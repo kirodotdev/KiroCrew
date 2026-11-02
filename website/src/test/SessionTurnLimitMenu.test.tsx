@@ -17,7 +17,10 @@ import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createTestStore } from './helpers'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 const mocks = vi.hoisted(() => ({
   chatSlotTurnTimeout: vi.fn(),
@@ -175,17 +178,21 @@ describe('SessionTurnLimitSubmenu', () => {
 
   it.each(['dropdown', 'context'] as const)('sits in the %s session menu as a submenu named for the setting', (variant) => {
     const client = new QueryClient()
+    const store = createTestStore()
+    store.dispatch(sseConnected())
     const Menu = variant === 'context' ? ContextMenu : DropdownMenu
     const Trigger = variant === 'context' ? ContextMenuTrigger : DropdownMenuTrigger
     const Content = variant === 'context' ? ContextMenuContent : DropdownMenuContent
     render(
       <QueryClientProvider client={client}>
-        <Menu {...(variant === 'dropdown' ? { defaultOpen: true } : {})}>
-          <Trigger>open</Trigger>
-          <Content forceMount>
-            <SessionTurnLimitSubmenu slotKey="slot-1" variant={variant} />
-          </Content>
-        </Menu>
+        <Provider store={store}>
+          <Menu {...(variant === 'dropdown' ? { defaultOpen: true } : {})}>
+            <Trigger>open</Trigger>
+            <Content forceMount>
+              <SessionTurnLimitSubmenu slotKey="slot-1" variant={variant} />
+            </Content>
+          </Menu>
+        </Provider>
       </QueryClientProvider>,
     )
     if (variant === 'context') fireEvent.contextMenu(screen.getByText('open'))
@@ -204,12 +211,14 @@ describe('SessionTurnLimitSubmenu', () => {
     const Content = variant === 'context' ? ContextMenuContent : DropdownMenuContent
     render(
       <QueryClientProvider client={client}>
-        <Menu {...(variant === 'dropdown' ? { defaultOpen: true } : {})}>
-          <Trigger>open</Trigger>
-          <Content forceMount>
-            <SessionTurnLimitSubmenu slotKey="slot-1" variant={variant} />
-          </Content>
-        </Menu>
+        <Provider store={createTestStore()}>
+          <Menu {...(variant === 'dropdown' ? { defaultOpen: true } : {})}>
+            <Trigger>open</Trigger>
+            <Content forceMount>
+              <SessionTurnLimitSubmenu slotKey="slot-1" variant={variant} />
+            </Content>
+          </Menu>
+        </Provider>
       </QueryClientProvider>,
     )
     if (variant === 'context') fireEvent.contextMenu(screen.getByText('open'))
@@ -217,6 +226,83 @@ describe('SessionTurnLimitSubmenu', () => {
     trigger.focus()
     fireEvent.keyDown(trigger, { key: 'ArrowRight' })
     expect(await screen.findByText(i18nT('components.sessionTurnLimit.this_session'))).toBeInTheDocument()
+  })
+
+  function renderSubmenu(connected: boolean) {
+    const store = createTestStore()
+    store.dispatch(connected ? sseConnected() : sseDisconnected())
+    return render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <Provider store={store}>
+          <DropdownMenu defaultOpen>
+            <DropdownMenuTrigger>open</DropdownMenuTrigger>
+            <DropdownMenuContent forceMount>
+              <SessionTurnLimitSubmenu slotKey="slot-1" variant="dropdown" />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('dims the trigger and names the reason while offline, leaving the flyout openable', () => {
+    mocks.chatSlotTurnTimeout.mockResolvedValue({ secs: null, global_secs: 14400, ...RANGE })
+    renderSubmenu(false)
+    const trigger = screen.getByTestId('session-turn-limit-submenu')
+    expect(trigger).toHaveAttribute('aria-disabled', 'true')
+    expect(trigger.className).toContain('opacity-40')
+    expect(trigger.title).toMatch(/Gateway offline/)
+    // A native disabled would drop the row from roving focus and make the
+    // reason unreachable, which is the idiom every sibling row avoids.
+    expect(trigger.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('carries the reason inside the flyout, and the connected control carries neither', async () => {
+    mocks.chatSlotTurnTimeout.mockResolvedValue({ secs: null, global_secs: 14400, ...RANGE })
+    const { unmount } = renderSubmenu(false)
+    const offlineTrigger = screen.getByTestId('session-turn-limit-submenu')
+    offlineTrigger.focus()
+    fireEvent.keyDown(offlineTrigger, { key: 'ArrowRight' })
+    // Radix portals the flyout, so it is not under the render container.
+    const reason = await screen.findByTestId('turn-limit-offline-reason')
+    expect(reason.textContent).toContain(i18nT('utils.offline.change_turn_limits'))
+    unmount()
+
+    renderSubmenu(true)
+    const liveTrigger = screen.getByTestId('session-turn-limit-submenu')
+    expect(liveTrigger).toHaveAttribute('aria-disabled', 'false')
+    expect(liveTrigger.className || '').not.toContain('opacity-40')
+    liveTrigger.focus()
+    fireEvent.keyDown(liveTrigger, { key: 'ArrowRight' })
+    // Opened, so the absence below is the gate and not an unopened flyout.
+    await screen.findByText(i18nT('components.sessionTurnLimit.this_session'))
+    expect(screen.queryByTestId('turn-limit-offline-reason')).toBeNull()
+  })
+
+  it('refuses a pick on the picker rows too, so the reason row is true', async () => {
+    mocks.chatSlotTurnTimeout.mockResolvedValue({ secs: null, global_secs: 14400, ...RANGE })
+    const { unmount } = renderSubmenu(false)
+    const trigger = screen.getByTestId('session-turn-limit-submenu')
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'ArrowRight' })
+    const row = await screen.findByText(fmtTurnLimit(RANGE.max))
+    const item = row.closest('[role="menuitemradio"]')!
+    expect(item).toHaveAttribute('aria-disabled', 'true')
+    expect(item.className).toContain('opacity-40')
+    fireEvent.click(item)
+    expect(mocks.setChatSlotTurnTimeout).not.toHaveBeenCalled()
+    unmount()
+
+    renderSubmenu(true)
+    const liveTrigger = screen.getByTestId('session-turn-limit-submenu')
+    liveTrigger.focus()
+    fireEvent.keyDown(liveTrigger, { key: 'ArrowRight' })
+    const liveRow = await screen.findByText(fmtTurnLimit(RANGE.max))
+    const liveItem = liveRow.closest('[role="menuitemradio"]')!
+    expect(liveItem.className || '').not.toContain('opacity-40')
+    fireEvent.click(liveItem)
+    await waitFor(() =>
+      expect(mocks.setChatSlotTurnTimeout).toHaveBeenCalledWith('slot-1', RANGE.max))
   })
 })
 

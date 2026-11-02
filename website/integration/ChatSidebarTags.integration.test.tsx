@@ -8,6 +8,7 @@ import SlotTagPopover from '../src/components/SlotTagPopover'
 import { TagPopoverProvider } from '../src/hooks/useTagPopover'
 import { sseSlots } from '../src/store/dashboardSlice'
 import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
 
 const mockConfirm = vi.fn(() => true)
@@ -43,6 +44,8 @@ const defaultProps = {
  */
 function renderBoard() {
   const store = createTestStore()
+  // The tag entry is gateway-gated, so this fixture must be connected.
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots(baseSlots as any))
   return renderWithProviders(
     <TagPopoverProvider><ChatSidebar {...defaultProps} /><SlotTagPopover /></TagPopoverProvider>,
