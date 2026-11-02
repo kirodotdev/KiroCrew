@@ -45,7 +45,11 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     _entry = next((i for i in slot._queue if i["id"] == queue_id), None)
     from kiro_crew.dashboard import responsive_chat
 
-    if _entry is not None and responsive_chat.row_already_written(slot, _entry):
+    if (
+        _entry is not None
+        and responsive_chat.row_already_written(slot, _entry)
+        and not responsive_chat.withdrawable_put_back(slot, _entry)
+    ):
         # Its user row is already in the transcript: removing only the queue
         # entry would leave the message there and hand the text back to the
         # composer, where sending it again writes a second copy.

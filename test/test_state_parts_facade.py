@@ -302,6 +302,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
     "queue_promote_by_id": ("function", False, False, "(self, queue_id: 'str') -> 'bool'"),
     "queue_remove_by_id": ("function", False, False, "(self, queue_id: 'str') -> 'str | None'"),
+    "queue_restore": ("function", False, False, "(self, items: 'list[dict[str, Any]]') -> 'int'"),
     "reasoning_effort": ("property", False, False, "(self) -> 'str'"),
     "record_model_withheld": (
         "function",

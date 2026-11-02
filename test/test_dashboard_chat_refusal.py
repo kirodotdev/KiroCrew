@@ -10,6 +10,7 @@ import pytest
 from chat_test_helpers import _make_state, await_successor, chat_done_frames, run_as_slot_task
 from dashboard_chat_helpers import _provider_mock
 
+from kiro_crew.dashboard.chat_utils_injected_rows import mark_signout_retained
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
 from kiro_crew.testing.wait import await_until
 
@@ -706,6 +707,7 @@ class TestRunChatEarlyExitHandOff:
         state, slot, prompts = self._setup(tmp_path, monkeypatch)
         slot._last_turn_auth_required = True
         slot.queue_insert(0, "held until login", kind="")
+        mark_signout_retained(slot)
 
         await self._run(state, slot, command)
 
@@ -960,6 +962,8 @@ class TestRunChatEarlyExitHandOff:
             self._fail_first_setup(monkeypatch)
             message = "first"
         slot.queue_insert(0, "held entry", kind="")
+        if hold == "sign-in":
+            mark_signout_retained(slot)
         real_payload = chat_runner.chat_done_payload
         sent: list[str] = []
 

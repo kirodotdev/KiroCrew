@@ -1073,6 +1073,34 @@ class TestQueueCancel:
         assert [item["id"] for item in slot._queue] == [qid]
         state.broadcast_ws.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_lone_put_back_entry_can_be_withdrawn(self, _sel):
+        slot = _ChatSlot("s1")
+        row = slot.append("user", "held", "msg msg-u")
+        qid = slot.queue_append("held")
+        slot._queue[0]["_signout_put_back"] = "g1"
+        slot._queue[0]["_responsive_row"] = row
+        status, _body = await self._delete(_state(slot), "s1", qid)
+        assert status == 200
+        assert slot._queue == []
+        assert [m["content"] for m in slot.messages if m["role"] == "user"] == ["held"]
+
+    @pytest.mark.asyncio
+    async def test_an_entry_put_back_under_a_merged_row_is_not_cancelled(self, _sel):
+        slot = _ChatSlot("s1")
+        row = slot.append("user", "[2 queued messages merged]\n\none\n\ntwo", "msg msg-u")
+        qid = slot.queue_append("one")
+        slot.queue_append("two")
+        for entry in slot._queue:
+            entry["_signout_put_back"] = "g1"
+            entry["_responsive_row"] = row
+        state = _state(slot)
+        status, body = await self._delete(state, "s1", qid)
+        assert status == 409
+        assert body["code"] == "queue_item_already_sent"
+        assert len(slot._queue) == 2
+        state.broadcast_ws.assert_not_called()
+
 
 class TestQueueEdit:
     async def _patch(self, state, name, qid, payload):
@@ -1117,6 +1145,20 @@ class TestQueueEdit:
         assert body["code"] == "queue_item_already_sent"
         assert slot._queue[0]["content"] == "orig"
         assert [m["content"] for m in slot.messages if m["role"] == "user"] == ["orig"]
+
+    @pytest.mark.asyncio
+    async def test_an_entry_put_back_under_a_merged_row_is_not_edited(self, _sel):
+        slot = _ChatSlot("s1")
+        row = slot.append("user", "[2 queued messages merged]\n\none\n\ntwo", "msg msg-u")
+        qid = slot.queue_append("one")
+        slot.queue_append("two")
+        for entry in slot._queue:
+            entry["_signout_put_back"] = "g1"
+            entry["_responsive_row"] = row
+        status, body = await self._patch(_state(slot), "s1", qid, {"content": "changed"})
+        assert status == 409
+        assert body["code"] == "queue_item_already_sent"
+        assert slot._queue[0]["content"] == "one"
 
     @pytest.mark.asyncio
     async def test_unknown_queue_id_is_404(self, _sel):

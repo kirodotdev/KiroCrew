@@ -319,8 +319,10 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     chat_done_payload,
     effective_session_key,
     expire_slack_options,
+    mark_signout_retained,
     mirror_is_paused,
     run_to_completion,
+    signout_hold_active,
     teardown_hold_active,
     variant_from_row,
 )
@@ -924,6 +926,9 @@ async def _run_chat(
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
     _current_message: dict | None = None,
+    # The queue entries this turn was drained from, as the same dicts. Only the
+    # queue drain sets it. A sign-in failure puts the person's ones back.
+    _queued_entries: "tuple[dict, ...]" = (),
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
     turn = _ChatTurn(
@@ -960,6 +965,8 @@ async def _run_chat(
         monitor_completion=monitor_completion,
         _current_message=_current_message,
         _agent_started=_agent_started,
+        _queued_entries=_queued_entries,
+        _message_is_typed=_message_is_typed,
     )
     # Bench timing (KIROCREW_TURN_TIMING): top-level user prompts only, the
     # same population as the TTFT histogram.

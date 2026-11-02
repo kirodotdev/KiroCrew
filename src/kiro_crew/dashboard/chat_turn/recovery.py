@@ -770,6 +770,74 @@ async def _purge_superseded_continuations(state: DashboardState, slot: _ChatSlot
     return False
 
 
+def _put_back_person_input(
+    slot: _ChatSlot,
+    entries: "tuple[dict, ...]",
+    *,
+    incoming: str,
+    row: dict | None,
+    typed_send: bool,
+    prompt_depth: int,
+    user_origin: bool,
+    attachment_meta: "dict[str, list[str]] | None",
+    queue_recovery: Callable[..., str],
+) -> None:
+    """Restore a person's input a signed-out turn took, so post-login resumes it.
+
+    The drained entries go back as themselves, so each keeps the origin,
+    channel and actor stamps the drain judges it by. Their parked admission
+    work ended when the turn ran, so they drop it and are admitted afresh.
+    Tagged entries are runner, cron or sub-agent input, which the caller
+    restores by kind.
+
+    A turn with no entries is put back only when it ran one typed message
+    (*typed_send*) under the row that send wrote: a composer or linked-thread
+    send. A composed prompt, like the OpenAI-compatible endpoint's flattened
+    conversation whose client was told it failed, gets nothing put back. The
+    entry comes from ``queue_recovery``, which stamps the turn's own provenance,
+    and carries the row's author for admission. It holds what the turn
+    received, or for a nested ``/prompts get`` turn what the person typed.
+
+    The entries share one put-back group and are tied to the row they already
+    have, so they drain again as one run that writes no second row. A run of
+    waiting sends keeps each send's own row.
+    """
+    import uuid
+
+    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.shared_crew.admission_entry import QUEUED_WORK_META_KEY
+    from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+
+    people = [item for item in entries if not item.get("kind")]
+    if people:
+        for item in people:
+            meta = item.get("meta")
+            if isinstance(meta, dict) and QUEUED_WORK_META_KEY in meta:
+                item["meta"] = {k: v for k, v in meta.items() if k != QUEUED_WORK_META_KEY}
+        slot.queue_restore(people)
+    elif entries or not (user_origin and typed_send and incoming and isinstance(row, dict)):
+        return
+    else:
+        meta = {key: list(paths) for key, paths in (attachment_meta or {}).items() if paths}
+        row_meta = row.get("meta")
+        author = row_meta.get(MESSAGE_AUTHOR_META_KEY) if isinstance(row_meta, dict) else None
+        if author:
+            meta[MESSAGE_AUTHOR_META_KEY] = author
+        typed = row.get("content")
+        text = typed if prompt_depth and isinstance(typed, str) else incoming
+        qid = queue_recovery(0, text, kind="", extra_meta=meta or None)
+        people = [item for item in slot._queue if item.get("id") == qid]
+    own_rows = all(
+        responsive_chat.priority_entry(item) and responsive_chat._present_row(slot, item)
+        for item in people
+    )
+    group = uuid.uuid4().hex
+    for item in people:
+        item[responsive_chat.PUT_BACK_KEY] = group
+        if row is not None and not own_rows:
+            responsive_chat.remember_row(slot, item, row)
+
+
 async def _requeue_auth_retry(
     slot: _ChatSlot,
     message: str,
@@ -780,13 +848,35 @@ async def _requeue_auth_retry(
     _consumed_reported: bool,
     _current_message: dict | None,
     _queue_recovery: Callable[..., str],
+    _queued_entries: "tuple[dict, ...]" = (),
+    _put_back_row: dict | None = None,
+    _incoming_message: str = "",
+    _directive_user_origin: bool = False,
+    _attachment_meta: "dict[str, list[str]] | None" = None,
+    _prompt_depth: int = 0,
+    _message_is_typed: bool = True,
 ) -> None:
-    """Put a runner-authored input that hit a signed-out CLI back at the queue head.
+    """Put the input that hit a signed-out CLI back at the queue head.
 
     The queue is held intact for after sign-in. A synthetic-recovery, synthesis or
     sub-agent input this turn already popped is restored once, at the queue head,
-    with its delivery provenance.
+    with its delivery provenance. So is a person's: the queue entries the turn
+    was drained from go back as the same entries, and a send that ran straight
+    from the composer gets one. Nothing goes back once the model reported the
+    input used, since running it again would answer it twice.
     """
+    if not _consumed_reported:
+        _put_back_person_input(
+            slot,
+            _queued_entries,
+            incoming=_incoming_message,
+            row=_put_back_row,
+            typed_send=_message_is_typed,
+            prompt_depth=_prompt_depth,
+            user_origin=_directive_user_origin and not _turn_actor,
+            attachment_meta=_attachment_meta,
+            queue_recovery=_queue_recovery,
+        )
     _auth_retry_kind = ""
     if _synthetic_recovery_turn or (_synthetic_payload and message == SUBAGENT_SYNTHESIS_PROMPT):
         # A synthesis turn is runner-authored even though its ledger actor is

@@ -258,6 +258,38 @@ class TestLinkedThreadRouting:
             )
         assert result is True
 
+    @pytest.mark.asyncio
+    async def test_the_turn_runs_under_the_redacted_row_the_route_wrote(self):
+        """The row holds the redacted text and the turn the raw text, so only
+        the row itself, handed over, ties the turn to it."""
+        from kiro_crew.slack import handler
+
+        slack = MagicMock()
+        slack.post_message = AsyncMock()
+        ds, _slot = _linked_ds(agent="restricted-agent")
+        written: list[dict] = []
+
+        def _append(_state, _slot, role, content, cls, **_kw):
+            written.append({"role": role, "content": content, "cls": cls})
+            return written[-1]
+
+        raw = "token " + "ghp_" + "a" * 36
+        a, b = _patches()
+        with (
+            a,
+            b,
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "append_and_surface", _append),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as run_chat,
+        ):
+            await handler.maybe_route_linked_thread(raw, "slack:t1", "U1", PINNED, slack, "t1")
+            await asyncio.sleep(0)
+        (row,) = written
+        assert row["content"] != raw
+        assert run_chat.call_args.args[2] == raw
+        assert run_chat.call_args.kwargs["_current_message"] is row
+
 
 def _import_ds(existing=None):
     ds = MagicMock()

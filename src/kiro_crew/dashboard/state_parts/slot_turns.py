@@ -760,6 +760,10 @@ def queue_pop(self: _ChatSlot, index: int = 0) -> dict[str, Any]:
     return self._queue_repository.queue_pop(self, index)
 
 
+def queue_restore(self: _ChatSlot, items: list[dict[str, Any]]) -> int:
+    return self._queue_repository.queue_restore(self, items)
+
+
 def note_pending_subagent_delivery(
     self: _ChatSlot, content: str, deliveries: list[SubagentDelivery]
 ) -> None:

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _MemoryUnavailable,
         acp_error_is_transient,
         logger,
+        mark_signout_retained,
         run_bg_oneliner,
     )
     from kiro_crew.dashboard.chat_turn.account_identity import _mark_kiro_signed_out
@@ -127,7 +128,15 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
         _consumed_reported=turn._consumed_reported,
         _current_message=_current_message,
         _queue_recovery=functools.partial(_queue_recovery, turn),
+        _put_back_row=turn._current_replay_message,
+        _queued_entries=turn._queued_entries,
+        _incoming_message=turn._incoming_message,
+        _directive_user_origin=turn._directive_user_origin,
+        _attachment_meta=turn._attachment_meta,
+        _prompt_depth=turn._prompt_depth,
+        _message_is_typed=turn._message_is_typed,
     )
+    mark_signout_retained(slot)
     _auth_required = True
     turn._auth_required = _auth_required
     needs_session_reset = True

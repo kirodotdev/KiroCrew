@@ -26,7 +26,7 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import PUT_BACK_KEY, RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.session_lifecycle import compaction_in_flight
 
@@ -178,6 +178,8 @@ def priority_entry(item: dict) -> bool:
 
 
 def reusable_row(slot: Any, consumed: list[dict], text: str) -> dict | None:
+    if (row := _put_back_row(slot, consumed)) is not None:
+        return row
     if len(consumed) > 1:
         # A merged run of waiting sends: every one already has its row where it
         # was sent, so the turn anchors on the last of them and writes none.
@@ -192,6 +194,39 @@ def reusable_row(slot: Any, consumed: list[dict], text: str) -> dict | None:
     if consumed[0].get("content") != text:
         return None
     return _present_row(slot, consumed[0])
+
+
+def withdrawable_put_back(slot: Any, item: dict) -> bool:
+    """Whether *item* is a put-back entry its person may still cancel.
+
+    Only a lone one: the row stays as a message nobody answered. A member of a
+    merged group shares its row with the others, so it is not withdrawn alone.
+    """
+    group = item.get(PUT_BACK_KEY)
+    return bool(group) and sum(1 for entry in slot._queue if entry.get(PUT_BACK_KEY) == group) == 1
+
+
+def _put_back_row(slot: Any, consumed: list[dict]) -> dict | None:
+    """The one row a put-back group already has, matched as an object.
+
+    Matched by identity, not text: the drain redacts a channel or app entry's
+    text before it writes the row, so the row need not equal the entry.
+    """
+    group = consumed[0].get(PUT_BACK_KEY) if consumed else None
+    row = consumed[0].get("_responsive_row") if consumed else None
+    if not group or not isinstance(row, dict):
+        return None
+    if any(
+        item.get(PUT_BACK_KEY) != group or item.get("_responsive_row") is not row
+        for item in consumed
+    ):
+        return None
+    if any(existing is row for existing in slot.messages):
+        return row
+    pos = consumed[0].get("_responsive_row_pos")
+    if isinstance(pos, int) and not isinstance(pos, bool) and pos < _durable_base(slot):
+        return row
+    return None
 
 
 def _restored_row(slot: Any, item: dict, text: str) -> dict | None:
@@ -259,6 +294,8 @@ def row_already_written(slot: Any, item: dict) -> bool:
     editing its queue entry would leave the transcript holding the old text and
     the drain writing the new one beside it.
     """
+    if _put_back_row(slot, [item]) is not None:
+        return True
     content = item.get("content")
     if not isinstance(content, str):
         return False

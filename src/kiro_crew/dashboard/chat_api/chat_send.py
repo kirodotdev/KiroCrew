@@ -1336,6 +1336,23 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # conversation the person asked to drop. `_turn_admit` consumes without
     # ``allow_discard``, so nothing later in the turn drops it either.
     _teardown_hold = bool(not slot.running and teardown_hold_active(state, slot))
+    # Prompts a sign-in failure put back run before a send made after it, so
+    # the send joins the queue behind them. A held copy of the very words this
+    # person sends again is dropped: the new send answers them.
+    _behind_signout = False
+    if not slot.running and _person_send:
+        from kiro_crew.dashboard.chat_utils_injected_rows import (
+            signout_held,
+            withdraw_resent_put_backs,
+        )
+        from kiro_crew.shared_crew.identity import actor_of as _resend_actor_of
+
+        if signout_held(slot):
+            for _dropped in withdraw_resent_put_backs(
+                slot, message, _resend_actor_of(request).principal.id
+            ):
+                state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": _dropped})
+            _behind_signout = signout_held(slot)
     _sub_key = effective_session_key(slot)
     _held = subagents_hold_user_messages(state, _sub_key)
     # Messages parked while a child was live stay parked once it is flagged
@@ -1347,7 +1364,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or _teardown_hold:
+    if (
+        (not (steer and not _agent_origin) and (_held or _behind_parked))
+        or _teardown_hold
+        or _behind_signout
+    ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 

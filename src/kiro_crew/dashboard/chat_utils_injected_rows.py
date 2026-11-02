@@ -15,7 +15,11 @@ import json
 from enum import Enum
 from typing import Any
 
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, source_channels_of
+from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_META_KEYS,
+    PUT_BACK_KEY,
+    source_channels_of,
+)
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -553,6 +557,72 @@ def teardown_hold_active(state, slot) -> bool:
     return not _slot_has_pending_interaction(state, slot)
 
 
+#: Set on every entry queued when a turn hit a signed-out CLI, by that turn.
+SIGNOUT_RETAINED_KEY = "_signout_retained"
+
+
+def mark_signout_retained(slot) -> None:
+    """Mark everything queued as held by the sign-in failure that just happened.
+
+    Called by the failing turn after it put its own input back, so the mark is
+    set by the one place that knows these entries were held, and anything queued
+    later carries none.
+    """
+    for item in slot._queue:
+        item[SIGNOUT_RETAINED_KEY] = True
+
+
+def signout_held(slot) -> bool:
+    """Whether *slot*'s queue holds entries a sign-in failure marked."""
+    return bool(slot._last_turn_auth_required) and any(
+        item.get(SIGNOUT_RETAINED_KEY) for item in slot._queue
+    )
+
+
+def withdraw_resent_put_backs(slot, text: str, author_id: str) -> list[str]:
+    """Drop held put-back entries the same person has just sent again.
+
+    The new send answers those words, so running the held copy after it would
+    answer them twice, out of order. Returns the dropped entries' ids.
+    """
+    from kiro_crew.shared_crew.attribution import message_author
+
+    dropped: list[str] = []
+    for item in list(slot._queue):
+        if not (item.get(SIGNOUT_RETAINED_KEY) and item.get(PUT_BACK_KEY)):
+            continue
+        if item.get("content") != text:
+            continue
+        meta = item.get("meta")
+        if message_author(meta if isinstance(meta, dict) else None).id != author_id:
+            continue
+        if slot.queue_remove_by_id(item["id"]) is not None:
+            dropped.append(item["id"])
+    return dropped
+
+
+def _resumes_signout(item: dict) -> bool:
+    return bool(
+        not item.get("kind")
+        and not item.get(SIGNOUT_RETAINED_KEY)
+        and _stamped_turn_actor(item) in ("", "user")
+    )
+
+
+def signout_hold_active(slot) -> bool:
+    """Whether a sign-in failure holds *slot*'s queue.
+
+    Nothing learns that the person signed in; only a turn that runs clears the
+    failure. So a person's send queued after the failure, anywhere in the queue,
+    is what lets the queue try again, in order. If the CLI is still signed out,
+    that try puts its input back and marks the queue again, so it loses nothing.
+    App, cron, crew and sub-agent arrivals do not trigger a try.
+    """
+    if not slot._last_turn_auth_required:
+        return False
+    return not any(_resumes_signout(item) for item in slot._queue)
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
@@ -580,6 +650,9 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # A decision's receipt names one message; a merged row has one meta.
                 or (item.get("meta") or {}).get("decisions_strip")
             ):
+                break
+            # A put-back group drains as the run it was, under its one row.
+            if to_merge and item.get(PUT_BACK_KEY) != to_merge[0].get(PUT_BACK_KEY):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
                 break
