@@ -9,7 +9,7 @@
 // This drives the REAL provider and the REAL PrPickList rather than
 // re-implementing the narrowing in the test body.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -100,6 +100,10 @@ Element.prototype.scrollIntoView ??= () => {}
 
 async function openPicker() {
   if (!screen.queryByRole('menu')) {
+    // A real press takes focus before the menu opens; fireEvent.pointerDown does not. With focus still in the filter
+    // box, Radix's focus() on open blurred it mid-commit, and user-event's patched blur ran a nested act that cleared
+    // the outer act's queue, so the rest of that commit warned. Take focus first, inside its own act.
+    act(() => { labelTrigger().focus() })
     // `button: 0` and no modifier keys: Radix ignores a secondary or
     // ctrl-clicked pointerdown, so a bare event would silently not open it.
     fireEvent.pointerDown(labelTrigger(), { button: 0, ctrlKey: false, pointerId: 1 })
