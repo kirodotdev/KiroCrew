@@ -547,7 +547,6 @@ test/test_mcp_probe_treadmill.py
 test/test_mcp_probe_warn_once.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
-test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
 test/test_mcp_stub_freeze_ratchet.py
 test/test_mcp_stub_migration.py
