@@ -21,12 +21,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.cron_script_mcp import KeptMcpServers
+from kiro_crew.cron_script_mcp import KeptMcpServers, _redact_pair
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -313,15 +313,28 @@ class ScriptContext:
         when it starts signs in once per run rather than once per call.
         :meth:`close` stops the kept servers.
 
-        Args are scanned for credential/URL leakage before passing to the
-        sandboxed MCP server subprocess.
+        Args are scanned for credential/URL leakage before they reach the
+        sandboxed MCP server subprocess, because a cron body is agent-writable.
+        One case is exempt: a string ARGUMENT VALUE that exactly equals a value
+        THIS SAME server returned earlier in the run is the script handing a
+        value back to the server that produced it (an opaque id a prior call
+        yielded), so it is sent unchanged. The match is exact and per server --
+        no substring or prefix match, and never a value another server returned.
+        Every other string -- a value not seen from this server, and every KEY --
+        goes through :func:`redact` as the serialized pass did. If redaction
+        would change any of them, the call is REFUSED with an error naming the
+        argument path, rather than sending the ``[REDACTED: credential]``
+        placeholder on to the server (which the server rejects with a misleading
+        error of its own). The error names the argument path and the class of
+        value; the path segments are themselves redacted, so a credential-shaped
+        key cannot leak through the diagnostic, and the value is never shown.
+
+        The scan and the server call share one audited block, so a refusal is
+        recorded as an ``error`` outcome -- with a sanitized reason, never the
+        value -- just as a failed call is.
         """
-        # Scan serialized args for credential patterns
-        args_str = json.dumps(args)
-        args_str = redact(args_str)
-        safe_args = json.loads(args_str)
         try:
-            result = self._kept_servers.call_tool(server, tool, safe_args)
+            result = self._kept_servers.scan_and_call(server, tool, args)
         except Exception as exc:
             self._audit_tool_call(server, tool, "error", str(exc))
             raise
@@ -424,27 +437,6 @@ class ScriptContext:
         except Exception as exc:
             logger.warning("ScriptContext %s failed: %s", where, exc)
             return {"error": str(exc)}
-
-
-def _redact_pair(key: str, value: str) -> str:
-    """*value* redacted as the value UNDER *key*.
-
-    A credential pattern can need its key to match: ``Bearer <token>`` alone passes the
-    redactor, while ``authorization: Bearer <token>`` is caught. Redacting the value on
-    its own would let that pair through and the token would render on a page, and
-    redacting the serialized record would eat the delimiter between the two and leave
-    text that is not JSON. So the value is judged twice: alone, and then the cleaned
-    result spelled beside its key the way a header line spells it. A pair the second
-    judgement catches is answered
-    with the redactor's own tag in the value's place, so the key stays and the shape holds.
-    """
-    safe = redact(value)
-    # On the CLEANED value, always: a value carrying two tokens -- one the bare scrub
-    # catches and one only its key reveals -- must not keep the second for the first.
-    spelled = f"{key}: {safe}"
-    if redact(spelled) != spelled:
-        return REDACTED_CREDENTIAL_TAG
-    return safe
 
 
 def _redact_deep(value: Any, key: str = "") -> Any:

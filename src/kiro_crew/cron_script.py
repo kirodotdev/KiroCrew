@@ -1143,7 +1143,6 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         Skip,
         SkipError,
         _redact_deep,
-        _redact_pair,
         _refusal_code,
         logger,
     )
@@ -1173,11 +1172,20 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         validate_secret_env_grant,
     )
     from kiro_crew.cron_script_mcp import (  # noqa: F401
+        _BARE_ENTROPY_RULE,
+        _MAX_RETAINED_VALUE_LEN,
+        _MAX_RETAINED_VALUES_PER_SERVER,
         _STDERR_TAIL_READ_SPAN,
         KeptMcpServers,
+        McpArgRedactionError,
         McpToolClient,
         McpToolError,
+        _collect_string_leaves,
+        _is_bare_entropy_whole_leaf_id,
+        _is_whole_leaf_credential,
+        _redact_pair,
         _resolve_mcp_server,
+        _scan_tool_args,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,
@@ -1220,9 +1228,13 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
+        CREDENTIAL_REDACTION_TAGS,
         REDACTED_CREDENTIAL_TAG,
         is_unverifiable_path_refusal,
         sensitive_path_refusal,
+    )
+    from kiro_crew.security.redaction import (  # noqa: F401
+        redact_credentials_with_records,
     )
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.subprocess_utf8 import UTF8_TEXT  # noqa: F401
