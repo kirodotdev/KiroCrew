@@ -219,9 +219,8 @@ class TestSafeWriteFileNolinkWithoutDirFd:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture, moved verbatim; the one undo() in its class runs after the write the patch is for
-    def _no_dir_fd(self, monkeypatch):
-        monkeypatch.setattr(os, "supports_dir_fd", set())
+    def _no_dir_fd(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(os, "supports_dir_fd", set())
 
     def test_the_staged_payload_is_still_renamed_over_the_target(self, tmp_path):
         f = _write(tmp_path / "a.txt", "old")
@@ -258,12 +257,9 @@ class TestSafeWriteFileNolinkWithoutDirFd:
                 raise FileNotFoundError("target moved")
             return real_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "stat", _vanish_on_the_recheck)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _vanish_on_the_recheck)
             assert safe_write_file_nolink(str(f), "new") is False
-        finally:
-            # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that restores os.stat before the file is read back, moved verbatim
-            monkeypatch.undo()
         assert state["fired"] is True
         assert f.read_text(encoding="utf-8") == "old"
         # The staged sibling is unlinked by name on the cleanup path.
@@ -310,12 +306,9 @@ class TestSafeWriteFileNolinkDirFdChecks:
                 raise FileNotFoundError("gone from the pinned parent")
             return real_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "stat", _no_stat_through_dir_fd)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _no_stat_through_dir_fd)
             assert safe_write_file_nolink(str(f), "new") is False
-        finally:
-            # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that restores os.stat before the file is read back, moved verbatim
-            monkeypatch.undo()
         assert f.read_text(encoding="utf-8") == "old"
 
 
@@ -389,12 +382,11 @@ class TestVerifiedReplaceFileNolink:
                 os.replace(side, f)
             return real_fsync(fd)
 
-        monkeypatch.setattr(os, "fsync", racing_fsync)
-        out = verified_replace_file_nolink(
-            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
-        )
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that restores os.fsync before the outcome is checked, moved verbatim
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "fsync", racing_fsync)
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
         assert fired["done"], "the race never ran — the test would be vacuous"
         assert out == "conflict"
         assert f.read_text(encoding="utf-8") == "NEWER FROM OUTSIDE"
@@ -415,12 +407,11 @@ class TestVerifiedReplaceFileNolink:
                     fh.truncate()
             return real_fsync(fd)
 
-        monkeypatch.setattr(os, "fsync", racing_fsync)
-        out = verified_replace_file_nolink(
-            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
-        )
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that restores os.fsync before the outcome is checked, moved verbatim
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "fsync", racing_fsync)
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
         assert fired["done"], "the race never ran — the test would be vacuous"
         assert out == "conflict"
         assert f.read_text(encoding="utf-8") == "NEWER IN PLACE, LONGER THAN BASE"
@@ -451,12 +442,11 @@ class TestVerifiedReplaceFileNolink:
                 os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
             return real_fsync(fd)
 
-        monkeypatch.setattr(os, "fsync", racing_fsync)
-        out = verified_replace_file_nolink(
-            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
-        )
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that restores os.fsync before the outcome is checked, moved verbatim
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "fsync", racing_fsync)
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
         assert fired["done"], "the race never ran — the test would be vacuous"
         assert out == "conflict"
         assert f.read_text(encoding="utf-8") == "EGAB"
