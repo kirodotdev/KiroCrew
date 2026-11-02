@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compact_result``, ``_sign_in_ask``.
 
-Instance fields read: ``_client``, ``essential_delivery``.
+Instance fields read: ``_client``, ``_cloud_governance_scope``, ``essential_delivery``.
 """
 
 from __future__ import annotations
@@ -176,8 +176,11 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
     must be confirmed before anything is prompted into it. A spec that cannot be
     confirmed raises out of ``confirm_member_projection``, so nothing is sent.
     A no-op for every session that projects nothing, and for one already
-    confirmed. Called on this arm only: the Kiro and KAS runtimes are not an
-    ``AcpClient``, so their paths gain no call or await (harness-parity H13).
+    confirmed. The readiness steps run on this arm only: the Kiro and KAS runtimes
+    are not an ``AcpClient``, so their paths gain no call or await (harness-parity
+    H13). The one exception is a Kiro Cloud session, whose governance is checked
+    again before each send (:func:`_readmit_cloud_session`); every other session
+    skips it on an attribute read.
     """
     if isinstance(self._client, AcpClient):
         # A model or effort switch on a launch-time harness holds this lock across
@@ -190,6 +193,54 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
             # session is the one confirmed and prompted. A no-op with no mark set.
             await relaunch_reload.apply_pending_mcp_relaunch(self._client)
         await self._client.confirm_member_projection()
+    # Set only by a Kiro Cloud start, so every other session skips this await.
+    scope = getattr(self, "_cloud_governance_scope", None)
+    if scope is not None:
+        await _readmit_cloud_session(self, scope)
+
+
+#: Said when a turn of a running Kiro Cloud chat is refused by governance. The
+#: governance reason follows, so the person knows what changed.
+CLOUD_GOVERNANCE_WITHDRAWN = (
+    "Kiro Cloud Sessions are no longer allowed for this chat, so its cloud sandbox "
+    "was disconnected (it was not deleted and is still listed in Kiro Web): "
+)
+
+
+async def _readmit_cloud_session(provider: AcpProvider, scope: tuple[str, str, str]) -> None:
+    """Re-run the Kiro Cloud governance check before a turn on ``provider``'s cloud runtime.
+
+    A cloud session's tools run in Kiro's cloud, outside every gate Kiro Crew
+    enforces, so the start's check (``prepare_for_session``) is not enough: a
+    policy refresh or a profile edit can withdraw the capability, or govern a new
+    scope, while the chat runs. ``scope`` is the start's own ``(session_key,
+    agent, app)``, so the turn is judged exactly as its start was. On a refusal
+    the runtime is stopped through the provider's ordinary shutdown, which never
+    deletes a cloud sandbox, and the turn is refused with words a retry cannot
+    change; the next start then meets the same refusal in ``prepare_for_session``.
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.coder.session_launch import kiro_cloud_governance_refusal
+
+    client = provider._client
+    if not isinstance(client, AcpSessionProvider) or client._runtime.is_cloud_sandbox is not True:
+        return
+    session_key, agent, app = scope
+    # Off the loop: profile resolution and the SEL audit read and write disk.
+    refusal = await asyncio.to_thread(
+        kiro_cloud_governance_refusal, session_key, agent=agent, app=app
+    )
+    if refusal is None:
+        return
+    logger.warning(
+        "session %s: Kiro Cloud Sessions is no longer allowed; stopping its cloud runtime",
+        session_key,
+    )
+    try:
+        await client.shutdown()
+    except Exception:
+        logger.warning("session %s: stopping the cloud runtime failed", session_key, exc_info=True)
+    raise AcpError(CLOUD_GOVERNANCE_WITHDRAWN + refusal, transient=False, user_worded=True)
 
 
 async def stream(
