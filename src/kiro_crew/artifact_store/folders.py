@@ -220,6 +220,16 @@ class ArtifactFolderStore:
             key=lambda f: (self._depth(f["id"]), int(f.get("order", 0)), str(f.get("name", ""))),
         )
 
+    def _next_order(self) -> int:
+        """The ``order`` of a new folder: the rule chat tags and columns use.
+
+        Called with ``self._lock`` held. Imported at call time so loading the
+        artifact store does not load the dashboard state module.
+        """
+        from kiro_crew.dashboard.chat_tags_store import _next_order
+
+        return _next_order(self._folders)
+
     def get(self, folder_id: str) -> dict[str, Any] | None:
         with self._lock:
             f = self._by_id().get(folder_id)
@@ -258,7 +268,7 @@ class ArtifactFolderStore:
             folder = {
                 "id": uuid.uuid4().hex[:12],
                 "name": name,
-                "order": len(self._folders),
+                "order": self._next_order(),
                 "parent_id": parent_id,
             }
             if color:
@@ -433,7 +443,7 @@ class ArtifactFolderStore:
                         match = {
                             "id": uuid.uuid4().hex[:12],
                             "name": self.clean_name(seg),
-                            "order": len(self._folders),
+                            "order": self._next_order(),
                             "parent_id": parent,
                         }
                         self._folders.append(match)
