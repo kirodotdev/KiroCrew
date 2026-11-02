@@ -62,6 +62,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -72,7 +73,7 @@ from kiro_crew import feature_videos_cache as cache_mod
 from kiro_crew import feature_videos_manifest as manifest_mod
 from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.apps.version import parse_version
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry, replace_with_retry
 from kiro_crew.config.loader import KiroCrewConfig, config_local_path, config_path, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import (
@@ -81,6 +82,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.members import _member_name_is_addressable
+from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
@@ -751,7 +753,7 @@ def load_state() -> FeatureVideoState:
     """
     path = _state_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, RecursionError):
         # RecursionError is neither an OSError nor a ValueError: json.loads
         # raises it on JSON nested past the interpreter's recursion limit. Our
@@ -767,6 +769,72 @@ def load_state() -> FeatureVideoState:
     raw = data.get("videos")
     if not isinstance(raw, dict):
         return FeatureVideoState()
+    return _state_from_rows(raw)
+
+
+class FeatureVideoStateUnreadable(Exception):
+    """The state file cannot be read or set aside, so a write would replace it."""
+
+
+def _load_state_for_update() -> FeatureVideoState:
+    """The read :func:`record_status` saves from.
+
+    :func:`load_state` degrades for readers, where it re-offers a clip at worst. A
+    write cannot start from that answer: the empty state would be saved over every
+    row still in the file. Here a file that cannot be decoded or parsed as a
+    ``{"videos": {...}}`` object is moved aside to ``<name>.corrupt-<utc>`` with a
+    warning first, and the write starts from an empty state with the old bytes kept.
+    When the read itself fails, or the move does, the write raises
+    :class:`FeatureVideoStateUnreadable` and the file stays as it is.
+    """
+    path = _state_path()
+    try:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8-sig"))
+    except FileNotFoundError:
+        return FeatureVideoState()
+    except OSError as e:
+        # A read that fails says nothing about the bytes, which may be good state:
+        # moving it aside would re-offer every clip, so the write is refused instead.
+        raise FeatureVideoStateUnreadable(
+            f"{path} could not be read ({e}); not saving over it"
+        ) from e
+    except (ValueError, RecursionError) as e:
+        _set_aside_state(path, e)
+        return FeatureVideoState()
+    raw = data.get("videos") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        _set_aside_state(path, "no videos object")
+        return FeatureVideoState()
+    return _state_from_rows(raw)
+
+
+def _set_aside_state(path: Path, reason: object) -> None:
+    """Move an unreadable state file to ``<name>.corrupt-<utc>`` before a save."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+    # The sidecar keeps the state file's owner-only contract (see save_state), so the
+    # file is locked down before it is renamed. A lockdown failure warns: keeping the
+    # bytes from the save matters more than their mode.
+    try:
+        restrict_to_owner(path)
+    except OSError:
+        logger.warning("could not restrict %s to its owner", path.name, exc_info=True)
+    try:
+        replace_with_retry(path, aside)
+    except OSError as e:
+        raise FeatureVideoStateUnreadable(
+            f"{path} could not be read ({reason}) or moved aside ({e}); not saving over it"
+        ) from e
+    logger.warning(
+        "feature video state %s could not be read (%s); moved it to %s before saving",
+        path,
+        reason,
+        aside.name,
+    )
+
+
+def _state_from_rows(raw: dict[object, object]) -> FeatureVideoState:
+    """Keep each row whose key is a string and whose status is a valid one."""
     videos: dict[str, dict[str, object]] = {}
     for key, row in raw.items():
         if not isinstance(key, str) or not isinstance(row, dict):
@@ -805,10 +873,12 @@ def record_status(video_id: str, status: str) -> None:
     Load, mutate, save under :data:`_state_write_lock`: the three steps are one
     transaction, and two tabs recording different videos concurrently would
     otherwise both read the same bytes and the later save would drop the earlier
-    video's row — offering an already-dismissed clip again.
+    video's row — offering an already-dismissed clip again. The load is strict for
+    the same reason: a state file that exists but cannot be read is moved aside
+    rather than saved over.
     """
     with _state_write_lock:
-        st = load_state()
+        st = _load_state_for_update()
         st.videos[video_id] = {"status": status, "ts": time.time()}
         save_state(st)
 
