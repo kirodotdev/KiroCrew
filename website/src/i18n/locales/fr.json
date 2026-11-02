@@ -22354,6 +22354,7 @@
     "title": "Explorer",
     "intro_video_save_failed": "Impossible d’enregistrer que tu as regardé ou fermé cette vidéo. Réessaie.",
     "pill_count": "Explorer {{done}}/{{total}}",
+    "header_progress": "{{done}} fonctions essayées sur {{total}}",
     "badges": "Badges",
     "notice_count_many": "{{count}} nouveautés dans Explorer",
     "try_today_none": "Commence par « Premiers pas » ci-dessous.",

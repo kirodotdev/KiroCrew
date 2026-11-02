@@ -22354,6 +22354,7 @@
     "streak_short_one": "Serie di {{count}} giorno",
     "streak_short_other": "Serie di {{count}} giorni",
     "pill_count": "Esplora {{done}}/{{total}}",
+    "header_progress": "{{done}} funzioni provate su {{total}}",
     "intro_video_watch": "Guarda",
     "notice_one": "Raggiunto: {{title}}",
     "getting_started_result": "Un primo risultato finito",

@@ -22341,6 +22341,7 @@
     "getting_started_result": "Un primer resultado terminado",
     "try_today_entry_one": "Prueba hoy: {{count}} función nueva",
     "pill_count": "Explorar {{done}}/{{total}}",
+    "header_progress": "{{done}} de {{total}} funciones probadas",
     "mark_as_done": "Marcar como hecho",
     "streak_days_one": "{{count}} día · mejor {{best}}",
     "intro_video_watch": "Ver",

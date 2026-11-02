@@ -21809,6 +21809,7 @@
     "intro_video_watch": "দেখো",
     "notice_one": "পূর্ণ হয়েছে: {{title}}",
     "pill_count": "এক্সপ্লোর {{done}}/{{total}}",
+    "header_progress": "{{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে",
     "load_failed": "এক্সপ্লোর লোড করা যায়নি।",
     "mark_as_done": "সম্পন্ন চিহ্নিত করো",
     "indicator_label_streak_other": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে, টানা {{count}} দিন",

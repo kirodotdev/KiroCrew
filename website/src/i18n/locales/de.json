@@ -21873,6 +21873,7 @@
     "mark_as_done": "Als erledigt markieren",
     "try_today_entry_one": "Heute ausprobieren: {{count}} neue Funktion",
     "pill_count": "Entdecken {{done}}/{{total}}",
+    "header_progress": "{{done}} von {{total}} Funktionen ausprobiert",
     "notice_count_one": "{{count}} Neuigkeit in Entdecken",
     "try_it": "Ausprobieren",
     "notice_one": "Erreicht: {{title}}",

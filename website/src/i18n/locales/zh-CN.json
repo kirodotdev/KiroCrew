@@ -21359,6 +21359,7 @@
     "try_it": "试试",
     "load_failed": "无法加载探索。",
     "pill_count": "探索 {{done}}/{{total}}",
+    "header_progress": "已试过 {{done}}/{{total}} 个功能",
     "notice_count_other": "探索里有 {{count}} 项新进展",
     "getting_started_brief": "设置每日晨报",
     "close": "关闭探索",

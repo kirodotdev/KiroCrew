@@ -21403,6 +21403,7 @@
     "more_to_try": "이것도 살펴보세요",
     "intro_video_watch": "보기",
     "pill_count": "탐색 {{done}}/{{total}}",
+    "header_progress": "기능 {{total}}개 중 {{done}}개 사용해 봄",
     "mark_as_done": "완료로 표시",
     "indicator_label_streak_other": "탐색: 기능 {{total}}개 중 {{done}}개 사용해 봄, {{count}}일 연속",
     "all_tried": "여기 있는 기능을 모두 써 봤어요.",

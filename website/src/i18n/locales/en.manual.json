@@ -10887,6 +10887,7 @@
     "streak_short_one": "{{count}}-day streak",
     "streak_short_other": "{{count}}-day streak",
     "pill_count": "Explore {{done}}/{{total}}",
+    "header_progress": "{{done}} of {{total}} features tried",
     "more_to_try": "Also worth a look",
     "video_failed": "Feature video could not be loaded"
   }
