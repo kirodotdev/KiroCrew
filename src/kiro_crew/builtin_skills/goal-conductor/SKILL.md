@@ -108,26 +108,29 @@ Worked example — goal "resolve this repo's open issues":
 
 When one open question — a design, a root cause, a plan, a review — needs
 several workers to argue it before anyone builds on the answer, run a worker
-debate: proposers and single-aspect critics argue in files, you relay and
+debate: proposers and critics with one role each argue in files, you relay and
 referee, and the human rules when it is stuck. Read
 `<this skill's dir>/references/worker-debate.md` and follow it. Its
 participants read each other's files by design, the one exception to
 Independent above, and the ledger carries only a short summary and the path to
 the debate note.
 
-**Offer a debate; do not wait to be asked.** When a goal or an item is a
-design or implementation of real size, put "debate first" in your Round 0
-plan as one Assumption line: the question, the participants and their
-aspects, the rounds, a time estimate and the work items it uses. Real size
-means any of: about 150 lines or more, two or more modules, a security, data,
-approval or trust boundary, a contract others depend on, two or more
-plausible approaches, a prior failed attempt or a design block from a
-reviewer, or an RFC. Do not offer it for a small change with a clear fix, CI
-or rebase work, wording, an emergency, a design the owner already decided, or
-when fewer than half the goal's work items are left. "Skip the debate", "just
-do it" or any gate-skipping message drops it. A standing preference the owner
-stated ("always debate first", "stop suggesting debates") wins over these
-rules.
+**Offer a debate for a costly, contested choice.** Offer one when the owner
+asks for it. Offer one unasked only when the task is a complex analysis: two
+or more plausible approaches, AND a wrong choice is costly. Costly means it
+crosses a security, data, approval or trust boundary, changes a contract
+others depend on, or follows a prior failed attempt or a design block from a
+reviewer. Size alone
+(about 150 lines, two or more modules) is not a reason, and neither is an RFC
+unless both conditions hold. A debate costs about 45 minutes and several work
+items. To offer it, put "debate first" in your Round 0 plan as one Assumption
+line: the question, the participants and their roles, the rounds, a time
+estimate and the work items it uses. Do not offer it for a small change with
+a clear fix, CI or rebase work, wording, an emergency, a design the owner
+already decided, or when fewer than half the goal's work items are left.
+"Skip the debate", "just do it" or any gate-skipping message drops it. A
+standing preference the owner stated ("always debate first", "stop suggesting
+debates") wins over these rules.
 
 ## The loop
 
