@@ -312,6 +312,106 @@ def test_an_untagged_bucket_at_the_origin_is_still_a_half_present_drive(monkeypa
     assert spy.created_distributions == []
 
 
+_OTHER_DRIVE_BUCKET = f"{pd.BUCKET_PREFIX}999999999999"
+
+
+def _s3_origin_forms(bucket: str) -> list[str]:
+    """Every DomainName an S3 bucket origin can carry."""
+    return [
+        f"{bucket}.s3.amazonaws.com",
+        f"{bucket}.s3.us-west-2.amazonaws.com",
+        f"{bucket}.s3-us-west-2.amazonaws.com",
+    ]
+
+
+@pytest.mark.parametrize("origin", _s3_origin_forms(BUCKET))
+def test_a_distribution_serving_from_the_drive_bucket_is_accepted_in_every_s3_form(
+    monkeypatch, payload, origin
+):
+    """An origin set by hand may use any S3 form, and each one naming the drive's own
+    bucket is the drive serving from itself."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin)
+    spy.install(monkeypatch)
+    res = _publish(pd.PersonalDriveProvider(), payload)
+    assert res.view_url
+    assert spy.arg("put-object", "--bucket") == BUCKET
+    assert spy.created_distributions == [], "the existing drive must be reused"
+
+
+@pytest.mark.parametrize("origin", [*_s3_origin_forms(_OTHER_DRIVE_BUCKET), "example.com"])
+def test_a_distribution_serving_from_another_bucket_is_refused_before_any_write(
+    monkeypatch, payload, origin
+):
+    """The bucket and the distribution are each found by tag, so an origin edited to
+    another bucket keeps both tags. Publishing then uploaded to one bucket and returned a
+    link that reads another, so the pair must be refused before any policy write or
+    upload."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin, existing_policy=True)
+    spy.install(monkeypatch)
+    try:
+        _publish(pd.PersonalDriveProvider(), payload)
+        refusal = ""
+    except PublishError as exc:
+        refusal = str(exc)
+    assert "does not serve from" in refusal
+    assert DIST in refusal and BUCKET in refusal
+    writes = [a[:2] for a in spy.checked if a[1:2] in (["put-object"], ["put-bucket-policy"])]
+    assert writes == [], "nothing may be written to a drive whose origin is elsewhere"
+    assert spy.created_distributions == []
+
+
+def test_flipping_to_public_on_a_distribution_serving_another_bucket_is_refused(monkeypatch):
+    """Private -> public hands out a link through `_require_drive`, a different resolver
+    from a first publish, so it needs the same origin check before its policy write."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(
+        origin_domain=f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com", existing_policy=True
+    )
+    spy.install(monkeypatch)
+    with pytest.raises(PublishError) as exc:
+        asyncio.run(
+            pd.PersonalDriveProvider().update_sharing(
+                external_id="abc~alpha", visibility="public", shared_with=[]
+            )
+        )
+    assert "does not serve from" in str(exc.value)
+    writes = [a[:2] for a in spy.checked if a[1:2] in (["put-bucket-policy"], ["copy-object"])]
+    assert writes == [], "nothing may be written before the origin check refuses"
+
+
+def test_removing_or_replacing_content_is_not_blocked_by_a_mismatched_origin(monkeypatch, payload):
+    """A withdrawal, a take-private and an in-place push act on the bucket's objects, which
+    the origin cannot make wrong. Refusing them would strand content its owner is trying to
+    remove or replace, so only the paths that hand out a link are checked."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    origin = f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com"
+    _EngineSpy(origin_domain=origin, existing_policy=True).install(monkeypatch)
+    provider = pd.PersonalDriveProvider()
+    asyncio.run(provider.unpublish(external_id="abc~alpha"))
+    asyncio.run(
+        provider.update_sharing(external_id="abc~alpha", visibility="private", shared_with=[])
+    )
+    result = asyncio.run(
+        provider.push_version(external_id="abc~alpha", file_path=payload, expected_token="")
+    )
+    assert "does not serve from" not in str(result)
+
+
+def test_the_origin_the_drive_is_built_with_passes_the_origin_check(monkeypatch, payload):
+    """A drive this module creates must keep passing: its origin comes from the deploy
+    engine's own distribution config, so that exact DomainName is what is fed back."""
+    built = pd.engine.distribution_config(BUCKET, "us-west-2", "OAC1")
+    origin = built["Origins"]["Items"][0]["DomainName"]
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin)
+    spy.install(monkeypatch)
+    res = _publish(pd.PersonalDriveProvider(), payload)
+    assert res.view_url
+    assert spy.arg("put-object", "--bucket") == BUCKET
+
+
 def test_total_absence_no_bucket_no_distribution_still_creates(monkeypatch, payload):
     """A1's other half -- the distinction that must stay sharp. When NEITHER a bucket NOR
     a drive-tagged distribution exists, this is genuine total absence, not a partial

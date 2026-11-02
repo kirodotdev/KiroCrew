@@ -157,6 +157,13 @@ _ORIGIN_RE = re.compile(
     r"^(?P<bucket>[a-z0-9.-]+)\.s3\.(?P<region>[a-z]{2}(?:-[a-z]+)+-\d)\.amazonaws\.com$"
 )
 
+#: Every DomainName an S3 bucket origin can carry: `<bucket>.s3.amazonaws.com`,
+#: `<bucket>.s3.<region>.amazonaws.com` and the older `<bucket>.s3-<region>.amazonaws.com`.
+#: A drive whose origin was set by hand may use any of them, not only the form above.
+_S3_ORIGIN_RE = re.compile(
+    r"^(?P<bucket>[a-z0-9.-]+)\.s3(?:[.-][a-z]{2}(?:-[a-z]+)+-\d)?\.amazonaws\.com$"
+)
+
 #: Objects under this prefix are the only ones the distribution may read.
 PUBLIC_PREFIX = "public/"
 
@@ -446,17 +453,7 @@ class PersonalDriveProvider(PublishProvider):
         the origin points at. An origin in the profile's own region was already searched,
         and an origin that is not a drive-scheme S3 bucket is not this drive's.
         """
-        out = engine._checked(
-            ["cloudfront", "get-distribution", "--id", dist_id, "--output", "json"],
-            profile,
-            action="cloudfront:GetDistribution",
-        )
-        try:
-            dist = json.loads(out or "{}").get("Distribution") or {}
-        except json.JSONDecodeError:  # pragma: no cover - malformed API output
-            return ""
-        origins = ((dist.get("DistributionConfig") or {}).get("Origins") or {}).get("Items") or []
-        for origin in origins:
+        for origin in self._distribution_origins(profile, dist_id):
             match = _ORIGIN_RE.match(str(origin.get("DomainName", "")))
             if not match or not _BUCKET_RE.match(match["bucket"]):
                 continue
@@ -465,6 +462,42 @@ class PersonalDriveProvider(PublishProvider):
             if self._find_bucket(profile, match["region"]) == match["bucket"]:
                 return match["bucket"]
         return ""
+
+    def _distribution_origins(self, profile: str, dist_id: str) -> list[dict]:
+        """The distribution's configured origins, or [] when the reply is unreadable."""
+        out = engine._checked(
+            ["cloudfront", "get-distribution", "--id", dist_id, "--output", "json"],
+            profile,
+            action="cloudfront:GetDistribution",
+        )
+        try:
+            dist = json.loads(out or "{}").get("Distribution") or {}
+        except json.JSONDecodeError:  # pragma: no cover - malformed API output
+            return []
+        return ((dist.get("DistributionConfig") or {}).get("Origins") or {}).get("Items") or []
+
+    def _assert_origin_is_bucket(self, profile: str, dist_id: str, bucket: str) -> None:
+        """Refuse to hand out a link when the distribution does not serve the drive's bucket.
+
+        The bucket and the distribution are discovered separately, by tag, so each can
+        pass on its own while the pair is wrong: an origin edited in the console to
+        another bucket keeps both tags. Publishing then uploads to one bucket and hands
+        out a link that reads another, so the paths that hand out a link (a public
+        publish and a private -> public flip) call this before any policy write or
+        upload. A withdrawal, a take-private and an in-place push do not: they act on the
+        bucket's objects, which the origin cannot make wrong, and refusing them would
+        strand content its owner is trying to remove or replace.
+        """
+        for origin in self._distribution_origins(profile, dist_id):
+            match = _S3_ORIGIN_RE.match(str(origin.get("DomainName", "")))
+            if match and match["bucket"] == bucket:
+                return
+        raise PublishError(
+            f"This account's personal drive distribution ({dist_id}) does not serve from "
+            f"the drive's bucket ({bucket}), so a link to it would not show what was "
+            "uploaded and nothing was changed. Point the distribution's origin back at "
+            "that bucket in the AWS console, then publish again."
+        )
 
     def _find_distribution(self, profile: str, region: str) -> tuple[str, str]:
         """The drive's distribution, as (id, arn), or ("", "").
@@ -674,6 +707,10 @@ class PersonalDriveProvider(PublishProvider):
         if existing and existing.get("bucket") and existing.get("distribution_id"):
             bucket = existing["bucket"]
             dist_id = existing["distribution_id"]
+            if link_promised:
+                # Before the policy write below: a link to a distribution that serves
+                # another bucket would not show what is about to be uploaded.
+                self._assert_origin_is_bucket(profile, dist_id, bucket)
             if existing.get("distribution_arn"):
                 self._reassert_bucket_policy(existing, profile, link_promised=link_promised)
             status, domain = engine.distribution_status(dist_id, profile)
@@ -791,6 +828,10 @@ class PersonalDriveProvider(PublishProvider):
                 "serving may still be public -- check the drive's bucket in the AWS "
                 "console for this account."
             )
+        if require_serving:
+            # Make-public hands out a link, so the distribution must serve this bucket
+            # (see `_assert_origin_is_bucket`); checked before the policy write below.
+            self._assert_origin_is_bucket(profile, found["distribution_id"], found["bucket"])
         if found.get("distribution_arn"):
             # Here the two questions coincide: the only caller that asserts the network is
             # make-public, which is also the only one that ends by handing out a link.
@@ -851,6 +892,8 @@ class PersonalDriveProvider(PublishProvider):
                 # was returned to a bucket the delivery network cannot read. The sibling
                 # in `_ensure_drive` passes the real flag; in `_require_drive` the two
                 # questions coincide, which is what made copying it look safe.
+                if link_promised:
+                    self._assert_origin_is_bucket(profile, dist_id, bucket)
                 if recheck.get("distribution_arn"):
                     self._reassert_bucket_policy(recheck, profile, link_promised=link_promised)
                 status, domain = engine.distribution_status(dist_id, profile)
