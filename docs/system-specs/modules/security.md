@@ -858,10 +858,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   resumes after every separator so nested pairs (`-H "X-Api-Key: …"`) match. An
   unquoted value in a line-oriented assignment (env, INI, YAML, a header) runs to the
   end of its line, a CLI flag's to the next blank, and a nested pair's to its
-  container's delimiter. In a shell-style `KEY=value` line, a placeholder followed by
-  another `KEY=value` word is read alone (`password=${PW} api_key=<key>`); a next word
-  the scanner cannot read as a pair (`api_key==value`) keeps the whole-line cut.
-  `labelled.secret_field`'s allow list holds the
+  container's delimiter. A shell line whose credential value starts with a
+  placeholder is read to the end of the line, so a credential later on the same
+  line is still redacted. `labelled.secret_field`'s allow list holds the
   status words (`required`, `expired`) a credential field carries in place of a value,
   matched against the whole value, so `enabledXYZ` is still redacted. Every value under
   a `session` key is redacted at any length, including an app's own session name such

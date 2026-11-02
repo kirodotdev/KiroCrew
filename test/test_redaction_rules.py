@@ -625,10 +625,12 @@ class TestLabelledSecretField:
         calls = 0
         real = detectors.labelled_value
 
-        def counting(text: str, i: int, *args: object) -> tuple[int, int] | None:
+        def counting(
+            text: str, i: int, shape: str = detectors.NESTED
+        ) -> tuple[int, int] | None:
             nonlocal calls
             calls += 1
-            return real(text, i, *args)  # type: ignore[arg-type]
+            return real(text, i, shape)
 
         monkeypatch.setattr(detectors, "labelled_value", counting)
         redact("k=" * 5000 + " password=" + synth(20, ALNUM, 25))
@@ -879,8 +881,6 @@ class TestNonCredentialValuesUnderCredentialNames:
             "password=required",
             '"access_token": "expired"',
             '{"password": {"type": "string", "required": true}}',
-            "password=${DB_PASSWORD} api_key=<your-api-key>",
-            "DB_PASSWORD=$DB_PASSWORD API_KEY=${API_KEY}",
         ],
     )
     def test_is_kept(self, text: str) -> None:
@@ -945,51 +945,27 @@ class TestNonCredentialValuesUnderCredentialNames:
     ) -> None:
         assert secret not in redact(text).text
 
-    def test_placeholder_then_real_pair_redacts_only_the_real_pair(self) -> None:
-        value = synth(24, ALNUM, 91)
-        result = redact(f"password=${{DB_PASSWORD}} api_key={value}")
-        assert result.text == f"password=${{DB_PASSWORD}} api_key={rr.PLACEHOLDER}"
 
+class TestPlaceholderHeadRedaction:
     @pytest.mark.parametrize(
-        ("text", "expected"),
+        "template",
         [
-            ("password=${DB_PW} api_key=abc;def123", "password=${DB_PW} api_key={P}"),
-            ("password=${DB_PW} token=abcd,efghijklmnop", "password=${DB_PW} token={P}"),
-            (
-                "password=${A} secret=${B} api_key=abc;def123",
-                "password=${A} secret=${B} api_key={P}",
-            ),
-            ("password=$PW api_key=abc;def123", "password=$PW api_key={P}"),
-            (
-                "password=${DB_PW} api_key=abc;def123\nnote=a;b",
-                "password=${DB_PW} api_key={P}\nnote=a;b",
-            ),
+            'password=${PW} api_key=""{v}',
+            'password=${PW} api_key="${KEY}"{v}',
+            "password=${PW} api_key=={v}",
+            "password=${A} secret=${B} api_key={v}",
+            "password=${PW} api_key=abc;{v}",
         ],
     )
-    def test_pairs_after_a_placeholder_head_are_read_as_shell_words(
-        self, text: str, expected: str
-    ) -> None:
+    def test_placeholder_head_does_not_hide_a_later_secret(self, template: str) -> None:
+        value = synth(20, ALNUM, 92)
+        text = template.replace("{v}", value)
         result = redact(text)
-        assert result.text == expected.replace("{P}", rr.PLACEHOLDER)
-        again = redact(result.text)
-        assert again.text == result.text
-        assert again.records == ()
+        assert value not in result.text
+        assert result.records
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "password=${PW} api_key=<key>",
-            "password=${A} secret=${B} api_key=<key>",
-        ],
-    )
-    def test_placeholders_chained_by_shell_words_are_kept(self, text: str) -> None:
+    def test_single_placeholder_is_kept(self) -> None:
+        text = "password = ${DB_PASSWORD}"
         result = redact(text)
         assert result.text == text
         assert result.records == ()
-
-    @pytest.mark.parametrize("head", ["${PW}", "$PW", "<pw>", "{{ pw }}"])
-    def test_unreadable_next_pair_keeps_the_whole_line_cut(self, head: str) -> None:
-        value = "=" + synth(18, ALNUM, 92)
-        result = redact(f"password={head} api_key={value}")
-        assert value[1:] not in result.text
-        assert result.records
