@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import threading
-import time
 from typing import Any
 from unittest import mock
 
@@ -1021,6 +1020,18 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
         backup._state_path().parent.mkdir(parents=True, exist_ok=True)
         holding = threading.Event()
         release = threading.Event()
+        arrived = threading.Event()
+        contender_done = threading.Event()
+        real_file_lock = backup.file_lock
+
+        def arriving_file_lock(*args: Any, **kwargs: Any) -> Any:
+            # Stand-in for the lock the state module takes: it reports that the
+            # contender reached the state lock, then takes the real lock.
+            arrived.set()
+            return real_file_lock(*args, **kwargs)
+
+        # Through the facade, which writes every module that holds the name.
+        monkeypatch.setattr(backup, "file_lock", arriving_file_lock)
 
         def holder() -> None:
             with platform_compat.open_lock_file(lock_path) as fd:
@@ -1037,6 +1048,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
             except OSError as exc:
                 outcome["acquired"] = False
                 outcome["error"] = repr(exc)
+            finally:
+                contender_done.set()
 
         holder_thread = threading.Thread(target=holder)
         holder_thread.start()
@@ -1044,12 +1057,13 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
             assert holding.wait(timeout=10), "the holder never took the lock"
             contender_thread = threading.Thread(target=contender)
             contender_thread.start()
+            assert arrived.wait(timeout=10), "the contender never reached the state lock"
             # Outlive the patched ceiling while still held, which is the condition
             # that made the unbounded default refuse a contender that was only
-            # waiting.
-            # flake-ok: pre-existing 300 ms hold past the patched 50 ms lock ceiling; moved verbatim and tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing hold past the patched lock ceiling moved verbatim
-            time.sleep(0.3)
+            # waiting. The contender must still be waiting after the window.
+            assert not contender_done.wait(
+                timeout=0.3
+            ), "the contender returned while the holder still held the lock"
             release.set()
             contender_thread.join(timeout=15)
             assert not contender_thread.is_alive(), "the contender never returned"
