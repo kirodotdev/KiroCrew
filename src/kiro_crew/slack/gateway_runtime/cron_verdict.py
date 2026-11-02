@@ -74,6 +74,10 @@ class _GateTally:
         self.refused_rules: list[str] = []
         self.approved = 0
         self.unresolved = 0
+        # Titles of the unresolved calls, parallel to ``unresolved``, so the
+        # delivered result can name what was not approved. They do not move
+        # the run's status or its failure counter (see ``all_blocked``).
+        self.unresolved_titles: list[str] = []
         # An approved call whose bare tool name is ``send_message``. Titles
         # arrive as ``Running: @server/send_message`` (kiro-cli) or
         # ``mcp__server__send_message`` (ACP); ``_bare_tool_name`` strips
@@ -92,6 +96,7 @@ class _GateTally:
             self.refused_rules.append((reason or "").strip().split("\n", 1)[0].strip())
         else:
             self.unresolved += 1
+            self.unresolved_titles.append(title)
 
     def _empty_reply_text(self, count: str) -> str:
         """The empty-reply shape this tally names, with *count* in the count slot.
@@ -194,20 +199,48 @@ class _GateTally:
             head = f"{len(self.refused)} of {total} tool call(s) blocked by the security gate: "
         return display_safe(head + named)[:_CRON_FAILURE_DETAIL_CAP]
 
+    def unapproved_summary(self) -> str:
+        """One redacted, capped line naming the calls that were not approved.
+
+        An unresolved call is one the run's approver did not approve: on an
+        unattended cron that is usually an approval request nobody answered, but
+        it is also a governance denial or a person's own rejection. Whichever it
+        was, the call did not run. Titles are LLM-authored and land in the result
+        body, so the line goes through :func:`display_safe` exactly as
+        :meth:`refusal_summary` does.
+        """
+        n = self.unresolved
+        named = ", ".join(t or "<untitled tool>" for t in self.unresolved_titles[:3])
+        head = f"{n} tool call(s) not approved (no approver answered, or refused by policy): "
+        return display_safe(head + named)[:_CRON_FAILURE_DETAIL_CAP]
+
 
 def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
-    """Prefix a partially-blocked run's result with the refusal it carries.
+    """Prefix a run's result with the tool calls it lost.
 
     The result is what every delivery leg (dashboard bell and slot, channel,
     Slack) shows and what the dedup hash is taken over, so one prefix here is
-    what puts the refused call in front of the user beside the prose that may
-    claim the work was done. A fully blocked run is not annotated: its verdict
-    is a failure alert in its own right, and a tool-free or clean run has
-    nothing to name.
+    what puts the lost call in front of the user beside the prose that may
+    claim the work was done.
+
+    Two kinds of loss are named. A partially-blocked run names its security
+    refusal. A run with an unresolved call (an approval nobody answered, a
+    governance denial or a person's rejection) names that call too: the model's
+    reply can still read as if the step happened, and before this the only
+    record that it did not was the audit row. Naming it changes neither the
+    run's status nor its failure counter (see :func:`_apply_gate_verdict`).
+
+    A fully blocked run gets no security line: its verdict is a failure alert in
+    its own right. A tool-free or clean run has nothing to name.
     """
-    if not tally.partially_blocked:
+    lines: list[str] = []
+    if tally.partially_blocked:
+        lines.append(f"⛔ {tally.refusal_summary()} — that work did not happen.")
+    if tally.unresolved:
+        lines.append(f"⚠ {tally.unapproved_summary()} — that work did not happen.")
+    if not lines:
         return result_text
-    return f"⛔ {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
+    return "\n".join(lines) + f"\n\n{result_text}"
 
 
 def _dedup_text(result_text: str, tally: _GateTally, *, empty_reply: bool) -> str:
