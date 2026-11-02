@@ -3887,7 +3887,16 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   servers Crew launches (`mate_worker.conductor_mcp_servers`, the keys of
   `agent._MANAGED_MCP_SERVERS`), `includeMcpJson` is off, and no `tools` or
   `allowedTools` ref to any other server survives, so the user's own servers
-  reach the crewmate's worker only, through its file. Computer use
+  reach the crewmate's worker only, through its file. On top of that filter
+  it mounts the work ledger, `kirocrew-work`, which `build_agent_config()`
+  skips as an `opt_in` server (`service_agents._mount_work_ledger`, the entry
+  built by `managed_mcp._managed_opt_in_entry("mcp-work")` so it keeps
+  `"type": "registry"` and the `KIROCREW_HOME` pin): `@kirocrew-work` in
+  `tools` and the ledger conductor's grants
+  (`agent._LEDGER_CONDUCTOR_WORK_GRANTS`, `work_ledger_read` /
+  `work_ledger_record` among them) in `allowedTools`, through the governance
+  ceiling, so a withheld verb stays mounted and prompts. Every crewmate gets
+  it (`test/test_mate_work_ledger_mount.py`). Computer use
   (`@kirocrew-computer`) and the browser tool stay, and so does `cron_add`,
   scripted jobs included. A crewmate's
   scheduled AGENT turn does not run on the conductor at all: at every fire,
@@ -3967,7 +3976,12 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   another crewmate keeps that crewmate's resolution, which refuses it
   (session-control.md, "What a created child inherits"). The worker's own
   unnamed children inherit the worker, and it has no request tool ("What the
-  worker lacks" below). Both specs are written from
+  worker lacks" below). It mounts `kirocrew-work` the same way as the
+  conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
+  `work_brief`, `work_report`), so a worker bound to an item in its
+  crewmate's ledger can read its brief and report on it; it is a base server,
+  so a crewmate's file cannot replace its entry (a switch-off is still a
+  restriction, below). Both specs are written from
   `build_agent_config()` on every gateway start
   (`service_agents._install_mate_conductor_agent` /
   `_install_mate_worker_agent`) into `~/.kiro/mates/agents/`, beside the
