@@ -86,7 +86,6 @@
   "src/test/TranscriptRowGeometry.test.tsx",
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WidgetFrame.test.tsx",
-  "src/test/WorkflowRunTree.storageError.test.tsx",
   "src/test/WorkspacePickerCoverage.test.tsx",
   "src/test/approvalFocusShortcut.test.tsx",
   "src/test/chatPins.test.tsx",
