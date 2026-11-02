@@ -13,7 +13,6 @@
 #       --floor <n> --baseline <this file> --update-baseline
 #
 # Format: <path> <rate-when-recorded>   # <covered>/<statements>
-src/app-sdk/index.ts 48.0   # 36/75
 src/app-sdk/shared-modules.ts 0.0   # 0/1
 src/apps/auto-improvement/AutoImprovementPage.tsx 58.0   # 47/81
 src/apps/auto-improvement/FindingDetail.tsx 8.3   # 2/24
