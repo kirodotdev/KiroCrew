@@ -202,13 +202,9 @@ line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/scripts/gen-pse
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/App.tsx:499
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/App.tsx:619
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/components/ArtifactFolderDeleteDialog.tsx:41
-line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/components/InlineCommentOverlay.tsx:171
-line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/components/SessionGridView.tsx:214
-line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/i18n/detect.ts:133
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/i18n/scriptFonts.test.ts:51-56
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/pages/ArtifactDetailPage.tsx:49
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/pages/ChatSidebar.tsx:560
-line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/surfaces/registry.ts:324
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/vite.config.ts:426-427
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	WateringHoleScene.tsx:92
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	hooks/sceneText.ts:145
