@@ -1,8 +1,8 @@
 """The ``slot_focused`` resume prefetch, split out of ``dashboard/ws.py`` (its import path).
 
 A focus frame on a persisted-but-idle slot starts the speculative ``session/load``.
-Before that spawn the owner-only path binds the session to the owner as the user its
-persisted MCP sign-ins belong to (``dashboard/mcp_grant_binding.py``).
+A focus never binds the session to a user for persisted MCP sign-ins
+(``dashboard/mcp_grant_binding.py``): seeing a slot does not prove whose it is.
 """
 
 from __future__ import annotations
@@ -11,15 +11,9 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.mcp_grant_binding import OWNER_PRINCIPAL, abind_slot_to_principal
-from kiro_crew.mcp_grant_principals import principal_for
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
-
-
-#: Off-loop focus binds in flight, held so they are not collected mid-run.
-_pending_binds: set[asyncio.Future] = set()
 
 
 def _handle_slot_focused(
@@ -89,12 +83,9 @@ def _handle_slot_focused(
     # new slot. Non-resumable focus preserves whatever task is pending.
     if not sessions.resumable_hint(session_key):
         return None
-    # Owner-gated above: the owner is the user its persisted MCP sign-ins belong
-    # to. The bind reads the session map, so it runs off the loop ahead of the
-    # debounced spawn; a spawn that wins the race only persists nothing.
-    if principal_for(session_key) != OWNER_PRINCIPAL:
-        _pending_binds.add(
-            task := asyncio.ensure_future(abind_slot_to_principal(slot, OWNER_PRINCIPAL, sessions))
-        )
-        task.add_done_callback(_pending_binds.discard)
+    # No MCP sign-in bind here. After a restart the binding table is empty, and
+    # the owner can focus a slot another dashboard user drives; binding it to the
+    # owner would spawn that user's engine on the owner's vault. Left unbound, the
+    # prefetched process declares no secretStorage (grants stay in its memory);
+    # a key a real turn already bound keeps its vault.
     return schedule_eager_spawn(state, slot, allow_resume=True)

@@ -210,15 +210,80 @@ def test_a_read_on_a_slot_route_binds_nothing(method):
     assert principals.principal_for(effective_session_key(slot)) == "owner"
 
 
-def test_the_owner_focus_prefetch_binds_the_owner():
-    from kiro_crew.dashboard.mcp_grant_binding import bind_slot_to_principal
-
+def test_an_owner_bind_skips_a_channel_linked_session():
     slot = _slot()
     bind_slot_to_principal(slot, principals.OWNER_PRINCIPAL, _Sessions())
     assert principals.principal_for(effective_session_key(slot)) == "owner"
     linked = _slot("chat-9")
     bind_slot_to_principal(linked, principals.OWNER_PRINCIPAL, _Sessions(slack="1.2"))
     assert principals.principal_for(effective_session_key(linked)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound_before", [None, "owner", "user:42"])
+async def test_an_owner_focus_never_lends_the_owner_vault(monkeypatch, bound_before):
+    """After a restart the owner focuses a restored slot a teammate drives.
+
+    The focus must not bind the key to the owner, so the prefetched engine
+    declares no secretStorage; the teammate's turn then binds the key to the
+    teammate, and no step reaches the owner's vault. A key a real turn already
+    bound keeps that binding.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.acp import kas_secret_storage as kss
+    from kiro_crew.acp import runtime_spawn_launch
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.ws_focus import _handle_slot_focused
+
+    monkeypatch.setattr(kss, "persistence_enabled", lambda: True)
+    slot = _slot("chat-teammate", running=False)
+    key = effective_session_key(slot)
+    if bound_before:
+        principals.bind(key, bound_before)
+    sessions = _Sessions()
+    sessions.has_session = lambda k: False
+    sessions.resumable_hint = lambda k: True
+    state = MagicMock()
+    state.get_slot = MagicMock(return_value=slot)
+    state.sessions = sessions
+
+    spawned: list[AcpRuntime] = []
+
+    async def prefetch_spawn():
+        runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS, mcp_grant_key=key)
+        runtime._tool_search = None
+        caps = await runtime_spawn_launch._handshake_client_capabilities(runtime)
+        spawned.append(runtime)
+        return caps
+
+    def fake_schedule(st, sl, *, allow_resume):
+        assert allow_resume is True
+        return asyncio.ensure_future(prefetch_spawn())
+
+    monkeypatch.setattr(chat_runner, "schedule_eager_spawn", fake_schedule)
+    caps = await _handle_slot_focused(state, slot.key, None, owner=True)
+    # Let any off-loop work the focus might have queued finish before reading.
+    await asyncio.to_thread(lambda: None)
+    await asyncio.sleep(0)
+
+    (prefetched,) = spawned
+    assert principals.principal_for(key) == bound_before
+    if bound_before is None:
+        assert "secretStorage" not in caps.get("_meta", {}).get("kiro", {})
+        assert prefetched._mcp_secret_server is None
+    else:
+        # Bound by a real turn earlier: that user's vault, never another's.
+        assert prefetched._mcp_secret_server._principal == bound_before
+
+    # The teammate drives the slot: their turn binds, and the owner is never it.
+    await bind_slot_to_request_user(_Request("U-OWNER", sessions=sessions, user="42", app=""), slot)
+    assert principals.principal_for(key) != "owner"
+    if bound_before is None:
+        assert principals.principal_for(key) == "user:42"
+        assert prefetched._mcp_secret_server is None
 
 
 @pytest.mark.asyncio
