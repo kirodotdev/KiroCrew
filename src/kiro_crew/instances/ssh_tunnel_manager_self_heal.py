@@ -152,6 +152,16 @@ def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
         # itself, and the user reconnects against the new record.
         logger.info("Skipping self-heal for %s: reconfiguration in progress", instance_id)
         return
+    self._schedule_recovery(instance_id)
+
+
+def _schedule_recovery(self: SshTunnelManager, instance_id: str) -> None:
+    """Schedule the next self-heal attempt for *instance_id* after its backoff.
+
+    The one scheduling seam: a tunnel's unexpected exit and a recovery that
+    ended on a failed mint both come through here, so every attempt waits the
+    same backoff and counts against the same cap.
+    """
     delay = _recover_backoff_secs(
         self._recover_attempts.get(instance_id, 0) + 1, self._recover_backoff_max
     )
@@ -188,7 +198,12 @@ async def _recover_after(self: SshTunnelManager, instance_id: str, delay: float)
         # during the backoff: either way this attempt holds stale coordinates.
         return
     try:
-        await self._recover(instance_id)
+        if await self._recover(instance_id) and instance_id not in self._reconfiguring:
+            # A failed mint installed no tunnel, so no exit will call back. The
+            # next attempt re-reads the registry (an instance replaced under its
+            # record may be named correctly by then), and once the cap is spent
+            # it is that attempt which gives up and schedules the diagnosis.
+            self._schedule_recovery(instance_id)
     finally:
         # ONE re-settle covers every exit, and the in-use invariant is what makes
         # it correct in both directions: a rebuild that SUCCEEDED leaves the tunnel
@@ -382,7 +397,7 @@ async def _mark_recovered(
         )
 
 
-async def _recover(self: SshTunnelManager, instance_id: str) -> None:
+async def _recover(self: SshTunnelManager, instance_id: str) -> bool:
     """2-tier self-heal for an unhealthy tunnel (either transport).
 
     Tier 1: rebuild the tunnel (reusing the existing token).
@@ -402,16 +417,22 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
     mirroring ``_refresh_token_once`` — so self-heal can't stall concurrent
     connect/disconnect/shutdown. The lock is held only for the
     validation/state checks and to store a freshly minted token.
+
+    Returns True when the attempt failed on a token mint. A mint failure
+    installs no tunnel, so no tunnel exit will ever schedule the next
+    attempt; :meth:`_recover_after` does it instead, through the same
+    backoff, so the attempt cap still ends in diagnosis. Every other exit
+    returns False.
     """
     # Phase 1 — validate + bump the attempt counter under the lock, then release.
     async with self._lock:
         inst = await asyncio.to_thread(self._registry.get, instance_id)
         current = self._tunnels.get(instance_id)
         if inst is None or current is None:
-            return  # disconnected / removed while we waited
+            return False  # disconnected / removed while we waited
         if current.status.state == TunnelState.CONNECTED:
             self._recover_attempts.pop(instance_id, None)
-            return  # already healthy (e.g. user reconnected)
+            return False  # already healthy (e.g. user reconnected)
 
         attempts = self._recover_attempts.get(instance_id, 0) + 1
         self._recover_attempts[instance_id] = attempts
@@ -420,13 +441,13 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
                 "Giving up self-heal for %s after %d attempts", instance_id, self._max_recovery
             )
             self._schedule_diagnosis(instance_id)
-            return
+            return False
 
         try:
             params = self._resolve_transport(inst, await self._with_parent(inst))
         except (SshValidationError, SsmValidationError) as e:
             logger.warning("Self-heal aborted for %s: %s", instance_id, e)
-            return
+            return False
 
         local_port = current.status.local_port or inst.local_port
         # The hold is NOT released here. Releasing it in this locked phase would leave
@@ -468,11 +489,11 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             mint = await self._mint_for(inst, params)
         except TokenMintError as e:
             # The hop runs through the parent, so a parent we cannot mint
-            # over is a parent we cannot heal through either. Standing down
-            # keeps the attempt counted, so _MAX_RECOVERY still ends in
-            # diagnosis rather than a silent forever-retry.
+            # over is a parent we cannot heal through either. The attempt stays
+            # counted and the caller schedules the next one, so _MAX_RECOVERY
+            # ends in diagnosis rather than in silence or a forever-retry.
             logger.warning("Self-heal mint through parent failed for %s: %s", instance_id, e)
-            return
+            return True
         hop = mint.hop
         if not hop:
             # Falling back to the row's port is the exposure `connect`
@@ -484,13 +505,13 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
                 instance_id,
                 params.via_instance_id,
             )
-            return
+            return False
         async with self._lock:
             if instance_id not in self._tunnels:
-                return  # disconnected while minting -- discard
+                return False  # disconnected while minting -- discard
             if self._tunnel_epoch.get(instance_id, 0) != epoch:
                 logger.info("Discarding a superseded self-heal mint for %s", instance_id)
-                return
+                return False
         if hop != params.via_remote_port:
             # The parent disagrees with the row. Its answer wins and is
             # persisted, so a later reconnect dials the same port this does.
@@ -515,7 +536,7 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         # tier failure: falling through to tier 2 would re-mint against a
         # world this recovery has been superseded in.
         logger.info("Self-heal for %s stood down: superseded mid-rebuild", instance_id)
-        return
+        return False
     if rebuilt is not None:
         # The rebuild's install is the one bump expected past the Phase 1
         # stamp; anything else means the world moved mid-rebuild and
@@ -526,11 +547,11 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
                 if not self._store_token(
                     inst, chained_mint, minted_at_epoch=epoch + 1, binds_forward=True
                 ):
-                    return
+                    return False
                 self._schedule_token_refresh(instance_id)
         await self._mark_recovered(instance_id, rebuilt, epoch + 1)
         logger.info("Self-heal tier 1 finished for %s", instance_id)
-        return
+        return False
 
     # Tier 2 -- re-mint the dashboard token, then rebuild. A fargate instance
     # has no token, so its tier 2 is the rebuild alone: the tier-1 failure
@@ -551,11 +572,13 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         try:
             mint = await self._mint_for(inst, params)
         except TokenMintError as e:
+            # Nothing was installed, so no tunnel exit will re-arm recovery: the
+            # caller schedules the next attempt (see _recover_after).
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
-            return
+            return True
         async with self._lock:
             if instance_id not in self._tunnels:
-                return  # disconnected while minting -- discard
+                return False  # disconnected while minting -- discard
             # This mint ran for the generation tier 1 installed, which is
             # exactly ONE bump past the Phase 1 stamp: a failed tier-1 rebuild
             # always installs (and bumps for) its replacement before start()
@@ -564,13 +587,13 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             # rebuild below would otherwise replace the current tunnel using
             # this recovery's stale record.
             if not self._store_token(inst, mint, minted_at_epoch=epoch + 1, binds_forward=False):
-                return
+                return False
             self._schedule_token_refresh(instance_id)
     try:
         rebuilt = await self._rebuild(inst, params, local_port, expected_epoch=epoch + 1)
     except _RecoverySuperseded:
         logger.info("Self-heal for %s stood down: superseded mid-rebuild", instance_id)
-        return
+        return False
     if rebuilt is not None:
         # epoch + 2: tier 1's failed install and this rebuild's own are
         # the two bumps this recovery made itself.
@@ -582,7 +605,7 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
                 if not self._store_token(
                     inst, chained_mint, minted_at_epoch=epoch + 2, binds_forward=True
                 ):
-                    return
+                    return False
                 self._schedule_token_refresh(instance_id)
         await self._mark_recovered(instance_id, rebuilt, epoch + 2)
         # Same rule as the connect path's mint, and for the same reason: a
@@ -596,3 +619,4 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         logger.info("Self-heal tier 2 finished for %s", instance_id)
     else:
         logger.warning("Self-heal failed for %s even after re-mint", instance_id)
+    return False

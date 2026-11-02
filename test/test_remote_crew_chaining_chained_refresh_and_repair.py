@@ -353,6 +353,28 @@ class TestChainedRepairPaths:
         assert [t for t in _FakeTunnel.made if t.iid == "c"] == [], "dialled an unnamed hop"
         assert reg.get("c").via_remote_port == 53999
 
+    def test_a_failed_mint_through_the_parent_asks_for_another_attempt(self, tmp_path, monkeypatch):
+        """No forward is rebuilt, so no tunnel exit will call back: the recovery
+        reports the failed mint so its caller schedules the next attempt."""
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        reg, mgr = self._pair(tmp_path, monkeypatch)
+        monkeypatch.setattr(mgr, "_mint_through_parent", _relay_mint(mgr))
+        assert asyncio.run(mgr.connect("c")).state.value == "connected"
+
+        async def unanswered(_inst, _params):
+            raise TokenMintError("crew 'b' did not answer the mint in time")
+
+        monkeypatch.setattr(mgr, "_mint_through_parent", unanswered)
+
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        mgr._tunnels["c"].status.state = TunnelState.ERROR
+        _FakeTunnel.made = []
+        assert asyncio.run(mgr._recover("c")) is True
+        assert [t for t in _FakeTunnel.made if t.iid == "c"] == []
+        assert mgr._recover_attempts["c"] == 1
+
     def test_a_refresh_for_a_hop_the_parent_has_moved_off_is_discarded(self, tmp_path, monkeypatch):
         """The exit this invariant was found on. The crew holding the hop moves this
         crew to another loopback port and is free to give the old one to a different

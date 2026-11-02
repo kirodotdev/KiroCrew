@@ -307,6 +307,7 @@ class SshTunnelManager:
     _cancel_recovery = _self_heal._cancel_recovery
     _on_tunnel_healthy = _self_heal._on_tunnel_healthy
     _on_tunnel_exit = _self_heal._on_tunnel_exit
+    _schedule_recovery = _self_heal._schedule_recovery
     _recover_after = _self_heal._recover_after
     _rebuild = _self_heal._rebuild
     _mark_recovered = _self_heal._mark_recovered
