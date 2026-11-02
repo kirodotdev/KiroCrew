@@ -102,9 +102,9 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     """Report deployed cron scripts that disagree with their skill-asset source.
 
     The packaged-to-installed hop is content-verified, ``scripts/`` included. The
-    installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
-    skill, and nothing compares its two sides -- so a deploy can run superseded
-    code indefinitely while looking healthy.
+    installed-to-``crons/`` hop is a copy made by hand -- no built-in skill
+    documents one -- and nothing else compares its two sides, so a deploy can run
+    superseded code indefinitely while looking healthy.
 
     Divergence is reported WITHOUT a direction. A cron script body is
     LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
@@ -146,7 +146,8 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     if any(state.state == CRON_SOURCE_DIVERGED for state in states):
         issues.append("deployed cron script diverged from its skill source")
         print(
-            "               Reconcile using the owning skill's own copy recipe. "
+            "               Reconcile by hand: the path after DIVERGED is the "
+            "installed skill's copy, the crons/ file is what the cron runs. "
             "A diverged copy may be a stale deploy OR an intentional local edit "
             "-- doctor cannot tell which, so it does not overwrite either one."
         )
