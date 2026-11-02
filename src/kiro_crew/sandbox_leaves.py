@@ -677,6 +677,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # upgrade still reads and writes it, so it must stay unforgeable for that process.
     "seed-provenance",
     "settings_seeds.json",
+    # The gateway's config publication record (``config.write_provenance``): the
+    # ``(dev, ino)`` of each ``config.json`` / ``config.local.json`` the gateway itself
+    # published, read by the launcher's pin to tell the gateway's own save from a
+    # substitution. READONLY rather than hidden because the write is the whole risk: an
+    # entry an agent could add would let a swapped config file pass the pin, while the
+    # record itself holds no secret. A directory, for the ``seed-provenance`` reason: the
+    # record is rewritten through ``atomic_write`` on every config save, and the rename
+    # inside the directory leaves the directory's inode -- what its seal pins -- alone.
+    "config-provenance",
     # The crew webview template directory. A ceiling in exactly the sense above:
     # the whole value of splitting a panel into human-authored TEMPLATE and
     # agent-published DATA is that layout is authored by a person, so a crew must
@@ -976,6 +985,7 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     "apps/.dev-grants.json",
     "seed-provenance",
     "settings_seeds.json",
+    "config-provenance",
     "agent_model_state.json",
     "agent_model_state.json.lock",
     # Gateway-owned run records, read to restore app authorization on a cold

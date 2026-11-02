@@ -100,6 +100,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
 | `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`) and `read_local_secret`. |
 | `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
+| `config/write_provenance.py` | The record of the `config.json` / `config.local.json` inodes this gateway process published (read from the staged descriptor, each held open), with its per-process nonce, read by the Linux launcher's pin (security.md). Written by `write_config_atomically`; logs under `kiro_crew.config.loader`. |
 | `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
 | `config/loader_snapshots.py` | Published snapshots (the materialized agents with their scan, refresh, dispatch and default-agent healer; the alias table; the compaction threshold; the timezone) and the resolvers that answer from them. Every `global` it rebinds has its one home here, served through the facade. |
 | `config/loader_agents.py` | Agent resolution: `resolve_crew_identity`, `resolve_agent_identity`, `resolve_agent_bindings`. |
@@ -2340,6 +2341,15 @@ data home (see security.md "Data Home File Modes"); a newly created one is owner
 Windows it also applies a real owner-only DACL via
 `platform_compat.restrict_to_owner` (`restrict_on_error="warn"`, so a DACL that
 cannot be applied warns rather than making the config unwritable).
+
+**On POSIX it records the inode it is about to publish** for `config.json` and
+`config.local.json` under the data home (`config/write_provenance.py`,
+`staging_hook`, passed to `atomic_write` as `on_staged`), read off the staged file's
+descriptor before the rename, in `<data_home>/config-provenance/published`. A Linux sandbox
+seals both files and pins them against the identity its pre-spawn pass saw; the
+record is how the launcher tells this function's own rename from a substituted
+file (security.md, the pin's recreation table). Best-effort: a record that cannot be written changes nothing for
+the write and leaves the pin refusing as it always did.
 
 That is a reversal of an earlier ruling recorded here, and the reason it changed
 is worth keeping: the lockdown used to shell out to `icacls`, a blocking

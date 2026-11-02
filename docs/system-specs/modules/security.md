@@ -193,7 +193,7 @@ it puts a per-target probe per spawn back on the single event loop, which is the
 carried entry keeps the previous behaviour -- the mask covers what the link resolves to -- and
 that residual is stated here rather than left to read as covered.
 
-**The comparison is on DEVICE AND INODE, and it carries NO exceptions.** Weaker attributes do
+**The comparison is on DEVICE AND INODE, and it admits one recreation, on evidence.** Weaker attributes do
 not identify an object: comparing only link-ness admits a same-kind decoy, because a directory
 swapped for another directory satisfies it while the real tree sits unmasked at whatever name
 the writer moved it to. Only device and inode identify the object.
@@ -265,22 +265,56 @@ every other hiding mount); the window's staging mount is then retired with `MNT_
 is a second unmasked path into the window; and a caller may pin a window to an expected
 `(dev, ino)`.
 
-The cost of having no exceptions is that EVERY inode change at a protected name refuses,
+The cost of comparing identities is that an inode change at a protected name refuses,
 and some inode changes are ordinary rather than hostile:
 
 | Change at the name | Outcome | Ordinary cause |
 |---|---|---|
 | untouched | proceeds | -- |
 | real object recreated | REFUSES | a staging directory rebuilt mid-flight (`aws-control-staging`, measured) |
-| real object atomically rewritten | REFUSES | any `atomic_write` / `os.replace` publish; the helper renames onto the destination, so the inode always changes |
+| `config.json` / `config.local.json` rewritten by the gateway's own config writer | PROCEEDS, only on the publication record below | the boot meta-stamp refresh, a load-time migration, a settings save |
+| any other atomic rewrite | REFUSES | any `atomic_write` / `os.replace` publish; the helper renames onto the destination, so the inode always changes |
 | symlink recreated | REFUSES | a dotfile manager restow |
 | real object replaced by a symlink | REFUSES | the substitution this exists to catch |
 | symlink replaced by a real object | REFUSES | a dotfile manager unlinking |
 
 Which of those a sandbox should permit is a decision about what the operator's own tooling may
 do to a protected name while an agent is running. It is not derivable from the launcher, and a
-list invented there would either break ordinary hosts or quietly reopen the hole, so the code
-carries none and says so at the comparison. This table is the list to choose from.
+list invented there would either break ordinary hosts or quietly reopen the hole. This table is
+the list, and the code admits only the row marked PROCEEDS.
+
+**The gateway's own config save, admitted on its publication record.** The two runtime-config
+files are sealed as files (they sit at the data-home root and cannot move into a directory),
+and the gateway itself saves them through `write_config_atomically` -- on boot, on a load-time
+migration, on every settings write. On a freshly provisioned host those saves and the first
+sandboxed spawns (the MCP probe fan-out, app registry clones) run in the same minutes, and a
+save landing between a spawn's pass and its pin refused that spawn with "a DIFFERENT object
+holds that name"; the expectation is per spawn, so the next spawn passed, but every spawn in
+that window failed. The pin cannot tell that save from a substitution by shape, so it is told
+by evidence: on each POSIX save `config.write_provenance.staging_hook` reads the staged file's
+`(dev, ino)` off the writer's own descriptor BEFORE the rename publishes it (a stat of the name
+afterwards could meet a file someone else put there) and records it under the leaf's name in
+`<data_home>/config-provenance/published`, headed by a nonce fresh to the gateway process. The
+gateway holds a descriptor on each identity the record lists (the last four per name), so the
+inode cannot be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
+names (`published_file_record`). On a changed occupant at one of those names, and only after
+the kind check, the launcher (`_published_by_gateway`) accepts when the entry at the name is the
+same kind of entry the pass saw (the same link, for a symlinked config, which the writer writes
+through), the object it pinned is a regular file, and the record -- opened no-follow, first line
+equal to the plan's nonce -- lists that object's identity under the name. One read answers,
+because the record is written before the file it vouches for is published. Everything else refuses
+as before: a rewrite the gateway did not make, a swap after one of its writes (the swapped-in
+object is not listed), a record from another gateway process, and any other sealed name. The
+record directory is a no-follow read-only leaf in every tier (`_CREW_READONLY_LEAVES`,
+`_CREW_PRECREATE_READONLY_DIR_LEAVES`, `_CREW_NOFOLLOW_READONLY_DIR_LEAVES`) and write-fenced on
+the file-tool floor, so no sandboxed process can add an entry, and a record rewrite renames
+inside it, leaving the directory's sealed inode alone. Residual, stated: a sandbox of a build
+that predates the leaf does not seal it, so a process in such a sandbox could write a record
+until the gateway restarts on this build; the nonce is what keeps that record from vouching for
+anything, since it is fresh per process and travels only in the launcher plan. A second residual
+fails closed: each writing process rewrites the whole record under its own nonce, so a save
+from another process (`kirocrew config set` in a terminal) both refuses a gateway spawn whose
+window it lands in, as before, and drops the gateway's earlier entries until its next save.
 
 A record Kiro Crew ITSELF rewrites often therefore lives inside a sealed DIRECTORY
 instead of being sealed as a file: an `atomic_write` inside a directory renames over the

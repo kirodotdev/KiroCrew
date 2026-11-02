@@ -162,6 +162,13 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # Without this entry the seal skips the directory until the first seed, and the
     # name is one an agent could create to forge the record.
     "seed-provenance",
+    # The gateway's config publication record (``config.write_provenance``), on the
+    # ``profiles`` argument. (1) Its reader, the launcher's pin, reads a missing record
+    # as vouching for nothing, exactly as it reads an absent directory: the refusal the
+    # pin always made. (2) The bind is live, so every later config save's record is seen.
+    # Without this entry the name is one an agent could create to forge the record that
+    # lets a changed config.json pass the pin.
+    "config-provenance",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -185,6 +192,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "template-mcp-additions",
     "skill-projection",
     "seed-provenance",
+    "config-provenance",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -280,6 +288,11 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed settings-seed record",
         "the agent could forge the record that lets Kiro Crew overwrite and delete a "
         "settings.local.json the user wrote",
+    ),
+    "config-provenance": (
+        "sealed config publication record",
+        "the agent could forge the record that lets a substituted config.json pass the "
+        "launcher's identity check",
     ),
     "app-agent-launch": (
         "sealed app-agent launch directory",

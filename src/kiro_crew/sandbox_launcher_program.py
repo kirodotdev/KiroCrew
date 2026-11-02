@@ -166,6 +166,11 @@ class Launch:
         #: which is exactly main's behaviour before this control.
         self.seal_windowless_masks = frozenset(plan.get("seal_windowless_masks", ()))
         self.mask_occupants = plan["mask_occupants"]
+        #: ``{"record", "nonce", "names"}``: where the gateway records the config files
+        #: it published itself, the nonce of the gateway process that built this plan,
+        #: and the names whose changed occupant the pin may look up there. Empty in an
+        #: older payload, which vouches for nothing -- the pin's behaviour before this.
+        self.published_file_record = plan.get("published_file_record") or {}
         self.crew_home_aliases = plan["crew_home_aliases"]
         self.expose_files = plan["expose_files"]
         self.env_prefixes = plan["env_prefixes"]
@@ -506,6 +511,8 @@ from kiro_crew.sandbox_launcher_parts.pinned_mounts import (  # noqa: E402
     _mount_or_die,
     _mount_or_warn,
     _pin_mount_path,
+    _published_by_gateway,
+    _read_published_record,
     _register_stand_in,
     _retire_stage_or_die,
     _stand_in_identity,
