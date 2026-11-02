@@ -43,9 +43,12 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
         self, installed, monkeypatch, tmp_path
     ):
         """Every other field matches ``build_agent_config()`` exactly, except the
-        work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
+        work-ledger mount (:class:`TestItMountsTheWorkLedger`) and the skills the
+        mounted ledger's patrol text names, which only add."""
+        from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+
         template = agent.build_agent_config()
-        mounted = ("tools", "allowedTools", "mcpServers")
+        mounted = ("tools", "allowedTools", "mcpServers", "resources")
         for key, value in template.items():
             if key in ("name", "description", "excludedTools", *mounted):
                 continue
@@ -57,6 +60,11 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
         assert [
             t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
         ] == template["allowedTools"]
+        added = prompt_skill_uris("goal-conductor", "dashboard")
+        assert [r for r in installed["resources"] if r not in added] == (
+            template.get("resources") or []
+        )
+        assert installed["resources"][-len(added) :] == added
 
     def test_it_keeps_the_default_templates_built_in_tools(self, installed):
         """Only sub-agent spawning is taken away: the shell, the file writer and
@@ -217,19 +225,29 @@ _READ = "@kirocrew-work/work_ledger_read"
 
 
 def _install_with_work(
-    tmp_path, monkeypatch, *, withhold_record: bool = False, select: bool = True
+    tmp_path,
+    monkeypatch,
+    *,
+    withhold_record: bool = False,
+    select: bool = True,
+    muted: bool = False,
 ) -> dict:
-    """The installed conductor spec when the template carries ``kirocrew-work``, as it
-    will once the ledger is mounted on the conductor (the mount is a separate change)."""
+    """The installed conductor spec when the template itself carries ``kirocrew-work``.
+
+    The installer mounts the ledger on top (``_mount_work_ledger``), keeping an
+    inherited ``disabled``, so *muted* is how a written spec ends up without it."""
     from kiro_crew.agent_materialization import auto_approve, managed_mcp
 
     real = agent.build_agent_config
 
     def with_work():
         config = real()
+        entry = managed_mcp._managed_opt_in_entry("mcp-work")
+        if muted:
+            entry["disabled"] = True
         config["mcpServers"] = {
             **config.get("mcpServers", {}),
-            "kirocrew-work": managed_mcp._managed_opt_in_entry("mcp-work"),
+            "kirocrew-work": entry,
         }
         if select:
             config["tools"] = [*config["tools"], "@kirocrew-work"]
@@ -257,12 +275,23 @@ def _goal_conductor_uri() -> str:
     return prompt_skill_uris("goal-conductor")[0]
 
 
-def test_without_the_ledger_the_conductor_maps_no_goal_conductor_skill(installed):
+def test_the_default_install_mounts_the_ledger_and_maps_goal_conductor(installed):
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
-    assert "kirocrew-work" not in installed["mcpServers"]
-    assert _goal_conductor_uri() not in (installed.get("resources") or [])
-    assert not spec_has_ledger_tools(installed)
+    assert "kirocrew-work" in installed["mcpServers"]
+    assert spec_has_ledger_tools(installed)
+    assert _goal_conductor_uri() in installed["resources"]
+
+
+def test_without_the_ledger_the_conductor_maps_no_goal_conductor_skill(tmp_path, monkeypatch):
+    """An operator's switch-off on the inherited entry survives the mount, and a
+    muted ledger is no ledger: no patrol text, so no mapping."""
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    spec = _install_with_work(tmp_path, monkeypatch, muted=True)
+    assert spec["mcpServers"]["kirocrew-work"]["disabled"] is True
+    assert not spec_has_ledger_tools(spec)
+    assert _goal_conductor_uri() not in (spec.get("resources") or [])
 
 
 def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
@@ -292,10 +321,18 @@ def test_a_ceiling_that_withholds_the_record_verb_reads_as_no_ledger(tmp_path, m
     assert _goal_conductor_uri() not in (spec.get("resources") or [])
 
 
-def test_a_server_entry_without_its_tools_selected_maps_no_skill(tmp_path, monkeypatch):
+def test_an_inherited_entry_without_its_tools_selected_is_selected_and_mapped(
+    tmp_path, monkeypatch
+):
+    """The mount selects ``@kirocrew-work`` for an entry the template lists bare, and
+    the mapping follows the written spec's check. The unselected case itself is
+    pinned on the check (``server-not-in-tools`` in ``test_crewmate_prompts.py``)."""
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
     spec = _install_with_work(tmp_path, monkeypatch, select=False)
-    assert "kirocrew-work" in spec["mcpServers"]
-    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+    assert "@kirocrew-work" in spec["tools"]
+    assert spec_has_ledger_tools(spec)
+    assert _goal_conductor_uri() in spec["resources"]
 
 
 def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path, monkeypatch):
@@ -309,6 +346,8 @@ def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path
     )
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     service_agents._install_mate_conductor_agent()
+    assert member_mate_tools.binding_has_ledger_tools(binding) is True
+    _install_with_work(tmp_path, monkeypatch, muted=True)
     assert member_mate_tools.binding_has_ledger_tools(binding) is False
     _install_with_work(tmp_path, monkeypatch)
     assert member_mate_tools.binding_has_ledger_tools(binding) is True
