@@ -375,7 +375,9 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
             meeting_id=meeting_id,
             sessions=sessions_of(request),
             hooks=hooks_of(request),
-            agents_enabled=agents_enabled,
+            # The roster ``start_meeting_meta`` settled on, not the raw request field:
+            # an absent field keeps the roster the meeting already holds.
+            agents_enabled=meta.get("agents_enabled"),
             config=config,
             # Threaded through for the translation worker's writes, which are the
             # only ones a live session makes on its own rather than via a handler.
