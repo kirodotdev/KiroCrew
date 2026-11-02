@@ -21,14 +21,13 @@ class TestInitializeSession:
     """Tests for _initialize_session covering new session, resume, and model set."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolate_home(self, tmp_path, monkeypatch):
+    def _isolate_home(self, tmp_path, _floor_monkeypatch):
         """Redirect Path.home to tmp_path so session-file writes are isolated.
 
         Without this, tests pollute the real ~/.kiro/sessions/cli/ on the
         build host and collide with parallel runs (hardcoded session names).
         """
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        _floor_monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     def _make_client(self, tmp_path, **kwargs):
         client = AcpClient(work_dir=tmp_path, **kwargs)
