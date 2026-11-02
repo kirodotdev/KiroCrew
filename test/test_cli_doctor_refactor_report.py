@@ -144,7 +144,7 @@ class _Host:
         self.calls: list[tuple[str, tuple, dict]] = []
         self.issue_from: set[str] = set()
         self.which: dict[str, str] = {}
-        self.runs: dict[tuple[str, ...], subprocess.CompletedProcess] = {}
+        self.runs: dict[tuple[str, ...], subprocess.CompletedProcess | BaseException] = {}
         self.urls: dict[str, object] = {}
         self.home = tmp_path / "datahome"
         self.home.mkdir()
@@ -329,7 +329,10 @@ class _Host:
         key = tuple(str(part) for part in argv)
         if key not in self.runs:
             raise AssertionError(f"doctor spawned an unpinned command: {key}")
-        return self.runs[key]
+        answer = self.runs[key]
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     def _urlopen(self, req, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else str(req)
@@ -546,6 +549,87 @@ def test_a_ready_host_prints_every_section_in_order_and_passes(host, capsys) -> 
     # One issues list threads through every section that reports into it.
     lists = {id(_issues_arg(n, a)) for n, a, _k in host.calls if n in _TAKES_ISSUES}
     assert len(lists) == 1
+
+
+_LAUNCH_FAILURES = pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (subprocess.TimeoutExpired([_KIRO, "--version"], 5), "--version did not answer in 5s"),
+        (
+            FileNotFoundError(2, "No such file or directory"),
+            "cannot be launched (No such file or directory)",
+        ),
+        (PermissionError(13, "Permission denied"), "cannot be launched (Permission denied)"),
+    ],
+    ids=["hangs", "missing", "not-executable"],
+)
+
+
+def _run_with_launch_failure(host, capsys, failure: BaseException) -> tuple[str, int | None]:
+    host.runs[(_KIRO, "--version")] = failure
+    try:
+        return host.run(capsys)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        pytest.fail(f"doctor raised {exc!r} instead of printing the kiro-cli row")
+
+
+@_LAUNCH_FAILURES
+def test_a_kiro_cli_no_selected_route_runs_is_a_warning_row_and_doctor_passes(
+    host, capsys, failure: BaseException, reason: str
+) -> None:
+    _ready(host)
+    host.cfg.agent.acp_backend = "claude"
+    host.cfg.agent.member_acp_backend = "claude"
+
+    out, code = _run_with_launch_failure(host, capsys, failure)
+
+    row = f"  kiro-cli:    ⚠  {reason} (optional backend)\n"
+    assert out == _READY.replace("  kiro-cli:    ✅ kiro-cli 1.2.3\n", row)
+    assert code is None
+
+
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "relay_entry"),
+    [
+        (ACP_BACKEND_KIRO, "claude", None),
+        ("claude", ACP_BACKEND_KIRO, None),
+        # Relay KAS with no vault-named sibling enters through the launcher.
+        (ACP_BACKEND_KAS, "claude", None),
+        # The Kiro CLI role still runs the launcher beside a relay sibling.
+        (ACP_BACKEND_KIRO, ACP_BACKEND_KAS, "/opt/kiro/bin/kiro-cli-chat"),
+    ],
+)
+@_LAUNCH_FAILURES
+def test_a_kiro_cli_a_selected_route_runs_is_an_issue_and_doctor_still_summarizes(
+    host, capsys, monkeypatch, backend, member_backend, relay_entry, failure, reason
+) -> None:
+    _ready(host)
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = False
+    monkeypatch.setattr(services, "kas_relay_entry", lambda kiro: relay_entry)
+
+    out, code = _run_with_launch_failure(host, capsys, failure)
+
+    assert f"  kiro-cli:    ❌ {reason} (a selected backend runs it)\n" in out
+    assert out.endswith(f"❌ Fix these issues: kiro-cli {reason}\n")
+    assert code == 1
+
+
+@_LAUNCH_FAILURES
+def test_relay_kas_through_a_vault_named_sibling_keeps_the_launcher_optional(
+    host, capsys, monkeypatch, failure: BaseException, reason: str
+) -> None:
+    _ready(host)
+    host.cfg.agent.acp_backend = ACP_BACKEND_KAS
+    host.cfg.agent.member_acp_backend = "claude"
+    host.cfg.agent.kas_bundle = False
+    monkeypatch.setattr(services, "kas_relay_entry", lambda kiro: "/opt/kiro/bin/kiro-cli-chat")
+
+    out, code = _run_with_launch_failure(host, capsys, failure)
+
+    assert f"  kiro-cli:    ⚠  {reason} (optional backend)\n" in out
+    assert code is None
 
 
 def test_a_start_up_record_of_an_inherited_lib_path_leaves_the_report_unchanged(

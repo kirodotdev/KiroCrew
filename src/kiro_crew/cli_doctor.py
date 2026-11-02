@@ -481,6 +481,44 @@ def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     return kiro_role, relay_kas_role
 
 
+_KIRO_VERSION_TIMEOUT_SECS = 5
+
+
+def _kiro_cli_version_row(kiro: str, issues: list[str], *, required: bool) -> str:
+    """The Connectivity ``kiro-cli`` row: the version ``kiro --version`` prints.
+
+    A binary that hangs past the timeout or cannot be launched (a dangling
+    link, no exec bit) is a row, not a traceback, so doctor still reaches the
+    rows after it and its summary. That failure is an issue when *required*
+    (a selected route starts sessions through this launcher) and a warning
+    otherwise. A non-zero exit stays the warning row it has always been.
+    """
+    failure = ""
+    try:
+        result = subprocess.run(
+            [kiro, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_KIRO_VERSION_TIMEOUT_SECS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        failure = f"--version did not answer in {_KIRO_VERSION_TIMEOUT_SECS}s"
+    except OSError as exc:
+        failure = f"cannot be launched ({exc.strerror or type(exc).__name__})"
+    if failure and required:
+        issues.append(f"kiro-cli {failure}")
+        return f"  kiro-cli:    ❌ {failure} (a selected backend runs it)"
+    if failure:
+        return f"  kiro-cli:    ⚠  {failure} (optional backend)"
+    if result.returncode == 0:
+        ver = result.stdout.strip() or result.stderr.strip()
+        return f"  kiro-cli:    ✅ {ver}"
+    return "  kiro-cli:    ⚠  exits with error (optional backend)"
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -901,6 +939,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Connectivity ──
     print("\nConnectivity")
+    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
+    relay_entry = services.kas_relay_entry(kiro) if relay_kas_role else None
     if bundle_route:
         # The engine this host runs, where the kiro-cli version row goes on the
         # relay route: a ``--version`` spawn of a binary the route never runs
@@ -912,19 +952,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         else:
             print("  engine:      ⏭  no KAS bundle installed (see the KAS backend section)")
     elif kiro:
-        kiro_result = subprocess.run(
-            [kiro, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        if kiro_result.returncode == 0:
-            ver = kiro_result.stdout.strip() or kiro_result.stderr.strip()
-            print(f"  kiro-cli:    ✅ {ver}")
-        else:
-            print("  kiro-cli:    ⚠️  exits with error (optional backend)")
+        # Relay KAS enters through the launcher unless Crew's vault names a
+        # sibling chat binary for it (``relay_entry``).
+        launcher_role = kiro_role or (relay_kas_role and relay_entry is None)
+        print(_kiro_cli_version_row(kiro, issues, required=launcher_role))
     else:
         print("  kiro-cli:    ⏭  skipped (not installed)")
     # The launcher answers ``--version`` itself; this row asks the chat binary
@@ -939,12 +970,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # launcher's sibling chat binary instead (``services.kas_relay_entry``), so
     # that binary is probed for the relay role while the launcher's delegate
     # is still probed for a selected Kiro CLI role.
-    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     services._doctor_kiro_chat_delegate(
         kiro,
         issues,
         required=kiro_role or relay_kas_role,
-        relay_entry=services.kas_relay_entry(kiro) if relay_kas_role else None,
+        relay_entry=relay_entry,
         kiro_role=kiro_role,
     )
     services._doctor_gateway_reachability(dashboard, issues)
