@@ -180,6 +180,27 @@ async def test_later_successful_visibility_change_clears_a_stale_notice(store, f
     assert pub.last_error == ""
 
 
+@pytest.mark.asyncio
+async def test_visibility_change_records_a_new_provider_notice(store, fake_client):
+    """A completed sharing change keeps a warning returned by its provider."""
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="PRIVATE")
+    fake_client.update_sharing_response = {
+        "artifactId": "uuid-123",
+        "notice": "The link may show content from another bucket.",
+        "notice_code": "unknown",
+    }
+
+    summary = await publish_sync.update_sharing("d", visibility="PUBLIC")
+
+    pub = store.get("d").publication
+    assert pub.notice == "The link may show content from another bucket."
+    assert pub.notice_code == "unknown"
+    assert summary["notice"] == pub.notice
+    assert summary["notice_code"] == pub.notice_code
+    assert pub.last_error == ""
+
+
 # ── notice_code discriminator (B1) ─────────────────────────────────────────
 
 
