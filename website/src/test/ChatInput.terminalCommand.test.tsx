@@ -62,7 +62,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   vi.useRealTimers()
-  await changeLanguage('en')
+  await act(async () => { await changeLanguage('en') })
 })
 
 function renderWithProviders(ui: React.ReactElement) {
