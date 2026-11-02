@@ -155,9 +155,9 @@ export interface SideState {
   createdAt: string
   /** The banner counts the parent turns newer than `createdAt` instead of
    *  comparing with `openedAtTurnCount`, because the count this tab held when the
-   *  conversation began is no baseline: the conversation was restored, or its
-   *  first row landed in an empty state made earlier, while this tab could be
-   *  showing another slot or still loading this one. Counted at render: the
+   *  conversation began is no baseline: the conversation was restored, its
+   *  first row landed in an empty state made earlier, or it began while this tab
+   *  was showing another slot or still loading this one. Counted at render: the
    *  parent transcript can load later. */
   countsTurnsSinceCreated?: boolean
   /** The answer of this run streamed before this tab joined it, so its deltas
