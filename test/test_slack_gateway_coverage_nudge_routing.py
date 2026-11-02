@@ -27,10 +27,24 @@ from kiro_crew.autonudge import MANUAL_STOP_REASON, MONITOR_TERMINAL_REASON, Nud
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ═════════════════════════════════════════════════════════════════════════
 # _init_autonudge closures: the _fire router and the _observer
 # ═════════════════════════════════════════════════════════════════════════
+
+
+async def _deliveries_ended(orch: Any) -> None:
+    """Wait until every terminal-notice delivery the orchestrator holds has ended.
+
+    The observer and startup's replay each hand a delivery to ``create_task`` and keep
+    it in ``orch._background_tasks``, so the observer returning shows only that the task
+    exists. A delivery parked on the persist future keeps this wait open until the test
+    resolves that future, and any count read after the wait is a final one.
+    """
+    await await_until(
+        asyncio.gather(*orch._background_tasks), what="the terminal-notice deliveries ending"
+    )
 
 
 class TestAutonudgeRouterAndObserver:
@@ -358,8 +372,7 @@ class TestAutonudgeRouterAndObserver:
 
         observer("updated", loop)
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         orch._notify_nudge_expired.assert_called_once_with(loop)
 
@@ -383,13 +396,16 @@ class TestAutonudgeRouterAndObserver:
         )
 
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The delivery posts the notice and then waits on the persist future with no
+        # turn between the two, so a posted notice means it is parked there.
+        await async_wait_until(
+            lambda: orch._notify_nudge_expired.called,
+            describe=lambda: f"notice calls: {orch._notify_nudge_expired.call_args_list}",
+        )
 
         inst.mark_terminal_notification_delivered.assert_not_awaited()
         persisted.set_result(True)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         inst.mark_terminal_notification_delivered.assert_awaited_once_with(
             loop.id,
@@ -422,11 +438,11 @@ class TestAutonudgeRouterAndObserver:
         )
 
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The second emission is a retry only once the first attempt has ended and
+        # given its claim back; until then the observer would drop it as a repeat.
+        await _deliveries_ended(orch)
         observer("updated", loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         inst.mark_terminal_notification_delivered.assert_not_awaited()
         assert orch._notify_nudge_expired.call_count == 2
@@ -463,16 +479,17 @@ class TestAutonudgeRouterAndObserver:
         finally:
             if not notification_started.is_set():
                 startup.cancel()
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The notice is posted and its persist future is still open: startup has either
+        # returned (the replay is its own task) or is parked on that future (the replay
+        # runs inline). No further loop turn changes which, so none is awaited.
         startup_blocked = not startup.done()
 
         persisted.set_result(True)
         _on_fire, observer, inst = await _within_lost_run(startup, "startup after the persist")
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         observer("updated", loop)
+        await _deliveries_ended(orch)
 
         assert not startup_blocked
         orch._notify_nudge_expired.assert_called_once_with(loop)
@@ -499,8 +516,7 @@ class TestAutonudgeRouterAndObserver:
         )
 
         await self._wire(orch, emit_during_start=loop)
-        # flake-ok: pre-existing zero yield that lets the task the observer or startup schedules run before the next assertion; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _deliveries_ended(orch)
 
         orch._notify_nudge_expired.assert_called_once_with(loop)
 
