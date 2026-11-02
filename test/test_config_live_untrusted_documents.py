@@ -72,14 +72,17 @@ class TestApplierTimeout:
         w = ConfigWatch()
         w.prime(KiroCrewConfig.load())
 
+        release = asyncio.Event()
+
         async def _hangs(change: ConfigChange) -> None:
-            # flake-ok: the applier hangs on purpose so the patched 50 ms applier timeout cuts it short, moved verbatim
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the applier's own hang, which the patched applier timeout cuts short; not a barrier
-            await asyncio.sleep(10)
+            # The applier hangs on purpose. The patched 50 ms applier timeout
+            # cancels it; the 30 s ceiling only bounds a lost run.
+            await asyncio.wait_for(release.wait(), timeout=30)
 
         w.subscribe("agent.model", callback=_hangs, name="hangs-forever")
         cfg_file.write_text(json.dumps({"agent": {"model": "a-new-model"}}), encoding="utf-8")
         change = await w.refresh_now()
+        release.set()
         assert change is not None and change.touched("agent.model")
         assert any(sub.name == "hangs-forever" for sub, _ in w._stale.values())
 
