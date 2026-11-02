@@ -36,6 +36,22 @@ const isDroppedPlaceholder = (s: string) =>
 const chunkContentArb = fc.string({ minLength: 1, maxLength: 50 })
   .filter(s => s.length > 0 && !s.includes('\n[⚠') && !isDroppedPlaceholder(s))
 
+// Chunks accumulate into ONE streaming message, so the filters above must also
+// hold for the joined content: [" ", "-"] passes per chunk, but " -" is a
+// placeholder the finalizer drops.
+const chunkArrayArb = (maxLength: number) =>
+  fc.array(chunkContentArb, { minLength: 1, maxLength })
+    .filter(cs => !cs.join('').includes('\n[⚠') && !isDroppedPlaceholder(cs.join('')))
+
+describe('chunk generators', () => {
+  it('a placeholder formed across chunks is dropped on _segment', () => {
+    let state = chunk(chunk({ ...withSlot }, ' '), '-')
+    state = segment(state)
+    expect(state.messages.filter(m => m.role === 'assistant')).toHaveLength(0)
+    expect(isDroppedPlaceholder([' ', '-'].join(''))).toBe(true)
+  })
+})
+
 
 // Feature: inline-tool-cards, Property 3: Streaming-to-assistant conversion on finalization
 // **Validates: Requirements 2.1, 4.1, 5.2**
@@ -44,7 +60,7 @@ describe('Property 3: Streaming-to-assistant conversion on finalization', () => 
     fc.assert(
       fc.property(
         // Generate 1–5 chunk contents and a finalizer type
-        fc.array(chunkContentArb, { minLength: 1, maxLength: 5 }),
+        chunkArrayArb(5),
         fc.constantFrom('_segment', '_done'),
         (chunks, finalizer) => {
           // Build up a streaming message from chunks
@@ -205,7 +221,7 @@ describe('Property 11: Single assistant message for tool-free streams', () => {
   it('chunk-only sequences followed by _done produce exactly one assistant message', () => {
     fc.assert(
       fc.property(
-        fc.array(chunkContentArb, { minLength: 1, maxLength: 10 }),
+        chunkArrayArb(10),
         (chunks) => {
           let state = { ...withSlot }
           let accumulated = ''
