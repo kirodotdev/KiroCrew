@@ -70,10 +70,9 @@ class TestRecordedVersionRecovery:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
-        monkeypatch.setattr(
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        _floor_monkeypatch.setattr(
             "kiro_crew.apps.builtins.aws_control.backend.backup.app_data_dir",
             lambda name: tmp_path / "appdata",
         )
@@ -83,14 +82,14 @@ class TestRecordedVersionRecovery:
         # every recovery here declines and the class would assert the gate rather than
         # the mechanism. Each gate test below revokes exactly one of the four, which
         # is what keeps them pinned individually rather than papered over.
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             "kiro_crew.deploy.engine._checked",
             lambda args, profile, *, action="", timeout=30, extra_visible_dirs=(): (
                 '{"Account": "%s"}' % ACCOUNT
             ),
         )
-        monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", lambda name: True)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr("kiro_crew.apps.manager.is_app_enabled", lambda name: True)
+        _floor_monkeypatch.setattr(
             "kiro_crew.aws_consent.read_grant",
             lambda service: mock.Mock(profile="p", region="us-west-2", account=ACCOUNT),
         )
@@ -490,10 +489,9 @@ class TestRememberedArchives:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
         self.state_file = tmp_path / "backup.json"
-        monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: self.state_file)
         yield
 
     def _on_disk(self) -> dict:
