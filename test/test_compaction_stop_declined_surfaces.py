@@ -14,6 +14,8 @@ import pytest
 from compaction_stop_declined_helpers import _clear_channel_decline_markers  # noqa: F401
 from compaction_stop_declined_helpers import _dashboard_state, _run_slack_stop, _setup, _slack_orch
 
+from kiro_crew.testing.clock import ManualClock
+
 
 def test_an_ordinary_second_press_escalation_still_discards_the_session_queue(
     tmp_path, monkeypatch
@@ -43,6 +45,7 @@ def test_an_ordinary_second_press_escalation_still_discards_the_session_queue(
 def test_a_stale_decline_does_not_turn_a_later_first_press_into_a_force_stop(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
+    from kiro_crew.dashboard import slot_projection
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
     from kiro_crew.dashboard.slot_projection import STOP_DECLINED_ESCALATION_SECS
 
@@ -54,10 +57,11 @@ def test_a_stale_decline_does_not_turn_a_later_first_press_into_a_force_stop(tmp
     state.sessions.is_compacting = MagicMock(return_value=False)
     state.sessions.stop_turn = AsyncMock(return_value="soft")
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-    import time as _time
-
-    # flake-ok: pre-existing stamp backdated past the escalation window on the real monotonic clock, moved verbatim; tracked for a de-flake pass
-    slot._stop_declined_at = _time.monotonic() - STOP_DECLINED_ESCALATION_SECS - 1
+    # Stamp the decline and judge it on one frozen clock, so the stamp is exactly one
+    # second past the escalation window whatever the host does in between.
+    clock = ManualClock(monotonic_start=1_000.0)
+    clock.install(monkeypatch, slot_projection)
+    slot._stop_declined_at = clock.monotonic() - STOP_DECLINED_ESCALATION_SECS - 1
     assert slot.to_dict()["stop_declined"] is False
 
     asyncio.run(stop_slot_turn(state, slot))
@@ -206,9 +210,14 @@ def test_slack_stop_tells_stop_turn_to_keep_the_queue_it_did_not_detach():
     orch.sessions.clear_queue.assert_called_once_with("100.0", only=at_press)
 
 
-def test_slack_stop_declined_in_the_race_restores_what_it_detached():
+def test_slack_stop_declined_in_the_race_restores_what_it_detached(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
+    from kiro_crew.session_lifecycle_parts import stop_decline
+
+    # Arm and read on one frozen clock, so the escalation window cannot lapse between
+    # the decline and the read back.
+    ManualClock().install(monkeypatch, stop_decline)
     orch, task = _slack_orch()
     orch.sessions.is_compacting = MagicMock(return_value=False)
     at_press = ("q-at-press",)
@@ -232,7 +241,6 @@ def test_slack_stop_declined_in_the_race_restores_what_it_detached():
     # marker for this presser, the same as the pre-check decline does.
     from kiro_crew.session_lifecycle import consume_stop_declined
 
-    # flake-ok: pre-existing decline marker armed and read back to back inside the real-clock escalation window, moved verbatim; tracked for a de-flake pass
     assert consume_stop_declined("100.0", "U_OWNER") is True
 
 
@@ -536,7 +544,7 @@ def test_slack_stop_hands_the_detached_queue_on_when_the_raising_stop_already_po
     hand.assert_awaited_once_with(orch.sessions, "100.0", at_press)
 
 
-def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor():
+def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor(monkeypatch):
     """On the forced repeat (hard reset) everything detached at the press goes to
     the successor instead of being dropped, the presser's own included: the Stop
     was aimed at the compaction, not at the shared queue. The pending stash goes
@@ -544,14 +552,17 @@ def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor():
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from kiro_crew.session_lifecycle import note_stop_declined
+    from kiro_crew.session_lifecycle_parts import stop_decline
 
+    # Arm the first press and judge the repeat on one frozen clock, so the escalation
+    # window cannot lapse between the two.
+    ManualClock().install(monkeypatch, stop_decline)
     orch, task = _slack_orch()
     orch.sessions.is_compacting = MagicMock(return_value=True)
     at_press = ("q-at-press",)
     orch.sessions.detach_queue = MagicMock(return_value=at_press)
     pending_at_press = list(orch._pending_queue["100.0"])
     orch.sessions.stop_turn = AsyncMock(return_value="hard")
-    # flake-ok: pre-existing decline marker armed and read back to back inside the real-clock escalation window, moved verbatim; tracked for a de-flake pass
     note_stop_declined("100.0", "U_OWNER")  # the first press was declined
     dispatched = AsyncMock()
     with patch("kiro_crew.slack.events.hand_queue_to_successor", new=AsyncMock()) as hand:
