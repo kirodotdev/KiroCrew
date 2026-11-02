@@ -293,26 +293,6 @@ _OAUTH_QUERY_PARAMS = frozenset(
 _OAUTH_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._~-]{1,512}\Z")
 
 
-def _oauth_table_entropy_params(candidates: frozenset[str]) -> frozenset[str] | None:
-    """The *candidates* the rule table classifies as public OAuth identifiers.
-
-    Names are matched literally, like ``_OAUTH_QUERY_PARAMS``. Returns ``None``
-    when the table cannot answer (missing, malformed, the row not an identifier),
-    so the caller exempts nothing and the gate stays strict.
-    """
-    try:
-        from kiro_crew.security import redaction_rules as rr
-        from kiro_crew.security.redaction_rules.rules import normalise_name
-
-        rule = rr.load_table().rule("oauth.public_param")
-        if rule.tier is not rr.Tier.IDENTIFIER or rule.detector is not rr.Detector.URL_PARAM:
-            return None
-        return frozenset(name for name in candidates if normalise_name(name) in rule.labels)
-    except Exception:  # noqa: BLE001 -- any table failure means "exempt nothing"
-        logger.warning("OAuth gate: rule table unavailable; no identifier exemption")
-        return None
-
-
 # ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
 # ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
 # exact-match, but that leaves no remedy short of a code release when a user's

@@ -49,7 +49,6 @@ from .exfil_oauth import (  # noqa: F401
     _log_operator_list_use,
     _oauth_diagnostic,
     _oauth_query_diagnostic,
-    _oauth_table_entropy_params,
     _oauth_url_payload_diagnostic,
     _valid_oauth_extension_path,
 )
@@ -1133,13 +1132,16 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
 
 # Markerless 40-character values collide with OAuth entropy only for these
 # authorization-request fields (``code_verifier`` goes to the token endpoint;
-# a dynamically registered public ``client_id`` may be 43-char base64url).
+# a public ``client_id`` is an identifier, not a secret).
 _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
 # The exemption is bounded to shapes the protocol itself can emit, so an
 # AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
 # set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
-# challenge and a dynamic client id must be exactly 43 base64url characters.
+# challenge must be exactly 43 base64url characters. A ``client_id`` is a
+# public identifier and may be 1 to 512 RFC 3986 unreserved characters (no
+# `+` or `/`), long enough for a Salesforce Connected App consumer key.
+# ``state`` and ``nonce`` must not contain `+` or `/`.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
@@ -1187,22 +1189,21 @@ def _oauth_credential_scan_target(
 
     Fixed credential signatures are checked against the raw and decoded URL
     before this target is built. At an exact approved endpoint, only the
-    state, nonce, PKCE challenge and client_id fields the rule table classifies as
-    public identifiers are omitted from the markerless bare-secret heuristic, and
-    only when the value carries a shape the protocol can emit (see
+    code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
+    markerless bare-secret heuristic, and only when the value carries a shape
+    the protocol can emit (see
     :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
     parameter names, unknown parameters, and every non-query URL component
-    remain in the scan target. A table that cannot answer exempts nothing.
+    remain in the scan target.
     """
     if not approved_endpoint or not query:
         return url
-    exempt = _oauth_table_entropy_params(_OAUTH_ENTROPY_QUERY_PARAMS) or frozenset()
 
     sanitized_segments: list[str] = []
     for key, separator, value in (segment.partition("=") for segment in query.split("&")):
         approved_value = (
             bool(separator)
-            and key in exempt
+            and key in _OAUTH_ENTROPY_QUERY_PARAMS
             and _oauth_entropy_value_is_protocol_shaped(key, value)
         )
         sanitized_segments.append(

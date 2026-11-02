@@ -380,21 +380,6 @@ class TestOAuthAuthorizationUrlRedaction:
         url = self.NOTION_URL.replace(self.CHALLENGE, self.BARE_AWS_SECRET_ALNUM, 1)
         assert oauth_url_contains_credential(url) is True
 
-    def test_identifier_exemption_fails_closed_when_the_table_cannot_answer(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.security import redaction_rules
-
-        def broken() -> None:
-            raise redaction_rules.RuleTableError("synthetic")
-
-        monkeypatch.setattr(redaction_rules, "load_table", broken)
-        entropy = base64.b64encode(hashlib.sha256(b"synthetic-table-down").digest()).decode()
-        url = self.NOTION_URL.replace(
-            self.STATE, entropy[:40].replace("+", "A").replace("/", "B"), 1
-        )
-        assert oauth_url_contains_credential(url) is True
-
     def test_duplicate_value_in_standard_and_unknown_param_fails_closed(self) -> None:
         url = self.NOTION_URL + f"&session_blob={self.CHALLENGE}"
         assert oauth_url_contains_credential(url) is True
