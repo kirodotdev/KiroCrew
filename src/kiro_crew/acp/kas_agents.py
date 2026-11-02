@@ -100,7 +100,7 @@ from kiro_crew.agent_discovery import (
     spec_welcome_message,
 )
 from kiro_crew.agent_files import LITE_AGENT_FILENAME, kas_wire_agent_id
-from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks
+from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
@@ -1428,12 +1428,17 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
 def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ...]:
     """The matchers of every PreToolUse hook a KAS session's calls meet.
 
-    Two sources, both fired by Crew's permission path: the spec's own ``hooks``
-    (Crew fires them on KAS, see :mod:`kiro_crew.agent_sdk.spec_hooks`) and the
-    Hooks page's store. The projection withholds auto-approval for what they cover,
-    because an auto-approved call never reaches that path. Read at session start:
-    a Hooks-page hook added later gates auto-approved calls from the next session
-    on.
+    Three sources, all fired by Crew's permission path on KAS: the spec's own
+    ``hooks`` (Crew fires them on KAS, see :mod:`kiro_crew.agent_sdk.spec_hooks`),
+    the Hooks page's store, and the user's standalone ``~/.kiro/hooks/*.json``
+    files (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`). The projection
+    withholds auto-approval for what they cover, because an auto-approved call
+    never reaches that path -- a user-file PreToolUse hook that exits 2 would
+    otherwise be skipped on exactly the calls KAS auto-approves. Read at session
+    start: a Hooks-page or user-file hook added or edited later gates
+    auto-approved calls from the next projection on
+    (:func:`kiro_crew.agent_sdk.spec_hooks.hook_projection_stale` reads this same
+    list, so an edit that changes a file's content marks the session stale).
 
     Fails toward gating. A source that cannot be read answers ``("*",)``, which
     withholds every auto-approval, rather than an empty tuple that would let a call
@@ -1444,7 +1449,7 @@ def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ..
         # saved hooks on disk, and they still gate its calls; a saved file that
         # cannot be read raises, which withholds every auto-approval below.
         store = get_global_hook_store() or persisted_hook_store()
-        hooks = [*spec_script_hooks(agent_id, spec), *store.list_all()]
+        hooks = [*spec_script_hooks(agent_id, spec), *store.list_all(), *user_hook_files()]
     except Exception:  # noqa: BLE001 - fail toward gating, see the docstring
         logger.warning(
             "PreToolUse hooks for %r could not be listed; no call is auto-approved",

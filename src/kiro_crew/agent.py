@@ -858,6 +858,29 @@ _aim_skill_paths = _all_skill_paths
 _DEFAULT_KIRO_HOOKS_DIR = Path.home() / ".kiro" / "hooks"
 
 
+def resolved_kiro_hooks_dir() -> Path:
+    """The user's ``~/.kiro/hooks`` directory, honouring ``agent.kiro_hooks_dir``.
+
+    Reads ``~/.kiro/crew/config.json`` and resolves the configured directory
+    through the HOME-contained check the ``*.sh`` autoimport uses
+    (:func:`kiro_crew.agent_materialization.kiro_hooks.resolve_kiro_hooks_dir`),
+    so the standalone ``*.json`` hook-file loader and the script autoimport read
+    one directory under one rule. Falls back to ``~/.kiro/hooks`` on any failure.
+    """
+    try:
+        mc_cfg = _load_json(_mc_config_path()) or {}
+    except Exception:  # noqa: BLE001 - a missing/unreadable config falls back
+        mc_cfg = {}
+    agent_cfg = mc_cfg.get("agent") if isinstance(mc_cfg, dict) else None
+    # audit=False: this runs on every KAS turn, so a rejected override must not
+    # warn and SEL-audit each time -- the install path (audit default True) reports
+    # it once, where it happens. The owner is reached through the module bound by
+    # the tail re-export below, so this core keeps its single owner import.
+    return kiro_hooks.resolve_kiro_hooks_dir(
+        agent_cfg if isinstance(agent_cfg, dict) else {}, audit=False
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Compatibility facade. The hook normalization that stood here, and the MCP
 # projection, governance and derived-agent installers further down, live in
