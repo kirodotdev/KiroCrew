@@ -55,6 +55,11 @@ GATEWAY_NOTICE_COMPACTION_CONTINUING = "compaction_continuing"
 GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK = "model_access_fallback"
 GATEWAY_NOTICE_MODEL_UNAVAILABLE = "model_unavailable"
 GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK = "model_throttled_fallback"
+# Refusal-fallback (`agent.refusal_fallback_model`) ``notice`` row: the
+# configured fallback equals the model that just refused, so the one retry is
+# skipped (`_refusal_fallback_is_same_model`). A separate row from the terminal
+# refusal card, so this sentence localizes without tokenizing the whole card.
+GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL = "refusal_fallback_same_model"
 
 # Session-reconnect, credential-reload and model-session rebuild ``error`` rows.
 # Each keeps today's red card; only its copy is localized.

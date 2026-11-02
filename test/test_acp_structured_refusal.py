@@ -254,6 +254,20 @@ class TestCard:
         assert "suggests model 'm-alt'" in text
         assert "agent.refusal_fallback_model" in text
 
+    def test_disabled_fallback_off_sentence_is_unchanged(self):
+        # The Disabled wording is byte-identical: this fix must not touch it.
+        text = refusal_card_text(None, fallback_off=True)
+        assert (
+            "Automatic retry on another model is available but switched off"
+            " (`agent.refusal_fallback_model`)." in text
+        )
+
+    def test_card_has_no_same_model_sentence(self):
+        # The same-model hint is a SEPARATE notice row, never built into the
+        # card — the card text must not carry it under any flag combination.
+        assert "same as your current model" not in refusal_card_text(None)
+        assert "same as your current model" not in refusal_card_text(None, fallback_off=True)
+
 
 class TestEveryFieldIsScrubbed:
     """Round-2 GPT finding: ``category`` / ``recommendedModel`` reach the same

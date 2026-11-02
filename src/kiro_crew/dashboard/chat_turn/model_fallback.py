@@ -384,6 +384,31 @@ def _resolve_refusal_fallback_target(refusal: "RefusalInfo | None") -> str:
     return cfg
 
 
+def _refusal_fallback_is_same_model(client: Any, refusal: "RefusalInfo | None") -> bool:
+    """True when a refusal fallback IS configured but resolves to the model
+    that just refused — the case :func:`_refusal_fallback_swap` skips.
+
+    When ``agent.refusal_fallback_model`` equals ``agent.model`` the retry is
+    silently disabled even though a fallback looks set. It reads disabled, not
+    misconfigured, so a separate ``notice`` row (the
+    ``refusal_fallback_same_model`` gateway-notice token) can explain WHY no
+    retry ran and what to change. The equality mirrors the
+    swap's own guard exactly (``strip().lower()`` on the resolved candidate
+    and the active/refusing model) so the card never claims a same-model skip
+    the swap would not have made. An unresolvable candidate (empty, or
+    ``auto`` with no recommendation) or an unknown active model is not this
+    case — those are handled by the ``fallback_off`` hint or by the swap's
+    own unprovable-primary branch.
+    """
+    cand = _resolve_refusal_fallback_target(refusal)
+    if not cand:
+        return False
+    primary = provider_active_model(client)
+    if not primary:
+        return False
+    return cand.strip().lower() == primary.strip().lower()
+
+
 async def _refusal_fallback_swap(
     slot: Any, client: Any, candidate: str, session_key: str = ""
 ) -> str | None:
