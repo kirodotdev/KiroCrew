@@ -309,7 +309,7 @@ describe('RemoteFilesPanel', () => {
     const notice = await screen.findByRole('alert', {}, { timeout: CHAINED_LISTING_TIMEOUT_MS })
     // Its own sentence says what failed, so it never reads as the neutral notice.
     expect(notice).toHaveTextContent("Couldn't open this chat's files")
-    expect(notice).not.toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(notice).not.toHaveTextContent('This chat runs in a Kiro Cloud Sessions sandbox')
     expect(within(notice).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
     expect(screen.queryByText(/Select a file to view it/)).toBeNull()
@@ -1204,7 +1204,7 @@ describe('recorded cloud placement', () => {
     wrap(<RemoteFilesPanel slot="chat-1" name="Kiro Cloud" workdir="" onOpenTerminal={() => {}} />)
     const notice = await screen.findByRole('status')
     expect(notice).toHaveAttribute('data-tone', 'info')
-    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(notice).toHaveTextContent('This chat runs in a Kiro Cloud Sessions sandbox')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('tree')).toBeNull()
     expect(screen.queryByRole('button', { name: /terminal/i })).toBeNull()
@@ -1236,7 +1236,7 @@ describe('recorded cloud placement', () => {
     // (kiro_cloud) -> wrapper swaps to the neutral notice: three awaited requests.
     const notice = await screen.findByRole('status', {}, { timeout: STALE_PLACEMENT_TIMEOUT_MS })
     expect(notice).toHaveAttribute('data-tone', 'info')
-    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
+    expect(notice).toHaveTextContent('This chat runs in a Kiro Cloud Sessions sandbox')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(placement).toHaveBeenCalledTimes(2)
   })

@@ -238,7 +238,7 @@ reader, interactive rule or tool-call field to the owner whose row names it.
 | `acp/liveness_interactive.py` | interactive-command classification: the program tables, `InteractiveClassification`, `classify_interactive_command` and `non_interactive_hint` |
 | `acp/liveness_tool_state.py` | the in-flight tool call: `ToolCallState`, the `InFlightToolTracker` hand-off rule and `wait_tool_verdict` |
 
-## Kiro Cloud reconnect lifecycle
+## Kiro Cloud Sessions reconnect lifecycle
 
 The cloud harness alone opts into detach-only teardown (`TeardownPolicy.local_only`).
 `terminate_session` still unregisters in `finally`; a handle's end deletes only when

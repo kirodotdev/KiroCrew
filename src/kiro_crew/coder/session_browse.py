@@ -116,7 +116,7 @@ async def _resolve(session_key: str, *, wake: bool = True) -> _Target:
     if kind == KIRO_CLOUD_PROVIDER_ID:
         # The sandbox belongs to Kiro's cloud and only its own agent reaches it.
         raise CloudSandboxOnly(
-            "this session runs in a Kiro cloud sandbox; its files and shell are reached "
+            "this session runs in a Kiro Cloud Sessions sandbox; its files and shell are reached "
             "only by its own agent, not from Kiro Crew"
         )
     if kind != PROVIDER_ID:
