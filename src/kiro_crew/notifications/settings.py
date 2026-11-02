@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -37,6 +38,7 @@ from typing import Any
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ def _read_stored_strict() -> dict[str, dict[str, Any]]:
     path = _settings_path()
     if not path.exists():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = loads_user_json(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} is not a JSON object")
     raw = data.get("channel_settings", {})
@@ -89,16 +91,43 @@ def _read_stored_strict() -> dict[str, dict[str, Any]]:
     return {ch: dict(entry) for ch, entry in raw.items() if isinstance(entry, dict)}
 
 
-def _read_stored() -> dict[str, dict[str, Any]]:
-    """The stored mapping, or ``{}`` when the file is absent or unusable."""
+def _read_stored() -> dict[str, dict[str, Any]] | None:
+    """The stored mapping, or ``None`` when the file exists but is unusable."""
     path = _settings_path()
     try:
         return _read_stored_strict()
     except Exception:
-        # Corrupt settings must not take down the gateway; fall back to
-        # defaults (everything unmuted, producer priorities honored).
+        # Corrupt settings must not take down the gateway; the caller falls
+        # back to defaults (everything unmuted, producer priorities honored).
         logger.warning("Failed to load %s; using defaults", path, exc_info=True)
-    return {}
+    return None
+
+
+def _move_unreadable_aside() -> None:
+    """Rename the settings file to ``<name>.corrupt-<UTC stamp>`` before a write.
+
+    Called under :data:`_lock` when the file exists but cannot be read or parsed,
+    so the write that follows never destroys the only copy of the user's mutes.
+    The file is renamed, never rewritten, so the copy holds the exact bytes. A
+    rename that fails raises ``OSError``, the same error a failed write raises,
+    and nothing is written.
+    """
+    path = _settings_path()
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    suffix = 1
+    while os.path.lexists(target):
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        os.rename(path, target)
+    except FileNotFoundError:
+        return  # Gone since the read: there is nothing left to keep.
+    logger.warning(
+        "%s could not be read; kept its contents at %s and wrote the new settings in its place",
+        path,
+        target.name,
+    )
 
 
 def _seeded(settings: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -182,11 +211,34 @@ class ChannelSettings:
 
     def __init__(self) -> None:
         self._settings: dict[str, dict[str, Any]] = {}
+        # Whether memory matches the file. False after a boot read that failed,
+        # so update() reads the file again (and keeps it aside if it still
+        # cannot) before its first write, instead of writing defaults over it.
+        self._loaded = False
         self._load()
         self._seed_monitor_from_agent()
 
     def _load(self) -> None:
-        self._settings = _read_stored()
+        """Bind memory to the file, or to defaults when it cannot be read."""
+        stored = _read_stored()
+        self._loaded = stored is not None
+        self._settings = _seeded(stored or {})
+
+    def _rebase_before_write(self) -> None:
+        """Make memory match the file before the first write after a failed load.
+
+        Called under :data:`_lock`. A read that succeeds now (the holder let go)
+        rebases memory on the file. One that still fails moves the file aside
+        (:func:`_move_unreadable_aside`), so the write keeps working and the
+        stored mutes survive in the ``.corrupt-`` copy.
+        """
+        if self._loaded:
+            return
+        try:
+            self._settings = _seeded(_read_stored_strict())
+        except Exception:
+            _move_unreadable_aside()
+        self._loaded = True
 
     def _seed_monitor_from_agent(self) -> None:
         """Copy a stored ``system.agent`` entry to ``system.monitor`` once.
@@ -227,6 +279,7 @@ class ChannelSettings:
                 # that loss to disk.
                 try:
                     self._settings = _seeded(_read_stored_strict())
+                    self._loaded = True
                 except Exception:
                     logger.warning(
                         "Failed to re-read %s after a failed settings swap; "
@@ -236,9 +289,10 @@ class ChannelSettings:
                     )
                 raise
             if installed is None:
-                self._settings = _seeded(_read_stored())
+                self._load()
             else:
                 self._settings = _seeded({ch: dict(entry) for ch, entry in installed.items()})
+                self._loaded = True
 
     @staticmethod
     def _payload(channel_settings: dict[str, dict[str, Any]]) -> str:
@@ -283,6 +337,7 @@ class ChannelSettings:
         # _lock serializes WRITERS only (read-modify-write below); readers
         # are lock-free because this method rebinds self._settings wholesale.
         with _lock:
+            self._rebase_before_write()
             entry = dict(self._settings.get(channel, {}))
             if muted is not None:
                 if muted:
@@ -333,6 +388,7 @@ class ChannelSettings:
             candidate.setdefault(MONITOR_CHANNEL, {})
             atomic_write(path, self._payload(candidate))
             self._settings = candidate
+            self._loaded = True
             return True
 
     def apply(self, note: dict[str, Any]) -> dict[str, Any]:

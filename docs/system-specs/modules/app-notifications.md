@@ -89,7 +89,7 @@ An approval prompt in a dashboard chat that expires unanswered also posts one `s
 
 ## Per-channel settings
 
-`notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
+`notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. The file is parsed with `user_json.loads_user_json`, so a UTF-8 BOM reads. After a failed load the first `update` reads the file again; if it still fails, the file is renamed to `notification_settings.json.corrupt-<UTC stamp>` with a WARNING before the write, so no write replaces mutes it never read. `test_notification_settings_unreadable.py` pins it. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
 
 - A muted non-protected channel remains in history but receives `silenced: true` and passive priority. `test_apply_mute_forces_passive_and_silenced` and `test_muted_channel_excluded_from_badge` pin the visibility and badge invariant.
 - A priority override replaces the effective producer or channel priority.
