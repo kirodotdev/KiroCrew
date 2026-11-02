@@ -533,6 +533,36 @@ def _load_state(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+class StateUnreadable(Exception):
+    """The state file exists but cannot be read as a handled set."""
+
+
+def _load_state_strict(path: Path) -> dict[str, Any]:
+    """The state for a WRITE: ``{}`` when the file does not exist.
+
+    ``_load_state`` folds every failure into ``{}``, which is right for a read
+    whose worst case is one re-fired signal. A mark writes the map it read back
+    to disk, so the same fallback would replace every recorded disposition with
+    the one being added. Here a present file that cannot be read or is not JSON
+    raises instead, so the caller can refuse and leave the file as it is. Parsed
+    JSON of the wrong shape holds no handled set to lose, so it reads as ``{}``
+    as it does for the patrol, and the mark rewrites it as a valid set.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise StateUnreadable(f"{type(exc).__name__}: {exc.strerror or exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise StateUnreadable(f"not UTF-8: {exc.reason}") from exc
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise StateUnreadable(f"not valid JSON: {exc}") from exc
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _suppressed(handled: dict[str, Any], key: str, tag: str, digest: str, idle_secs: int) -> bool:
     entry = handled.get(key)
     if not isinstance(entry, dict):
