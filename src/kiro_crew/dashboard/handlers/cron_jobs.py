@@ -21,7 +21,13 @@ from typing import Any, TypeVar
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone, parse_time_string
+from kiro_crew.cron import (
+    CronStoreBusy,
+    CronStoreUnreadable,
+    is_valid_timezone,
+    never_fires_warning,
+    parse_time_string,
+)
 from kiro_crew.cron_service.model import (
     validate_alert_after_failures,
     validate_auto_pause_after_failures,
@@ -450,6 +456,15 @@ async def _persist_holding_folder(
     return await state.hold_folders(_section)
 
 
+def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
+    """Add a ``warnings`` list to a saved job's success body when its cron never fires."""
+    schedule = getattr(job, "schedule", None)
+    warning = never_fires_warning(schedule) if schedule is not None else ""
+    if warning:
+        body["warnings"] = [warning]
+    return body
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
@@ -702,7 +717,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
     # The fingerprint of the job as this write made it: a card step records it,
     # so its Undo's baseline is what the card made, not a later edit.
-    return web.json_response({"ok": True, "id": job.id, "revision": cron_job_revision(job)})
+    created: dict[str, Any] = {"ok": True, "id": job.id, "revision": cron_job_revision(job)}
+    return web.json_response(_with_schedule_warnings(created, job))
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:
@@ -1051,7 +1067,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
             getattr(job, "chat_folder_id", ""),
         )
     state.push_refresh("crons")
-    return web.json_response({"ok": True, "id": job.id})
+    return web.json_response(_with_schedule_warnings({"ok": True, "id": job.id}, job))
 
 
 async def api_cron_enable(request: web.Request) -> web.Response:
