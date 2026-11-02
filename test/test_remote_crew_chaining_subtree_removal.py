@@ -37,6 +37,7 @@ from remote_crew_chaining_helpers import (
 )
 
 from kiro_crew.instances.registry import InstancesRegistry
+from kiro_crew.testing.wait import await_until, finished, until_parked
 
 
 class _FakeMgr:
@@ -389,9 +390,21 @@ class TestChainCascade:
         reg.add(name="B", ssh_host="b-host", instance_id="b")
 
         async def interleave():
-            # The add reaches its parent check first; the removal then runs to
-            # completion while the add is still between validation and insert --
-            # which it can only do if the two are not one critical section.
+            # The add reaches its parent check first and is held there, between
+            # validation and insert, until the removal is parked behind it. The
+            # removal runs to completion in that window only if the two are not one
+            # critical section; under the chain lock it waits, and the add lands first.
+            checked = asyncio.Event()
+            queued = asyncio.Event()
+            real_refusal = handlers._chain_refusal
+
+            async def hold_after_check(*args, **kwargs):
+                refusal = await real_refusal(*args, **kwargs)
+                checked.set()
+                await await_until(queued, what="the removal queuing behind the add")
+                return refusal
+
+            monkeypatch.setattr(handlers, "_chain_refusal", hold_after_check)
             adding = asyncio.create_task(
                 handlers.api_instances_add(
                     _FakeReq(
@@ -406,15 +419,20 @@ class TestChainCascade:
                     )
                 )
             )
-            # flake-ok: pre-existing one-tick yield, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
-            removing = asyncio.create_task(
-                handlers.api_instances_remove(
-                    _FakeReq(_State(reg, _FakeMgr(registry=reg)), match={"id": "b"})
+            try:
+                await await_until(checked, what="the add passing its parent check")
+                removing = asyncio.create_task(
+                    handlers.api_instances_remove(
+                        _FakeReq(_State(reg, _FakeMgr(registry=reg)), match={"id": "b"})
+                    )
                 )
-            )
-            # flake-ok: pre-existing unbounded await on the add and remove handler tasks started above; both end in-process, moved verbatim
-            return await asyncio.gather(adding, removing)
+                await until_parked(
+                    handlers._CHAIN_MUTATION_LOCK,
+                    describe=lambda: "the removal has not queued behind the add",
+                )
+            finally:
+                queued.set()
+            return await finished(asyncio.gather(adding, removing), "chained add and removal")
 
         added, removed = asyncio.run(interleave())
         assert removed.status == 200
