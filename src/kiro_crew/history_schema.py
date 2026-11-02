@@ -101,6 +101,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "forked_from_created_at",
         "linked_session_key",
         "tab_id",
     }

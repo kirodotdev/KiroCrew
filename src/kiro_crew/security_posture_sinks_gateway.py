@@ -872,4 +872,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "and credential redaction (the display battery for timeline labels) "
         "before it reaches the browser.",
     ),
+    (
+        "Fork merge-back summaries",
+        "dashboard/chat_merge_back.py",
+        "The summary the background model writes of a fork's new messages, on its way "
+        "to the merge dialog, where the person edits it before Merge writes it into "
+        "the parent chat, and the fork's title the merge card shows. Both pass through "
+        "the active credential policy before they leave the gateway; the summary is cut "
+        "to the merge limit only after that.",
+    ),
 )
