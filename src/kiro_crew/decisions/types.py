@@ -1,9 +1,10 @@
 """Typed Jev questions and answers.
 
-Three question types, matching the provider's three: ``Choice`` picks one of the
+Four question types, matching the provider's own: ``Choice`` picks one of the
 declared options, ``Noul`` asks a yes/no question and gets back the probability
-of yes, and ``Score`` rates the state along an ordered list of levels and gets
-back a probability-weighted level. The gate checks every answer's identifier and
+of yes, ``Score`` rates the state along an ordered list of levels and gets
+back a probability-weighted level, and ``Box`` locates one thing on an image the
+request carries. The gate checks every answer's identifier and
 its type's own domain before a response is consumed. Probability metadata is not
 a guarantee of correctness or a selection threshold.
 """
@@ -82,7 +83,39 @@ class Score:
     levels: list[str] = field(default_factory=list)
 
 
-Question = Union[Choice, Noul, Score]
+@dataclass
+class Box:
+    """Locate one thing on an image the request carries. Image-only.
+
+    The answer's ``value`` is ``{"left", "top", "right", "bottom"}``, each a
+    fraction 0..1 of the image's width or height with ``left < right`` and
+    ``top < bottom``; ``p`` is the provider's confidence. A Box always travels with
+    a Noul that asks whether the thing is there at all, because a box is drawn
+    even when it is not.
+    """
+
+    id: str
+    prompt: str
+
+
+Question = Union[Choice, Noul, Score, Box]
+
+#: Image formats a request may carry, and the largest one image may be.
+IMAGE_FORMATS = frozenset({"png", "jpeg"})
+IMAGE_MAX_BYTES = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ImageAsset:
+    """One image a request carries, referenced from the state by its asset id.
+
+    Images cannot be scrubbed like text, so the gate sends one only for a request
+    whose caller named an image scope the owner granted, and only to a provider
+    whose registry entry declares ``image`` support.
+    """
+
+    data: bytes
+    format: str = "png"
 
 
 def question_texts(question: object) -> list[str]:

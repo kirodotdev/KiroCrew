@@ -209,6 +209,16 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The live card's control posts (visibility, ack, claim, release, one input
+    # event, reopen, close): small fixed-shape bodies, so the route keeps a 4 KiB
+    # cap of its own, well under the shared default.
+    "handlers/browser_live.py::_run": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    # A quick-ask answer: an id, an action and at most a few values of 1 KiB each,
+    # so the route caps the body at 8 KiB, well under the shared default.
+    "handlers/browser_ask.py::api_browser_ask_answer": (
+        "qa.ANSWER_BODY_MAX",
+        _BOUNDED_EXPLICIT,
+    ),
     # Both mediated-secret routes (the capability claim and the request) admit through
     # ``_admit``. A mediated request carries the agent's own body, headers and query, so
     # it gets the 1 MiB cap the MCP stub refuses past before sending, read before decode.

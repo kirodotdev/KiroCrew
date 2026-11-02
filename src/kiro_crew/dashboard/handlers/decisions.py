@@ -202,7 +202,7 @@ def _judge_lane(jev_armed: bool) -> str:
     from kiro_crew.decisions import gate as _gate
 
     try:
-        return str(_gate.judge_lane(jev_consented=jev_armed) or _gate.LANE_JEV)
+        return str(_gate.judge_lane(endpoint_consented=jev_armed) or _gate.LANE_JEV)
     except Exception:
         logger.debug("decisions: judge lane unreadable; judging the row on the keystone")
         return _gate.LANE_JEV
@@ -418,6 +418,10 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # it rather than inferring the scope from ``enabled``.
         "memory_text": consent.consented_memory_text(state),
         "nudge_evidence": consent.consented_nudge_evidence(state),
+        # The two ``browser.step`` scopes. Both read TRUE when absent: they are the
+        # two scopes on by default once consent stands.
+        "browser": consent.consented_browser(state),
+        "browser_images": consent.consented_browser_images(state),
         # The points this build ships, with the effective status of each. Here
         # rather than on a route of its own because the card reads this payload
         # already and a point's status is a function of the same keystone: a second
@@ -614,6 +618,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         "compaction",
         "memory_text",
         "nudge_evidence",
+        "browser",
+        "browser_images",
         "history_budget_chars",
     )
     scope_named = isinstance(body, dict) and any(f in body for f in _STANDALONE_FIELDS)
@@ -726,6 +732,22 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # The two browser scopes, on the same terms: absent hands on the writer's KEEP
+    # sentinel, and a truthy stand-in is a 400.
+    browser_scopes: dict[str, object] = {}
+    for field, keep in (
+        ("browser", consent.KEEP_BROWSER),
+        ("browser_images", consent.KEEP_BROWSER_IMAGES),
+    ):
+        value = body.get(field, keep) if isinstance(body, dict) else keep
+        if value is not keep and not isinstance(value, bool):
+            await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
+            return web.json_response(
+                {"error": f'"{field}" must be true or false', "code": _CODE_INVALID_BODY},
+                status=400,
+            )
+        browser_scopes[field] = value
+
     # Bound to the endpoint the owner REVIEWED, checked against the one the
     # config names now. Equal: consent is for the address on screen, and the one
     # the gate will hold the config to afterwards. Different: the config moved
@@ -766,6 +788,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         or compaction is True
         or memory_text is True
         or nudge_evidence is True
+        or any(value is True for value in browser_scopes.values())
         or budget_grants
     )
     # The same answer, carried to the audit verb below with the ABSENT case kept apart
@@ -831,6 +854,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             compaction=compaction,
             memory_text=memory_text,
             nudge_evidence=nudge_evidence,
+            browser=browser_scopes["browser"],
+            browser_images=browser_scopes["browser_images"],
         )
     except consent.ConsentCorruptError as exc:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="error", error="corrupt")
@@ -882,7 +907,13 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         # into the same row, and which way a scope moved is the fact an auditor
         # reconstructing when egress started actually needs.
         outcome=_consent_write_verb(
-            enabled, tool_args, compaction, memory_text, nudge_evidence, budget_asserts
+            enabled,
+            tool_args,
+            compaction,
+            memory_text,
+            nudge_evidence,
+            *browser_scopes.values(),
+            budget_asserts,
         ),
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
@@ -890,7 +921,9 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"tool_args={consent.consented_tool_args(state)} "
             f"compaction={consent.consented_compaction(state)} "
             f"memory_text={consent.consented_memory_text(state)} "
-            f"nudge_evidence={consent.consented_nudge_evidence(state)}"
+            f"nudge_evidence={consent.consented_nudge_evidence(state)} "
+            f"browser={consent.consented_browser(state)} "
+            f"browser_images={consent.consented_browser_images(state)}"
         ),
     )
     return web.json_response(await asyncio.to_thread(_payload, state, denied=withdrawn))

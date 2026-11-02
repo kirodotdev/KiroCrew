@@ -93,7 +93,6 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/handlers/knowledge_sync.py",
     "dashboard/handlers/messaging.py",
     "dashboard/messaging_api/agent_push.py",
-    "dashboard/messaging_api/browser_routes.py",
     "dashboard/messaging_api/channel_config_writes.py",
     "dashboard/messaging_api/channel_delivery.py",
     "dashboard/messaging_api/channel_folder_backfill.py",

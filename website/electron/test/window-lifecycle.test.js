@@ -731,22 +731,20 @@ describe("window lifecycle source contracts", () => {
     );
   });
 
-  it("tears command/control owners down before closing dashboard contents", () => {
+  it("tears embedded panels down before closing dashboard contents", () => {
     const setupStart = SOURCE.indexOf("function setupWindowContents");
     const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
     assert.notEqual(setupStart, -1);
     assert.notEqual(setupEnd, -1);
     const setup = SOURCE.slice(setupStart, setupEnd);
 
-    const stop = setup.indexOf("void win._mcAgentChannel.stop()");
     const destroyPanels = setup.indexOf("win._mcDestroyBrowserPanel(id)");
     const closeDashboard = setup.indexOf("view.webContents.close()");
-    assert.ok(stop !== -1, "agent command channel cleanup missing");
     assert.ok(destroyPanels !== -1, "browser panel cleanup missing");
     assert.ok(closeDashboard !== -1, "dashboard WebContents cleanup missing");
     assert.ok(
-      stop < destroyPanels && destroyPanels < closeDashboard,
-      "cleanup order must be channel -> panels/control -> dashboard contents",
+      destroyPanels < closeDashboard,
+      "cleanup order must be panels -> dashboard contents",
     );
   });
 
@@ -909,11 +907,6 @@ describe("window lifecycle source contracts", () => {
       "browserSetInactive",
       "browserClose",
       "browserGetState",
-      "browserTrackSession",
-      "browserSetAgentAct",
-      "browserSetControlOwner",
-      "browserGetControl",
-      "browserControl",
     ]) {
       const start = SOURCE.indexOf(`function ${name}(`);
       const asyncStart = SOURCE.indexOf(`async function ${name}(`);
@@ -1108,7 +1101,6 @@ async function wireDashboardWindow(t, options) {
   const wiring = harness.log.splice(0);
   harness.viewContents.emit("did-finish-load");
   const onLoad = harness.log.splice(0);
-  await harness.win._mcAgentChannel.stop();
   return { ...harness, wiring, onLoad };
 }
 
@@ -1286,7 +1278,6 @@ describe("dashboard window wiring order", () => {
     assert.ok(win._mcBrowserPanels instanceof Map);
     assert.equal(typeof win._mcBrowserPanel, "function");
     assert.equal(typeof win._mcDestroyBrowserPanel, "function");
-    assert.ok(win._mcReachableSessions instanceof Set);
     assert.equal(typeof win._mcSetCustomName, "function");
     assert.equal(win._mcGetCustomName(), null);
     win._mcSetCustomName("Work");
@@ -1334,19 +1325,13 @@ describe("browser panel IPC routing", () => {
     assert.equal(lifecycle.browser.setOverlay(viewContents, "p1", true), null);
     assert.equal(lifecycle.browser.setInactive(viewContents, "p1", true), null);
     assert.equal(lifecycle.browser.close(viewContents, "p1"), null);
-    assert.equal(lifecycle.browser.getControl(viewContents, "p1"), null);
-    assert.equal(await lifecycle.browser.control(viewContents, "p1", "snapshot", {}), null);
     assert.deepEqual(
       await lifecycle.browser.annotate(viewContents, "p1", "poll", {}),
       { ok: false, code: "no_view", error: "no native browser panel" },
     );
     assert.equal(win._mcBrowserPanels.size, 0, "no panel was created by any of the above");
-
-    assert.deepEqual(lifecycle.browser.trackSession(stranger, "s1", true), { ok: false });
-    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "  s1  ", true), { ok: true });
-    assert.deepEqual([...win._mcReachableSessions], ["s1"]);
-    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "s1", false), { ok: true });
-    assert.equal(win._mcReachableSessions.size, 0);
+    assert.equal(lifecycle.browser.open(stranger, "p1", "https://example.test"), null);
+    assert.equal(win._mcBrowserPanels.size, 0, "a stranger's open creates nothing");
   });
 });
 

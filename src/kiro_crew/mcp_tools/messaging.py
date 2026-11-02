@@ -440,9 +440,9 @@ def schemas() -> list[dict[str, Any]]:
                 "dashboard. To put an IMAGE inline in a "
                 "messaging conversation, reference it in your reply as "
                 "![alt](/abs/path) from the session's working directory or "
-                "the browser tool's own output directory "
-                "($PLAYWRIGHT_MCP_OUTPUT_DIR, where playwright-cli screenshots "
-                "land) — the channel renderer uploads it as a native picture, "
+                "the browser tool's own screenshot directory (the path its "
+                "screenshot op returns) — the channel renderer uploads it as a "
+                "native picture, "
                 "which this tool's outbox copy is not eligible for."
             ),
             "inputSchema": {
