@@ -1,7 +1,6 @@
 """Coverage for the workflows backend: redaction, examples listing, the stub
 agent and the HTTP routes, exercised on a loopback listener."""
 
-import asyncio
 import http.client
 import json
 import logging
@@ -42,9 +41,10 @@ def test_redaction_keeps_non_string_scalars_and_walks_containers(monkeypatch):
     assert server._redact_obj(["a", {"k": ["v", 3, None]}]) == ["<a>", {"<k>": ["<v>", 3, None]}]
 
 
-def test_stub_agent_echoes_a_truncated_prompt():
+@pytest.mark.asyncio
+async def test_stub_agent_echoes_a_truncated_prompt():
     head = "x" * 80
-    reply = asyncio.run(server._stub_agent(head + "tail", {}))
+    reply = await server._stub_agent(head + "tail", {})
     assert reply == f"[stub agent reply to: {head}]"
 
 
