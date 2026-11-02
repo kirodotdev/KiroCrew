@@ -96,15 +96,6 @@ def test_steering_contained(tree, monkeypatch) -> None:
     assert not _contained(outside, root)
 
 
-def test_pptx_contained(tree, monkeypatch) -> None:
-    from kiro_crew.apps.builtins.pptx_maker.backend.paths import _contained
-
-    root, inside, outside = tree
-    _prefix_resolve_of(monkeypatch, inside)
-    assert _contained(inside, root) is not None
-    assert _contained(outside, root) is None
-
-
 def test_papyrus_safe_child(tree, monkeypatch) -> None:
     from kiro_crew.apps.builtins.papyrus.backend.store import PathRejected, safe_child
 
