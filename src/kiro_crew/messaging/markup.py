@@ -19,13 +19,16 @@ This lives in ``messaging`` rather than in one channel package because none of
 the three hazards is channel-specific: Discord, Telegram, iMessage, Weixin and
 WhatsApp all deliver a ``<thinking>`` block and a pipe table as written.
 
-Stdlib-only leaf: regex and string work with no imports from this package, so it
-stays importable from any channel and adds nothing to a boot path.
+Near-leaf: regex and string work whose one import from this package is
+:mod:`kiro_crew.messaging.tables`, itself stdlib-only, so it stays importable
+from any channel and adds nothing to a boot path.
 """
 
 from __future__ import annotations
 
 import re
+
+from kiro_crew.messaging.tables import _cells
 
 __all__ = [
     "MERMAID_INFO",
@@ -102,8 +105,13 @@ def _is_separator(line: str) -> bool:
 
 
 def _row_cells(row: str) -> list[str]:
-    """The cells of a pipe row, outer delimiters and per-cell padding dropped."""
-    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+    """The cells of a pipe row, outer delimiters and per-cell padding dropped.
+
+    The split is the table renderer's own: an escaped ``\\|`` and a pipe inside
+    an inline code span are cell text, not a boundary, so ``| `a|b` | or |``
+    stays two cells instead of tearing the code span across a label.
+    """
+    return _cells(row)
 
 
 def _flatten_rows(header: list[str], rows: list[list[str]]) -> list[str]:
