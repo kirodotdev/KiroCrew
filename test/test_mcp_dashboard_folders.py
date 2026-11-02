@@ -409,6 +409,27 @@ class TestSlashBearingFolderNames:
         assert not out.startswith("Error:"), out
         assert _writes(dash)[-1].body == {"folder_id": "dddddddddddd"}
 
+    def test_a_duplicate_on_a_shallower_reading_does_not_refuse_a_unique_path(self) -> None:
+        """Two literal ``A/B`` siblings must not refuse the one ``A`` > ``B`` > ``C``.
+
+        Only one folder renders ``A/B/C``; the duplicates sit on a reading that
+        never reaches that depth, so the deeper unique reading resolves.
+        """
+        tree = [
+            {"id": "aaaaaaaaaaaa", "name": "A/B", "parent_id": ""},
+            {"id": "eeeeeeeeeeee", "name": "A/B", "parent_id": ""},
+            {"id": "bbbbbbbbbbbb", "name": "A", "parent_id": ""},
+            {"id": "cccccccccccc", "name": "B", "parent_id": "bbbbbbbbbbbb"},
+            {"id": "dddddddddddd", "name": "C", "parent_id": "cccccccccccc"},
+        ]
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B/C"},
+            self._routes(tree),
+        )
+        assert not out.startswith("Error:"), out
+        assert _writes(dash)[-1].body == {"folder_id": "dddddddddddd"}
+
     def test_a_path_below_both_readings_is_refused(self) -> None:
         out, dash = _call(
             "chat_folder_create",

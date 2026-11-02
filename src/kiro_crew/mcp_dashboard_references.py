@@ -164,31 +164,32 @@ def _resolve_existing_chat_folder_prefix(
     by ``folder_id`` (``0`` and ``""`` = nothing exists, start at the top level).
     A folder name may itself contain ``/``, so each step tries every run of the
     remaining segments as one name (``a/b`` as well as ``a``) and follows every
-    reading that exists. The deepest reading wins; two readings that reach the
-    same depth through different folders are refused rather than resolved to
-    whichever came first, as are duplicate siblings anywhere on a reading.
+    folder that matches, duplicate siblings included. The deepest reading wins;
+    when more than one folder sits at that depth the path is refused rather
+    than resolved to whichever came first. A duplicate sibling on a shallower
+    reading does not refuse a path another reading resolves deeper and
+    uniquely; when duplicate siblings are what made the deepest depth
+    ambiguous, the refusal names them as the per-segment walk always has.
     """
     reached: dict[int, set[str]] = {}
-    duplicate: str | None = None
+    duplicates: dict[int, str] = {}
 
     def follow(parent: str, start: int) -> None:
-        nonlocal duplicate
         reached.setdefault(start, set()).add(parent)
         for end in range(start + 1, len(segments) + 1):
             name = redact("/".join(segments[start:end]))
             matches = _chat_folder_children(folders, parent, name)
             if len(matches) > 1:
-                duplicate = duplicate or _ambiguous_segment_error(name, matches)
-                continue
-            if matches:
-                follow(str(matches[0].get("id") or ""), end)
+                duplicates.setdefault(end, _ambiguous_segment_error(name, matches))
+            for match in matches:
+                follow(str(match.get("id") or ""), end)
 
     follow("", 0)
-    if duplicate:
-        return "", 0, duplicate
     depth = max(reached)
     ids = sorted(reached[depth])
     if len(ids) > 1:
+        if depth in duplicates:
+            return "", 0, duplicates[depth]
         return (
             "",
             0,
