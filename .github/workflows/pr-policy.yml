@@ -368,11 +368,15 @@ jobs:
           # required check reporting green having examined nothing. That
           # polarity is worse than a false red, so an uncomputable diff fails
           # loudly and is re-runnable instead.
+          #
+          # The stylesheet include carries `:(glob)` magic: under git's default
+          # magic `**/` needs at least one directory, so a stylesheet directly
+          # under website/src/ (index.css, tailwind-theme.css) would not match.
           if ! changed="$(git diff --name-only HEAD^1 HEAD -- \
             'website/src/components/**' \
             'website/src/pages/**' \
             'website/src/apps/**' \
-            'website/src/**/*.css' \
+            ':(glob)website/src/**/*.css' \
             'website/index.html' \
             ':(exclude)website/src/**/*.test.ts' \
             ':(exclude)website/src/**/*.test.tsx' \
