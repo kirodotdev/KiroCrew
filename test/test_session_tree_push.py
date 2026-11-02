@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from crew_log_drain import assert_drained
 from turn_harness import Do, ScriptedProvider, SlotSpec, TurnScript, run_turn
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
@@ -174,7 +175,7 @@ async def test_a_restored_child_that_never_ran_writes_no_creator_into_its_first_
     ``session_control.revive_session``'s ownership check then reads.
     """
     emit.on_session_opened("s-lead", agent="kirocrew-lead", slot="lead")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     stp.reset_for_tests()
     emit.reset_caches()
 
@@ -216,7 +217,7 @@ def test_a_restored_child_with_no_predecessor_inherits_from_the_spawn():
 
     emit.on_session_opened("s-lead", agent="kirocrew-lead", slot="lead")
     emit.on_session_spawned("s-lead", creator_slot="lead", child_slot="worker")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     stp.reset_for_tests()
     emit.reset_caches()
 

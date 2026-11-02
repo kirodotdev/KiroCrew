@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from crew_log_drain import assert_drained
 from session_ledger_projection_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     LATER_SESSION,
     SESSION,
@@ -116,7 +117,7 @@ def test_record_returns_the_record_the_appended_entry_produces():
         event_kind="progress",
     )
     assert returned["phase"] == "awaiting-ci"
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     settled = sl.read_state(SLOT)
 
     # The field SET is compared whole, so a field added to the record in future is

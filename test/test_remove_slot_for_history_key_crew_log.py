@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from crew_log_drain import assert_drained
 from remove_slot_for_history_key_helpers import (
     _guard_work_ledger_cleanup,
     _make_slot,
@@ -136,7 +137,7 @@ class TestSessionLedgerOnPermanentDelete:
             emit.on_session_opened(
                 "acp-emitted", agent="kirocrew", slot="dashboard_chat-1-100", cwd="/tmp"
             )
-            assert emit.flush(timeout=5.0)
+            assert_drained()
             assert self._exists("acp-emitted")
             assert (
                 remove_unit(lg.KIND_SESSION, "acp-emitted", guard=lambda _dir: True) == REMOVE_OWNED
