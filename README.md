@@ -1356,6 +1356,7 @@ make this tool possible:
 <a href="https://github.com/william-davies" title="William Davies"><img src="https://github.com/william-davies.png?size=64" width="64" height="64" alt="William Davies" /></a>
 <a href="https://github.com/wknight1" title="wknight1"><img src="https://github.com/wknight1.png?size=64" width="64" height="64" alt="wknight1" /></a>
 <a href="https://github.com/wmaillard" title="Will Maillard"><img src="https://github.com/wmaillard.png?size=64" width="64" height="64" alt="Will Maillard" /></a>
+<a href="https://github.com/wooseokdotkim" title="wooseokdotkim"><img src="https://github.com/wooseokdotkim.png?size=64" width="64" height="64" alt="wooseokdotkim" /></a>
 <a href="https://github.com/wu5bocheng" title="wu5bocheng"><img src="https://github.com/wu5bocheng.png?size=64" width="64" height="64" alt="wu5bocheng" /></a>
 <a href="https://github.com/wundram" title="wundram"><img src="https://github.com/wundram.png?size=64" width="64" height="64" alt="wundram" /></a>
 <a href="https://github.com/wuxinyun" title="wuxinyun"><img src="https://github.com/wuxinyun.png?size=64" width="64" height="64" alt="wuxinyun" /></a>
