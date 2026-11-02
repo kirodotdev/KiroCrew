@@ -229,6 +229,7 @@ def _stage_managed_node(source: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     if root.is_symlink():
         raise OSError(f"managed CLI root is a symlink: {root}")
+    _clear_retired_managed_nodes(root)
     destination = _managed_node_path()
     fd, incoming = tempfile.mkstemp(
         dir=root,
@@ -239,18 +240,85 @@ def _stage_managed_node(source: str) -> Path:
     try:
         shutil.copyfile(source_path, incoming)
         if not platform_compat.IS_WINDOWS:
-            os.chmod(incoming, 0o500)
+            # The copy is a public Node executable with no secret payload; the
+            # mode just makes it read+exec only before it is probed and renamed.
+            os.chmod(incoming, 0o500)  # lockdown-ok: public Node binary, carries no secret
         reason = _staged_node_runs(Path(incoming))
         if reason is not None:
             raise OSError(
                 f"Node copied from {source_path} does not run from the managed leaf "
                 f"({reason}). {_unrunnable_node_remedy(reason)}"
             )
-        os.replace(incoming, destination)
+        _swap_in_managed_node(Path(incoming), destination)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(incoming)
     return destination
+
+
+def _swap_in_managed_node(incoming: Path, destination: Path) -> None:
+    """Move the staged copy over ``destination``, surviving a running Node on Windows.
+
+    On POSIX this is a plain ``os.replace``: the OS renames over an executable
+    that a process has open, and the running image keeps its own copy.
+
+    Windows refuses to rename over a file that is open for execution, so a
+    reinstall or upgrade run while a managed ``node.exe`` is still serving an
+    agent fails here with a bare ``PermissionError`` ("Access is denied").
+    Windows does, however, allow renaming the running image to a different
+    name -- the open handle follows the file. So the running copy is moved
+    aside first, which frees the name, and the staged copy is renamed into
+    place. The moved-aside image is deleted best-effort: the still-running
+    process may hold it, and that is harmless -- the next install clears any
+    leftover ``.old-*`` sidecars before it stages. If even moving it aside
+    fails, the destination is genuinely pinned, and the error names the running
+    ``node.exe`` and the remedy instead of propagating a bare "Access is denied".
+    """
+    if not platform_compat.IS_WINDOWS:
+        os.replace(incoming, destination)
+        return
+    try:
+        os.replace(incoming, destination)
+        return
+    except PermissionError:
+        pass
+    # A unique token, not just the pid: two swaps in one gateway process would
+    # otherwise reuse the same retired name, and a retired node.exe the first
+    # swap left running (its best-effort delete failed) would make the second
+    # swap's move-aside try to overwrite a running executable and fail.
+    token = os.urandom(8).hex()
+    retired = destination.with_name(f".{destination.name}.{token}.old")
+    try:
+        os.replace(destination, retired)
+    except OSError as exc:
+        raise OSError(
+            f"the managed Node at {destination} is in use and could not be replaced "
+            "(Windows locks a running executable). Close every running browser CLI "
+            "session and any process using that node.exe, then install the browser "
+            "CLI again."
+        ) from exc
+    try:
+        os.replace(incoming, destination)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.replace(retired, destination)
+        raise
+    with contextlib.suppress(OSError):
+        os.unlink(retired)
+
+
+def _clear_retired_managed_nodes(root: Path) -> None:
+    """Delete any ``.node.exe.<token>.old`` sidecars a prior running-image swap left.
+
+    The swap on Windows renames a locked running ``node.exe`` aside and deletes
+    it best-effort; a copy the process still held stays on disk. Clearing them
+    here, before the next stage, keeps the leaf from accumulating dead images
+    without ever touching the live ``node.exe``.
+    """
+    name = _managed_node_path().name
+    for stale in root.glob(f".{name}.*.old"):
+        with contextlib.suppress(OSError):
+            os.unlink(stale)
 
 
 def _managed_cli_candidates() -> tuple[Path, ...]:
