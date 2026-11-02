@@ -22,7 +22,6 @@
   "src/test/ChatInput.test.tsx",
   "src/test/ChatPage.chipUndo.test.tsx",
   "src/test/ChatPage.dirStaging.test.tsx",
-  "src/test/ChatPage.sessionControls.test.tsx",
   "src/test/ChatPage.sid.test.tsx",
   "src/test/ChatPage.widgetPrefill.test.tsx",
   "src/test/ChatPageDrafts.test.tsx",
