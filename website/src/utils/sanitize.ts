@@ -3,11 +3,23 @@
 import { i18nT } from '../i18n/t'
 
 // ── Credential patterns (matches redact_credentials in security.py) ──
+// AWS key-value pairs keep their label and lose only the value, as the backend
+// does. Group 1 is the label. A value that is exactly a redaction tag (this
+// file's `[REDACTED]` or a backend tag) ended by whitespace, a quote, `,`, `}`
+// or the end of the text is left alone, so text the backend redacted is not
+// redacted a second time into a garbled tag; a tag with anything glued after it
+// is redacted like any other value.
+const TAG_VALUE = String.raw`\[REDACTED(?:\]|: (?:encoded )?credential\])(?=[\s"',}]|$)`
+// A backend tag carries a space, which `\S+` would stop at, so a value that
+// starts with one takes the whole tag and whatever is glued after it.
+const VALUE = String.raw`(?:\[REDACTED: (?:encoded )?credential\]\S*|\S+)`
+const KEYED_CRED_PATTERNS: RegExp[] = [
+  new RegExp(String.raw`((?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*)(?!${TAG_VALUE})${VALUE}`, 'gi'),
+  new RegExp(String.raw`((?:SessionToken|aws_session_token)\s*[:=]\s*)(?!${TAG_VALUE})${VALUE}`, 'gi'),
+  new RegExp(String.raw`((?:AccessKeyId|aws_access_key_id)\s*[:=]\s*)(?!${TAG_VALUE})${VALUE}`, 'gi'),
+]
 const CRED_PATTERNS: RegExp[] = [
   /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
-  /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
-  /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
-  /(?:AccessKeyId|aws_access_key_id)\s*[:=]\s*\S+/gi,
   /BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY/g,
   /xox[bpas]-[0-9a-zA-Z-]{10,}/g,
   // JWS (3 segments) and compact JWE (5 segments). Post-header segments use `*`,
@@ -90,7 +102,7 @@ function decodeB64Safe(chunk: string): string {
   try {
     const decoded = atob(chunk)
     // Check if decoded content contains credential patterns
-    for (const re of CRED_PATTERNS) {
+    for (const re of [...CRED_PATTERNS, ...KEYED_CRED_PATTERNS]) {
       re.lastIndex = 0
       if (re.test(decoded)) return decoded
     }
@@ -104,6 +116,10 @@ export function sanitizeCredentials(text: string): string {
   for (const re of CRED_PATTERNS) {
     re.lastIndex = 0
     out = out.replace(re, '[REDACTED]')
+  }
+  for (const re of KEYED_CRED_PATTERNS) {
+    re.lastIndex = 0
+    out = out.replace(re, '$1[REDACTED]')
   }
   // Base64-encoded credentials
   B64_CHUNK.lastIndex = 0

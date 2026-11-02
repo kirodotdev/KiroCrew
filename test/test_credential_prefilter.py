@@ -60,6 +60,36 @@ _REFERENCE_TOKEN_PARAM_RE = re.compile(
     rf"{_REFERENCE_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
 )
 
+# The AWS key-value label, spelled out here rather than read from the live
+# module, so the oracle's label split is an independent statement.
+_REFERENCE_AWS_LABEL_RE = re.compile(
+    r"(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token"
+    r"|AccessKeyId|aws_access_key_id)[\"']?\s*[:=]\s*[\"']?"
+)
+
+
+def _reference_value_is_tag(text: str, start: int, end: int) -> bool:
+    """Whether the AWS value at ``text[start:end]`` is made of a credential tag's bytes.
+
+    A whole tag ended by the text or a value terminator, a tag cut by the end of
+    the text, or a tag with its space dropped (whole, or cut by the end of the
+    text).
+    """
+    rest = text[start:]
+    value = text[start:end]
+    for tag in (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG):
+        squeezed = tag.replace(" ", "")
+        if rest == tag[: len(rest)]:
+            return True
+        if rest.startswith(tag) and (
+            len(rest) == len(tag) or re.match(r"[\s\"',}]", rest[len(tag)])
+        ):
+            return True
+        if value == squeezed or (end == len(text) and squeezed.startswith(value)):
+            return True
+    return False
+
+
 # ── Reference oracle: the implementation as it stood before the optimisation ──
 
 
@@ -111,11 +141,21 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
 
     # 1. plaintext credential patterns — ungated full scan, JSON-header-validated JWT hits
     for m in _credential_matches(text):
-        # The HTTP/JSON bearer branch keeps its non-secret `bearer_prefix`
-        # group (header + separator + quote + scheme) and redacts only the token
-        # after it; every other branch is redacted whole.
+        # A branch's non-secret prefix is kept and only the value after it is
+        # redacted: the HTTP/JSON bearer branch's `bearer_prefix` group (header +
+        # separator + quote + scheme) and an AWS key-value branch's label (key
+        # name + separator + quote). An AWS value that is already a credential
+        # tag's own bytes is left alone. Every other branch is redacted whole.
         prefix_end = m.end("bearer_prefix")
-        start = prefix_end if prefix_end != -1 else m.start()
+        aws = _REFERENCE_AWS_LABEL_RE.match(m.group())
+        if prefix_end != -1:
+            start = prefix_end
+        elif aws is not None:
+            start = m.start() + aws.end()
+            if _reference_value_is_tag(text, start, m.end()):
+                continue
+        else:
+            start = m.start()
         warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
         taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
 
@@ -550,20 +590,22 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
 _FULL_CORPUS = _corpus()
 
 
-# The HTTP/JSON bearer branch keeps its non-secret prefix (header name,
-# separator, quote, `Bearer` scheme) and redacts only the token, so it diverges
-# from the by-VALUE legacy oracle, which replaces the whole match. These texts
-# are held out of the legacy-equivalent set and pinned on their own below: the
-# token is gone, and the prefix the legacy oracle drops survives. Every other
+# The HTTP/JSON bearer branch and the AWS key-value branches keep their
+# non-secret prefix (header name, separator, quote and `Bearer` scheme; the AWS
+# key name, separator and quote) and redact only the value, so they diverge from
+# the by-VALUE legacy oracle, which replaces the whole match. These texts are
+# held out of the legacy-equivalent set and pinned on their own below: the
+# value is gone, and the prefix the legacy oracle drops survives. Every other
 # shape agrees with legacy.
-def _is_bearer_bearing(text: str) -> bool:
+def _is_key_preserving(text: str) -> bool:
     return _CREDENTIAL_PATTERNS.search(text) is not None and any(
-        m.end("bearer_prefix") != -1 for m in _credential_matches(text)
+        m.end("bearer_prefix") != -1 or _REFERENCE_AWS_LABEL_RE.match(m.group())
+        for m in _credential_matches(text)
     )
 
 
-BEARER_KEY_PRESERVING_CORPUS = [t for t in _FULL_CORPUS if _is_bearer_bearing(t)]
-LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_bearer_bearing(t)]
+KEY_PRESERVING_CORPUS = [t for t in _FULL_CORPUS if _is_key_preserving(t)]
+LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_key_preserving(t)]
 CORPUS = _FULL_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
 
 
@@ -640,26 +682,29 @@ def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> N
     assert redact_credentials(text) == _legacy_redact_credentials(text)
 
 
-@pytest.mark.parametrize(
-    "text", BEARER_KEY_PRESERVING_CORPUS, ids=range(len(BEARER_KEY_PRESERVING_CORPUS))
-)
-def test_bearer_keeps_the_prefix_the_legacy_oracle_dropped(text: str) -> None:
-    """The bearer branch keeps its non-secret prefix; the token is gone.
+@pytest.mark.parametrize("text", KEY_PRESERVING_CORPUS, ids=range(len(KEY_PRESERVING_CORPUS)))
+def test_key_preserving_branches_keep_the_prefix_the_legacy_oracle_dropped(text: str) -> None:
+    """The bearer and AWS key-value branches keep their non-secret prefix; the value is gone.
 
     The legacy by-VALUE oracle replaces the whole match (key, separator, quote
-    and scheme with the token), so a JSON/header document does not parse. The
-    by-span redactor keeps that prefix and redacts only the token, so it
-    DIVERGES from legacy here -- in the key-preserving direction -- while
-    removing every secret byte of the token.
+    and, for Bearer, the scheme with the token), so a JSON/header document does
+    not parse. The by-span redactor keeps that prefix and redacts only the
+    value, so it DIVERGES from legacy here -- in the key-preserving direction --
+    while removing every secret byte of the value.
     """
     legacy_text, _ = _legacy_redact_credentials(text)
     live_text, _ = redact_credentials(text)
-    assert live_text != legacy_text, "corpus assumption: this shape exercises the bearer branch"
+    assert (
+        live_text != legacy_text
+    ), "corpus assumption: this shape exercises a key-preserving branch"
     # Legacy reduces the whole match to a bare tag; the live output carries the
-    # `Bearer` scheme word ahead of the tag.
-    assert "Bearer" in live_text or "bearer" in live_text
+    # `Bearer` scheme word or the AWS key name ahead of the tag.
+    assert re.search(
+        r"(?i:bearer)|AccessKey|SessionToken|aws_(?:secret_access_key|session_token|access_key_id)",
+        live_text,
+    )
     assert "[REDACTED: credential]" in live_text
-    # No token bytes survive: re-redacting the live output is a fixed point.
+    # No value bytes survive: re-redacting the live output is a fixed point.
     assert redact_credentials(live_text)[0] == live_text
 
 
@@ -746,15 +791,16 @@ def test_hosted_bare_secret_is_redacted_at_its_own_span() -> None:
 def test_partly_claimed_run_keeps_no_plaintext() -> None:
     """A later pass redacts whatever of its span an earlier pass left standing.
 
-    A key glued to the ``aws`` of a following ``aws_secret_access_key=`` label
-    forms one base64 run whose last three chars pass 1 claims. The run as a
-    whole is a bare secret; skipping it because part of it is gone would leave
-    the glued key in plaintext, and re-redacting the claimed tail would
-    corrupt the pass-1 tag. Only the unclaimed head is spliced.
+    A key glued to the ``glpat`` of a following GitLab token forms one base64
+    run whose last five chars pass 1 claims. The run as a whole is a bare
+    secret; skipping it because part of it is gone would leave the glued key in
+    plaintext, and re-redacting the claimed tail would corrupt the pass-1 tag.
+    Only the unclaimed head is spliced.
     """
-    run = f"D{AWS_SECRET}ZGHUT8aws"
-    text = f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}"
-    assert [m.group() for m in _B64_CHUNK_RE.finditer(text)] == [run, AWS_SECRET]
+    token = "glpat-" + "abcdefghijklmnopqrst"
+    run = f"D{AWS_SECRET}ZGHUT8glpat"
+    text = f"D{AWS_SECRET}ZGHUT8{token}"
+    assert [m.group() for m in _B64_CHUNK_RE.finditer(text)] == [run]
     assert _contains_bare_secret(run), "corpus assumption: the glued run is a bare secret"
 
     redacted, warnings = redact_credentials(text)
@@ -762,7 +808,7 @@ def test_partly_claimed_run_keeps_no_plaintext() -> None:
     assert AWS_SECRET not in redacted
     assert redacted == f"{_REDACTED_CREDENTIAL_TAG}{_REDACTED_CREDENTIAL_TAG}"
     assert warnings == [
-        f"Redacted credential pattern ({len(text) - len(run) + 3} chars)",
+        f"Redacted credential pattern ({len(token)} chars)",
         f"Redacted bare secret key ({len(run)} chars)",
     ]
 

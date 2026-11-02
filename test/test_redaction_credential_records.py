@@ -19,21 +19,21 @@ def test_text_and_warnings_match_plain_redactor() -> None:
 
 
 def test_label_rule_and_value_for_labelled_aws_secret() -> None:
-    _, _, matches = redact_credentials_with_records(f"aws_secret_access_key = {_SECRET}")
+    cleaned, _, matches = redact_credentials_with_records(f"aws_secret_access_key = {_SECRET}")
+    assert cleaned == "aws_secret_access_key = [REDACTED: credential]"
     assert len(matches) == 1
     m = matches[0]
-    assert (m.ordinal, m.rule, m.label, m.value) == (
-        0,
-        "aws_secret_access_key",
-        "aws_secret_access_key = ",
-        _SECRET,
-    )
+    # The label stays in the text, so the record carries none.
+    assert (m.ordinal, m.rule, m.label, m.value) == (0, "aws_secret_access_key", "", _SECRET)
 
 
 def test_session_token_label() -> None:
-    _, _, matches = redact_credentials_with_records("aws_session_token=" + "FwoGZXIvYXdzEBYaD")
+    cleaned, _, matches = redact_credentials_with_records(
+        "aws_session_token=" + "FwoGZXIvYXdzEBYaD"
+    )
     assert matches[0].rule == "aws_session_token"
-    assert matches[0].label == "aws_session_token="
+    assert matches[0].label == ""
+    assert cleaned == "aws_session_token=[REDACTED: credential]"
 
 
 def test_unlabelled_rule_ids() -> None:

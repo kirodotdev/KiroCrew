@@ -138,3 +138,49 @@ describe('sanitizeCredentials: JWT family', () => {
     }
   })
 })
+
+describe('sanitizeCredentials: AWS key-value pairs keep their label', () => {
+  const SECRET = 'wJalrXUtnFEMI/K7MDENG/' + 'bPxRfiCYEXAMPLEKEY'
+  const KEYS = [
+    'aws_secret_access_key',
+    'SecretAccessKey',
+    'aws_session_token',
+    'SessionToken',
+    'aws_access_key_id',
+    'AccessKeyId',
+  ]
+
+  for (const key of KEYS) {
+    it(`replaces only the value after ${key}`, () => {
+      expect(sanitizeCredentials(`${key}=${SECRET} done`)).toBe(`${key}=[REDACTED] done`)
+      expect(sanitizeCredentials(`${key}: ${SECRET}`)).toBe(`${key}: [REDACTED]`)
+    })
+
+    it(`leaves a ${key} value the backend already redacted unchanged`, () => {
+      for (const tag of ['[REDACTED: credential]', '[REDACTED: encoded credential]', '[REDACTED]']) {
+        const text = `${key}=${tag} done`
+        expect(sanitizeCredentials(text)).toBe(text)
+      }
+    })
+  }
+
+  it('still redacts a value that only starts like a tag', () => {
+    const out = sanitizeCredentials(`aws_secret_access_key=[REDACTED${SECRET}`)
+    expect(out).toBe('aws_secret_access_key=[REDACTED]')
+  })
+
+  it('redacts a secret glued after a whole tag', () => {
+    for (const tag of ['[REDACTED]', '[REDACTED: credential]']) {
+      const out = sanitizeCredentials(`secretAccessKey=${tag}${SECRET.replace(/\d/g, 'x')} done`)
+      expect(out).not.toContain('EXAMPLEKEY')
+    }
+  })
+
+  it('redacts a base64-encoded key-value pair', () => {
+    const digitFree = SECRET.replace(/\d/g, 'x')
+    const encoded = btoa(`secretAccessKey=${digitFree}`)
+    const out = sanitizeCredentials(`blob ${encoded} end`)
+    expect(out).not.toContain(encoded)
+    expect(out).toContain('[REDACTED: encoded credential]')
+  })
+})

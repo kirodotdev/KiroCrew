@@ -76,13 +76,13 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
     ),
     (
         "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        _TAG,
-        ["Redacted credential pattern (56 chars)"],
+        f"SecretAccessKey={_TAG}",
+        ["Redacted credential pattern (40 chars)"],
     ),
     (
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
-        _TAG,
-        ["Redacted credential pattern (45 chars)"],
+        f"aws_secret_access_key = {_TAG}",
+        ["Redacted credential pattern (21 chars)"],
     ),
     (
         f"Token is {_XOXB}",

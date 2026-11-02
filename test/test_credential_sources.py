@@ -43,7 +43,8 @@ def test_a_file_read_names_path_section_and_the_aws_template() -> None:
     }
     assert rec["view_command"] == "aws configure get aws_secret_access_key --profile default"
     assert rec["profile_command"] is None
-    assert rec["label"] == "aws_secret_access_key = "
+    # The redactor keeps the label in the text, so the record carries none.
+    assert rec["label"] == ""
 
 
 def test_a_session_token_recommends_the_profile() -> None:
