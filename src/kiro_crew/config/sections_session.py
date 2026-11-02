@@ -594,11 +594,11 @@ class SessionEnvironmentsConfig:
     kiro_cloud_profiles: list[dict[str, Any]] = field(
         default_factory=list,
         metadata=_meta(
-            "Kiro Cloud Profiles",
+            "Kiro Cloud Sessions Profiles",
             "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, "
-            "repositories}. The session runs in a Kiro cloud sandbox through KAS, "
-            "without Kiro Crew's tools, MCP servers or governance gate; the gateway's "
-            "Kiro sign-in authenticates.",
+            "repositories}. The session runs in a Kiro Cloud Sessions sandbox through "
+            "Kiro Agent, without Kiro Crew's tools, MCP servers or governance gate; the "
+            "gateway's Kiro sign-in authenticates.",
         ),
     )
 

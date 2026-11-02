@@ -282,6 +282,17 @@ class SessionEnvironmentChoices:
         True when the row now carries it. A cleared or changed choice is left
         alone (False), so the caller must refuse to publish the stale runtime.
         """
+        return self.swap_cloud_session(session_key, cloud_session_id, profile_id=profile_id)[0]
+
+    def swap_cloud_session(
+        self, session_key: str, cloud_session_id: str, *, profile_id: str
+    ) -> tuple[bool, str]:
+        """:meth:`record_cloud_session`, also returning the id the row held before.
+
+        Read under the same lock as the write, so the caller can tell a reopen of
+        the recorded session from a new sandbox that replaced it. ``""`` when the
+        row held none (a first start) or a value that is not an id.
+        """
         if not session_key or len(session_key) > _MAX_SESSION_KEY:
             raise ValueError("session key is invalid")
         if not isinstance(cloud_session_id, str) or not _valid_cloud_session_id(cloud_session_id):
@@ -296,11 +307,14 @@ class SessionEnvironmentChoices:
                     or entry.get("provider") != KIRO_CLOUD_PROVIDER_ID
                     or entry.get("configuration") != profile_id
                 ):
-                    return False
-                if entry.get("cloud_session") != cloud_session_id:
+                    return False, ""
+                previous = entry.get("cloud_session")
+                if previous != cloud_session_id:
                     entry["cloud_session"] = cloud_session_id
                     self._write(sessions)
-                return True
+                if isinstance(previous, str) and _valid_cloud_session_id(previous):
+                    return True, previous
+                return True, ""
 
     def cloud_session_recorded(self, session_key: str) -> bool:
         """Whether Kiro's cloud holds this session: a cloud session id is on its row.
@@ -448,12 +462,13 @@ def kiro_cloud_governance_refusal(
             else:
                 layer = "policy"
                 refusal = (
-                    f"this host's governance policy limits {', '.join(governed)}, and a Kiro Cloud "
-                    "session's tools run in Kiro's cloud outside those limits; an administrator "
-                    f"can allow it with {KIRO_CLOUD_CAPABILITY}, or choose another session environment"
+                    f"this host's governance policy limits {', '.join(governed)}, and a "
+                    "Kiro Cloud Sessions sandbox's tools run in Kiro's cloud outside those "
+                    f"limits; an administrator can allow it with {KIRO_CLOUD_CAPABILITY}, "
+                    "or choose another session environment"
                 )
     except Exception:
-        logger.warning("Kiro Cloud start: governance could not be read", exc_info=True)
+        logger.warning("Kiro Cloud Sessions start: governance could not be read", exc_info=True)
         rule = "evaluation-error"
         layer = "default"
         refusal = (
@@ -474,7 +489,7 @@ def kiro_cloud_governance_refusal(
             reason=refusal if refusal is not None else reason,
         )
     except Exception:
-        logger.debug("Kiro Cloud start: governance audit failed", exc_info=True)
+        logger.debug("Kiro Cloud Sessions start: governance audit failed", exc_info=True)
     return refusal
 
 
@@ -743,11 +758,13 @@ async def prepare_for_session(
     return prepared
 
 
-async def record_cloud_session(session_key: str, cloud_session_id: str, *, profile_id: str) -> None:
+async def record_cloud_session(session_key: str, cloud_session_id: str, *, profile_id: str) -> str:
     """Record that Kiro's cloud now holds ``session_key``, which fixes its environment.
 
     Called once ``session/new`` or ``session/load`` answered on a Kiro Cloud
-    runtime. Raises :class:`SessionEnvironmentUnavailable` when the record
+    runtime. Returns the cloud session id the row held before (``""`` for a
+    first start): one that differs from ``cloud_session_id`` is a sandbox this
+    start replaced. Raises :class:`SessionEnvironmentUnavailable` when the record
     cannot be written or the prepared profile does not own the choice, so no
     stale cloud runtime is published.
     """
@@ -756,17 +773,18 @@ async def record_cloud_session(session_key: str, cloud_session_id: str, *, profi
     home = await asyncio.to_thread(data_home)
     choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")
     try:
-        recorded = await asyncio.to_thread(
-            choices.record_cloud_session, session_key, cloud_session_id, profile_id=profile_id
+        recorded, previous = await asyncio.to_thread(
+            choices.swap_cloud_session, session_key, cloud_session_id, profile_id=profile_id
         )
     except (OSError, ValueError) as exc:
         raise SessionEnvironmentUnavailable(
-            "could not record this session's Kiro Cloud session"
+            "could not record this session's Kiro Cloud Sessions sandbox"
         ) from exc
     if not recorded:
         raise SessionEnvironmentUnavailable(
-            "this session's environment changed while Kiro Cloud was starting; try again"
+            "this session's environment changed while Kiro Cloud Sessions was starting; try again"
         )
+    return previous
 
 
 async def forget_subagent_environment(child_key: str) -> None:
