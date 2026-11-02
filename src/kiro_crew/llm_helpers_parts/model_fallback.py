@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import LLMProvider, advertised_model_ids
 from kiro_crew.config.loader import KiroCrewConfig
@@ -475,21 +476,31 @@ async def advance_fallback_candidate(
                 _raw_after,
             )
             continue
-        fb_state.active = wire
+        # ``auto`` names no model. A harness that takes its model at launch
+        # (Strands) launches its settings' model for it, and the restore probe
+        # compares the marker against what the session runs, so the record is the
+        # served model there. Every other harness keeps ``auto`` (H13).
+        applied = wire
+        # The wrapper (``AcpProvider``) carries no backend; its client does. Read
+        # here only, so the spelling fold above keeps its own backend reading.
+        launch_backend = backend or provider_backend(pick_epoch_host(provider))
+        if wire.strip().lower() == "auto" and launch_backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
+            applied = provider_active_model(provider) or wire
+        fb_state.active = applied
         fb_state.attempts = 1
-        fb_state.walked.append(wire)
+        fb_state.walked.append(applied)
         try:
-            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, wire))
+            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, applied))
         except Exception:
             logger.debug("publishing fallback marker failed", exc_info=True)
         logger.warning(
             "model fallback: %s -> %s (reason=throttle-exhaustion, surface=%s%s)",
             fb_state.primary or "?",
-            wire,
+            applied,
             surface,
             log_suffix,
         )
-        return wire
+        return applied
 
 
 def pick_epoch_host(provider: Any) -> Any:

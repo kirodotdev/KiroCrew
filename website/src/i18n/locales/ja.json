@@ -13377,6 +13377,7 @@
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
       "before_you_connect": "接続する前に",
+      "before_you_disconnect": "切断する前に",
       "cancel": "キャンセル",
       "complete_connection": "完了",
       "connect": "接続",
@@ -13426,6 +13427,7 @@
       "prerequisite_gitlab": "GitLab Duo をベータ機能・実験的機能とともに有効にし、トップレベルグループに対して MCP サーバーへのアクセスを許可してください。これらがないと、接続は成功してもツールは一切公開されません。",
       "prerequisite_gitlab_steps": "GitLab Duo をベータ機能・実験的機能とともに有効にし、トップレベルグループに対して MCP サーバーへのアクセスを許可してください。",
       "prerequisites_for_provider": "{{provider}} の前提条件",
+      "shared_signin_for_provider": "{{provider}} の共有サインイン",
       "reconnect": "再接続",
       "reconnecting": "再接続中…",
       "relaying": "送信中…",
@@ -14069,7 +14071,9 @@
         "crewmate_harness": "クルーメイトごとのエージェントハーネス",
         "crewmate_harness_desc": "各クルーメイトのプロフィールにエージェントハーネスの設定を追加し、1 人を Claude Code などの別の AI コーディングツールとそのモデルで動かし、ほかは既定のままにできるようにします。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。"
+        "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。",
+        "explore": "探索",
+        "explore_desc": "トップバーに探索を追加します。試せる機能、進捗、新しいチャットの「今日試す」カードが表示されます。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",

@@ -239,48 +239,69 @@ def _print_no_desktop_sources() -> None:
     )
 
 
-def _setup_electron() -> None:
-    """Build and install the KiroCrew desktop app (macOS only)."""
+def _run_desktop_build_step(label: str, cmd: list[str], cwd: Path, timeout: int) -> bool:
+    """Run one desktop-app build command; print why it failed and return False."""
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            # npm and electron-builder are node programs: their pipes carry
+            # UTF-8, not the locale's code page.
+            **UTF8_TEXT,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  ❌ {label} timed out after {timeout}s.")
+        print("     Check your network and re-run: kirocrew setup --electron-only")
+        return False
+    except OSError as exc:
+        print(f"  ❌ {label} could not start: {exc}")
+        return False
+    if result.returncode != 0:
+        # npm / electron-builder print the failing error LAST: redact the whole
+        # stream (it can echo registry URLs with tokens), then keep the tail.
+        print(f"  ❌ {label} failed: {redact(result.stderr.strip())[-200:]}")
+        return False
+    return True
+
+
+def _setup_electron() -> bool:
+    """Build and install the Kiro Crew desktop app (macOS only).
+
+    Returns False when the install was attempted and failed, so
+    ``setup --electron-only`` can exit non-zero. A platform without the app and
+    a packaged install with no sources to build are not failures.
+    """
     if platform.system() != "Darwin":
         print("  ⚠️  Kiro Crew desktop app is only available on macOS.")
-        return
+        return True
 
     electron_dir = _find_electron_dir()
     if electron_dir is None:
         _print_no_desktop_sources()
-        return
+        return True
 
     if not shutil.which("node"):
         print("  ❌ Node.js not found — required to build the desktop app.")
         print("     Install Node.js and re-run: kirocrew setup --electron-only")
-        return
+        return False
 
     print("  🔨 Building Kiro Crew desktop app…")
-    npm_install = subprocess.run(
+    if not _run_desktop_build_step(
+        "npm install",
         ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"],
-        cwd=str(electron_dir),
-        capture_output=True,
-        # npm and electron-builder are node programs: their pipes carry UTF-8,
-        # not the locale's code page.
-        **UTF8_TEXT,
-        timeout=120,
-    )
-    if npm_install.returncode != 0:
-        # npm / electron-builder print the failing error LAST: redact the whole
-        # stream (it can echo registry URLs with tokens), then keep the tail.
-        print(f"  ❌ npm install failed: {redact(npm_install.stderr.strip())[-200:]}")
-        return
-
-    build = subprocess.run(
+        electron_dir,
+        120,
+    ):
+        return False
+    if not _run_desktop_build_step(
+        "Electron build",
         ["npx", "electron-builder", "--mac", "--dir"],
-        cwd=str(electron_dir),
-        capture_output=True,
-        **UTF8_TEXT,
-        timeout=300,
-    )
-    if build.returncode != 0:
-        print(f"  ❌ Electron build failed: {redact(build.stderr.strip())[-200:]}")
-        return
+        electron_dir,
+        300,
+    ):
+        return False
 
     arch = "mac-arm64" if platform.machine() == "arm64" else "mac"
     app_src = electron_dir / "dist" / arch / "KiroCrew.app"
@@ -291,7 +312,7 @@ def _setup_electron() -> None:
                 break
     if not app_src.is_dir():
         print("  ❌ Build succeeded but KiroCrew.app not found in dist/")
-        return
+        return False
 
     app_dest = Path.home() / "Applications" / "KiroCrew.app"
     app_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +321,7 @@ def _setup_electron() -> None:
     shutil.copytree(str(app_src), str(app_dest))
     print("  ✅ KiroCrew.app installed to ~/Applications")
     print("     Launch via Spotlight (⌘+Space → KiroCrew) or Finder → ~/Applications")
+    return True
 
 
 def _setup(
@@ -339,7 +361,9 @@ def _setup_impl(
 
     if electron_only:
         print("── Desktop App ──\n")
-        _setup_electron()
+        if not _setup_electron():
+            # The desktop app was the whole ask: a failed build is a failed run.
+            sys.exit(1)
         return
 
     print("Kiro Crew Setup 👻\n")

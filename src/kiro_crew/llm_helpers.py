@@ -198,6 +198,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_sdk import (  # noqa: F401
         CONTEXT_EVENT_COMPACTION,
     )
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH  # noqa: F401
     from kiro_crew.agent_sdk.drivers.acp import (  # noqa: F401
         provider_error_client,
         resolve_pin_spelling_on,

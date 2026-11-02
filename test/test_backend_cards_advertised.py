@@ -76,6 +76,21 @@ SET_GATE_ALLOWLIST: Dict[Tuple[str, str], int] = {
     ("providers/acp_turns.py", "ACP_BACKENDS_STEERING_REQUEST"): 1,
     ("subagent_manager/continuation.py", "ACP_BACKENDS_STEERING_REQUEST"): 1,
     ("subagent_parts/model_choice.py", "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION"): 1,
+    # The launch-time channel (Strands): the model and effort are argv, and the
+    # harness advertises no model select or effort option, so there is no field
+    # for these sites to read. Each picks the relaunch path, as the kiro-family
+    # sites above pick their native requests. Shrink-only from here like the rest.
+    ("acp/client_model_selection.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 2,
+    ("acp/launch_tuning.py", "ACP_BACKENDS_EFFORT_AT_LAUNCH"): 1,
+    ("acp/launch_tuning.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 1,
+    ("config/loader_config.py", "ACP_BACKENDS_EFFORT_AT_LAUNCH"): 1,
+    ("dashboard/handlers/agents.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 2,
+    ("llm_helpers_parts/model_fallback.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 1,
+    ("providers/acp_lifecycle.py", "ACP_BACKENDS_EFFORT_AT_LAUNCH"): 1,
+    ("providers/acp.py", "ACP_BACKENDS_EFFORT_AT_LAUNCH"): 1,
+    ("providers/acp.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 1,
+    ("providers/acp_model_effort.py", "ACP_BACKENDS_EFFORT_AT_LAUNCH"): 5,
+    ("session_allocation_parts/get_or_create.py", "ACP_BACKENDS_MODEL_AT_LAUNCH"): 1,
 }
 
 _SET_METHODS = frozenset(

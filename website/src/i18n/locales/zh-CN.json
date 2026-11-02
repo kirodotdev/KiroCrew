@@ -13377,6 +13377,7 @@
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
       "before_you_connect": "连接前",
+      "before_you_disconnect": "断开前",
       "cancel": "取消",
       "complete_connection": "完成",
       "connect": "连接",
@@ -13426,6 +13427,7 @@
       "prerequisite_gitlab": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问——否则连接虽会成功，但不会提供任何工具。",
       "prerequisite_gitlab_steps": "启用 GitLab Duo（包含测试版和实验性功能），并为你的顶级群组允许 MCP 服务器访问。",
       "prerequisites_for_provider": "{{provider}} 前提条件",
+      "shared_signin_for_provider": "{{provider}} 共享登录",
       "reconnect": "重新连接",
       "reconnecting": "正在重新连接…",
       "relaying": "正在发送…",
@@ -14069,7 +14071,9 @@
         "crewmate_harness": "按队友设置代理运行框架",
         "crewmate_harness_desc": "在每个队友的资料中添加“代理运行框架”设置，让某个队友使用另一种 AI 编程工具（例如 Claude Code）及其模型，其他队友保持默认。",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。"
+        "crew_mode_desc": "让一个对话把任务交给一个团队，并在看板里跟踪它们。",
+        "explore": "探索",
+        "explore_desc": "在顶栏加入探索：可试用功能、你的进度，以及新聊天里的“今天试试”卡片。"
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",

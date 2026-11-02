@@ -160,6 +160,14 @@ class AcpClient:
         # no filesystem syscall at all.
         self._work_dir_ready = False
         self._model = model or DEFAULT_MODEL
+        # The reasoning effort a launch-time-effort harness starts with
+        # (``ACP_BACKENDS_EFFORT_AT_LAUNCH``), or "" for its own default. Set by the
+        # provider before the first start and by ``acp.launch_tuning`` after.
+        self._launch_effort = ""
+        # Held by a launch-tuning switch across its relaunch, and by the provider's
+        # prompt boundary across ``ensure_ready``, so neither starts a process
+        # inside the other's (``acp.launch_tuning``).
+        self._launch_tuning_lock = asyncio.Lock()
         self._agent = agent
         self._sandbox_mode = sandbox_mode
         self.memory_mode = "persistent"

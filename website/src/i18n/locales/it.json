@@ -13897,6 +13897,7 @@
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
       "before_you_connect": "Prima della connessione",
+      "before_you_disconnect": "Prima della disconnessione",
       "cancel": "Annulla",
       "complete_connection": "Completa",
       "connect": "Connetti",
@@ -13946,6 +13947,7 @@
       "prerequisite_gitlab": "Attiva GitLab Duo con le funzionalità beta e sperimentali e consenti l'accesso al server MCP per il tuo gruppo di primo livello — senza di essi la connessione riesce ma non espone alcuno strumento.",
       "prerequisite_gitlab_steps": "Attiva GitLab Duo con le funzionalità beta e sperimentali e consenti l'accesso al server MCP per il tuo gruppo di primo livello.",
       "prerequisites_for_provider": "Prerequisiti di {{provider}}",
+      "shared_signin_for_provider": "Accesso condiviso di {{provider}}",
       "reconnect": "Riconnetti",
       "reconnecting": "Riconnessione…",
       "relaying": "Invio…",
@@ -14607,7 +14609,9 @@
         "crewmate_harness": "Harness dell’agente per compagno",
         "crewmate_harness_desc": "Aggiunge un’impostazione Harness dell’agente al profilo di ogni compagno, così uno può usare un altro strumento di programmazione IA, come Claude Code, con i suoi modelli, mentre gli altri restano su quello predefinito.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca."
+        "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca.",
+        "explore": "Esplora",
+        "explore_desc": "Aggiunge Esplora alla barra in alto: funzioni da provare, i tuoi progressi e una scheda «Prova oggi» in una nuova chat."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",

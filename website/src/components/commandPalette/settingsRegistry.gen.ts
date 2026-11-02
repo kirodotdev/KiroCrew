@@ -1960,6 +1960,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.explore",
+    "label": "Explore",
+    "labelKey": "pages.developer.featurePreviewsTab.explore",
+    "description": "Adds Explore to the top bar: features to try, your progress, and a Try today card on a new chat.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.folder-conductor",
     "label": "Folder conductor",
     "labelKey": "pages.developer.featurePreviewsTab.folder_conductor",

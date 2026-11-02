@@ -783,8 +783,10 @@ function ConnectionCard({
             {/* Test and Disconnect are visually separated groups (never three
                 peer buttons): the shared-grant caveat tip sits in the Disconnect
                 group, immediately before Disconnect, because it qualifies that
-                action -- the connection-card-caveat-tip convention, reusing the
-                shared PrerequisiteTip heading and label. */}
+                action -- the connection-card-caveat-tip convention. Its heading
+                and label name the Disconnect it qualifies, never the
+                pre-connect "Before you connect" (#26890): the card is already
+                connected. */}
             <div className="flex items-center justify-between gap-2">
               <Btn
                 onClick={() => void onTest()}
@@ -798,8 +800,8 @@ function ConnectionCard({
               <div className="flex items-center gap-2">
                 {(grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed ? (
                   <PrerequisiteTip
-                    label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
-                    heading={t('pages.connectionsPage.before_you_connect')}
+                    label={t('pages.connectionsPage.shared_signin_for_provider', { provider: provider.name })}
+                    heading={t('pages.connectionsPage.before_you_disconnect')}
                     text={`${
                       grantSharedWith && grantSharedWith.length > 0
                         ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })

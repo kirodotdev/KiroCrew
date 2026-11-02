@@ -8998,6 +8998,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.explore",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: explore",
+      "help": "Turn on the 'explore' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.folder_conductor",
       "kind": "core",
       "type": "boolean",

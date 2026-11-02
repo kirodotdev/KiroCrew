@@ -291,17 +291,28 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     # from that set entirely, so reading the config set alone would report the
     # default harness as unable to do what it has always done. KAS takes effort as
     # a config option, so it answers through the first set.
+    # A launch-effort harness (Strands) changes its level by relaunching the
+    # process and reloading the session, which is still a change on a live chat.
     _LineSpec(
         LINE_REASONING_EFFORT,
-        ("ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"),
+        (
+            "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION",
+            "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
+            "ACP_BACKENDS_EFFORT_AT_LAUNCH",
+        ),
     ),
     # Same shape for the model: the config-option members take a switch as
     # ``session/set_config_option``, and the kiro family takes it as the native
     # set-model request -- so the kiro-family set stands for it, as on the first
     # line above.
+    # The model-at-launch set stands for a switch by relaunch, as above.
     _LineSpec(
         LINE_MODEL_SWITCH,
-        ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_FAMILY"),
+        (
+            "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION",
+            "ACP_BACKENDS_KIRO_FAMILY",
+            "ACP_BACKENDS_MODEL_AT_LAUNCH",
+        ),
     ),
 )
 
@@ -367,10 +378,6 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
-    "ACP_BACKENDS_MODEL_AT_LAUNCH": (
-        "which channel carries a model pick: a launch argument instead of a wire "
-        "request. The model-switch line already says whether a running session can move."
-    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "

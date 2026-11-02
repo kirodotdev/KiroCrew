@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
@@ -81,7 +82,7 @@ def test_reconnect_mid_turn_writes_no_closers_and_seq_stays_contiguous():
     emit.on_turn_started(SESSION, 5, "user")
     emit.on_tool_called(SESSION, 5, name="fs_read", call_id="tc-1")
     emit.on_tool_called(SESSION, 5, name="fs_write", call_id="tc-2")
-    assert emit.flush()
+    assert_drained()
 
     pre_reconnect = _body()
     pre_seqs = [e["seq"] for e in pre_reconnect]
@@ -94,7 +95,7 @@ def test_reconnect_mid_turn_writes_no_closers_and_seq_stays_contiguous():
     emit.on_tool_completed(SESSION, 5, status="completed", call_id="tc-1")
     emit.on_tool_completed(SESSION, 5, status="completed", call_id="tc-2")
     emit.on_turn_completed(SESSION, 5, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
 
@@ -149,13 +150,13 @@ def test_resume_with_repair_while_writer_still_live_produces_closers():
     _open_session()
     emit.on_turn_started(SESSION, 3, "user")
     emit.on_tool_called(SESSION, 3, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     # A second process resumes the same session, believing the writer is gone.
     # This is the only code path that passes repair=True.
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", resumed=True)
-    assert emit.flush()
+    assert_drained()
 
     # The repair DID close the open turn and the open tool call.
     body = _body()
@@ -174,7 +175,7 @@ def test_resume_with_repair_while_writer_still_live_produces_closers():
     # Now simulate the "live writer" continuing to emit entries for turn 3.
     emit.on_tool_completed(SESSION, 3, status="completed", call_id="tc-1")
     emit.on_turn_completed(SESSION, 3, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
     # HAZARD: turn 3 now has a turn/completed{interrupted} followed by more
@@ -224,7 +225,7 @@ def test_eviction_mid_turn_entries_land_and_call_index_continues():
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_tool_called(SESSION, 2, name="a", call_id="c1")
     emit.on_tool_called(SESSION, 2, name="b", call_id="c2")
-    assert emit.flush()
+    assert_drained()
 
     # Evict only the handle, not the live-turn state.
     with emit._lock:
@@ -236,7 +237,7 @@ def test_eviction_mid_turn_entries_land_and_call_index_continues():
     emit.on_tool_completed(SESSION, 2, status="completed", call_id="c2")
     emit.on_tool_completed(SESSION, 2, status="completed", call_id="c3")
     emit.on_turn_completed(SESSION, 2, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
 
@@ -274,16 +275,16 @@ def test_repeated_reconnects_in_one_turn_no_duplicate_closers():
     """
     _open_session()
     emit.on_turn_started(SESSION, 10, "user")
-    assert emit.flush()
+    assert_drained()
 
     for n in range(5):
         with emit._lock:
             emit._open.pop(SESSION, None)  # simulate eviction
         emit.on_tool_called(SESSION, 10, name=f"tool-{n}", call_id=f"tc-{n}")
-        assert emit.flush()
+        assert_drained()
 
     emit.on_turn_completed(SESSION, 10, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
 
@@ -324,12 +325,12 @@ def test_reconnect_after_resume_repair_produces_coherent_new_turn():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     # Resume: repairs the interrupted turn.
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", resumed=True)
-    assert emit.flush()
+    assert_drained()
 
     # The repair wrote closers.
     body_after_repair = _body()
@@ -341,7 +342,7 @@ def test_reconnect_after_resume_repair_produces_coherent_new_turn():
     # Now the resumed process starts a new turn.
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_tool_called(SESSION, 2, name="fs_write", call_id="tc-2")
-    assert emit.flush()
+    assert_drained()
 
     # Reconnect mid-turn (eviction).
     with emit._lock:
@@ -349,7 +350,7 @@ def test_reconnect_after_resume_repair_produces_coherent_new_turn():
 
     emit.on_tool_completed(SESSION, 2, status="completed", call_id="tc-2")
     emit.on_turn_completed(SESSION, 2, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
 
@@ -388,23 +389,23 @@ def test_reconnect_after_resume_repair_live_writer_continues_old_turn():
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     # Resume repairs the open turn.
     emit.reset_caches()
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", resumed=True)
-    assert emit.flush()
+    assert_drained()
 
     # Live writer continues its turn (it never stopped), then gets evicted.
     emit.on_tool_completed(SESSION, 1, status="completed", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     with emit._lock:
         emit._open.pop(SESSION, None)
 
     # Reconnect, then finish the turn.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
 
     body = _body()
 

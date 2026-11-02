@@ -809,7 +809,9 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     vi.spyOn(terminalPopout, 'bringBack').mockImplementation(() => {})
   })
   afterEach(() => {
-    terminalRegistry.setTerminalEnabledFlag(false)
+    // The pane is still mounted here, and the flag feeds the composer's
+    // terminal hook through useSyncExternalStore, so flip it inside act().
+    act(() => { terminalRegistry.setTerminalEnabledFlag(false) })
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })

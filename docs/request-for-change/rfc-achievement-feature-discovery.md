@@ -583,7 +583,7 @@ Success criteria (read 4 weeks after Ship 1):
 
 - **D1 (former Q1) Should a starter task send on click, or only prefill?** Low-cost rows send directly; every other row only prefills the composer, and the Mate row sends no prompt but opens the Mate chat. The low-cost rules and the per-row classification are in 4.5: `widgets` and `parallel-chats` send directly. Checked against the five rules, the scheduled-task row moved from direct send to prefill.
 - **D2 (former Q2) Model turn or fixed copy for the daily prompt?** A real Mate model turn, at most once a day, triggered the first time the user opens the Mate chat that day. A model turn speaks the user's language and can use context; fixed copy would need a new "write an assistant message without running a model" path that does not exist today. An `O_EXCL` day marker keeps spend to at most one turn a day across tabs, reloads and restarts. See 4.8.
-- **D3 (former Q3) Main switch on or off by default?** On. Off by default would mean new users never see it. Existing users see it after upgrading, but features they already used are credited by the backfill. Managed fleets can turn it off with a capability policy. See 4.9.
+- **D3 (former Q3) Main switch on or off by default?** On. Off by default would mean new users never see it. Existing users see it after upgrading, but features they already used are credited by the backfill. Managed fleets can turn it off with a capability policy. See 4.9. *(Superseded by D18 on 2026-11-01: Explore ships behind a default-off Feature Preview.)*
 
 **2026-10-30, product owner:**
 
@@ -598,6 +598,10 @@ Success criteria (read 4 weeks after Ship 1):
 - **D12 Streaks.** Count local days in a row with at least one user-sent turn, in the user's time zone. Show current and best. Missing a day resets current, never best. Tiers 3 / 7 / 30 / 100 days, on best. Same local file. No penalty and no notice about losing a streak. See 3.3.
 - **D13 Milestones first, features as one group.** The top level is milestones: new features, sessions (10 / 100 / 1000), messages, streak and running at once. The empty state still suggests only untried new features, never volume milestones or streaks, so the spend risk is unchanged. See 3.1.
 - **D14 Quiet style and the "milestone" name.** No trophy icon and no fanfare. The top bar has a small ring for feature progress with the streak number beside it; the panel is a plain "Milestones" list with checkmarks and thin progress bars; a new milestone is one small line. The design uses "milestone" for all terms, keys, routes, metrics and the state file; the RFC file name keeps "achievement" so links stay stable. The local counters are user-editable, which is accepted for a personal tool. See 4.6 and 4.7. *(Amended by D17 on 2026-10-31: the top-bar label is "Explore N/M" with the streak as smaller text, and reached tiers show as tiered badges, Advanced ones in one calm color.)*
+
+**2026-11-01, product owner:**
+
+- **D18 Explore ships behind a default-off Feature Preview.** Explore (the top-bar pill, the panel, notices and the Try today card) now shows only when Settings > Developer > Feature previews > Explore (`mc-preview-explore`) is on. It is off by default. Reason: Ship 1 reached every user at once, and parts are not ready for all of them, for example the intro clip has Chinese text in its frames. With the preview on, `dashboard.milestones_enabled` keeps working as the user's own switch, so the preview is a release gate, not a second user setting. Counting continues while the preview is off, so nothing is lost when it is turned on. Supersedes D3. Revisit when Explore leaves preview.
 
 ### 7.2 Open questions
 

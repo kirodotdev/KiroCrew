@@ -73,6 +73,14 @@ describe('CrewModeChip', () => {
     expect(onTurnOn).not.toHaveBeenCalled()
   })
 
+  it('fills the bolt only while on, so on and off differ at a glance', () => {
+    const { rerender } = render(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} />)
+    const bolt = () => screen.getByTestId('crew-mode-chip').querySelector('.lucide-zap')
+    expect(bolt()).toHaveAttribute('fill', 'none')
+    rerender(<CrewModeChip onTurnOn={vi.fn()} onTurnOff={vi.fn()} pressed />)
+    expect(bolt()).toHaveAttribute('fill', 'currentColor')
+  })
+
   it('keeps the accessible name Ultra Mode', () => {
     render(<CrewModeChip onTurnOn={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Ultra Mode', pressed: false })).toBeInTheDocument()

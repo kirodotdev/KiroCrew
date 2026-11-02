@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import relaunch_reload
 from kiro_crew.acp.client import AcpClient, AcpError
+from kiro_crew.acp.launch_tuning import switch_barrier
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     EVENT_COMPACTION_STATUS,
@@ -169,11 +170,15 @@ async def _ready_confirmed_session(self: AcpProvider) -> None:
     ``AcpClient``, so their paths gain no call or await (harness-parity H13).
     """
     if isinstance(self._client, AcpClient):
-        await self._client.ensure_ready()
-        # A pending MCP change on a relaunch-reload harness is applied here, before
-        # the prompt and before the confirmation, so the relaunched session is the
-        # one confirmed and prompted. A no-op with no mark set.
-        await relaunch_reload.apply_pending_mcp_relaunch(self._client)
+        # A model or effort switch on a launch-time harness holds this lock across
+        # its relaunch (``acp.launch_tuning``): a send waits for it to land rather
+        # than starting a second process inside it, and a switch waits for this start.
+        async with switch_barrier(self._client):
+            await self._client.ensure_ready()
+            # A pending MCP change on a relaunch-reload harness is applied here,
+            # before the prompt and before the confirmation, so the relaunched
+            # session is the one confirmed and prompted. A no-op with no mark set.
+            await relaunch_reload.apply_pending_mcp_relaunch(self._client)
         await self._client.confirm_member_projection()
 
 

@@ -55,7 +55,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       onClick={click}
       className={`crew-chip inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] font-semibold transition-colors cursor-pointer ${state}`}
     >
-      <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
+      <Zap size={13} aria-hidden="true" fill={pressed ? 'currentColor' : 'none'} className="inline-block shrink-0 ultra-accent" />
       <span className="crew-chip-text">{i18nT('components.crewMode.chip_off')}</span>
     </Glass>
   )
