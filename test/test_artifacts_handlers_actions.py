@@ -431,15 +431,14 @@ class TestTeardown:
     """Tests for _handle_teardown restricted-session deny + confirm gate."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse class-scoped restricted-session patch moved verbatim; no test in this class calls monkeypatch.undo()
-    def patch_deploy_restricted(self, monkeypatch):
+    def patch_deploy_restricted(self, _floor_monkeypatch):
         """Patch _is_restricted_session at the import point used by deploy handlers."""
         from kiro_crew.dashboard.handlers import _shared
 
         def _stub(_state, req) -> bool:
             return req.app.get("_restricted_session", False)
 
-        monkeypatch.setattr(_shared, "_is_restricted_session", _stub)
+        _floor_monkeypatch.setattr(_shared, "_is_restricted_session", _stub)
 
     @pytest.mark.asyncio
     async def test_restricted_session_denied(self, isolated_store, patch_restricted) -> None:
