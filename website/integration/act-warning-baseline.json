@@ -23,7 +23,6 @@
   "src/test/ChatPage.widgetPrefill.test.tsx",
   "src/test/ChatPageDrafts.test.tsx",
   "src/test/ChatPageW3Coverage.test.tsx",
-  "src/test/ChatSidebar.renameFailureRecovery.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
