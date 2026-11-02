@@ -243,7 +243,10 @@ async def _cron_run_sequence(
                     is_new,
                     agent_session_key,
                     interactive=False,
-                    agent=agent,
+                    # The execution template, as dispatched: a crew
+                    # alias names no template file, and a private
+                    # crewmate's essentials refuse a missing one.
+                    agent=step.dispatch_agent,
                     memory_store=cron_memory_store or None,
                     execution_context=cron_execution,
                     context_provider=client,
@@ -650,7 +653,8 @@ async def _cron_run_single(
             is_new,
             session_key,
             interactive=False,
-            agent=cron_agent or None,
+            # The execution template, as dispatched (see the sequence site).
+            agent=_dispatch_agent,
             memory_store=cron_memory_store or None,
             execution_context=cron_execution,
             context_provider=client,
