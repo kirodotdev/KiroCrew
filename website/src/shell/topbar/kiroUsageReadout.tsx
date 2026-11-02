@@ -8,6 +8,7 @@ import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { failedWithNoData } from '../../api/queryState'
+import HoverTip from '../../components/HoverTip'
 
 /**
  * The Kiro credit reading one derivation serves: the capsule's credits segment,
@@ -151,12 +152,12 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
     // No reading: the API returned no plan and the /usage scrape
     // found none either (or is parked). The label says what
     // happened and where to act.
-    node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_no_reading')} aria-label={i18nT('app.kiro_credit_usage_no_reading')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+    node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_no_reading')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_no_reading')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button></HoverTip>)
   } else if (kiroUsageState === 'config-unreadable') {
     // No reading AND the backend setting could not be read: not the
     // hidden non-Kiro case (nothing proved that), a failed read with
     // its retry behind the dash -- the modal re-asks for the config.
-    node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_config_unreadable')} aria-label={i18nT('app.kiro_credit_usage_config_unreadable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+    node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_config_unreadable')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_config_unreadable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button></HoverTip>)
   }
   if (kiroUsageState !== 'none' && kiroUsageState !== 'config-unreadable') {
     if (isAccountOnly(kiroUsageState)) {
@@ -166,7 +167,7 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // here", plus an info mark, the one the modal's notice uses, so it is
       // not mistaken for a failed read. It only arises with kiro-cli, so it
       // never hides with the non-Kiro `none` case.
-      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_sign_in_type')} aria-label={i18nT('app.kiro_credit_usage_sign_in_type')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span> <Info size={11} aria-hidden="true" data-testid="kiro-usage-sign-in-type-mark" /></button>)
+      node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_sign_in_type')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_sign_in_type')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span> <Info size={11} aria-hidden="true" data-testid="kiro-usage-sign-in-type-mark" /></button></HoverTip>)
     } else if (kiroUsageState === 'failed') {
       // Failed with nothing cached to fall back on. A dash says that;
       // a spinner would claim a fetch is still in flight. A failure
@@ -176,14 +177,14 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // The dash renders on mobile too, where the reading and the
       // spinner are both dropped: without it the failed and warming
       // states are one coin glyph apart in opacity alone.
-      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_unavailable')} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+      node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_unavailable')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button></HoverTip>)
     } else if (kiroUsageState === 'signin-required') {
       // No live Kiro credential could be read (or it was rejected), so
       // the free API never got an answer about this account. Terminal,
       // and the label must name the remedy: signing in again.
-      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+      node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_signin_required')}><button className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button></HoverTip>)
     } else if (!kiroUsageState) {
-      node = (<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
+      node = (<HoverTip key="usage" label={i18nT('app.kiro_credit_usage_checking')}><button className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button></HoverTip>)
     } else {
       // Pool every bonus grant into the compact readout. Bonus is
       // drawn down before the plan, so excluding it looks like a
@@ -197,9 +198,9 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // Names the account and subscription, not just the balance: this pill
       // is the desktop's way to the plan page behind the modal (#23812).
       const title = i18nT('app.kiro_account_credits')
-      node = (<button key="usage" className={kiroUsageState.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
+      node = (<HoverTip key="usage" label={title}><button className={kiroUsageState.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} aria-label={title}>
         <Coins size={12} /> {!isMobile && <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
-      </button>)
+      </button></HoverTip>)
     }
   }
   return node

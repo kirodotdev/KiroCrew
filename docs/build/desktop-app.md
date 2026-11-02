@@ -1077,6 +1077,14 @@ pins the five parts a change could silently drop: the 42px height, the
 per-platform right inset, the focus-mode collapse, the prepend, and `[tabindex]`
 together with the scroller attribute it keys on.
 
+A native `title` tooltip does not paint inside a drag region either, even on an
+exempt control whose hover and click still work. So a hint on anything the band
+covers is an in-page bubble: `HoverTip`, or `useInstantTip({ placement: 'below' })`
+where a wrapper would break the layout
+([`InstantTip.tsx`](../../website/src/components/InstantTip.tsx)), never a
+`title`. A browser tab shows a `title` normally, so only a native window shows
+the difference.
+
 #### Focus mode: verify these seams after an Electron or Radix bump
 
 Focus mode (hide the shell chrome behind hover) rests on five mechanisms that
@@ -1120,8 +1128,10 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
    still move the window. If a bump changes the order in which Chromium reports
    app-region rectangles, one of those two stops working: either the top strip of
    the conversation goes dead and shows an arrow cursor, or the header no longer
-   drags. A headless display cannot answer this one, because the region set is
-   resolved by the window rather than by the page.
+   drags. While the header is out, hover a top-bar control such as the
+   focus-mode toggle: its hint should open under it. A headless display cannot
+   answer this one, because the region set is resolved by the window rather
+   than by the page.
 5. **Slam the pointer out through the top edge to reveal the header, park it
    just outside the window, then move it well away.** The header should stay
    while the pointer is parked and close once it travels away. Exercises the

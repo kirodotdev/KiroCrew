@@ -36,6 +36,19 @@ describe('HoverTip', () => {
     fireEvent.focus(screen.getByRole('button'))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Copy')
   })
+
+  it('without a label, leaves the control as it is inside the same wrapper', () => {
+    const { rerender } = render(<HoverTip label="Click to hide"><button type="button">M</button></HoverTip>)
+    const btn = screen.getByRole('button')
+    rerender(<HoverTip><button type="button" aria-describedby="card">M</button></HoverTip>)
+    expect(screen.getByRole('button')).toBe(btn)
+    expect(btn).toHaveAttribute('aria-describedby', 'card')
+    expect(btn.parentElement).toHaveAttribute('data-hover-tip')
+    fireEvent.mouseEnter(btn.parentElement as HTMLElement)
+    fireEvent.focus(btn)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
 })
 
 describe('ReadingWidthToggle', () => {

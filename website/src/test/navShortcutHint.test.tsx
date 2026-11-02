@@ -365,8 +365,8 @@ describe('App topbar bell — the control Alt+N actually operates', () => {
     // `[data-i18n-opaque]` escape, so a chord here is 220 untranslated-attribute
     // findings. Pinned so nobody "improves" it back: the tooltip is the base copy
     // and nothing else, while aria-keyshortcuts above carries the chord.
-    expect(bell().getAttribute('title')).toBe('Notifications')
-    expect(bell().getAttribute('title')).not.toMatch(/Alt/)
+    expect(bell()).not.toHaveAttribute('title')
+    expect(bell()).toHaveAccessibleDescription('Notifications')
   })
 
   it('keeps the chord out of the bell accessible name', async () => {
