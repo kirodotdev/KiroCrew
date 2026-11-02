@@ -267,6 +267,7 @@ async def test_cancelled_git_is_killed_before_the_handler_unwinds(tmp_path, monk
     client = _make_client(monkeypatch, tmp_path)
     killed: list[str] = []
     parked = asyncio.Event()
+    release = asyncio.Event()
 
     class _HangingProc:
         returncode = None
@@ -279,9 +280,9 @@ async def test_cancelled_git_is_killed_before_the_handler_unwinds(tmp_path, monk
             # arrives before the spawn, proc is still None, and the test asserts
             # against a teardown that never had a process to kill.
             parked.set()
-            # flake-ok: the fake git hangs here until the test cancels it; nothing waits on it
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake git hangs until the test cancels it; nothing waits on this sleep
-            await asyncio.sleep(3600)
+            # The fake git hangs until the test cancels it. The release event is
+            # the cleanup path if the cancellation never reaches this await.
+            await release.wait()
             raise AssertionError("unreachable")
 
         def kill(self):
@@ -313,6 +314,7 @@ async def test_cancelled_git_is_killed_before_the_handler_unwinds(tmp_path, monk
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
+        release.set()
         await client.close()
 
     assert killed == ["kill"], "the spawned git process outlived the cancelled request"
