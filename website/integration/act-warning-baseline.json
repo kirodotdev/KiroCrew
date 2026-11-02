@@ -14,7 +14,6 @@
   "src/test/ChatInput.approval.test.tsx",
   "src/test/ChatInput.approvalNudge.test.tsx",
   "src/test/ChatInput.busyAndUndo.test.tsx",
-  "src/test/ChatInput.listContinuation.test.tsx",
   "src/test/ChatInput.optimizeSlotContext.test.tsx",
   "src/test/ChatInput.optimizeWriteback.test.tsx",
   "src/test/ChatInput.paste.test.tsx",
