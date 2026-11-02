@@ -13,6 +13,7 @@ spawn, writes the text to ``<config_dir>/run`` and wraps the command in
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,7 +28,15 @@ _SEATBELT_PROFILE = """\
 
 
 def _quoted(path: str) -> str:
-    """*path* with its double quotes escaped for a ``"..."`` profile string."""
+    """Escape *path* so it stays one literal SBPL string.
+
+    Double quotes are always escaped. Backslashes are escaped wherever they are a
+    filename character (every host that runs ``sandbox-exec``); on Windows they are the
+    path separator and no profile is ever executed, so they are left as the paths spell
+    them and the rendered text reads like the paths do.
+    """
+    if os.sep == "/":
+        path = path.replace("\\", "\\\\")
     return path.replace('"', '\\"')
 
 
@@ -35,10 +44,34 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
     """Render *plan* as a Seatbelt profile.
 
     Rule order is part of the contract: Seatbelt is deny-wins across deny rules and
-    last-match-wins between an allow and a deny, so the write carve-outs come last and
-    override only the runtime parent's write seal.
+    last-match-wins between an allow and a deny, so the operator's read-only layer comes
+    first (every crew rule after it decides where both match) and the write carve-outs
+    come last and override only the runtime parent's write seal.
     """
     rules: list[str] = []
+    # The operator's read-only directories and their exceptions come FIRST: every crew
+    # rule below is emitted later, so wherever one matches the same path it decides,
+    # and the operator's layer can never re-open a crew mask or seal. Within the layer
+    # the rules run shallowest path first, so each nested entry decides over the one
+    # holding it -- ``/X`` read-only, ``/X/Docs`` writable, ``/X/Docs/Taxes`` read-only
+    # again -- the same answer the Linux mount order gives. ``file-link`` stops a
+    # hardlink giving a read-only file a writable second name (an exception re-allows
+    # links to its own, already writable, files), and the literal write
+    # denies on each read-only directory and its ancestors come after every allow, so a
+    # rename cannot move a read-only tree out from under its path rule even when one of
+    # those ancestors is itself a writable exception.
+    layer = [(path, False) for path in plan.operator_readonly]
+    layer += [(path, True) for path in plan.operator_writable]
+    for path, writable in sorted(layer, key=lambda entry: (entry[0].count("/"), entry[0])):
+        escaped = _quoted(path)
+        if writable:
+            rules.append(f'(allow file-write* (subpath "{escaped}"))')
+            rules.append(f'(allow file-link (subpath "{escaped}"))')
+        else:
+            rules.append(f'(deny file-write* (subpath "{escaped}"))')
+            rules.append(f'(deny file-link (subpath "{escaped}"))')
+    for target in plan.operator_ancestor_guards:
+        rules.append(f'(deny file-write* (literal "{_quoted(target)}"))')
     for mask in plan.masks:
         if mask.origin != "tier":
             continue

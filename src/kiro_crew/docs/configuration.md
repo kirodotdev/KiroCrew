@@ -128,6 +128,46 @@ session's start error names the same fix.
 
 Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
+### Read-only paths
+
+`agent.sandbox_readonly_paths` lists directories the sandboxed agent may read but
+never write, and `agent.sandbox_readonly_exceptions` lists directories inside
+those that stay writable. The OS sandbox enforces both: a write into a read-only
+directory fails with `EROFS` on Linux (WSL2 included) and is denied by the
+Seatbelt profile on macOS. For example, to protect a Windows drive under WSL
+while keeping one folder on it writable:
+
+```json
+{
+  "agent": {
+    "sandbox_readonly_paths": ["/mnt/c"],
+    "sandbox_readonly_exceptions": ["/mnt/c/Users/<you>/Documents"]
+  }
+}
+```
+
+- Entries are absolute paths; a leading `~` is expanded. Filesystems mounted
+  below a read-only directory are made read-only too, and stay read-only below
+  an exception.
+- An unreadable config file logs a `SECURITY` warning and keeps this process's last
+  readable layer; without one, it applies the entries of the files that do parse.
+- Both lists are empty by default, which changes nothing. They can only take
+  write access away: Kiro Crew's own masks and seals are applied on top and
+  always win, so no entry can expose a hidden or sealed Kiro Crew path.
+- An entry that cannot be used is skipped with a `SECURITY: ignoring
+  agent.sandbox_readonly_...` warning in the gateway log: one that is relative
+  or does not exist, `/` itself, a directory holding `/run/user/<uid>` or
+  `/dev/shm` (where the Linux sandbox builds its masks), or an exception that is
+  not strictly inside a read-only entry or would re-open a Kiro Crew path.
+- Making the project directory, the Kiro Crew data home or the agent's own state
+  directories read-only breaks the agent there, so list the directories you want
+  protected rather than their parents.
+- Not enforced where Kiro Crew applies no sandbox of its own: `agent.sandbox`
+  `off`, a macOS spawn delegated to kiro-cli's internal sandbox, and Windows,
+  which logs a `SECURITY` warning instead.
+- `config.json` is itself read-only inside the sandbox, so an agent can read
+  these lists but never edit them. A change applies to sessions started after it.
+
 ## ACP Backend
 
 `agent.acp_backend` selects the ACP harness Kiro Crew drives. `agent.provider`
@@ -334,6 +374,8 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
 | `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
 | `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). Applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |
+| `agent.sandbox_readonly_paths` | Absolute directories the sandboxed agent may read but never write, enforced by the OS sandbox. Kiro Crew's own masks and seals always win. See [Read-only paths](#read-only-paths) | `[]` |
+| `agent.sandbox_readonly_exceptions` | Absolute directories strictly inside a `sandbox_readonly_paths` entry that stay writable. See [Read-only paths](#read-only-paths) | `[]` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |

@@ -64,6 +64,10 @@ _MS_REMOUNT = 32
 _MS_BIND = 4096
 _MS_REC = 16384
 _MS_PRIVATE = 1 << 18
+#: Where the launcher reads the mounts of its own namespace.
+_MOUNTINFO = "/proc/self/mountinfo"
+#: Where the launcher reads which mount one of its descriptors sits on (``mnt_id:``).
+_FDINFO = "/proc/self/fdinfo/%d"
 #: ``umount2`` flag: take the mount out of this namespace's tree now and let the kernel
 #: release it when the last reference goes. Retires a private window's staging mount,
 #: which is a second path to that window's real tree.
@@ -146,6 +150,11 @@ class Launch:
         self.readonly_dirs = plan["readonly_dirs"]
         self.parent_pins = plan["parent_pins"]
         self.writable_dirs = plan["writable_dirs"]
+        #: The operator's read-only directories and the write exceptions inside them
+        #: (``agent.sandbox_readonly_paths`` / ``agent.sandbox_readonly_exceptions``).
+        #: Absent from the payload when unset, which applies nothing.
+        self.operator_readonly_dirs = plan.get("operator_readonly_dirs", [])
+        self.operator_writable_dirs = plan.get("operator_writable_dirs", [])
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
         self.alias_credential_ids = plan["alias_credential_ids"]
@@ -490,12 +499,14 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, the seals' parents are pinned before
+    Windows are staged before anything is masked, the operator's read-only layer lands
+    next so every crew rule is placed on top of it, the seals' parents are pinned before
     the seals, read-only seals land before the hides placed on top of them, carve-outs
     after the seals they punch through, the exposed files are restored into their empty
     masks, and the single files and ``~/.ssh`` are masked last.
     """
     stage_private_windows(launch)
+    seal_operator_readonly(launch)
     pin_seal_parents(launch)
     seal_readonly(launch)
     mask_sensitive(launch)
@@ -601,12 +612,17 @@ from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
 )
 from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     _hold_seal_parent,
+    _mount_id_of,
+    _mount_ids_at,
+    _mount_points_below,
     _mount_private_tmpfs,
     _open_unreadable_stand_in,
     _pin_below_mask,
     _retire_unreadable_stage,
     _seal_masked_dir_if_windowless,
+    _seal_path,
     _stage_is_fresh_mount,
+    _unescape_mount_point,
     apply_carveouts,
     check_crew_home_aliases,
     confirm_crew_home_aliases,
@@ -616,6 +632,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     pin_seal_parents,
     preread_exposed_files,
     restore_exposed_files,
+    seal_operator_readonly,
     seal_readonly,
     stage_private_windows,
     verify_fail_closed_aliases,

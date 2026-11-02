@@ -553,6 +553,38 @@ class AgentConfig:
             "operator answers yes.",
         ),
     )
+    sandbox_readonly_paths: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Sandbox Read-Only Paths",
+            "Absolute directories (a leading ~ is expanded) the sandboxed agent may "
+            "read but never write, enforced by the OS sandbox: a read-only bind mount "
+            "in the Linux namespace (WSL2 included), a write deny in the macOS "
+            "Seatbelt profile. Filesystems mounted below an entry are made read-only "
+            "too. Empty (the default) changes nothing. Kiro Crew's own masks and "
+            "seals are applied on top and always win, so an entry can never expose a "
+            "hidden or sealed Kiro Crew path. An entry that does not exist, is "
+            "relative, is /, or holds /run/user/<uid> or /dev/shm (where the "
+            "Linux sandbox builds its masks) is skipped with a SECURITY warning. "
+            "Making the project directory, the Kiro Crew data home or the agent's own "
+            "state directories read-only breaks the agent there. Not enforced where "
+            "Kiro Crew applies no sandbox of its own: agent.sandbox 'off', a macOS "
+            "spawn delegated to kiro-cli's internal sandbox, and Windows, which logs "
+            "a SECURITY warning. A change applies to sessions started after it.",
+        ),
+    )
+    sandbox_readonly_exceptions: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Sandbox Read-Only Exceptions",
+            "Absolute directories inside a sandbox_readonly_paths entry that stay "
+            "writable, e.g. /mnt/c read-only with /mnt/c/Users/<you>/Documents "
+            "writable. Each must lie strictly inside an entry; one that does not, "
+            "that does not exist, or that would re-open a Kiro Crew mask or seal is "
+            "skipped with a SECURITY warning. A filesystem mounted below an exception "
+            "stays read-only.",
+        ),
+    )
     apps_allow_third_party: bool = field(
         default=False,
         metadata=_meta(

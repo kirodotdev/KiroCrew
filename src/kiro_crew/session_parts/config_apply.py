@@ -58,6 +58,9 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.sandbox",
     "agent.sandbox_allow_no_isolation",
     "agent.sandbox_allow_unsandboxed_exec",
+    # A warm process carries the read-only layer it was spawned under.
+    "agent.sandbox_readonly_paths",
+    "agent.sandbox_readonly_exceptions",
     "agent.member_acp_backend",
     # A warm process carries the environment it was spawned with.
     "agent.env",
