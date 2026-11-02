@@ -490,6 +490,7 @@
     "pages.overview.vectorMemoryCard.view_switch_label": "Accessible name, read by screen readers, of the row of buttons that switches the Vector Memory card between its Semantic, Episodic, Audit and Inspector views.",
     "pages.overview.skillsTab.usage_short": "Right end of a skill row in the Skills list, which is about 240px wide, so keep it short. {{uses}} is an already-formatted count of times the skill's instructions were loaded; {{when}} is an already-localised relative time like '2d ago'.",
     "pages.overview.skillsTab.usage_title": "Tooltip on that usage text. {{uses}} is the formatted count; {{when}} is an already-localised date and time.",
+    "pages.overview.skillsTab.budget_source_app": "Small tag next to a skill's name in the Context budget list: the skill was added by an app the user installed (an application, not a verb). Keep it to one short word.",
     "pages.overview.skillsTab.sort_label": "Accessible name of the sort dropdown above the Skills list.",
     "pages.overview.skillsTab.sort_default": "Sort option: keep the order the server lists skills in.",
     "pages.overview.skillsTab.sort_most_used": "Sort option: the skills loaded most often come first.",

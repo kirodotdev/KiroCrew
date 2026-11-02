@@ -147,6 +147,12 @@ export interface Skill {
 export interface SkillBudgetRow {
   key: string
   name: string
+  /** SKILL.md frontmatter description, `""` when the skill has none. Optional:
+   *  an older gateway behind a remote hub does not send it. */
+  description?: string
+  /** Where the skill came from: shipped with the product, registered by an
+   *  app the user installed, or the user's own. Optional as above. */
+  origin?: 'builtin' | 'app' | 'user'
   size_bytes: number
   deliveries: number | null
   /** null when the cost is not measurable: an `always: true` skill is injected
