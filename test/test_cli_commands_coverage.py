@@ -321,6 +321,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")),
+            patch("kiro_crew.cli_commands.get_app", return_value={"name": "demo"}),
             patch(
                 "kiro_crew.cli_commands.register_app",
                 return_value=_registration(
@@ -823,6 +824,7 @@ class TestAppCli:
             patch(
                 "kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")
             ) as local_install,
+            patch("kiro_crew.cli_commands.get_app", return_value={"name": "demo"}),
             patch(
                 "kiro_crew.cli_commands.register_app", return_value=_registration(agents=["a"])
             ) as local_register,
