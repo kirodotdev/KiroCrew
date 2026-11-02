@@ -8583,7 +8583,7 @@
         "feature_suspicious_patterns": "Suspicious Bash Patterns",
         "feature_suspicious_patterns_description": "Detects deletion, exfiltration, and pipe-execution attack shapes in shell commands",
         "feature_token_auth": "Dashboard Token Auth",
-        "feature_token_auth_description": "HMAC-SHA256 signed, IP-pinned, single-use tokens with dual expiry on the link and the session",
+        "feature_token_auth_description": "HMAC-SHA256 signed, IP-pinned tokens with dual expiry on the link and the session",
         "feature_url_exfil": "URL Exfiltration Detection",
         "feature_url_exfil_description": "Domain-agnostic scanning for suspicious query strings, base64 blobs, and credential patterns in URLs",
         "gov_plane_access": "Tools & Commands",

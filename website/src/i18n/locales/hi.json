@@ -18049,7 +18049,7 @@
         "feature_suspicious_patterns": "संदिग्ध Bash पैटर्न",
         "feature_suspicious_patterns_description": "शेल कमांड में हटाने, डेटा चुराने और पाइप-एक्ज़ीक्यूशन वाले हमलों के रूप पहचानता है",
         "feature_token_auth": "डैशबोर्ड टोकन प्रमाणन",
-        "feature_token_auth_description": "HMAC-SHA256 से हस्ताक्षरित, IP से बँधे, एक-बार उपयोग वाले टोकन, जिनकी लिंक और सत्र दोनों पर समाप्ति होती है",
+        "feature_token_auth_description": "HMAC-SHA256 से हस्ताक्षरित, IP से बँधे टोकन, जिनकी लिंक और सत्र दोनों पर समाप्ति होती है",
         "feature_url_exfil": "URL से डेटा चोरी की पहचान",
         "feature_url_exfil_description": "URL में संदिग्ध क्वेरी स्ट्रिंग, base64 ब्लॉब और क्रेडेंशियल पैटर्न के लिए डोमेन-निरपेक्ष स्कैनिंग",
         "floor": "न्यूनतम: {{n}}",

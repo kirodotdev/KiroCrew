@@ -17705,7 +17705,7 @@
         "feature_suspicious_patterns": "可疑 Bash 模式",
         "feature_suspicious_patterns_description": "检测 shell 命令中的删除、外泄和管道执行攻击形态",
         "feature_token_auth": "仪表板令牌认证",
-        "feature_token_auth_description": "HMAC-SHA256 签名、绑定 IP、一次性使用的令牌，链接和会话双重过期",
+        "feature_token_auth_description": "HMAC-SHA256 签名、绑定 IP 的令牌，链接和会话双重过期",
         "feature_url_exfil": "URL 外泄检测",
         "feature_url_exfil_description": "与域名无关地扫描 URL 中的可疑查询字符串、base64 数据块和凭证模式",
         "floor": "下限：{{n}}",

@@ -18049,7 +18049,7 @@
         "feature_suspicious_patterns": "Verdächtige Bash-Muster",
         "feature_suspicious_patterns_description": "Erkennt Angriffsmuster für Löschung, Exfiltration und Pipe-Ausführung in Shell-Befehlen",
         "feature_token_auth": "Token-Authentifizierung für das Dashboard",
-        "feature_token_auth_description": "Mit HMAC-SHA256 signierte, IP-gebundene Einmal-Tokens mit doppelter Ablauffrist für Link und Sitzung",
+        "feature_token_auth_description": "Mit HMAC-SHA256 signierte, IP-gebundene Tokens mit doppelter Ablauffrist für Link und Sitzung",
         "feature_url_exfil": "Erkennung von URL-Exfiltration",
         "feature_url_exfil_description": "Domänenunabhängige Prüfung auf verdächtige Query-Strings, Base64-Blobs und Muster von Anmeldedaten in URLs",
         "floor": "Untergrenze: {{n}}",
