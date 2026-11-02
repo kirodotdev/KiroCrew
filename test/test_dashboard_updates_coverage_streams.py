@@ -21,7 +21,6 @@ import asyncio
 import collections
 import json
 import logging
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,7 +31,8 @@ from dashboard_updates_coverage_helpers import (  # noqa: F401 -- the autouse fi
     _request,
 )
 
-from kiro_crew.dashboard.handlers import updates
+from kiro_crew.dashboard.handlers import updates, updates_streams
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -396,8 +396,7 @@ class TestLogsStream:
         logging.getLogger("kiro_crew.stream").warning("live two")
         await async_wait_until(lambda: len(writes) >= 2, describe=lambda: f"writes={writes!r}")
         task.cancel()
-        # flake-ok: pre-existing unbounded await of the cancelled logs stream, moved verbatim; tracked for a de-flake pass
-        await task
+        await await_until(task, what="the cancelled logs stream to return")
 
         payloads = [json.loads(w.decode().removeprefix("data: ").strip())["msg"] for w in writes]
         assert any("live one" in p for p in payloads)
@@ -414,27 +413,43 @@ class TestLogsStream:
         slept through.
         """
         writes = _stub_stream(monkeypatch)
-        real_wait_for = asyncio.wait_for
+        idle = asyncio.Event()  # set at cleanup: after the first keepalive the stream waits here
+        real_handler = updates_streams._QueueLogHandler
 
-        async def _no_waiting(awaitable, timeout=None):
-            if timeout == 30:
-                awaitable.close()  # nothing has run yet; close it rather than leak it
-                # flake-ok: pre-existing 10 ms pause inside the stubbed wait_for timeout, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms pause inside the stubbed wait_for, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
-                raise asyncio.TimeoutError
-            return await real_wait_for(awaitable, timeout)
+        class _KeepaliveHandler(real_handler):
+            """The stream's log handler, with the first read of its queue timing out at once.
 
-        # flake-ok: pre-existing process-wide asyncio.wait_for stub for the keepalive branch, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(asyncio, "wait_for", _no_waiting)
+            The stream waits ``wait_for(queue.get(), timeout=30)`` and writes a keepalive
+            when that wait times out. The first read raises that ``TimeoutError`` at once; a
+            later one parks on ``idle`` until the test cancels the stream.
+            """
 
-        task = asyncio.ensure_future(updates.api_logs(_request()))
-        await async_wait_until(
-            lambda: b": keepalive\n\n" in writes, describe=lambda: f"writes={writes!r}"
-        )
-        task.cancel()
-        # flake-ok: pre-existing unbounded await of the cancelled logs stream, moved verbatim; tracked for a de-flake pass
-        await task
+            def __init__(self, queue):
+                super().__init__(queue)
+                keepalive_due = [True]
+
+                async def _get():
+                    if keepalive_due:
+                        keepalive_due.clear()
+                        raise asyncio.TimeoutError
+                    await idle.wait()
+                    # Released at cleanup: end the stream as a cancel would, not with another timeout.
+                    raise asyncio.CancelledError
+
+                queue.get = _get
+
+        # Through the facade: it reaches the streams module that builds the handler.
+        monkeypatch.setattr(updates, "_QueueLogHandler", _KeepaliveHandler)
+
+        try:
+            task = asyncio.ensure_future(updates.api_logs(_request()))
+            await async_wait_until(
+                lambda: b": keepalive\n\n" in writes, describe=lambda: f"writes={writes!r}"
+            )
+            task.cancel()
+            await await_until(task, what="the cancelled logs stream to return")
+        finally:
+            idle.set()
 
         assert b": keepalive\n\n" in writes
 
@@ -507,8 +522,9 @@ class TestDashboardStream:
         from kiro_crew.dashboard import status_counts as sc
 
         monkeypatch.setattr(sc, "_counts_cache", (0, 0))
-        # flake-ok: pre-existing real-clock stamp that marks the status-counts cache fresh, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(sc, "_counts_cache_ts", time.monotonic())
+        clock = ManualClock()
+        clock.install(monkeypatch, sc)
+        monkeypatch.setattr(sc, "_counts_cache_ts", clock.monotonic())
         monkeypatch.setattr(sc, "_counts_cache_failures", 0)
         monkeypatch.setattr(sc, "_counts_refresh_inflight", False)
 
@@ -779,8 +795,7 @@ class TestDashboardStream:
             describe=lambda: "register_sse never called",
         )
         task.cancel()
-        # flake-ok: pre-existing unbounded await of the cancelled dashboard stream, moved verbatim; tracked for a de-flake pass
-        resp = await task
+        resp = await await_until(task, what="the cancelled dashboard stream to return")
 
         assert isinstance(resp, web.StreamResponse)
         req.app["state"].unregister_sse.assert_called_once()
