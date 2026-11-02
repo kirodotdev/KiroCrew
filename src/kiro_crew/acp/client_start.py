@@ -55,6 +55,7 @@ from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
+from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
@@ -1088,8 +1089,13 @@ async def _initialize_session(self: AcpClient) -> None:
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
+    # Its own process then says which of those servers it registered, before the
+    # first prompt: a confirmed refusal is a failed row, no answer an unconfirmed one.
     if self._is_pi:
-        await self._discard_pi_mcp_handoff()
+        try:
+            await verify_registration(self)
+        finally:
+            await self._discard_pi_mcp_handoff()
     # Copilot CLI read its launch MCP config when its process started; the file
     # carries a session credential and nothing reads it again. Same for the Strands CLI.
     if self._is_copilot or self._is_strands:

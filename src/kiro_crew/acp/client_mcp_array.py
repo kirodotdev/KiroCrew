@@ -43,6 +43,7 @@ from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable
+from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
@@ -1018,6 +1019,7 @@ async def _republish_pi_mcp_handoff(self: AcpClient) -> None:
 
     path, payload = getattr(self, "_pi_mcp_handoff", ("", b""))
     if path and self._pi_gate_nonce:
+        await asyncio.to_thread(discard_registration, self.work_scratch_dir, self._pi_gate_nonce)
         await asyncio.to_thread(publish_pi_mcp_handoff, self._pi_gate_nonce, payload)
 
 

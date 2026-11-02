@@ -149,6 +149,10 @@ class ProcessSession(Protocol):
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
 
+    @property
+    def work_scratch_dir(self) -> Path | None:
+        """The child scratch window allocated by the shared launch tail."""
+
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
         tool-gate read-back and the launch tail see the same values."""
