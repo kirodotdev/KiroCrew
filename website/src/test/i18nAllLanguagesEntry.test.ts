@@ -414,6 +414,11 @@ describe('the vitest setup module graph stays English-only', () => {
     expect(specifiers.length).toBeGreaterThan(0)
   })
 
+  // The walk parses every module the setup file reaches with the TypeScript compiler:
+  // about 2 s alone, and past the 15 s default on a loaded CI shard. It is CPU work
+  // with nothing to wait on, so the bound is a ceiling for a slow runner, not a sleep.
+  const SETUP_GRAPH_SCAN_TIMEOUT_MS = 60_000
+
   for (const specifier of specifiers) {
     it(`'${specifier}' reaches no catalog beyond English`, () => {
       const entry = resolveModule(join(WEBSITE, 'vite.config.ts'), specifier)
@@ -429,6 +434,6 @@ describe('the vitest setup module graph stays English-only', () => {
           + 'in `src/i18n/catalogs.ts`, reached only through `src/i18n/all.ts`, and let '
           + 'a test that needs another language import that entry itself.',
       ).toEqual([])
-    })
+    }, SETUP_GRAPH_SCAN_TIMEOUT_MS)
   }
 })
