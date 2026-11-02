@@ -470,7 +470,9 @@ class TestCronTriggerCLI:
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
         assert exc.value.code == 1
-        assert "Job not found" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Job not found: aabbccddee\n"
 
     def test_cli_trigger_already_running_names_reason_and_exits_1(self, mock_dashboard, capsys):
         import argparse
@@ -491,7 +493,9 @@ class TestCronTriggerCLI:
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
         assert exc.value.code == 1
-        assert "Error: HTTP 409: job is already running" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Error: HTTP 409: job is already running\n"
 
     def test_cli_trigger_invalid_id(self, capsys, tmp_path):
         """CLI rejects malformed job IDs."""
@@ -518,11 +522,12 @@ class TestCronTriggerCLI:
 
         assert exc.value.code == 1
         captured = capsys.readouterr()
-        assert "Invalid job ID format" in captured.out
+        assert captured.out == ""
+        assert captured.err == "Invalid job ID format: ../evil\n"
 
     @pytest.mark.parametrize("action", ["pause", "resume"])
     def test_cli_unknown_job_exits_nonzero(self, action, capsys, tmp_path):
-        """pause and resume exit 1 on an unknown job id."""
+        """pause and resume exit 1 on an unknown job id, with the reason on stderr."""
         import argparse
 
         from kiro_crew.cli_commands import _cron
@@ -535,7 +540,9 @@ class TestCronTriggerCLI:
         ):
             _cron(args)
         assert exc.value.code == 1
-        assert "Job not found: abc12345" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Job not found: abc12345\n"
 
 
 # ── Tool Definition Tests ──

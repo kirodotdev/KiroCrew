@@ -146,20 +146,41 @@ class TestCronPreviewValidation:
         ):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args("~/.kirocrew/crons/bad.py:run"))
-        assert "blocked" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Error: blocked by policy\n"
 
-    def test_missing_function(self, tmp_path: Path):
+    def test_unloadable_script_refused_on_stderr(self, tmp_path: Path, capsys):
+        # Not named s.py: the bytecode fixture expects s.py to be imported,
+        # and this script never is.
+        _write_script(tmp_path, "unloadable.py", "def run(ctx): pass\n")
+        with _patch_resolve(tmp_path, name="unloadable.py"), patch(
+            "importlib.util.spec_from_file_location", return_value=None
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cron_preview(_make_args(f"{tmp_path / 'unloadable.py'}:run"))
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err.startswith("Error: cannot load ")
+
+    def test_missing_function(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "def other(ctx): pass\n")
         with _patch_resolve(tmp_path, func="run"):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "Error: function 'run' not found in " in out.err
 
     def test_async_function_rejected(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "async def run(ctx): pass\n")
         with _patch_resolve(tmp_path):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
-        assert "async" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "Error: function 'run' is async" in out.err
 
 
 class TestCronPreviewEnv:
