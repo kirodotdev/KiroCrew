@@ -17,7 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.apps.link_preview_grants import host_refusal, normalize_host
+from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
+from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -134,7 +135,6 @@ _MAX_ARGUMENT_HOSTS = 20
 
 #: A literal hostname, optionally with a leading dot meaning "this domain or any
 #: subdomain of it". Fixed and host-owned: it is never built from manifest input.
-_HOST_RE = re.compile(r"^\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
 
 #: Most commands one app may contribute, mirroring `MAX_COMMANDS_PER_APP` in
 #: `contributedCommands.ts`. Not a layout limit -- the group is display-capped anyway
@@ -764,29 +764,9 @@ class LinkPreviewConfig:
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
         if not self.entry:
             errors.append(f"{where}: missing entry")
-        if self.bad_hosts:
-            # Coerced to [] this would read as "no links", and the provider would
-            # install clean and never fire.
-            errors.append(f"{where}: hosts must be an array of hostnames")
-        elif not self.hosts:
-            errors.append(f"{where}: hosts must list at least one hostname")
-        elif len(self.hosts) > _MAX_LINK_PREVIEW_HOSTS:
-            errors.append(
-                f"{where}: {len(self.hosts)} hosts exceeds the limit of {_MAX_LINK_PREVIEW_HOSTS}"
-            )
-        for host in self.hosts:
-            # Same grammar as a command argument's host allowlist. A bare TLD or a
-            # leading-dot public suffix (".com") is refused by requiring two labels.
-            if not _HOST_RE.fullmatch(host):
-                errors.append(f"{where}: hosts entry is not a hostname ({host!r})")
-            elif refusal := host_refusal(host):
-                # A public suffix (``.co.uk``, ``github.io``) would reach every site
-                # under it.
-                errors.append(f"{where}: hosts entry is {refusal} ({host!r})")
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_PREVIEW_HOSTS))
         if self.bad_full_url:
             errors.append(f"{where}: fullUrl must be true or false")
-        if len(set(self.hosts)) != len(self.hosts):
-            errors.append(f"{where}: hosts repeats an entry")
         if self.bad_text_patterns:
             errors.append(
                 f"{where}: textPatterns must be an array of "

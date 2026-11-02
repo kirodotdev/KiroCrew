@@ -8,51 +8,15 @@
  *
  * @module linkPreview/linkPreviewRegistry
  */
+import { claimableUrlHost, claimsHost, grantedSet, readHostClaims } from '../appFrame/hosts'
 import { MAX_TEXT_PATTERNS, type RawTextPattern } from './textPatterns'
 
-/** Mirrors `_HOST_RE` in `apps/manifest_contributes.py`: exact host, or a
- *  leading dot for the domain and every subdomain, at least two labels. */
-const HOST_RE = /^\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+// The host rule lives in appFrame/hosts, shared by every point that names hosts.
+export { CC_SECOND_LEVELS, PUBLIC_SUFFIXES, isPublicSuffix, normalizeHost } from '../appFrame/hosts'
+
 /** Mirrors the backend caps. */
 const MAX_HOSTS = 64
 const ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
-
-/** Mirrors `PUBLIC_SUFFIXES` and `_CC_SECOND_LEVELS` in `apps/link_preview_grants.py`:
- *  a host claiming one would reach every site under it. */
-export const PUBLIC_SUFFIXES: ReadonlySet<string> = new Set([
-  'appspot.com', 'azurewebsites.net', 'blogspot.com', 'cloudfront.net', 'firebaseapp.com',
-  'github.io', 'gitlab.io', 'herokuapp.com', 'netlify.app', 'ngrok.io', 'pages.dev',
-  'vercel.app', 'web.app', 'workers.dev',
-])
-export const CC_SECOND_LEVELS: ReadonlySet<string> = new Set([
-  'ac', 'co', 'com', 'edu', 'gob', 'go', 'gov', 'ltd', 'mil', 'ne', 'net', 'nic', 'or', 'org', 'plc', 'sch',
-])
-
-/** Lowercase, no trailing dot, IDNA (punycode) form; a leading dot kept. Null when
- *  it is not a hostname. Mirrors `normalize_host` in `apps/link_preview_grants.py`. */
-export function normalizeHost(raw: string): string | null {
-  let s = String(raw).trim().toLowerCase()
-  const lead = s.startsWith('.')
-  if (lead) s = s.slice(1)
-  if (s.endsWith('.')) s = s.slice(0, -1)
-  if (!s) return null
-  let host: string
-  try {
-    host = new URL(`https://${s}/`).hostname
-  } catch {
-    return null
-  }
-  if (host.endsWith('.')) host = host.slice(0, -1)
-  return (lead ? '.' : '') + host
-}
-
-/** A public suffix or a bare top-level domain (normalized, no leading dot). */
-export function isPublicSuffix(host: string): boolean {
-  const labels = host.split('.')
-  if (labels.length < 2) return true
-  if (PUBLIC_SUFFIXES.has(host)) return true
-  return labels.length === 2 && labels[1].length === 2 && CC_SECOND_LEVELS.has(labels[0])
-}
 
 /** A text pattern's grant entry. Mirrors `pattern_grant` in `apps/link_preview_grants.py`. */
 export function patternGrant(tp: RawTextPattern, index: number): string {
@@ -133,23 +97,11 @@ export function resolveLinkPreviews(apps: readonly AppLike[]): ResolvedLinkPrevi
     const id = typeof p.id === 'string' ? p.id : ''
     const entry = typeof p.entry === 'string' ? p.entry : ''
     if (!ID_RE.test(id) || !entry || entry.includes('..') || entry.startsWith('/')) continue
-    const hosts = Array.isArray(p.hosts) ? p.hosts.slice(0, MAX_HOSTS) : []
-    const exact = new Set<string>()
-    const suffixes: string[] = []
     // Only what the owner approved: an update that added a host or a pattern
     // waits for them (`linkPreviewGrant`, from the gateway).
     const grant = app.linkPreviewGrant
-    const grantedHosts = grant && Array.isArray(grant.hosts) ? new Set(grant.hosts.filter((x): x is string => typeof x === 'string')) : null
-    const grantedPatterns = grant && Array.isArray(grant.textPatterns) ? new Set(grant.textPatterns.filter((x): x is string => typeof x === 'string')) : null
-    for (const h of hosts) {
-      if (typeof h !== 'string') continue
-      const host = normalizeHost(h)
-      if (!host || !HOST_RE.test(host)) continue
-      if (isPublicSuffix(host.startsWith('.') ? host.slice(1) : host)) continue
-      if (grantedHosts && !grantedHosts.has(host)) continue
-      if (host.startsWith('.')) suffixes.push(host)
-      else exact.add(host)
-    }
+    const { exact, suffixes } = readHostClaims(p.hosts, MAX_HOSTS, grant ? grantedSet(grant.hosts) : null)
+    const grantedPatterns = grant ? grantedSet(grant.textPatterns) : null
     // An unnamed pattern's id is its declaration index. Fix it before the grant
     // filter drops any, so a later pattern keeps its id (and the app's off switch
     // for it) when an earlier one waits for approval.
@@ -179,19 +131,9 @@ export function resolveLinkPreviews(apps: readonly AppLike[]): ResolvedLinkPrevi
 /** The first provider that claims `href`, or null. https only. */
 export function providerFor(href: string, providers: readonly ResolvedLinkPreview[]): ResolvedLinkPreview | null {
   if (!providers.length) return null
-  let u: URL
-  try {
-    u = new URL(href)
-  } catch {
-    return null
-  }
-  if (u.protocol !== 'https:') return null
-  // `example.com.` is the same host as `example.com`.
-  const host = u.hostname.toLowerCase().replace(/\.$/, '')
-  for (const p of providers) {
-    if (p.exact.has(host)) return p
-    // `.example.dev` matches `example.dev` and `a.example.dev`.
-    if (p.suffixes.some((s) => host === s.slice(1) || host.endsWith(s))) return p
-  }
+  // https only, as before the host rule moved to appFrame/hosts.
+  const host = claimableUrlHost(href)
+  if (!host) return null
+  for (const p of providers) if (claimsHost(p, host)) return p
   return null
 }

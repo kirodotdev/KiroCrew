@@ -358,7 +358,9 @@ window.addEventListener('message', (e) => {
     case 'theme': CFG.theme = m.theme === 'dark' ? 'dark' : 'light'; call('theme', CFG.theme); return;
     case 'dispose': call('dispose'); handler = null; return;
     case 'invoke.cancel':
-      if (typeof m.invocationId === 'string') call('cancel', m.invocationId, String(m.reason || 'other'));
+      if (typeof m.invocationId !== 'string') return;
+      abortInvocation(m.invocationId);
+      call('cancel', m.invocationId, String(m.reason || 'other'));
       return;
     case 'result.ack': settleOffer(m, { ok: true }); return;
     case 'result.error': settleOffer(m, { ok: false, code: String(m.code || 'error') }); return;
@@ -395,9 +397,11 @@ window.open = (raw) => { const url = webUrl(raw); if (url) { try { P.postMessage
 
 # The invocation contract, for a point whose work starts with one user act. The host
 # mints `invocationId` and sends it in the point's own invoke message; the point
-# script hands its handler `invocationControls(invocationId)`. Every control is
-# frozen to that id, so a late call from an earlier invocation names the earlier id
-# and the host refuses it. Each offer carries a rising `seq` and resolves on the
+# script hands its handler `invocationControls(invocationId)`, which is null for an
+# id that is malformed or was already used, so one id starts one invocation. Every
+# control is frozen to that id, so a late call from an earlier invocation names the
+# earlier id and the host refuses it. `signal` aborts on the host's `invoke.cancel`,
+# before the handler's `cancel` is called. Each offer carries a rising `seq` and resolves on the
 # host's `result.ack` / `result.error` for that seq (handled in `_RUNTIME`); the
 # host sends `invoke.cancel` when the invocation ends without a result. Host side:
 # `website/src/appFrame/invocation.ts`.
@@ -410,7 +414,20 @@ function settleOffer(m, outcome) {
   pendingOffers.delete(m.seq);
   done(outcome);
 }
+const INVOCATION_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const usedInvocations = new Set();
+const invocationAborts = new Map();
+function abortInvocation(invocationId) {
+  const ac = invocationAborts.get(invocationId);
+  if (!ac) return;
+  invocationAborts.delete(invocationId);
+  ac.abort();
+}
 function invocationControls(invocationId) {
+  if (typeof invocationId !== 'string' || !INVOCATION_ID.test(invocationId) || usedInvocations.has(invocationId)) return null;
+  usedInvocations.add(invocationId);
+  const ac = new AbortController();
+  invocationAborts.set(invocationId, ac);
   const offer = (kind, value) => new Promise((done) => {
     offerSeq += 1;
     pendingOffers.set(offerSeq, done);
@@ -418,8 +435,10 @@ function invocationControls(invocationId) {
   });
   return Object.freeze({
     invocationId,
+    signal: ac.signal,
     offerCopy: (text) => offer('copy', text),
     offerOpen: (url) => offer('open', url),
+    offerInsert: (text) => offer('insert', text),
     resize: (size) => send('invocation.resize', { invocationId, width: clampNum(size && size.width), height: clampNum(size && size.height) }),
     close: () => send('invocation.close', { invocationId }),
     error: (message) => send('invocation.error', { invocationId, message: String(message == null ? '' : message).slice(0, 200) }),

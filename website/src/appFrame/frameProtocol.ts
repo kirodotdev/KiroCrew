@@ -71,12 +71,12 @@ export const finite = (n: unknown): number => (typeof n === 'number' && Number.i
 
 /** Largest message a frame on the invocation contract may send, as JSON text. */
 export const MAX_HOST_MESSAGE_BYTES = 64 * 1024
-/** The most text a `copy` offer may carry, in UTF-16 units. */
+/** The most text a `copy` or `insert` offer may carry, in UTF-16 units. */
 export const MAX_OFFER_CHARS = 32000
 /** The longest URL an `open` offer may carry. */
 export const MAX_OFFER_URL = 2048
 
-export type OfferKind = 'copy' | 'open'
+export type OfferKind = 'copy' | 'open' | 'insert'
 /** Why the host refused an offer, as `result.error { code }`. */
 export type OfferRefusal = 'stale' | 'too_large' | 'not_allowed'
 
@@ -119,7 +119,7 @@ export function readInvocationMessage(data: unknown): InvocationMessage | null {
         type: 'result.offer',
         invocationId,
         seq: typeof m.seq === 'number' && Number.isInteger(m.seq) && m.seq > 0 ? m.seq : -1,
-        kind: m.kind === 'copy' || m.kind === 'open' ? m.kind : null,
+        kind: m.kind === 'copy' || m.kind === 'open' || m.kind === 'insert' ? m.kind : null,
         value: str(m.value),
       }
     default:
@@ -129,7 +129,7 @@ export function readInvocationMessage(data: unknown): InvocationMessage | null {
 
 /** Why an offer's value is refused, or null when the host can draw its button. */
 export function offerRefusal(kind: OfferKind | null, value: string): Exclude<OfferRefusal, 'stale'> | null {
-  if (kind === 'copy') return value.length > MAX_OFFER_CHARS ? 'too_large' : null
+  if (kind === 'copy' || kind === 'insert') return value.length > MAX_OFFER_CHARS ? 'too_large' : null
   if (kind === 'open') {
     if (value.length > MAX_OFFER_URL) return 'too_large'
     try {

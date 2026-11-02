@@ -152,6 +152,7 @@ globalThis.location = { pathname: '/app-frame/a/alphaPoint/one/f/t', href: 'http
 const appModule = 'export function activate(ctx) { return { invoke(c) { globalThis.calls.push(c); }, cancel(id, why) { globalThis.cancels.push([id, why]); } }; }';
 globalThis.calls = [];
 globalThis.cancels = [];
+globalThis.refused = [];
 globalThis.document = {
   activeElement: null,
   body: {},
@@ -164,32 +165,43 @@ const POINT = {
   ctx: {},
   accepts: (h) => !!h && typeof h.invoke === 'function',
   missing: 'no invoke',
-  message(m) { if (m.type === 'test.invoke' && typeof m.invocationId === 'string') call('invoke', invocationControls(m.invocationId)); },
+  message(m) {
+    if (m.type !== 'test.invoke') return;
+    const c = invocationControls(m.invocationId);
+    if (c) call('invoke', c); else globalThis.refused.push(m.invocationId);
+  },
 };
 """
 _DRIVER = r"""
 const deliver = (data) => (listeners.message || []).forEach((f) => f({ source: parent, data: { 'kirocrew-app-frame': 1, ...data } }));
 deliver({ type: 'init', capability: 'c' });
 for (let i = 0; i < 50 && !posted.some((m) => m.type === 'ready'); i++) await new Promise((r) => setTimeout(r, 10));
-deliver({ type: 'test.invoke', invocationId: 'inv-1' });
-deliver({ type: 'test.invoke', invocationId: 'inv-2' });
+deliver({ type: 'test.invoke', invocationId: 'inv-0001' });
+deliver({ type: 'test.invoke', invocationId: 'inv-0002' });
+deliver({ type: 'test.invoke', invocationId: 'inv-0001' });
+deliver({ type: 'test.invoke', invocationId: 'short' });
+deliver({ type: 'test.invoke', invocationId: 'bad id with spaces' });
 const [first, second] = calls;
 const a = first.offerCopy('one');
 const b = first.offerOpen('https://x.example.com/');
 const c = second.offerCopy('two');
+const d = second.offerInsert('three');
 first.resize({ width: 10, height: Infinity });
 first.close();
 second.error('bad');
 const offers = posted.filter((m) => m.type === 'result.offer');
-deliver({ type: 'result.ack', invocationId: 'inv-1', seq: offers[0].seq });
-deliver({ type: 'result.error', invocationId: 'inv-1', seq: offers[1].seq, code: 'stale' });
-deliver({ type: 'result.ack', invocationId: 'inv-2', seq: offers[2].seq });
-deliver({ type: 'invoke.cancel', invocationId: 'inv-1', reason: 'closed' });
+deliver({ type: 'result.ack', invocationId: 'inv-0001', seq: offers[0].seq });
+deliver({ type: 'result.error', invocationId: 'inv-0001', seq: offers[1].seq, code: 'stale' });
+deliver({ type: 'result.ack', invocationId: 'inv-0002', seq: offers[2].seq });
+deliver({ type: 'result.ack', invocationId: 'inv-0002', seq: offers[3].seq });
+deliver({ type: 'invoke.cancel', invocationId: 'inv-0001', reason: 'closed' });
 console.log(JSON.stringify({
   frozen: Object.isFrozen(first),
   offers: offers.map((m) => [m.invocationId, m.seq, m.kind, m.value]),
   rest: posted.filter((m) => m.type.startsWith('invocation.')).map((m) => [m.type, m.invocationId, m.height ?? m.message ?? null]),
-  results: [await a, await b, await c],
+  results: [await a, await b, await c, await d],
+  calls: calls.length, refused,
+  aborted: [first.signal.aborted, second.signal.aborted],
   cancels,
 }));
 """
@@ -212,17 +224,28 @@ def test_the_invocation_contract_numbers_offers_and_settles_each_on_its_answer()
     assert result["frozen"] is True
     # One rising sequence across invocations, each offer naming its own invocation.
     assert result["offers"] == [
-        ["inv-1", 1, "copy", "one"],
-        ["inv-1", 2, "open", "https://x.example.com/"],
-        ["inv-2", 3, "copy", "two"],
+        ["inv-0001", 1, "copy", "one"],
+        ["inv-0001", 2, "open", "https://x.example.com/"],
+        ["inv-0002", 3, "copy", "two"],
+        ["inv-0002", 4, "insert", "three"],
     ]
     assert result["rest"] == [
-        ["invocation.resize", "inv-1", 0],
-        ["invocation.close", "inv-1", None],
-        ["invocation.error", "inv-2", "bad"],
+        ["invocation.resize", "inv-0001", 0],
+        ["invocation.close", "inv-0001", None],
+        ["invocation.error", "inv-0002", "bad"],
     ]
-    assert result["results"] == [{"ok": True}, {"ok": False, "code": "stale"}, {"ok": True}]
-    assert result["cancels"] == [["inv-1", "closed"]]
+    assert result["results"] == [
+        {"ok": True},
+        {"ok": False, "code": "stale"},
+        {"ok": True},
+        {"ok": True},
+    ]
+    assert result["cancels"] == [["inv-0001", "closed"]]
+    # One id starts one invocation; a reused or malformed id starts none.
+    assert result["calls"] == 2
+    assert result["refused"] == ["inv-0001", "short", "bad id with spaces"]
+    # The cancel aborted that invocation's signal only.
+    assert result["aborted"] == [True, False]
 
 
 def test_point_grant_families_come_from_one_registry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,3 +273,15 @@ def test_the_host_rule_has_one_home() -> None:
     assert link_preview_grants.host_refusal is app_hosts.host_refusal
     assert app_hosts.normalize_host("Tickets.Example.COM.") == "tickets.example.com"
     assert app_hosts.host_refusal(".co.uk") is not None
+    # An IP literal or a loopback name is not a host an app can claim.
+    for host in (
+        "127.0.0.1",
+        "10.0.0.8",
+        ".1.2.3.4",
+        "localhost.localhost",
+        "app.localhost",
+        ".localhost",
+    ):
+        assert app_hosts.host_refusal(host) is not None, host
+    assert app_hosts.host_refusal("v1.example.com") is None
+    assert app_hosts.host_refusal("123.example.com") is None
