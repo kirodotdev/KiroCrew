@@ -399,3 +399,38 @@ def test_a_flat_listed_app_skill_the_base_app_wildcard_grants_comes_with(monkeyp
     skills = {row["id"]: row for row in rows if row["section"] == "skills"}
     assert skills["a-first"]["state"] == "inherited"
     assert skills["a-first"]["remove"] is None
+
+
+def test_the_summary_resolves_the_skills_root_once_however_many_skill_links(monkeypatch):
+    """Resolving the skills root is a pooled sensitive-path check. Done once per
+    skill link it costs ~1.3 s per crewmate screen on a 74-skill home, so the
+    count must not grow with the catalog."""
+    from kiro_crew import skills as sk
+
+    root = sk.skills_dir()
+    wildcard = f"skill://{root.as_posix()}/app/*/SKILL.md"
+    base = {"mcpServers": {}, "tools": [], "resources": [wildcard]}
+    file_spec = {"resources": [wildcard]}
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: dict(base))
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+    real = sk.validate_file_path
+    calls: list[str] = []
+
+    def counting(path, *a, **kw):
+        if str(path) == str(root):
+            calls.append(path)
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(sk, "validate_file_path", counting)
+
+    def catalog(n):
+        return {f"s{i}": f"skill://{root.as_posix()}/s{i}/SKILL.md" for i in range(n)}
+
+    mate_capabilities.worker_summary("ben", catalog(1))
+    one = len(calls)
+    calls.clear()
+    mate_capabilities.worker_summary("ben", catalog(8))
+
+    assert one <= 1
+    assert len(calls) == one
