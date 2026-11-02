@@ -9,6 +9,7 @@ Masking replaces code characters with spaces rather than deleting them, which
 keeps every line's length and the total line count intact — backlink line
 numbers are computed off the masked body and must match the source file.
 """
+
 from __future__ import annotations
 
 import datetime
