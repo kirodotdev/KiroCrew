@@ -49,6 +49,27 @@ describe('file-explorer/utils', () => {
     it('returns / for top-level file', () => {
       expect(utils.dirname('/file.txt')).toBe('/')
     })
+    // #27791: a Windows gateway prints backslash paths, which used to come
+    // back as `/` (no `/` to cut on), re-rooting the tab where nothing lists.
+    it('returns the Windows parent of a drive-rooted path', () => {
+      expect(utils.dirname('C:\\Users\\u\\repo')).toBe('C:\\Users\\u')
+      expect(utils.dirname('C:\\Users\\u\\repo\\src\\a.ts')).toBe('C:\\Users\\u\\repo\\src')
+      expect(utils.dirname('C:\\Users\\u\\repo\\')).toBe('C:\\Users\\u')
+      expect(utils.dirname('C:\\Users')).toBe('C:\\')
+      expect(utils.dirname('C:/Users/u')).toBe('C:/Users')
+    })
+    it('returns a drive root itself, never /', () => {
+      expect(utils.dirname('C:\\')).toBe('C:\\')
+    })
+    it('returns the parent of a UNC path and stops at the share root', () => {
+      expect(utils.dirname('\\\\host\\share\\dir\\a.ts')).toBe('\\\\host\\share\\dir')
+      expect(utils.dirname('\\\\host\\share\\dir')).toBe('\\\\host\\share')
+      expect(utils.dirname('\\\\host\\share')).toBe('\\\\host\\share')
+    })
+    it('keeps a backslash inside a POSIX name as part of the name', () => {
+      expect(utils.dirname('/tmp/we\\ird')).toBe('/tmp')
+      expect(utils.dirname('/tmp/a\\b/c')).toBe('/tmp/a\\b')
+    })
   })
 
   describe('parentChain', () => {

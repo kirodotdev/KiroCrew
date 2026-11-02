@@ -50,7 +50,8 @@ export const underRoot = (p: string, r: string) => {
 /**
  * The directory containing `p`, or `null` at a filesystem root. Separator-aware
  * because the backend prints paths with the host's own separator (`str(Path)`),
- * so on a Windows gateway every one is a backslash; `utils.dirname` is POSIX-only.
+ * so on a Windows gateway every one is a backslash. `utils.dirname` delegates
+ * here for Windows-shaped paths and keeps a `/`-only cut for POSIX ones.
  */
 export function parentDir(p: string): string | null {
   const trimmed = p.replace(/[\\/]+$/, '')
