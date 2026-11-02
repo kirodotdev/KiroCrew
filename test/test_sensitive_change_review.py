@@ -598,8 +598,16 @@ class TestCommentWorkflow:
         assert "## Sensitive change review" in cond
 
     def test_hosted_runner_and_no_checkout(self, wf):
+        # Still a GitHub-hosted Ubuntu VM, not the CodeBuild fleet: both
+        # branches of the expression carry no fleet credentials and are
+        # dispatched by GitHub, so an arbitrary commenter's event cannot reach
+        # AWS. A personal fork cannot reach the larger-runner definition, so it
+        # falls back to the shared hosted pool.
         (job,) = wf["jobs"].values()
-        assert job["runs-on"] == "ubuntu-latest"
+        assert job["runs-on"] == (
+            "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+            "|| 'ubuntu-latest' }}"
+        )
         assert all("uses" not in step for step in job["steps"])
 
     def test_reruns_the_check_workflow(self, wf):

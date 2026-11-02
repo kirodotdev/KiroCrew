@@ -542,7 +542,13 @@ def test_the_handler_is_comment_triggered_and_gated_on_the_command() -> None:
     (job,) = wf["jobs"].values()
     assert "github.event.issue.pull_request != null" in job["if"]
     assert "startsWith(github.event.comment.body, '/pr-size approve')" in job["if"]
-    assert job["runs-on"] == "ubuntu-latest"
+    # Hosted, never the fleet: any commenter can fire this event. Upstream it
+    # takes the larger-runner label; a personal fork cannot reach that
+    # definition, so it falls back to the shared hosted pool.
+    assert job["runs-on"] == (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest' }}"
+    )
     assert wf["permissions"] == {"actions": "write", "contents": "read", "pull-requests": "write"}
 
 

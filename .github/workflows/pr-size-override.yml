@@ -43,10 +43,14 @@ jobs:
     if: >-
       github.event.issue.pull_request != null
       && startsWith(github.event.comment.body, '/pr-size approve')
-    # Hosted, like ai-review-human-override.yml: any commenter can trigger this
-    # event, in-job permission validation is what gates the approval, and a
-    # non-collaborator's dispatch to the fleet would queue forever.
-    runs-on: ubuntu-latest
+    # Off the fleet, like ai-review-human-override.yml: any commenter can
+    # trigger this event, in-job permission validation is what gates the
+    # approval, and a non-collaborator's dispatch to the fleet would queue
+    # forever. The group is a GitHub-hosted Ubuntu VM reached through GitHub's
+    # own dispatch rather than the AWS webhook, so no actor allowlist applies
+    # and that reason is untouched; it buys queue position on a lane that
+    # unblocks a human waiting to merge an oversized pull request.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
