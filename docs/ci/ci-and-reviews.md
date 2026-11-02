@@ -1462,13 +1462,16 @@ preserve: restore `runs-on: ubuntu-latest` on the affected line.
 **The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
 in `ci.yml` that were pinned to a default hosted runner now reach the
 group through its `kirocrew-linux-4-core` label instead of through group
-targeting: `native-redaction-gate`, `backend-test-kernel-lock-owner`,
+targeting: `backend-test-kernel-lock-owner`, `backend-test-sandbox`,
 `e2e-private-namespace`, and the Linux leg of each of the two matrix lanes
-`backend-test-ipv6` and `new-test-stability`. `wheel-closure` was here too and
-has moved to the fleet: it now reads the `changes` resolver, which reaches this
-same group on its own non-admitted branch, so the destination a rejected run
-takes is unchanged and only the admitted one moved. Its rollback is therefore
-the fleet-preserving one, not the whole-line replacement the lanes below take.
+`backend-test-ipv6` and `new-test-stability`. `wheel-closure` and
+`native-redaction-gate` were here too and have moved to the fleet: each now
+reads the `changes` resolver, which reaches this same group on its own
+non-admitted branch, so the destination a rejected run takes is unchanged and
+only the admitted one moved. Their rollback is therefore the fleet-preserving
+one, not the whole-line replacement the lanes below take.
+`native-redaction-gate` installs Rust with a SHA-pinned
+`dtolnay/rust-toolchain` step, because the fleet image has no `cargo`.
 
 What puts `ci.yml` in this group is that it also runs **in a contributor's own
 repository** -- a push to the fork's `main`, or a pull request opened inside the
@@ -1495,11 +1498,11 @@ sees no new or missing context. The destination is resolved per leg in
 `runs-on`, the shape `e2e-boot-matrix` already uses:
 
 ```yaml
-runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
+runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
 ```
 
-The Windows leg falls through to `matrix.os` and is untouched; a Windows group
-is a separate change.
+The Windows leg reaches `kirocrew-windows-4-core` the same way, and any other
+`matrix.os` value falls through to itself.
 
 **These five can hold merges.** They are `ci.yml` jobs on the `pull_request`
 path, `pr-readiness.yml` carries `ci.yml|CI` in its `workflow_specs` and
@@ -1513,24 +1516,21 @@ back differently.** The three single-OS lanes return to
 `runs-on: ${{ matrix.os }}`, the recipe `e2e-boot-matrix` and
 `denial-differential` already use above. Writing `ubuntu-latest` on a matrix
 line instead drops the `|| matrix.os` fall-through and runs that lane's Windows
-leg on Linux. On `backend-test-ipv6` that reds `test_ci_ipv6_routing.py`, which
-pins the whole expression. On `new-test-stability` nothing reads that line, so
-`New-test stability (windows-latest)` would report green from a Linux VM and no
-check would say otherwise.
+leg on Linux. On either lane that reds
+`test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group` in
+`test_ci_fleet_routing_expression_parity.py`, which pins both lines, and on
+`backend-test-ipv6` it reds `test_ci_ipv6_routing.py` too.
 
-**Three of the five are pinned by a routing test, and two are not.**
-`test_ci_ipv6_routing.py`, `test_ci_kernel_owner_routing.py` and
-`test_ci_nonroot_boundary.py` assert the whole expression for
-`backend-test-ipv6`, `backend-test-kernel-lock-owner` and
-`e2e-private-namespace`, fork branch included, so dropping the
-`|| 'ubuntu-latest'` on one of those three lines reds that test rather than
-stranding fork runs on a label no runner a fork can see carries. No test reads
-the `runs-on` of `native-redaction-gate` or `new-test-stability`, so the same
-edit on those two lines is silent. Removing the fallback from each line in turn
-reds exactly one test for the first three and nothing for the last two.
-`wheel-closure` used to be in that unpinned set and no longer is: its move to
-the resolver put it in `test_ci_fleet_routing_expression_parity.py`'s consumer
-map, which pins its complete expression including its hosted fallback.
+**All five are pinned by a routing test.**
+`test_ci_kernel_owner_routing.py` and `test_ci_nonroot_boundary.py` assert the
+whole expression for `backend-test-kernel-lock-owner`, `backend-test-sandbox`
+and `e2e-private-namespace`, and the parity test named above asserts it for
+both matrix lanes (`test_ci_ipv6_routing.py` pins `backend-test-ipv6` as
+well), fork branch included. Dropping the `|| 'ubuntu-latest'` on one of those
+five lines reds a test rather than stranding fork runs on a label no runner a
+fork can see carries. `wheel-closure` and `native-redaction-gate` left that set
+when they moved to the resolver: `test_ci_fleet_routing_expression_parity.py`'s
+consumer map pins each one's complete expression, hosted fallback included.
 
 **One site cannot use the group, and uses the label instead:** `ci.yml`'s
 `changes` resolver, whose `linux_runner` and `linux_runner_large` outputs carry
