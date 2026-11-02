@@ -429,8 +429,10 @@ def _owed_completion(slot, text: str = "[Subagent completion event] a1 finished"
 class _SettlingManager:
     """The slice of ``SubagentManager`` a hard stop settles discarded deliveries through.
 
-    ``during`` runs inside the settle's suspension: the window in which the real
-    manager waits on the child's teardown gate and writes its tombstones on a thread.
+    ``during`` runs inside the settle call, after its deliveries are recorded and
+    before the caller resumes. A send that lands there is the one the caller must
+    not discard after the settle returns. The double has no suspension of its own:
+    nothing it stands for is awaited, so the caller never waits on a signal here.
 
     A stop pushes a slots update, and a push whose coalescing window is open
     serializes every slot, which reads the manager's running and queued sub-agents.
@@ -443,8 +445,6 @@ class _SettlingManager:
 
     async def settle_queued_delivery(self, deliveries) -> None:
         self.settled.extend(deliveries)
-        # flake-ok: pre-existing single yield standing in for the settle's suspension point; moved verbatim and it waits for nothing
-        await asyncio.sleep(0)
         if self._during is not None:
             self._during()
 
