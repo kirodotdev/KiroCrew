@@ -1139,3 +1139,58 @@ async def test_hook_based_policy_still_approves_a_read_kind_tool():
     provider = await _run_read_only(_read_only_event(), policy=ToolApprovalPolicy.HOOK_BASED)
     assert provider.approved == ["r1"]
     assert provider.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_frame_is_not_audited_as_an_approval():
+    """One declined read left TWO audit rows, ``auto_approved``
+    then ``rejected``, which read as a duplicate request where the first was
+    approved. The ``auto_approved`` row came from the tool_call frame, which
+    arrives before the call's permission request, so nothing had approved it.
+    That row now says ``invoked``; the decision row stays the only verdict."""
+    from unittest.mock import patch
+
+    from kiro_crew.hooks import ToolHookResult
+
+    title = "Reading dispatch.md:1"
+    provider = _ScriptedProvider(
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title=title, tool_kind="read", tool_call_id="c1"),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title=title,
+                tool_kind="read",
+                request_id="r1",
+                tool_call_id="c1",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
+    hooks = MagicMock()
+    hooks.on_tool_call = MagicMock(return_value=ToolHookResult.allow())
+    hooks.effective_denied_regexes = MagicMock(return_value=[])
+    from kiro_crew.sel import SecurityEventLog
+
+    rows: list[str] = []
+
+    def _record(_self: object, **kw: object) -> None:
+        rows.append(str(kw["outcome"]))
+
+    async def _nobody_answers(_event: LLMEvent) -> bool:
+        return False
+
+    # Both rows go through the one SEL singleton, so the method is patched on
+    # its class rather than on each module's binding of ``sel``.
+    with patch.object(SecurityEventLog, "log_tool_invocation", _record):
+        await stream_and_collect(
+            provider,  # type: ignore[arg-type]
+            "q",
+            approval_policy=ToolApprovalPolicy.HOOK_BASED,
+            hooks=hooks,
+            on_tool_approval=_nobody_answers,
+            retry_transient=False,
+        )
+
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+    assert rows == ["invoked", "rejected"], rows

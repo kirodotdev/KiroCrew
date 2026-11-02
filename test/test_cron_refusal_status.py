@@ -187,6 +187,65 @@ def test_an_unapproved_run_is_not_a_failure() -> None:
     assert job.enabled is True
 
 
+class TestUnapprovedCallIsNamed:
+    """An unattended cron's first step (reading its own
+    instructions) was not approved, the model went on without it, and the run
+    read as a plain success. The status and counters stay as the tests above
+    pin them; what changes is that the delivered result names the lost call.
+    """
+
+    def test_the_result_names_the_unapproved_call(self) -> None:
+        ds = _slotless_dashboard()
+        job = _run_cron_runs([UNAPPROVED, APPROVED], dashboard=ds)
+
+        assert ds.notify.call_count == 1
+        body = ds.notify.call_args.args[2]
+        assert body.startswith("⚠ 1 tool call(s) not approved"), body
+        assert "Read README.md" in body
+        assert "that work did not happen" in body
+        assert "I was unable to complete" in body, "the model's own prose was dropped"
+        assert job.last_result is not None and job.last_result.startswith("⚠")
+
+    def test_naming_it_leaves_status_and_counters_alone(self) -> None:
+        job = _run_cron_runs([UNAPPROVED], runs=_AUTO_PAUSE_THRESHOLD)
+
+        assert job.last_status != "error"
+        assert job.consecutive_failures == 0
+        assert job.auto_paused is False
+
+    def test_a_clean_run_carries_no_banner(self) -> None:
+        job = _run_cron_runs([APPROVED])
+
+        assert job.last_result is not None
+        assert not job.last_result.startswith("⚠")
+
+    def test_a_partial_block_with_an_unapproved_call_names_both(self) -> None:
+        job = _run_cron_runs([APPROVED, REFUSED_WRITE, UNAPPROVED])
+
+        assert job.last_result is not None
+        first, second = job.last_result.split("\n")[:2]
+        assert first.startswith("⛔ 1 of 3 tool call(s) blocked")
+        assert second.startswith("⚠ 1 tool call(s) not approved")
+
+    def test_the_kept_titles_are_bounded_but_every_call_is_counted(self) -> None:
+        from kiro_crew.slack.gateway_runtime import cron_verdict as cv
+
+        tally = cv._GateTally()
+        for i in range(cv._UNAPPROVED_TITLES_KEPT + 5):
+            tally.note(f"call-{i}-" + "x" * (cv._UNAPPROVED_TITLE_CHARS * 2), False, False)
+
+        assert tally.unresolved == cv._UNAPPROVED_TITLES_KEPT + 5
+        assert len(tally.unresolved_titles) == cv._UNAPPROVED_TITLES_KEPT
+        assert all(len(t) <= cv._UNAPPROVED_TITLE_CHARS for t in tally.unresolved_titles)
+        assert "and 5 more" in tally.unapproved_summary()
+
+    def test_an_unapproved_title_is_defanged(self) -> None:
+        job = _run_cron_runs([("<!channel> read", False, False)])
+
+        assert job.last_result is not None
+        assert "<!channel>" not in job.last_result
+
+
 def test_a_mixed_refusal_run_is_not_a_failure() -> None:
     """A security block ALONGSIDE an unresolved refusal proves nothing.
 
