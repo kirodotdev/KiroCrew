@@ -132,8 +132,8 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
         async def ensure_ready(self):
             # The spawn assigns the PID, then initialization drags on.
             self._pid = 4242
-            # flake-ok: pre-existing unbounded wait in the stubbed readiness; the finally sets ready itself; moved verbatim, tracked for a de-flake pass
-            await ready.wait()
+            # Blocks until the test's finally releases it; the bound is the test's own await_until.
+            await await_until(ready, what="stubbed readiness")
 
         def pop_pending_oauth_requests(self):
             return []
@@ -163,10 +163,8 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
 
 
 async def _until(predicate, interval: float = 0.01) -> None:
-    """Poll until the predicate holds. Bounded by the caller's wait_for."""
-    while not predicate():
-        # flake-ok: pre-existing 10 ms poll interval of the _until helper, which no test calls; its docstring leaves the bound to the caller; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(interval)
+    """Wait until the predicate holds, under the wait helper's lost-run bound."""
+    await async_wait_until(predicate, interval=interval)
 
 
 def test_a_failed_release_unlink_keeps_its_manifest_row(monkeypatch):
