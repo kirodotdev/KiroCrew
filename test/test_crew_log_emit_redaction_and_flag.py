@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     SESSION,
     _body,
@@ -79,7 +80,7 @@ def test_no_job_is_ever_submitted_without_a_session_key():
         emit.on_step_completed(SESSION, 1, 1, ms=5)
         emit.on_message_queued(SESSION, source="slack", size_bytes=3, queued_seq="q-1")
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     assert seen, "no job was submitted at all -- the spy never ran"
     assert "" not in seen, f"{seen.count('')} job(s) landed in the unordered bucket"
 
@@ -91,14 +92,14 @@ def test_a_rerun_immediately_after_a_resume_does_not_reuse_the_attempt():
     _open_session()
     emit.on_turn_started(SESSION, 7, "user")
     emit.on_turn_completed(SESSION, 7, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
 
     # Re-attach and rerun ordinal 7 with NO flush in between: the rerun's job is
     # submitted while the seed is still queued behind it.
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", resumed=True)
     emit.on_turn_started(SESSION, 7, "user")
-    assert emit.flush()
+    assert_drained()
     starts = [e for e in _body() if e["type"] == "turn/started" and e["data"]["turn"] == 7]
     assert len(starts) == 2, f"expected two starts at ordinal 7, got {len(starts)}"
     assert "attempt" not in starts[0]["data"], "the first try must carry no field"
@@ -111,7 +112,7 @@ def test_the_attempt_seed_keeps_readable_counts_before_a_backward_tail():
     _open_session()
     emit.on_turn_started(SESSION, 7, "user", attempt=2)
     emit.on_turn_completed(SESSION, 7, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     emit.reset_caches()
 
     path = _log_path()
@@ -120,7 +121,7 @@ def test_the_attempt_seed_keeps_readable_counts_before_a_backward_tail():
         damaged.write(started)
 
     emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
-    assert emit.flush()
+    assert_drained()
     seen: list[int] = []
     real_append = lg.CrewLog.append
 
@@ -148,7 +149,7 @@ def test_the_turn_closer_is_the_last_entry_of_its_turn():
     emit.on_message_sent(SESSION, 1, step=second, text="the turn's last text")
     emit.on_step_completed(SESSION, 1, second, ms=5)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     types = [e["type"] for e in _body() if e["type"].startswith(("turn/", "step/", "message/"))]
     assert types[-1] == "turn/completed", f"the closer is not last: {types}"
     assert types.index("turn/completed") > max(
@@ -168,7 +169,7 @@ def test_the_closer_never_reaches_another_turns_open_call():
     emit.on_turn_started(SESSION, 2, "user")
     emit.on_tool_called(SESSION, 2, name="fs_write", call_id="call-b", args="{}")
     closed = emit.close_open_tool_calls(SESSION, 2)
-    assert emit.flush()
+    assert_drained()
     assert closed == 1, f"turn 2's closer touched {closed} calls, expected only its own"
     done = [e for e in _body() if e["type"] == "tool/completed"]
     assert [e["data"]["call_id"] for e in done] == ["call-b"]
@@ -185,7 +186,7 @@ def test_an_oversize_typed_message_is_recorded_rather_than_refused():
     _open_session()
     body = "s" * (lg.MAX_ENTRY_BYTES + 500)
     _typed(1, body, source="dashboard")
-    assert emit.flush()
+    assert_drained()
     received = [e for e in _body() if e["type"] == "message/received"]
     chunks = [e for e in _body() if e["type"] == "message/chunk"]
     assert received, "the message was refused and lost"
@@ -210,7 +211,7 @@ def test_entries_for_one_session_land_in_the_order_they_were_emitted():
     emit.on_message_sent(SESSION, 1, step=step, text="second")
     emit.on_step_completed(SESSION, 1, step, ms=1)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     got = [e["type"] for e in _body() if e["type"] != "session/opened"]
     expected = [
         "turn/started",
@@ -239,14 +240,14 @@ def test_an_entry_in_the_window_before_the_turn_is_published_is_not_blamed_on_tu
     emit.on_turn_started(SESSION, 4, "user")
     assert emit.live_turn(SESSION) == 4, "the live record is not readable at turn start"
     emit.on_message_sent(SESSION, emit.live_turn(SESSION), text="partial reply")
-    assert emit.flush()
+    assert_drained()
     sent = [e for e in _body() if e["type"] == "message/sent"]
     assert sent and sent[-1]["data"]["turn"] == 4
 
     # And with no turn running the answer is 0, which the caller must treat as
     # "record what you actually have" rather than stamping 0 on an entry.
     emit.on_turn_completed(SESSION, 4, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     assert emit.live_turn(SESSION) == 0
     assert emit.live_turn("no-such-session") == 0
 
@@ -257,7 +258,7 @@ def test_the_attempt_seed_reads_the_file_only_when_memory_cannot_answer():
     # only grows -- and every other session's appends queue behind it.
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
 
     scans: list[str] = []
     real = emit._seed_attempts
@@ -271,18 +272,18 @@ def test_the_attempt_seed_reads_the_file_only_when_memory_cannot_answer():
 
         # A warm reuse holds its counts: no scan.
         emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
-        assert emit.flush()
+        assert_drained()
         assert scans == [], "a warm reuse rescanned the file"
 
         # A resume belongs to a process that is gone: scan.
         emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", resumed=True)
-        assert emit.flush()
+        assert_drained()
         assert scans == [SESSION], "a resume did not seed from the file"
 
         # A process without the counts in memory cannot answer either: scan.
         emit.reset_caches()
         emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
-        assert emit.flush()
+        assert_drained()
         assert scans == [SESSION, SESSION], "an evicted map was not re-seeded"
 
 
@@ -302,7 +303,7 @@ def test_a_turns_closers_name_the_turn_that_started_it():
     emit.close_open_tool_calls(SESSION, 3)
     emit.on_step_completed(SESSION, 3, step, ms=1)
     emit.on_turn_completed(SESSION, 3, stop_reason="end_turn")
-    assert emit.flush()
+    assert_drained()
     turns = {e["data"].get("turn") for e in _body() if e["type"] != "session/opened"}
     assert turns == {3}, f"entries were split across ordinals: {sorted(turns, key=str)}"
     assert [e["type"] for e in _body()][-1] == "turn/completed"
@@ -332,7 +333,7 @@ def test_a_credential_cannot_survive_the_overflow_split_at_any_offset():
             step=1,
             text=filler_before + secret + "t" * 8000,
         )
-        assert emit.flush()
+        assert_drained()
         blob = _log_path().read_text(encoding="utf-8")
         assert marker not in blob, f"the credential survived at offset {offset}"
         # And reassembling the cited chunks must not rebuild it either.
@@ -353,7 +354,7 @@ def test_a_body_is_redacted_by_the_emitter_not_trusted_from_the_call_site():
     secret = "aws_secret" + "_access_key=" + marker
     _typed(1, f"use {secret} please")
     emit.on_message_sent(SESSION, 1, text=f"ok, {secret}")
-    assert emit.flush()
+    assert_drained()
     blob = json.dumps(_body())
     assert marker not in blob
 
@@ -366,7 +367,7 @@ def test_a_redaction_failure_writes_no_text_rather_than_the_raw_text(monkeypatch
     monkeypatch.setattr(emit, "redact_exfiltration_urls", boom)
     _open_session()
     _typed(1, "a very secret thing")
-    assert emit.flush()
+    assert_drained()
     entry = _body()[-1]
     assert entry["data"]["text"] == ""
     assert "very secret thing" not in json.dumps(entry)
@@ -376,7 +377,7 @@ def test_an_empty_body_writes_no_sent_entry_at_all():
     _open_session()
     before = len(_body())
     emit.on_message_sent(SESSION, 1, text="")
-    assert emit.flush()
+    assert_drained()
     assert len(_body()) == before
 
 
@@ -436,7 +437,7 @@ def test_the_same_work_does_happen_when_enabled(monkeypatch):
     )
     emit.on_tool_called(SESSION, 1, name="t", call_id="c1", args="v")
     emit.on_message_received(SESSION, 1, text="body")
-    assert emit.flush()
+    assert_drained()
     assert "digest" in worked
     assert "redact" in worked
 
@@ -532,7 +533,7 @@ def test_a_tool_call_records_a_digest_of_its_arguments_never_the_arguments():
     emit.on_tool_called(
         SESSION, 1, name="execute_bash", call_id="tc-1", args='{"command": "ls /tmp"}'
     )
-    assert emit.flush()
+    assert_drained()
 
     entry = next(e for e in _body() if e["type"] == "tool/called")
     assert entry["data"]["args_hash"] == hashlib.sha256(b'{"command": "ls /tmp"}').hexdigest()
@@ -546,7 +547,7 @@ def test_a_repeated_call_is_recognisable_by_its_digest():
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="a", args='{"path": "x"}')
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="b", args='{"path": "x"}')
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c", args='{"path": "y"}')
-    assert emit.flush()
+    assert_drained()
 
     hashes = [e["data"]["args_hash"] for e in _body() if e["type"] == "tool/called"]
     assert hashes[0] == hashes[1] != hashes[2]
@@ -557,7 +558,7 @@ def test_a_call_with_no_arguments_records_no_digest_fields():
     # "nothing was handed over to digest".
     _open_session()
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
     data = next(e for e in _body() if e["type"] == "tool/called")["data"]
     assert "args_hash" not in data and "args_bytes" not in data
@@ -570,7 +571,7 @@ def test_a_tool_completion_records_the_error_flag_and_a_result_digest():
     emit.on_tool_completed(
         SESSION, 1, call_id="tc-1", status="refused", is_error=True, result="denied by policy"
     )
-    assert emit.flush()
+    assert_drained()
 
     data = next(e for e in _body() if e["type"] == "tool/completed")["data"]
     assert data["is_error"] is True
@@ -588,7 +589,7 @@ def _record_tool_result_event(event, *, call_id: str = "tc-measured") -> dict:
         result_digest=event.tool_output_digest,
         result_bytes=event.tool_output_bytes,
     )
-    assert emit.flush()
+    assert_drained()
     return [e["data"] for e in _body() if e["type"] == "tool/completed"][-1]
 
 
@@ -674,7 +675,7 @@ def test_an_unstated_error_flag_is_left_off_rather_than_recorded_as_success():
     _open_session()
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
     emit.on_tool_completed(SESSION, 1, call_id="tc-1", status="completed")
-    assert emit.flush()
+    assert_drained()
 
     data = next(e for e in _body() if e["type"] == "tool/completed")["data"]
     assert "is_error" not in data
@@ -693,7 +694,7 @@ def test_a_rerun_of_the_same_turn_ordinal_is_distinguishable_by_its_attempt():
     emit.on_turn_started(SESSION, 4, "user", attempt=2)
     emit.on_turn_completed(SESSION, 4, stop_reason="end_turn")
     emit.on_turn_started(SESSION, 4, "user", attempt=3)
-    assert emit.flush()
+    assert_drained()
 
     starts = [e["data"] for e in _body() if e["type"] == "turn/started"]
     assert [d["turn"] for d in starts] == [4, 4, 4]
@@ -707,7 +708,7 @@ def test_a_turn_start_carries_the_message_it_answers_when_the_caller_knows_it():
     emit.on_turn_started(SESSION, 1, "user", message_seq=7)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     emit.on_turn_started(SESSION, 2, "user")
-    assert emit.flush()
+    assert_drained()
 
     starts = [e["data"] for e in _body() if e["type"] == "turn/started"]
     assert starts[0]["message_seq"] == 7
@@ -758,7 +759,7 @@ def test_flag_off_allocates_no_state_either(monkeypatch):
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
     _open_session()
     emit.on_tool_called(SESSION, 5, name="fs_read", call_id="tc-after")
-    assert emit.flush()
+    assert_drained()
     (call,) = [e["data"] for e in _body() if e["type"] == "tool/called"]
     assert call["call_index"] == 1, "a flag-off turn left its numbering behind"
 
