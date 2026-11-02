@@ -2,6 +2,7 @@ import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 
 /**
  * `inlineToolbarWhileFits` (#19608): the Crewmates DM composer is ONE row --
@@ -16,6 +17,15 @@ import ChatInput from '../components/ChatInput'
  * staged file, a quote, the default-off host -- while the wrap boundary itself
  * is the capture harness's (`capture-crew-composer-one-row.mjs`).
  */
+
+/** A DM composer whose voice slice says it is recording (or not), with no
+ *  dictation panel: the voice props reach ChatInput through the Composer
+ *  root's slice, which the override stands in for. */
+const recordingComposer = (recording: boolean) => (
+  <ComposerVoiceSliceOverride inputProps={{ voiceRecording: recording, onVoiceToggle: vi.fn() }}>
+    <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />
+  </ComposerVoiceSliceOverride>
+)
 
 const wrapper = () => screen.getByTestId('input-wrapper')
 const inline = () => wrapper().getAttribute('data-inline-toolbar') === 'true'
@@ -97,6 +107,23 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     renderWithProviders(<ChatInput value="see attached" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits holdSend uploading onUploadFiles={vi.fn()} />)
     expect(screen.getByTestId('composer-send-held')).toBeInTheDocument()
     expect(inline()).toBe(false)
+  })
+
+  // Without the dictation panel (setting off, no WebGL2, or reduced motion) a
+  // recording draws the voice bar's Recording strip; on the single row it would
+  // sit beside the text and squeeze both.
+  it('opens to two rows while recording draws the Recording strip', () => {
+    renderWithProviders(recordingComposer(true))
+    expect(screen.getByText('Recording')).toBeInTheDocument()
+    expect(inline()).toBe(false)
+  })
+
+  it('returns to one row once the recording ends', () => {
+    const { rerender } = renderWithProviders(recordingComposer(true))
+    expect(inline()).toBe(false)
+    rerender(recordingComposer(false))
+    expect(screen.queryByText('Recording')).toBeNull()
+    expect(inline()).toBe(true)
   })
 
   it('opens to two rows while a quote is staged', () => {
