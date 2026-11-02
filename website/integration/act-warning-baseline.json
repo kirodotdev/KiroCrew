@@ -45,7 +45,6 @@
   "src/test/McpAppFrame.test.tsx",
   "src/test/MemberMemoryPanel.test.tsx",
   "src/test/ProjectsPage.test.tsx",
-  "src/test/ProjectsPageWorkspaceShell.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/SettingsChatPanelCoverage.test.tsx",
   "src/test/TerminalRegistryCoverage.test.tsx",
