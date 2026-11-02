@@ -58,7 +58,6 @@
   "src/test/McpManagement.test.tsx",
   "src/test/MdNotebookPageCoverage.test.tsx",
   "src/test/MemberMemoryPanel.test.tsx",
-  "src/test/PendingQuestionCard.test.tsx",
   "src/test/ProjectsPage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
