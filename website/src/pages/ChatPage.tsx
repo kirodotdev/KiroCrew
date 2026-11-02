@@ -975,7 +975,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
   const {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
-    closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
+    closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
     embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
@@ -1218,7 +1218,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
         chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
-        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
+        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
         sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
         pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}
       />
