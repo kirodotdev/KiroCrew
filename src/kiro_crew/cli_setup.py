@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     EnvFileWideEncodingError,
     _default_workspace_base,
+    _env_name_key,
     _workspace_dir_file,
     coerce_config_field,
     config_path,
@@ -762,6 +763,27 @@ def _read_env_pairs(cred_path: Path) -> dict[str, str]:
     return pairs
 
 
+def _pop_env_entry(pairs: dict[str, str], name: str) -> str | None:
+    """Remove every spelling of *name*'s ``os.environ`` entry; return the live value.
+
+    On Windows ``os.environ`` is case-insensitive, so ``slack_bot_token`` and
+    ``SLACK_BOT_TOKEN`` are one entry, and boot propagates ``.env`` with
+    ``setdefault`` and skips empty values: the first NON-EMPTY spelling in the
+    file is the value in force, and that is the one returned (``None`` when no
+    spelling holds a value). Writing
+    a new value under the canonical name alone would leave that older line ahead
+    of it, still winning. On POSIX the key is the literal name, so only *name*
+    itself is removed.
+    """
+    canon = _env_name_key(name)
+    live: str | None = None
+    for key in [k for k in pairs if _env_name_key(k) == canon]:
+        value = pairs.pop(key)
+        if live is None and value:
+            live = value
+    return live
+
+
 def _print_wide_env_remedy(cred_path: Path, exc: EnvFileWideEncodingError) -> None:
     print(
         f"  ❌ {cred_path} is saved as {exc.wide_encoding}, which Kiro Crew cannot read. "
@@ -893,8 +915,16 @@ def _setup_slack_tokens() -> None:
             # overwrite it.
             _print_wide_env_remedy(cred_path, exc)
             return
+        # Each written name first drops its other spellings, so on
+        # Windows a lowercase line from an older .env cannot keep the old value
+        # in force ahead of the new one.
+        _pop_env_entry(merged, CRED_SLACK_APP_TOKEN)
         merged[CRED_SLACK_APP_TOKEN] = app_token
+        _pop_env_entry(merged, CRED_SLACK_BOT_TOKEN)
         merged[CRED_SLACK_BOT_TOKEN] = bot_token
+        prior_owner = _pop_env_entry(merged, CRED_OWNER_ID)
+        if prior_owner is not None:
+            merged[CRED_OWNER_ID] = prior_owner
         if owner_id:
             merged[CRED_OWNER_ID] = owner_id
         elif owner_rejected and merged.get(CRED_OWNER_ID):

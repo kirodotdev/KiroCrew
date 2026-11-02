@@ -286,6 +286,101 @@ class TestSetupSlackTokens:
         assert fake_slack.calls == []
 
 
+class TestOtherSpellingsOfASavedName:
+    """On Windows ``slack_bot_token`` IS ``SLACK_BOT_TOKEN``.
+
+    Boot propagates ``.env`` with ``setdefault`` in file order, so an older
+    lowercase line left ahead of the newly written one keeps the OLD token in
+    force. The write must replace every spelling of the entry it sets, and only
+    on Windows: on POSIX the two spellings are different variables.
+    """
+
+    _OLD = (
+        "slack_app_token=xapp-old\n"
+        "slack_bot_token=xoxb-old\n"
+        "kirocrew_owner_id=U0OLDOWNER1\n"
+        "OTHER_KEY=keep\n"
+    )
+
+    def _run(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch, *, windows: bool
+    ) -> list[tuple[str, str]]:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", windows)
+        env_file.write_text(self._OLD, encoding="utf-8")
+        _tty(monkeypatch, True)
+        _install(monkeypatch, _FakeWebClient)
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "U03T18B4Y23")
+
+        cs._setup_slack_tokens()
+
+        return [
+            tuple(line.split("=", 1))  # type: ignore[misc]
+            for line in env_file.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def test_on_windows_the_new_values_replace_every_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lines = self._run(env_file, monkeypatch, windows=True)
+
+        names = [k.upper() for k, _ in lines]
+        for name in (CRED_SLACK_APP_TOKEN, CRED_SLACK_BOT_TOKEN, CRED_OWNER_ID):
+            assert names.count(name) == 1, lines
+        saved = dict(lines)
+        assert saved[CRED_SLACK_APP_TOKEN] == "xapp-new"
+        assert saved[CRED_SLACK_BOT_TOKEN] == "xoxb-new"
+        assert saved[CRED_OWNER_ID] == "U03T18B4Y23"
+        assert saved["OTHER_KEY"] == "keep"
+
+    def test_the_live_value_is_the_first_non_empty_spelling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boot skips an empty spelling, so an empty lowercase line ahead of a
+        populated canonical one must not stand in for the saved value."""
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", True)
+        pairs = {"kirocrew_owner_id": "", CRED_OWNER_ID: "U03T18B4Y23", "OTHER": "x"}
+
+        assert cs._pop_env_entry(pairs, CRED_OWNER_ID) == "U03T18B4Y23"
+        assert pairs == {"OTHER": "x"}
+        assert cs._pop_env_entry({"kirocrew_owner_id": ""}, CRED_OWNER_ID) is None
+
+    def test_a_rejected_member_id_keeps_the_saved_owner_behind_an_empty_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", True)
+        env_file.write_text(f"kirocrew_owner_id=\n{CRED_OWNER_ID}=U0SAVED0001\n", encoding="utf-8")
+
+        class Client(_FakeWebClient):
+            def users_info(self, user: str) -> dict[str, object]:
+                if user != "U0SAVED0001":
+                    raise _api_error("user_not_found")
+                return super().users_info(user)
+
+        _tty(monkeypatch, True)
+        _install(monkeypatch, Client)
+        typos = ["U0TYPO00001"] * cs._SLACK_VERIFY_ATTEMPTS
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", *typos)
+
+        cs._setup_slack_tokens()
+
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        assert [ln for ln in lines if ln.upper().startswith(CRED_OWNER_ID + "=")] == [
+            f"{CRED_OWNER_ID}=U0SAVED0001"
+        ]
+
+    def test_on_posix_a_differently_cased_name_is_left_alone(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved = dict(self._run(env_file, monkeypatch, windows=False))
+
+        assert saved["slack_bot_token"] == "xoxb-old"
+        assert saved["slack_app_token"] == "xapp-old"
+        assert saved["kirocrew_owner_id"] == "U0OLDOWNER1"
+        assert saved[CRED_SLACK_BOT_TOKEN] == "xoxb-new"
+        assert saved[CRED_SLACK_APP_TOKEN] == "xapp-new"
+        assert saved[CRED_OWNER_ID] == "U03T18B4Y23"
+
+
 class TestVerifySlackSecret:
     """The token check mirrors the dashboard's: two calls, three verdicts."""
 
