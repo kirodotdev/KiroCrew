@@ -1522,12 +1522,52 @@ def unattended_apply_allowed() -> bool:
     return active_update_pins().unattended_apply
 
 
+def manual_check_operator_transport() -> bool:
+    """Whether a person's update check fetches with the operator's own git config.
+
+    The fetch of a check someone started from the dashboard reads the operator's
+    global git config (credential helper, ssh command, proxy) on a standalone
+    install, as their Update already does, so a private remote that signs in
+    through a helper can be checked. A governed install always keeps that check
+    on the isolated env. Governed means a security policy is installed, the build
+    is the LTS edition, or the operator declared ``agent.mcp_registry_mode``.
+    Every answer that cannot be read is ``False``: the isolated env is the
+    default this widens. The background check never calls this; it is always
+    isolated.
+    """
+    try:
+        from kiro_crew.edition import is_lts
+        from kiro_crew.platform.context import current_context
+
+        ctx = current_context()
+        governed = ctx.governance is not None or ctx.is_enterprise or is_lts()
+    except Exception:
+        logger.debug("governance unreadable; keeping the manual check isolated", exc_info=True)
+        return False
+    if not governed:
+        try:
+            # Function-local: the loader closes an import cycle through the config plane.
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+            if cfg._base_unreadable or cfg._overlay_unreadable:
+                return False
+            governed = cfg.agent.mcp_registry_mode is True
+        except Exception:
+            logger.debug(
+                "registry mode unreadable; keeping the manual check isolated", exc_info=True
+            )
+            return False
+    return not governed
+
+
 __all__ = [
     "PRIMARY_BRANCHES",
     "git_command_env",
     "git_neutralizer_env",
     "is_primary_branch",
     "commits_ahead",
+    "manual_check_operator_transport",
     "min_version",
     "repo_exec_config_reason",
     "nested_repo_exec_driver_reason",

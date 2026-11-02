@@ -103,7 +103,8 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
   const [applyDirty, setApplyDirty] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const gwCheck = useMutation({
-    mutationFn: () => api.checkUpdate(),
+    // Only ever run from a click, so it is the manual check.
+    mutationFn: () => api.checkUpdate({ manual: true }),
     // Where the saved switch's entry stood, so a late answer cannot overwrite a newer read.
     onMutate: () => configReads(queryClient),
     onSuccess: (d, _vars, readsWhenSent) => {
