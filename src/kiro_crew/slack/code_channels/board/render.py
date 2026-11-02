@@ -28,8 +28,10 @@ FALLBACK_PREFIX = "Work board"
 
 #: The built-in Code tab's static ``tab_id`` (it has no persisted view id).
 CODE_TAB_ID = "code"
-#: A Slack id we put into a ``channel`` element: a channel id or a view id.
-_SLACK_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
+#: A Slack id we put into a ``channel`` element, a channel id or a view id: 1 to
+#: 64 ASCII letters and digits, checked character by character (nothing
+#: trailing, not even a newline). The wrap-up's own check, shared.
+_is_slack_id = _wrapup._is_slack_id
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,7 @@ class Tabs:
 
 def tab_element(channel_id: str, tab_id: str) -> dict | None:
     """A ``channel`` rich-text element that opens *tab_id* in *channel_id*, or None."""
-    if not (_SLACK_ID.match(channel_id or "") and _SLACK_ID.match(tab_id or "")):
+    if not (_is_slack_id(channel_id or "") and _is_slack_id(tab_id or "")):
         return None
     return {"type": "channel", "channel_id": channel_id, "tab_id": tab_id}
 
