@@ -179,6 +179,33 @@ class TestFolderCrud:
         assert folders.get(a["id"])["order"] == 5
         assert folders.get(b["id"])["order"] == 1
 
+    def test_create_after_deletes_lands_last(
+        self, folders: ArtifactFolderStore, store: ArtifactStore
+    ) -> None:
+        """Deleting A and B leaves C and D at orders 2 and 3; E must follow both."""
+        made = {name: folders.create(name) for name in ("A", "B", "C", "D")}
+        for name in ("A", "B"):
+            folders.delete(made[name]["id"], delete_contents=False, artifact_store=store)
+        folders.create("E")
+        listed = folders.list()
+        assert [f["name"] for f in listed] == ["C", "D", "E"]
+        assert listed[-1]["order"] == 4
+
+    def test_resolve_path_after_deletes_lands_last(
+        self, folders: ArtifactFolderStore, store: ArtifactStore
+    ) -> None:
+        made = {name: folders.create(name) for name in ("A", "B", "C", "D")}
+        for name in ("A", "B"):
+            folders.delete(made[name]["id"], delete_contents=False, artifact_store=store)
+        folders.resolve_path("E", create_missing=True)
+        assert [f["name"] for f in folders.list()] == ["C", "D", "E"]
+
+    def test_create_reads_a_non_integer_order_as_zero(self, tmp_path: Path) -> None:
+        path = tmp_path / "af.json"
+        path.write_text(json.dumps([{"id": "x1", "name": "Odd", "order": "first"}]))
+        created = ArtifactFolderStore(path=path).create("Next")
+        assert created["order"] == 1
+
     def test_persists_across_reload(self, tmp_path: Path) -> None:
         path = tmp_path / "af.json"
         s1 = ArtifactFolderStore(path=path)
