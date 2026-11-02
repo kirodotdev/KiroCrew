@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 356,
+  "_total": 349,
   "files": {
     "api/client.ts": {
       "total": 5,
@@ -282,10 +282,6 @@
     "pages/LocalStorageDebug.tsx": {
       "total": 1,
       "template": 1
-    },
-    "pages/overview/VectorMemoryCard.tsx": {
-      "total": 7,
-      "array": 7
     },
     "pages/scenes/GhostScene.tsx": {
       "total": 3,

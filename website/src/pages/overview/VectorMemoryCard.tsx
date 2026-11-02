@@ -618,7 +618,13 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </div>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
-          {['Key','Value','Confidence','Source',''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
+          {[
+            i18nT('pages.overview.vectorMemoryCard.column_key'),
+            i18nT('pages.overview.vectorMemoryCard.column_value'),
+            i18nT('pages.overview.vectorMemoryCard.column_confidence'),
+            i18nT('pages.overview.vectorMemoryCard.column_source'),
+            '',
+          ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
           {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map(e => {
             const valStr = semanticValueText(e)
@@ -735,7 +741,12 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </div>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
-          {['Event','Key/Type','Details','When'].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
+          {[
+            i18nT('pages.overview.vectorMemoryCard.column_event'),
+            i18nT('pages.overview.vectorMemoryCard.column_key_type'),
+            i18nT('pages.overview.vectorMemoryCard.column_details'),
+            i18nT('pages.overview.memoryTab.when'),
+          ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
           {filteredEvents.length === 0 && audit.isSuccess ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.vectorMemoryCard.no_events')}</td></tr> : filteredEvents.map((e, i: number) => (
             <tr key={i} className="hover:bg-bg-hover transition-colors">
