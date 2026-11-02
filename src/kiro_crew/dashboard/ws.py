@@ -84,6 +84,20 @@ _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 _ORPHANED_UNKNOWN = "Orphaned (unknown cause)"
 
 
+async def _send_browser_live_snapshot(ws: web.WebSocketResponse) -> None:
+    """Send each chat's current ``browser_live`` state to a NEW owner socket.
+
+    The hub publishes on change only, so without this a reloaded tab shows no
+    browser card, and a quick ask waiting on the person stays hidden until it
+    times out. Same frame and same redaction as the hub's own publish; owner
+    sockets only, like every other ``browser_live`` frame.
+    """
+    from kiro_crew.browser_harness.live_hub import LIVE_EVENT, get_live_hub
+
+    for data in get_live_hub().snapshot_events():
+        await ws.send_str(json.dumps({"type": LIVE_EVENT, "data": data}))
+
+
 async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
     """Send the one-shot ``slot_projection/subscribed`` floor to a NEW owner socket.
 
@@ -951,6 +965,10 @@ async def _serve_ws(
                 await state.send_members_subscribed(ws)
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
+            try:
+                await _send_browser_live_snapshot(ws)
+            except Exception:
+                logger.debug("browser_live snapshot not sent", exc_info=True)
         if is_dashboard_user:
             # The same shape for SLOT folds, and the same reason: a revision floor the
             # client holds BEFORE it issues a baseline read, so a read already on the

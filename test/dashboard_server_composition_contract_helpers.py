@@ -38,7 +38,7 @@ _SRC = _FACADE_PATH.parents[2]
 _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "api_entrypoint": (),
     "app_platform": (),
-    "browser_lifecycle": (),
+    "browser_lifecycle": ("_register_browser_harness_lifecycle",),
     "config_watch": ("_kick_config_watch", "_register_config_watch"),
     "crewmate_prune": tuple("""
         _claimed_dashboard_slots _crewmate_prune_gate_holds_path _kick_crewmate_prune

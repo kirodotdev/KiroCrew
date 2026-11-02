@@ -186,12 +186,12 @@ async def test_the_decision_http_release_waits_for_its_import(
     import it to close nothing."""
     import kiro_crew.decisions as decisions
 
-    name = "kiro_crew.decisions.impl_jev"
+    name = "kiro_crew.decisions.impl_systemone"
     app = web.Application()
     server._register_stt_hooks(app)
     hook = next(h for h in app.on_cleanup if h.__name__ == "_decision_http_shutdown")
     monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.delattr(decisions, "impl_jev", raising=False)
+    monkeypatch.delattr(decisions, "impl_systemone", raising=False)
     await hook(app)
     assert name not in sys.modules
     closed: list[bool] = []
@@ -202,7 +202,7 @@ async def test_the_decision_http_release_waits_for_its_import(
     module = types.ModuleType(name)
     module.close_sessions = _close_sessions  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(decisions, "impl_jev", module, raising=False)
+    monkeypatch.setattr(decisions, "impl_systemone", module, raising=False)
     await hook(app)
     assert closed == [True]
 

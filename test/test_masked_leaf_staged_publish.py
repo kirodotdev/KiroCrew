@@ -50,13 +50,6 @@ def temp_dirs(monkeypatch):
     return seen
 
 
-def _browser_token_write():
-    from kiro_crew.browser_cli import token
-
-    token.set_token("tok-" + "a" * 32)
-    return token.token_path(), None
-
-
 def _ops_secret_write():
     from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
 
@@ -72,7 +65,6 @@ def _ops_policy_write():
 
 
 WRITERS = {
-    "browser-extension-token": _browser_token_write,
     "ops-mission-control-secrets": _ops_secret_write,
     "ops-mission-control-policy": _ops_policy_write,
 }
@@ -142,11 +134,11 @@ def test_unusable_staging_refuses_rather_than_writing_beside_the_leaf(crew_home,
     """A planted non-directory at the staging name must NOT fall back to a sibling temp."""
     (crew_home / _AUTH_STORE_STAGING_LEAF).write_text("planted", encoding="utf-8")
 
-    from kiro_crew.browser_cli import token
+    from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
 
     with pytest.raises(OSError):
-        token.set_token("tok-" + "b" * 32)
-    assert not token.token_path().exists()
+        policy_store.put(policy_store.PRIMARY_KEY, "host-b")
+    assert not policy_store.policy_path().exists()
     assert crew_home not in temp_dirs
 
 

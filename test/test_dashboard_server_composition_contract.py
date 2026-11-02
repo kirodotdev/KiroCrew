@@ -108,8 +108,7 @@ _BASE_NAMES = frozenset("""
         _note_listener_sidecar _notify_owner_channels _notify_slack_override_expired
         _notify_unattended_expiry _override_expiry_dm_text _own_host_warm_done
         _pending_skill_notification _precompute_telemetry
-        _prune_browser_snapshots_loop _reconcile_listener_publication
-        _register_browser_install_cleanup _register_browser_view_cleanup
+        _reconcile_listener_publication _register_browser_harness_lifecycle
         _register_config_watch _register_connections_warm_lifecycle
         _register_crewmate_prune_gate _register_deploy_routes
         _register_deploy_skills _register_dist_static_routes
@@ -148,9 +147,8 @@ _BASE_NAMES = frozenset("""
         api_remote_artifact_reply_comment api_remote_artifacts_browse
         api_remote_artifacts_clone api_remote_artifacts_fork apply_config_duration
         async_safe_context_call attribute_dump audit_actor authorize_and_add_nudge
-        await_crewmate_prune_settled bind_address_for browser_cli_launch
-        browser_cli_launcher browser_cli_snapshots browser_cli_token
-        browser_cli_view build_allowed_origins build_hardened_runner
+        await_crewmate_prune_settled bind_address_for
+        build_allowed_origins build_hardened_runner
         build_host_canonical_redirect cautious_boot channel_slots chat check_host
         check_origin chmod_socket_0600 claim_dump_notification
         cleanup_migrated_builtin consume_managed_service_launch_environment
@@ -185,23 +183,20 @@ _BASE_NAMES = frozenset("""
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "534c66ed75e197e3cff4a5d7488aa541ca7ee0da864fa6cce3e1418926a9063c"
+_BASE_SHAPE_DIGEST = "e49860c4f160d2d4a0415334722d285cdada119f540333842f6ed84a81d61614"
 
 #: The definitions of the one-module file that ``_BASE_OWNERS`` does not name: the two
 #: entrypoints, and the helpers repository guards read by path or that own module
 #: state -- the tailnet awake cache's reader, the inherited-trust teardown pair, the
-#: browser lifecycle trio, the instances hooks with their revive policy, the pinned
+#: the instances hooks with their revive policy, the pinned
 #: order load and the healthy-boot marker. ``_FACADE_DEF_HOMES`` names the file each
 #: lives in.
 _FACADE_DEFS = (
-    "_prune_browser_snapshots_loop",
     "_tailnet_publish_keeps_awake",
     "_retake_hops_then_revive",
     "_revive_intended_instances",
     "_clear_override_derived_trust",
     "_suspend_override_derived_trust",
-    "_register_browser_install_cleanup",
-    "_register_browser_view_cleanup",
     "_register_instances_hooks",
     "_dispatch_healthy_boot_marker",
     "_kick_pinned_order_load",
@@ -219,11 +214,6 @@ _FACADE_DEFS = (
 _FACADE_DEF_HOMES: dict[str, tuple[str, ...]] = {
     "server": ("start_dashboard",),
     "api_entrypoint": ("start_api_server",),
-    "browser_lifecycle": (
-        "_prune_browser_snapshots_loop",
-        "_register_browser_install_cleanup",
-        "_register_browser_view_cleanup",
-    ),
     "heartbeat": ("_dispatch_healthy_boot_marker",),
     "inherited_trust": ("_clear_override_derived_trust", "_suspend_override_derived_trust"),
     "instances_lifecycle": (
@@ -301,7 +291,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 326
+    assert len(_BASE_NAMES) == 319
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 
@@ -387,7 +377,9 @@ _LAZY_IMPORTS = {
     "kiro_crew.apps.event_bus": "build_broadcast_fn",
     "kiro_crew.apps.execution": "builtin_app_agents builtin_app_mcp_servers builtin_app_names",
     "kiro_crew.apps.spawn_sdk": "build_spawn_impl",
+    "kiro_crew.browser_harness.supervisor": "get_supervisor",
     "kiro_crew.config": "live",
+    "kiro_crew.config.paths": "data_home",
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
@@ -413,6 +405,7 @@ _LAZY_IMPORTS = {
         "api_monitor_restart api_monitor_slot_get api_monitor_stop api_monitor_update "
         "api_monitors_list api_session_monitor_get"
     ),
+    "kiro_crew.dashboard.handlers.browser_harness_status": "auto_setup_browser_harness",
     "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
     "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
     "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
@@ -431,7 +424,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
-    "kiro_crew.decisions": "impl_jev local_runtime",
+    "kiro_crew.decisions": "impl_systemone local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
     "kiro_crew.memory_startup": "memory_prepared memory_startup_preparing",
     "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
@@ -474,7 +467,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 116
+    assert len(expected) == 119
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -528,12 +521,12 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     strays = [f"{o}:{n}" for o, n in placed if getattr(server, n) is not vars(_owner(o)).get(n)]
     assert strays == []
     names = [name for _, name in placed]
-    assert len(names) == len(set(names)) == 90 + 23
+    assert len(names) == len(set(names)) == 91 + 23
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(f"{name} {_shape(getattr(server, name))}" for name in _MOVED)
-    assert len(lines) == 90
+    assert len(lines) == 91
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -541,13 +534,13 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
 #: SHA-256 of the same ``"<name> <kind> <signature>"`` lines for the helpers of
 #: ``_FACADE_DEFS``, captured from the server module before they moved to their homes.
 #: The two entrypoints are left out: their ``port`` default reads ``KIROCREW_PORT``.
-_FACADE_HELPER_SHAPE_DIGEST = "54f69707c825bcf977e7e0ddde37d4469664ada8a855738842d4af0d75a49aee"
+_FACADE_HELPER_SHAPE_DIGEST = "0952dafb87df8d73c3c54e406f8028bf9043f91c08354f04d8a015faf2d76936"
 
 
 def test_the_moved_facade_helpers_keep_their_base_shapes() -> None:
     helpers = set(_FACADE_DEFS) - {"start_dashboard", "start_api_server"}
     lines = sorted(f"{name} {_shape(getattr(server, name))}" for name in helpers)
-    assert len(lines) == 11
+    assert len(lines) == 8
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _FACADE_HELPER_SHAPE_DIGEST, "\n".join(lines)
 
@@ -669,7 +662,7 @@ def test_the_data_module_importer_scan_sees_every_spelling() -> None:
 
 def test_the_facade_definitions_each_have_one_home() -> None:
     assert sorted(_FACADE_DEF_HOME) == sorted(_FACADE_DEFS)
-    assert len(_FACADE_DEF_HOME) == sum(map(len, _FACADE_DEF_HOMES.values())) == 13
+    assert len(_FACADE_DEF_HOME) == sum(map(len, _FACADE_DEF_HOMES.values())) == 10
 
 
 @pytest.mark.parametrize("name", _FACADE_DEFS)
@@ -699,7 +692,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEF_HOMES["server"])
-    assert len(set(_FACADE_DEFS) | _MOVED) == len(_FACADE_DEFS) + len(_MOVED) == 103
+    assert len(set(_FACADE_DEFS) | _MOVED) == len(_FACADE_DEFS) + len(_MOVED) == 101
     places: dict[str, list[str]] = {name: ["server"] for name in defined}
     for path in sorted(_OWNER_DIR.glob("[!_]*.py")):
         for top in ast.parse(path.read_text(encoding="utf-8")).body:

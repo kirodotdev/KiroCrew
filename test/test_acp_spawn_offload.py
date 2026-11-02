@@ -1222,7 +1222,6 @@ class TestRuntimeShieldSurvivesAFailedAppend:
                 allocate_scratch=lambda _: None, drop_inherited_scratch_env=lambda env: ()
             ),
         )
-        monkeypatch.setattr(runtime_mod, "browser_session_env", lambda env: {})
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])

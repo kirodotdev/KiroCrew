@@ -122,10 +122,14 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   'BrowserPanel.tsx': 'browser',
+  // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
+  // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
+  // origin list. Mapped with it so a control any of them gains stays indexed.
+  'BrowserCredentialDomains.tsx': 'browser',
+  'BrowserLiveSection.tsx': 'browser',
+  'BrowserLocalOrigins.tsx': 'browser',
   // The Browser tab's managed-browser and existing-browser sections, mounted by
   // BrowserPanel. Mapped with it so a control either one gains stays indexed.
-  'ManagedBrowsersSection.tsx': 'browser',
-  'ConnectBrowserSection.tsx': 'browser',
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',

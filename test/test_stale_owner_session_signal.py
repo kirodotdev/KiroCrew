@@ -219,15 +219,6 @@ def test_ask_question_gate_labels_stale_bootstrap_denial() -> None:
     assert resp is not None and resp.status == 401
 
 
-def test_browser_gate_labels_stale_bootstrap_denial() -> None:
-    from kiro_crew.dashboard.handlers import messaging as msg
-
-    request = _mocked_request()
-    with patch.object(msg, "_sel", return_value=MagicMock()):
-        resp = msg._deny_non_owner_browser_request(request, "browser.install")
-    assert resp is not None and resp.status == 401
-
-
 def test_cloud_gate_labels_stale_bootstrap_denial() -> None:
     from kiro_crew.dashboard import handlers_cloud as cloud
 

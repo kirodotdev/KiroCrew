@@ -315,7 +315,6 @@ test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
-test/test_browser_cli_snapshots.py
 test/test_browser_recording_skill.py
 test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
@@ -745,7 +744,6 @@ test/test_turn_duration_slack.py
 test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
 test/test_update_venv_detection.py
-test/test_use_builtin_browser_config.py
 test/test_user_resolution_fallback.py
 test/test_validation.py
 test/test_validation_user_actions.py

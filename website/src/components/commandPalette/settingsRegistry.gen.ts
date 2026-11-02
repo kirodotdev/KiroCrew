@@ -33,21 +33,53 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "auto_update"
   },
   {
-    "id": "browser.attach-token",
-    "labelKey": "pages.settings.browserPanel.token_label",
+    "id": "browser.max-frame-rate",
+    "label": "Max frame rate",
+    "labelKey": "pages.settings.browserPanel.max_fps_label",
+    "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
     "tab": "browser",
-    "type": "input",
+    "type": "select",
     "occurrence": 1,
-    "label": "Extension token (optional)"
+    "configKey": "browser.live.max_fps"
   },
   {
-    "id": "browser.use-the-built-in-browser",
-    "label": "Use the built-in browser",
-    "labelKey": "pages.settings.browserPanel.use_builtin_label",
+    "id": "browser.quality",
+    "label": "Quality",
+    "labelKey": "pages.settings.browserPanel.quality_label",
+    "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.live.quality"
+  },
+  {
+    "id": "browser.run-with-no-window",
+    "label": "Run with no window",
+    "labelKey": "pages.settings.browserPanel.headless_label",
+    "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window.",
+    "tab": "browser",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "browser.show-the-live-view-in-chat",
+    "label": "Show the live view in chat",
+    "labelKey": "pages.settings.browserPanel.live_enabled_label",
+    "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1,
-    "configKey": "dashboard.use_builtin_browser"
+    "configKey": "browser.live.enabled"
+  },
+  {
+    "id": "browser.which-browser",
+    "label": "Which browser",
+    "labelKey": "pages.settings.browserPanel.choice_label",
+    "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.choice"
   },
   {
     "id": "channels.agent-sessions-slack",
@@ -1799,6 +1831,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Agent harness per mate",
     "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
     "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
+    "label": "Also send screenshots of the agent's browser tab",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
+    "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

@@ -216,6 +216,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
+  'pages.chat.quickAsk.confirm_then', // {{button}} is page-authored DOM text, quoted in all catalogs at introduction
   'pages.overview.agentTemplatesTab.delete_confirm', // quoted in all catalogs at introduction (#12481)
   'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
   'pages.overview.skillsTab.delete_confirm',

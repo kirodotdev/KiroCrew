@@ -146,7 +146,6 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   // route, which is owner-gated and re-applies that check.
   dashboard_instance_changed: 'panels',
   log: 'log',
-  browser_event: 'browser',
   // NOTE: `slots` is deliberately absent — the list re-push is always
   // delivered and filtered per app in the payload on the server
   // (state.py::_serialize_for_client), so it needs no declaration.

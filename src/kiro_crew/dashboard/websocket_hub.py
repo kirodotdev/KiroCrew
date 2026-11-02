@@ -656,8 +656,11 @@ class WebSocketHub:
         send_all = self._owner_method("_send_ws_all", self._send_ws_all)
         send_all(msg_type, data, msg)
 
-    async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str) -> None:
+    async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str | bytes) -> None:
         """Send ``msg`` to one owner tab and wait for as long as the tab reads.
+
+        ``msg`` is a text frame as ``str`` or a binary frame as ``bytes`` (the live
+        browser frames, which carry a JPEG and must not be base64-inflated).
 
         The send returns once the tab's buffer drains, so how long it takes is the
         tab's backlog over its link speed, not a sign that the tab stopped reading.
@@ -670,7 +673,10 @@ class WebSocketHub:
         level shows no reading (``level_is_progress_signal``, or a transport that
         reports no level), only ``WS_OWNER_SEND_MAX_S`` ends it.
         """
-        send = asyncio.ensure_future(ws.send_str(msg))
+        if isinstance(msg, (bytes, bytearray, memoryview)):
+            send = asyncio.ensure_future(ws.send_bytes(bytes(msg)))
+        else:
+            send = asyncio.ensure_future(ws.send_str(msg))
         try:
             loop = asyncio.get_running_loop()
             watch = level_is_progress_signal()
@@ -705,6 +711,20 @@ class WebSocketHub:
         the call returns for every other tab. A tab that still reads keeps its
         send however slow its link, up to ``WS_OWNER_SEND_MAX_S``.
         """
+        return await self._deliver_owners(json.dumps({"type": msg_type, "data": data}))
+
+    async def deliver_ws_owners_bytes(self, payload: bytes) -> int:
+        """Await one BINARY frame to every owner tab; the binary sibling of ``deliver_ws_owners``.
+
+        Same audience (owner sockets only), same per-tab bound and same drop rule
+        for a tab that stopped reading. The payload is sent as one websocket binary
+        message, untouched: the live browser card decodes its own header
+        (``browser_harness.screencast.decode_frame``). Nothing here inspects or
+        logs the bytes, which may be a frame of a logged-in page.
+        """
+        return await self._deliver_owners(bytes(payload))
+
+    async def _deliver_owners(self, msg: str | bytes) -> int:
         targets = [
             ws
             for ws in list(self._owner._owner_ws_clients)
@@ -712,7 +732,6 @@ class WebSocketHub:
         ]
         if not targets:
             return 0
-        msg = json.dumps({"type": msg_type, "data": data})
         results = await asyncio.gather(
             *(self._await_owner_send(ws, msg) for ws in targets),
             return_exceptions=True,
@@ -972,26 +991,6 @@ class WebSocketHub:
             for ws in list(self._owner._ws_clients)
             if not ws.closed and ws.get("_is_dashboard_user", False)
         )
-
-    def broadcast_browser_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Redact and broadcast a browser activity event."""
-        safe_data: dict[str, Any] = {}
-        for key, value in data.items():
-            if isinstance(value, str):
-                from kiro_crew.security import redact
-
-                value = redact(value)
-            safe_data[key] = value
-        payload: dict[str, Any] = {
-            "type": "browser_event",
-            "event": event_type,
-            "ts": time.time(),
-        }
-        for key, value in safe_data.items():
-            if key not in ("type", "event", "ts"):
-                payload[key] = value
-        broadcast = self._owner_method("broadcast_ws", self.broadcast_ws)
-        broadcast("browser_event", payload)
 
     def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
         """Register a client and latch the serving loop before its first frame."""

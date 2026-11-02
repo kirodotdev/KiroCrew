@@ -36,6 +36,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
+        BrowserCredentialProvider,
         CapabilityManager,
         CloudInstancePolicyProvider,
         CredentialPolicy,
@@ -354,6 +355,11 @@ class PlatformContext:
     # the dashboard's ``setFeedbackTracker`` seam. v1 addition (no
     # CONTRACT_VERSION bump).
     feedback: "FeedbackTrackerProvider"
+    # Session cookies for Kiro's own Chromium, applied by the gateway's browser
+    # supervisor at every start and when the source or the settings changed
+    # before an agent navigation; never for the person's own Chrome. The Default
+    # supplies nothing. v1 addition (no CONTRACT_VERSION bump).
+    browser_credentials: "BrowserCredentialProvider"
     # Edition-registered STT / TTS providers and the edition's default choice.
     # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
     # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).

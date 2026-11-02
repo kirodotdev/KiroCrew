@@ -34,6 +34,12 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
   for pre-approved tools. The emitted ``rawInput`` carries the reserved purpose
   argument under its camelCase spelling (see ``_TOOL_PURPOSE``), so the pill's
   concise-label path is covered by the harness.
+* ``[[BROWSER]]`` in the prompt -> emit a ``browser`` MCP tool call
+  (``_meta.kiro`` names ``kirocrew-core`` / ``browser``, the identity the live
+  browser card keys its turn on) plus its completed update. The fake drives no
+  browser itself: a smoke test posts the real ops to ``/api/browser/op`` for the
+  same slot while a ``[[SLOW_HOLD:...]]`` keeps the turn open, and the card in
+  the transcript shows the stream exactly as a real turn would.
 * ``[[PERMISSION]]`` in the prompt -> the ``[[TOOL]]`` sequence PLUS a
   server->client ``session/request_permission`` (to surface the approval
   modal). This is **fire-and-forget**: the fake does not gate its own
@@ -154,6 +160,8 @@ FAKE_MODEL_CATALOG: dict[str, Any] = {
 
 # Prompt sentinels. Absent by default so a plain prompt stays text-only.
 TOOL_TRIGGER = "[[TOOL]]"
+# Emits a ``browser`` MCP tool call (see the module docstring).
+BROWSER_TRIGGER = "[[BROWSER]]"
 PERMISSION_TRIGGER = "[[PERMISSION]]"
 # Permission that actually GATES: the fake waits for the host's answer and
 # reflects it in the tool_call_update status. Distinct from PERMISSION_TRIGGER,
@@ -306,6 +314,7 @@ _MCP_CLIENT_ORIGIN = {
     "kiro": {"resource": {"resourceType": "mcpServer", "source": {"origin": "client"}}}
 }
 _TOOL_CALL_ID = "fake-tool-1"
+_BROWSER_TOOL_CALL_ID = "fake-browser-1"
 # The agent-authored purpose line, carried as a reserved tool argument. kiro-cli
 # echoes it back in ``rawInput`` under EITHER spelling; the fake emits the
 # camelCase one so the harness exercises the shape the dashboard's concise tool
@@ -588,6 +597,30 @@ def _emit_tool_call(session_id: str, *, with_permission: bool, gated: bool = Fal
     )
 
 
+def _emit_browser_tool_call(session_id: str, url: str = "https://jspaint.app") -> None:
+    """Emit one completed ``browser`` MCP tool call, as kiro-cli spells its identity."""
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": _BROWSER_TOOL_CALL_ID,
+            "title": "browser",
+            "kind": "fetch",
+            "status": "pending",
+            "rawInput": {"op": "navigate", "args": {"url": url}, "__toolUsePurpose": "Open a page"},
+            "_meta": {"kiro": {"mcpServerName": "kirocrew-core", "toolName": "browser"}},
+        },
+    )
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": _BROWSER_TOOL_CALL_ID,
+            "status": "completed",
+        },
+    )
+
+
 def _emit_elicitation(session_id: str, mode: str) -> str:
     """Raise an MCP elicitation mid tool call and echo the host's answer.
 
@@ -835,6 +868,8 @@ def _handle(msg: dict[str, Any]) -> None:
             _emit_tool_call(session_id, with_permission=True)
         elif TOOL_TRIGGER in text:
             _emit_tool_call(session_id, with_permission=False)
+        if BROWSER_TRIGGER in text:
+            _emit_browser_tool_call(session_id)
 
         holds = _SLOW_HOLD_RE.findall(text)
         if holds:

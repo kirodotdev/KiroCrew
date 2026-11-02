@@ -10,7 +10,7 @@
  * is guaranteed to reject.
  *
  * This is a SOURCE-CONTRACT test, matching the existing ChatPage convention
- * (see ChatPage.reachability.test.tsx): ChatPage's message list is driven by a
+ * (see ChatPage.mcpOAuth.test.tsx): ChatPage's message list is driven by a
  * custom virtualizer that mounts an empty window under jsdom, so a full-page
  * render cannot exercise these offers. What regressed — and what must not come
  * back — is precisely the gate SHAPE: which condition each offer is guarded on.

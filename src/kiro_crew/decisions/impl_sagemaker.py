@@ -511,7 +511,7 @@ class SageMakerOracle:
 
     async def ask(self, state: dict | str, questions: list[Question]) -> Answers:
         """Send one request carrying every question. Raises on any failure."""
-        from kiro_crew.decisions.impl_jev import _from_wire, _response_meta, _to_wire
+        from kiro_crew.decisions.impl_systemone import _from_wire, _response_meta, _to_wire
 
         if not questions:
             raise SageMakerProtocolError("no questions to ask")

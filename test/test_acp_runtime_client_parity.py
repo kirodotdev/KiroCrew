@@ -1021,53 +1021,6 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     assert env.get("KIROCREW_RUNTIME_PYTHON") == runtime_mod.sys.executable
 
 
-@pytest.mark.asyncio
-async def test_runtime_spawn_names_its_own_browser_session(monkeypatch):
-    """A subagent gets its own playwright-cli browser, not the parent's.
-
-    AcpRuntime builds its child environment independently of AcpClient, so this
-    is the drift guard: without it a subagent's ``goto`` lands in whatever page
-    the parent was reading, and its ``close`` takes the parent's browser down.
-    """
-    import kiro_crew.acp.runtime as runtime_mod
-
-    monkeypatch.delenv("PLAYWRIGHT_CLI_SESSION", raising=False)
-    captured: dict[str, object] = {}
-
-    class _StopSpawn(Exception):
-        pass
-
-    async def _fake_exec(*_args, **kwargs):
-        captured["env"] = kwargs.get("env")
-        raise _StopSpawn()
-
-    async def resolve_kiro_bin(*, environ=None, home=None):
-        return "/fake/kiro"
-
-    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_kiro_bin)
-    monkeypatch.setattr(
-        runtime_mod,
-        "wrap_argv",
-        lambda argv, mode, strip_python_env=False, is_kiro_cli=None, **_kw: (argv, None),
-    )
-    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
-    monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
-    monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
-    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", _fake_exec)
-
-    names = []
-    for _ in range(2):
-        rt = AcpRuntime(sandbox_mode="auto")
-        with pytest.raises(_StopSpawn):
-            await rt.spawn()
-        env = captured["env"]
-        assert isinstance(env, dict)
-        names.append(env["PLAYWRIGHT_CLI_SESSION"])
-
-    assert all(name.startswith("kc-") for name in names)
-    assert names[0] != names[1]
-
-
 class TestToolPurposeExtraction:
     """The reserved purpose arg is what the dashboard's concise tool pill shows
     instead of the literal invocation. kiro-cli echoes it back under EITHER

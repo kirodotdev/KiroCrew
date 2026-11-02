@@ -49,7 +49,7 @@ if TYPE_CHECKING:
         _note_listener_sidecar,
         _precompute_telemetry,
         _reconcile_listener_publication,
-        _register_browser_install_cleanup,
+        _register_browser_harness_lifecycle,
         _register_config_watch,
         _register_connections_warm_lifecycle,
         _register_deploy_routes,
@@ -377,7 +377,9 @@ async def start_api_server(
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
     _register_listener_guard_shutdown(app, state)
-    _register_browser_install_cleanup(app, state)
+    # The headless gateway serves the ``browser`` tool too, so its browser plane
+    # stops with it and a stray daemon is reclaimed at its start, as on the dashboard.
+    _register_browser_harness_lifecycle(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 

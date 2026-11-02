@@ -26,18 +26,6 @@ from aiohttp import web
 from kiro_crew import platform_compat  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
-from kiro_crew.browser.command_bus import (  # noqa: F401
-    DEFAULT_COMMAND_TIMEOUT_MS,
-    DEFAULT_DRAIN_WAIT_MS,
-    NoPanelError,
-    QueueFullError,
-    get_command_bus,
-)
-from kiro_crew.browser_cli import install as browser_cli_install  # noqa: F401
-from kiro_crew.browser_cli import install_job as browser_install_job  # noqa: F401
-from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
-from kiro_crew.browser_cli import token as browser_cli_token  # noqa: F401
-from kiro_crew.browser_cli import view as browser_cli_view  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
 from kiro_crew.config import loader as _loader
 from kiro_crew.config.loader import (  # noqa: F401
@@ -83,13 +71,11 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     spawn_parent_claim,
     string_field_error,
 )
-from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX  # noqa: F401
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.ingress import refuse_relayed  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.limits import APPS_OFF_FOR_TEAMMATES  # noqa: F401
 from kiro_crew.dashboard.messaging_api import agent_push as _owner_agent_push
-from kiro_crew.dashboard.messaging_api import browser_routes as _owner_browser_routes
 from kiro_crew.dashboard.messaging_api import channel_config_writes as _owner_channel_config_writes
 from kiro_crew.dashboard.messaging_api import channel_delivery as _owner_channel_delivery
 from kiro_crew.dashboard.messaging_api import (
@@ -111,27 +97,6 @@ from kiro_crew.dashboard.messaging_api import webex_settings as _owner_webex_set
 from kiro_crew.dashboard.messaging_api import wecom_settings as _owner_wecom_settings
 from kiro_crew.dashboard.messaging_api.agent_push import (  # noqa: F401
     api_notification_agent_push,
-)
-from kiro_crew.dashboard.messaging_api.browser_routes import (  # noqa: F401
-    _browser_install_active,
-    _browser_install_conflict,
-    _browser_install_job,
-    _browser_install_status,
-    _browser_view_payload,
-    _deny_non_owner_browser_request,
-    _start_browser_install_job,
-    _terminate_install_scope,
-    api_browser_command,
-    api_browser_command_drain,
-    api_browser_command_result,
-    api_browser_engine_install,
-    api_browser_install_get,
-    api_browser_install_start,
-    api_browser_open,
-    api_browser_token_put,
-    api_browser_view_get,
-    api_browser_view_start,
-    stop_browser_install,
 )
 from kiro_crew.dashboard.messaging_api.channel_config_writes import (  # noqa: F401
     _clean_id_list,
@@ -1095,7 +1060,6 @@ _facade_compose(
         _owner_imessage_settings,
         _owner_wecom_settings,
         _owner_feishu_settings,
-        _owner_browser_routes,
         _owner_channel_config_writes,
         _owner_slack_workspace,
         _owner_channel_folder_backfill,
