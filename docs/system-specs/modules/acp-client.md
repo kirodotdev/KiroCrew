@@ -3425,7 +3425,15 @@ applies it.
   (`_turn_start_priority`: user-origin provenance and `_crew_log_actor ==
   "user"`, not a restored queue entry — a typed turn, a Resume/Continue press,
   the runner's requeue of a person's failed turn, a typed follow-up in a cron
-  tab). The eager respawn that turn arms takes its priority, and so does the
+  tab). **A bulk Resume does not claim it.** `POST /api/chat/slots/resume-all`
+  answers 202 at once and runs every candidate's Continue in the background, so
+  no person waits on any one of the starts it leads to; a FOREGROUND claim per
+  start would put each of them in the person-only reserve ahead of the owner's
+  next typed message. Each queue entry it inserts keeps the owner's provenance
+  and carries `START_BACKGROUND_META_KEY` (`dashboard/chat_delivery.py`); the
+  drain passes `_turn_start_background` only when every entry it consumes
+  carries it, so a typed message drained in the same batch keeps FOREGROUND, and
+  `_turn_start_priority` then answers BACKGROUND. The eager respawn that turn arms takes its priority, and so does the
   poisoned-conversation canary inside it. An eager spawn from the dashboard
   owner's own slot create, agent switch or project switch; the focus resume
   prefetch, a reload and any app-token request stay BACKGROUND. Every messaging

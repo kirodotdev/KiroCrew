@@ -523,6 +523,16 @@ async def test_the_identity_sweep_barrier_finishes_under_a_foreground_stream():
         (dict(user_origin=True, crew_log_actor="app", provenance_restored=False), BG),
         # A queue entry restored from a previous process: its provenance is a file.
         (dict(user_origin=True, crew_log_actor="user", provenance_restored=True), BG),
+        # A bulk Resume: the owner's provenance, but nobody waits on this one start.
+        (
+            dict(
+                user_origin=True,
+                crew_log_actor="user",
+                provenance_restored=False,
+                start_background=True,
+            ),
+            BG,
+        ),
     ],
 )
 def test_a_dashboard_turn_is_foreground_only_when_a_person_sent_it(flags, expected):

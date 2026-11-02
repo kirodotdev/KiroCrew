@@ -535,6 +535,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_user_origin",
         "_message_is_typed",
         "_turn_provenance_restored",
+        "_turn_start_background",
         "_directive_self_wake",
         "_directive_loop_id",
         "_directive_loop_gen",

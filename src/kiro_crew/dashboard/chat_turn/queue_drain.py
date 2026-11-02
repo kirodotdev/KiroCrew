@@ -9,6 +9,10 @@ import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_delivery import (
+    BACKGROUND_START_TASKS,
+    START_BACKGROUND_META_KEY,
+)
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
@@ -1117,6 +1121,8 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
+    # Start plumbing too, read per entry below; it says nothing about the row.
+    _drained_meta.pop(START_BACKGROUND_META_KEY, None)
     if "quote" in _drained_meta:
         # The row's quote record follows the row's text: as typed only when
         # every consumed entry is the human's own (`deliver_as_typed`), else
@@ -1284,6 +1290,12 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
+    # A BACKGROUND start only when EVERY consumed entry asked for one: a person's
+    # typed message drained in the same batch keeps its FOREGROUND start.
+    if consumed and all(
+        (item.get("meta") or {}).get(START_BACKGROUND_META_KEY) is True for item in consumed
+    ):
+        _run_kwargs["_turn_start_background"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -1352,6 +1364,8 @@ async def _start_next_queued_turn(
             _run_chat(state, slot, next_msg, **_run_kwargs),
         )
     slot.task = task
+    if _run_kwargs.get("_turn_start_background"):
+        BACKGROUND_START_TASKS.add(task)
     # A recovery replay of a Regenerate's message takes over its target now
     # that ``slot.task`` gave it the slot's generation.
     adopt_regenerate_target(slot, consumed, task)

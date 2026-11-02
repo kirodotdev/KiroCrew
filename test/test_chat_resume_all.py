@@ -1,17 +1,21 @@
 """``POST /api/chat/slots/resume-all`` -- the bulk form of the Continue button.
 
 Pins the candidate set (idle + interrupted; relay archives, running slots and
-slots with live sub-agents out), the wave bounds and stagger, the per-slot
-refusal and failure isolation, a candidate that finished before its wave, the
-background run (202 at once, one run at a time, cancellation of the run only
-between waves, one outcome frame however the run ends), the owner gate (app tokens and non-owner dashboard
-sessions refused before any dispatch), and the empty install.
+slots with live sub-agents out), at most ``RESUME_ALL_MAX_RUNNING`` resumed
+turns at once in registration order, each entry's BACKGROUND start stamp, the
+per-slot refusal and failure
+isolation, a candidate that finished before its dispatch, the background run
+(202 at once, one run at a time, one outcome frame however the run ends), the
+owner gate (app tokens and non-owner dashboard sessions refused before any
+dispatch), and the empty install.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,30 +27,27 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard import chat_resume_all as mod
+from kiro_crew.dashboard.chat_delivery import BACKGROUND_START_TASKS, START_BACKGROUND_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
     SESSION_START_FAILED_KIND,
     SYNTHETIC_RECOVERY_KIND,
 )
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _START_TIMEOUT = "Request initialize timed out after 90s"
-
-#: Ceiling on every await of a run or wave this file releases itself, so a run
-#: that never finishes fails here by name instead of hanging the worker.
-_RUN_CEILING_SECS = 10.0
 
 
 @pytest.fixture
 def dispatched(monkeypatch):
-    """Stub the real turn dispatcher and the audit sink; make the stagger observable."""
+    """Stub the real turn dispatcher and the audit sink."""
     started = AsyncMock(return_value=True)
     mock_sel = MagicMock()
-    pause = AsyncMock()
     monkeypatch.setattr(ch, "_start_next_queued_turn", started)
     monkeypatch.setattr(ch, "sel", lambda: mock_sel)
-    monkeypatch.setattr(mod, "_pause", pause)
-    return SimpleNamespace(started=started, sel=mock_sel, pause=pause)
+    return SimpleNamespace(started=started, sel=mock_sel)
 
 
 def _interrupted(slot) -> None:
@@ -71,8 +72,39 @@ def _mark_running(slot) -> None:
     slot.task = task
 
 
-def _run(state, request=None) -> dict:
-    return asyncio.run(mod.resume_all_interrupted(state, request))
+def _frames(state) -> MagicMock:
+    sink = MagicMock()
+    state.broadcast_ws_owners = sink
+    return sink
+
+
+async def _drain(state) -> None:
+    while state._background_tasks:
+        await await_until(
+            asyncio.gather(*list(state._background_tasks), return_exceptions=True),
+            what="the resume-all background tasks",
+        )
+
+
+async def _press(state) -> dict:
+    """One press through ``start_resume_all``, run to its one outcome frame.
+
+    Returns that frame without its ``run_id``, once the id is checked against the
+    202's, so a test reads the per-slot record alone.
+    """
+    frames = _frames(state)
+    status, body = mod.start_resume_all(state, {"app": ""})
+    assert status == 202, (status, body)
+    await _drain(state)
+    ((event, outcome),) = [c.args for c in frames.call_args_list]
+    assert event == mod.RESUME_ALL_DONE_FRAME
+    assert outcome.pop("run_id") == body["run_id"]
+    assert outcome["total"] == body["total"]
+    return outcome
+
+
+def _run(state) -> dict:
+    return asyncio.run(_press(state))
 
 
 # ── the candidate set ────────────────────────────────────────────────────────
@@ -129,6 +161,8 @@ def test_resumes_every_candidate_with_the_pick_up_body(tmp_path, dispatched):
         assert entry["kind"] == SYNTHETIC_RECOVERY_KIND
         assert entry["content"] == _MANUAL_RESUME_MSG
         assert entry.get("_directive_user_origin"), "the owner's press is a human directive"
+        # Nobody waits on one start of a bulk press, so it starts BACKGROUND.
+        assert entry["meta"].get(START_BACKGROUND_META_KEY) is True
     assert dispatched.started.await_count == 2
     vias = {
         c.kwargs["metadata"].get("via") for c in dispatched.sel.log_tool_invocation.call_args_list
@@ -136,75 +170,192 @@ def test_resumes_every_candidate_with_the_pick_up_body(tmp_path, dispatched):
     assert vias == {mod.RESUME_ALL_VIA}
 
 
-def test_an_empty_install_answers_at_once(tmp_path, dispatched):
+# ── at most RESUME_ALL_MAX_RUNNING turns at once ─────────────────────────────
+
+
+def test_a_run_holds_at_most_the_bound_of_resumed_turns_running(tmp_path, dispatched, monkeypatch):
+    """Ten candidates, a bound of four: four turns run, and each later candidate
+    is dispatched, in registration order, only once an earlier turn has ended.
+    The outcome goes out once the last candidate is dispatched, with its own turn
+    still running."""
+    count = 10
+    bound = mod.RESUME_ALL_MAX_RUNNING
+    assert 1 < bound < count
     state = _make_state(tmp_path)
-    _finished(state.get_or_create_slot("done"))
-
-    out = _run(state)
-
-    assert out == {"ok": True, "total": 0, "resumed": [], "skipped": [], "failed": []}
-    dispatched.started.assert_not_awaited()
-    dispatched.pause.assert_not_awaited()
-
-
-# ── waves ────────────────────────────────────────────────────────────────────
-
-
-def test_launches_go_out_in_waves_with_a_pause_between(tmp_path, dispatched, monkeypatch):
-    """Nine candidates, waves of four: three waves, two pauses, none before the first."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
-    state = _make_state(tmp_path)
-    for i in range(9):
+    for i in range(count):
         _interrupted(state.get_or_create_slot(f"s{i}"))
-
-    out = _run(state)
-
-    assert out["resumed"] == [f"s{i}" for i in range(9)]
-    assert dispatched.pause.await_count == 2
-    assert all(c.args == (mod.RESUME_ALL_STAGGER_SECS,) for c in dispatched.pause.call_args_list)
-
-
-def test_a_wave_dispatches_at_most_the_wave_size_at_once(tmp_path, dispatched, monkeypatch):
-    """The dispatcher is held open: the fifth launch waits for the first wave."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
-    state = _make_state(tmp_path)
-    for i in range(6):
-        _interrupted(state.get_or_create_slot(f"s{i}"))
-    in_flight = 0
-    peak = 0
-    release = asyncio.Event()
-
-    async def slow_start(_state, _slot):
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await release.wait()
-        in_flight -= 1
-        return True
-
-    monkeypatch.setattr(ch, "_start_next_queued_turn", slow_start)
 
     async def drive():
-        task = asyncio.ensure_future(mod.resume_all_interrupted(state))
-        # Let the first wave reach the dispatcher; the lock and the sub-agent
-        # probe inside continue_slot_turn take a few loop turns each.
-        for _ in range(500):
-            if in_flight == 4:
-                break
-            await asyncio.sleep(0)
-        for _ in range(50):
-            await asyncio.sleep(0)
-        assert in_flight == 4, "the second wave must wait for the first"
-        release.set()
-        return await asyncio.wait_for(task, _RUN_CEILING_SECS)
+        frames = _frames(state)
+        order: list[str] = []
+        turns: dict[str, asyncio.Future] = {}
+        loop = asyncio.get_running_loop()
 
-    out = asyncio.run(drive())
+        async def dispatch(_state, slot):
+            # As the queue drain does: the turn runs as the slot's own task.
+            slot._queue.clear()
+            turns[slot.key] = loop.create_future()
+            slot.task = asyncio.ensure_future(turns[slot.key])
+            order.append(slot.key)
+            return True
 
-    assert peak == 4
-    assert len(out["resumed"]) == 6
+        def running() -> int:
+            return sum(1 for f in turns.values() if not f.done())
+
+        monkeypatch.setattr(ch, "_start_next_queued_turn", dispatch)
+        status, _body = mod.start_resume_all(state, {"app": ""})
+        assert status == 202
+        await async_wait_until(lambda: len(order) == bound, describe=lambda: f"order={order}")
+        # Nothing more starts while all four turns are still running.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert len(order) == bound and running() == bound
+        for i in range(count):
+            turns[f"s{i}"].set_result(None)
+            want = min(count, bound + i + 1)
+            await async_wait_until(lambda: len(order) == want, describe=lambda: f"order={order}")
+            assert running() <= bound
+        await _drain(state)
+        ((_event, outcome),) = [c.args for c in frames.call_args_list]
+        return order, outcome
+
+    order, outcome = asyncio.run(drive())
+
+    assert order == [f"s{i}" for i in range(count)], "candidates go on in registration order"
+    assert outcome["resumed"] == order
+    assert outcome["skipped"] == [] and outcome["failed"] == []
+
+
+@pytest.mark.parametrize("successor_is_own_retry", [True, False])
+def test_a_turn_that_hands_over_to_its_own_retry_keeps_its_place(
+    successor_is_own_retry, tmp_path, dispatched, monkeypatch
+):
+    """A resumed turn whose process dies queues a retry and hands the slot to it
+    before its own task ends. That retry is still this resume's work, so the next
+    candidate waits for it; a person's message drained next is not, so the next
+    candidate goes on as the resumed turn ends."""
+    bound = mod.RESUME_ALL_MAX_RUNNING
+    state = _make_state(tmp_path)
+    for i in range(bound + 1):
+        _interrupted(state.get_or_create_slot(f"s{i}"))
+    first = state.get_or_create_slot("s0")
+
+    async def drive():
+        frames = _frames(state)
+        loop = asyncio.get_running_loop()
+        turns: dict[str, asyncio.Future] = {}
+        order: list[str] = []
+
+        async def dispatch(_state, slot):
+            slot._queue.clear()
+            turns[slot.key] = loop.create_future()
+            slot.task = asyncio.ensure_future(turns[slot.key])
+            BACKGROUND_START_TASKS.add(slot.task)
+            order.append(slot.key)
+            return True
+
+        monkeypatch.setattr(ch, "_start_next_queued_turn", dispatch)
+        mod.start_resume_all(state, {"app": ""})
+        await async_wait_until(lambda: len(order) == bound, describe=lambda: f"{order}")
+        # As the queue hand-off does: the successor takes the slot before the
+        # ending turn's task completes.
+        successor = loop.create_future()
+        first.task = asyncio.ensure_future(successor)
+        if successor_is_own_retry:
+            BACKGROUND_START_TASKS.add(first.task)
+        turns["s0"].set_result(None)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        held = len(order) == bound
+        successor.set_result(None)
+        for fut in list(turns.values()):
+            if not fut.done():
+                fut.set_result(None)
+        await async_wait_until(lambda: len(order) == bound + 1, describe=lambda: f"{order}")
+        if not turns[f"s{bound}"].done():
+            turns[f"s{bound}"].set_result(None)
+        await _drain(state)
+        return held, frames.call_args.args[1]
+
+    held, outcome = asyncio.run(drive())
+
+    assert held is successor_is_own_retry
+    assert len(outcome["resumed"]) == bound + 1
+
+
+def test_a_waiting_candidate_its_owner_resumed_meanwhile_is_skipped(
+    tmp_path, dispatched, monkeypatch
+):
+    """A candidate past the bound is checked when its turn comes: one its owner
+    resumed by hand while it waited is reported as running, not resumed twice."""
+    bound = mod.RESUME_ALL_MAX_RUNNING
+    state = _make_state(tmp_path)
+    for i in range(bound + 1):
+        _interrupted(state.get_or_create_slot(f"s{i}"))
+    late = state.get_or_create_slot(f"s{bound}")
+
+    async def drive():
+        frames = _frames(state)
+        turns: dict[str, asyncio.Future] = {}
+        loop = asyncio.get_running_loop()
+
+        async def dispatch(_state, slot):
+            slot._queue.clear()
+            turns[slot.key] = loop.create_future()
+            slot.task = asyncio.ensure_future(turns[slot.key])
+            return True
+
+        monkeypatch.setattr(ch, "_start_next_queued_turn", dispatch)
+        mod.start_resume_all(state, {"app": ""})
+        await async_wait_until(lambda: len(turns) == bound, describe=lambda: f"{list(turns)}")
+        _mark_running(late)
+        for fut in list(turns.values()):
+            fut.set_result(None)
+        await _drain(state)
+        ((_event, outcome),) = [c.args for c in frames.call_args_list]
+        return outcome
+
+    outcome = asyncio.run(drive())
+
+    assert outcome["resumed"] == [f"s{i}" for i in range(bound)]
+    assert outcome["skipped"] == [{"slot": f"s{bound}", "code": "slot_running"}]
 
 
 # ── isolation ────────────────────────────────────────────────────────────────
+
+
+def test_a_session_whose_queue_a_restart_restored_is_resumed(tmp_path, dispatched):
+    """After a restart an interrupted session can still hold queued cards,
+    reloaded from disk. The press resumes it, as the per-row Resume does, and the
+    restored cards stay queued behind the pick-up for the owner to send."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("restored")
+    _interrupted(slot)
+    slot.queue_append("a card queued before the restart")
+    slot._queue[-1][RESTORED_QUEUE_KEY] = True
+
+    out = _run(state)
+
+    assert out["resumed"] == ["restored"], out
+    assert out["skipped"] == []
+    assert [e["content"] for e in slot._queue] == [
+        _MANUAL_RESUME_MSG,
+        "a card queued before the restart",
+    ]
+
+
+def test_a_live_queue_on_an_interrupted_session_is_still_left_to_the_runner(tmp_path, dispatched):
+    """A card queued in THIS process is the runner's to drain, so the press skips
+    that session as the per-row Resume does."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("live")
+    _interrupted(slot)
+    slot.queue_append("a card queued just now")
+
+    out = _run(state)
+
+    assert out["resumed"] == []
+    assert out["skipped"] == [{"slot": "live", "code": "slot_queue_pending"}]
 
 
 def test_a_refused_slot_is_reported_by_code_and_the_rest_resume(tmp_path, dispatched):
@@ -223,7 +374,7 @@ def test_a_refused_slot_is_reported_by_code_and_the_rest_resume(tmp_path, dispat
     dispatched.started.assert_awaited_once()
 
 
-def test_a_slot_that_fails_to_dispatch_does_not_stop_the_wave(tmp_path, dispatched, monkeypatch):
+def test_a_slot_that_fails_to_dispatch_does_not_stop_the_others(tmp_path, dispatched, monkeypatch):
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("ok1"))
     _interrupted(state.get_or_create_slot("boom"))
@@ -254,8 +405,8 @@ def test_a_slot_replaced_while_queued_is_skipped_not_resumed(tmp_path, dispatche
     # re-registered to a fresh object (a reconnect landing mid-request).
     real_collect = mod.collect_interrupted_idle
 
-    def collect_then_swap(st):
-        picked = real_collect(st)
+    def collect_then_swap(st, **kw):
+        picked = real_collect(st, **kw)
         st._slots["swap"] = replacement
         return picked
 
@@ -269,12 +420,11 @@ def test_a_slot_replaced_while_queued_is_skipped_not_resumed(tmp_path, dispatche
     assert list(replacement._queue) == []
 
 
-# ── a candidate that finished before its wave ────────────────────────────────
+# ── a candidate that finished before its dispatch ────────────────────────────
 
 
-def test_slot_finished_between_waves_is_not_continued(tmp_path, dispatched, monkeypatch):
-    """s4 is in wave 2; its turn finishes on its own during wave 1's pause."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
+def test_slot_finished_before_its_dispatch_is_not_continued(tmp_path, dispatched, monkeypatch):
+    """s4's turn finishes on its own between the collect and its Continue."""
     state = _make_state(tmp_path)
     for i in range(5):
         _interrupted(state.get_or_create_slot(f"s{i}"))
@@ -286,11 +436,14 @@ def test_slot_finished_between_waves_is_not_continued(tmp_path, dispatched, monk
         return True
 
     monkeypatch.setattr(ch, "_start_next_queued_turn", start)
+    real_load = mod.load_window_off_loop
 
-    async def pause(_secs):
-        state._slots["s4"].append("assistant", "finished on its own", "msg msg-a")
+    async def load_then_finish(slot):
+        await real_load(slot)
+        if slot.key == "s4":
+            slot.append("assistant", "finished on its own", "msg msg-a")
 
-    monkeypatch.setattr(mod, "_pause", pause)
+    monkeypatch.setattr(mod, "load_window_off_loop", load_then_finish)
     out = _run(state)
 
     assert "s4" not in out["resumed"], f"s4 got {bodies.get('s4')!r}"
@@ -314,7 +467,7 @@ def test_second_press_after_turns_finished_fast_does_not_carry_on(
     monkeypatch.setattr(ch, "_start_next_queued_turn", start_and_finish)
     stale = mod.collect_interrupted_idle(state)  # the second press's snapshot
     _run(state)  # the first press runs to completion
-    monkeypatch.setattr(mod, "collect_interrupted_idle", lambda _s: stale)
+    monkeypatch.setattr(mod, "collect_interrupted_idle", lambda _s, **_k: stale)
     seen: list[str] = []
 
     async def record(_state, slot):
@@ -396,6 +549,107 @@ def test_a_slot_whose_channel_turn_is_in_flight_is_not_a_candidate(
     assert out["skipped"] == []
 
 
+#: The fixture the sidebar's count is checked against too (see its ``$comment``).
+_COUNT_FIXTURE = Path(__file__).parent / "fixtures" / "resume_all_candidates.json"
+#: The slots-payload fields the browser's count reads (``interruptedIdleSlots``
+#: plus the chat page's ``isChatPageSurface`` filter).
+_COUNT_ROW_FIELDS = frozenset(
+    {"mode", "surface", "running", "interrupted", "subagents_running", "executor"}
+)
+_TRANSCRIPTS = {
+    "interrupted": _interrupted,
+    "start_failed": _start_failed,
+    "finished": _finished,
+    "empty": lambda _slot: None,
+}
+
+
+def _count_cases() -> list[dict]:
+    return json.loads(_COUNT_FIXTURE.read_text(encoding="utf-8"))["cases"]
+
+
+def _build_from_facts(state, entries: list[dict], monkeypatch) -> None:
+    linked: set[str] = set()
+    children: set[str] = set()
+    building: set[str] = set()
+    for entry in entries:
+        facts = entry["facts"]
+        slot = state.get_or_create_slot(entry["key"])
+        _TRANSCRIPTS[facts.get("transcript", "empty")](slot)
+        if facts.get("running"):
+            _mark_running(slot)
+        if facts.get("reserved"):
+            slot._turn_admission_reserved = True
+        if facts.get("linked_turn_running"):
+            linked.add(slot.key)
+        if facts.get("subagents_running"):
+            children.add(ch.effective_session_key(slot))
+        if facts.get("under_construction"):
+            building.add(slot.key)
+        if "executor" in facts:
+            slot.executor = facts["executor"]
+        if "mode" in facts:
+            slot.mode = facts["mode"]
+        if "agent" in facts:
+            slot.agent = facts["agent"]
+        if "created_by" in facts:
+            slot._created_by = facts["created_by"]
+    slot_type = type(next(iter(state._slots.values())))
+    monkeypatch.setattr(slot_type, "linked_turn_running", property(lambda s: s.key in linked))
+    state.subagents = SimpleNamespace(
+        running_agents_for=lambda key: ["child"] if key in children else [],
+        published_queued_depths=lambda: {},
+    )
+    state._slots_under_construction = building
+
+
+@pytest.mark.parametrize("case", _count_cases(), ids=lambda case: case["name"])
+def test_the_server_total_is_the_count_the_sidebar_reads_from_the_shared_fixture(
+    case, tmp_path, dispatched, monkeypatch
+):
+    """The fixture's rows are what ``serialize_slots`` sends for its facts, and
+    the server picks exactly its ``expected`` keys, as ``total`` too. The vitest
+    suite checks the sidebar's count against the same rows and keys."""
+    from kiro_crew import crew_mode
+
+    # The Crew Mode lineage from these slots alone: no remembered root, no
+    # persisted edge, the shipped conductor list.
+    monkeypatch.setattr(crew_mode, "_known_roots", set())
+    monkeypatch.setattr(crew_mode, "persisted_parents", dict)
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    state = _make_state(tmp_path)
+    _build_from_facts(state, case["slots"], monkeypatch)
+
+    payload = {row["key"]: row for row in state.serialize_slots()}
+    for entry in case["slots"]:
+        want = entry["row"]
+        if want is None:
+            assert entry["key"] not in payload, f"{entry['key']} is in the slots payload"
+            continue
+        assert (
+            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | {"crew_root"}
+        ), f"{entry['key']}: name every field the count reads"
+        # ``crew_root`` is on a worker's row only; a row the fixture gives none
+        # must carry none, or the sidebar would drop a row this case counts.
+        got = {field: payload[entry["key"]].get(field) for field in _COUNT_ROW_FIELDS}
+        got["crew_root"] = payload[entry["key"]].get("crew_root") or None
+        assert got == {"crew_root": None, **want}, entry["key"]
+
+    crew = case.get("crew_mode", False)
+    picked = mod.collect_interrupted_idle(state, crew_mode=crew)
+    assert [name for name, _ in picked] == case["expected"]
+
+    async def press():
+        status, body = mod.start_resume_all(state, {"app": ""}, crew_mode=crew)
+        await _drain(state)
+        return status, body
+
+    _frames(state)
+    status, body = asyncio.run(press())
+    assert status == (202 if case["expected"] else 200)
+    assert body["total"] == len(case["expected"])
+
+
 class _PendingWindow:
     """A restored row's lazy window loader: ``read`` is the disk read, the call
     is the replay. Records which thread each read ran on."""
@@ -446,7 +700,7 @@ def test_a_restored_candidate_loads_its_window_off_the_loop(tmp_path, dispatched
     loader = _restore_pending(slot)
 
     async def drive():
-        return threading.get_ident(), await mod.resume_all_interrupted(state)
+        return threading.get_ident(), await _press(state)
 
     loop_thread, out = asyncio.run(drive())
 
@@ -474,36 +728,26 @@ def test_a_failed_window_read_fails_that_slot_only(tmp_path, dispatched):
     assert out["failed"] == [{"slot": "broken", "error": "OSError"}]
 
 
-def test_a_failed_slots_push_after_dispatch_still_counts_as_resumed(
-    tmp_path, dispatched, monkeypatch
-):
+def test_a_failed_slots_push_fails_only_its_own_slot(tmp_path, dispatched, monkeypatch):
+    """``continue_slot_turn`` raises when the slots push after its dispatch fails;
+    ``_one`` records that slot as failed and the other slot still resumes."""
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("a"))
     _interrupted(state.get_or_create_slot("b"))
-    monkeypatch.setattr(state, "push_slots_update", MagicMock(side_effect=RuntimeError("ws")))
+    monkeypatch.setattr(
+        state, "push_slots_update", MagicMock(side_effect=[RuntimeError("ws"), None])
+    )
 
     out = _run(state)
 
-    assert out["resumed"] == ["a", "b"]
-    assert out["failed"] == []
+    (failed,) = out["failed"]
+    assert failed["error"] == "RuntimeError"
+    assert sorted([*out["resumed"], failed["slot"]]) == ["a", "b"]
+    assert len(out["resumed"]) == 1
     assert dispatched.started.await_count == 2
 
 
 # ── the background run ───────────────────────────────────────────────────────
-
-
-def _frames(state) -> MagicMock:
-    sink = MagicMock()
-    state.broadcast_ws_owners = sink
-    return sink
-
-
-async def _drain(state) -> None:
-    while state._background_tasks:
-        await asyncio.wait_for(
-            asyncio.gather(*list(state._background_tasks), return_exceptions=True),
-            _RUN_CEILING_SECS,
-        )
 
 
 def test_a_run_answers_at_once_and_pushes_its_outcome(tmp_path, dispatched):
@@ -602,31 +846,24 @@ def test_a_second_press_during_a_run_is_refused_and_dispatches_nothing(
     assert third[0] == 202
 
 
-def test_cancelling_the_run_mid_wave_leaves_no_slot_half_queued(tmp_path, dispatched, monkeypatch):
-    """Cancelling the run task stops it BETWEEN waves only.
-
-    This is a cancellation of the run task itself, not gateway shutdown: loop
-    teardown cancels every task, the wave included, and the shield does not
-    apply there. Wave 2's starts are held open when the run is cancelled. The shielded wave
-    still runs to its end, so every slot whose recovery entry was queued gets
-    its dispatch; waves 3+ are never touched; the outcome frame says cancelled.
-    """
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
+def test_a_cancelled_run_sends_one_outcome_frame_and_frees_the_button(
+    tmp_path, dispatched, monkeypatch
+):
+    """Loop teardown is what cancels a run: one frame marked ``cancelled`` still
+    goes out, with the slots recorded so far, and the button is free again."""
     state = _make_state(tmp_path)
     frames = _frames(state)
-    for i in range(12):
+    for i in range(3):
         _interrupted(state.get_or_create_slot(f"s{i}"))
+    all_in = asyncio.Event()
     hold = asyncio.Event()
-    in_wave2 = 0
-    dispatched_keys: list[str] = []
+    entered: list[str] = []
 
     async def start(_state, slot):
-        nonlocal in_wave2
-        if int(slot.key[1:]) >= 4:
-            in_wave2 += 1
-            await hold.wait()
-        slot._queue.clear()
-        dispatched_keys.append(slot.key)
+        entered.append(slot.key)
+        if len(entered) == 3:
+            all_in.set()
+        await hold.wait()
         return True
 
     monkeypatch.setattr(ch, "_start_next_queued_turn", start)
@@ -635,44 +872,41 @@ def test_cancelling_the_run_mid_wave_leaves_no_slot_half_queued(tmp_path, dispat
         status, _body = mod.start_resume_all(state, {"app": ""})
         assert status == 202
         run, _run_id, _total = getattr(state, mod._RUN_ATTR)
-        for _ in range(2000):
-            if in_wave2 == 4:
-                break
-            await asyncio.sleep(0)
-        assert in_wave2 == 4
+        await await_until(all_in, what="every dispatch in flight")
         run.cancel()
         with pytest.raises(asyncio.CancelledError):
-            # shield: a ceiling hit must not cancel the run a second time.
-            await asyncio.wait_for(asyncio.shield(run), _RUN_CEILING_SECS)
-        hold.set()
+            await await_until(run, what="the cancelled run finishing")
         await _drain(state)
 
     asyncio.run(drive())
 
-    depth = {k: state._slots[k].queue_depth for k in state._slots}
-    assert all(d == 0 for d in depth.values()), f"a slot was left half-queued: {depth}"
-    assert sorted(dispatched_keys, key=lambda k: int(k[1:])) == [f"s{i}" for i in range(8)]
     (call,) = frames.call_args_list
     outcome = call.args[1]
     assert outcome["cancelled"] is True
-    # Sent once the in-flight wave finished, so it reports that wave too.
-    assert sorted(outcome["resumed"], key=lambda k: int(k[1:])) == [f"s{i}" for i in range(8)]
+    assert outcome["resumed"] == [] and outcome["failed"] == []
     assert getattr(state, mod._RUN_ATTR) is None
-
-    async def press_again():
-        return await ch.continue_slot_turn(state, state._slots["s9"], directive_user_origin=True)
-
-    assert asyncio.run(press_again()) == "resumed", "an untouched slot still takes Resume"
+    # Only loop teardown cancels a run, so each slot whose dispatch was in flight
+    # keeps its queued recovery entry for the restart to reload.
+    assert {k: state._slots[k].queue_depth for k in ("s0", "s1", "s2")} == {
+        "s0": 1,
+        "s1": 1,
+        "s2": 1,
+    }
 
 
 def test_an_exception_outside_the_slot_work_still_sends_the_outcome(
     tmp_path, dispatched, monkeypatch, caplog
 ):
-    """An exception escaping the waves outside ``_one`` (here the inter-wave
-    pause) frees the button, sends one ``ok: false`` frame naming every slot it
-    never reached, and is logged through ``_log_task_exception``."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 1)
-    monkeypatch.setattr(mod, "_pause", AsyncMock(side_effect=OSError("boom")))
+    """An exception escaping the per-slot work (here raised by the candidate
+    loop itself after one slot) frees the button, sends one ``ok: false`` frame
+    naming every slot it never recorded, and is logged through
+    ``_log_task_exception``."""
+
+    async def resume_one_then_fail(_state, candidates, _claims, outcome):
+        outcome["resumed"].append(candidates[0][0])
+        raise OSError("boom")
+
+    monkeypatch.setattr(mod, "_resume_candidates", resume_one_then_fail)
     state = _make_state(tmp_path)
     frames = _frames(state)
     for i in range(2):
@@ -725,6 +959,169 @@ async def test_the_owner_resumes_over_http(tmp_path, dispatched):
     assert data == {"ok": True, "total": 1, "run_id": data["run_id"]}
     dispatched.started.assert_awaited_once()
     assert frames.call_args.args[1]["resumed"] == ["a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "want"),
+    [
+        ({"crew_mode": True}, ["conductor"]),
+        (None, ["conductor", "worker"]),
+        ({"crew_mode": "yes"}, ["conductor", "worker"]),
+    ],
+)
+async def test_the_press_says_whether_crew_mode_left_workers_out(
+    body, want, tmp_path, dispatched, monkeypatch
+):
+    """Only ``{"crew_mode": true}`` leaves a listed root's worker out of the run;
+    no body or another value counts it, as the sidebar does with the preview
+    off."""
+    from kiro_crew import crew_mode
+
+    monkeypatch.setattr(crew_mode, "_known_roots", set())
+    monkeypatch.setattr(crew_mode, "persisted_parents", dict)
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    state = _make_state(tmp_path)
+    frames = _frames(state)
+    root = state.get_or_create_slot("conductor")
+    root.agent = "kirocrew-conductor"
+    _interrupted(root)
+    worker = state.get_or_create_slot("worker")
+    worker._created_by = "conductor"
+    _interrupted(worker)
+
+    async with TestClient(TestServer(_app(state))) as client:
+        if isinstance(body, str):
+            resp = await client.post("/api/chat/slots/resume-all", data=body)
+        else:
+            resp = await client.post("/api/chat/slots/resume-all", json=body)
+        data = await resp.json()
+        await _drain(state)
+
+    assert resp.status == 202
+    assert data["total"] == len(want)
+    assert sorted(frames.call_args.args[1]["resumed"]) == sorted(want)
+
+
+@pytest.mark.parametrize(
+    ("slots", "want"),
+    [
+        (["a", "c", "not-a-session"], ["a", "c"]),
+        ([], []),
+        # Malformed: the run narrows to nothing, never widens to every session.
+        ("a", []),
+        (["a", 3], []),
+        (["x"] * (mod.RESUME_ALL_MAX_KEYS + 1), []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_press_resumes_only_the_sessions_it_names(slots, want, tmp_path, dispatched):
+    """``{"slots": [...]}`` is what the sidebar counted and the owner confirmed:
+    a session interrupted after the press, or one the press never named, stays
+    out of the run."""
+    state = _make_state(tmp_path)
+    frames = _frames(state)
+    for key in ("a", "b", "c"):
+        _interrupted(state.get_or_create_slot(key))
+
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post("/api/chat/slots/resume-all", json={"slots": slots})
+        data = await resp.json()
+        await _drain(state)
+
+    assert data["total"] == len(want)
+    if want:
+        assert resp.status == 202
+        assert frames.call_args.args[1]["resumed"] == want
+    else:
+        assert resp.status == 200
+        assert dispatched.started.await_count == 0
+
+
+@pytest.mark.parametrize("raw", ["not json", "[1, 2]", "null"])
+@pytest.mark.asyncio
+async def test_a_body_that_is_no_json_object_resumes_nothing(raw, tmp_path, dispatched):
+    """Only a press with no body resumes every candidate: one whose body cannot
+    be read as the optional object fails closed."""
+    state = _make_state(tmp_path)
+    _interrupted(state.get_or_create_slot("a"))
+
+    async with TestClient(TestServer(_app(state))) as client:
+        resp = await client.post(
+            "/api/chat/slots/resume-all",
+            data=raw,
+            headers={"Content-Type": "application/json"},
+        )
+        data = await resp.json()
+
+    assert resp.status == 200 and data["total"] == 0
+    assert dispatched.started.await_count == 0
+
+
+def test_a_candidate_waits_for_memory_preparation_startup_has_not_published(
+    tmp_path, dispatched, monkeypatch
+):
+    """While this process is preparing memory but the state carries no task yet,
+    nothing is dispatched; the run goes on once the task is published and ends."""
+    from kiro_crew import memory_startup
+
+    preparing = [True]
+    monkeypatch.setattr(memory_startup, "memory_startup_preparing", lambda: preparing[0])
+    # A zero poll only yields, so the waits below are a count of loop turns.
+    monkeypatch.setattr(mod, "_MEMORY_TASK_POLL_SECONDS", 0)
+    state = _make_state(tmp_path)
+    _interrupted(state.get_or_create_slot("a"))
+
+    async def drive():
+        frames = _frames(state)
+        state.memory_startup_task = None
+        status, _body = mod.start_resume_all(state, {"app": ""})
+        assert status == 202
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert dispatched.started.await_count == 0
+        preparation = asyncio.get_running_loop().create_future()
+        state.memory_startup_task = asyncio.ensure_future(preparation)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert dispatched.started.await_count == 0
+        preparing[0] = False
+        preparation.set_result(None)
+        await _drain(state)
+        return frames.call_args.args[1]
+
+    outcome = asyncio.run(drive())
+
+    assert outcome["resumed"] == ["a"]
+
+
+def test_no_resumed_turn_starts_while_memory_preparation_runs(tmp_path, dispatched):
+    """The queue drain parks a dispatch while memory preparation runs and later
+    starts every parked queue at once, which would pass the bound. The run waits
+    for preparation first, then dispatches through its permits."""
+    state = _make_state(tmp_path)
+    for i in range(mod.RESUME_ALL_MAX_RUNNING + 2):
+        _interrupted(state.get_or_create_slot(f"s{i}"))
+
+    async def drive():
+        frames = _frames(state)
+        preparation = asyncio.get_running_loop().create_future()
+        state.memory_startup_task = asyncio.ensure_future(preparation)
+        status, _body = mod.start_resume_all(state, {"app": ""})
+        assert status == 202
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert dispatched.started.await_count == 0, "nothing is queued behind preparation"
+        assert all(not slot._queue for slot in state._slots.values())
+        preparation.set_result(None)
+        await _drain(state)
+        ((_event, outcome),) = [c.args for c in frames.call_args_list]
+        return outcome
+
+    outcome = asyncio.run(drive())
+
+    assert len(outcome["resumed"]) == mod.RESUME_ALL_MAX_RUNNING + 2
+    assert dispatched.started.await_count == mod.RESUME_ALL_MAX_RUNNING + 2
 
 
 @pytest.mark.asyncio
@@ -833,3 +1230,15 @@ def test_the_route_is_registered_before_every_slot_pattern():
     slot_patterns = [i for i, p in enumerate(posts) if p.startswith("/api/chat/slots/{slot}")]
     assert slot_patterns, "the per-slot POST routes moved; re-point this pin"
     assert literal < min(slot_patterns)
+
+
+def test_the_sidebar_names_the_same_bound_the_run_holds():
+    """The confirmation tells the owner how many resumed turns run at once; that
+    number is the browser's copy of ``RESUME_ALL_MAX_RUNNING``."""
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[1] / "website/src/pages/chat-sidebar/resumeAll.tsx"
+    ).read_text(encoding="utf-8")
+    (shown,) = re.findall(r"export const RESUME_ALL_MAX_RUNNING = (\d+)", source)
+    assert int(shown) == mod.RESUME_ALL_MAX_RUNNING

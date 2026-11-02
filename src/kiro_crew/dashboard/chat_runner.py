@@ -119,6 +119,7 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
+from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop  # noqa: F401
 from kiro_crew.dashboard.chat_summary import generate_session_summary
@@ -842,6 +843,11 @@ async def _run_chat(
     # observed, and a restored entry carries no actor at all -- which reads as
     # `user`. Only the queue drain sets it, and it is never persisted.
     _turn_provenance_restored: bool = False,
+    # Every consumed queue entry asked for a BACKGROUND cold start
+    # (``START_BACKGROUND_META_KEY`` in its meta). A person's provenance stays as
+    # it is; only the start priority drops, for a turn a person started without
+    # waiting on it (the bulk Resume). Only the queue drain sets it.
+    _turn_start_background: bool = False,
     # This turn is the delivered wake of a nudge/monitor loop bound to THIS slot
     # (set only by ``GatewayOrchestrator._fire_dashboard_nudge``). It is the
     # second producer the session-directive consumer admits as "the session's
@@ -925,6 +931,7 @@ async def _run_chat(
         _responsive_protected=_responsive_protected,
         _directive_user_origin=_directive_user_origin,
         _turn_provenance_restored=_turn_provenance_restored,
+        _turn_start_background=_turn_start_background,
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,

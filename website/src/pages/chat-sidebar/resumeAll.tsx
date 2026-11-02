@@ -6,15 +6,18 @@
  *  that ended without a reply -- the state behind the composer's Resume button
  *  and the sidebar row's "interrupted" cue. Pressing Resume in each tab is the
  *  chore this row removes: one press calls `POST /api/chat/slots/resume-all`,
- *  which starts a background run of the Continue path on every such session,
- *  four at a time, and answers at once with the run's id. The row stays
+ *  which answers at once with the run's id and runs the Continue path on every
+ *  such session in the background, a few at a time: the next session starts as
+ *  an earlier one's turn ends. Above `RESUME_ALL_CONFIRM_ABOVE` sessions the
+ *  press asks first, since every one of them starts a turn. The row stays
  *  pending until the run's outcome arrives as a `resume_all_done` frame (the
- *  rows themselves move with the ordinary slots push meanwhile). The frame can
+ *  rows themselves move with the ordinary slots push meanwhile, and a session
+ *  the run has not reached yet says it is waiting, `resumeAllWaiting`). The frame can
  *  arrive before the 202 has been read -- a short run finishes in milliseconds
- *  -- so the hook keeps the last few outcomes it heard and settles from them
- *  when the run id turns up. A press while a run is in flight -- another tab's
- *  -- gets 409 `resume_all_running` with that run's id and total; the row then
- *  follows that run and says it is already going.
+ *  -- so the hook keeps each outcome it hears while its request is open, by run
+ *  id, and settles from the one the 202 names. A press while a run is in
+ *  flight -- another tab's -- gets 409 `resume_all_running` with that run's id
+ *  and total; the row then follows that run and says it is already going.
  *
  *  It is a row in the search dock's SHELF, not a third control in the search
  *  row's trailing cluster: AUTOSDE max-two-buttons-per-row grandfathers that
@@ -27,10 +30,15 @@ import { useMutation } from '@tanstack/react-query'
 import { RotateCcw } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { Btn } from '../../components/ui'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { crewModeEnabled } from '../../lib/crewMode'
 import { RESUME_ALL_DONE_EVENT } from '../../lib/resumeAllEvent'
+import { setResumeAllWaiting } from '../../lib/resumeAllWaiting'
 import { i18nT } from '../../i18n/t'
-import { errMessage } from '../../utils/thunkError'
+import { offlineProps } from '../../utils/offline'
 import type { Slot } from './types'
 import type { SidebarScope } from './scope'
 
@@ -38,19 +46,32 @@ import type { SidebarScope } from './scope'
  *  its count (or disappears, once the slots push has cleared the badge). */
 export const RESUME_ALL_RESULT_MS = 6000
 
+/** Above this many sessions a press asks for confirmation first: each one
+ *  starts an agent turn and spends credits, and a few is what a restart
+ *  usually leaves. */
+export const RESUME_ALL_CONFIRM_ABOVE = 5
+
+/** How many resumed turns the server runs at once, the number the
+ *  confirmation names. The server's `RESUME_ALL_MAX_RUNNING`
+ *  (`dashboard/chat_resume_all.py`); `test_chat_resume_all.py` holds the two
+ *  equal. */
+export const RESUME_ALL_MAX_RUNNING = 4
+
+/** The backstop on a run's wait, per session. The run starts a few sessions at
+ *  a time and the next one only as an earlier turn ends, so a long run is
+ *  normal; a lost frame is not, because frames only go missing while the
+ *  socket is down, and the row stops waiting the moment it goes down. */
+export const RESUME_ALL_PENDING_PER_SESSION_MS = 5 * 60_000
+
 /** How long the row waits for a run's outcome frame before giving the button
- *  back. Frames are one-shot: a socket that reconnects mid-run misses it, and
- *  the row must not stay pending forever. Generous: the server's own pacing for
- *  N sessions is about N × 0.4 s. */
+ *  back, whatever else happens. A press after that, with the run still going,
+ *  gets the 409 and follows the run again. */
 export function resumeAllPendingCeilingMs(total: number): number {
-  return 60_000 + Math.max(0, total) * 1_000
+  return 60_000 + Math.max(0, total) * RESUME_ALL_PENDING_PER_SESSION_MS
 }
 
 /** The 409 a press gets while another press's run is still going. */
 export const RESUME_ALL_RUNNING_CODE = 'resume_all_running'
-
-/** How many outcome frames the hook keeps for a run id it has not seen yet. */
-export const RESUME_ALL_RECENT_OUTCOMES = 8
 
 /** The sessions the server will act on, read from the same slots payload the
  *  rows render: idle AND flagged interrupted by the transcript scan. Peer rows
@@ -73,8 +94,9 @@ export type ResumeAllResult = {
 }
 
 /** Skip codes that need nothing from anyone: the session moved on between the
- *  count and its wave (it finished, started, queued a message, began stopping,
- *  closed, or started sub-agents). Every other skip, and every failure, is one
+ *  count and its dispatch (it finished, started, queued a message this process
+ *  will drain on its own, began stopping, closed, or started sub-agents). A queue
+ *  a restart restored from disk is no skip: the run resumes that session. Every other skip, and every failure, is one
  *  the owner must act on, so the row reports it through `ErrorNotice`. */
 export const RESUME_ALL_BENIGN_SKIPS: ReadonlySet<string> = new Set([
   'turn_not_failed', 'slot_running', 'slot_queue_pending', 'slot_stopping',
@@ -99,9 +121,11 @@ export function resumeAllProblems(res: ResumeAllResult): ResumeAllProblem[] {
   return out
 }
 
-/** The problems list's own box: bounded to about six lines, scrolling past
- *  that, so a long list never pushes the notice's controls off the panel. */
-export const RESUME_ALL_PROBLEMS_MESSAGE_CLASS = 'block whitespace-pre-line max-h-24 overflow-y-auto'
+/** The problems list's own box: exactly six lines (`leading-4` sets 16px lines,
+ *  `max-h-24` is 96px), scrolling past that, so a long list never pushes the
+ *  notice's controls off the panel and the box's edge falls between two lines,
+ *  never through one. */
+export const RESUME_ALL_PROBLEMS_MESSAGE_CLASS = 'block whitespace-pre-line leading-4 max-h-24 overflow-y-auto'
 
 /** One line per problem: the session's title, then what stopped it. */
 export function resumeAllProblemText(problems: ResumeAllProblem[], titleOf: (key: string) => string): string {
@@ -137,11 +161,21 @@ function refusalOf(e: unknown): Refusal {
 }
 
 /** The owner gate refusing the viewer: this row's route is owner-only, and a
- *  non-owner dashboard session cannot fix that by retrying or by asking the
- *  agent, so its notice says so and offers neither. */
+ *  non-owner dashboard session cannot fix that by retrying, so its notice
+ *  names the owner gate instead of the raw refusal. */
 export function isOwnerOnlyRefusal(e: unknown): boolean {
   const { status, code } = refusalOf(e)
   return status === 403 && code === 'owner_only'
+}
+
+/** What the failure notice says under its title. Never the server's own text
+ *  ("Internal Server Error" tells the owner nothing): the owner gate gets its
+ *  own sentence, and every other failure says nothing was resumed and what to
+ *  do next. */
+export function resumeAllErrorText(e: unknown): string {
+  return isOwnerOnlyRefusal(e)
+    ? i18nT('pages.chatSidebar.resume_all_owner_only')
+    : i18nT('pages.chatSidebar.resume_all_failed_next')
 }
 
 type WaitedRun = { id: string; total: number; adopted: boolean }
@@ -150,12 +184,21 @@ type WaitedRun = { id: string; total: number; adopted: boolean }
 export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; connected: boolean }) {
   const candidates = useMemo(() => interruptedIdleSlots(localSlots), [localSlots])
   const count = candidates.length
+  const { confirm, confirmDialog } = useConfirm()
+  // The sessions counted at the press that the run has not reached yet: the
+  // rows that say they are waiting while the run is pending. A session leaves
+  // the list for good once a slots push shows it running or no longer
+  // interrupted, so one whose resumed turn failed again reads Resume again.
+  const pressedKeysRef = useRef<string[]>([])
+  // The connection after the confirmation, which can stay open across a
+  // dropped socket.
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
   // The outcome of the LAST run, shown for a few seconds in place of the
   // count. Kept as data, not prose, so the row renders it in the active
   // language even if the language switches while it is up.
   const [result, setResult] = useState<ResumeAllResult | null>(null)
   const [error, setError] = useState('')
-  const [ownerOnly, setOwnerOnly] = useState(false)
   // The sessions the last run left for the owner to act on. Kept until
   // dismissed or the next press, not for the outcome line's six seconds.
   const [problems, setProblems] = useState<ResumeAllProblem[]>([])
@@ -169,59 +212,64 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
   // outcome frame is a separate macrotask and must see the id at once.
   const [waited, setWaited] = useState<WaitedRun | null>(null)
   const waitedRef = useRef<WaitedRun | null>(null)
-  // Outcome frames heard for a run id this row was not (yet) waiting on, in
-  // arrival order, each kept until its run's pending ceiling has passed.
-  const recentRef = useRef(new Map<string, { res: ResumeAllResult; at: number }>())
+  // The outcome frames heard while this row's request is open, by run id. The
+  // 202 or 409 names its run, and that run can finish before the answer is
+  // read. More than one run can: the server's one-run guard ends when a run's
+  // dispatch is done, not when its 202 reaches this tab, so another tab's run
+  // can start and finish in between. Emptied when the answer is read, so no
+  // frame carries over to a later press.
+  const earlyRef = useRef<Map<string, ResumeAllResult>>(new Map())
+  const requestOpenRef = useRef(false)
   const setWait = (next: WaitedRun | null) => {
     waitedRef.current = next
     setWaited(next)
   }
-  const pruneRecent = () => {
-    const now = Date.now()
-    for (const [id, { res, at }] of recentRef.current) {
-      if (now - at > resumeAllPendingCeilingMs(res.total)) recentRef.current.delete(id)
-    }
-  }
   // Wait on *run*, or settle at once if its outcome frame already arrived.
   const follow = (run: WaitedRun) => {
-    pruneRecent()
-    const early = run.id ? recentRef.current.get(run.id) : undefined
+    const early = run.id ? earlyRef.current.get(run.id) : undefined
+    earlyRef.current.clear()
     if (early) {
-      recentRef.current.delete(run.id)
       setWait(null)
-      settle(early.res)
+      settle(early)
       return
     }
     setWait(run)
   }
   const mutation = useMutation({
-    mutationFn: () => api.chatSlotsResumeAll(),
+    // The count came through `crewModeView`, which reads this tab's preview flag;
+    // the server cannot see it, so the press says it.
+    // It names the sessions it counted, so the run never reaches a session that
+    // became interrupted after the press (or while its confirmation was open).
+    mutationFn: (keys: string[]) => api.chatSlotsResumeAll(crewModeEnabled(), keys),
     onSuccess: (res) => {
+      requestOpenRef.current = false
       setError('')
       if (!res.run_id || res.total === 0) {
+        earlyRef.current.clear()
         setResult({ ok: true, total: 0, resumed: [], skipped: [], failed: [] })
         return
       }
       follow({ id: res.run_id, total: res.total, adopted: false })
     },
     onError: (e) => {
+      requestOpenRef.current = false
       setResult(null)
       const { status, code, runId, total } = refusalOf(e)
       if (status === 409 && code === RESUME_ALL_RUNNING_CODE) {
+        // Another press's run: its candidates are not the ones this tab counted.
+        pressedKeysRef.current = []
+        setResumeAllWaiting([])
         follow({ id: runId, total, adopted: true })
         return
       }
-      const owner = isOwnerOnlyRefusal(e)
-      setOwnerOnly(owner)
-      setError(owner
-        ? i18nT('pages.chatSidebar.resume_all_owner_only')
-        : errMessage(e) || i18nT('pages.chatSidebar.resume_all_failed'))
+      earlyRef.current.clear()
+      setError(resumeAllErrorText(e))
     },
   })
   // Always listening, not only while a run is awaited. The frame of the run
   // this row waits on (matched by id; a 409 with no id to match takes any
-  // outcome) settles it. Any other frame with an id is kept, bounded, for a
-  // 202 or 409 that has not been read yet.
+  // outcome) settles it. Any other frame with an id is kept by its run id
+  // while the request is open, for the 202 or 409 that will name it.
   useEffect(() => {
     const onDone = (ev: Event) => {
       const detail = (ev as CustomEvent<ResumeAllResult>).detail
@@ -233,19 +281,21 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
         settle(detail)
         return
       }
-      if (typeof detail.run_id !== 'string' || !detail.run_id) return
-      const recent = recentRef.current
-      recent.delete(detail.run_id)
-      recent.set(detail.run_id, { res: detail, at: Date.now() })
-      while (recent.size > RESUME_ALL_RECENT_OUTCOMES) {
-        const oldest = recent.keys().next().value
-        if (oldest === undefined) break
-        recent.delete(oldest)
-      }
+      if (!requestOpenRef.current || typeof detail.run_id !== 'string' || !detail.run_id) return
+      earlyRef.current.set(detail.run_id, detail)
     }
     window.addEventListener(RESUME_ALL_DONE_EVENT, onDone)
     return () => window.removeEventListener(RESUME_ALL_DONE_EVENT, onDone)
   }, [])
+  // Frames are one-shot, and one sent while the socket is down never arrives:
+  // never wait while it is down, whether it went down during the wait or before
+  // the 202 installed it. A press once it is back gets the 409 while the run is
+  // still going, and follows it again.
+  useEffect(() => {
+    if (connected || !waited) return
+    waitedRef.current = null
+    setWaited(null)
+  }, [connected, waited])
   useEffect(() => {
     if (!waited) return
     const t = setTimeout(() => {
@@ -259,22 +309,53 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
     const t = setTimeout(() => setResult(null), RESUME_ALL_RESULT_MS)
     return () => clearTimeout(t)
   }, [result])
-  const press = () => { setError(''); setOwnerOnly(false); setResult(null); setProblems([]); mutation.mutate() }
+  const pending = mutation.isPending || waited !== null
+  useEffect(() => {
+    if (pending) {
+      const byKey = new Map(localSlots.map(s => [s.key, s]))
+      pressedKeysRef.current = pressedKeysRef.current.filter(key => {
+        const row = byKey.get(key)
+        return !!row && !row.running && !!row.interrupted
+      })
+    }
+    setResumeAllWaiting(pending ? pressedKeysRef.current : [])
+  }, [pending, localSlots])
+  useEffect(() => () => setResumeAllWaiting([]), [])
+  const press = async () => {
+    // The sessions this press is about: the ones the button counted, which the
+    // confirmation names too. A slots push while it is open changes neither.
+    const keys = candidates.map(s => s.key)
+    if (keys.length > RESUME_ALL_CONFIRM_ABOVE) {
+      const label = i18nT('pages.chatSidebar.resume_all_sessions', { count: keys.length })
+      const ok = await confirm({
+        title: i18nT('pages.chatSidebar.resume_all_confirm_title'),
+        body: i18nT('pages.chatSidebar.resume_all_confirm_body', { limit: RESUME_ALL_MAX_RUNNING }),
+        confirmLabel: label,
+        danger: false,
+        primary: true,
+      })
+      if (!ok || !connectedRef.current) return
+    }
+    setError(''); setResult(null); setProblems([])
+    pressedKeysRef.current = keys
+    requestOpenRef.current = true
+    mutation.mutate(keys)
+  }
   const titles = useMemo(() => new Map(localSlots.map(s => [s.key, s.title || s.key])), [localSlots])
   const titleOf = (key: string) => titles.get(key) ?? key
   return {
     count,
     result,
     error,
-    ownerOnly,
     setError,
     problems,
     dismissProblems: () => setProblems([]),
     titleOf,
-    pending: mutation.isPending || waited !== null,
+    pending,
     alreadyRunning: !!waited?.adopted,
-    run: press,
+    run: () => { void press() },
     connected,
+    confirmDialog,
   }
 }
 
@@ -286,6 +367,36 @@ export function resumeAllResultText(res: ResumeAllResult): string {
   return i18nT('pages.chatSidebar.resume_all_partial', { count: res.resumed.length, left })
 }
 
+/** The notice naming the sessions a run left for the owner, an alert of its
+ *  own. One line per session, so thirty of them would push the shelf past the
+ *  panel: the list scrolls in its own box, and the hand-off and Dismiss stay
+ *  outside it, always in view. While lines sit below the box's edge, the edge
+ *  fades (`MORE_BELOW_MASK`, the model list's cue): a box that ends on a whole
+ *  line otherwise reads as the end of the list. askAgent: those sessions stay
+ *  interrupted on the server for the agent to look at. */
+function ResumeAllProblemsNotice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLSpanElement>()
+  // A renamed session or a language switch changes the lines while the box
+  // keeps its height, which the hook's observer does not report.
+  useEffect(() => { remeasureList() }, [text, remeasureList])
+  return (
+    <div className="mx-2 mt-2 shrink-0">
+      <ErrorNotice
+        variant="inline"
+        className="flex-wrap w-full"
+        title={i18nT('pages.chatSidebar.resume_all_not_resumed')}
+        message={text}
+        messagePlacement="below"
+        messageClassName={listEdges.bottom ? `${RESUME_ALL_PROBLEMS_MESSAGE_CLASS} ${MORE_BELOW_MASK}` : RESUME_ALL_PROBLEMS_MESSAGE_CLASS}
+        messageRef={attachList}
+        askAgent
+        onDismiss={onDismiss}
+        testId="resume-all-problems"
+      />
+    </div>
+  )
+}
+
 /** The shelf row. Rendered only while there is something to resume, a run in
  *  flight, a result to show, or an error to report -- an idle install carries
  *  no row. A failed request renders through `ErrorNotice` BELOW the status row,
@@ -293,9 +404,9 @@ export function resumeAllResultText(res: ResumeAllResult): string {
  *  status region would announce it twice. */
 export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
   const {
-    count, result, error, ownerOnly, setError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, connected,
+    count, result, error, setError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, connected, confirmDialog,
   } = shell.resumeAll
-  if (count === 0 && !result && !error && !pending && problems.length === 0) return null
+  if (count === 0 && !result && !error && !pending && problems.length === 0) return confirmDialog
   const label = i18nT('pages.chatSidebar.resume_all_sessions', { count })
   return (
     <>
@@ -322,14 +433,19 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
               Withheld offline: the press is a request, and a disabled button says
               so where a failing one would only report it afterwards. Disabled
               while a run is in flight, so the row says "Resuming…" rather than
-              inviting a second press the server would refuse. */}
+              inviting a second press the server would refuse. That label is a
+              state, not a dimmed action: it keeps full opacity in the muted ink,
+              which holds its contrast on the shelf in every theme. */}
           {(count > 0 || pending) && (
             <Btn
-              className="mt-1 ml-[22px] p-0 border-none bg-transparent rounded-none text-accent hover:bg-transparent hover:underline text-[12px] font-medium active:scale-100"
+              className={`mt-1 ml-[22px] p-0 border-none bg-transparent rounded-none hover:bg-transparent text-[12px] font-medium active:scale-100 ${
+                pending ? 'text-muted disabled:opacity-100' : 'text-accent hover:underline'
+              }`}
               data-testid="resume-all-button"
               disabled={pending || !connected}
               aria-busy={pending || undefined}
               title={label}
+              {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.resume_sessions'), label))}
               onClick={run}
             >
               {pending ? i18nT('pages.chatSidebar.resume_all_resuming') : label}
@@ -339,8 +455,9 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
       )}
       {/* askAgent: the press writes nothing the sidebar holds locally, so the
           hand-off cannot destroy a draft, and the sessions stay interrupted on
-          the server for the agent to look at. Not for the owner gate: neither
-          the agent nor a retry can make a non-owner the owner. */}
+          the server for the agent to look at. That holds for the owner gate
+          too: the agent still runs for a non-owner and can say who the owner
+          is. */}
       {error && (
         <div className="mx-2 mt-2 shrink-0">
           <ErrorNotice
@@ -348,34 +465,16 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
             className="flex-wrap w-full"
             title={i18nT('pages.chatSidebar.resume_all_failed')}
             message={error}
-            askAgent={!ownerOnly}
+            askAgent
             onDismiss={() => setError('')}
             testId="resume-all-error"
           />
         </div>
       )}
-      {/* A run that left sessions the owner must act on (a repeated start
-          failure, a pending approval, an error) names each one and why, as an
-          alert of its own. askAgent: those sessions stay interrupted on the
-          server for the agent to look at. */}
       {problems.length > 0 && (
-        <div className="mx-2 mt-2 shrink-0">
-          <ErrorNotice
-            variant="inline"
-            className="flex-wrap w-full"
-            title={i18nT('pages.chatSidebar.resume_all_not_resumed')}
-            message={resumeAllProblemText(problems, titleOf)}
-            // One line per session, so thirty of them would push the shelf past
-            // the panel: the list scrolls in its own box, and the hand-off and
-            // Dismiss stay outside it, always in view.
-            messagePlacement="below"
-            messageClassName={RESUME_ALL_PROBLEMS_MESSAGE_CLASS}
-            askAgent
-            onDismiss={dismissProblems}
-            testId="resume-all-problems"
-          />
-        </div>
+        <ResumeAllProblemsNotice text={resumeAllProblemText(problems, titleOf)} onDismiss={dismissProblems} />
       )}
+      {confirmDialog}
     </>
   )
 }

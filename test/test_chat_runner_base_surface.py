@@ -974,7 +974,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_turn_start_priority",
             "function",
-            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool') -> 'StartPriority'",
+            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool', start_background: 'bool' = False) -> 'StartPriority'",
         ),
     ),
     "turn_reply_seams": (

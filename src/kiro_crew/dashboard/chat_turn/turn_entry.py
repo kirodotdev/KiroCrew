@@ -18,12 +18,11 @@ from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
 from kiro_crew.security import StreamRedactor
-from kiro_crew.start_priority import person_priority
+from kiro_crew.start_priority import StartPriority, person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         ReplayFamily,
-        StartPriority,
         effective_session_key,
         logger,
     )
@@ -320,6 +319,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         user_origin=_directive_user_origin,
         crew_log_actor=_crew_log_actor,
         provenance_restored=_turn_provenance_restored,
+        start_background=turn._turn_start_background,
     )
     turn._turn_priority = _turn_priority
     # Append-only the session's log identity, declared HERE rather than only where
@@ -1088,7 +1088,11 @@ async def _turn_flush_file_changes(turn: _ChatTurn) -> asyncio.CancelledError | 
 
 
 def _turn_start_priority(
-    *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
+    *,
+    user_origin: bool,
+    crew_log_actor: str,
+    provenance_restored: bool,
+    start_background: bool = False,
 ) -> StartPriority:
     """The start priority of a turn's cold start (rule: ``kiro_crew.start_priority``).
 
@@ -1098,5 +1102,12 @@ def _turn_start_priority(
     covers a typed turn, a person's Resume/Continue press and the runner's requeue
     of a person's failed turn; a self-wake, a dispatch-named actor (cron, sub-agent,
     gateway, app, crew) or a restored queue entry starts BACKGROUND.
+
+    *start_background* drops a person's turn to BACKGROUND when its queue entries
+    asked for it: the bulk Resume answers its request at once, so nobody waits on
+    any one of the starts it leads to, and FOREGROUND would put each of them in
+    the person-only reserve ahead of the owner's next typed message.
     """
+    if start_background:
+        return StartPriority.BACKGROUND
     return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)
