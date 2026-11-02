@@ -48,6 +48,7 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     _XATTR_UNSUPPORTED_ERRNOS,
     _is_access_control_xattr,
     _should_carry_xattr,
+    read_bytes_with_retry,
 )
 from kiro_crew.config import paths as _config_paths
 
