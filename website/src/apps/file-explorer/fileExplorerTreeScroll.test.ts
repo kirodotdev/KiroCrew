@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const raw = () => readFile(join(__dirname, '..', 'apps', 'file-explorer', 'styles.ts'), 'utf8')
+const raw = () => readFile(join(__dirname, 'styles.ts'), 'utf8')
 // Strip comments: the rules are explained in prose that quotes the same selectors.
 const css = async () => (await raw()).replace(/\/\*[\s\S]*?\*\//g, '')
 

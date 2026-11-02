@@ -494,8 +494,10 @@ class DefaultAppsLoader:
     """The open-source ``apps/builtins/`` set."""
 
     def bundled_app_names(self) -> List[str]:
-        # auto_research + file_explorer ship in the public core.
-        return ["auto_research", "file_explorer"]
+        # The public core names no app: its builtins are found by scanning
+        # ``apps/builtins/`` (``discover_builtin_apps``), which orphan detection
+        # already reads. A companion declares the feature apps it bundles here.
+        return []
 
     def manifest_sources(self) -> List[Path]:
         return []

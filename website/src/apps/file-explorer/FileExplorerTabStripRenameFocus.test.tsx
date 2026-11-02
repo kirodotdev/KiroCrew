@@ -6,9 +6,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import TabStrip from '../apps/file-explorer/TabStrip'
-import type { FolderTab } from '../apps/file-explorer/types'
-import { i18nT } from '../i18n/t'
+import TabStrip from './TabStrip'
+import type { FolderTab } from './types'
+import { i18nT } from '../../i18n/t'
 
 // TabStrip measures its scroller for the edge fades.
 globalThis.ResizeObserver ??= class {

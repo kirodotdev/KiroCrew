@@ -6,14 +6,36 @@ coverage for Coverlay.
 """
 
 import os
+import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from conftest import requires_symlinks
 from kiro_crew.apps.builtins.file_explorer import server
 from kiro_crew.sandbox import SandboxUnavailableError
+
+
+def _can_create_symlink() -> bool:
+    """Whether this host lets the test process create a directory symlink."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "target")
+        os.mkdir(target)
+        try:
+            os.symlink(target, os.path.join(tmp, "link"))
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
+
+
+# Defined here rather than imported from core's test/conftest.py: the app's tests
+# carry no import from core's test tree, and a bare ``conftest`` import resolves
+# to the rootdir conftest under mypy, which has no such marker.
+requires_symlinks = pytest.mark.skipif(
+    not _can_create_symlink(),
+    reason="creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows",
+)
 
 
 @pytest.fixture
@@ -658,7 +680,9 @@ class TestHTTPHandler:
 
     def _make_request(self, path):
         """Create a mock handler and dispatch a GET request."""
-        handler = server.FileExplorerHandler.__new__(server.FileExplorerHandler)
+        # ``Any``: the stub replaces ``_json`` and parks replies on ``responses``,
+        # which shadows the base handler's status-phrase table.
+        handler: Any = server.FileExplorerHandler.__new__(server.FileExplorerHandler)
         handler.path = path
         handler.responses = []
 

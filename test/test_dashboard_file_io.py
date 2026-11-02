@@ -245,14 +245,6 @@ class TestFileRead:
             assert resp.headers["X-File-Binary"] == "true"
             assert await resp.json() == {"binary": True, "content": ""}
 
-    def test_binary_extension_list_matches_the_files_app(self):
-        # The endpoint's comment says the two surfaces disagreeing about what
-        # "binary" means is the worst outcome; this is what makes that true.
-        from kiro_crew.apps.builtins.file_explorer.server import BINARY_EXTS
-        from kiro_crew.dashboard.handlers.files import _FILE_READ_BINARY_EXTS
-
-        assert set(_FILE_READ_BINARY_EXTS) == set(BINARY_EXTS)
-
     @pytest.mark.asyncio
     async def test_read_keeps_a_visible_marker_for_a_file_ending_mid_codepoint(
         self, tmp_path, mock_sel, home_patch

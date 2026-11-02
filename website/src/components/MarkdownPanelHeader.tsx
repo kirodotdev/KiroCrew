@@ -3,9 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff } from 'lucide-react'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
-import { FILE_EXPLORER_APP, FILE_EXPLORER_ROUTE, fileExplorerDeepLink } from '../apps/file-explorer/deepLink'
+import { pathOpenerLink, pathOpenerTarget, type PathOpenerTarget } from '../apps/pathOpener'
 import { useInstalledApps } from '../hooks/panelTabRegistry'
-import { appNavTarget } from '../appNav'
 import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
@@ -269,28 +268,16 @@ export function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof 
 const menuRowCls = 'flex items-center gap-2 w-full min-w-0 overflow-hidden px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left whitespace-nowrap hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-hidden'
 
 /**
- * The Files app as a destination for the file under the ⋯ menu, or `null` when
- * there is none to offer.
- *
- * Eligibility, route and label come from the same `appNavTarget` derivation the
- * left rail and the command palette use, so this row cannot offer an app those
- * two hide: the Files app ships `defaultEnabled: false`, and a disabled app has
- * nowhere to go. Narrower than theirs in one way — the row needs the NATIVE
- * page (`FILE_EXPLORER_ROUTE`), because only `FileExplorerPage` reads the
- * `?path=` the link carries. An orphaned app (routed to its migration page) or
- * one an edition re-homes under AppHost would swallow the param and land the
- * reader on a page that opened nothing, so neither gets a row.
+ * The in-dashboard app page the file under the ⋯ menu can be opened in, or
+ * `null` when there is none to offer. Which page, and why only a natively routed
+ * enabled one qualifies, is `pathOpenerTarget`'s rule.
  *
  * Costs no request: `useInstalledApps` observes the shell's own `['apps']`
  * query, which the sidebar fetches on every dashboard load.
  */
-function useFilesAppTarget(): { label: string } | null {
+function usePathOpenerTarget(): PathOpenerTarget | null {
   const { apps } = useInstalledApps()
-  return useMemo(() => {
-    const app = apps.find(a => a.name === FILE_EXPLORER_APP)
-    const target = app ? appNavTarget(app) : null
-    return target?.route === FILE_EXPLORER_ROUTE ? { label: target.label } : null
-  }, [apps])
+  return useMemo(() => pathOpenerTarget(apps), [apps])
 }
 
 export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, onDownload }: {
@@ -363,12 +350,13 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
-  // "Open in Files": the in-dashboard destination, gated on the app being
-  // enabled and natively routed (see useFilesAppTarget) and on the path being
-  // absolute — the Files backend has no project directory to resolve a relative
-  // path against, so for one of those the row would only promise an error.
-  const filesApp = useFilesAppTarget()
-  const openInFiles = filesApp && isAbsolutePath(filePath) ? filesApp : null
+  // "Open in <app>": the in-dashboard destination, gated on an app page that
+  // opens a path being enabled and natively routed (see usePathOpenerTarget) and
+  // on the path being absolute — the app's backend has no project directory to
+  // resolve a relative path against, so for one of those the row would only
+  // promise an error.
+  const pathOpener = usePathOpenerTarget()
+  const openInApp = pathOpener && isAbsolutePath(filePath) ? pathOpener : null
   const knowledge = useFileKnowledgeState(filePath, onError)
   const artifact = useFileArtifactState(filePath, content, onError)
   const contribItems = useFileMenuItems('file-overflow')
@@ -489,20 +477,20 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             )
           )}
           <div className="h-px bg-border my-1 mx-2" />
-          {/* File-location group: hand the file to another surface — the Files
-              app inside the dashboard first, then the desktop — then the
+          {/* File-location group: hand the file to another surface — an app
+              page inside the dashboard first, then the desktop — then the
               clipboard/download fallbacks for hosts that have no desktop.
               Iconless like its neighbours — the group reads as a list of
               destinations, and two glyphs among six would look arbitrary.
-              Open in Files needs the app enabled at its native route plus an
-              absolute path (openInFiles); Open uses the shared canOpen gate
+              Open in <app> needs a path-opening app enabled at its native
+              route plus an absolute path (openInApp); Open uses the shared canOpen gate
               (canReveal + non-Windows); Reveal uses canReveal alone — a remote
               session, or a gateway host that cannot open one, cannot drive a file
               manager the user sees, so it gets the fallbacks only. Same gates
               the shared FilePathMenu applies. */}
-          {openInFiles && (
-            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { navigate(fileExplorerDeepLink(filePath)); setOpen(false) }}>
-              {i18nT('components.markdownPanel.open_in_app', { app: openInFiles.label })}
+          {openInApp && (
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { navigate(pathOpenerLink(openInApp, filePath)); setOpen(false) }}>
+              {i18nT('components.markdownPanel.open_in_app', { app: openInApp.label })}
             </button>
           )}
           {canOpen && (

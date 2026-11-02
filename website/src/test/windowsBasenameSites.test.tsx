@@ -18,7 +18,6 @@ import FoldableDiffBlock, { resetExpandedDiffFences } from '../components/Foldab
 import { FilePreviewStrip } from '../components/chat-input/FilePreviewStrip'
 import { ImageViewer } from '../components/FileRenderers'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
-import { basename as explorerBasename, crumbLabel, parentChain } from '../apps/file-explorer/utils'
 import { WINDOWS_SHAPED_PATH_RE } from '../utils/pathBasename'
 import { isWindowsShapedPath, normalizeWindowsPath } from '../utils/fileTokens'
 
@@ -75,16 +74,6 @@ describe('Windows gateway paths show their file name (#14581)', () => {
     expect(result.current.tabs.at(-1)?.title).toBe(title)
   })
 
-  it.each([
-    [WIN, 'report.md'],
-    ['C:\\Users\\u\\docs\\', 'docs'],
-    [POSIX_BACKSLASH, 'we\\ird.md'],
-    ['/a/b/', 'b'],
-    ['/', ''],
-  ])('file-explorer basename(%s) is %s', (p, name) => {
-    expect(explorerBasename(p)).toBe(name)
-  })
-
   // The sites listed on #14581 that are not mounted above. Each derived its
   // name with a `/`-only split; the shared helper is the one place that knows
   // when `\` separates. (composerDrop.ts, the Mochi drop site, is PR #10952's.)
@@ -99,7 +88,6 @@ describe('Windows gateway paths show their file name (#14581)', () => {
     'pages/chat/FilesHomePanel.tsx',
     'pages/chat/FolderPanel.tsx',
     'hooks/usePanelTabs.ts',
-    'apps/file-explorer/utils.ts',
   ])('%s derives file names through pathBasename only', (rel) => {
     const src = readFileSync(resolve(__dirname, '..', rel), 'utf8')
     expect(src).toMatch(/import \{[^}]*\bpathBasename\b[^}]*\} from '[./]+\/utils\/pathBasename'/)
@@ -124,32 +112,7 @@ describe('Windows gateway paths show their file name (#14581)', () => {
   })
 })
 
-// Breadcrumb navigation is out of scope: these pin main's behaviour so the
-// separator-aware basename cannot collapse a Windows root crumb to `repo`.
-describe('file-explorer breadcrumbs are unchanged by #14581', () => {
-  it.each([
-    ['C:\\Users\\u\\repo', ['/', 'C:\\Users\\u\\repo']],
-    ['/a/b/c', ['/', '/a', '/a/b', '/a/b/c']],
-    ['/tmp/we\\ird', ['/', '/tmp', '/tmp/we\\ird']],
-  ])('parentChain(%s)', (p, chain) => {
-    expect(parentChain(p)).toEqual(chain)
-  })
-
-  it.each([
-    ['C:\\Users\\u\\repo', 'C:\\Users\\u\\repo'],
-    ['C:/Users', 'Users'],
-    ['/a/b/', 'b'],
-    ['/tmp/we\\ird', 'we\\ird'],
-  ])('crumbLabel(%s) is %s', (p, label) => {
-    expect(crumbLabel(p)).toBe(label)
-  })
-
-  it('PathBar labels crumbs with crumbLabel, not the separator-aware basename', () => {
-    const src = readFileSync(resolve(__dirname, '../apps/file-explorer/PathBar.tsx'), 'utf8')
-    expect(src).toContain('crumbLabel(s)')
-    expect(src).not.toMatch(/\bbasename\(s\)/)
-  })
-
+describe('the Windows path shape has one owner', () => {
   it('fileTokens uses the one Windows-shape regex', () => {
     expect(normalizeWindowsPath('C:\\a\\b')).toBe('C:/a/b')
     expect(isWindowsShapedPath('\\\\host\\s')).toBe(WINDOWS_SHAPED_PATH_RE.test('\\\\host\\s'))
