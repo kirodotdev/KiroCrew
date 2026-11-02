@@ -9,11 +9,14 @@ import { errMessage } from '../utils/thunkError'
 
 const HEALTH_POLL_MS = 15_000
 
-/** Used fraction at or above which a meter reads as elevated / critical. */
+/** Used fraction at or above which a meter reads as elevated. */
+const WARN_AT = 0.8
+
+/** Only a warning or a danger is coloured; a healthy meter stays neutral. */
 function tone(used: number): string {
   if (used >= 0.95) return 'bg-danger'
-  if (used >= 0.8) return 'bg-warn'
-  return 'bg-ok'
+  if (used >= WARN_AT) return 'bg-warn'
+  return 'bg-muted'
 }
 
 function Meter({ label, used, summary }: { label: string; used: number; summary: string }) {
@@ -65,7 +68,11 @@ function uptime(seconds: number): string {
 /** The remote environment's identity, state and machine metrics: the body of
  *  the composer chip's hover card. Polls only while mounted (the card is open),
  *  and the endpoint never starts a stopped workspace to measure it. */
-export default function EnvironmentHealthCard({ slot, name }: { slot: string; name: string }) {
+export default function EnvironmentHealthCard({ slot, name, icon }: {
+  slot: string; name: string
+  /** The provider's mark, as the chip shows it; a generic server otherwise. */
+  icon?: React.ReactNode
+}) {
   const { t } = useTranslation()
   const health = useQuery({
     queryKey: ['slot-environment-health', slot],
@@ -79,6 +86,7 @@ export default function EnvironmentHealthCard({ slot, name }: { slot: string; na
   const stats = data?.stats
   const mem = stats?.memory
   const disk = stats?.disk
+  const memUsed = mem ? 1 - mem.available_bytes / mem.total_bytes : 0
   const state = data?.state
   const dot = state === 'running' ? 'bg-ok' : state === 'stopped' || state === 'not_created' ? 'bg-muted' : 'bg-danger'
 
@@ -87,9 +95,9 @@ export default function EnvironmentHealthCard({ slot, name }: { slot: string; na
       <div className="mb-2.5 grid gap-0.5">
         {/* Names the card for what it is: a status read-out of the chip's
             environment, not a control that switches machines. */}
-        <span className="text-[11px] text-muted">{t('sessionEnvironments.health.readOnly')}</span>
+        <span className="text-[11px] text-muted">{t('sessionEnvironments.health.statusHeading')}</span>
         <div className="flex items-center gap-2">
-          <Server className="lucide-inline shrink-0 text-accent" aria-hidden />
+          {icon ?? <Server className="lucide-inline shrink-0 text-accent" aria-hidden />}
           <span className="truncate font-semibold text-text">{name}</span>
           {data && (
             <span className="ml-auto flex shrink-0 items-center gap-1.5 text-muted">
@@ -126,7 +134,7 @@ export default function EnvironmentHealthCard({ slot, name }: { slot: string; na
       ) : (
         <dl className="m-0 grid min-w-0 gap-2">
           {data.workspace && (
-            <Row icon={<Box className="lucide-inline" aria-hidden />} label={t('sessionEnvironments.health.workspace')} value={<span className="font-mono">{data.workspace}</span>} title={data.workspace} />
+            <Row icon={<Box className="lucide-inline" aria-hidden />} label={t('sessionEnvironments.health.workspaceName')} value={<span className="font-mono">{data.workspace}</span>} title={data.workspace} />
           )}
           {data.workdir && (
             <Row icon={<FolderOpen className="lucide-inline" aria-hidden />} label={t('sessionEnvironments.health.directory')} value={<span className="font-mono">{data.workdir}</span>} title={data.workdir} />
@@ -141,8 +149,12 @@ export default function EnvironmentHealthCard({ slot, name }: { slot: string; na
               {stats.load && (
                 <Row
                   icon={<Activity className="lucide-inline" aria-hidden />}
-                  label={t('sessionEnvironments.health.load')}
-                  value={<span className="tabular-nums">{stats.load.map((v) => fmtNumber(v, { maximumFractionDigits: 2 })).join(' · ')}</span>}
+                  label={t('sessionEnvironments.health.busyCores')}
+                  // Load averages read against the core count: "0.4 · 0.3 · 0.2 of 4".
+                  value={<span className="tabular-nums">{t('sessionEnvironments.health.busyCoresValue', {
+                    load: stats.load.map((v) => fmtNumber(v, { maximumFractionDigits: 2 })).join(' · '),
+                    cores: fmtNumber(stats.cpus),
+                  })}</span>}
                 />
               )}
               {mem && (
@@ -150,13 +162,16 @@ export default function EnvironmentHealthCard({ slot, name }: { slot: string; na
                   <Row
                     icon={<MemoryStick className="lucide-inline" aria-hidden />}
                     label={t('sessionEnvironments.health.memory')}
-                    value={fmtPercent(1 - mem.available_bytes / mem.total_bytes)}
+                    value={fmtPercent(memUsed)}
                   />
                   <Meter
                     label={t('sessionEnvironments.health.memory')}
-                    used={1 - mem.available_bytes / mem.total_bytes}
+                    used={memUsed}
                     summary={t('sessionEnvironments.health.free', { free: fmtBytes(mem.available_bytes), total: fmtBytes(mem.total_bytes) })}
                   />
+                  {memUsed >= WARN_AT && (
+                    <p className="m-0 text-[11px] leading-snug text-warn">{t('sessionEnvironments.health.memoryLow')}</p>
+                  )}
                 </div>
               )}
               {disk && (

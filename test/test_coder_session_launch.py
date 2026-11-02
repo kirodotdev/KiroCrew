@@ -699,6 +699,8 @@ async def test_browse_session_runs_the_guest_browse_through_coder(tmp_path, monk
     with pytest.raises(ValueError):
         await session_browse.browse_session("dashboard:remote", "write", ".")
     # Machine metrics reach the dashboard only through session_health.
+    # The guest's own browse has a "stats" op (test_stats_reports_numbers_only);
+    # this refusal pins that the Files browse route cannot reach it.
     with pytest.raises(ValueError):
         await session_browse.browse_session("dashboard:remote", "stats", ".")
 
