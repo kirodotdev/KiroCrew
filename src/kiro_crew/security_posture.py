@@ -529,6 +529,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # compaction notice, whose display sink is already registered, so it is
         # not an egress boundary of its own.
         "acp/compaction_errors.py",
+        # Split out of transport_errors with the frame readers; its redactor calls
+        # scrub the raw error frame kept for the dashboard turn's WARNING (a
+        # gate-side log line), so it is not an egress boundary of its own.
+        "acp/error_frames.py",
         "acp/runtime_frame_accounting.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
         # gate-side log line) and defers user-facing display to the routed

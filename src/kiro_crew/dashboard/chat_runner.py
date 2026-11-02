@@ -341,6 +341,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
 )
+from kiro_crew.dashboard.session_health import RAW_FRAME_LOG_LABEL
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
@@ -1180,6 +1181,14 @@ async def _run_chat(
         _escalation = turn._escalation
         message = turn.message
         logger.warning("ACP error in slot %s: [%s] %s", slot.key, type(exc).__name__, exc)
+        # A curated message hides the harness's own frame; log that frame
+        # (already redacted and bounded) on its own line so a diagnostics
+        # bundle carries the cause. Kept off the line above, which the
+        # session-health scanner parses; the scanner skips provider text
+        # inside this record by its label.
+        _raw_detail = getattr(exc, "raw_detail", "")
+        if _raw_detail:
+            logger.warning("%s %s: %s", RAW_FRAME_LOG_LABEL, slot.key, _raw_detail)
         _msg = str(exc)
         turn._msg = _msg
         # Retry-eligible transients:

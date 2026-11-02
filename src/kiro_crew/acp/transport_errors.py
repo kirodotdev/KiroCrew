@@ -28,6 +28,7 @@ from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via th
     compaction_failure_detail,
     compaction_failure_is_transient,
 )
+from kiro_crew.acp.error_frames import _error_kind_from_frame, raw_error_detail
 from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
@@ -179,6 +180,12 @@ class AcpError(Exception):
         # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
         # reset-and-reload-once path a dropped session takes.
         self.credential_reload: bool = False
+        # The harness's own error frame, redacted and bounded
+        # (:func:`raw_error_detail`), set by :func:`_raise_acp_error` when the
+        # message above is Kiro Crew's curated wording. That wording replaces
+        # the provider's text, so this is the one place the underlying cause
+        # survives for the log. Empty when the message already carries it.
+        self.raw_detail: str = ""
 
 
 class AcpTimeoutError(AcpError):
@@ -1820,27 +1827,6 @@ def _rejected_model_from_error(error: object) -> str | None:
     return m.group(1) if m else None
 
 
-def _error_kind_from_frame(error: object) -> str:
-    """Return the structured ``errorKind`` a raw ACP frame's ``data`` carries.
-
-    claude-agent-acp names some provider answers with a machine-readable kind
-    alongside the prose (``{"code": -32603, "message": "Internal error",
-    "data": {"errorKind": "cloud_credential_error"}}`` -- the same field the
-    ``{'errorKind': 'unknown'}`` wrapper note at ``_RE_5XX_HINT`` describes).
-    Only a ``data`` that IS a mapping is read: the formatter pastes a
-    non-mapping ``data`` verbatim into the user-visible message, so matching
-    the kind out of that string would be the prose path structured readers
-    exist to avoid. Returns "" when the frame names no kind.
-    """
-    if not isinstance(error, dict):
-        return ""
-    data_field = error.get("data")
-    if isinstance(data_field, dict):
-        kind = data_field.get("errorKind")
-        return kind if isinstance(kind, str) else ""
-    return ""
-
-
 def _raise_acp_error(
     error: object,
     available_models: Sequence[str] | None = None,
@@ -1882,6 +1868,11 @@ def _raise_acp_error(
             transient=_is_transient_raw_error(error, available_models),
             user_worded=worded,
         )
+    # Curated wording replaces the provider's text (a dispatch failure and a
+    # named 5xx both read "transient error"), so keep the frame itself for the
+    # log; the fallback message already carries it.
+    if worded:
+        err.raw_detail = raw_error_detail(error)
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.

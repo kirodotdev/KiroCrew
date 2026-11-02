@@ -24,6 +24,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
 | `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
 | `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
+| `acp/error_frames.py` | readers of the raw error frame itself: its structured `errorKind`, and `raw_error_detail`, the redacted, bounded one-line rendering kept on `AcpError.raw_detail` |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
@@ -3064,6 +3065,7 @@ whose transport behaviour this module owns.
 
 - `AcpProcessDied` is raised by every stdin writer on `BrokenPipeError` / `ConnectionResetError`, and on a stalled write; see "`AcpProcessDied` on a stalled stdin write" below.
 - `AcpError.user_worded` is True only when Kiro Crew wrote the message for a person: a curated `_format_acp_error` branch (reported by `_format_acp_error_worded`), or a raise site with fixed recovery wording (`AcpModelUnavailable`, the signed-out harness error). It is False for the formatter's fallback, which passes the provider's own text or the raw error dict through, and that fallback still carries a `transient` verdict, so a surface that shows backend errors to a chat audience keys on `user_worded`, not on `transient`.
+- `AcpError.raw_detail` holds the harness's own frame, redacted and bounded by `raw_error_detail`, whenever `_raise_acp_error` raises a `user_worded` message, and is empty otherwise; the dashboard turn logs it as `ACP error frame in slot <key>: ...` so the cause a curated message replaces still reaches the gateway log. The rendering, scrub order and cap are in [error-handling.md](../common/error-handling.md#backend-error-classification).
 - `AcpAuthRequired` — kiro-cli is not authenticated (`kiro-cli login` needed). Non-retryable: `ensure_ready()` skips the retry ladder and re-raises so callers surface the actionable message rather than reset-and-requeue.
 - A context-window overflow remains an ordinary `AcpError`. `_raise_acp_error`
   constructs it through the same path as other protocol failures, obtains the

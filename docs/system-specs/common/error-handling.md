@@ -164,7 +164,30 @@ user would otherwise paste the log into, and a history row holds no draft.
 backend errors into actionable user text (`_format_acp_error`) and decides
 retry-eligibility (`_is_transient_raw_error`).
 Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
-never drift. Notable terminal (non-retryable) classes:
+never drift.
+
+When a curated branch words the message (`user_worded=True`), that wording
+replaces the provider's text: a named 5xx, an HTTP 50x and a "please try again"
+hint all read "transient error (HTTP 5xx)", and a dispatch failure reads the
+connection card. `_raise_acp_error`
+therefore keeps the frame itself on `AcpError.raw_detail` through
+`raw_error_detail` (`acp/error_frames.py`): `code`, `message` and `data` rendered as one line of compact
+ASCII JSON (`ensure_ascii`, so neither a newline nor a Unicode line break such as
+U+2028 in provider text can forge a log line). Every string in the frame
+is scrubbed by `redact_exfiltration_urls` then `redact_credentials` in its own
+spelling BEFORE the escaping, because escaping puts a backslash before each
+quote and a quoted `"aws_session_token": "..."` inside a provider string would
+no longer match; the rendered whole is scrubbed again, which catches a
+key/value pair in a structured `data`. Only then is it cut to
+`RAW_ERROR_DETAIL_MAX_CHARS` (2000) with the dropped length named. The dashboard
+turn logs it at WARNING as `ACP error frame in slot <key>: <frame>`, on a line of
+its own beside `ACP error in slot ...`, which the session-health scanner parses
+and which keeps its shape. The scanner ignores a stall signature that follows
+the raw-frame label, so a frame echoing one cannot mark a slot stalled. A fallback message already carries the provider's
+text, so its `raw_detail` stays empty and no second line is written. Pinned by
+`test/test_acp_error_raw_frame_log.py`.
+
+Notable terminal (non-retryable) classes:
 
 - **Context window overflow**: the provider's exact "The context window
   overflowed" rejection becomes an ordinary `AcpError` with `transient=False`,
