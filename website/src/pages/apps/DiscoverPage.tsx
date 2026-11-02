@@ -29,6 +29,8 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
+import MarketInstallModal, { type MarketInstalled } from '../../components/appstore/MarketInstallModal'
+import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenNotice'
 import { categoryCounts, categoryFor, type Category } from '../../components/appstore/categories'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
@@ -132,12 +134,16 @@ function DiscoverPageBody() {
   const [installedOnly, setInstalledOnly] = useState(false)
   const [sort, setSort] = useState<'name' | 'category'>('name')
   const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [marketOpen, setMarketOpen] = useState(false)
   const [successMsg, setSuccessMsg] = useState('')
   /* Whether the success notice carries the Library link. Only the
      install-from-path flow sets it — that notice hands off to another page
      (enable lives in Library) and persists until acted on; an update success
      resolves HERE, so it links nowhere and auto-dismisses instead. */
   const [successLink, setSuccessLink] = useState(false)
+  // Where a marketplace install landed (a skill or MCP server is not an app, so
+  // the Library link would point at nothing), and whether the agent spec followed.
+  const [marketDone, setMarketDone] = useState<MarketInstalled | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   /* Sub-tab state (V1 mockup: Featured | Updates). Component-internal state
@@ -179,6 +185,7 @@ function DiscoverPageBody() {
   const showSuccess = (msg: string) => {
     setSuccessMsg(msg)
     setSuccessLink(false)
+    setMarketDone(null)
     setTimeout(() => setSuccessMsg(''), 4000)
   }
 
@@ -390,9 +397,23 @@ function DiscoverPageBody() {
               // until the user acts on it or dismisses it.
               setSuccessMsg(i18nT('pages.appsPage.installed_app_find_in_library_and_enable', { name }))
               setSuccessLink(true)
+              setMarketDone(null)
             }}
+            onMarketInstall={() => setMarketOpen(true)}
           />
         </>}
+      />
+      {/* Marketplace listings (skills, MCP servers, themes) install through the
+          edition's own installer; the Sources popover offers it only when the
+          build has one. */}
+      <MarketInstallModal
+        open={marketOpen}
+        onClose={() => setMarketOpen(false)}
+        onInstalled={(installed) => {
+          setSuccessMsg(i18nT('components.appstore.marketInstall.installed', { ref: installed.ref }))
+          setSuccessLink(false)
+          setMarketDone(installed)
+        }}
       />
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
@@ -441,6 +462,7 @@ function DiscoverPageBody() {
             className="mb-4 animate-rise"
           />
         )}
+        {marketDone && !marketDone.specRewritten && <AgentSpecNotRewrittenNotice className="mb-4" />}
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
@@ -453,7 +475,17 @@ function DiscoverPageBody() {
                 {i18nT('nav.library')}
               </Link>
             )}
-            <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => { setSuccessMsg(''); setSuccessLink(false) }}><X className="lucide-inline" /></button>
+            {marketDone?.kinds.includes('skill') && (
+              <Link to="/capabilities?tab=skills" className="text-accent text-sm font-medium hover:underline shrink-0">
+                {i18nT('components.appstore.marketInstall.open_skills')}
+              </Link>
+            )}
+            {marketDone?.kinds.includes('mcp') && (
+              <Link to="/capabilities?tab=mcp" className="text-accent text-sm font-medium hover:underline shrink-0">
+                {i18nT('components.appstore.marketInstall.open_mcp')}
+              </Link>
+            )}
+            <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => { setSuccessMsg(''); setSuccessLink(false); setMarketDone(null) }}><X className="lucide-inline" /></button>
           </div>
         )}
 

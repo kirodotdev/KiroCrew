@@ -236,6 +236,13 @@ from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_status,
     api_kiro_prerequisite_update_cli,
 )
+
+# ── Marketplace installs through the edition installer (handlers/market.py) ──
+from kiro_crew.dashboard.handlers.market import (  # noqa: E402, F401
+    api_capability_market_apply,
+    api_capability_market_plan,
+    api_capability_market_status,
+)
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     _bg_mcp_probe,
     _sync_mcp_to_agent,

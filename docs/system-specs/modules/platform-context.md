@@ -1289,6 +1289,26 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   separator — a split silently misattributes any package whose own name contains
   that separator, which makes the package permanently "drifted" so every
   `sync_plugins` reinstalls a plugin that already exists.
+- **Marketplace listings.** Three ops let an edition install a marketplace listing
+  (a skill, an MCP server or a theme, with any bundled components and
+  dependencies) through its OWN installer, so the files land exactly where that
+  installer places them from its own command line and the core writes none:
+  `market_available() -> bool`; `async market_plan(ref) -> Dict` (a read: every
+  item to place with `ref`, `kind`, `semver`, `sha256`, `publisher`, `target`;
+  the union of `permissions` — `commands`, `network`, `files`, `secrets`;
+  `installable`/`refusal`; `conflicts`; and `planDigest`, 64-hex);
+  `async market_apply(ref, plan_digest) -> CapabilityResult`, which the edition
+  MUST refuse, writing nothing, when `ref` now resolves to a plan with another
+  digest. `ref` is
+  `<namespace>/<name>[@<version or bounded range>]`. The core's wrapper
+  feature-detects them (an edition written before them answers
+  `market_available() == False` and keeps working), bounds `market_plan` as a
+  read and `market_apply` as an install, and
+  before `market_apply` re-reads the plan, refuses a digest that no longer
+  matches, and asks governance `extensions:<kind>:<ref>` for every `skill` and
+  `mcp` item, so an allowlist naming skills only refuses a plan that also brings
+  an MCP server. The dashboard shows the whole plan before Install
+  (`MarketInstallModal`), and the routes are human-only as well as owner-only.
 - `CapabilityManager` (operations-based external package/capability manager).
   The seam names OPERATIONS, not a binary whose exact CLI grammar the core would
   hardcode: the

@@ -450,6 +450,15 @@ class DefaultCapabilityManager:
     async def sync_plugins(self) -> "CapabilityResult":
         return CapabilityResult(ok=False, message="capability manager not available")
 
+    def market_available(self) -> bool:
+        return False
+
+    async def market_plan(self, ref: str) -> Dict[str, Any]:
+        return {}
+
+    async def market_apply(self, ref: str, plan_digest: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
 
 class DefaultExternalAccessPolicy:
     """Admits every external service — today's open-source behaviour.
