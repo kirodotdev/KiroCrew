@@ -314,6 +314,53 @@ aligned, but the code does not.
 Keep the registry `version` in step with your fleet's installed version. If your
 organisation pins Kiro Crew centrally, that pin now governs the MCP side too.
 
+## Session identity for Kiro Crew's own tools: an admin opt-in, off by default
+
+Many `kirocrew-core` tools act for *one session* — `artifact_save`, `spawn_run`,
+memory, monitors — and need to prove which session is calling. Outside registry
+mode Kiro Crew gives each session's `kirocrew-core` and `kirocrew-cron` a signed
+session identity by mounting its own copy of them on the session. Under registry
+mode that copy would be launched as given, from the local install, past your
+catalog. So by default Kiro Crew mounts nothing there (except on a Builder ID or
+social sign-in no admin registry can govern, described above): the servers run from your
+catalog entry, which carries no session identity, and their tool calls refuse with
+
+```
+identity_unattestable ... This host is MCP registry-governed (agent.mcp_registry_mode),
+and the admin's MCP registry is blocking Kiro Crew's own tools ...
+```
+
+To enable session identity, set one field at the top level of the security policy
+(`~/.kiro/crew/security_policy.json`, or your centrally distributed document) and
+restart Kiro Crew:
+
+```json
+{
+  "version": 1,
+  "boot": { "fail_closed": true },
+  "mcp_registry_local_control_plane": true
+}
+```
+
+What that changes, and what it does not:
+
+- `kirocrew-core` and `kirocrew-cron` then run from the **local Kiro Crew install**
+  for each session, not from your catalog entry. A catalog `version` pin no longer
+  governs those two servers, and they are mounted even if your catalog omits them.
+  The code that runs is the same Kiro Crew as the gateway, which also removes the
+  version mismatch described in the previous section.
+- Nothing else widens. `kirocrew-computer`, `kirocrew-dashboard`, builtin app
+  servers and every third-party server stay under your catalog exactly as before.
+- Only you can set it. `security_policy.json` is mounted read-only in the sandbox
+  and the agent's file tools refuse to write it; a per-surface profile that sets the
+  field is rejected; and a lower policy tier cannot supply it — with a central
+  document, only the central document's value counts.
+- It must be a JSON `true` or `false`; any other value fails the policy load.
+- A new security policy file brings the rest of the ceiling with it. The `boot`
+  object is required, and the boot flags you leave out take their documented
+  defaults (see the governance spec), so start from the example above or add the
+  field to the policy you already have.
+
 ## Known limitation: registry mode cannot work on the KAS backend
 
 Everything above is about Kiro CLI, which reads your agent spec off disk and so

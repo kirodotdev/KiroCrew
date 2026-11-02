@@ -289,6 +289,56 @@ def external_client_identity_note(server: str = "kirocrew-core") -> str:
     )
 
 
+#: The security-policy field an admin sets to let Crew's own servers carry their
+#: session identity on a registry-governed host. A test pins it to the key the
+#: governance policy parser reads, so the refusal cannot name a field that does nothing.
+REGISTRY_LOCAL_CONTROL_PLANE_FIELD = "mcp_registry_local_control_plane"
+
+
+def registry_identity_note(server_name: str) -> str:
+    """The cause and the admin's fix for ``identity_unattestable`` on a registry host.
+
+    Empty unless all three hold: *server_name* is ``kirocrew-core`` or
+    ``kirocrew-cron`` (the only servers the opt-in mounts an identity element for),
+    this install declares registry mode, and the admin's security policy has not
+    already opted in. There, kiro-cli launches those two servers from the admin's
+    MCP registry catalog, which gives them no session identity, and setting the
+    field is what fixes the refusal. On any other server, or with the field already
+    on, the field changes nothing, so the note would point the admin at the wrong
+    fix. The text names the exact field because the person reading a refusal is
+    usually not the person who can fix it and has to know what to ask for.
+
+    Registry mode is read through :func:`kiro_crew.agent._mcp_registry_mode`, the
+    reader the mount gate also uses, and the opt-in through
+    :func:`kiro_crew.platform.governance.registry_local_control_plane_permitted`,
+    the mount gate's own read, so the note and the mount cannot disagree. The
+    imports are function-local: the config plane reaches back into this package,
+    and a module-level name here would be served through the ``mcp_shared`` facade.
+    """
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+
+    if server_name not in CONTROL_PLANE_SERVERS:
+        return ""
+    from kiro_crew.agent import _mcp_registry_mode
+
+    if not _mcp_registry_mode():
+        return ""
+    from kiro_crew.platform.governance import registry_local_control_plane_permitted
+
+    if registry_local_control_plane_permitted():
+        return ""
+    return (
+        f" This host is MCP registry-governed (agent.mcp_registry_mode), and the "
+        f"admin's MCP registry is blocking Kiro Crew's own tools: under the registry "
+        f"these servers start without a session identity. An administrator enables "
+        f'them by setting "{REGISTRY_LOCAL_CONTROL_PLANE_FIELD}": true at the top '
+        f"level of security_policy.json in the Kiro Crew data home and restarting Kiro "
+        f"Crew; kirocrew-core and kirocrew-cron then run from the local install "
+        f"instead of the registry catalog's entry "
+        f"(docs/guides/enterprise-mcp-governance.md)."
+    )
+
+
 def _policy_session_key() -> str | None:
     """Resolve the session whose tool policy is being asked for, absent a gateway caller.
 

@@ -284,6 +284,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POLICY_DETAIL_MAX_CHARS,
         _STARTUP_RACE_CACHE_TTL,
         _UNRESOLVED_REFUSES_CALL,
+        REGISTRY_LOCAL_CONTROL_PLANE_FIELD,
         ToolPolicy,
         _ambient_audit_session,
         _excluded_tools_by_session,
@@ -301,6 +302,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_excluded_tools,
         _resolve_tool_policy,
         external_client_identity_note,
+        registry_identity_note,
         serves_managed_tools,
         spawned_without_gateway_identity,
     )

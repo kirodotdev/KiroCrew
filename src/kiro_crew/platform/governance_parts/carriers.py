@@ -287,6 +287,35 @@ def active_update_pins() -> UpdatePins:
     return pins if isinstance(pins, UpdatePins) else UpdatePins()
 
 
+def registry_local_control_plane_permitted() -> bool:
+    """Whether the admin's security policy opts Crew's own servers past the MCP registry.
+
+    The policy's top-level ``mcp_registry_local_control_plane``
+    (``GovernanceCeiling.mcp_registry_local_control_plane``), read from the
+    boot-frozen ceiling. ``security_policy.json`` is a keystone the sandbox mounts
+    read-only and the agent file gate refuses to write, so the opt-in is the
+    admin's alone. Absent, ``false``, no policy at all, or a ceiling that cannot be
+    read all answer ``False``: the default on a registry-governed host stays the one
+    that mounts nothing outside the catalog. The single read point for the mount
+    gate (``acp.session_mcp.kiro_control_plane_servers``) and the refusal wording
+    (``mcp_shared_policy.registry_identity_note``), so the two cannot disagree.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        return (
+            getattr(current_context().governance, "mcp_registry_local_control_plane", False) is True
+        )
+    except Exception:
+        logger.warning(
+            "could not read the security policy's mcp_registry_local_control_plane; "
+            "treating it as off, so Kiro Crew's own servers get no per-session identity "
+            "element under registry mode.",
+            exc_info=True,
+        )
+        return False
+
+
 # ``distribution.on_unavailable`` dispositions.  Two values, because there are only
 # two questions: may this host run when the central ceiling cannot be established,
 # and may it run on a cache older than the fleet's staleness bound.
@@ -689,6 +718,14 @@ class GovernanceCeiling:
     # "Auto-approval duration"). 0 = no cap. Read through
     # ``safety_override_permits.yolo_ttl_cap``.
     yolo_max_seconds: int = 0
+    # Policy-only admin opt-in (top-level ``mcp_registry_local_control_plane``).
+    # ``True`` lets a registry-governed host (``agent.mcp_registry_mode``) mount
+    # Kiro Crew's own per-session identity element for ``kirocrew-core`` and
+    # ``kirocrew-cron``, which launches them from the local install rather than the
+    # admin catalog's entry. ``False`` (absent) withholds it, so identity-scoped
+    # calls from those servers are refused there. A profile cannot carry this key.
+    # Read through ``registry_local_control_plane_permitted`` below.
+    mcp_registry_local_control_plane: bool = False
     # Which precedence tier produced this ceiling (one of the ``TIER_*`` names, or
     # "" for a ceiling parsed outside the loader).  Its one consumer is the tier
     # audit in ``compose_tier_ladder``, which names authority and subordinate in the

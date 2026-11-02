@@ -1130,6 +1130,19 @@ custom commands and registry-governed entries remain with Kiro's native loader
 rather than losing their restrictions in the ACP array. A native entry without
 another verifiable identity channel retains the strict caller refusal.
 
+Under `agent.mcp_registry_mode` the array is empty by default: kiro-cli launches
+the spec's `"type": "registry"` entries from the admin's catalog, which gives them
+no session identity, and an element injected on `session/new` would be launched as
+given, past that catalog. Identity-scoped calls from `kirocrew-core` and
+`kirocrew-cron` are then refused `identity_unattestable`, and the refusal names the
+admin's fix. When the admin's `security_policy.json` sets the policy-only top-level
+`mcp_registry_local_control_plane: true`
+(`GovernanceCeiling.mcp_registry_local_control_plane`, read through
+`platform.governance.registry_local_control_plane_permitted`), the element is mounted for
+`kirocrew-core` and `kirocrew-cron` only; opt-in Crew servers and builtin app
+servers stay under the catalog. The policy file is a read-only keystone in the
+sandbox and refused by the agent file gate, so the opt-in is the admin's alone.
+
 `memory_mode` is fixed before provider startup and before `session/new`, including
 late-start adoption. Incognito and Temporary suppress Crew raw-frame recording
 and payload diagnostics, do not resume retained native context, and cannot retain

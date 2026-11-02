@@ -286,8 +286,9 @@ and effort selection, the full `session/request_permission` flow) works. So
   rewriter refuses to wrap a `type: "registry"` one -- and nothing here can
   resolve a name against the admin's catalog. Holding the line at that one
   overlay read covers every mirror that mounts `stub_elements`, codex included,
-  and any future one; it is a no-op for the kiro-cli path, which drops an
-  unmarked injected entry under registry mode by itself. Crew's control plane is
+  and any future one; it holds on the kiro-cli path too, where an element
+  injected on `session/new` is launched as given rather than filtered against the
+  catalog. Crew's control plane is
   exempt there on the same grounds it is exempt above, and the two functions must
   agree, or a name in the set with no element behind it withholds the spec's only
   copy of that server. A stub
