@@ -427,6 +427,9 @@ class FileReader:
                         level = int(style.split()[-1])
                     except (ValueError, IndexError):
                         level = 1
+                    # Markdown stops at six '#'. Word's Heading 7-9 map to
+                    # level 6, so chunk_markdown still sees them as headings.
+                    level = max(1, min(level, 6))
                     lines.append(f'{"#" * level} {text}')
                 else:
                     lines.append(text)
