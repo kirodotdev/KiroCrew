@@ -433,6 +433,88 @@ class TestSlashBearingFolderNames:
         assert _writes(dash) == []
 
 
+class TestSlashBearingFolderAsPathPrefix:
+    """An existing folder named ``A/B project`` anchors a longer path under it.
+
+    ``A/B project/worker`` must file ``worker`` inside the existing folder, not
+    mint a parallel ``A`` -> ``B project`` -> ``worker`` tree from the top level.
+    """
+
+    LITERAL = [{"id": "aaaaaaaaaaaa", "name": "A/B project", "parent_id": ""}]
+    WITH_CHILD = [
+        {"id": "aaaaaaaaaaaa", "name": "A/B project", "parent_id": ""},
+        {"id": "dddddddddddd", "name": "worker", "parent_id": "aaaaaaaaaaaa"},
+    ]
+    BOTH = [
+        {"id": "aaaaaaaaaaaa", "name": "A/B project", "parent_id": ""},
+        {"id": "bbbbbbbbbbbb", "name": "A", "parent_id": ""},
+        {"id": "cccccccccccc", "name": "B project", "parent_id": "bbbbbbbbbbbb"},
+    ]
+    PLAIN = [
+        {"id": "aaaaaaaaaaaa", "name": "A", "parent_id": ""},
+        {"id": "bbbbbbbbbbbb", "name": "B project", "parent_id": "aaaaaaaaaaaa"},
+    ]
+
+    @staticmethod
+    def _routes(folders: list[dict]) -> dict[str, Any]:
+        return {
+            "GET /api/chat/folders": folders,
+            "GET /api/chat/slots": [{"key": "chat-1-100", "title": "S", "folder_id": ""}],
+            "PATCH /api/chat/slots/{slot}/folder": {"ok": True},
+            "POST /api/chat/folders": _minting_post(),
+        }
+
+    def test_missing_tail_is_created_inside_the_existing_folder(self) -> None:
+        _, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B project/worker"},
+            self._routes(self.LITERAL),
+        )
+        assert [r.body for r in _writes(dash)] == [
+            {"name": "worker", "parent_id": "aaaaaaaaaaaa"},
+            {"name": "leaf", "parent_id": "new000000001"},
+        ]
+
+    def test_an_existing_tail_is_reused_without_creating_anything(self) -> None:
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B project/worker"},
+            self._routes(self.WITH_CHILD),
+        )
+        assert not out.startswith("Error:")
+        assert [r.body for r in _writes(dash)] == [{"folder_id": "dddddddddddd"}]
+
+    def test_two_readings_that_both_match_are_refused(self) -> None:
+        out, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B project/worker"},
+            self._routes(self.BOTH),
+        )
+        assert out.startswith("Error:") and "pass the folder id" in out
+        assert "aaaaaaaaaaaa" in out and "cccccccccccc" in out
+        assert _writes(dash) == []
+
+    def test_a_plain_nested_path_still_walks_from_the_top(self) -> None:
+        _, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B project/worker"},
+            self._routes(self.PLAIN),
+        )
+        assert [r.body for r in _writes(dash)] == [
+            {"name": "worker", "parent_id": "bbbbbbbbbbbb"},
+            {"name": "leaf", "parent_id": "new000000001"},
+        ]
+
+    def test_resolve_only_never_creates_under_the_prefix(self) -> None:
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B project/worker"},
+            self._routes(self.LITERAL),
+        )
+        assert out.startswith("Error:") and "folder not found" in out
+        assert _writes(dash) == []
+
+
 class TestFolderNameRedaction:
     """A folder name is agent-authored and the sidebar re-renders it forever.
 

@@ -92,7 +92,9 @@ def _resolve_chat_folder_ref(
       are computed; when they disagree, or when either is itself duplicated, the
       reference is refused rather than resolved to whichever came first.
     * **A path to walk**, segment by segment, creating what is missing when
-      ``create_missing``.
+      ``create_missing``. When an existing folder renders a leading part of the
+      path (a folder named ``A/B project`` under ``A/B project/worker``), the
+      walk starts from the longest such folder instead of the top level.
 
     Pure apart from the creation leg: the caller already holds the folder list,
     and re-fetching per reference would let the tree shift between the two
@@ -118,6 +120,24 @@ def _resolve_chat_folder_ref(
                 f"({', '.join(exact)}) — pass the folder id instead of a path"
             ),
         )
+
+    # Reading 2b: nothing renders the WHOLE reference, but an existing folder may
+    # render a leading part of it (a folder named ``A/B project`` under a
+    # reference ``A/B project/worker``). The longest such prefix is the anchor the
+    # rest hangs off; walking every ``/`` from the top would build a parallel
+    # tree beside it.
+    if not exact:
+        anchored = _resolve_from_longest_prefix(
+            ref,
+            folders,
+            paths,
+            create_missing=create_missing,
+            client=client,
+            session_key=session_key,
+            before_create=before_create,
+        )
+        if anchored is not None:
+            return anchored
 
     # Reading 3: walk the segments. When the exact reading already resolved, the
     # walk runs resolve-only — there is nothing to create, and creating before
@@ -155,6 +175,79 @@ def _resolve_chat_folder_ref(
     return "", created, f"folder not found: {redact(ref)}"
 
 
+def _resolve_from_longest_prefix(
+    ref: str,
+    folders: list[dict],
+    paths: dict[str, str],
+    *,
+    create_missing: bool,
+    client: DashboardClient | None,
+    session_key: str | None,
+    before_create: Callable[[str], str | None] | None,
+) -> tuple[str, list[str], str | None] | None:
+    """Resolve ``ref`` from the longest leading part an existing folder renders.
+
+    Returns ``None`` when no proper prefix of ``ref`` renders as an existing
+    folder's path, so the caller walks the whole reference as before. Otherwise
+    the result is the same ``(folder_id, created_names, error)`` triple the
+    caller returns.
+
+    The prefix gets the same two checks the whole reference gets: more than one
+    folder rendering it is refused, and so is a folder that disagrees with the
+    plain segment-by-segment reading of that prefix (``A/B project`` as one
+    folder versus ``B project`` inside ``A``). Only then is the remainder walked
+    from the anchor, creating what is missing when ``create_missing``.
+    """
+    segments = [s.strip() for s in ref.split("/") if s.strip()]
+    rendered: dict[str, list[str]] = {}
+    for fid, path in paths.items():
+        rendered.setdefault(path.strip().lower(), []).append(fid)
+    for cut in range(len(segments) - 1, 0, -1):
+        prefix = "/".join(segments[:cut])
+        anchors = sorted(rendered.get(prefix.lower(), []))
+        if not anchors:
+            continue
+        # The plain reading goes first so duplicate siblings along the way keep
+        # their own refusal, exactly as for a whole-path reference.
+        plain, _none, plain_err = _walk_chat_folder_segments(prefix, folders, create_missing=False)
+        if plain_err:
+            return "", [], plain_err
+        if len(anchors) > 1:
+            return (
+                "",
+                [],
+                (
+                    f"{len(anchors)} folders render the same path {redact(prefix)} "
+                    f"({', '.join(anchors)}) — pass the folder id instead of a path"
+                ),
+            )
+        if plain and plain != anchors[0]:
+            return (
+                "",
+                [],
+                (
+                    f"{redact(ref)} is ambiguous: its start {redact(prefix)} is both a "
+                    f"folder's own name ({anchors[0]}) and a nested path ({plain}) "
+                    "— pass the folder id"
+                ),
+            )
+        walked, created, err = _walk_chat_folder_segments(
+            "/".join(segments[cut:]),
+            folders,
+            create_missing=create_missing,
+            client=client,
+            session_key=session_key,
+            before_create=before_create,
+            start_parent=anchors[0],
+        )
+        if err:
+            return "", created, err
+        if walked and walked != anchors[0]:
+            return walked, created, None
+        return "", created, f"folder not found: {redact(ref)}"
+    return None
+
+
 def _walk_chat_folder_segments(
     ref: str,
     folders: list[dict],
@@ -163,6 +256,7 @@ def _walk_chat_folder_segments(
     client: DashboardClient | None = None,
     session_key: str | None = None,
     before_create: Callable[[str], str | None] | None = None,
+    start_parent: str = "",
 ) -> tuple[str, list[str], str | None]:
     """Walk a ``/``-separated path segment by segment. ONE walk, two modes.
 
@@ -185,7 +279,7 @@ def _walk_chat_folder_segments(
     itself would be refused before any folder exists for it.
     """
     walked = ""
-    parent = ""
+    parent = start_parent
     created: list[str] = []
     checked_before_create = before_create is None
     segments = [s.strip() for s in ref.split("/") if s.strip()]
