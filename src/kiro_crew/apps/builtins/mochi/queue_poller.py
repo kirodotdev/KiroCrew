@@ -744,8 +744,9 @@ class QueuePoller:
             self._spawn_deadline = None
 
     async def _spawn_agent_task_serial(self, task: dict[str, Any]) -> bool:
-        """Spawn a freestyle task's agent and wait; on timeout, mark failure
-        and queue the sticky fail-notify after MAX_FAIL_COUNT.
+        """Spawn a freestyle task's agent and wait; once the agent finishes,
+        mark the task done; on timeout, mark failure and queue the sticky
+        fail-notify after MAX_FAIL_COUNT.
 
         The spawn is SERIAL: once an id comes back (the agent is running, or
         queued behind the admission gate's capacity wait) this coroutine awaits
@@ -814,12 +815,19 @@ class QueuePoller:
         if on_end is not None:
             on_end()
 
+        # Off the event loop either way: both wait on a cross-process lock.
         if timed_out:
             try:
-                # Off the event loop: this waits on a cross-process lock.
                 await asyncio.to_thread(self._locked_mark_timeout, task_id)
             except OSError:
                 logger.exception("[QueuePoller] spawn timeout handler error for %s", task_id)
+        else:
+            # The agent finished, so the task has run. Left undone it stays
+            # executable, and the next poll would spawn the same task again.
+            try:
+                await asyncio.to_thread(self._locked_mark_done, task_id)
+            except OSError:
+                logger.exception("[QueuePoller] failed to mark task %s done", task_id)
         return False
 
     async def _spawn_watch_check(self, prompt: str) -> None:
@@ -846,6 +854,23 @@ class QueuePoller:
         on_end = getattr(self._callbacks, "on_agent_spawn_end", None)
         if on_end is not None:
             on_end()
+
+    def _locked_mark_done(self, task_id: Any) -> None:
+        """Mark a freestyle task done once its agent finished, under the queue
+        lock and on a fresh read, so queue edits made while it ran survive.
+
+        Blocking — call via ``asyncio.to_thread``.
+        """
+        with qf.queue_mutation(self._queue_path):
+            q = qf.read_queue(self._queue_path)
+            if q is None:
+                return  # reset while the agent ran: nothing left to mark
+            t = next((x for x in q.get("tasks", []) if x.get("id") == task_id), None)
+            if t is None or t.get("done"):
+                return  # removed or replaced while the agent ran
+            t["done"] = True
+            t["executed_at"] = _iso(self._clock())
+            qf.write_queue_atomic(self._queue_path, q)
 
     def _locked_mark_timeout(self, task_id: Any) -> None:
         """Mark a timed-out spawn task failed under the queue lock.

@@ -286,6 +286,44 @@ async def test_timed_out_spawns_count_failures_and_the_limit_queues_a_notify(rig
     assert (kind, notice["execute_after"]) == (("notify", "error", "system", False), qf._iso(NOW))
 
 
+async def test_a_finished_freestyle_task_is_stamped_done_and_not_spawned_again(rig: _Rig) -> None:
+    rig.write(_task("fs1", "freestyle"))
+    await rig.poll()
+    assert (rig.task("fs1")["done"], rig.task("fs1").get("executed_at")) == (True, qf._iso(NOW))
+    assert "fail_count" not in rig.task("fs1")  # a finished run is not a failure
+    rig.now += 1_000
+    await rig.poll()
+    assert rig.prompts == ["Execute freestyle task: fs1"]  # spawned once, not on every poll
+
+
+async def test_the_done_stamp_keeps_a_task_added_while_the_agent_ran(rig: _Rig) -> None:
+    rig.write(_task("fs1", "freestyle"))
+    spawn = rig.spawn_agent
+
+    async def _spawn_while_the_planner_adds_a_task(prompt: str) -> str:
+        queue = rig.read()
+        queue["tasks"].append(_task("late", "notify", execute_after=FAR))
+        rig.path.write_text(json.dumps(queue), encoding="utf-8")
+        return await spawn(prompt)
+
+    rig.spawn_agent = _spawn_while_the_planner_adds_a_task
+    await rig.poll()
+    assert [(t["id"], t["done"]) for t in rig.read()["tasks"]] == [("fs1", True), ("late", False)]
+
+
+async def test_the_done_stamp_does_not_resurrect_a_queue_reset_while_the_agent_ran(rig) -> None:
+    rig.write(_task("fs1", "freestyle"))
+    spawn = rig.spawn_agent
+
+    async def _spawn_while_the_queue_is_reset(prompt: str) -> str:
+        rig.path.unlink()
+        return await spawn(prompt)
+
+    rig.spawn_agent = _spawn_while_the_queue_is_reset
+    await rig.poll()
+    assert not rig.path.exists()
+
+
 async def test_a_disk_error_recording_a_timeout_is_logged_not_raised(rig, caplog) -> None:
     rig.timeout = True
     rig.write(_task("fs1", "freestyle"))
