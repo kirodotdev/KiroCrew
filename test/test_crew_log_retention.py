@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_type_helpers import minimal_data
 from off_loop_helpers import off_loop
 
@@ -1159,13 +1160,13 @@ async def test_destroying_a_session_records_the_teardown_in_its_log():
     await manager.get_or_create("thread-doomed")
 
     emit.on_session_opened("acp-torn-down", agent="kirocrew", slot="thread-doomed")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert _newest_lifecycle_type("acp-torn-down") == "session/opened"
 
     # ``SessionManager.destroy`` returns None -- it awaits the lifecycle's own
     # destroy and discards its bool -- so the effect is what is asserted.
     await manager.destroy("thread-doomed")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_lifecycle_type("acp-torn-down") == _CLOSED
 
@@ -1189,9 +1190,9 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep():
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-aged"))
     await manager.get_or_create("thread-aged")
     emit.on_session_opened("acp-aged", agent="kirocrew", slot="thread-aged")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert await manager.destroy("thread-aged") is None
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     # Age the close the sweep reads, the same way the fixtures above do.
     path = _unit_dir(lg.KIND_SESSION, "acp-aged") / "log.jsonl"
@@ -1406,7 +1407,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-shared"))
     await manager.get_or_create("thread-shared")
     emit.on_session_opened("acp-shared", agent="kirocrew", slot="thread-shared")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     # A surviving holder of the same sid, exactly as a repeated transfer import
     # produces: a different key, the same session id.
@@ -1414,7 +1415,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
         manager._session_map, "find_key_by_sid", lambda _sid: "dashboard_chat-9-900"
     )
     await manager.destroy("thread-shared")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
     _age_close_entry("acp-shared", days=400)
@@ -1435,14 +1436,14 @@ async def test_an_unreadable_map_also_withholds_the_terminal_reason(monkeypatch)
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-nomap"))
     await manager.get_or_create("thread-nomap")
     emit.on_session_opened("acp-nomap", agent="kirocrew", slot="thread-nomap")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     def _raise(_sid):
         raise RuntimeError("map unreadable")
 
     monkeypatch.setattr(manager._session_map, "find_key_by_sid", _raise)
     await manager.destroy("thread-nomap")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
 
     assert _newest_close_reason("acp-nomap") == "destroyed_sid_retained"
 
@@ -1465,15 +1466,15 @@ async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_aga
     manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-revived"))
     await manager.get_or_create("thread-revived")
     emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     monkeypatch.setattr(manager._session_map, "find_key_by_sid", lambda _sid: None)
     await manager.destroy("thread-revived")
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     assert _newest_close_reason("acp-revived") == "destroyed"
 
     _age_close_entry("acp-revived", days=400)
     emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived", resumed=True)
-    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert_drained()
     emit.reset_caches()
 
     assert off_loop(store.sweep_expired, 30) == (0, 0)

@@ -38,6 +38,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from test_chat_runner_coverage import _drive, _runner_state, _slot
 from test_chat_send_agent_model_default import _config, _pin_sync_accessors, _turn_state
 
@@ -157,7 +158,7 @@ def _store(tmp_path, monkeypatch):
             previous_sid=previous,
             previous_undecided=undecided,
         )
-        assert emit.flush(10.0), "the writer did not settle, so the store is not the input"
+        assert_drained()
 
     yield _open
     emit.drain_for_shutdown(timeout=2.0)
@@ -1162,7 +1163,7 @@ class TestTheStoreReader:
             channel=True,
             previous_sid="",
         )
-        assert emit.flush(10.0), "the writer did not settle, so the store is not the input"
+        assert_drained()
 
         directory = crew_log_dir("session", NEWEST)
         _header, announce, _ = store.read_head(store.oldest_segment(directory))
