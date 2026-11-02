@@ -47,6 +47,17 @@ if TYPE_CHECKING:
     )
 
 
+def _failover_fields(info: object) -> dict[str, object]:
+    """``failover_from`` and ``backend`` for a run ``agent.acp_failover`` moved, else ``{}``."""
+    from kiro_crew.acp_backends import backend_to_stored
+
+    moved_from = getattr(info, "failover_from", None)
+    ran_on = getattr(info, "backend", None)
+    if not isinstance(moved_from, str) or not isinstance(ran_on, str):
+        return {}
+    return {"failover_from": moved_from, "backend": backend_to_stored(ran_on)}
+
+
 def _redact(text: str) -> str:
     """Two-pass redaction for LLM-derived content on external surfaces."""
     text, _ = redact_exfiltration_urls(text)
@@ -195,6 +206,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     data["started"] = info.started
+    # Present only when ``agent.acp_failover`` moved the run, so the default
+    # payload is unchanged: the backend asked for, and the one that ran.
+    data.update(_failover_fields(info))
     if info.done:
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
@@ -326,6 +340,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        # Present only when ``agent.acp_failover`` moved the run, so the default
+        # payload is unchanged: the backend asked for, and the one that ran.
+        entry.update(_failover_fields(info))
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

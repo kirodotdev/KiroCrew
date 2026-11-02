@@ -543,7 +543,9 @@ _MEMBER_HARNESS_KEY = "member_acp_backend"
 
 #: The ``agent`` fields that hold a harness id, spelled in the config-file
 #: vocabulary on disk and in ``to_dict()`` and as runtime ids on the dataclass.
-_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend")
+# ``acp_failover`` is here for the same reason: its loaded value drops chain
+# members this deployment cannot select, and a save must not erase them.
+_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend", "acp_failover")
 
 
 def _stored_agent_dict(agent: AgentConfig) -> dict:
@@ -661,6 +663,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         mcp_quarantine_after_failures=section.read("mcp_quarantine_after_failures", _safe_int),
         acp_backend=_read_backend_choice(section, agent_data, "acp_backend"),
         member_acp_backend=_read_backend_choice(section, agent_data, "member_acp_backend"),
+        acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),

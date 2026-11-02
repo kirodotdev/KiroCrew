@@ -251,6 +251,28 @@ class AgentConfig:
             # frozen literal.
         ),
     )
+    # Plain JSON data, read through ``backend_failover.failover_policy`` where it
+    # is used: a dataclass here would not survive ``to_dict()`` and ``save()``.
+    acp_failover: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "ACP backend failover",
+            "Opt-in, off-by-default policy that starts a sub-agent on another "
+            "backend when the one it asked for cannot start. An object with "
+            "'enabled' (bool), 'chain' (ordered list of distinct backend names, "
+            "spelled as spawn_run spells them, e.g. 'codex', 'claude', 'kiro') "
+            "and optional 'triggers' (which refusals cause a hop: "
+            "backend_not_installed, backend_restart_required; both when omitted). "
+            "A hop only goes to a later chain member that can start, never a "
+            "silent Kiro fallback, and the spawn result names the backend that "
+            "ran and the one it replaced. A hop moves the prompt and its context "
+            "to that backend's vendor and bill. A name that is not selectable is "
+            "skipped. Absent means no failover.",
+            # No enum: 'chain' names selectable backends, whose live set comes
+            # from the registry, and 'triggers' is checked in
+            # AcpFailoverConfig.from_raw; a frozen literal here would drift.
+        ),
+    )
     kas_bundle: bool = field(
         default=False,
         metadata=_meta(
