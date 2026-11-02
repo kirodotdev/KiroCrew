@@ -115,6 +115,8 @@ from .http_routes.ai import (  # noqa: F401
     _language_directive,
     _load_detail_for_ai,
     _pr_ai_comment_rows,
+    _pr_ai_comment_text,
+    _pr_ai_failing_names,
     _pr_ai_fingerprint,
     _pr_lifecycle,
     _resolve_ui_language,
