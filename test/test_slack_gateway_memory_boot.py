@@ -182,8 +182,11 @@ class TestAutoMigrateMemory:
         orch, store = self._orch_with_store(migrated=False)
         # Model absent at migrate time, present after the download task resolves.
         presence = iter([False, False, True, True])
-        # flake-ok: pre-existing event-loop yield standing in for the download task, moved verbatim; tracked for a de-flake pass
-        orch._model_download_task = asyncio.ensure_future(asyncio.sleep(0))
+        # The download task is a real task the test completes on an event;
+        # the production await on it is the wait, not a loop-turn count.
+        download_done = asyncio.Event()
+        orch._model_download_task = asyncio.ensure_future(download_done.wait())
+        download_done.set()
         with (
             patch(
                 "kiro_crew.slack.gateway.model_file_present",
