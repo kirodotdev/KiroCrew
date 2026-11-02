@@ -319,7 +319,73 @@ def _status_of(complete: list[bool | None]) -> str:
     return STATUS_MISSING
 
 
+#: The manifest name of Playwright's separate headless Chromium build, and the
+#: cache-directory engine it downloads into (hyphens turned into underscores).
+_HEADLESS_SHELL_MANIFEST_NAME = "chromium-headless-shell"
+_HEADLESS_SHELL_DIR_ENGINE = "chromium_headless_shell"
+
+
 def browser_status() -> dict[str, str]:
+    """Per-engine download state, counting the headless shell a headless launch needs.
+
+    The same reading as :func:`_full_browser_status`, except that ``chromium``
+    is not ``downloaded`` while the ``chromium_headless_shell-<rev>`` build the
+    CLI's manifest requires is missing (or unreadable). A headless Playwright
+    launch runs that separate build, so a cache left by ``--no-shell``, or one
+    whose shell directory alone was removed, fails that launch while the full
+    build is intact; reporting ``missing`` makes the panel offer the Chromium
+    download, which restores both builds.
+
+    The shell is consulted only when the manifest names its revision. Without one
+    (no attributable manifest, or a CLI whose manifest predates the separate
+    shell) the full-build reading stands, the same presence-only degradation the
+    full build uses. ``browser_ok`` and :func:`browsers_present` keep reading
+    the full build alone, because ``attach``/``--extension`` drives the full
+    build and never the shell.
+    """
+    return _with_headless_shell(_full_browser_status())
+
+
+def _with_headless_shell(full: dict[str, str]) -> dict[str, str]:
+    """*full* (a :func:`_full_browser_status` reading) with the headless shell folded into ``chromium``."""
+    result = dict(full)
+    if result.get("chromium") != STATUS_DOWNLOADED:
+        return result
+    shell = _headless_shell_status()
+    if shell is not None and shell != STATUS_DOWNLOADED:
+        result["chromium"] = shell
+    return result
+
+
+def _headless_shell_status() -> str | None:
+    """The required headless shell's download state, or ``None`` when no revision is named."""
+    required = _required_revisions()
+    revision = required.get(_HEADLESS_SHELL_MANIFEST_NAME) if required is not None else None
+    if revision is None:
+        return None
+    cache = _browsers_cache_dir()
+    names = _cached_browser_names(cache) if cache is not None else None
+    if names is None or cache is None:
+        return STATUS_UNKNOWN
+    overrides = _revision_overrides().get(_HEADLESS_SHELL_MANIFEST_NAME, {})
+    host = _playwright_host_platform() if overrides else ""
+    host_revision = overrides.get(host)
+    if host_revision is not None:
+        wanted = f"{_HEADLESS_SHELL_DIR_ENGINE}_{host}_special-{host_revision}"
+    else:
+        wanted = f"{_HEADLESS_SHELL_DIR_ENGINE}-{revision}"
+    status = _status_of([_download_complete(cache / wanted)] if wanted in names else [])
+    if status == STATUS_MISSING and _has_complete_special_build(
+        cache, names, _HEADLESS_SHELL_DIR_ENGINE
+    ):
+        # The same reasoning as the full build: a complete special directory this
+        # host key did not predict says the host-platform port may be stale, so
+        # the honest answer is `unknown`, not `missing`.
+        status = STATUS_UNKNOWN
+    return status
+
+
+def _full_browser_status() -> dict[str, str]:
     """Per-engine download state for the revision the installed CLI needs.
 
     ``downloaded`` means a directory for the required revision holds
@@ -410,9 +476,11 @@ def browsers_present(status: dict[str, str] | None = None) -> dict[str, bool]:
     have to discover that "browser installed" only ever meant Chromium. An
     ``unknown`` engine is ``False`` here; callers that must tell unknown from
     missing read :func:`browser_status` instead. *status* reuses a reading the
-    caller already took.
+    caller already took, which must be a :func:`_full_browser_status` reading:
+    these booleans describe the full build ``attach`` drives, so a missing
+    headless shell does not make them false.
     """
-    reading = status if status is not None else browser_status()
+    reading = status if status is not None else _full_browser_status()
     return {engine: reading.get(engine) == STATUS_DOWNLOADED for engine in BROWSER_ENGINES}
 
 

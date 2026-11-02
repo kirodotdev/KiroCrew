@@ -809,3 +809,122 @@ class TestPlaywrightHostPlatform:
 
     def test_no_os_release_falls_back_like_playwright(self, monkeypatch):
         assert self._host(monkeypatch, system="linux") == "ubuntu24.04-x64"
+
+
+class TestHeadlessShellReadiness:
+    """A full Chromium build without its headless shell is not ready for a headless launch.
+
+    Playwright runs ``chromium_headless_shell-<rev>`` for a headless launch, so a
+    cache made with ``--no-shell``, or one whose shell directory alone was removed,
+    must read ``missing`` in ``browser_status`` (the panel then offers the Chromium
+    download, which restores the shell). ``browser_ok`` and ``browsers`` keep
+    describing the full build that ``attach``/``--extension`` drives.
+    """
+
+    @staticmethod
+    def _require(monkeypatch, revisions: dict[str, str], overrides=None) -> None:
+        monkeypatch.setattr(mod, "_required_revisions", lambda: dict(revisions))
+        monkeypatch.setattr(mod, "_revision_overrides", lambda: dict(overrides or {}))
+
+    _BOTH = {"chromium": "1232", "chromium-headless-shell": "1232"}
+
+    def test_a_full_build_without_the_shell_reads_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+        detected = mod.detect()
+        assert detected["browser_status"]["chromium"] == mod.STATUS_MISSING
+        # The attach/extension gate still reads the full build alone.
+        assert detected["browser_ok"] is True
+        assert detected["browsers"]["chromium"] is True
+        assert mod.browsers_present()["chromium"] is True
+        assert mod._browser_present() is True
+
+    def test_the_full_build_with_its_shell_reads_downloaded(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
+        assert mod.detect()["browser_ok"] is True
+
+    def test_an_interrupted_shell_download_reads_missing(self, monkeypatch, isolated_browser_cache):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+        (isolated_browser_cache / "chromium_headless_shell-1232").mkdir()
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+
+    def test_a_stale_shell_revision_reads_missing(self, monkeypatch, isolated_browser_cache):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+        _complete(isolated_browser_cache / "chromium_headless_shell-1208")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+
+    def test_an_unreadable_shell_marker_reads_unknown(self, monkeypatch, isolated_browser_cache):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+        (isolated_browser_cache / "chromium_headless_shell-1232").mkdir()
+        real_is_file = mod.Path.is_file
+
+        def is_file(self):
+            if self.parent.name.startswith("chromium_headless_shell-"):
+                raise PermissionError("denied")
+            return real_is_file(self)
+
+        monkeypatch.setattr(mod.Path, "is_file", is_file)
+        assert mod.browser_status()["chromium"] == mod.STATUS_UNKNOWN
+        assert mod.detect()["browser_ok"] is True
+
+    def test_a_manifest_without_a_shell_entry_keeps_the_full_build_reading(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, {"chromium": "1232"})
+        _complete(isolated_browser_cache / "chromium-1232")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
+
+    def test_the_presence_fallback_does_not_require_the_shell(self, isolated_browser_cache):
+        # No attributable revision (the fixture default): the documented
+        # presence-only fallback is unchanged.
+        _complete(isolated_browser_cache / "chromium-1208")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
+
+    def test_a_shell_alone_still_reads_missing(self, monkeypatch, isolated_browser_cache):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+        assert mod.detect()["browser_ok"] is False
+
+    def test_a_host_override_shell_is_matched_by_its_special_directory(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(
+            monkeypatch,
+            self._BOTH,
+            overrides={"chromium-headless-shell": {"mac14": "1200"}},
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "mac14")
+        _complete(isolated_browser_cache / "chromium-1232")
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
+        # The plain directory is not the one the override sends this host to.
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+        _complete(isolated_browser_cache / "chromium_headless_shell_mac14_special-1200")
+        assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
+
+    def test_a_shell_special_build_this_host_did_not_predict_reads_unknown(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, self._BOTH)
+        _complete(isolated_browser_cache / "chromium-1232")
+        _complete(isolated_browser_cache / "chromium_headless_shell_mac14_special-1200")
+
+        assert mod.browser_status()["chromium"] == mod.STATUS_UNKNOWN
