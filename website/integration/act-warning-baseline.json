@@ -6,7 +6,6 @@
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
   "src/pages/members/DeployMyCrew.test.tsx",
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
-  "src/pages/members/MembersPage.schedules.test.tsx",
   "src/pages/settings/SecurityPanel.yoloDurationRefresh.test.tsx",
   "src/pages/settings/decisionsCard.test.tsx",
   "src/test/AboutPanel.inAppApply.test.tsx",

@@ -343,7 +343,8 @@ describe('MembersPage Profile card Schedules tab', () => {
     await openCrewmate()
     const list = await openSchedulesTab()
     await waitFor(() => expect(vi.mocked(api.crons)).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 50))
+    // The failed read is handled once the list draws its error line; the empty line is withheld with it.
+    await screen.findByTestId('crew-schedule-error')
     expect(within(list).queryByTestId('crew-schedule-empty')).toBeNull()
     expect(list).not.toHaveTextContent(/Nothing wakes this mate/i)
   })
@@ -569,11 +570,19 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     const section = await openDraft()
     fireEvent.click(within(section).getByTestId('crew-wake-create-submit'))
     await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    // "Nothing opens within 120 ms" runs on a fake clock installed once the render has settled. A real sleep let
+    // SidePanel (its 180 ms motion timer) and ThemeProvider update outside act() when the host was loaded.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.click(screen.getByTestId('crew-profile-close'))
-    await new Promise((r) => setTimeout(r, 120))
+    await act(async () => { await vi.advanceTimersByTimeAsync(120) })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
-    act(() => { release({ ok: true, id: 'j-new' }) })
+    // Real timers again: the waits below poll on them.
+    vi.useRealTimers()
+    await act(async () => { release({ ok: true, id: 'j-new' }) })
+    // A saved schedule closes the form (CrewWakeSection onCreated): the completion has landed once it is gone.
+    await waitFor(() => expect(screen.queryByTestId('crew-wake-create-submit')).toBeNull())
   })
 
   it('asks before a mate switch from the switcher discards a draft, and remounts the card once it does', async () => {
