@@ -154,7 +154,8 @@ class Runner:
             ["bash", "-c", self.scripts[name]],
             cwd=self.work,
             env={**self.env, **extra},
-            text=True, encoding="utf-8",
+            text=True,
+            encoding="utf-8",
             capture_output=True,
         )
 
@@ -323,9 +324,7 @@ def test_step_scripts_are_valid_shell(scripts: dict[str, str]) -> None:
         ("Stable", "channel: stable"),
     ],
 )
-def test_channel_dropdown_answer_becomes_a_label(
-    runner: Runner, answer: str, label: str
-) -> None:
+def test_channel_dropdown_answer_becomes_a_label(runner: Runner, answer: str, label: str) -> None:
     assert runner.channel(body=_form_body(answer)) == label
 
 
