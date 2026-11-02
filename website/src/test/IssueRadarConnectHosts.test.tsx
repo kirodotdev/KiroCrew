@@ -334,7 +334,8 @@ describe('WelcomeCarousel Back during a connect', () => {
     // Still on the connect slide: the provider list and picker are present.
     expect(screen.getByRole('button', { name: /GitHub/ })).toBeInTheDocument()
     expect(screen.getByLabelText('Repository URL')).toBeInTheDocument()
-    release()
+    // Resolve the pending connect inside act so its state update lands in scope.
+    await act(async () => { release() })
   })
 })
 
