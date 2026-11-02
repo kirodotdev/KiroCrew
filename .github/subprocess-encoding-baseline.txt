@@ -13,6 +13,5 @@
 1 conftest.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
 2 test/test_cli_lazy_imports.py
-2 test/test_config_baseline.py
 1 test/test_connections_tool_aliases.py
 2 test/test_prepare_pr_prove.py
