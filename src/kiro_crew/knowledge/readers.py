@@ -1,6 +1,7 @@
 """File readers for knowledge ingestion. Supports text, PDF, PPTX, DOCX, HTML."""
 
 import codecs
+import html as html_lib
 import os
 import re
 import time
@@ -19,6 +20,9 @@ try:
     import html2text as _html2text_mod
 except ImportError:
     _html2text_mod = None  # type: ignore[assignment]
+
+# Opening or closing block-level tags (and <br>) in the regex HTML fallback.
+_HTML_BLOCK_TAG_RE = re.compile(r'<(?:br|/?(?:p|div|li|h[1-6]|tr))\b[^>]*>', re.IGNORECASE)
 
 
 def _decode_text_bytes(raw: bytes) -> str:
@@ -449,6 +453,14 @@ class FileReader:
             return h.handle(html), {'format': 'html'}
         text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        # Source whitespace, newlines included, renders as one space. A block
+        # tag ends a line, marked with a NUL sentinel so that only block tags
+        # (not source newlines or a decoded '&#10;') split the text.
+        text = re.sub(r'[\s\x00]+', ' ', text)
+        text = _HTML_BLOCK_TAG_RE.sub('\x00', text)
         text = re.sub(r'<[^>]+>', ' ', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text, {'format': 'html'}
+        # Entities decode after tag stripping: a literal '&lt;div>' in the
+        # page is text to index, never a tag to strip.
+        text = html_lib.unescape(text)
+        lines = (re.sub(r'\s+', ' ', line).strip() for line in text.split('\x00'))
+        return '\n'.join(line for line in lines if line), {'format': 'html'}
