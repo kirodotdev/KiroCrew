@@ -143,9 +143,10 @@ def _run_helper(
     ``openssl`` it shells out to -- can then only ever write there.
     """
     return subprocess.run(
-        [sys.executable, str(HELPER), *args],
+        [sys.executable, "-X", "utf8", str(HELPER), *args],
         check=check,
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -258,6 +259,7 @@ def test_helper_builds_a_canonical_independently_verifiable_manifest(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
     )
     assert verified.returncode == 0, verified.stderr
