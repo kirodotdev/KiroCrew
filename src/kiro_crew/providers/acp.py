@@ -920,12 +920,16 @@ class AcpProvider(LLMProvider):
         always: bool = False,
         deadline: GrantDeadline | None = None,
         withdraw_if: Callable[[], bool] | None = None,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> bool:
-        # Passed on only when given, so a call without it reaches the client
-        # exactly as before.
+        # Passed on only when given, so a call without them reaches the client
+        # exactly as before. ``deny_waivers`` are the deny-rule keys a person
+        # overrode on the dashboard card (see ``AcpClient.approve_tool``).
         withdrawal: dict[str, Any] = {}
         if withdraw_if is not None:
             withdrawal["withdraw_if"] = withdraw_if
+        if deny_waivers:
+            withdrawal["deny_waivers"] = deny_waivers
         if deadline is None:
             return await self._client.approve_tool(request_id, always=always, **withdrawal)
         return await self._client.approve_tool(

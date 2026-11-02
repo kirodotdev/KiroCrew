@@ -10697,6 +10697,14 @@
       "reason": "Je ne peux pas exécuter ceci, mais toi, tu peux.",
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
+    },
+    "denyOverride": {
+      "blocked": "Une règle de sécurité a bloqué cette commande.",
+      "rule_label": "Règle : {{rule}}",
+      "warning": "Si vous l'autorisez, cette commande s'exécute quand même, en passant outre cette seule règle. Lisez d'abord la commande.",
+      "override": "Autoriser quand même",
+      "allow_once": "Autoriser une fois — cette commande seulement",
+      "allow_session": "Autoriser dans ce chat — cette règle, jusqu'à la fermeture du chat ou au redémarrage de {{productName}}"
     }
   },
   "hooks": {

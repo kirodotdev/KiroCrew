@@ -4601,6 +4601,14 @@
     },
     "sendToInstanceSubmenu": {
       "default_badge": "default"
+    },
+    "denyOverride": {
+      "blocked": "A security rule blocked this command.",
+      "rule_label": "Rule: {{rule}}",
+      "warning": "Allowing it lets this command run anyway, past this one rule only. Read the command first.",
+      "override": "Allow anyway",
+      "allow_once": "Allow once — this command only",
+      "allow_session": "Allow in this chat — this rule, until you close the chat or {{productName}} restarts"
     }
   },
   "hooks": {

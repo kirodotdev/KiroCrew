@@ -32,8 +32,12 @@ export function alreadyResolvedDecision(err: unknown): SharedDecision | null {
 }
 
 /** The card outcome a resolved decision maps to. */
+/** Outcomes a decision record carries that let the call run: a plain approval,
+ *  a trust-reads approval, and the owner's two security-rule override scopes. */
+const APPROVING_OUTCOMES = new Set(['approved', 'approved_trust_reads', 'deny_override_once', 'deny_override_session'])
+
 export function decisionVerdict(decision: SharedDecision): 'approved' | 'rejected' {
-  return decision.outcome === 'approved' || decision.outcome === 'approved_trust_reads' ? 'approved' : 'rejected'
+  return APPROVING_OUTCOMES.has(decision.outcome) ? 'approved' : 'rejected'
 }
 
 type Who = { self: true } | { self: false; name: string }

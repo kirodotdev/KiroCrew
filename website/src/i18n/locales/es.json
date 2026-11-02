@@ -10697,6 +10697,14 @@
       "reason": "Yo no puedo ejecutar esto, pero tú sí.",
       "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
       "title": "Ejecútalo tú"
+    },
+    "denyOverride": {
+      "blocked": "Una regla de seguridad bloqueó este comando.",
+      "rule_label": "Regla: {{rule}}",
+      "warning": "Si lo permites, este comando se ejecuta igualmente, saltando solo esta regla. Lee el comando antes.",
+      "override": "Permitir de todos modos",
+      "allow_once": "Permitir una vez — solo este comando",
+      "allow_session": "Permitir en este chat — esta regla, hasta que cierres el chat o {{productName}} se reinicie"
     }
   },
   "hooks": {

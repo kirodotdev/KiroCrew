@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         is_read_only_bash,
         is_sensitive_bash_command,
         is_unverifiable_path_refusal,
+        logger,
         mcp_identity_ref,
         policy_alias_split,
         policy_aliases,
@@ -101,6 +102,7 @@ class GateFacts:
         app: str,
         classifier_only: bool,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> None:
         self.manager = manager
         self.call = call
@@ -108,6 +110,11 @@ class GateFacts:
         self.agent = agent
         self.app = app
         self.classifier_only = classifier_only
+        #: Refusal keys a person overrode on the dashboard approval card, for this
+        #: call or this session. Read by the deny-rules tier alone
+        #: (:func:`_tier_deny_rules`), which drops any key a governance policy
+        #: pins before it reaches ``is_denied``; no other tier consults it.
+        self.deny_waivers = deny_waivers
         #: The surface's Reads approval mode is on for this call. Read by the
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
@@ -733,16 +740,38 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     the trusted identities. It reuses the ONE snapshot taken by the targets tier --
     a second read here would let a ceiling refresh split this call's verdict across
     two policy states.
+
+    A person's in-session overrides (:attr:`GateFacts.deny_waivers`) reach
+    ``is_denied`` only after every key a governance policy pins is dropped: the
+    active ceiling's pins and every loaded profile's
+    (``security.pinned_builtin_command_ids_for_snapshot``), so a pin that lands
+    mid-session, in the ceiling or in the bound profile, takes effect on the next
+    call even over a waiver granted before it. The union over-locks a profile
+    the session is not bound to, which only ever keeps a refusal.
     """
     authority = facts.authority
     denied_regexes = facts.denied_regexes
     denied_notes = facts.denied_notes
+    waived: frozenset[str] = frozenset()
+    if facts.deny_waivers:
+        from kiro_crew.security.deny_waiver import waivable_keys
+
+        try:
+            waived = waivable_keys(
+                facts.deny_waivers, security.pinned_builtin_command_ids_for_snapshot()
+            )
+        except Exception:
+            # Pins that cannot be read waive nothing: the override is the one
+            # input here that only ever loosens, so it is what a failure drops.
+            logger.warning("governance pins unreadable; deny overrides ignored", exc_info=True)
+            waived = frozenset()
     for target in facts.deny_targets:
         reason = authority.is_denied(
             target,
             facts.config.auto_deny_tools,
             denied_regexes=denied_regexes,
             reason_notes=denied_notes,
+            waived=waived,
         )
         if reason:
             return ToolHookResult.deny(reason)
@@ -776,6 +805,7 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
                 extra_patterns=sent_title_globs,
                 reason_notes=denied_notes,
                 segments=True,
+                waived=waived,
             )
             if reason:
                 return ToolHookResult.deny(reason)

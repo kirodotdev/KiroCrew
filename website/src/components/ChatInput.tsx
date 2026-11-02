@@ -9,6 +9,7 @@ import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import RejectDropdown from './RejectDropdown'
+import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -406,6 +407,7 @@ function ChatInput({
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalDenyRule, approvalDenyDetail,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
@@ -1190,6 +1192,7 @@ function ChatInput({
                       control. A `data-` hook rather than button text because every
                       catalog translates the labels. */}
                   <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
+                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {/* One dropdown carries every standing grant this card can
                           record. Trust-reads is a tier inside it, not a sibling
@@ -1212,6 +1215,7 @@ function ChatInput({
                             onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
                         />
                       )}
+                      </>}
                       <RejectDropdown
                           disabled={approvalSubmitting}
                           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
@@ -1219,6 +1223,7 @@ function ChatInput({
                       />
                   </div>
               </div>
+              {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} detail={approvalDenyDetail} />}
               {/* A1 discoverability hint: points at the footer mode picker so a
                   new user learns approval prompting is adjustable. Withheld for
                   unattended sources (the mode picker governs THIS slot, not the
@@ -1226,8 +1231,9 @@ function ChatInput({
                   composer unmounts the picker, so the link would have nothing
                   to open), while the B2 nudge is up (two pointers at one
                   control), and retired forever once the user has found the
-                  picker — via this link or by adjusting the mode. */}
-              {!showGhost && !approvalIsUnattended && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+                  picker — via this link or by adjusting the mode. Withheld on a
+                  security-rule override card too: no approval mode answers it. */}
+              {!showGhost && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
                 <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
                   <span>{i18nT('components.chatInput.approval_hint_question')}</span>
                   <button

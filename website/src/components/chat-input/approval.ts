@@ -133,6 +133,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** Set when the card is a security-rule override (the server refused the
+   *  command by this rule): the bar offers the override scopes and a reject,
+   *  and no Allow once / Trust, which the server would read as a refusal. */
+  const approvalDenyRule = typeof approvalMeta?.deny_override_rule === 'string' ? approvalMeta.deny_override_rule : ''
+  /** The plain sentence on what that rule blocks, when the server knows one. */
+  const approvalDenyDetail = typeof approvalMeta?.deny_override_detail === 'string' ? approvalMeta.deny_override_detail : ''
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -298,6 +304,18 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       setApprovalNoticeKind('error')
       setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
     }
+    if (['deny_override_once', 'deny_override_session'].includes(decision)) {
+      // A security-rule override is slot-scoped and owner-only on the server;
+      // there is no one-shot fallback for it, so with no slot it is not sent.
+      // It names the exact card row it was clicked on (`request_mid`): request
+      // ids recur, and the server refuses an override that does not match the
+      // card it would settle.
+      if (!activeSlot || !clickedMid) { setApprovalSubmitting(false); return }
+      api.approveChatSlot(activeSlot, decision, {
+        request_id: approvalId, response_id: responseId, origin: 'native', request_mid: clickedMid,
+      }).then(finish).catch(fail)
+      return
+    }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
       // Defence in depth: the Trust controls are not rendered for unattended
       // sources, but never let a trust grant be applied on their behalf. The
@@ -323,6 +341,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalDenyRule, approvalDenyDetail,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }

@@ -69,6 +69,7 @@ async def approve_tool(
     *,
     deadline: GrantDeadline | None = None,
     withdraw_if: Callable[[], bool] | None = None,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> bool:
     """Approve a pending permission request.
 
@@ -97,6 +98,9 @@ async def approve_tool(
     :class:`~kiro_crew.permission_floor.ApprovalWithdrawn` is raised. Under
     the lock it is read ahead of the runtime's liveness check, which
     ``deadline`` follows.
+
+    ``deny_waivers`` reach the floor's gate unchanged, as on
+    ``AcpClient.approve_tool``.
     """
     gate_event = self._permission_gate_events.pop(request_id, None)
     # Taken first, before any await: it records the session's cancellation
@@ -107,7 +111,12 @@ async def approve_tool(
     if gate_event is None:
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
-        reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if deny_waivers:
+            reason = await asyncio.to_thread(
+                permission_floor.refusal_for, gate_event, deny_waivers=deny_waivers
+            )
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
     if reason is not None:
         # Same as ``AcpClient.approve_tool``: drop any earlier grant for this call
         # id now, since ``reject_tool`` below finds the gate event already popped.

@@ -10534,6 +10534,14 @@
       "reason": "Ich kann das nicht ausführen, du aber schon.",
       "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
       "title": "Selbst ausführen"
+    },
+    "denyOverride": {
+      "blocked": "Eine Sicherheitsregel hat diesen Befehl blockiert.",
+      "rule_label": "Regel: {{rule}}",
+      "warning": "Wenn du ihn erlaubst, läuft dieser Befehl trotzdem, nur an dieser einen Regel vorbei. Lies den Befehl zuerst.",
+      "override": "Trotzdem erlauben",
+      "allow_once": "Einmal erlauben — nur dieser Befehl",
+      "allow_session": "In diesem Chat erlauben — diese Regel, bis du den Chat schließt oder {{productName}} neu startet"
     }
   },
   "hooks": {
