@@ -26,6 +26,7 @@ from kiro_crew.embeddings_model import (
     embedding_model_is_custom,
     model_file_present,
 )
+from kiro_crew.embeddings_ollama import ollama_backend_selected
 from kiro_crew.embeddings_settings import (
     _DEFAULT_MODEL_URL,
     _DOWNLOAD_BACKOFF_BASE_SECS,
@@ -362,14 +363,18 @@ def reset_download_manager() -> None:
 def start_background_model_download() -> "asyncio.Task[bool] | None":
     """Kick the default-on background model download. Returns the task or None.
 
-    Called from gateway/server startup. Returns None when a custom model is
-    configured (the bundled model must never overwrite or compete with it —
-    this is what makes a custom model survive a default-model version bump),
-    when the model is already present (nothing to do), or when downloads are
-    skipped via env. Idempotent: a second call while a download is in flight
-    returns the existing task instead of spawning another.
+    Called from gateway/server startup. Returns None when an Ollama server
+    backend is selected (nothing would load the bundled model), when a custom
+    model is configured (the bundled model must never overwrite or compete with
+    it — this is what makes a custom model survive a default-model version
+    bump), when the model is already present (nothing to do), or when downloads
+    are skipped via env. Idempotent: a second call while a download is in
+    flight returns the existing task instead of spawning another.
     """
     global _download_task
+    if ollama_backend_selected(_read_memory_config()):
+        logger.info("Ollama embedding backend selected — skipping the default model download")
+        return None
     if embedding_model_is_custom():
         logger.info("Custom embedding model configured — skipping the default model download")
         return None

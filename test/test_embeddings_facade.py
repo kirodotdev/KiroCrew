@@ -1,6 +1,6 @@
 """The embedding runtime's facade keeps the patch seams the one module had.
 
-``kiro_crew.embeddings`` is a mirror facade (:mod:`kiro_crew._facade_mirror`) over seven
+``kiro_crew.embeddings`` is a mirror facade (:mod:`kiro_crew._facade_mirror`) over eight
 sibling owners and defines nothing itself. Callers, tests and documents still reach every
 name as ``kiro_crew.embeddings.<name>``, and the moved code reads its names as plain module
 globals, so a patch through the facade reaches that code only because the mirror writes
@@ -44,6 +44,7 @@ OWNERS = (
     "kiro_crew.embeddings_gguf",
     "kiro_crew.embeddings_model",
     "kiro_crew.embeddings_llama",
+    "kiro_crew.embeddings_ollama",
     "kiro_crew.embeddings_shared",
     "kiro_crew.embeddings_download",
 )
@@ -138,7 +139,7 @@ def test_a_facade_patch_of_every_scanned_name_reaches_every_module_holding_it() 
 
 
 def test_the_owners_load_lowest_layer_first() -> None:
-    """``_OWNERS`` is the seven owners, and each owner imports only owners listed before
+    """``_OWNERS`` is the eight owners, and each owner imports only owners listed before
     it -- the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
     assert owners == list(OWNERS)
