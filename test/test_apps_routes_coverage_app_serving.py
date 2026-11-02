@@ -105,6 +105,8 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        # The POSIX path on every host; the native-Windows refusal is tested apart.
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Linux")
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -124,6 +126,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         wrapped: dict[str, Any] = {}
 
@@ -155,6 +158,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -187,6 +191,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)

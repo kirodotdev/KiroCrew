@@ -1711,7 +1711,11 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 
 `POST /api/apps/{name}/open` runs this command in the background. On a
 cloud/remote environment with no display, the endpoint returns the command for
-the user to run locally instead of executing it on the server.
+the user to run locally instead of executing it on the server. On native
+Windows, which has no `/bin/sh`, the command is not run: the endpoint answers
+409 with `code: "app_open_unsupported_platform"` and an error naming the
+platform. The same refusal covers a registry entry's `detectInstalled` probe,
+which reads not-installed there and logs one warning.
 
 #### `openCommand` — Environment
 

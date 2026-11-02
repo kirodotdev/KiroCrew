@@ -47,6 +47,7 @@ from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.catalog import (
     SOURCE_REGISTRY_PREFIX,
     _is_catalog_row,
+    _manifest_shell_platform_refusal,
     _resolve_install_entry,
     resolve_installed_trust_repository,
 )
@@ -628,7 +629,14 @@ async def install_from_registry(
 
     # Guard: check if already installed externally (e.g. user ran setup.sh manually)
     detect_cmd = entry.get("detectInstalled", "")
-    if detect_cmd:
+    detect_refusal = _manifest_shell_platform_refusal() if detect_cmd else None
+    if detect_refusal:
+        # No /bin/sh to run the probe through. Say so in the install log the user
+        # reads, instead of a spawn error swallowed as "not installed", and go on:
+        # the install proceeded on this host before, and still does.
+        log_lines.append(f"detectInstalled not run: {detect_refusal}")
+        logger.warning("detectInstalled not run for %s: %s", name, detect_refusal)
+    elif detect_cmd:
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]

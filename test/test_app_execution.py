@@ -536,6 +536,7 @@ class TestLaunchAndLifecycleBoundary:
             manifest_extra={"openCommand": "echo admitted"},
         )
         monkeypatch.setenv("DISPLAY", ":99")
+        monkeypatch.setattr(routes, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: True)
         monkeypatch.setattr(routes, "wrap_argv", lambda argv, **kwargs: (argv, None))
         monkeypatch.setattr(routes, "cgroup_scope_argv", lambda argv: argv)
