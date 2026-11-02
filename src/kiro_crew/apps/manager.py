@@ -30,6 +30,7 @@ from kiro_crew import _facade_mirror
 #   ``manager_external`` -- register_external_app: the record of a self-managed app.
 #   ``manager_uninstall`` -- uninstall_app and the agent.apps_trusted grant it drops and restores.
 #   ``manager_lookup`` -- list_apps, get_app, enablement reads, and which installed app owns an agent.
+#   ``manager_adopt`` -- adopting a builtin-owned record onto its own repository, and recovering one.
 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -42,6 +43,7 @@ _OWNERS = (
     "kiro_crew.apps.manager_external",
     "kiro_crew.apps.manager_uninstall",
     "kiro_crew.apps.manager_lookup",
+    "kiro_crew.apps.manager_adopt",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -60,6 +62,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         enable_app,
         mark_session_approval_consent_pending,
         session_approval_consent_candidates,
+    )
+    from kiro_crew.apps.manager_adopt import (  # noqa: F401
+        adopt_builtin_record,
+        recover_interrupted_adoption,
     )
     from kiro_crew.apps.manager_builtins import (  # noqa: F401
         _BUILTIN_APPS,
@@ -92,6 +98,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.manager_install import (  # noqa: F401
         _LIFECYCLE_LOCKS,
         _REGISTRY_SOURCE_REPOSITORY,
+        AdoptionProvenance,
         _effective_source_repository,
         app_lifecycle_lock,
         install_app,

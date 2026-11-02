@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -69,14 +70,36 @@ def _builtin_manifest_sources() -> tuple[Path, ...]:
 def shipped_builtin_app_root(app_name: str) -> Path | None:
     """Return the immutable package directory that ships ``app_name``.
 
-    The package ``app.json`` is authoritative. Mutable installed metadata is
-    deliberately ignored, and a directory without a valid shipped manifest is
-    not a builtin even when its name resembles one.
+    The package ``app.json`` is authoritative: a directory without a valid shipped
+    manifest is not a builtin even when its name resembles one. Installed metadata
+    can only REMOVE that provenance, never grant it: when the wheel copy of the
+    app is released (``builtin_adoption.builtin_released``: the record was adopted
+    from its own repository, or a user app occupies the name) there is no shipped
+    root, so every root chooser resolves the data-home tree instead.
     """
     for root, name in _shipped_builtin_apps():
         if name == app_name:
-            return root
+            return None if _wheel_copy_released(app_name) else root
     return None
+
+
+_released_guard = threading.local()
+
+
+def _wheel_copy_released(app_name: str) -> bool:
+    """``builtin_released(app_name)``, False when that call raises or re-enters."""
+    if getattr(_released_guard, "active", False):
+        return False
+    _released_guard.active = True
+    try:
+        from kiro_crew.apps.builtin_adoption import builtin_released
+
+        return builtin_released(app_name)
+    except Exception:  # noqa: BLE001 - an unanswerable question keeps today's root
+        logger.debug("builtin release check failed for %s", app_name, exc_info=True)
+        return False
+    finally:
+        _released_guard.active = False
 
 
 def shipped_builtin_app_name_at(path: Path) -> str | None:

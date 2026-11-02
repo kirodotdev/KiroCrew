@@ -14,6 +14,7 @@ import os
 
 from aiohttp import web
 
+from kiro_crew.apps.builtin_adoption import released_builtin_packages
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
@@ -231,8 +232,14 @@ def register(app: web.Application) -> None:
     # App Platform
     register_app_routes(app)
 
-    # Built-in app routes — register at startup (handlers check enabled state)
+    # Built-in app routes — register at startup (handlers check enabled state).
+    # A package whose app was adopted from its own repository (or never had a
+    # record on this host while pinned) registers nothing: its routes, and its
+    # on_startup/on_cleanup callbacks, would otherwise serve beside the adopted copy.
+    _released = released_builtin_packages(BUILTIN_NAMES)
     for _builtin_name in BUILTIN_NAMES:
+        if _builtin_name in _released:
+            continue
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
             if hasattr(_mod, "register_routes"):

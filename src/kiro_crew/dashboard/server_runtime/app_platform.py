@@ -234,3 +234,37 @@ def _kick_default_app_installs(state: DashboardState) -> None:
     task = asyncio.create_task(reconcile_default_installs())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+async def _apply_builtin_adoptions() -> None:
+    """Swap staged former built-ins onto their own repository, BEFORE any route exists.
+
+    Network-free (the fetch happened in an earlier run's background staging), and
+    awaited before ``_register_mcp_routes``, ``register_all`` and
+    ``register_builtin_apps``: a released wheel copy then never registers a route,
+    and on Windows its store is never open while the tree is swapped. Returns
+    immediately when nothing is pinned and no adoption is mid-grant.
+    """
+    from kiro_crew.apps.builtin_adoption import apply_builtin_adoptions
+
+    # No catch: the pass handles each app's failure itself and re-raises only
+    # ``PlatformCompositionError`` and cancellation.
+    outcomes = await apply_builtin_adoptions()
+    if outcomes:
+        logger.info("Built-in adoption: %s", outcomes)
+
+
+def _kick_builtin_adoption_staging(state: DashboardState) -> None:
+    """Fetch pinned former built-ins in the background, after the listener serves.
+
+    Never mutates an app record; the swap happens at the next boot. Nothing
+    waits on it, and it returns at once when nothing is pinned.
+    """
+    from kiro_crew.apps.builtin_adoption import stage_builtin_adoptions
+    from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
+
+    if not adoption_pin_names():
+        return
+    task = asyncio.create_task(stage_builtin_adoptions())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)

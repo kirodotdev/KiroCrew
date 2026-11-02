@@ -642,6 +642,17 @@ def _strands_str_or_empty(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _builtin_adoption_markers(raw: object) -> dict[str, dict[str, object]]:
+    """``agent.apps_builtin_adoption``: the gateway-written adoption markers, validated.
+
+    The validator is the adoption module's own, so the loader and the base-file
+    reader (``apps.builtin_adoption_state``) cannot disagree on what a marker is.
+    """
+    from kiro_crew.apps.builtin_adoption_markers import coerce_adoption_markers
+
+    return {name: dict(marker) for name, marker in coerce_adoption_markers(raw).items()}
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -716,6 +727,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             if isinstance(_applied := section.get("apps_default_installs_applied"), list)
             else section.default("apps_default_installs_applied")
         ),
+        apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),

@@ -16,7 +16,7 @@ import os
 import shutil
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
@@ -452,12 +452,21 @@ def install_app(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AdoptionProvenance:
+    """The registry coordinate a former built-in record is adopted onto (``manager_adopt``)."""
+
+    repository: str
+    commit: str
+
+
 @holds_app_record_locks
 def update_app(
     source: str | Path,
     *,
     expected_name: str | None = None,
     source_repository: str = "",
+    _adoption: AdoptionProvenance | None = None,
 ) -> AppResult:
     """Update an already-installed app from a local directory path.
 
@@ -469,6 +478,13 @@ def update_app(
     ``expected_name``: when given, reject the update unless the source
     manifest's ``name`` matches — callers that lock/route by app name must
     not let a mismatched source mutate a different app.
+
+    ``_adoption`` is set only by ``manager_adopt.adopt_builtin_record``: the
+    builtin-owned record becomes a registry record of *repository* at *commit*
+    (``origin=registry``, ``lifecycle=gateway``) in the same transaction. It is
+    refused BEFORE anything is mutated unless the record is builtin-owned and the
+    new manifest neither holds back a grant nor adds ``sessionApproval``, so an
+    adopted app keeps its ``enabled`` flag and every approved grant.
     """
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
@@ -552,6 +568,23 @@ def update_app(
         new_permissions=grant_source(manifest),
     )
     widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
+    if _adoption is not None:
+        # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
+        # owner, so not importable here): only ``register_builtin_apps`` writes it.
+        if not (existing.source == "builtin" or existing.origin == "builtin"):
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"app {name!r} is not a built-in record",
+                error_code="not_builtin_owned",
+            )
+        if widened_session_approval or widened_grants:
+            return AppResult(
+                ok=False,
+                name=name,
+                error="the repository version requests permissions the built-in did not hold",
+                error_code="adoption_would_widen",
+            )
 
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction
@@ -574,6 +607,17 @@ def update_app(
         sourceSigner="",
         approvedGrantsStored=True,
     )
+    if _adoption is not None:
+        meta = replace(
+            meta,
+            source=f"registry:{name}",
+            origin="registry",
+            resources="gateway",
+            lifecycle="gateway",
+            migratedTo="",
+            sourceUrl=_adoption.repository,
+            sourceCommit=_adoption.commit,
+        )
     # Preserve data directory and app secret
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
