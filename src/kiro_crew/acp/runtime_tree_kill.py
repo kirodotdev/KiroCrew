@@ -94,6 +94,33 @@ def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
     return [pid for pid in saved if pid not in dead]
 
 
+def _untrack_killed_root(pid: int, start_token: str | None) -> None:
+    """Retire the killed root's PID-registry entry, by identity when it has one.
+
+    A synchronous unit so the caller can hand the whole thing to a worker
+    thread, the same way ``_prune_dead_descendants`` is: the untrack takes the
+    PID file's exclusive lock and rewrites it through ``atomic_write``, neither
+    of which may run on the event loop. ``unregister_protected_pid`` is
+    ``_PROTECTED_LOCK``-guarded, so it is safe on the worker thread too.
+
+    A recorded start token names the session line that is ours, so the retire
+    goes by identity; the bare line is removed only while the number is dead at
+    that moment -- never by number alone. A root whose identity could not be
+    read at spawn has no token to compare and keeps the prefix-matched untrack.
+    """
+    if start_token:
+        if not _untrack_root_by_identity(pid, start_token):
+            # No session line of ours to retire (spawn's append
+            # failed, or a successor already replaced it): the
+            # bare line still goes, but only while the number
+            # is dead -- never by number alone.
+            _untrack_pid_if_dead(pid)
+    else:
+        _untrack_pid(pid)
+        _untrack_session_pid(pid)
+    unregister_protected_pid(pid)
+
+
 async def _discard_bound_workspace(self: AcpRuntime) -> None:
     """Close the parent copy of a macOS workspace identity off-loop."""
     descriptor = getattr(self, "_bound_workspace_fd", None)
@@ -631,29 +658,16 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
 
             # Untrack the PID so the orphan sweep doesn't chase a dead entry
             # (mirrors AcpClient._reset_state). Best-effort — a leftover entry
-            # is only pruned lazily otherwise.
+            # is only pruned lazily otherwise. _untrack_killed_root retires it
+            # by identity when a start token names the line that is ours.
             #
-            # By IDENTITY, the same way an observed death retires. The reap
-            # above proved THIS process dead, not that its number is still
-            # ours: the kernel can hand the number to a root this gateway
-            # spawns next before this line runs, and a prefix-matched untrack
-            # would then take the successor's lines with it. The recorded
-            # start token names the line that is ours; the bare line is
-            # removed only while the number is dead at that moment. A root
-            # whose identity could not be read at spawn has no token to
-            # compare, so it keeps the prefix-matched untrack it always had.
+            # Run off the loop: the untrack takes the PID file's exclusive lock
+            # and rewrites it through atomic_write, a syscall that blocks the
+            # event loop (and so the wait_for timeout that bounds this kill)
+            # on a slow disk. Hand it to a worker thread, the same way
+            # _prune_dead_descendants below is.
             try:
-                if self._spawn_start_token:
-                    if not _untrack_root_by_identity(pid, self._spawn_start_token):
-                        # No session line of ours to retire (spawn's append
-                        # failed, or a successor already replaced it): the
-                        # bare line still goes, but only while the number
-                        # is dead -- never by number alone.
-                        _untrack_pid_if_dead(pid)
-                else:
-                    _untrack_pid(pid)
-                    _untrack_session_pid(pid)
-                unregister_protected_pid(pid)
+                await asyncio.to_thread(_untrack_killed_root, pid, self._spawn_start_token)
             except Exception:
                 logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
 
