@@ -132,8 +132,7 @@ class TestPortOwner:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse pid-record stub moved verbatim; no test in this class calls monkeypatch.undo()
-    def _recorded_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _recorded_pid(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
         """Stand in for a pid record that PROVED fresh.
 
         This deliberately does NOT pin ``rt.IS_POSIX``, because ``port_owner``
@@ -148,7 +147,7 @@ class TestPortOwner:
         # for a record that PROVED fresh (it answers ``None`` otherwise), which is
         # what lets these cases vary listener evidence independently; the
         # freshness proof itself is covered in ``test_pod_api.py``.
-        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        _floor_monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
 
     @staticmethod
     def _listener(pid: int, address: str = "127.0.0.1", family: str = "4"):
