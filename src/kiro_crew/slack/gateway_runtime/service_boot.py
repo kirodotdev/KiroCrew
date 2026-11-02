@@ -196,6 +196,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
             log_message="agent_runtime.run_first_run_setup failed",
         )
     except Exception:
+        # A rebuild PlatformCompositionError lands here too: platform boot enforces composition.
         # Boot deliberately continues: a gateway with no agent spec still
         # serves the dashboard, and one command repairs it. But this is NOT a
         # warning-level event — without a spec on disk kiro-cli answers every

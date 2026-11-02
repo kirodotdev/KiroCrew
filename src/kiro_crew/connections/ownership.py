@@ -39,6 +39,7 @@ from kiro_crew.agent_spec_format import (
     opens_frontmatter_fence,
     parse_agent_spec_text,
 )
+from kiro_crew.platform import PlatformCompositionError
 
 logger = logging.getLogger(__name__)
 
@@ -719,8 +720,12 @@ async def remove_provider_entry(
         # different flocks and reentrancy never arises.
         try:
             from kiro_crew.agent import rebuild_agent_config_reporting
+            from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 
             _spec_path, spec_rewritten = await _offload_config_write(rebuild_agent_config_reporting)
+        except PlatformCompositionError:
+            logger.error(COMPOSITION_REFUSED_LOG, f"disconnect of {slug}", exc_info=True)
+            spec_rewritten = False
         except Exception:  # noqa: BLE001 — the config write already landed
             logger.warning("agent config rebuild failed after disconnect", exc_info=True)
             spec_rewritten = False

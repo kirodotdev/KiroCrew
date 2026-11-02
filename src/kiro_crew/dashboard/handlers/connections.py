@@ -7,7 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
@@ -15,6 +15,7 @@ from aiohttp import web
 from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
 from kiro_crew.connections.registry import Provider
+from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 from kiro_crew.dashboard.handlers.mcp import (
     _get_mcp_lock,
     _is_valid_mcp_name,
@@ -22,9 +23,14 @@ from kiro_crew.dashboard.handlers.mcp import (
     _scrub_preregistered_oauth_copies,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+#: ``_refresh_client_projections``' answer when the rebuild stopped on a
+#: ``PlatformCompositionError``.
+COMPOSITION_REFUSED: Literal["composition_refused"] = "composition_refused"
 
 _MAX_RETURN_ADDRESS_BYTES = 8192
 _MAX_REQUEST_TARGET_BYTES = 6144
@@ -1030,7 +1036,7 @@ def _oauth_client_configured(provider: Provider) -> bool:
     return bool(oauth_client_view(provider, config=config, vault_names=names).get("configured"))
 
 
-async def _refresh_client_projections(slug: str) -> bool | None:
+async def _refresh_client_projections(slug: str) -> bool | None | Literal["composition_refused"]:
     """Bring every runtime projection of ``slug``'s client in line with the record.
 
     The vault and config.json are the source of truth; the emitted agent spec and
@@ -1054,7 +1060,10 @@ async def _refresh_client_projections(slug: str) -> bool | None:
     spec still carrying the old client is a fact the response must state so the
     operator retries or restarts rather than assuming the rotation took. The
     mint withdrawal is best-effort and logged; a mint that cannot be cancelled is
-    a process the TTL reaps, not a projection that persists.
+    a process the TTL reaps, not a projection that persists. Returns
+    :data:`COMPOSITION_REFUSED` when the rebuild stopped on a
+    ``PlatformCompositionError``: the same stale-projection failure, whose cause
+    is this host's enterprise setup, so the response names governance.
     """
     from kiro_crew.connections.mint import cancel_mint
 
@@ -1085,6 +1094,9 @@ async def _refresh_client_projections(slug: str) -> bool | None:
         from kiro_crew.agent import rebuild_agent_config_reporting  # circular at module scope
 
         _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, "an OAuth client change", exc_info=True)
+        return COMPOSITION_REFUSED
     except Exception:  # noqa: BLE001 -- reported to the caller, see docstring
         logger.warning("rebuild_agent_config failed after an OAuth client change", exc_info=True)
         return False
@@ -1098,15 +1110,23 @@ async def _refresh_client_projections(slug: str) -> bool | None:
     return True
 
 
-def _projection_stale_response(slug: str, current: dict | None) -> web.Response:
+def _projection_stale_response(
+    slug: str, current: dict | None, *, composition_refused: bool = False
+) -> web.Response:
     """The response for a committed record whose agent-spec projection did not refresh."""
+    error = (
+        "the client was saved but the agent spec was not rewritten: this host's enterprise "
+        "setup could not be built (governance); see the gateway log"
+        if composition_refused
+        else (
+            "the client was saved but the agent spec could not be rebuilt; new sessions "
+            "may still load the previous client until a rebuild succeeds"
+        )
+    )
     return web.json_response(
         {
             "ok": False,
-            "error": (
-                "the client was saved but the agent spec could not be rebuilt; new sessions "
-                "may still load the previous client until a rebuild succeeds"
-            ),
+            "error": error,
             "code": "projection_refresh_failed",
             "slug": slug,
             "client": current,
@@ -1298,10 +1318,12 @@ async def api_connections_oauth_client_put(request: web.Request) -> web.Response
                 return failure
             refreshed = await _refresh_client_projections(slug)
             spec_rewritten[0] = refreshed is True
-            if refreshed is False:
+            if refreshed is False or refreshed == COMPOSITION_REFUSED:
                 views_now = await asyncio.to_thread(_oauth_client_views)
                 return _projection_stale_response(
-                    slug, next((v for v in views_now if v.get("slug") == slug), None)
+                    slug,
+                    next((v for v in views_now if v.get("slug") == slug), None),
+                    composition_refused=refreshed == COMPOSITION_REFUSED,
                 )
             return None
 
@@ -1397,10 +1419,12 @@ async def api_connections_oauth_client_delete(request: web.Request) -> web.Respo
                 )
             refreshed = await _refresh_client_projections(slug)
             spec_rewritten[0] = refreshed is True
-            if refreshed is False:
+            if refreshed is False or refreshed == COMPOSITION_REFUSED:
                 views_now = await asyncio.to_thread(_oauth_client_views)
                 return _projection_stale_response(
-                    slug, next((v for v in views_now if v.get("slug") == slug), None)
+                    slug,
+                    next((v for v in views_now if v.get("slug") == slug), None),
+                    composition_refused=refreshed == COMPOSITION_REFUSED,
                 )
             return None
 

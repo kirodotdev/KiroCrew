@@ -42,7 +42,12 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.config.sections import MANAGED_STUB_FOLLOWERS
 from kiro_crew.dashboard.chat_utils import run_to_completion
-from kiro_crew.dashboard.handlers._shared import AGENT_SPEC_NOT_REWRITTEN, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    AGENT_SPEC_COMPOSITION_REFUSED,
+    AGENT_SPEC_NOT_REWRITTEN,
+    COMPOSITION_REFUSED_LOG,
+    read_bounded_json,
+)
 from kiro_crew.dashboard.handlers.mcp_agent_sync import (
     _agent_home_not_owned,
     _agent_home_not_owned_response,
@@ -125,6 +130,7 @@ from kiro_crew.mcp_utils import (
     mcp_server_alias,
     without_mcp_refs,
 )
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1540,6 +1546,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
             # home, so the saved change does not reach new sessions.
             rebuild_error = AGENT_SPEC_NOT_REWRITTEN
             logger.warning("agent spec was not rewritten after apply: %s", rebuild_error)
+    except PlatformCompositionError:
+        # The rebuild stopped before composing a spec from the open-source defaults;
+        # the reason names governance rather than echoing the exception text.
+        rebuild_error = AGENT_SPEC_COMPOSITION_REFUSED
+        logger.error(COMPOSITION_REFUSED_LOG, "apply", exc_info=True)
     except Exception as exc:
         # Rebuild failures can surface file paths, env var contents, or
         # credential fragments (e.g. JSON decode errors that echo file

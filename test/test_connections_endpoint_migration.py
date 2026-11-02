@@ -215,3 +215,32 @@ def test_a_failure_is_logged_and_does_not_raise(
 
     assert _start() == []
     assert "endpoint migration failed for atlassian" in caplog.text
+
+
+def test_a_composition_refused_rebuild_is_logged_as_governance(
+    home: dict, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The entry still moves; the unrewritten spec is reported, and the log names
+    governance at ERROR because this host's enterprise setup could not be built."""
+    from kiro_crew.platform import PlatformCompositionError
+
+    def _refused(**_kwargs: object) -> tuple[pathlib.Path, bool]:
+        raise PlatformCompositionError("companion missing")
+
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config_reporting", _refused)
+    _write_mcp(home, {"atlassian": {"url": _V1}})
+    _write_owner_record({"atlassian": {"url": _V1}})
+    caplog.set_level("ERROR", logger="kiro_crew.connections.endpoint_migration")
+
+    (moved,) = _start()
+
+    assert _servers(home)["atlassian"] == {"url": _V2}
+    assert moved.entry_migrated
+    assert moved.agent_spec_rewritten is False
+    errors = [
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.connections.endpoint_migration" and r.levelname == "ERROR"
+    ]
+    assert len(errors) == 1
+    assert "governance" in errors[0].getMessage()

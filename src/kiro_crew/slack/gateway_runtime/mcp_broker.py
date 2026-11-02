@@ -181,6 +181,7 @@ async def _init_mcp_gateway(
         except asyncio.CancelledError:
             raise
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the withhold stays.
             logger.warning(
                 "mcp-gateway: could not lift the secret:// withhold for newly routed servers",
                 exc_info=True,
