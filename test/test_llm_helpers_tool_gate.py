@@ -1169,17 +1169,19 @@ async def test_a_tool_call_frame_is_not_audited_as_an_approval():
     hooks = MagicMock()
     hooks.on_tool_call = MagicMock(return_value=ToolHookResult.allow())
     hooks.effective_denied_regexes = MagicMock(return_value=[])
+    from kiro_crew.sel import SecurityEventLog
+
     rows: list[str] = []
-    recorder = MagicMock()
-    recorder.log_tool_invocation = lambda **kw: rows.append(kw["outcome"])
+
+    def _record(_self: object, **kw: object) -> None:
+        rows.append(str(kw["outcome"]))
 
     async def _nobody_answers(_event: LLMEvent) -> bool:
         return False
 
-    with (
-        patch("kiro_crew.sel.sel", return_value=recorder),
-        patch("kiro_crew.llm_helpers_parts.turn_stream._sel", return_value=recorder),
-    ):
+    # Both rows go through the one SEL singleton, so the method is patched on
+    # its class rather than on each module's binding of ``sel``.
+    with patch.object(SecurityEventLog, "log_tool_invocation", _record):
         await stream_and_collect(
             provider,  # type: ignore[arg-type]
             "q",
