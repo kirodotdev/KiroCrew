@@ -206,9 +206,10 @@ owns the real private-workflow MCP test and does not serialize the browser job.
 The CI-only helper overlaps the unchanged `python setup.py test_e2e` command and
 the dedicated Memory UI pytest command. Both outcomes are awaited; no failure
 cancels or hides the other lane. Both helper outcomes remain mandatory, with the
-same 25-minute browser-job ceiling. The private namespace coverage is a separate
-mandatory CI job instead of a serial prerequisite, so it does not consume the
-browser lane's critical path.
+same browser-job ceiling (25 minutes on the CodeBuild fleet, 40 off it; see
+"The browser install is budgeted" below). The private namespace coverage is a
+separate mandatory CI job instead of a serial prerequisite, so it does not
+consume the browser lane's critical path.
 
 The head+base i18n render gate is its own `i18n-render` job rather than a third
 lane here, for the same reason: it needs no gateway, and on the hosted 4-vCPU
@@ -253,9 +254,12 @@ failure propagation and cancellation cleanup, not private-MCP or browser proof.
 
 ### The browser install is budgeted, and installs no apt packages
 
-The job's ceiling is `timeout-minutes: 25`, and the browser install is the step
-that historically consumed it. It carries three constraints, all in service of
-leaving the specs enough of that budget to actually run:
+The job's ceiling is route-aware, like `backend-test`'s: 25 minutes when the run
+is admitted to the CodeBuild fleet, 40 when it is not and the job falls back to
+`kirocrew-linux-4-core`, where the slowest observed fork run took 23.9 of the
+old 25. The browser install is the step that historically consumed that budget.
+It carries three constraints, all in service of leaving the specs enough of it
+to actually run:
 
 - **`${RUNNER_TEMP}/ms-playwright` is cached**, keyed on the exact `@playwright/test`
   version read out of `website/package-lock.json`. `PLAYWRIGHT_BROWSERS_PATH`
