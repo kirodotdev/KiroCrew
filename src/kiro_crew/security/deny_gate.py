@@ -25,11 +25,10 @@ both are bound. New deny-gate logic and new security audit events belong here.
 from __future__ import annotations
 
 import asyncio
-import functools
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING
 
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
@@ -420,27 +419,6 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
-
-
-def _one_payload_walk_per_decision(fn: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Run *fn* inside one ``shell_normalizer._payload_walk_memo`` block.
-
-    Every floor of a decision descends the same command's nested payloads, so the
-    decision shares one walk per distinct text instead of paying for one per floor.
-    The owner is resolved at call time, as :func:`is_denied` resolves its own.
-    """
-
-    @functools.wraps(fn)
-    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        with _submodule("shell_normalizer")._payload_walk_memo():
-            return fn(*args, **kwargs)
-
-    return wrapper
-
-
-@_one_payload_walk_per_decision
 @sharing_views
 def is_denied(
     tool_name: str,

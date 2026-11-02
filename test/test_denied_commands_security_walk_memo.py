@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 from kiro_crew.security import argv_floor as _argv_floor
 from kiro_crew.security import argv_floor_self as _argv_floor_self
 from kiro_crew.security import is_denied
+from kiro_crew.security import shell_commands as _shell_commands
 
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
@@ -68,7 +69,7 @@ class TestOneDecisionSharesEachPayloadWalk:
     Every structural floor descends the command's nested payloads; unshared, each one
     re-tokenizes the whole command, so one decision on a long command pays the
     tokenizer's cost once per floor. The walk is shared inside
-    ``shell_normalizer._payload_walk_memo`` for the duration of one call.
+    the per-call cache ``shell_commands.sharing_views`` opens for one call.
 
     Ratcheted on the WORK the walk does -- how many times the uncached walk runs --
     never on timing, which flips under load: a regression that brings back a walk
@@ -112,8 +113,6 @@ class TestOneDecisionSharesEachPayloadWalk:
 
     def test_a_later_decision_walks_again(self, monkeypatch):
         """Nothing carries between decisions: the gate holds no state across calls."""
-        from kiro_crew.security import shell_normalizer
-
         _requests, walks = self._spy_walks(monkeypatch)
         command = _payload_heavy_heredoc(5)
 
@@ -121,7 +120,7 @@ class TestOneDecisionSharesEachPayloadWalk:
         is_denied(command)
 
         assert walks[command.lower()] == 2
-        assert shell_normalizer._PAYLOAD_WALK_MEMO.get() is None
+        assert _shell_commands._CALL_VIEWS.get() is None
 
     def test_each_distinct_text_keeps_its_own_walk(self, monkeypatch):
         """A continuation-joined view is a second text, walked once in its own right.
@@ -141,7 +140,7 @@ class TestOneDecisionSharesEachPayloadWalk:
         assert walks == Counter({text: 1 for text in requests})
 
         first, second = "kirocrew restart", "bash -c 'git push origin main'"
-        with shell_normalizer._payload_walk_memo():
+        with _one_call_scope():
             for text in (first, second, first):
                 assert shell_normalizer._shell_payload_walk(
                     text
@@ -152,7 +151,7 @@ class TestOneDecisionSharesEachPayloadWalk:
         from kiro_crew.security import shell_normalizer
 
         command = 'bash -c "kirocrew token" && echo $(pgrep -f kirocrew)'
-        with shell_normalizer._payload_walk_memo():
+        with _one_call_scope():
             first = shell_normalizer._shell_payload_walk(command)
             first[0][1].append("tampered")
             first.append(("tampered", ["tampered"]))
@@ -174,7 +173,7 @@ class TestOneDecisionSharesEachPayloadWalk:
 
         monkeypatch.setattr(shell_normalizer, "_shell_payload_walk_uncached", flaky)
         with pytest.raises(RuntimeError):
-            with shell_normalizer._payload_walk_memo():
+            with _one_call_scope():
                 with pytest.raises(RuntimeError):
                     shell_normalizer._shell_payload_walk("kirocrew token")
                 assert shell_normalizer._shell_payload_walk("kirocrew token") == real(
@@ -183,20 +182,7 @@ class TestOneDecisionSharesEachPayloadWalk:
                 raise RuntimeError("the block itself fails")
 
         assert attempts["n"] == 2
-        assert shell_normalizer._PAYLOAD_WALK_MEMO.get() is None
-
-    def test_a_nested_block_reuses_the_enclosing_memo(self, monkeypatch):
-        from kiro_crew.security import shell_normalizer
-
-        _requests, walks = self._spy_walks(monkeypatch)
-        with shell_normalizer._payload_walk_memo():
-            shell_normalizer._shell_payload_walk("kirocrew token")
-            with shell_normalizer._payload_walk_memo():
-                shell_normalizer._shell_payload_walk("kirocrew token")
-            # Leaving the inner block must not drop the outer decision's memo.
-            shell_normalizer._shell_payload_walk("kirocrew token")
-
-        assert walks["kirocrew token"] == 1
+        assert _shell_commands._CALL_VIEWS.get() is None
 
     def test_verdicts_match_an_unshared_walk_on_the_floor_corpus(self):
         """The memo changes what a decision costs, never what it decides."""
@@ -228,9 +214,20 @@ class TestOneDecisionSharesEachPayloadWalk:
 
 
 @contextlib.contextmanager
+def _one_call_scope():
+    """The per-call scope ``sharing_views`` opens around one ``is_denied`` call, as a block."""
+    previous = _shell_commands._CALL_VIEWS.get()
+    _shell_commands._CALL_VIEWS.set({})
+    try:
+        yield
+    finally:
+        _shell_commands._CALL_VIEWS.set(previous)
+
+
+@contextlib.contextmanager
 def _without_walk_sharing():
     """Every walk runs uncached: the reference a shared-walk decision must agree with."""
     from kiro_crew.security import shell_normalizer
 
-    with mock.patch.object(shell_normalizer, "_payload_walk_memo", contextlib.nullcontext):
+    with mock.patch.object(shell_normalizer, "_payload_walk_memo", lambda: None):
         yield

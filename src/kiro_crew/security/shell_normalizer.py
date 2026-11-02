@@ -29,8 +29,6 @@ four owners, which never import it: the tiers depend on the reader, never the re
 from __future__ import annotations
 
 import bisect
-import contextlib
-import contextvars
 import os
 import re
 import shlex
@@ -122,7 +120,8 @@ from .vocabulary import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
+    from typing import Any
 
 
 # Shell glob metacharacters, and the concrete spellings a glob could expand to.  A
@@ -1577,48 +1576,40 @@ def _nested_shell_payloads(
 # ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.
 
 
-#: The walks the current :func:`_payload_walk_memo` block has already paid for,
-#: keyed by the exact text walked. ``None`` outside a block, where every call walks.
-_PAYLOAD_WALK_MEMO: contextvars.ContextVar[
-    dict[str, tuple[tuple[str, tuple[str, ...]], ...]] | None
-] = contextvars.ContextVar("shell_payload_walk_memo", default=None)
-
-
-@contextlib.contextmanager
-def _payload_walk_memo() -> Iterator[None]:
-    """Walk each distinct text at most once for the duration of the block.
+def _payload_walk_memo() -> "dict[object, Any] | None":
+    """The open gate call's cache (``shell_commands.sharing_views``), or ``None`` outside one.
 
     Every floor of one deny decision -- the git-publish sources, the mint and kill
     predicates, each self-subcommand predicate -- asks for the same walk, and the walk
     is a function of its text alone, so sharing one result gives no floor a different
-    view. The memo exists only inside the block, a nested block reuses the enclosing
-    one, and nothing carries from one decision to the next.
+    view. The walk keeps its frames in the one per-call scope ``is_denied`` already
+    opens, so nothing carries from one decision to the next.
     """
-    if _PAYLOAD_WALK_MEMO.get() is not None:
-        yield
-        return
-    token = _PAYLOAD_WALK_MEMO.set({})
-    try:
-        yield
-    finally:
-        _PAYLOAD_WALK_MEMO.reset(token)
+    from .shell_commands import _CALL_VIEWS  # the reader imports this module
+
+    return _CALL_VIEWS.get()
+
+
+#: Tags a walk's key in the shared per-call cache, whose redirect-view keys are plain str.
+_WALK_KEY = "shell_payload_walk"
 
 
 def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
-    """:func:`_shell_payload_walk_uncached`, shared inside a :func:`_payload_walk_memo` block.
+    """:func:`_shell_payload_walk_uncached`, shared inside one ``sharing_views`` call.
 
     Every call hands out fresh lists, remembered or not, so a consumer that edits
     the argv it was given cannot change what the next consumer reads. A walk that
     raises is not remembered: the next caller walks again and meets the same
     exception it would have met without the memo.
     """
-    memo = _PAYLOAD_WALK_MEMO.get()
+    memo = _payload_walk_memo()
     if memo is None:
         return _shell_payload_walk_uncached(text_lower)
-    frames = memo.get(text_lower)
+    key = (_WALK_KEY, text_lower)
+    frames = memo.get(key)
     if frames is None:
         walked = _shell_payload_walk_uncached(text_lower)
-        memo[text_lower] = tuple((source, tuple(tokens)) for source, tokens in walked)
+        memo[key] = tuple((source, tuple(tokens)) for source, tokens in walked)
         return walked
     return [(source, list(tokens)) for source, tokens in frames]
 
