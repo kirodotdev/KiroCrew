@@ -369,6 +369,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "Détails destinés à la personne qui a assemblé cet exemplaire",
       "refused_page_handoff_note": "Demander à l'agent ouvre une conversation à laquelle ces détails sont déjà joints.",
+      "apps_list_failed": "Impossible de charger tes apps installées.",
       "refused_page_lead": "{{productName}} a rejeté cette page à son démarrage, car elle est mal configurée dans cet exemplaire. Réessayer ne la ramènera pas — c'est à la personne qui a assemblé cet exemplaire de le corriger.",
       "refused_page_title": "Impossible de charger {{route}}"
     },
@@ -11082,7 +11083,21 @@
       "grants_reconsent_link_hosts": "Hôtes de liens : permet aux cartes de survol de l’app de voir les liens vers ces sites dans les messages du chat.",
       "grants_reconsent_link_patterns": "Motifs de texte : permet aux cartes de survol de l’app de voir le texte du chat qui correspond à ces motifs.",
       "grants_reconsent_link_full_url": "Adresses de lien complètes : les cartes de survol de l’app voient aussi la partie d’un lien après « ? » ou « # », qui peut contenir un code de connexion.",
-      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
+      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant.",
+      "adoption": {
+        "network": "{{name}} n’a pas encore pu télécharger sa version de l’App Store. {{productName}} réessaie automatiquement ; vérifie la connexion réseau de cet ordinateur.",
+        "local": "{{name}} n’a pas pu préparer sa version de l’App Store sur cet ordinateur : le disque est plein ou un fichier de réglages est illisible. {{productName}} réessaie automatiquement.",
+        "policy": "Le passage de {{name}} à sa version de l’App Store est en attente : ta politique d’admission des apps n’admet pas cette version. Autorise-la dans la politique d’admission pour terminer le passage.",
+        "trust": "Le passage de {{name}} à sa version de l’App Store est en attente : son réglage de confiance désigne une autre source, ou il est défini dans config.local.json, donc {{productName}} ne l’a pas modifié. Vérifie le réglage de confiance pour terminer le passage.",
+        "permissions": "Le passage de {{name}} à sa version de l’App Store est en attente : cette version demande plus d’accès que celle que tu as maintenant. Rien n’a été modifié.",
+        "platform": "{{name}} ne peut pas passer à sa version de l’App Store : cette version ne prend pas en charge cette plateforme.",
+        "host": "Le passage de {{name}} à sa version de l’App Store est en attente : cette version nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} pour terminer le passage.",
+        "verification": "{{name}} ne passe pas à sa version de l’App Store : cette version n’a pas passé la vérification, et cette version de {{productName}} ne réessaie pas. Rien n’a été modifié.",
+        "staged": "La version de l’App Store de {{name}} est téléchargée et vérifiée. {{name}} y passe au prochain redémarrage de {{productName}}.",
+        "keeps_builtin_until": "D’ici là, elle reste une app intégrée.",
+        "keeps_builtin": "Elle reste une app intégrée.",
+        "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
+      }
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

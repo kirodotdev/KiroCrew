@@ -1,8 +1,8 @@
 """The typed ``app.json`` blocks other than ``contributes``.
 
 One dataclass per block -- ``crons``, ``ui``, ``backend`` and its ``hooks``,
-``permissions``, ``setup``, ``dependencies``, ``platform``, ``publishProvider`` and
-``notifications`` -- each with the ``from_dict`` / ``to_dict`` pair ``AppManifest``
+``permissions``, ``setup``, ``dependencies``, ``platform``, ``publishProvider``,
+``notifications`` and ``l10n`` -- each with the ``from_dict`` / ``to_dict`` pair ``AppManifest``
 composes and, where a block has rules of its own, a ``validate``. Parsing is defensive by
 contract: a wrong JSON type degrades to the field's empty value, and a value that would
 silently change meaning is recorded so validation can refuse it.
@@ -1226,3 +1226,135 @@ class NotificationsConfig:
                     f"one of {_CHANNEL_PRIORITIES}, got {ch.defaultPriority!r}"
                 )
         return errors
+
+
+#: A locale key: a 2-3 letter language, optionally one region or script subtag
+#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by exactly this key
+#: and then by its base language, so a key outside the grammar could never be read.
+L10N_LOCALE_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
+MAX_L10N_LOCALES = 32
+MAX_L10N_HIGHLIGHTS = 12
+MAX_L10N_HIGHLIGHT_CHARS = 300
+#: The string fields an ``l10n`` entry may carry, each with its length cap.
+L10N_TEXT_CAPS: dict[str, int] = {"displayName": 120, "description": 1000, "pageLabel": 60}
+#: Drop warnings kept per block; the drops past it are counted in one summary line.
+MAX_L10N_WARNINGS = MAX_L10N_LOCALES
+#: Longest app-supplied key quoted in a drop warning, and how many unknown keys it names.
+_L10N_QUOTED_CHARS = 40
+_L10N_QUOTED_KEYS = 3
+
+
+def _l10n_quoted(text: str) -> str:
+    """*text* cut to :data:`_L10N_QUOTED_CHARS`: app-supplied keys are quoted in warnings."""
+    return text if len(text) <= _L10N_QUOTED_CHARS else text[: _L10N_QUOTED_CHARS - 3] + "..."
+
+
+@dataclass
+class L10nEntry:
+    """One locale's translation of an app's listing copy. Every field is optional."""
+
+    displayName: str = ""  # noqa: N815
+    description: str = ""
+    pageLabel: str = ""  # noqa: N815
+    highlights: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.displayName:
+            d["displayName"] = self.displayName
+        if self.description:
+            d["description"] = self.description
+        if self.pageLabel:
+            d["pageLabel"] = self.pageLabel
+        if self.highlights:
+            d["highlights"] = list(self.highlights)
+        return d
+
+    @classmethod
+    def parse(cls, raw: Any) -> tuple[L10nEntry | None, str]:
+        """``(entry, "")`` for a well-formed object, else ``(None, reason)``."""
+        if not isinstance(raw, dict):
+            return None, "must be an object"
+        unknown = sorted(str(k) for k in raw if k not in L10N_TEXT_CAPS and k != "highlights")
+        if unknown:
+            named = ", ".join(_l10n_quoted(k) for k in unknown[:_L10N_QUOTED_KEYS])
+            more = len(unknown) - _L10N_QUOTED_KEYS
+            return None, f"unknown key(s) {named}" + (f" and {more} more" if more > 0 else "")
+        values: dict[str, str] = {}
+        for key, cap in L10N_TEXT_CAPS.items():
+            value = raw.get(key, "")
+            if not isinstance(value, str):
+                return None, f"{key} must be a string"
+            if len(value) > cap:
+                return None, f"{key} is longer than {cap} characters"
+            values[key] = value
+        highlights = raw.get("highlights", [])
+        if not isinstance(highlights, list) or not all(isinstance(h, str) for h in highlights):
+            return None, "highlights must be an array of strings"
+        if len(highlights) > MAX_L10N_HIGHLIGHTS:
+            return None, f"highlights has more than {MAX_L10N_HIGHLIGHTS} items"
+        if any(len(h) > MAX_L10N_HIGHLIGHT_CHARS for h in highlights):
+            return None, f"a highlight is longer than {MAX_L10N_HIGHLIGHT_CHARS} characters"
+        return (
+            cls(
+                displayName=values["displayName"],  # noqa: N815
+                description=values["description"],
+                pageLabel=values["pageLabel"],  # noqa: N815
+                highlights=list(highlights),
+            ),
+            "",
+        )
+
+
+@dataclass
+class L10nConfig:
+    """An app's optional ``l10n`` block: listing copy per locale.
+
+    Content, not trust: the dashboard shows it in place of the English
+    ``displayName`` / ``description`` / page label / highlights for the reader's
+    locale, for an app of any origin. A malformed locale is DROPPED rather than
+    refused, so a translation mistake never blocks an install; each drop is kept
+    in ``warnings`` for the install path to report, up to :data:`MAX_L10N_WARNINGS`
+    of them plus one line counting the rest.
+    """
+
+    entries: dict[str, L10nEntry] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list, compare=False, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for locale, entry in self.entries.items():
+            body = entry.to_dict()
+            if body:
+                out[locale] = body
+        return out
+
+    @classmethod
+    def from_value(cls, raw: Any) -> L10nConfig:
+        if raw is None:
+            return cls()
+        if not isinstance(raw, dict):
+            return cls(warnings=["l10n: must be an object; ignored"])
+        entries: dict[str, L10nEntry] = {}
+        warnings: list[str] = []
+        uncounted = 0
+        for locale, value in raw.items():
+            if not isinstance(locale, str) or not L10N_LOCALE_RE.fullmatch(locale):
+                warning = (
+                    f"l10n: locale key {_l10n_quoted(repr(locale))} is not a locale tag; dropped"
+                )
+            elif len(entries) >= MAX_L10N_LOCALES:
+                warning = f"l10n: more than {MAX_L10N_LOCALES} locales; {locale!r} dropped"
+            else:
+                entry, reason = L10nEntry.parse(value)
+                if entry is not None:
+                    entries[locale] = entry
+                    continue
+                warning = f"l10n.{locale}: {reason}; dropped"
+            if len(warnings) < MAX_L10N_WARNINGS:
+                warnings.append(warning)
+            else:
+                uncounted += 1
+        if uncounted:
+            warnings.append(f"l10n: {uncounted} more locale(s) dropped")
+        return cls(entries=entries, warnings=warnings)

@@ -339,6 +339,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "供组装此副本的人员参考的详细信息",
       "refused_page_handoff_note": "询问代理会打开一个已附带这些详细信息的对话。",
+      "apps_list_failed": "无法加载你已安装的应用。",
       "refused_page_lead": "{{productName}} 启动时拒绝了此页面，因为它在此副本中的设置有误。重试无法恢复它——需要由组装此副本的人员来修正。",
       "refused_page_title": "无法加载 {{route}}"
     },
@@ -10752,7 +10753,21 @@
       "grants_reconsent_link_hosts": "链接主机：允许应用的悬停卡片看到聊天消息中指向这些站点的链接。",
       "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
-      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
+      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
+      "adoption": {
+        "network": "{{name}} 暂时无法下载其 App Store 版本。{{productName}} 会自动重试；请检查这台电脑的网络连接。",
+        "local": "{{name}} 无法在这台电脑上准备其 App Store 版本：磁盘已满，或无法读取某个设置文件。{{productName}} 会自动重试。",
+        "policy": "{{name}} 切换到其 App Store 版本已暂停：你的应用准入策略不允许该版本。在准入策略中允许它即可完成切换。",
+        "trust": "{{name}} 切换到其 App Store 版本已暂停：它的信任设置指向另一个来源，或在 config.local.json 中设置，因此 {{productName}} 未更改它。检查信任设置即可完成切换。",
+        "permissions": "{{name}} 切换到其 App Store 版本已暂停：该版本请求的访问权限多于当前版本。没有做任何更改。",
+        "platform": "{{name}} 无法切换到其 App Store 版本：该版本不支持此平台。",
+        "host": "{{name}} 切换到其 App Store 版本已暂停：该版本需要更新的 {{productName}}。更新 {{productName}} 即可完成切换。",
+        "verification": "{{name}} 不会切换到其 App Store 版本：该版本未通过验证，此版本的 {{productName}} 不会重试。没有做任何更改。",
+        "staged": "{{name}} 的 App Store 版本已下载并验证。下次 {{productName}} 重启时，{{name}} 会切换到该版本。",
+        "keeps_builtin_until": "在此之前，它仍是内置应用。",
+        "keeps_builtin": "它仍是内置应用。",
+        "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
+      }
     },
     "appPage": {
       "loading_app": "加载应用…",

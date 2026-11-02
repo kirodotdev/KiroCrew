@@ -339,6 +339,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "このコピーを組み立てた担当者向けの詳細",
       "refused_page_handoff_note": "エージェントに質問すると、これらの詳細が添付された状態でチャットが開きます。",
+      "apps_list_failed": "インストール済みのアプリを読み込めませんでした。",
       "refused_page_lead": "{{productName}} は起動時にこのページを拒否しました。このコピーでの設定が誤っているためです。再試行しても元には戻らず、このコピーを組み立てた担当者が修正する必要があります。",
       "refused_page_title": "{{route}} を読み込めませんでした"
     },
@@ -10752,7 +10753,21 @@
       "grants_reconsent_link_hosts": "リンクのホスト: チャットメッセージ内のこれらのサイトへのリンクを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
-      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
+      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
+      "adoption": {
+        "network": "{{name}} は App Store 版をまだダウンロードできていません。{{productName}} が自動で再試行します。このコンピューターのネットワーク接続を確認してください。",
+        "local": "{{name}} はこのコンピューターで App Store 版を準備できませんでした。ディスクがいっぱいか、設定ファイルを読み取れません。{{productName}} が自動で再試行します。",
+        "policy": "{{name}} の App Store 版への切り替えは保留中です。アプリの受け入れポリシーがこの版を許可していません。切り替えを完了するには、受け入れポリシーで許可してください。",
+        "trust": "{{name}} の App Store 版への切り替えは保留中です。信頼設定が別のソースを指しているか、config.local.json で設定されているため、{{productName}} は変更しませんでした。切り替えを完了するには、信頼設定を確認してください。",
+        "permissions": "{{name}} の App Store 版への切り替えは保留中です。この版は現在の版より多くのアクセスを求めています。何も変更されていません。",
+        "platform": "{{name}} は App Store 版に切り替えられません。この版はこのプラットフォームに対応していません。",
+        "host": "{{name}} の App Store 版への切り替えは保留中です。この版には新しい {{productName}} が必要です。切り替えを完了するには、{{productName}} を更新してください。",
+        "verification": "{{name}} は App Store 版に切り替わりません。この版は検証に通らず、このリリースの {{productName}} は再試行しません。何も変更されていません。",
+        "staged": "{{name}} の App Store 版はダウンロードと検証が完了しています。次に {{productName}} を再起動したときに、{{name}} は App Store 版に切り替わります。",
+        "keeps_builtin_until": "それまではビルトインアプリのままです。",
+        "keeps_builtin": "ビルトインアプリのままです。",
+        "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
+      }
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

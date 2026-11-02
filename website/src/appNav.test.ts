@@ -287,3 +287,55 @@ describe('appNavTarget — inactive icon (ui.pages[].iconInactiveUrl)', () => {
     expect(t?.inactiveIconUrl).toBe('')
   })
 })
+
+describe('appNavTarget — an adopted former built-in', () => {
+  // The gateway moved this record from the wheel's built-in to its registry copy.
+  // Route and glyph come from the gateway's adoption row (the wheel pin), never
+  // from the app's manifest.
+  function adopted(over: Partial<AppNavRecord> = {}): AppNavRecord {
+    return app({
+      name: 'former-builtin',
+      origin: 'registry',
+      adoption: { state: 'adopted', legacyNav: { route: '/former-builtin', icon: 'ShoppingBag' } },
+      manifest: { ui: { entry: 'dist/index.mjs', pages: [{ route: '/apps/former-builtin', label: 'Former' }] } },
+      ...over,
+    })
+  }
+
+  it('keeps the legacy route, the bare nav id and the legacy glyph', () => {
+    const t = appNavTarget(adopted())
+    expect(t?.route).toBe('/former-builtin')
+    expect(t?.id).toBe('former-builtin')
+    expect(t?.iconName).toBe('ShoppingBag')
+    expect(t?.glyphAllowed).toBe(true)
+    // Still not a builtin: nothing downstream may treat it as first-party.
+    expect(t?.builtin).toBe(false)
+  })
+
+  it('drops a glyph the rail has no icon for, and keeps the route', () => {
+    const t = appNavTarget(adopted({ adoption: { state: 'adopted', legacyNav: { route: '/former-builtin', icon: 'constructor' } } }))
+    expect(t?.route).toBe('/former-builtin')
+    expect(t?.iconName).toBe('')
+  })
+
+  it.each([
+    ['a state other than adopted', { adoption: { state: 'staged' as const, legacyNav: { route: '/former-builtin', icon: 'ShoppingBag' } } }],
+    ['no legacy nav', { adoption: { state: 'adopted' as const } }],
+    ['a route outside the grammar', { adoption: { state: 'adopted' as const, legacyNav: { route: '/apps/x', icon: 'ShoppingBag' } } }],
+    ['a builtin-owned record', { origin: 'builtin' }],
+    ['no bundle to render', { manifest: { ui: { pages: [{ route: '/apps/former-builtin' }] } } }],
+  ])('routes as an ordinary registry app with %s', (_label, over) => {
+    const t = appNavTarget(adopted(over as Partial<AppNavRecord>))
+    expect(t?.route).not.toBe('/former-builtin')
+    expect(t?.glyphAllowed).toBe(over.origin === 'builtin')
+  })
+
+  it('leaves a non-adopted registry record unchanged', () => {
+    const t = appNavTarget(app({ name: 'third-party', origin: 'registry', manifest: { ui: { entry: 'x.mjs', pages: [{ route: '/x', icon: 'ShoppingBag' }] } } }))
+    expect(t).toMatchObject({ route: '/apps/third-party', id: 'app-third-party', glyphAllowed: false, iconName: 'ShoppingBag' })
+  })
+
+  it('still sends an orphaned adopted record to the migration page', () => {
+    expect(appNavTarget(adopted({ orphaned: true }))?.route).toBe('/apps/migrate/former-builtin')
+  })
+})

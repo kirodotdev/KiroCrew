@@ -84,6 +84,36 @@ export type RegistryApp = {
 }
 
 /** Installed app shape from ``GET /api/apps`` (mirrors app manager records). */
+/**
+ * Why a former built-in's move to its registry copy is waiting or blocked. Mirrors
+ * the gateway's closed set (`/api/apps` `adoption.reason`).
+ */
+export type AdoptionReasonCode =
+  // Transient: retried with backoff.
+  | 'network_unreachable' | 'network_timeout' | 'http_status' | 'disk_full' | 'config_unreadable'
+  // Deterministic, re-checked each boot without a network call.
+  | 'admission_denied' | 'trust_conflict' | 'trust_overlay_owned' | 'permission_widening'
+  | 'platform_mismatch' | 'host_too_old' | 'host_sdk_too_old'
+  // Deterministic, never retried for this pin.
+  | 'commit_not_found' | 'archive_digest_mismatch' | 'tree_digest_mismatch'
+  | 'manifest_identity_mismatch' | 'version_mismatch' | 'tree_requires_build' | 'tree_has_link'
+  | 'tree_unportable_name' | 'tree_too_large' | 'pinned_feature_unsupported'
+
+/**
+ * The gateway's adoption state for a former built-in (`/api/apps` `adoption`),
+ * present only for an app the wheel pins for adoption.
+ */
+export interface AppAdoptionRow {
+  state: 'pending' | 'staged' | 'blocked' | 'adopted'
+  /** Present only while `state` is `'pending'` (the last transient failure) or `'blocked'`. */
+  reason?: AdoptionReasonCode
+  /** Present only once adopted, for a record whose source is the pinned repository.
+   *  Copied from the wheel's pin, never from the app's manifest. */
+  legacyNav?: { route: string; icon: string }
+  /** The installed manifest's `minKiroCrewVersion` is newer than this host. */
+  hostTooOld?: boolean
+}
+
 export type InstalledApp = {
   name: string
   version: string
@@ -112,6 +142,8 @@ export type InstalledApp = {
   migratedTo?: string
   orphaned?: boolean
   updateAvailable?: boolean
+  /** Present for a former built-in the gateway moves to its registry copy. */
+  adoption?: AppAdoptionRow
   manifest: {
     name: string
     version: string
@@ -179,6 +211,8 @@ export type InstalledApp = {
     iconPathDark?: string
     openCommand?: string
     hidden?: boolean
+    /** The app's own listing copy per locale (`l10n` in app.json); see `appL10nText`. */
+    l10n?: unknown
   }
 }
 

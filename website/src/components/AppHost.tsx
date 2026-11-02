@@ -59,6 +59,8 @@ export interface AppHostProps {
         api?: string[]
         events?: string[]
       }
+      /** The app's own listing copy per locale, read by the title helpers. */
+      l10n?: unknown
     }
   }
   /** Bundle to mount, overriding `manifest.ui.entry`. Resolved against the app's
@@ -198,7 +200,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
     <>
       <PageHeader
         title={appDisplayName(app)}
-        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin })}
+        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin, l10n: app.manifest?.l10n })}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">

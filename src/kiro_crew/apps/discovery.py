@@ -66,6 +66,9 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     contrib_d = manifest.contributes.to_dict()
     if contrib_d:
         d["contributes"] = contrib_d
+    l10n_d = manifest.l10n.to_dict()
+    if l10n_d:
+        d["l10n"] = l10n_d
 
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers

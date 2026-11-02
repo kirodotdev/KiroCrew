@@ -369,6 +369,7 @@
     "builtinAppRoute": {
       "refused_page_detail_label": "Detalles para quien haya montado esta copia",
       "refused_page_handoff_note": "Al preguntar al agente se abre un chat con estos detalles ya adjuntos.",
+      "apps_list_failed": "No se pudieron cargar tus apps instaladas.",
       "refused_page_lead": "{{productName}} rechazó esta página al iniciarse, porque está mal configurada en esta copia. Volver a intentarlo no la recuperará — quien montó esta copia tiene que corregirlo.",
       "refused_page_title": "No se pudo cargar {{route}}"
     },
@@ -11082,7 +11083,21 @@
       "grants_reconsent_link_hosts": "Hosts de enlaces: permite que las tarjetas de la app vean enlaces a estos sitios en los mensajes del chat.",
       "grants_reconsent_link_patterns": "Patrones de texto: permite que las tarjetas de la app vean el texto del chat que coincide con estos patrones.",
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",
-      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
+      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos.",
+      "adoption": {
+        "network": "{{name}} todavía no pudo descargar su versión de la App Store. {{productName}} lo vuelve a intentar automáticamente; revisa la conexión de red de este equipo.",
+        "local": "{{name}} no pudo preparar su versión de la App Store en este equipo: el disco está lleno o no se pudo leer un archivo de ajustes. {{productName}} lo vuelve a intentar automáticamente.",
+        "policy": "El cambio de {{name}} a su versión de la App Store está en pausa: tu política de admisión de apps no admite esa versión. Permítela en la política de admisión para terminar el cambio.",
+        "trust": "El cambio de {{name}} a su versión de la App Store está en pausa: su ajuste de confianza indica otra fuente, o está definido en config.local.json, así que {{productName}} no lo cambió. Revisa el ajuste de confianza para terminar el cambio.",
+        "permissions": "El cambio de {{name}} a su versión de la App Store está en pausa: esa versión pide más acceso que la que tienes ahora. No se modificó nada.",
+        "platform": "{{name}} no puede cambiar a su versión de la App Store: esa versión no es compatible con esta plataforma.",
+        "host": "El cambio de {{name}} a su versión de la App Store está en pausa: esa versión necesita un {{productName}} más reciente. Actualiza {{productName}} para terminar el cambio.",
+        "verification": "{{name}} no cambia a su versión de la App Store: esa versión no superó la verificación, y esta versión de {{productName}} no lo vuelve a intentar. No se modificó nada.",
+        "staged": "La versión de la App Store de {{name}} ya está descargada y verificada. {{name}} cambia a ella la próxima vez que {{productName}} se reinicie.",
+        "keeps_builtin_until": "Hasta entonces sigue siendo una app integrada.",
+        "keeps_builtin": "Sigue siendo una app integrada.",
+        "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
+      }
     },
     "appPage": {
       "loading_app": "Cargando la app…",

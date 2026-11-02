@@ -6,6 +6,7 @@ dispatches to the internal table.
 
 Supports both exact paths and path parameters (e.g. /tasks/{task_id}/comments).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
@@ -31,6 +32,38 @@ class AppRoute:
     method: str  # HTTP method (uppercase): GET, POST, PUT, DELETE, PATCH
     path: str  # relative path starting with / (e.g. "/status", "/tasks/{task_id}")
     handler: Callable[[web.Request, AppContext], Awaitable[web.Response]]
+
+
+#: Methods a route may declare. The catch-all dispatches on these and nothing else.
+_ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH"})
+#: Longest route path accepted from an app (relative to its namespace).
+_MAX_ROUTE_PATH = 512
+
+
+def _route_fields(route: object) -> tuple[str, str, Callable[..., Any]] | None:
+    """``(method, path, handler)`` for one item a ``routes`` hook returned, or None.
+
+    Structural on purpose: an installed app returns its OWN dataclass with these
+    three attributes instead of importing :class:`AppRoute`, because a
+    ``kiro_crew`` import pins the app to one wheel's private layout. An
+    :class:`AppRoute` is read as before. Any other object is accepted only when
+    ``method`` is a str naming one of :data:`_ROUTE_METHODS` (any case),
+    ``path`` is a str of at most :data:`_MAX_ROUTE_PATH` characters, and
+    ``handler`` is callable; anything else is None and the caller skips it.
+    The method comes back uppercased; the path is returned as given.
+    """
+    if isinstance(route, AppRoute):
+        return route.method.upper(), route.path, route.handler
+    method = getattr(route, "method", None)
+    path = getattr(route, "path", None)
+    handler = getattr(route, "handler", None)
+    if not isinstance(method, str) or method.upper() not in _ROUTE_METHODS:
+        return None
+    if not isinstance(path, str) or len(path) > _MAX_ROUTE_PATH:
+        return None
+    if not callable(handler):
+        return None
+    return method.upper(), path, handler
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +85,7 @@ def _compile_pattern(path: str) -> tuple[re.Pattern[str], list[str]]:
 
     for match in _PARAM_RE.finditer(path):
         # Literal segment before this param
-        literal = path[last_end:match.start()]
+        literal = path[last_end : match.start()]
         regex_parts.append(re.escape(literal))
         # Param segment — match anything except /
         params.append(match.group(1))
@@ -70,9 +103,7 @@ def _has_params(path: str) -> bool:
     return bool(_PARAM_RE.search(path))
 
 
-def _match_path_pattern(
-    route_pattern: str, actual_path: str
-) -> dict[str, str] | None:
+def _match_path_pattern(route_pattern: str, actual_path: str) -> dict[str, str] | None:
     """Try to match actual_path against a route pattern with {params}.
 
     Returns dict of matched params or None if no match.
@@ -131,9 +162,7 @@ class RouteRegistry:
         """Register the catch-all route on the aiohttp app (idempotent)."""
         if self._catch_all_registered:
             return
-        self._app.router.add_route(
-            "*", "/api/apps/{app_name}/{path:.*}", self.dispatch
-        )
+        self._app.router.add_route("*", "/api/apps/{app_name}/{path:.*}", self.dispatch)
         self._catch_all_registered = True
         logger.info("Route Registry catch-all registered")
 
@@ -152,9 +181,7 @@ class RouteRegistry:
         try:
             register_fn = load_app_module(app_name, app_dir, hook_path)
         except (ImportError, ValueError) as exc:
-            logger.error(
-                "Failed to load route module for app %s: %s", app_name, exc
-            )
+            logger.error("Failed to load route module for app %s: %s", app_name, exc)
             ctx.health.mark_degraded(f"Route module load failed: {exc}")
             return []
 
@@ -163,15 +190,18 @@ class RouteRegistry:
         except Exception as exc:
             logger.error(
                 "Route registration function failed for app %s: %s",
-                app_name, exc, exc_info=True,
+                app_name,
+                exc,
+                exc_info=True,
             )
             ctx.health.mark_degraded(f"Route registration failed: {exc}")
             return []
 
         if not isinstance(routes, list):
             logger.error(
-                "App %s route function returned %s, expected list[AppRoute]",
-                app_name, type(routes).__name__,
+                "App %s route function returned %s, expected a list of routes",
+                app_name,
+                type(routes).__name__,
             )
             ctx.health.mark_degraded("Route function returned non-list")
             return []
@@ -180,17 +210,18 @@ class RouteRegistry:
         descriptions: list[str] = []
 
         for route in routes:
-            if not isinstance(route, AppRoute):
-                logger.warning("App %s: skipping non-AppRoute item: %s", app_name, type(route))
+            fields = _route_fields(route)
+            if fields is None:
+                logger.warning("App %s: skipping non-route item: %s", app_name, type(route))
                 continue
 
-            method = route.method.upper()
-            path = route.path if route.path.startswith("/") else f"/{route.path}"
+            method, raw_path, handler = fields
+            path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
 
             rr = _RegisteredRoute(
                 method=method,
                 path=path,
-                handler=route.handler,
+                handler=handler,
                 has_params=_has_params(path),
             )
             if rr.has_params:
@@ -205,7 +236,9 @@ class RouteRegistry:
 
         logger.info(
             "Registered %d route(s) for app %s: %s",
-            len(registered), app_name, descriptions,
+            len(registered),
+            app_name,
+            descriptions,
         )
         return descriptions
 
