@@ -476,8 +476,8 @@ def withhold_answered_under_authored_rules(
 #: written under, pinned to the recorded engine registry). This mapping is its
 #: inverse, grouped per kiro-cli name, plus the rows only the hook vocabulary
 #: needs: ``fs_write`` is a KAS id as well as the kiro-cli name (a file create
-#: states it on a permission request), and ``web_fetch`` / ``use_subagent``
-#: reach KAS tools no gate policy names. A matcher in an agent
+#: states it on a permission request), and ``web_fetch`` reaches a KAS tool no
+#: gate policy names. A matcher in an agent
 #: spec's ``hooks`` names tools in kiro-cli's vocabulary (``execute_bash``,
 #: ``fs_write``). KAS names its own tools differently, and the name it states for
 #: a call is the ``toolId`` of the permission request's ``_meta.kiro``
@@ -496,7 +496,6 @@ def withhold_answered_under_authored_rules(
 #: themselves are for a caller that must go from a kiro-cli name to KAS ids.
 _HOOK_ONLY_ROWS: dict[str, tuple[str, ...]] = {
     "web_fetch": ("web_fetch",),
-    "use_subagent": ("invoke_sub_agent",),
 }
 
 

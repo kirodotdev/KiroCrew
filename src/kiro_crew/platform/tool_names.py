@@ -113,12 +113,18 @@ def kas_verified_releases() -> str:
 #: prefixes the tool's name (``idPrefix = "remote_"``), so the id an allowlist must
 #: spell is ``remote_web_search`` (the fixture's ``remote`` list). Without the row
 #: a spec's ``web_search`` matched no KAS id and the tool was never mounted.
+#:
+#: ``use_subagent`` is kiro-cli's sub-agent tool; KAS registers the same tool as
+#: ``invoke_sub_agent`` (capability ``subagent``). Without the row a spec that
+#: lists ``use_subagent`` got no sub-agent tool on KAS, so it could not delegate
+#: to the agents its ``toolsSettings.subagent.availableAgents`` names.
 KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
     "fs_read": ("read_file", "list_directory"),
     "glob": ("file_search",),
     "grep": ("grep_search",),
     "fs_write": ("str_replace", "fs_append"),
     "web_search": ("remote_web_search",),
+    "use_subagent": ("invoke_sub_agent",),
 }
 
 #: KAS built-in tool id -> the kiro-cli name a policy about it is written under.
