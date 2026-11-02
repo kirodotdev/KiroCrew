@@ -106,7 +106,7 @@ describe('useQueuedMessageActions — cancel', () => {
   it('hands the card text to the host composer, removes the card optimistically, and tells the server', async () => {
     const restoreDraft = vi.fn()
     const { get, store } = renderActions({ restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     // Plain text round-trips the parser unchanged, with nothing to re-stage.
     expect(restoreDraft).toHaveBeenCalledWith('run the tests', [], undefined)
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
@@ -114,7 +114,7 @@ describe('useQueuedMessageActions — cancel', () => {
     expect(queueIdsIn(store)).toEqual(['q2'])
   })
 
-  it('restores the pre-send composer state from the queue-id stash — typed text AND files', () => {
+  it('restores the pre-send composer state from the queue-id stash — typed text AND files', async () => {
     // The card content is the LLM-facing serialization; the stash record is
     // what the user actually composed. A hit restores the raw text and
     // re-stages the files — lossless even for a spaced path no parser could
@@ -125,45 +125,45 @@ describe('useQueuedMessageActions — cancel', () => {
     const rows = [queued('q1', sent)]
     queuedSendStash.set('q1', { raw: 'summarize this', files: [spaced], sent })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced], undefined)
     // Consumed: a record restores exactly once.
     expect(queuedSendStash.has('q1')).toBe(false)
   })
 
-  it('without a stash, the row\'s own meta.quote is restored as the quote and its block comes off the text', () => {
+  it('without a stash, the row\'s own meta.quote is restored as the quote and its block comes off the text', async () => {
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't1' }
     const sent = '> the quoted reply\n> — quoting an earlier message from the assistant\n\nwhy?'
     const restoreDraft = vi.fn()
     const row = queued('q1', sent)
     const rows = [{ ...row, meta: { ...(row.meta ?? {}), quote } }]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('why?', [], undefined, quote)
   })
 
-  it('a row whose text was edited past its quote block restages no quote from the stale record', () => {
+  it('a row whose text was edited past its quote block restages no quote from the stale record', async () => {
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't1' }
     const restoreDraft = vi.fn()
     const row = queued('q1', 'why?')
     const rows = [{ ...row, meta: { ...(row.meta ?? {}), quote } }]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('why?', [], undefined)
   })
 
-  it('a stash hit hands the consumed whole-message quote back, so the host restages the card', () => {
+  it('a stash hit hands the consumed whole-message quote back, so the host restages the card', async () => {
     const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't1' }
     const sent = '> the quoted reply\n> — quoting an earlier message from the assistant\n\nwhy?'
     const restoreDraft = vi.fn()
     const rows = [queued('q1', sent)]
     queuedSendStash.set('q1', { raw: 'why?', files: [], sent, quote })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('why?', [], undefined, quote)
   })
 
-  it('a stash hit hands the alias map back so restored mentions stay reconciled (fork GPT review)', () => {
+  it('a stash hit hands the alias map back so restored mentions stay reconciled (fork GPT review)', async () => {
     // Restoring text + files WITHOUT the recorded aliases re-created the
     // pre-fix stuck chip: the restored mention was invisible to the
     // reconciliation, so hand-deleting it left a stale chip the next send
@@ -174,32 +174,32 @@ describe('useQueuedMessageActions — cancel', () => {
     const rows = [queued('q1', sent)]
     queuedSendStash.set('q1', { raw: 'check @src/main.ts', files: ['/repo/src/main.ts'], sent, aliases })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('check @src/main.ts', ['/repo/src/main.ts'], aliases)
   })
 
-  it('an entry edited after send fails the `sent` guard and falls to the parser', () => {
+  it('an entry edited after send fails the `sent` guard and falls to the parser', async () => {
     // Same queue id, different content: restoring the pre-edit stash would
     // silently discard the edit, so the edited text must win.
     const restoreDraft = vi.fn()
     const rows = [queued('q1', 'actually, deploy instead')]
     queuedSendStash.set('q1', { raw: 'summarize this', files: ['/tmp/a.pdf'], sent: 'summarize this\n[attached_file 1] /tmp/a.pdf' })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('actually, deploy instead', [], undefined)
   })
 
-  it('a foreign card (no stash record) decomposes producer markers via the parser', () => {
+  it('a foreign card (no stash record) decomposes producer markers via the parser', async () => {
     // Reload/another tab: no record exists, but a provably-lossless own-line
     // marker still comes back as typed text + a re-staged file.
     const restoreDraft = vi.fn()
     const rows = [queued('q1', 'summarize the report\n[attached_file 1] /tmp/report.docx')]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'], undefined)
   })
 
-  it('a foreign card carrying the entry\'s attachment list restores a spaced path whole', () => {
+  it('a foreign card carrying the entry\'s attachment list restores a spaced path whole', async () => {
     // After a reload (or on another tab) there is no stash, but the row's
     // `meta.files` is the server's echo of the entry's own list — so the
     // parser claims the own-line marker by exact text, spaces included, and
@@ -210,20 +210,20 @@ describe('useQueuedMessageActions — cancel', () => {
     const restoreDraft = vi.fn()
     const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: [spaced] } } as ChatMessage]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced], undefined)
   })
 
-  it('the same foreign card WITHOUT the list keeps the marker verbatim (legacy entry)', () => {
+  it('the same foreign card WITHOUT the list keeps the marker verbatim (legacy entry)', async () => {
     const spaced = '/Users/me/Desktop/My Report.pdf'
     const sent = `summarize this\n[attached_file 1] ${spaced}`
     const restoreDraft = vi.fn()
     const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith(sent, [], undefined)
   })
 
-  it('a foreign card with an inline mention restores the mention, the chip and its alias (#14617)', () => {
+  it('a foreign card with an inline mention restores the mention, the chip and its alias (#14617)', async () => {
     // After a reload there is no stash. The row's list proves the inline
     // marker's path, so the composer gets a readable mention instead of raw
     // wire text, the file re-stages, and the alias rides along so the chip
@@ -232,11 +232,11 @@ describe('useQueuedMessageActions — cancel', () => {
     const restoreDraft = vi.fn()
     const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/a.txt'] } } as ChatMessage]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('check @a.txt, please', ['/repo/a.txt'], { '/repo/a.txt': ['@a.txt'] })
   })
 
-  it('spells a restored mention past the files the host composer already stages', () => {
+  it('spells a restored mention past the files the host composer already stages', async () => {
     // The restore merges into the host composer, so the host's staged files
     // count when the parser picks a suffix: `@a.txt` would collide with the
     // staged `/repo/x/a.txt` on the next send.
@@ -244,22 +244,22 @@ describe('useQueuedMessageActions — cancel', () => {
     const restoreDraft = vi.fn()
     const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/y/a.txt'] } } as ChatMessage]
     const { get } = renderActions({ rows, restoreDraft, stagedFiles: () => ['/repo/x/a.txt'] })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('against @y/a.txt', ['/repo/y/a.txt'], { '/repo/y/a.txt': ['@y/a.txt'] })
   })
 
-  it('spells a restored mention of a project file relative to the host project', () => {
+  it('spells a restored mention of a project file relative to the host project', async () => {
     // The host composer revives a chip on undo only for the project-relative
     // spelling, so the hook reads the host's project at cancel time.
     const sent = 'check [attached_file 1] /repo/main/src/a.ts'
     const restoreDraft = vi.fn()
     const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/main/src/a.ts'] } } as ChatMessage]
     const { get } = renderActions({ rows, restoreDraft, project: () => '/repo/main' })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('check @src/a.ts', ['/repo/main/src/a.ts'], { '/repo/main/src/a.ts': ['@src/a.ts'] })
   })
 
-  it('an entry edited to drop its first attachment restores the renumbered survivor from the replaced list', () => {
+  it('an entry edited to drop its first attachment restores the renumbered survivor from the replaced list', async () => {
     // Two attachments; the edit removed marker 1, so the server renumbered
     // the survivor to 1 and pruned the list to match, and the `queue_edit`
     // frame replaced the row's list. The stash misses on `sent`, and the
@@ -273,11 +273,11 @@ describe('useQueuedMessageActions — cancel', () => {
     const rows = [{ ...queued('q1', edited), meta: { queueId: 'q1', files: [spaced] } } as ChatMessage]
     queuedSendStash.set('q1', { raw: '', files: [other, spaced], sent })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith('', [spaced], undefined)
   })
 
-  it('the stash still wins over the row list — it holds the typed text itself', () => {
+  it('the stash still wins over the row list — it holds the typed text itself', async () => {
     const spaced = '/Users/me/Desktop/My Report.pdf'
     const sent = `see @My Report.pdf please`
     const wire = `see [attached_file 1] ${spaced} please`
@@ -285,22 +285,22 @@ describe('useQueuedMessageActions — cancel', () => {
     const rows = [{ ...queued('q1', wire), meta: { queueId: 'q1', files: [spaced] } } as ChatMessage]
     queuedSendStash.set('q1', { raw: sent, files: [spaced], sent: wire })
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith(sent, [spaced], undefined)
   })
 
-  it('restores nothing when the host supplies no composer sink', () => {
+  it('restores nothing when the host supplies no composer sink', async () => {
     const { get, store } = renderActions({})
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
     expect(queueIdsIn(store)).toEqual(['q2'])
   })
 
-  it('cancels a card the host draws no button for, without restoring an empty body', () => {
+  it('cancels a card the host draws no button for, without restoring an empty body', async () => {
     const restoreDraft = vi.fn()
     const rows = [queued('q1', ''), queued('q2', 'then deploy')]
     const { get } = renderActions({ rows, restoreDraft })
-    act(() => { get().onCancel('q1') })
+    await act(async () => { get().onCancel('q1') })
     expect(restoreDraft).not.toHaveBeenCalled()
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
   })
@@ -309,7 +309,7 @@ describe('useQueuedMessageActions — cancel', () => {
 describe('useQueuedMessageActions — edit', () => {
   it('trims, updates the card optimistically, and PATCHes the trimmed text', async () => {
     const { get, store } = renderActions({})
-    act(() => { get().onEdit('q1', '  run the tests twice  ') })
+    await act(async () => { get().onEdit('q1', '  run the tests twice  ') })
     expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice')
     const card = (store.getState() as RootState).chat.messages.find(m => m.meta?.queueId === 'q1')
     expect(card?.content).toBe('run the tests twice')
@@ -325,9 +325,9 @@ describe('useQueuedMessageActions — edit', () => {
 })
 
 describe('useQueuedMessageActions — interrupt', () => {
-  it('asks the server to interrupt that entry only, with no optimistic store change', () => {
+  it('asks the server to interrupt that entry only, with no optimistic store change', async () => {
     const { get, store } = renderActions({})
-    act(() => { get().onInterrupt('q2') })
+    await act(async () => { get().onInterrupt('q2') })
     expect(apiMocks.interruptSlot).toHaveBeenCalledWith('chat-1', 'q2')
     expect(apiMocks.cancelQueuedMessage).not.toHaveBeenCalled()
     expect(queueIdsIn(store)).toEqual(['q1', 'q2'])
