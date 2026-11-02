@@ -142,8 +142,27 @@ session is reset after every run, so on a fresh one the transport path reads the
 parent for the same fenced block whatever the transcript holds, and records no
 `notice` row (`thread_parent.is_cron_owned`).
 
-Dashboard-linked threads and Slack-born sessions with prior turns fetch and
-record nothing.
+On these dispatch paths, a reply in a dashboard-linked thread and a Slack-born
+session with prior turns fetch and record nothing.
+
+A NEW dashboard session can also join a thread it did not start: the challenge
+link's re-open flow posts `slack-link` with the thread's `thread_ts` and the
+challenge token's `msg_ts` (the reply that hit the challenge). When `msg_ts`
+differs from `thread_ts` and the session holds no conversation yet,
+`dashboard/chat_slack.py` (`_seed_thread_parent`) reads the thread's first message
+from Slack with the same `fetch_thread_parent`; the request carries only the
+timestamp, never the parent text. The read happens only in a channel the bot
+already reads for its owner: the `channels` policy admits Slack inbound and the
+channel (`channel_refusal`), and the channel is tracked or is the owner's own DM.
+Any other channel is not read. The read runs after the link lock is released,
+within a few seconds, and each decision writes one SEL row
+(`chat.slack_link_thread_parent`). The session's turns hand the parent to
+`build_message` as `thread_parent_text` in the same fenced block, with
+`include_channel_history=False` so the channel's buffered messages are not added,
+until the session holds a reply, and only while it is still linked to that
+thread. The `notice` row is the same `transcript_notice` text, appended through
+the slot (`append_and_surface`) so the open tab draws it; incognito and temporary
+sessions get no row. Without `msg_ts` the link reads nothing.
 The transport path persists the user's row at receipt, so it builds the prompt
 with `exclude_last_n=1`; otherwise the history fallback replays the reply as the
 thread's history.

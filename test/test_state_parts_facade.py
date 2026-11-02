@@ -541,6 +541,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_steers": ("value", "[]"),
     "_pending_subagent_failures": ("value", "[]"),
     "_pending_synthesis": ("value", "False"),
+    "_pending_thread_parent": ("value", "None"),
     "_pending_variants": ("value", "[]"),
     "_poisoned_reset_used": ("value", "False"),
     "_posttoken_retry_used": ("value", "False"),

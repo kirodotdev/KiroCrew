@@ -771,6 +771,35 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if _ctx_prefix:
             message = _ctx_prefix + message
             turn.message = message
+        # The message that started the Slack thread this session joined
+        # (``chat_slack._seed_thread_parent``), handed to build_message as the
+        # fenced ``[SLACK THREAD CONTEXT — UNTRUSTED DATA]`` block, the same block
+        # a Slack-born session's first turn gets. Only while the slot is still
+        # linked to that thread, and only the parent: ``include_channel_history``
+        # keeps the channel's buffered messages out, so the parent is the one
+        # Slack text this turn gains.
+        #
+        # Kept until the session holds a reply, not dropped on first use: a
+        # first turn re-queued before any output (or one whose prompt build
+        # failed) builds its prompt again and still needs the parent, as the
+        # Slack-born path re-reads it while no turn has landed.
+        _thread_parent_kwargs: dict[str, Any] = {}
+        _pending_parent = getattr(slot, "_pending_thread_parent", None)
+        if isinstance(_pending_parent, tuple):
+            _parent_channel, _parent_thread, _parent_text = _pending_parent
+            if not (
+                slot._slack_linked
+                and slot._slack_channel == _parent_channel
+                and slot._slack_thread_ts == _parent_thread
+            ) or any(m.get("role") == "assistant" for m in slot.messages):
+                slot._pending_thread_parent = None
+            else:
+                _thread_parent_kwargs = {
+                    "channel_id": _parent_channel,
+                    "thread_ts": _parent_thread,
+                    "thread_parent_text": _parent_text,
+                    "include_channel_history": False,
+                }
         # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
         # name (e.g. "default"), so build_message's is_custom check
         # correctly identifies kirocrew sessions and enables skills.
@@ -1019,6 +1048,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # The same provenance the directive applier reads, so the
                 # prompt offers no tool that applier would refuse.
                 directive_user_origin=bool(turn._directive_user_origin),
+                **_thread_parent_kwargs,
             )
             turn.full_message = full_message
         slot_ctx_omitted = dict(_ctx_omitted)
