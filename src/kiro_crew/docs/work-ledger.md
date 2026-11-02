@@ -362,7 +362,9 @@ built with; running it is a second, explicit invocation.
 
 Flags: `--purge` (irreversible), `--older-than-days N` (default 30) and
 `--purge-unreadable`, which also removes records the sweep could not parse —
-they are listed but kept without it.
+they are listed but kept without it. `--purge-unreadable` only works with
+`--purge`; alone it is refused. A purge exits 1 when any delete failed, after
+finishing the rest and naming each store it could not delete.
 
 The sweep is conservative by design. A conductor holding an open item is never a
 candidate at any age, neither is one with no items at all, and each delete is
