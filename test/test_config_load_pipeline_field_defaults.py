@@ -838,13 +838,6 @@ def _own_value_cases() -> list:
             [],
         ),
         _case(
-            "dashboard.browser_view_port-out-of-range",
-            [(sections.DashboardConfig, "browser_view_port", 8080)],
-            {"dashboard": {"browser_view_port": 70000}},
-            lambda c: c.dashboard.browser_view_port,
-            0,
-        ),
-        _case(
             "agents.session_color-malformed",
             [(sections.KiroCrewAgentConfig, "session_color", "#123456")],
             {"agents": {"crew": {"session_color": "not a colour"}}},

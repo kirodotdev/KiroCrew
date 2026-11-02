@@ -127,10 +127,10 @@ class _Oracle:
 @pytest.fixture
 def install_oracle(monkeypatch):
     """Replace the one implementation ``decide`` constructs."""
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     def _install(oracle):
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: oracle)
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: oracle)
         return oracle
 
     return _install
@@ -186,13 +186,13 @@ class TestTheQuestion:
         authors reaches BOTH backends in the shape each reads -- the Jev provider's
         per-option ``criteria`` map and the LLM backend's rendered prompt -- so the
         field is not inert plumbing. Each tier's own description travels with it."""
-        from kiro_crew.decisions import impl_jev, impl_llm
+        from kiro_crew.decisions import impl_llm, impl_systemone
 
         question = mr.questions()[0]
 
         # Jev: the per-option map carries every tier's authored rubric, keyed by
         # the declared option, with no option dropped.
-        wire = impl_jev._question_to_wire(question)
+        wire = impl_systemone._question_to_wire(question)
         assert wire["type"] == "choice"
         assert wire["criteria"] == {tier: mr.TIER_DESCRIPTIONS[tier] for tier in mr.TIERS}
 

@@ -131,86 +131,35 @@ When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
 type a reply to the agent instead. Anything else denies.
 
-## Browsing (`browser` MCP tool, then `playwright-cli`)
+## Browsing (`browser` MCP tool)
 
-Browsing is not a `kirocrew` subcommand. Start with the **`browser` MCP tool**
-in the native Browser panel:
-`op=navigate|snapshot|click|type|press_key|hover|select_option|screenshot|wait_for|back|console`.
-It refuses loopback, private, and link-local targets. Use `playwright-cli` when
-no native panel serves the session, or for attached logins, saved storage state,
-and the full operate verbs. It must be on `PATH`; install via **Settings → Browser**
-(also holds the attach token) or `npm install -g @playwright/cli@latest`
-(Node.js 20 or newer).
+Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
+`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|reflex|ask`.
+It drives one browser the gateway owns (the user's own Chrome where there is
+one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
+user watches the page live in the chat, where one click takes over. It opens
+public `http(s)` URLs only, plus loopback origins the user listed under
+**Settings → Browser → Local preview origins**.
 
-| Command | Description |
-|---------|-------------|
-| `playwright-cli open <url>` | Open a page (prints URL, title, and a snapshot path) |
-| `playwright-cli snapshot` | Write the accessibility tree to a YAML file, print its path |
-| `playwright-cli click <ref>` / `fill <ref> <text>` | Act on an element from a snapshot |
-| `playwright-cli screenshot [ref]` | Write a PNG, print its path. `[ref]` is an ELEMENT, not a path; do not pass `--filename` (it resolves against the CWD and is not auto-approved) |
-| `playwright-cli state-save` / `state-load <file>` | Save or restore a logged-in session. Bare `state-save` writes into the service's own directory; both a name and `state-load` prompt for approval, because each names a local path |
-| `PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome` | Drive the user's own running Chrome, with their logins |
-| `playwright-cli show --port <n> --host 127.0.0.1` | Serve the CLI's dashboard for the Browser panel |
+| Op | Description |
+|----|-------------|
+| `navigate {url}` | Open a page (returns URL and title) |
+| `snapshot` | The page as an outline with element refs (`e5`); re-run after every page change |
+| `click {ref \| x,y}` / `type {ref, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field |
+| `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
+| `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 
 **Browsing workflow:** load the `web-browse`, `web-verify`, or `browser-auth`
-skill for the task. On the CLI path:
-1. Check `command -v playwright-cli`; if absent, use `web_fetch` and give the
-   install command above.
-2. Run `playwright-cli open <url>`; read its snapshot YAML only when the tree is
-   needed, such as before clicking. Refs (`[ref=e5]`) expire on page changes:
-   re-snapshot before the next action.
-3. On a login redirect, `state-load` a saved session or let the user sign in in
-   the Browser panel, then `state-save`.
+skill for the task. A sign-in, CAPTCHA or 2FA is the user's step: use the `ask`
+op (the tool's description lists its args), or ask them to take over the live
+view; your next op waits until they hand it back, then runs.
 
-**No npm access (internal registry, air-gapped host):** detection is **PATH-based**
--- `playwright-cli` on `PATH` is all that matters, so ANY install route works and the
-Settings button is a convenience, not the only one. In order of likelihood:
-
-1. Most internal registries proxy npmjs, so the plain install already works.
-2. Force the public registry for this one package:
-   `npm install -g @playwright/cli --registry=https://registry.npmjs.org`.
-3. **An internal registry that requires a login the user does not have** (the
-   common Amazon-internal / corporate case). Install into a user-owned prefix
-   against the public registry, ignoring the corporate `.npmrc` for this one
-   command, then put the binary on `PATH`:
-
-   ```bash
-   NPM_CONFIG_USERCONFIG=/dev/null \
-     npm install --prefix ~/.local/share/playwright-cli \
-     --registry=https://registry.npmjs.org @playwright/cli@0.1.18
-   mkdir -p ~/.local/bin
-   ln -sf ~/.local/share/playwright-cli/node_modules/.bin/playwright-cli \
-     ~/.local/bin/playwright-cli
-   ```
-
-   Two caveats worth stating to the user rather than burying: `~/.local/bin` has
-   to be **on `PATH`** or Kiro Crew still reports "not installed" (detection is
-   `PATH` + the Node bin dirs, nothing else); and `NPM_CONFIG_USERCONFIG=/dev/null`
-   deliberately ignores their employer's registry configuration, which is their
-   call to make, not ours to assume.
-4. Air-gapped: `npm pack @playwright/cli` on a connected machine, copy the
-   `.tgz` over, then `npm install -g ./playwright-cli-<version>.tgz`. Note the
-   tarball alone is not runnable -- it needs its `playwright` /
-   `playwright-core` dependencies resolved too.
-
-What does **not** substitute for it: `pip install playwright` and
-`dotnet tool install Microsoft.Playwright.CLI` install a DIFFERENT tool -- the
-`playwright` browser-installer/codegen CLI, not `@playwright/cli` (binary
-`playwright-cli`, its own 0.x line, which depends on `playwright@1.63.0-alpha`).
-Switching to yarn, pnpm or bun hits the same registry, so it only helps when the
-`npm` client itself is missing. And there is **no standalone binary**: the
-upstream GitHub release carries no build assets and `playwright-cli.js` starts
-with `#!/usr/bin/env node`, so Node.js 20+ is required no matter how it is
-fetched.
-
-**Approval:** page-scoped verbs run without prompting the user, because installing
-the CLI is itself the consent. Verbs that reach the local machine still prompt on
-purpose -- `eval`, `run-code`, `upload`, `state-load`, a named `state-save`, and the
-installers. Let the user approve those rather than rewriting the command to dodge
-the prompt.
-
-The full verb list is in the skill `playwright-cli install --skills agents --global`
-writes.
+**Setup:** **Settings → Browser** installs the engine on the gateway's machine
+and, on a desktop, connects the user's own Chrome (enable
+`chrome://inspect/#remote-debugging` once, then Allow). A tool reply that
+browsing is not set up points there; a `capabilities.browse` policy denial is
+final. The old Playwright CLI install is gone: `kirocrew doctor` reports a
+leftover prefix without touching it.
 
 ## Autonomous Task Runner
 

@@ -1,3 +1,4 @@
+import type React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
@@ -11,40 +12,43 @@ vi.mock('../hooks/useScreenSnip', async (importOriginal) => {
   return { ...actual, isScreenSnipSupported: () => true }
 })
 
-// Browser-view status/start and the address bar's launcher, stubbed at the api
-// seam. Only these methods are replaced — the rest of the client (and ApiError,
-// which the hook branches on) stays real, so no other call site in this panel
-// changes behaviour.
-const getBrowserView = vi.fn()
-const startBrowserView = vi.fn()
-const openInBrowser = vi.fn()
+/** The Preview tab's allowlist as the tests' gateway answers it: every loopback
+ *  host spelling on the ports the cases below type, so a case about framing is
+ *  not refused by the gate (which has its own cases). */
+const PORTS = [80, 443, 1234, 3000, 3001, 4000, 4321, 5000, 5173, 5174, 8000, 8080, 8081, 9000, 9223]
+const ORIGINS = PORTS.flatMap(p => [`localhost:${p}`, `127.0.0.1:${p}`, `[::1]:${p}`])
+const sendErrorToChat = vi.fn(() => true)
+vi.mock('../utils/errorReport', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/errorReport')>()),
+  sendErrorToChat: (...args: unknown[]) => sendErrorToChat(...(args as [])),
+}))
+
+const kirocrewConfig = vi.fn()
+const patchConfig = vi.fn()
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
     ...actual,
     api: {
       ...actual.api,
-      getBrowserView: () => getBrowserView(),
-      startBrowserView: () => startBrowserView(),
-      openInBrowser: (url: string, sessionKey: string) => openInBrowser(url, sessionKey),
+      kirocrewConfig: () => kirocrewConfig(),
+      patchConfig: (path: string, value: unknown) => patchConfig(path, value),
     },
   }
 })
 
-/** A view server that is up, on the loopback IPv4 address the CLI must bind. */
-const RUNNING = { status: 'running', url: 'http://127.0.0.1:45613/', port: 45613, reason: null }
-/** Installed, nothing serving yet — the state a start action is offered for. */
-const STOPPED = { status: 'stopped', url: null, port: null, reason: null }
-/** The launcher's answer for a page that opened in the gateway host's browser. */
-const OPENED = (_url: string) => ({ ok: true, session: 'panel-1234abcd', error: null, view: RUNNING })
+/** Render the panel and let its origins read settle: the allowlist gate shows
+ *  neither a frame nor a refusal until the list has answered. */
+async function renderPanel(ui: React.ReactElement) {
+  const r = renderWithProviders(ui)
+  await waitFor(() => expect(screen.getByTestId('web-preview-panel').getAttribute('data-origins-loaded')).toBe('true'))
+  return r
+}
 
-// Every test in this file renders the panel, which reads the view status. Default
-// it to `stopped` so the tests that are about the dev-server preview neither hit
-// an undefined query result nor get the browser view overlaid on them.
 beforeEach(() => {
-  getBrowserView.mockReset().mockResolvedValue(STOPPED)
-  startBrowserView.mockReset().mockResolvedValue(RUNNING)
-  openInBrowser.mockReset().mockImplementation(async (url: string) => OPENED(url))
+  kirocrewConfig.mockReset().mockResolvedValue({ dashboard: { browser_local_origins: ORIGINS } })
+  patchConfig.mockReset().mockResolvedValue({ ok: true })
+  sendErrorToChat.mockClear()
 })
 
 // The panel isolates a loopback preview host equal to the dashboard host onto
@@ -63,26 +67,26 @@ const targetOf = (frame: HTMLIFrameElement): string => {
 }
 
 describe('normalizeUrl', () => {
-  it('adds an http scheme to a bare host:port', () => {
+  it('adds an http scheme to a bare host:port', async () => {
     expect(normalizeUrl('localhost:5173')).toBe('http://localhost:5173/')
     expect(normalizeUrl('127.0.0.1:8080')).toBe('http://127.0.0.1:8080/')
   })
-  it('upgrades a bare public host to https (what a real site answers on)', () => {
+  it('upgrades a bare public host to https (what a real site answers on)', async () => {
     expect(normalizeUrl('google.com')).toBe('https://google.com/')
     expect(normalizeUrl('www.example.com/path?q=1')).toBe('https://www.example.com/path?q=1')
   })
-  it('keeps http for the dev-server shapes: loopback, an IP literal, an explicit port', () => {
+  it('keeps http for the dev-server shapes: loopback, an IP literal, an explicit port', async () => {
     expect(normalizeUrl('localhost')).toBe('http://localhost/')
     expect(normalizeUrl('myapp.localhost:5173')).toBe('http://myapp.localhost:5173/')
     expect(normalizeUrl('192.168.1.4')).toBe('http://192.168.1.4/')
     expect(normalizeUrl('192.168.1.4:3000')).toBe('http://192.168.1.4:3000/')
     expect(normalizeUrl('example.com:8443')).toBe('http://example.com:8443/')
   })
-  it('keeps explicit http/https', () => {
+  it('keeps explicit http/https', async () => {
     expect(normalizeUrl('https://example.com')).toBe('https://example.com/')
     expect(normalizeUrl('http://example.com')).toBe('http://example.com/')
   })
-  it('rejects empty and non-http(s) schemes', () => {
+  it('rejects empty and non-http(s) schemes', async () => {
     expect(normalizeUrl('   ')).toBeNull()
     expect(normalizeUrl('javascript:alert(1)')).toBeNull()
     expect(normalizeUrl('file:///etc/passwd')).toBeNull()
@@ -90,35 +94,35 @@ describe('normalizeUrl', () => {
 })
 
 describe('isolatePreviewHost', () => {
-  it('swaps a loopback preview host that equals the dashboard host to the other alias', () => {
+  it('swaps a loopback preview host that equals the dashboard host to the other alias', async () => {
     expect(isolatePreviewHost('http://localhost:5173/', 'localhost')).toBe('http://127.0.0.1:5173/')
     expect(isolatePreviewHost('http://127.0.0.1:5173/', '127.0.0.1')).toBe('http://localhost:5173/')
   })
-  it('isolates a same-host *.localhost dashboard (e.g. kirocrew.localhost) to 127.0.0.1', () => {
+  it('isolates a same-host *.localhost dashboard (e.g. kirocrew.localhost) to 127.0.0.1', async () => {
     expect(isolatePreviewHost('http://kirocrew.localhost:5173/', 'kirocrew.localhost'))
       .toBe('http://127.0.0.1:5173/')
   })
-  it('leaves a preview host that already differs from the dashboard host', () => {
+  it('leaves a preview host that already differs from the dashboard host', async () => {
     expect(isolatePreviewHost('http://127.0.0.1:5173/', 'localhost')).toBe('http://127.0.0.1:5173/')
     expect(isolatePreviewHost('http://localhost:5173/', 'kirocrew.localhost')).toBe('http://localhost:5173/')
   })
-  it('leaves non-loopback hosts untouched', () => {
+  it('leaves non-loopback hosts untouched', async () => {
     expect(isolatePreviewHost('https://example.com/', 'localhost')).toBe('https://example.com/')
   })
-  it('is a no-op when the dashboard host is unknown', () => {
+  it('is a no-op when the dashboard host is unknown', async () => {
     expect(isolatePreviewHost('http://localhost:5173/', '')).toBe('http://localhost:5173/')
   })
-  it('canonicalizes an IPv6 loopback ([::1]) preview host to 127.0.0.1 (CSP cannot admit [::1]:*)', () => {
+  it('canonicalizes an IPv6 loopback ([::1]) preview host to 127.0.0.1 (CSP cannot admit [::1]:*)', async () => {
     // The dashboard CSP structurally cannot admit `http://[::1]:*`, so the
     // liveness probe to [::1] is refused and a healthy server shows unreachable.
     expect(isolatePreviewHost('http://[::1]:8765/', 'localhost')).toBe('http://127.0.0.1:8765/')
     expect(isolatePreviewHost('http://[::1]:8765/app?x=1#h', 'localhost'))
       .toBe('http://127.0.0.1:8765/app?x=1#h')
   })
-  it('canonicalizes [::1] even when the dashboard host is unknown (CSP gap is host-independent)', () => {
+  it('canonicalizes [::1] even when the dashboard host is unknown (CSP gap is host-independent)', async () => {
     expect(isolatePreviewHost('http://[::1]:8765/', '')).toBe('http://127.0.0.1:8765/')
   })
-  it('canonicalizes [::1] then still cookie-isolates against a 127.0.0.1 dashboard', () => {
+  it('canonicalizes [::1] then still cookie-isolates against a 127.0.0.1 dashboard', async () => {
     // [::1] → 127.0.0.1, which now equals the dashboard host → isolate to localhost.
     expect(isolatePreviewHost('http://[::1]:8765/', '127.0.0.1')).toBe('http://localhost:8765/')
   })
@@ -126,55 +130,55 @@ describe('isolatePreviewHost', () => {
 
 
 describe('isDashboardOrigin', () => {
-  it('matches the gateway across the two loopback aliases (same port)', () => {
+  it('matches the gateway across the two loopback aliases (same port)', async () => {
     // The real case: the panel is on one alias, the target names the other, and
     // both are the same listening server — which refuses to be framed.
     expect(isDashboardOrigin('http://127.0.0.1:6776/api/hooks/agent', 'http://localhost:6776/')).toBe(true)
     expect(isDashboardOrigin('http://localhost:6776/', 'http://127.0.0.1:6776/chat')).toBe(true)
     expect(isDashboardOrigin('http://127.0.0.1:6776/', 'http://kirocrew.localhost:6776/')).toBe(true)
   })
-  it('does not match a dev server on a different port', () => {
+  it('does not match a dev server on a different port', async () => {
     expect(isDashboardOrigin('http://localhost:5173/', 'http://localhost:6776/')).toBe(false)
     expect(isDashboardOrigin('http://127.0.0.1:3000/', 'http://localhost:6776/')).toBe(false)
   })
-  it('treats an absent port as the scheme default, so :80 and bare compare equal', () => {
+  it('treats an absent port as the scheme default, so :80 and bare compare equal', async () => {
     expect(isDashboardOrigin('http://localhost/', 'http://localhost:80/')).toBe(true)
     expect(isDashboardOrigin('http://localhost:80/', 'http://localhost/')).toBe(true)
     expect(isDashboardOrigin('http://localhost:8080/', 'http://localhost/')).toBe(false)
   })
-  it('never matches a non-loopback target', () => {
+  it('never matches a non-loopback target', async () => {
     expect(isDashboardOrigin('https://example.com/', 'https://example.com/')).toBe(false)
   })
-  it('never matches when the dashboard itself is remote', () => {
+  it('never matches when the dashboard itself is remote', async () => {
     // Over a tunnel or a LAN address, a loopback target is the USER's own
     // machine — an ordinary dev server — not this gateway.
     expect(isDashboardOrigin('http://localhost:443/', 'https://crew.example.com/')).toBe(false)
     expect(isDashboardOrigin('http://localhost:6776/', 'http://192.168.1.4:6776/')).toBe(false)
   })
-  it('returns false for an unparseable url or an unknown dashboard origin', () => {
+  it('returns false for an unparseable url or an unknown dashboard origin', async () => {
     expect(isDashboardOrigin('not a url', 'http://localhost:6776/')).toBe(false)
     expect(isDashboardOrigin('http://localhost:6776/', '')).toBe(false)
   })
 })
 
 describe('withCacheBuster', () => {
-  it('appends the reload counter for any non-initial load', () => {
+  it('appends the reload counter for any non-initial load', async () => {
     expect(withCacheBuster('http://localhost:8080/', 1)).toBe('http://localhost:8080/?_kcreload=1')
     expect(withCacheBuster('http://localhost:8080/', 7)).toBe('http://localhost:8080/?_kcreload=7')
   })
-  it('leaves the URL pristine for the initial load (key 0) and for an empty URL', () => {
+  it('leaves the URL pristine for the initial load (key 0) and for an empty URL', async () => {
     expect(withCacheBuster('http://localhost:8080/', 0)).toBe('http://localhost:8080/')
     expect(withCacheBuster('', 3)).toBe('')
   })
-  it('preserves an existing query and fragment, inserting the param before the hash', () => {
+  it('preserves an existing query and fragment, inserting the param before the hash', async () => {
     expect(withCacheBuster('http://localhost:5173/app?tab=logs#section-2', 2))
       .toBe('http://localhost:5173/app?tab=logs&_kcreload=2#section-2')
   })
-  it('replaces its own param instead of stacking copies across reloads', () => {
+  it('replaces its own param instead of stacking copies across reloads', async () => {
     const once = withCacheBuster('http://localhost:5173/', 1)
     expect(withCacheBuster(once, 2)).toBe('http://localhost:5173/?_kcreload=2')
   })
-  it('returns the input unchanged when it cannot be parsed', () => {
+  it('returns the input unchanged when it cannot be parsed', async () => {
     expect(withCacheBuster('not a url', 1)).toBe('not a url')
   })
 })
@@ -188,18 +192,18 @@ describe('WebPreviewPanel', () => {
   })
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('shows the empty state with quick-pick ports before a URL is set', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('shows the empty state with the allowed origins as quick picks before a URL is set', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
-    expect(screen.getByText(':5173')).toBeInTheDocument()
+    await screen.findByText('localhost:5173')
     expect(screen.queryByTitle('Web preview')).toBeNull()
     // Quick-pick buttons are type=button so a valid draft in the URL field
     // can't be overridden by a stray form submission.
-    expect((screen.getByText(':5173').closest('button') as HTMLButtonElement).getAttribute('type')).toBe('button')
+    expect((screen.getByText('localhost:5173').closest('button') as HTMLButtonElement).getAttribute('type')).toBe('button')
   })
 
-  it('loads a typed URL into the iframe (normalizing scheme + isolating host) on submit', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('loads a typed URL into the iframe (normalizing scheme + isolating host) on submit', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'localhost:8080' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -207,10 +211,10 @@ describe('WebPreviewPanel', () => {
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
-  it('enables back only after navigating to a second URL, and steps back', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('enables back only after navigating to a second URL, and steps back', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByLabelText('Back')).toBeDisabled()
-    fireEvent.click(screen.getByText(':3000'))
+    fireEvent.click(screen.getByText('localhost:3000'))
     expect(screen.getByLabelText('Back')).toBeDisabled()
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'localhost:5173' } })
@@ -223,47 +227,48 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByLabelText('Forward')).not.toBeDisabled()
   })
 
-  it('loads a quick-pick port (isolated host)', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('loads a quick-pick port (isolated host)', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:3000/`)
   })
 
-  it('persists the URL per session and restores it on mount', () => {
+  it('persists the URL per session and restores it on mount', async () => {
     localStorage.setItem('mc-webpreview-url:sess-1', 'http://localhost:4321/')
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:4321/`)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
+    await waitFor(() => expect(screen.getAllByTestId('web-preview-panel')[1].getAttribute('data-origins-loaded')).toBe('true'))
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('loads a URL fed externally via setSessionPreviewUrl (matching slot, isolated)', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('loads a URL fed externally via setSessionPreviewUrl (matching slot, isolated)', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     act(() => { setSessionPreviewUrl('sess-1', 'localhost:8080') })
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
-  it('does not live-load an external feed when open=false (offer only)', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('does not live-load an external feed when open=false (offer only)', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewUrl('sess-1', 'localhost:8080', false) })
     // No dispatch → the already-mounted panel stays on the empty state.
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     expect(screen.queryByTitle('Web preview')).toBeNull()
   })
 
-  it('ignores an external feed aimed at a different slot', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('ignores an external feed aimed at a different slot', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewUrl('sess-2', 'localhost:8080') })
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     expect(screen.queryByTitle('Web preview')).toBeNull()
   })
 
-  it('shows a Load-preview card for a pending feed and navigates only on the explicit click', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('shows a Load-preview card for a pending feed and navigates only on the explicit click', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewPending('sess-1', 'localhost:8080') })
     // Pending → a card is shown and the iframe is NOT loaded (no auto-GET).
     expect(screen.getByText('Preview ready')).toBeInTheDocument()
@@ -274,8 +279,8 @@ describe('WebPreviewPanel', () => {
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
-  it('rejects a NON-loopback chat-fed URL (loopback-only channel)', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('rejects a NON-loopback chat-fed URL (loopback-only channel)', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     // Agent output is injectable, so the chat-feed channel refuses external
     // hosts outright — no card, no navigation, and a null return.
     let ret: string | null = 'sentinel'
@@ -290,12 +295,12 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByText('Preview ready')).toBeInTheDocument()
   })
 
-  it('reports a target that is this gateway instead of framing a blank page', () => {
+  it('reports a target that is this gateway instead of framing a blank page', async () => {
     // The dashboard's own origin can never render in the iframe: the gateway
     // sends frame-ancestors 'self' and the cookie-isolation host swap makes the
     // frame cross-origin by construction. The liveness probe can't see that
     // (the server IS up), so the panel has to say so itself.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: `${window.location.host}/api/hooks/agent` } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -306,24 +311,21 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByText('Open in browser')).toBeInTheDocument()
   })
 
-  it('shows a mixed-content URL separately from the consistent browser action', () => {
+  it('refuses a non-loopback http target as an outside address, before any embed question', async () => {
     const originalHref = window.location.href
     window.location.href = 'https://dashboard.example.com/'
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
       const input = screen.getByLabelText('Preview URL')
       fireEvent.change(input, { target: { value: 'http://0.0.0.0:5173/very/long/path' } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
-
+      // 0.0.0.0 is not a loopback host, so no allowlist entry could ever admit
+      // it: the outside-address card, with the real browser as the way out.
+      expect(screen.getByTestId('web-preview-outside-refused')).toBeInTheDocument()
+      expect(screen.queryByTitle('Web preview')).toBeNull()
       const shown = 'http://0.0.0.0:5173/very/long/path'
-      expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
-      // `0.0.0.0` is not loopback, so this one really IS the engine's mixed-content
-      // block — the card must say so, and must not blame the dashboard's policy.
-      expect(screen.getByTestId('web-preview-embed-refusal-browser')).toHaveTextContent(/mixed content/)
-      expect(screen.queryByTestId('web-preview-embed-refusal-policy')).toBeNull()
       expect(screen.getByText(shown).tagName).toBe('CODE')
-      expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
-      expect(screen.queryByText(`Open ${shown}`)).toBeNull()
+      expect(screen.getByRole('link', { name: /Open in your Chrome/ })).toHaveAttribute('href', shown)
     } finally {
       window.location.href = originalHref
     }
@@ -336,11 +338,11 @@ describe('WebPreviewPanel', () => {
   it.each([
     ['http://127.0.0.1:9223/', 'http://127.0.0.1:9223/'],
     ['http://localhost:5173/', 'http://localhost:5173/'],
-  ])('frames a loopback target on an https dashboard (%s)', (typed, expected) => {
+  ])('frames a loopback target on an https dashboard (%s)', async (typed, expected) => {
     const originalHref = window.location.href
     window.location.href = 'https://dashboard.example.com/'
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
       const input = screen.getByLabelText('Preview URL')
       fireEvent.change(input, { target: { value: typed } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -356,58 +358,29 @@ describe('WebPreviewPanel', () => {
   // `*.localhost` is potentially trustworthy too, but the dashboard's frame-src
   // only admits it in instances mode, so relaxing the guard for it would trade
   // the explanation for a CSP-blanked frame.
-  it('still refuses a *.localhost target on an https dashboard', () => {
+  it('refuses a *.localhost target as an outside address: the allowlist takes loopback spellings only', async () => {
     const originalHref = window.location.href
     window.location.href = 'https://dashboard.example.com/'
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
       const input = screen.getByLabelText('Preview URL')
-      fireEvent.change(input, { target: { value: 'http://myapp.localhost:5173/' } })
+      fireEvent.change(input, { target: { value: 'http://app.localhost:5173/' } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
-
-      expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
+      expect(screen.getByTestId('web-preview-outside-refused')).toBeInTheDocument()
       expect(screen.queryByTitle('Web preview')).toBeNull()
     } finally {
       window.location.href = originalHref
     }
   })
 
-  // The engine does NOT block `*.localhost` (it is potentially trustworthy); the
-  // dashboard's own embed allowlist does. The card has to name that blocker, or
-  // a reader is sent into a mixed-content investigation for a policy problem
-  // (#10696). The copy names the dashboard, not the CSP: with instances enabled
-  // the CSP admits `*.localhost` while the panel still refuses it.
-  it('blames the dashboard policy, not the browser, for a *.localhost refusal', () => {
-    const originalHref = window.location.href
-    window.location.href = 'https://dashboard.example.com/'
-    try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      const input = screen.getByLabelText('Preview URL')
-      fireEvent.change(input, { target: { value: 'http://myapp.localhost:5173/' } })
-      fireEvent.submit(input.closest('form') as HTMLFormElement)
-
-      const reason = screen.getByTestId('web-preview-embed-refusal-policy')
-      expect(reason).toHaveTextContent(/this dashboard only embeds http:\/\/ pages/)
-      expect(reason).toHaveTextContent(/gateway policy, not a browser block/)
-      expect(reason).not.toHaveTextContent(/mixed content/)
-      expect(screen.queryByTestId('web-preview-embed-refusal-browser')).toBeNull()
-      // The escape hatch survives on every branch — it is what makes the state
-      // recoverable.
-      expect(screen.getByText('Open in browser').closest('a'))
-        .toHaveAttribute('href', 'http://myapp.localhost:5173/')
-    } finally {
-      window.location.href = originalHref
-    }
-  })
-
   describe('httpEmbedRefusal', () => {
-    it('does not arise on an http dashboard or for an https target', () => {
+    it('does not arise on an http dashboard or for an https target', async () => {
       expect(httpEmbedRefusal('http://myapp.localhost:5173/', 'http:')).toBeNull()
       expect(httpEmbedRefusal('http://0.0.0.0:5173/', 'http:')).toBeNull()
       expect(httpEmbedRefusal('https://myapp.localhost:5173/', 'https:')).toBeNull()
     })
 
-    it('admits the hosts the dashboard frame-src always carries', () => {
+    it('admits the hosts the dashboard frame-src always carries', async () => {
       expect(httpEmbedRefusal('http://127.0.0.1:5173/', 'https:')).toBeNull()
       expect(httpEmbedRefusal('http://localhost:5173/', 'https:')).toBeNull()
     })
@@ -428,13 +401,13 @@ describe('WebPreviewPanel', () => {
       expect(httpEmbedRefusal(url, 'https:')).toBe('browser')
     })
 
-    it('fails closed to the browser wording for an unparseable URL', () => {
+    it('fails closed to the browser wording for an unparseable URL', async () => {
       expect(httpEmbedRefusal('http://exa mple/', 'https:')).toBe('browser')
     })
   })
 
   describe('isPotentiallyTrustworthyHost', () => {
-    it('follows W3C Secure Contexts: loopback names and 127/8, not 0.0.0.0', () => {
+    it('follows W3C Secure Contexts: loopback names and 127/8, not 0.0.0.0', async () => {
       for (const h of ['localhost', 'app.localhost', 'a.b.localhost', '127.0.0.1', '127.255.255.254', '[::1]', '::1']) {
         expect(isPotentiallyTrustworthyHost(h), h).toBe(true)
       }
@@ -447,26 +420,84 @@ describe('WebPreviewPanel', () => {
   // A public http:// host never reaches the frame on this transport at all: it is
   // handed to the gateway host's browser. Pinned so the relaxed guard is not read
   // as having opened the iframe to non-loopback plaintext.
-  it('hands a public http target to the host browser instead of framing it', async () => {
-    const originalHref = window.location.href
-    window.location.href = 'https://dashboard.example.com/'
-    try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      const input = screen.getByLabelText('Preview URL')
-      fireEvent.change(input, { target: { value: 'http://example.com/' } })
-      fireEvent.submit(input.closest('form') as HTMLFormElement)
+  it('answers an outside URL with "open it in your Chrome, or ask Kiro" instead of framing it', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://example.com/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await screen.findByTestId('web-preview-outside-refused')
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    expect(screen.getByText('This is not a local address')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Open in your Chrome/ }).getAttribute('href')).toBe('http://example.com/')
+    expect(screen.getByTestId('web-preview-ask-kiro')).toBeInTheDocument()
+    // Nothing went to the gateway: no launcher, no allow.
+    expect(patchConfig).not.toHaveBeenCalled()
+  })
 
-      await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('http://example.com/', 'sess-1'))
-      expect(screen.queryByTitle('Web preview')).toBeNull()
-    } finally {
-      window.location.href = originalHref
-    }
+  it('offers a one-click Allow for a loopback address outside the list, and writes the whole list back', async () => {
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ['localhost:5173'] } })
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:4200/app' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.getByTestId('web-preview-origin-refused')).toBeInTheDocument()
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    expect(screen.queryByTestId('web-preview-outside-refused')).toBeNull()
+    // The write lands on the gateway; the re-read after it carries the new entry.
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ['localhost:5173', '127.0.0.1:4200'] } })
+    fireEvent.click(screen.getByTestId('web-preview-allow-origin'))
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('dashboard.browser_local_origins', ['localhost:5173', '127.0.0.1:4200']))
+    await waitFor(() => expect(screen.getByTitle('Web preview')).toBeInTheDocument())
+  })
+
+  it('frames the exact origin the user listed, through the cookie-isolation host swap', async () => {
+    // The dashboard is served from `localhost`; the user lists `localhost:5173`
+    // and loads that URL. The frame must load the ISOLATED host (127.0.0.1) so
+    // the dashboard cookie never reaches the dev server, and the allowlist must
+    // be judged on the host the user chose, not the rewritten one: judging the
+    // rewrite refused the one origin they configured and offered to add a second.
+    const typedHost = window.location.hostname === '127.0.0.1' ? '127.0.0.1' : 'localhost'
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: [`${typedHost}:5173`] } })
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: `http://${typedHost}:5173/` } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.queryByTestId('web-preview-origin-refused')).toBeNull()
+    const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
+    expect(targetOf(frame)).toBe(`http://${iso(typedHost)}:5173/`)
+    // The user-facing spellings keep what they typed.
+    expect((input as HTMLInputElement).value).toBe(`http://${typedHost}:5173/`)
+    expect(localStorage.getItem('mc-webpreview-url:sess-1')).toBe(`http://${typedHost}:5173/`)
+  })
+
+  it('with no origins configured, the empty state points at Settings instead of offering picks', async () => {
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: [] } })
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    expect(screen.getByTestId('web-preview-no-origins')).toBeInTheDocument()
+    expect(screen.queryByTestId('web-preview-origin-picks')).toBeNull()
+  })
+
+  it('a failed origins read says it failed, not that none are configured', async () => {
+    kirocrewConfig.mockRejectedValue(new Error('503'))
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    expect(await screen.findByText(/Could not read the local preview list/)).toBeInTheDocument()
+    expect(screen.queryByTestId('web-preview-no-origins')).toBeNull()
+  })
+
+  it('Ask Kiro stages a prompt naming the outside address', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'https://news.example.org/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    fireEvent.click(screen.getByTestId('web-preview-ask-kiro'))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+    expect(String(sendErrorToChat.mock.calls[0][0])).toContain('https://news.example.org/')
   })
 
   // The http-served dashboard (the default install) never had this refusal and
   // must not gain one.
-  it('frames a loopback target on an http dashboard', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('frames a loopback target on an http dashboard', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'http://127.0.0.1:9223/' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -476,9 +507,9 @@ describe('WebPreviewPanel', () => {
       .toBe(`http://${iso('127.0.0.1')}:9223/`)
   })
 
-  it('still frames an ordinary dev server on another port', () => {
+  it('still frames an ordinary dev server on another port', async () => {
     // Guards the port comparison: only the gateway's own port is refused.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'localhost:5173' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -486,13 +517,13 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByTitle('Web preview')).toBeInTheDocument()
   })
 
-  it('shows a self-origin target exactly as entered, not host-swapped', () => {
+  it('shows a self-origin target exactly as entered, not host-swapped', async () => {
     // The cookie-isolation swap protects a FRAMED server. This target is never
     // framed, so swapping it would tell someone who typed the dashboard's own
     // host that the OTHER loopback alias "is the dashboard's own server" while
     // the panel is explaining itself. Typing the dashboard's host is what
     // triggers the swap, so that is the case this pins.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     const typed = `${window.location.host}/api/hooks/agent`
     fireEvent.change(input, { target: { value: typed } })
@@ -505,10 +536,10 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
   })
 
-  it('still cookie-isolates an ordinary dev server it WILL frame', () => {
+  it('still cookie-isolates an ordinary dev server it WILL frame', async () => {
     // Guards the narrowness of the exemption: only the never-framed self target
     // keeps its host.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const input = screen.getByLabelText('Preview URL')
     fireEvent.change(input, { target: { value: 'localhost:5173' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
@@ -516,8 +547,8 @@ describe('WebPreviewPanel', () => {
     expect(targetOf(frame)).toBe(`http://${iso('localhost')}:5173/`)
   })
 
-  it('refuses a chat-fed URL that points back at this gateway', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('refuses a chat-fed URL that points back at this gateway', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     // An agent discussing webhooks mentions the gateway's own URL in prose; the
     // offer must not be raised, since Load could only lead to a blank panel.
     let ret: string | null = 'sentinel'
@@ -527,8 +558,8 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('dismisses a pending feed without navigating', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+  it('dismisses a pending feed without navigating', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     act(() => { setSessionPreviewPending('sess-1', 'localhost:8080') })
     fireEvent.click(screen.getByText('Dismiss'))
     expect(screen.queryByText('Preview ready')).toBeNull()
@@ -537,12 +568,13 @@ describe('WebPreviewPanel', () => {
   })
 
   it('shows a "not reachable" state after the dev server stops responding, then auto-restores', async () => {
-    vi.useFakeTimers()
     const fetchMock = vi.fn().mockRejectedValue(new Error('refused'))
     vi.stubGlobal('fetch', fetchMock)
+    // The origins read settles on real timers; the probe cadence runs on fake ones.
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    vi.useFakeTimers()
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      fireEvent.click(screen.getByText(':3000'))
+      fireEvent.click(screen.getByText('localhost:3000'))
       expect(screen.getByTitle('Web preview')).toBeInTheDocument()   // loaded initially
       // Two consecutive failed probes (immediate + interval) → unreachable; the
       // stale iframe is unmounted in favor of the stopped state.
@@ -560,9 +592,9 @@ describe('WebPreviewPanel', () => {
   })
 
 
-  it('varies the iframe src on Reload so the remount is a new request, not a cache hit', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('varies the iframe src on Reload so the remount is a new request, not a cache hit', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     const before = (screen.getByTitle('Web preview') as HTMLIFrameElement).src
     fireEvent.click(screen.getByLabelText('Reload preview'))
     const after = (screen.getByTitle('Web preview') as HTMLIFrameElement).src
@@ -574,73 +606,71 @@ describe('WebPreviewPanel', () => {
       .toBe(`http://${iso('localhost')}:3000/`)
   })
 
-  it('keeps the URL pristine on the initial mount-restored load (no stray param)', () => {
+  it('keeps the URL pristine on the initial mount-restored load (no stray param)', async () => {
     localStorage.setItem('mc-webpreview-url:sess-1', 'http://localhost:4321/')
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.src).toBe(`http://${iso('localhost')}:4321/`)
     expect(frame.src).not.toContain('_kcreload')
   })
 
-  it('leaves the URL bar and the open-in-browser link on the clean URL', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('leaves the URL bar and the open-in-browser link on the clean URL', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     fireEvent.click(screen.getByLabelText('Reload preview'))
-    const clean = `http://${iso('localhost')}:3000/`
-    // The cache-buster is an implementation detail of the frame load: it must not
-    // leak into what the user sees, copies, or opens externally.
+    // The user picked `localhost:3000`: that is what the bar shows and the link
+    // opens. The cache-buster AND the cookie-isolation host swap are details of the
+    // frame load: neither leaks into what the user sees, copies, or opens externally.
+    const clean = 'http://localhost:3000/'
     expect((screen.getByLabelText('Preview URL') as HTMLInputElement).value).toBe(clean)
     expect((screen.getByLabelText('Open in browser') as HTMLAnchorElement).href).toBe(clean)
+    expect(targetOf(screen.getByTitle('Web preview') as HTMLIFrameElement)).toBe(`http://${iso('localhost')}:3000/`)
   })
 
-  it('probes liveness against the clean URL, not the cache-busted one', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('probes liveness against the clean URL, not the cache-busted one', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     fireEvent.click(screen.getByLabelText('Reload preview'))
     const probed = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(c => c[0])
     expect(probed.length).toBeGreaterThan(0)
     for (const u of probed) expect(String(u)).not.toContain('_kcreload')
   })
 
-  it('constrains the iframe to a device size when a mobile preset is picked', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('constrains the iframe to a device size when a mobile preset is picked', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     let frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.style.width).toBe('')
     // Device presets now live inside the overflow menu → Preview size submenu.
     // Radix opens on pointerDown, not click.
     fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'More actions' }),
+      screen.getByRole('button', { name: 'Preview size' }),
       { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
     )
-    fireEvent.click(screen.getByText('Preview size'))
     fireEvent.click(screen.getByText('iPhone SE'))
     frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.style.width).toBe('375px')
     expect(frame.style.height).toBe('667px')
   })
 
-  it('device preset items carry menuitemradio semantics with aria-checked', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByText(':3000'))
+  it('device preset items carry menuitemradio semantics with aria-checked', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText('localhost:3000'))
     fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'More actions' }),
+      screen.getByRole('button', { name: 'Preview size' }),
       { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
     )
-    fireEvent.click(screen.getByText('Preview size'))
     const responsive = screen.getByRole('menuitemradio', { name: /Responsive/ })
     expect(responsive).toHaveAttribute('aria-checked', 'true')
     const iphone = screen.getByRole('menuitemradio', { name: /iPhone SE/ })
     expect(iphone).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('action row renders exactly 4 top-level sibling controls (regression guard for max-two-buttons-per-row)', () => {
-    // The row is: back, forward, (URL container), expand, divider, overflow, crop.
+  it('action row renders exactly 4 top-level sibling controls (regression guard for max-two-buttons-per-row)', async () => {
+    // The row is: back, forward, (URL container), expand, divider, preview-size, crop.
     // The URL container is its own group (not counted); the divider is decorative.
-    // Sibling action controls = back + forward + expand + overflow + crop = 5.
-    // This matches the base-branch count (back + forward + expand + preview-size
-    // + crop = 5). The overflow REPLACED preview-size, so the count did not grow.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    // Sibling action controls = back + forward + expand + preview-size + crop = 5.
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
     const form = screen.getByLabelText('Preview URL').closest('form') as HTMLFormElement
     // Count direct-child buttons that are action controls (exclude the
     // URL container's internal reload/open-in-browser and the decorative divider).
@@ -649,28 +679,16 @@ describe('WebPreviewPanel', () => {
       if (el.tagName === 'DIV') return false // URL container
       return el.tagName === 'BUTTON' || el.getAttribute('role') === 'button'
     })
-    // 5 = back, forward, expand, overflow trigger, crop (canSnip is mocked on).
-    // Identical to baseline (which had preview-size instead of overflow).
+    // 5 = back, forward, expand, preview-size trigger, crop (canSnip is mocked on).
     expect(directButtons).toHaveLength(5)
   })
 
-  it('browser-view toggle still works through the overflow menu', () => {
-    getBrowserView.mockResolvedValue(STOPPED)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'More actions' }),
-      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
-    )
-    const item = screen.getByRole('menuitem', { name: /Browser view/ })
-    expect(item).toBeInTheDocument()
-  })
-
-  it('dispatches a snip request when the crop button is clicked', () => {
+  it('dispatches a snip request when the crop button is clicked', async () => {
     let fired = false
     const handler = () => { fired = true }
     window.addEventListener('kirocrew-web-preview-snip', handler)
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Screenshot an area into the chat'))
       expect(fired).toBe(true)
     } finally {
@@ -678,12 +696,12 @@ describe('WebPreviewPanel', () => {
     }
   })
 
-  it('broadcasts preview-expand true/false as the expand button toggles', () => {
+  it('broadcasts preview-expand true/false as the expand button toggles', async () => {
     const seen: boolean[] = []
     const handler = (e: Event) => seen.push(!!(e as CustomEvent<{ expanded?: boolean }>).detail?.expanded)
     window.addEventListener('kirocrew-preview-expand', handler)
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Expand preview'))
       expect(seen).toContain(true)
       fireEvent.click(screen.getByLabelText('Collapse'))
@@ -694,338 +712,7 @@ describe('WebPreviewPanel', () => {
   })
 })
 
-describe('WebPreviewPanel — Playwright CLI browser view', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    sessionStorage.clear()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
-  })
-  afterEach(() => { vi.unstubAllGlobals() })
-
-  /** The toggle, whichever of its two instances is currently exposed (the hidden
-   *  subtree is `aria-hidden`, so a role query can only ever see one).
-   *
-   *  In the URL bar it now sits behind the standard overflow trigger: that row
-   *  already carried back / forward / expand / preview-size, and
-   *  `max-two-buttons-per-row` forbids a legacy-status row from growing. The
-   *  overlay header keeps its own direct button, so when the view is UP the
-   *  toggle is still reachable in one click and this helper finds it there. */
-  const toggle = () => {
-    const direct = screen.queryByRole('button', { name: 'Browser view' })
-    if (direct) return direct
-    // Radix opens on pointerdown, not click.
-    fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'More actions' }),
-      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
-    )
-    return screen.getByRole('menuitem', { name: /Browser view/ })
-  }
-
-  it('frames the CLI dashboard at the reported URL when the view is running', async () => {
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // Running takes the panel over on its own — the same precedence the frame
-    // mirror had, so an agent that starts browsing still surfaces itself.
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    expect(frame.src).toBe('http://127.0.0.1:45613/')
-    expect(screen.getByText('Browser view')).toBeInTheDocument()
-    // Preview subtree stays MOUNTED (hidden) under the overlay so iframe/form
-    // state survives — its empty-state node is still in the DOM, just hidden.
-    expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
-  })
-
-  it('prefers the same-origin relay path over the loopback URL when the gateway offers one', async () => {
-    // `path` rides the dashboard's own origin, so it is what makes the view
-    // reachable from a remote browser (SSH forward, tunnel) — the absolute
-    // loopback URL stays only as the older-gateway fallback. The path embeds
-    // the relay's capability token; the panel treats it as opaque.
-    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    // jsdom absolutizes a relative src against the page origin; the pathname is
-    // the contract.
-    expect(new URL(frame.src).pathname).toBe('/browser-view/capAbc123xyz_-0/')
-    expect(new URL(frame.src).origin).toBe(window.location.origin)
-  })
-
-  it('frames the view WITHOUT allow-same-origin, so it cannot reach dashboard state', async () => {
-    // The relay serves the view SPA on the dashboard's own origin; the opaque
-    // origin (no allow-same-origin) is what keeps that content — or anything
-    // squatting the relay's loopback target port — away from the parent DOM
-    // and the cookie-authed APIs.
-    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    const sandbox = frame.getAttribute('sandbox') ?? ''
-    expect(sandbox).toContain('allow-scripts')
-    expect(sandbox).not.toContain('allow-same-origin')
-    // Popup parity with the direct path: allowed, but WITHOUT the escape
-    // variant — a popup inherits the sandbox (opaque origin included), so
-    // parity costs no isolation.
-    expect(sandbox).toContain('allow-popups')
-    expect(sandbox).not.toContain('allow-popups-to-escape-sandbox')
-  })
-
-  it('keeps allow-same-origin for the direct-URL fallback, which never gets the relay shim', async () => {
-    // Older gateway, no relay `path`: the frame loads the loopback URL
-    // directly. That is already a FOREIGN origin (allow-same-origin grants
-    // only itself, not the dashboard), and only relayed documents carry the
-    // localStorage shim — an opaque-origin direct frame crashes the view
-    // SPA's boot on its bare storage access.
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    expect(frame.src).toBe('http://127.0.0.1:45613/')
-    const sandbox = frame.getAttribute('sandbox') ?? ''
-    expect(sandbox).toContain('allow-same-origin')
-    expect(sandbox).toContain('allow-scripts')
-  })
-
-  it('refuses a malformed relay path and falls back to the reported URL', async () => {
-    // A protocol-relative value ('//host') would navigate off-origin if framed;
-    // the shape check drops it and the loopback URL is used instead.
-    getBrowserView.mockResolvedValue({ ...RUNNING, path: '//evil.example/x' })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    expect(frame.src).toBe('http://127.0.0.1:45613/')
-  })
-
-  it('never fires the liveness probe against a relay path — only the direct fallback', async () => {
-    // The relay is same-origin, so its health is the dashboard's own — and a
-    // no-cors probe against it would answer opaque (telling us nothing) while
-    // costing the relay's per-request ownership proofs every 5 seconds for
-    // every open panel. The probe exists for the DIRECT loopback fallback,
-    // whose reachability genuinely differs from this browser's point of view.
-    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
-    const relayRender = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    await screen.findByTitle('Live browser session')
-    // The relay does get the one-shot cookie check (#23180), which is a cors
-    // GET; what it must never get is the polling no-cors liveness probe.
-    const relayProbes = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .filter(c => String(c[0]).includes('/browser-view') && (c[1] as RequestInit | undefined)?.mode === 'no-cors')
-    expect(relayProbes).toEqual([])
-    relayRender.unmount()
-
-    // Positive control, proving this harness detects the probe when it IS
-    // enabled: the direct-URL fallback (old gateway, no `path`) still probes.
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
-    await screen.findByTitle('Live browser session')
-    const directProbes = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .map(c => String(c[0]))
-      .filter(u => u.startsWith('http://127.0.0.1:45613'))
-    expect(directProbes.length).toBeGreaterThan(0)
-  })
-
-  describe('a front door that refuses the frame for want of a cookie (#23180)', () => {
-    const RELAY = { ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' }
-    /** A fetch answer, as much of `Response` as the cookie check reads. */
-    const answer = (ok: boolean, landed?: string) => status(ok ? 200 : 403, landed)
-    const status = (code: number, landed?: string) => ({
-      ok: code >= 200 && code < 300, status: code, redirected: !!landed, url: landed ?? '', body: null,
-    })
-    /** Answers the relay path by credentials mode: `withCookie` for the
-     *  dashboard's own credentialed GET, `withoutCookie` for the cookieless one. */
-    const relayAnswers = (withCookie: unknown, withoutCookie: unknown) => {
-      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-        const out = init?.credentials === 'omit' ? withoutCookie : withCookie
-        if (out instanceof Error) throw out
-        return out
-      })
-      vi.stubGlobal('fetch', fetchMock)
-      return fetchMock
-    }
-    /** The cookie check's requests only: the panel fetches other things too. */
-    const relayCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
-      fetchMock.mock.calls.filter(c => c[0] === RELAY.path).length
-    const settled = async (fetchMock: ReturnType<typeof vi.fn>) => {
-      await waitFor(() => expect(relayCalls(fetchMock)).toBe(2))
-      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-    }
-
-    it('shows the explanation instead of a blank frame when only the cookieless request is refused', async () => {
-      getBrowserView.mockResolvedValue(RELAY)
-      relayAnswers(answer(true), answer(false))
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      expect(await screen.findByTestId('web-preview-view-cookie-refused')).toHaveTextContent("A likely cause")
-      expect(screen.queryByTitle('Live browser session')).toBeNull()
-      // The existing way out stays: the header's open-in-new-tab link.
-      expect(screen.getByRole('link', { name: 'Open in browser' })).toHaveAttribute('href', RELAY.path)
-    })
-
-    it.each([
-      ['a 401', status(401)],
-      ['a network failure (a cross-origin sign-in redirect fails CORS)', new TypeError('Failed to fetch')],
-      ['a 200 redirected to a same-origin sign-in page off the relay', status(200, `${window.location.origin}/login`)],
-    ])('counts %s on only the cookieless request as a refusal', async (_name, withoutCookie) => {
-      getBrowserView.mockResolvedValue(RELAY)
-      relayAnswers(answer(true), withoutCookie)
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      expect(await screen.findByTestId('web-preview-view-cookie-refused')).toBeInTheDocument()
-    })
-
-    it.each([
-      ['a 404 (token rotated)', status(404)],
-      ['a 429', status(429)],
-      ['a 500', status(500)],
-      ['a 502', status(502)],
-      ['a 503', status(503)],
-    ])('keeps the frame when only the cookieless request gets %s', async (_name, withoutCookie) => {
-      getBrowserView.mockResolvedValue(RELAY)
-      const fetchMock = relayAnswers(answer(true), withoutCookie)
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await screen.findByTitle('Live browser session')
-      await settled(fetchMock)
-      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
-    })
-
-    it('keeps the frame when the credentialed request does not reach the relay, whatever the other gets', async () => {
-      getBrowserView.mockResolvedValue(RELAY)
-      const fetchMock = relayAnswers(status(503), answer(false))
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await screen.findByTitle('Live browser session')
-      await settled(fetchMock)
-      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
-    })
-
-    it('keeps the frame when both requests reach the relay, including its own index redirect', async () => {
-      getBrowserView.mockResolvedValue(RELAY)
-      const landed = `${window.location.origin}${RELAY.path}index.html?ws=x`
-      const fetchMock = relayAnswers(answer(true, landed), answer(true, landed))
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await screen.findByTitle('Live browser session')
-      await settled(fetchMock)
-      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
-    })
-
-    it('blames no proxy when the relay fails either way (gateway down, view dead)', async () => {
-      getBrowserView.mockResolvedValue(RELAY)
-      const fetchMock = relayAnswers(new TypeError('Failed to fetch'), new TypeError('Failed to fetch'))
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await screen.findByTitle('Live browser session')
-      await settled(fetchMock)
-      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
-    })
-
-    it('asks again on Try again, and frames the view once the front door lets it through', async () => {
-      getBrowserView.mockResolvedValue(RELAY)
-      const fetchMock = relayAnswers(answer(true), answer(false))
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await screen.findByTestId('web-preview-view-cookie-refused')
-      fetchMock.mockImplementation(async () => answer(true))
-      fireEvent.click(screen.getByRole('button', { name: /Try again/ }))
-      expect(await screen.findByTitle('Live browser session')).toBeInTheDocument()
-      await waitFor(() => expect(relayCalls(fetchMock)).toBe(4))
-      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-      expect(screen.queryByTestId('web-preview-view-cookie-refused')).toBeNull()
-    })
-  })
-
-  it('layers nothing over the frame, so the CLI keeps its remote input', async () => {
-    // The CLI dashboard's own mouse/keyboard input IS the control surface. A
-    // scrim or hint bar over the frame would swallow exactly those events, so
-    // the frame must be the last thing in its container and not be inert.
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session')
-    const box = frame.parentElement as HTMLElement
-    expect(box.lastElementChild).toBe(frame)
-    expect(frame.className).not.toContain('pointer-events-none')
-    expect(frame.closest('[aria-hidden="true"]')).toBeNull()
-  })
-
-  it('offers a start action when the view is stopped, and POSTs it', async () => {
-    getBrowserView.mockResolvedValue(STOPPED)
-    startBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // Stopped does NOT take the panel over — the preview stays usable — so the
-    // state is reached through the toggle.
-    fireEvent.click(toggle())
-    expect(await screen.findByText('Browser view is not running')).toBeInTheDocument()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-    fireEvent.click(screen.getByText('Start browser view'))
-    await waitFor(() => expect(startBrowserView).toHaveBeenCalled())
-    // The start response IS the new status, so the frame appears without a
-    // second read.
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    expect(frame.src).toBe('http://127.0.0.1:45613/')
-  })
-
-  it('reports a failed start instead of leaving the card looking hung', async () => {
-    getBrowserView.mockResolvedValue(STOPPED)
-    startBrowserView.mockRejectedValue(new Error('port 45613 already in use'))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(toggle())
-    fireEvent.click(await screen.findByText('Start browser view'))
-    expect(await screen.findByText(/Couldn't start the browser view/)).toBeInTheDocument()
-    expect(screen.getByText(/port 45613 already in use/)).toBeInTheDocument()
-  })
-
-  it('reports a start that answered 200 and still did not run', async () => {
-    // The endpoint returns the post-attempt STATUS, not an HTTP error, so a launch
-    // that failed comes back as a perfectly good `stopped`. Re-rendering the same
-    // card would make the click look like it did nothing.
-    getBrowserView.mockResolvedValue(STOPPED)
-    startBrowserView.mockResolvedValue(STOPPED)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(toggle())
-    fireEvent.click(await screen.findByText('Start browser view'))
-    expect(await screen.findByText(/Couldn't start the browser view/)).toBeInTheDocument()
-    expect(screen.getByText('Browser view is not running')).toBeInTheDocument()
-  })
-
-  it('shows the server’s own reason when the view is unavailable', async () => {
-    getBrowserView.mockResolvedValue({
-      status: 'unavailable',
-      url: null,
-      port: null,
-      reason: 'playwright-cli is not installed. Run: npm install -g @playwright/cli@latest',
-    })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(toggle())
-    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
-    // Verbatim, never translated — it names the real cause, and a catalog key
-    // could only either drop the detail or assert a cause the server didn't give.
-    expect(screen.getByText(/npm install -g @playwright\/cli@latest/)).toBeInTheDocument()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-  })
-
-  it('falls back to its own copy when an unavailable view reports no reason', async () => {
-    getBrowserView.mockResolvedValue({ status: 'unavailable', url: null, port: null, reason: null })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(toggle())
-    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
-    expect(screen.getByText("The browser view isn't available on this gateway.")).toBeInTheDocument()
-  })
-
-  it('explains a running status whose URL cannot be framed rather than navigating it', async () => {
-    // A malformed or non-http(s) URL is never handed to the iframe: it would be
-    // a navigation the panel cannot vouch for. It degrades to the explanatory
-    // state, which is also what makes the value safe to trust elsewhere.
-    getBrowserView.mockResolvedValue({
-      status: 'running', url: 'javascript:alert(1)', port: 45613, reason: null,
-    })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(toggle())
-    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-  })
-
-  it('lets the user dismiss a running view to get the dev-server preview back', async () => {
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    await screen.findByTitle('Live browser session')
-    // The toggle exposed while the overlay is up is the pressed one in its header.
-    fireEvent.click(toggle())
-    await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
-    // ...and the preview is interactive again (no longer under an aria-hidden lid).
-    expect(screen.getByLabelText('Preview URL').closest('[aria-hidden="true"]')).toBeNull()
-  })
-})
-
-describe('WebPreviewPanel — native browser transport', () => {
+describe('WebPreviewPanel — native browser transport (desktop app)', () => {
   // A minimal window.browserAPI bridge, enough for useNativeBrowser to report
   // available:true and (via getState open:true) hand the panel to the native
   // surface. The native view paints outside the DOM, so these assert transport
@@ -1061,51 +748,49 @@ describe('WebPreviewPanel — native browser transport', () => {
     vi.unstubAllGlobals()
   })
 
-  it('native view OWNS the panel when available — a chat-opened page lands in it, not the CLI view', async () => {
-    getBrowserView.mockResolvedValue(RUNNING)
-    installNativeBridge(true)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // Wait for the CLI frame to be gone, which only happens once the native view
-    // is open and owning the panel. Before getState resolves, a running CLI view
-    // legitimately shows -- that is the deliberate fallback for a desktop shell
-    // whose native view has nothing in it yet.
-    await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
+
+  it('an ALLOWED address opens in the native view; the iframe path stays for the rest', async () => {
+    const api = installNativeBridge(false)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://localhost:5173/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(api.open).toHaveBeenCalledWith('sess-1', `http://${iso('localhost')}:5173/`))
   })
 
-  it('shows the CLI browser view when the bridge EXISTS but no native view is open yet', async () => {
-    // Regression: gating this on `!native.available` blanked the panel on a
-    // desktop shell whose preload bridge exists while nothing has been opened
-    // natively. The real condition is `!nativeOpen`.
-    getBrowserView.mockResolvedValue(RUNNING)
-    installNativeBridge(false)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    await waitFor(() =>
-      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-    )
+  it('never hands an unlisted or outside address to the native view', async () => {
+    const api = installNativeBridge(false)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'https://example.com/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.getByTestId('web-preview-outside-refused')).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: 'http://localhost:4200/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.getByTestId('web-preview-origin-refused')).toBeInTheDocument()
+    expect(api.open).not.toHaveBeenCalled()
   })
 
-  it('falls back to the CLI browser view when NO native view is available (remote gateway / plain browser)', async () => {
-    // No browserAPI bridge → native.available is false → the CLI dashboard is
-    // the only transport, so its frame shows.
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    expect(await screen.findByTitle('Live browser session')).toBeInTheDocument()
+  it('the native address bar navigates only within the list', async () => {
+    const api = installNativeBridge(true, 'http://localhost:5173/')
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    // Two bars carry the label: the iframe path's (aria-hidden behind the surface) and the surface's own.
+    const bar = await waitFor(() => {
+      const bars = screen.getAllByLabelText('Preview URL')
+      expect(bars.length).toBe(2)
+      return bars[1]
+    })
+    fireEvent.change(bar, { target: { value: 'https://example.com/' } })
+    fireEvent.submit(bar.closest('form') as HTMLFormElement)
+    expect(api.navigate).not.toHaveBeenCalled()
+    fireEvent.change(bar, { target: { value: 'http://127.0.0.1:3000/app' } })
+    fireEvent.submit(bar.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(api.navigate).toHaveBeenCalledWith('sess-1', 'http://127.0.0.1:3000/app'))
   })
-
-  // NOTE: three tests are deliberately gone from here — they pinned the
-  // per-session consent model this panel no longer has: the Globe toggle
-  // acquiring/releasing LIGHT, the BROWSE_MODE_REQUEST_EVENT pull handshake, and
-  // the slot filter on its answer. Browser Mode is now the authorization
-  // (security.py: "Presence alone is the authorization") and the agent command
-  // channel takes LIGHT itself, so the panel carries no agent-authorization
-  // control to assert. Transport selection is still covered by the three tests
-  // above (native owns the panel / CLI view before a native view / CLI view when
-  // no bridge exists).
 
   it('hides (never destroys) the native view when the panel goes inactive, and closes it on unmount', async () => {
     const api = installNativeBridge(true)
-    const { rerender, unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    const { rerender, unmount } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     await waitFor(() => expect(api.getState).toHaveBeenCalled())
     // Inactive → setInactive(true) HIDES; close() must not fire.
     rerender(<WebPreviewPanel sessionKey="sess-1" active={false} />)
@@ -1161,18 +846,18 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('shows Annotate only when a native view is open AND the shell exposes the annotate bridge', async () => {
     installAnnotateBridge()
-    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    const { unmount } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     expect(await screen.findByTestId('browser-annotate')).toHaveTextContent('Annotate')
     unmount()
     installNativeBridge(true) // older shell: no `annotate`
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-2" active />)
     await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
     expect(screen.queryByTestId('browser-annotate')).toBeNull()
   })
 
   it('clicking Annotate starts pick mode (badge hint localized, numbering from 0), flips to Done, and Done stops', async () => {
     const { annotate } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'start', { editHint: expect.any(String), roleNames: expect.objectContaining({ combobox: 'dropdown', textbox: 'text field' }), seq: 0, idStart: 0 }))
     await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
@@ -1185,7 +870,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a pick on the page opens the note editor here, focused; Enter keeps the note in the panel (never sent to the page)', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1199,7 +884,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('Esc on a fresh pick with nothing typed removes the pick on the page; a marker click (edit) reopens the editor prefilled', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     state.items = [TARGET]
@@ -1223,7 +908,7 @@ describe('WebPreviewPanel — native browser transport', () => {
     const onEv = (e: Event) => { seen.push(e as CustomEvent) }
     window.addEventListener('kirocrew-web-preview-annotate', onEv)
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
       fireEvent.click(await screen.findByTestId('browser-annotate'))
       await screen.findByTestId('browser-annotations')
       const send = screen.getByTestId('browser-annotations-send')
@@ -1259,7 +944,7 @@ describe('WebPreviewPanel — native browser transport', () => {
     const onEv = (e: Event) => { seen.push(e as CustomEvent) }
     window.addEventListener('kirocrew-web-preview-annotate', onEv)
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
       fireEvent.click(await screen.findByTestId('browser-annotate'))
       await screen.findByTestId('browser-annotations')
       await pickAndNote(state, 'too far right')
@@ -1294,7 +979,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a live pick whose id collides with a retained note is ignored, never aliasing the note', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1317,7 +1002,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a transient poll failure does not drop the notes; three in a row surface an error and pause', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1341,7 +1026,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a refused overlay removal keeps the note (nothing vanishes from here before the page confirms)', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1356,7 +1041,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a pick abandoned with nothing typed is dropped when the next element is picked (list, count and draft agree)', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     state.items = [TARGET]
@@ -1372,7 +1057,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a noted pick the page stops reporting is kept as detached rather than losing its note', async () => {
     const { state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1384,7 +1069,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a destroyed view (no_view) is treated like a vanished overlay: notes kept as detached', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1399,7 +1084,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('picking another element while a note is half-typed keeps that draft as the first pick\'s note', async () => {
     const { state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     state.items = [TARGET]
@@ -1416,7 +1101,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('Clear asks once (restating the count) before wiping typed notes', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1428,7 +1113,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('never shows or sends another session\'s notes after a session switch, and finds them again on return', async () => {
     const { annotate, state } = installAnnotateBridge()
-    const { rerender, unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    const { rerender, unmount } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1446,7 +1131,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('Done annotating → Annotate again keeps every pick and note', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1461,7 +1146,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a note still being typed when the page navigates away is kept, not lost', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     state.items = [TARGET]
@@ -1478,19 +1163,19 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('survives a dashboard reload: notes are restored from sessionStorage for the same slot', async () => {
     const { state } = installAnnotateBridge()
-    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    const { unmount } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
     unmount()
     installAnnotateBridge([TARGET])
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     await waitFor(() => expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right'))
   })
 
   it('counts what is listed (picks, noted or not) -- the same rows Clear would wipe; only noted picks are sent', async () => {
     const { state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1503,7 +1188,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('a failed stop is surfaced and leaves pick mode on for the poll to reconcile', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     const impl = annotate.getMockImplementation()!
@@ -1518,7 +1203,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('Add to chat still drafts when the stop fails, but reports it and leaves pick mode on', async () => {
     const { annotate, state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1537,7 +1222,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('an armed Clear does not carry over to another session', async () => {
     const { state } = installAnnotateBridge()
-    const { rerender } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    const { rerender } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1555,7 +1240,7 @@ describe('WebPreviewPanel — native browser transport', () => {
     const onEv = (e: Event) => { seen.push(e as CustomEvent) }
     window.addEventListener('kirocrew-web-preview-annotate', onEv)
     try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
       fireEvent.click(await screen.findByTestId('browser-annotate'))
       await screen.findByTestId('browser-annotations')
       await pickAndNote(state, 'too far right')
@@ -1575,7 +1260,7 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   it('Add to chat acknowledges inline that nothing was sent yet', async () => {
     const { state } = installAnnotateBridge()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
@@ -1584,396 +1269,3 @@ describe('WebPreviewPanel — native browser transport', () => {
   })
 })
 
-describe('WebPreviewPanel — address bar launcher (non-native transport)', () => {
-  // No `window.browserAPI` bridge in these tests, so `useNativeBrowser` reports
-  // available:false — the plain-browser / remote-gateway transport, where the
-  // gateway host's Playwright CLI browser is the only thing that can render an
-  // external site.
-  beforeEach(() => {
-    localStorage.clear()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
-  })
-  afterEach(() => { vi.unstubAllGlobals() })
-
-  const submit = (raw: string) => {
-    const input = screen.getByLabelText('Preview URL')
-    fireEvent.change(input, { target: { value: raw } })
-    fireEvent.submit(input.closest('form') as HTMLFormElement)
-  }
-
-  it('drops the padlock hint and the green dot when a cookie proxy refuses the relayed view (#23180)', async () => {
-    const RELAY = { ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' }
-    getBrowserView.mockResolvedValue(RELAY)
-    openInBrowser.mockImplementation(async () => ({ ...OPENED('https://google.com/'), view: RELAY }))
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => (
-      init?.credentials === 'omit'
-        ? { ok: false, status: 403, redirected: false, url: '', body: null }
-        : { ok: true, status: 200, redirected: false, url: '', body: null }
-    )))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    await screen.findByTestId('web-preview-view-cookie-refused')
-    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
-    expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
-    expect(screen.getByTestId('web-preview-view-dot').style.backgroundColor).toBe('var(--danger)')
-  })
-
-  it('drops a launch answer for a slot the user has left, on success and on failure', async () => {
-    // Slot A's launch is still in flight when the user switches to slot B; the
-    // late answer must not paint B's header, view or failure card.
-    let resolveA: (v: unknown) => void = () => {}
-    let rejectC: (e: unknown) => void = () => {}
-    openInBrowser.mockImplementation((_url: string, sessionKey: string) => new Promise((resolve, reject) => {
-      if (sessionKey === 'sess-a') resolveA = resolve
-      if (sessionKey === 'sess-c') rejectC = reject
-    }))
-    const { rerender } = renderWithProviders(<WebPreviewPanel sessionKey="sess-a" />)
-    submit('google.com')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://google.com/', 'sess-a'))
-    rerender(<WebPreviewPanel sessionKey="sess-b" />)
-    await act(async () => { resolveA(OPENED('https://google.com/')) })
-    expect(screen.queryByTestId('web-preview-session-name')).toBeNull()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-    expect(screen.queryByText('Opening in the browser…')).toBeNull()
-    // Same guard on the error path: a late failure does not paint the new slot's card.
-    rerender(<WebPreviewPanel sessionKey="sess-c" />)
-    submit('example.com')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://example.com/', 'sess-c'))
-    rerender(<WebPreviewPanel sessionKey="sess-d" />)
-    await act(async () => { rejectC(new Error('boom')) })
-    expect(screen.queryByTestId('web-preview-launch-error')).toBeNull()
-  })
-
-  it('paints only the latest launch on a slot: an earlier launch failing late never replaces the newer view', async () => {
-    // Mistype, then retype before the first answer lands: A (the typo) is still
-    // in flight when B (the corrected address) is submitted and succeeds. A's
-    // late failure must not swap B's live view for a stale failure card.
-    let answerA: (v: unknown) => void = () => {}
-    let answerB: (v: unknown) => void = () => {}
-    openInBrowser.mockImplementation((url: string) => new Promise((resolve) => {
-      if (url === 'https://gooogle.com/') answerA = resolve
-      if (url === 'https://google.com/') answerB = resolve
-    }))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('gooogle.com')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://gooogle.com/', 'sess-1'))
-    submit('google.com')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://google.com/', 'sess-1'))
-    await act(async () => { answerB(OPENED('https://google.com/')) })
-    expect(await screen.findByTitle('Live browser session')).toBeInTheDocument()
-    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
-    await act(async () => {
-      answerA({ ok: false, session: 'panel-1234abcd', error: 'Error: page.goto: net::ERR_NAME_NOT_RESOLVED', view: RUNNING })
-    })
-    expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-    expect(screen.queryByTestId('web-preview-launch-error')).toBeNull()
-    expect(screen.queryByText(/ERR_NAME_NOT_RESOLVED/)).toBeNull()
-    // The mirror image: the newer launch's own failure still shows, so a real
-    // error is never hidden behind an older success.
-    let answerC: (v: unknown) => void = () => {}
-    openInBrowser.mockImplementation((url: string) => new Promise((resolve) => {
-      if (url === 'https://example.invalid/') answerC = resolve
-    }))
-    submit('example.invalid')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://example.invalid/', 'sess-1'))
-    await act(async () => {
-      answerC({ ok: false, session: 'panel-1234abcd', error: 'Error: page.goto: net::ERR_NAME_NOT_RESOLVED', view: RUNNING })
-    })
-    expect(screen.getByTestId('web-preview-launch-error')).toBeInTheDocument()
-  })
-
-  it('sends an external host to the gateway browser and shows the CLI view, never the iframe', async () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    // Upgraded to https, keyed to THIS chat slot.
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://google.com/', 'sess-1'))
-    // The preview iframe was never pointed at the external site: no frame, no
-    // liveness probe against it (which is what produced "not reachable"). Every
-    // probe the panel made went to a loopback host, none to the public site.
-    expect(screen.queryByTitle('Web preview')).toBeNull()
-    const probed = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .map(c => String(c[0]))
-      .filter(u => /^https?:\/\//.test(u))  // the api client's own relative /api/… calls are not probes
-    for (const u of probed) expect(['127.0.0.1', 'localhost']).toContain(new URL(u).hostname)
-    // The answer carried the view status, so the CLI dashboard frames at once.
-    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
-    expect(frame.src).toBe('http://127.0.0.1:45613/')
-    expect(screen.queryByText('Preview server not reachable')).toBeNull()
-    // The header names what THIS chat launched, by the session name the framed
-    // sidebar lists (visible label, not a tooltip), and one line says how the next
-    // page is opened.
-    expect(screen.getByText('Opened from this chat')).toBeInTheDocument()
-    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
-    // Narrow widths (320px): the label group is the row's only flexible item and
-    // truncates, so the header's controls — the way back to the preview bar —
-    // never overflow. jsdom does no layout, so pin the contract on the classes.
-    const group = screen.getByTestId('web-preview-session-label')
-    expect(group.className).toMatch(/\bmin-w-0\b/)
-    expect(group.className).toMatch(/\bflex-1\b/)
-    expect(group.className).not.toMatch(/\bshrink-0\b/)
-    expect(screen.getByText('Opened from this chat').className).toMatch(/\btruncate\b/)
-    expect(screen.getByText(/^Click the padlock above the page/)).toBeInTheDocument()
-  })
-
-  it('states what this chat launched, never which session the frame is showing', async () => {
-    // #5940. The reveal that points the framed dashboard's one viewport at a
-    // session is machine-wide, so an agent or CLI launch for another chat's
-    // session -- or a second dashboard tab -- moves the frame with no signal this
-    // panel can see. The header therefore states a launch FACT and withdraws the
-    // ownership claim: "this chat's browser" described a page the reader was
-    // often not looking at, and nothing here can substantiate a stronger reading.
-    // Asserted as the absence of the old wording as well as the presence of the
-    // new one, because a header that regained the claim would still satisfy the
-    // presence half on its own.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    await screen.findByTitle('Live browser session')
-    const label = screen.getByTestId('web-preview-session-label')
-    expect(label).toHaveTextContent('Opened from this chat')
-    expect(label).toHaveTextContent('panel-1234abcd')
-    expect(label.textContent).not.toMatch(/this chat's browser/i)
-    // Nor anywhere else in the panel: the claim must not survive by moving.
-    expect(document.body.textContent).not.toMatch(/this chat's browser/i)
-  })
-
-  it('the padlock hint is one sentence and stays dismissed in this browser once dismissed', async () => {
-    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    await screen.findByTitle('Live browser session')
-    const hint = screen.getByTestId('web-preview-padlock-hint')
-    // One sentence: no second full stop before the end.
-    expect(hint.textContent?.trim().replace(/\.$/, '')).not.toMatch(/\.\s/)
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
-    // Another chat, or a reload: the dismissal is remembered per browser.
-    unmount()
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
-    submit('example.com')
-    await screen.findByTitle('Live browser session')
-    expect(screen.getByTestId('web-preview-session-name').textContent).toBe('panel-1234abcd')
-    expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
-  })
-
-  it('names the session to pick only when the framed dashboard did not attach', async () => {
-    // The gateway says whether the auto-attach happened. When it did not, the
-    // reader is looking at the frame's session grid with no page, so one line
-    // names the session to click; when it did, nothing extra is said.
-    openInBrowser.mockResolvedValue({ ...OPENED('https://google.com/'), attached: false })
-    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    await screen.findByTitle('Live browser session')
-    const line = screen.getByTestId('web-preview-pick-session')
-    expect(line.textContent).toContain('panel-1234abcd')
-    expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
-    unmount()
-    openInBrowser.mockResolvedValue({ ...OPENED('https://google.com/'), attached: true })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
-    submit('google.com')
-    await screen.findByTitle('Live browser session')
-    expect(screen.queryByTestId('web-preview-pick-session')).toBeNull()
-    expect(screen.getByTestId('web-preview-padlock-hint')).toBeInTheDocument()
-  })
-
-  it('shows an opening state while the gateway launches the browser', async () => {
-    let resolve!: (v: unknown) => void
-    openInBrowser.mockImplementation(() => new Promise(r => { resolve = r }))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('https://example.com/')
-    expect(await screen.findByText('Opening in the browser…')).toBeInTheDocument()
-    expect(screen.getByText('https://example.com/')).toBeInTheDocument()
-    await act(async () => { resolve(OPENED('https://example.com/')) })
-    await screen.findByTitle('Live browser session')
-    expect(screen.queryByText('Opening in the browser…')).toBeNull()
-  })
-
-  it('keeps a loopback dev server on the iframe path and never calls the launcher', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('localhost:8080')
-    const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
-    expect(openInBrowser).not.toHaveBeenCalled()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-  })
-
-  it('renders the gateway’s own error text verbatim when the CLI fails, never a blank frame', async () => {
-    const text = 'Error: Daemon pid=1467353: Daemon process exited with code 1\n'
-      + 'Chromium sandboxing failed!\n'
-      + 'No usable sandbox! If you want to live dangerously and need an immediate workaround, you can try using --no-sandbox.\n\n'
-      + 'Chromium could not start because this host cannot run its sandbox. Kiro Crew never disables the sandbox by default. '
-      + 'To accept that trade-off on this host, point PLAYWRIGHT_MCP_CONFIG in the gateway\'s environment at your own playwright-cli config.'
-    openInBrowser.mockResolvedValue({ ok: false, session: 'panel-1234abcd', error: text, view: RUNNING })
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('google.com')
-    expect(await screen.findByText("Couldn't open this page in the browser")).toBeInTheDocument()
-    // The CLI's words, exactly — a catalog key could only drop the cause or
-    // assert one the gateway did not give.
-    const notice = screen.getByTestId('web-preview-launch-error')
-    expect(notice.textContent).toContain('No usable sandbox!')
-    expect(notice.textContent).toContain('PLAYWRIGHT_MCP_CONFIG')
-    // Not the dev-server copy, and nothing framed.
-    expect(screen.queryByText('Preview server not reachable')).toBeNull()
-    expect(screen.queryByTitle('Web preview')).toBeNull()
-    expect(screen.queryByTitle('Live browser session')).toBeNull()
-    // Retry re-submits the same URL; the notice's own dismiss clears the card.
-    // One action in the row -- the third and later would need an overflow.
-    const actions = screen.getByText('Try again').closest('button') as HTMLButtonElement
-    expect(actions).not.toBeNull()
-    fireEvent.click(actions)
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledTimes(2))
-    expect(openInBrowser).toHaveBeenLastCalledWith('https://google.com/', 'sess-1')
-    fireEvent.click(await screen.findByLabelText('Dismiss'))
-    expect(screen.queryByText("Couldn't open this page in the browser")).toBeNull()
-  })
-
-  it('reports a transport failure of the launcher request', async () => {
-    openInBrowser.mockRejectedValue(new Error('url must be http(s) with a host and no credentials'))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('https://example.com/')
-    expect(await screen.findByText("Couldn't open this page in the browser")).toBeInTheDocument()
-    expect(screen.getByTestId('web-preview-launch-error').textContent)
-      .toContain('url must be http(s) with a host and no credentials')
-  })
-
-  it('refuses a ?query or #fragment URL before the round trip as a plain hint pointing at the frame\'s own address bar', async () => {
-    // The gateway refuses these shapes (argv is readable by same-host accounts),
-    // so the panel does not even ask. Nothing failed, so this is a validation
-    // hint in plain text — not an ErrorNotice, no alert role — that says where
-    // such a link goes.
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('https://example.com/search?q=hello')
-    const hint = await screen.findByTestId('web-preview-launch-refused')
-    expect(openInBrowser).not.toHaveBeenCalled()
-    expect(hint.textContent).toMatch(/frame's own address bar/)
-    expect(hint.textContent).toMatch(/padlock/)
-    expect(screen.queryByTestId('web-preview-launch-error')).toBeNull()
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.queryByText("Couldn't open this page in the browser")).toBeNull()
-    // Nothing to retry: the same address would be refused again.
-    expect(screen.queryByText('Try again')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByTestId('web-preview-launch-refused')).toBeNull()
-    submit('https://example.com/docs#install')
-    expect(await screen.findByTestId('web-preview-launch-refused')).toBeInTheDocument()
-    expect(openInBrowser).not.toHaveBeenCalled()
-    // A plain address still goes through.
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    submit('https://example.com/docs')
-    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('https://example.com/docs', 'sess-1'))
-  })
-
-  it('a loopback dev-server URL with a query keeps the iframe path (the refusal is the launcher\'s)', async () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('http://localhost:5173/app?tab=2')
-    const frame = await screen.findByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toContain('tab=2')
-    expect(openInBrowser).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('web-preview-launch-error')).toBeNull()
-  })
-
-  it('shows the gateway reason for an invalid_url refusal such as URL credentials', async () => {
-    // Query/fragment data is caught locally, but userinfo reaches the gateway's
-    // independent validator. Its reason must name credentials rather than send
-    // the reader looking for query/hash punctuation that is not present.
-    const { ApiError } = await import('../api/client')
-    openInBrowser.mockRejectedValue(new ApiError(
-      400,
-      'url must be http(s) with a host and no credentials, query, or fragment (a secret in the URL would leak via argv)',
-      JSON.stringify({ error: 'url must be http(s) with a host and no credentials, query, or fragment (a secret in the URL would leak via argv)', code: 'invalid_url' }),
-    ))
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    submit('http://user:pass@example.com/')
-    // A request went out and was rejected, so this one IS an error surface.
-    const card = await screen.findByTestId('web-preview-launch-error')
-    expect(card.textContent).toMatch(/no credentials, query, or fragment/)
-    expect(card.textContent).not.toMatch(/frame's own address bar/)
-    expect(screen.queryByTestId('web-preview-launch-refused')).toBeNull()
-    expect(screen.queryByText('Try again')).toBeNull()
-  })
-
-  it('adds no second address bar over the CLI view (its own chrome carries navigation)', async () => {
-    getBrowserView.mockResolvedValue(RUNNING)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const frame = await screen.findByTitle('Live browser session')
-    // The framed dashboard has its own URL bar, tab bar and remote input; a
-    // panel-level bar beside it would be a second, disagreeing address bar.
-    // Only the (hidden) preview subtree's URL field exists.
-    expect(screen.getAllByRole('textbox', { hidden: true })).toHaveLength(1)
-    expect(frame.parentElement?.lastElementChild).toBe(frame)
-  })
-
-  it('explains an unreachable view (gateway loopback, no forward) instead of framing a dead page', async () => {
-    vi.useFakeTimers()
-    // The gateway says running — it is, from where IT stands — but from this
-    // browser the loopback URL refuses to connect: a laptop on a tunnel without
-    // a forward for the view's port.
-    const fetchMock = vi.fn(async (input: unknown) => {
-      if (String(input).startsWith('http://127.0.0.1:45613')) throw new Error('refused')
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    getBrowserView.mockResolvedValue(RUNNING)
-    try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
-      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-      // Two failed probes (immediate + one interval) ⇒ the frame yields to the
-      // explanation, which names the URL and the setting that fixes it.
-      await act(async () => { await vi.advanceTimersByTimeAsync(11000) })
-      // Rendered through the shared error surface, naming the URL and the
-      // setting that fixes it.
-      const notice = screen.getByTestId('web-preview-view-unreachable')
-      expect(notice).toHaveAttribute('role', 'alert')
-      expect(notice.textContent).toContain("Browser view can't be reached from this browser")
-      expect(notice.textContent).toMatch(/pin the view's port/)
-      expect(screen.getByText('http://127.0.0.1:45613/')).toBeInTheDocument()
-      expect(screen.getByText('dashboard.browser_view_port')).toBeInTheDocument()
-      expect(screen.queryByTitle('Live browser session')).toBeNull()
-      expect(screen.queryByTestId('web-preview-padlock-hint')).toBeNull()
-      // The header dot says what THIS browser sees: not green beside this card.
-      expect(screen.getByTestId('web-preview-view-dot').style.backgroundColor).toBe('var(--danger)')
-      // The view comes within reach (the forward is up) → a retry restores the frame.
-      fetchMock.mockImplementation(async () => undefined)
-      fireEvent.click(screen.getByText('Try again'))
-      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
-      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
-    } finally {
-      vi.useRealTimers()
-      vi.unstubAllGlobals()
-    }
-  })
-})
-
-describe('WebPreviewPanel — native transport keeps its own path for external hosts', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
-    class RO { observe() {} unobserve() {} disconnect() {} }
-    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RO
-  })
-  afterEach(() => {
-    delete (window as unknown as { browserAPI?: unknown }).browserAPI
-    vi.unstubAllGlobals()
-  })
-
-  it('sends an external host to the native view, not to the gateway launcher', async () => {
-    const open = vi.fn(async (_p: string, u: string) => ({ open: true, visible: true, url: u, bounds: null }))
-    ;(window as unknown as { browserAPI?: unknown }).browserAPI = {
-      open,
-      navigate: vi.fn(async (_p: string, u: string) => ({ open: true, visible: true, url: u, bounds: null })),
-      setBounds: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
-      setOverlayActive: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
-      close: vi.fn(async () => ({ open: false, visible: false, url: '', bounds: null })),
-      setInactive: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
-      getState: vi.fn(async () => ({ open: false, visible: true, url: '', bounds: null })),
-      setAgentAct: vi.fn(async () => ({ ok: true })),
-      setControlOwner: vi.fn(async (_p: string, owner: string) => ({ owner, changed: true })),
-      onDidNavigate: vi.fn(() => () => {}),
-      onTitleUpdated: vi.fn(() => () => {}),
-    }
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    const input = screen.getByLabelText('Preview URL')
-    fireEvent.change(input, { target: { value: 'google.com' } })
-    fireEvent.submit(input.closest('form') as HTMLFormElement)
-    await waitFor(() => expect(open).toHaveBeenCalledWith('sess-1', 'https://google.com/'))
-    expect(openInBrowser).not.toHaveBeenCalled()
-  })
-})

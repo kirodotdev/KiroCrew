@@ -244,16 +244,32 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
     # sandboxed process.
     _MD_NOTEBOOK_STAGING_LEAF,
-    # Browser session material. The extension token reaches the CLI through the
-    # environment, never by ``open()``, so masking the file costs nothing; the other
-    # four are retired leaves with no reader left in the tree. The LIVE browser paths
-    # (``browser-state``, ``playwright-snapshots``, ``pw``, ``playwright-cli-config.json``)
-    # are deliberately absent from the sensitive list and stay fully visible.
+    # Browser session material an earlier version's browser CLI wrote: a storage
+    # state (cookies), its extension token and three retired markers. No reader is
+    # left in the tree, and nothing creates them any more; they stay masked because
+    # a file left on disk from that version still holds the owner's sessions. The
+    # live browser paths are the Harness leaves below; ``browser-snapshots`` (the
+    # agent's own screenshots) is deliberately visible.
     "browser-cookies.txt",
     "playwright-storage-state.json",
     "playwright-extension-token",
     "browser-mode-enabled",
     "browser-engine",
+    # Browser Harness's runtime directory (``browser_harness.supervisor.IPC_LEAF``):
+    # the daemon's Unix socket (or, on Windows, the port file carrying the IPC
+    # token), its pid file, log and screenshot temp. Whoever can open the socket
+    # can issue raw CDP to the user's own Chrome -- every tab, every cookie -- so
+    # no sandboxed process may see it; the gateway is the only client. Masked as
+    # a whole DIRECTORY so the token and the socket are covered at every name,
+    # and in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because it is created on the
+    # first connect, i.e. absent at the first spawn.
+    "browser-harness-ipc",
+    # Kiro's Chromium profile (``browser_harness.supervisor.PROFILE_LEAF``). A
+    # takeover login leaves its cookies here, and the agent must not read them as
+    # a file: the only path to a logged-in page is the live browser, where the
+    # ``type`` op refuses password fields and the frame masks them. Same
+    # first-launch creation, same precreate entry.
+    "browser-profile",
     # Cross-session state whose authorization model is "a session reaches only its own",
     # enforced by the HTTP routes. Every legitimate reader goes through the gateway, so
     # OS-masking closes the sideways path without touching a live consumer.
@@ -261,6 +277,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The conductor work ledger: a worker's full file toolset must not reach any
     # conductor's records except through the routes that check its binding.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): each chat's recorded
+    # frames and steps, logged-in pages included. Read only through the owner-only
+    # replay routes, which a sandboxed ``open()`` would skip.
+    "browser-recordings",
     # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
     # The design treats the crew log as the authority a conductor reads instead of
     # re-deriving, so an in-sandbox process able to write here could forge an
@@ -570,15 +590,18 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # what keeps the switch the owner's regardless of how a command spells the
     # way there.
     "credential_redaction.json",
-    # The browser launcher and its vendored Node package tree. Agent browser
-    # commands must read and execute this directory, while a write would choose
-    # the binary the unsandboxed gateway executes during startup reclamation or
-    # an owner address-bar launch. The gateway installer runs outside the agent
-    # sandbox, so it can still replace the managed copy.
-    "playwright-cli",
+    # The Browser Harness prefix (``browser_harness.install.PREFIX_LEAF``): the
+    # venv whose interpreter the unsandboxed gateway EXECUTES for the daemon and
+    # the helper worker, plus Kiro's Chromium beside it. A write would choose the
+    # code the gateway runs with the user's whole Chrome on the other end, so it is
+    # sealed; the installer runs in the gateway, outside the sandbox, and can
+    # still replace it. READONLY rather than hidden because a hidden EMPTY bind
+    # over an installed prefix would read as "engine absent" to any in-sandbox
+    # status probe, while a seal keeps the truth visible and only the write denied.
+    "browser-harness",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
-    # class as ``playwright-cli``: a sandboxed KAS process must read and execute
+    # class as ``browser-harness``: a sandboxed KAS process must read and execute
     # this directory, while a write would choose the code every later KAS
     # session runs. ``kirocrew kas install`` runs in the gateway, outside the
     # sandbox, so it can still lay down a new version.
@@ -591,7 +614,7 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # rewritten ``fargate.image`` turns the owner's next launch into credential
     # delivery to an image the owner never chose. The digest rule constrains the
     # reference's FORM, not who owns the registry, so it is no obstacle. Same
-    # both-layers treatment ``playwright-cli`` gets, for the reason the READONLY note
+    # both-layers treatment ``browser-harness`` gets, for the reason the READONLY note
     # gives: ``is_sensitive_write_path`` covers the leaf on the file-tool path, while
     # a sandboxed shell's ``open(..., "w")`` reaches it however the write is spelled,
     # and only a kernel denial holds there. Nothing in the product writes this file at
@@ -628,7 +651,7 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # a writable child could plant the launcher a later session executes.
     #
     # On the precreate and no-follow lists above as well, for the same two reasons
-    # ``playwright-cli`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
+    # ``browser-harness`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
     # them stays WRITABLE in-sandbox until pi first runs, and the mounted NAME has to
     # stay the real directory because the gateway later execs out of it. Those lists are
     # walked identically for every backend and carry no per-adapter branch, so an
@@ -935,6 +958,12 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # one lazily to avoid a load-time cycle, so importing its constant here would
     # close the cycle from the other side. The seal lists above spell it the same way.
     "pi-gate",
+    # The Browser Harness prefix. Holds no credential, and withheld for REACH the
+    # way ``pi-gate`` is: the only process that executes anything out of it is the
+    # gateway, so no harness's child needs to read it, and a leaf no child needs is
+    # a leaf no child should get. The read-only and no-follow seals still stop any
+    # child replacing what the gateway execs.
+    "browser-harness",
     # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
     # (not an enforced harness's) starts the launcher that reads them.
     "kas-mcp-launch",
@@ -964,12 +993,11 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
     # foreign child that reads it learns nothing.
     "app-agent-launch",
-    # The browser launcher an agent browser command must read and execute. The only
+    # The KAS engine bundle a sandboxed KAS process must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
-    # what an enforced child can open; the rest are already outside the mask.
-    "playwright-cli",
-    # The KAS engine bundle a sandboxed KAS process must read and execute. The
-    # second entry the read gate also fences, for the same reason as the first.
+    # what an enforced child can open; the rest are already outside the mask. (The
+    # Browser Harness prefix is NOT here: no sandboxed process runs it -- the
+    # gateway does -- so a child needs no read of it; see ``_CREW_CHILD_WITHHELD_LEAVES``.)
     "engines",
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.

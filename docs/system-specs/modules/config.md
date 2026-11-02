@@ -1753,8 +1753,7 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
-  two people's DMs), and unset (`0`) for a malformed or out-of-range
-  `dashboard.browser_view_port` (never a port nobody named).
+  two people's DMs).
 - `None` for an out-of-domain `resource_limits` value, and `local` for a retired
   `stt.provider` (the recogniser that user already had).
 - The sentinel a clamp lands on, among them automatic for a negative
@@ -3379,6 +3378,13 @@ class SkillsConfig:
     max_triggered: int = 0         # max skills loaded per message (>=0)
     lazy_load: bool = True         # true (default) = bounded usage-ranked index with paths and a families line; false = short eight-name skill_search entry; neither expands background admission
     # ... auto_create_from_sessions / auto_refine_on_deviation / extra_paths
+
+@dataclass
+class BrowserConfig:               # config/sections_browser.py; Settings -> Browser writes it via PATCH /api/config/kirocrew
+    choice: str = "auto"           # "auto" | "user_chrome" | "kiro_chromium" | "headless"; any other value reads as "auto" with one warning per process (browser_choice_resolution)
+    live: BrowserLiveConfig        # enabled=True, quality="auto"|"high"|"medium"|"low", max_fps=60 (15|30|60; a digit string is accepted; a bool or junk reads as 60), mask_passwords=True; the screencast reads them when a stream starts
+    credentials: BrowserCredentialsConfig  # enabled: bool | None = None (None follows the edition provider's default), domains: list[str] = [] (lowercase host names, at most 64; [] follows the provider's default); read by the supervisor at each Kiro Chromium start and before each agent navigation
+    # The Preview tab's allowlist is dashboard.browser_local_origins (DashboardConfig): PATCH-editable as a str_list of at most BROWSER_LOCAL_ORIGINS_MAX (32) `host:port` loopback entries matching BROWSER_LOCAL_ORIGIN_PATTERN; the loader's coerce_browser_local_origins drops anything else and caps the list at the same count.
 
 @dataclass
 class TelemetryConfig:

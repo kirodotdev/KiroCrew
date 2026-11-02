@@ -353,8 +353,6 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(AcpClient, "_drain_stderr", side_effect=_drain),
             patch.object(AcpClient, "_prepare_spawn_workspace", return_value=None),
             patch.object(AcpClient, "_resolve_session_mcp_servers", return_value=[]),
-            patch.object(client_mod, "browser_session_env", return_value={}),
-            patch.object(client_mod, "browser_socket_env", return_value={}),
             patch.object(client_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(client_mod, "_get_child_pids", return_value=[]),
             # A per-process temp root the sandbox masks, so every harness that does
@@ -654,8 +652,6 @@ def _capture_runtime_served(
                 side_effect=_windows_cleanup_passthrough,
             ),
             patch.object(runtime_mod, "_forward_ssh_auth_sock", return_value=False),
-            patch.object(runtime_mod, "browser_session_env", return_value={}),
-            patch.object(runtime_mod, "browser_socket_env", return_value={}),
             patch.object(runtime_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(runtime_mod, "resolve_krb5_ccname", return_value=None),
             # A real scratch dir under ``tmp_path`` (see

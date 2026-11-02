@@ -65,7 +65,6 @@ workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
 log                     Gateway log stream (broad)
-browser                 browser_event (broad)
 
 ## Scope declarations are SELF-declared
 
@@ -486,7 +485,6 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
-    "browser_event": "browser",
 }
 
 

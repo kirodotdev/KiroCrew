@@ -818,7 +818,7 @@ def test_no_documented_cli_pin_is_below_the_declared_cutoff() -> None:
             f"{guide.name} states {floor_text}"
         )
 
-    # `playwright-cli.sh --version` is a different installer on its own version
+    # a different installer script's `--version` is on its own version
     # line, so the lookbehind keeps `-cli.sh` suffixes out of the scan.
     invocation = re.compile(r"(?<![\w.-])cli\.sh\b")
     pin = re.compile(r"--version[= ]([0-9]+(?:\.[0-9]+)+)")

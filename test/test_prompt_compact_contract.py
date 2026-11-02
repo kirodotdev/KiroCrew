@@ -324,49 +324,27 @@ def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
         assert token in skill, token
 
 
-def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None:
+def test_browser_keeps_the_gate_takeover_and_ref_rules() -> None:
     browser = _section(_read(), "## Browser")
-    groups = browser.split("Four groups still prompt", 1)[1].split("\n\n", 1)[0]
-    for token in (
-        "eval",
-        "run-code",
-        "upload",
-        "state-load",
-        "state-save <name>",
-        "--filename",
-        "installers",
-        "cookie-list",
-        "cookie-get",
-        "localStorage",
-        "sessionStorage",
-        "requests",
-        "header/body",
-        "close",
-        "tab-close",
-        "close-all",
-        "kill-all",
-        "delete-data",
-        "set",
-        "delete",
-        "clear",
-        "loopback",
-        "localhost",
-        "private range",
-    ):
-        assert token in groups
-    _require(groups, r"let the user approve; do not rewrite.*dodges the prompt", r"prefer `detach`")
     _require(
         browser,
-        r"PUBLIC http\(s\).*refused",
+        r"Public http\(s\) URLs only",
+        r"loopback, private or link-local address are refused",
+        r"Local preview origins.*never add one yourself",
         r"does not RESOLVE DNS",
-        r"Fall back.*only when.*browser.*tells you",
-        r"never `close`.*windows",
-        r"After navigating, reloading.*fresh `snapshot`",
-        r"assume sharing.*ONE distinct.*EVERY command",
-        r"do not pass `--filename`",
+        r"Refs die with the page",
+        r"after navigating, going back, or a click that changes the page.*fresh `snapshot`",
+        r"Passwords are never yours to type",
+        r"`type` refuses a password field",
+        r"take over.*hand the browser back",
+        r"next op simply waits until they hand back",
+        r"`screenshot` writes a PNG and returns its absolute path",
+        r"policy denial.*is final",
+        r"Subagents.*share the parent's session browser",
     )
-    for token in ("PLAYWRIGHT_CLI_SESSION", "PLAYWRIGHT_MCP_OUTPUT_DIR", "-s=<name>"):
+    for token in ("navigate", "snapshot", "click", "drag", "scroll", "type", "tabs", "web-browse"):
         assert token in browser
+    assert "playwright" not in browser.lower()
 
 
 def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:

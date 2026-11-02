@@ -20,17 +20,12 @@ const SHELL_HANDLES = [
   "app-menu:items",
   "browser:annotate",
   "browser:close",
-  "browser:control",
-  "browser:get-control",
   "browser:get-state",
   "browser:navigate",
   "browser:open",
-  "browser:set-agent-act",
   "browser:set-bounds",
-  "browser:set-control-owner",
   "browser:set-inactive",
   "browser:set-overlay",
-  "browser:track-session",
   "close-action:get",
   "close-action:set",
   "crash-reports:get",
@@ -526,13 +521,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 45);
+  assert.equal(h.handlers.size + h.listeners.size, 40);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 46);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 41);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -615,11 +610,6 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["browser:set-inactive", "setInactive", ["panel", false]],
     ["browser:close", "close", ["panel"]],
     ["browser:get-state", "getState", ["panel"]],
-    ["browser:track-session", "trackSession", ["panel", true]],
-    ["browser:set-agent-act", "setAgentAct", ["panel", false]],
-    ["browser:set-control-owner", "setControlOwner", ["panel", "agent"]],
-    ["browser:get-control", "getControl", ["panel"]],
-    ["browser:control", "control", ["panel", "click", { x: 4 }]],
     ["browser:annotate", "annotate", ["panel", "poll", {}]],
   ];
   for (const [channel, owner, args] of browserCases) {

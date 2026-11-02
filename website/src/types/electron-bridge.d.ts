@@ -214,10 +214,6 @@ declare global {
     setInactive: (panelId: string, inactive: boolean) => Promise<NativeBrowserState | null>
     close: (panelId: string) => Promise<NativeBrowserState | null>
     getState: (panelId: string) => Promise<NativeBrowserState | null>
-    setAgentAct: (panelId: string, enabled: boolean) => Promise<{ ok: boolean } | null>
-    setControlOwner: (panelId: string, owner: string) => Promise<unknown>
-    getControl: (panelId: string) => Promise<unknown>
-    control: (panelId: string, operation: string, args: unknown) => Promise<unknown>
     /** Element annotation on the native page. Optional: absent on a desktop
      *  shell older than the feature, which is what hides the button. */
     annotate?: (
@@ -231,8 +227,6 @@ declare global {
       | { ok: true; url?: string; title?: string }
       | null
     >
-    trackSession: (panelId: string, tracked: boolean) => Promise<unknown>
-    onAgentOpened: (cb: (event: NativeBrowserEvent) => void) => () => void
     onDidNavigate: (cb: (event: NativeBrowserEvent) => void) => () => void
     onTitleUpdated: (cb: (event: NativeBrowserEvent) => void) => () => void
   }

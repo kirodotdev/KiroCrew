@@ -80,7 +80,7 @@ def consented(tmp_path, monkeypatch):
 @pytest.fixture
 def answers(monkeypatch):
     """An oracle answering whichever tier the test last set."""
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     state = {"tier": "simple", "during_await": None}
 
@@ -91,7 +91,7 @@ def answers(monkeypatch):
                 hook()
             return {q.id: Answer(id=q.id, value=state["tier"], p=0.9) for q in questions}
 
-    monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _Oracle())
+    monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _Oracle())
 
     def _set(tier: str, during_await=None) -> None:
         state["tier"] = tier

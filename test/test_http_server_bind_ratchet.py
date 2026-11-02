@@ -36,7 +36,7 @@ _SKIP = frozenset(
     {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT}
 )
 
-_BASELINE_SITES = 15
+_BASELINE_SITES = 14
 
 
 def _lines_with_construction(text: str) -> list[int]:

@@ -50,7 +50,7 @@ from kiro_crew.runtime_ownership import (  # noqa: F401
     release_runtime_teardown,
     tenancy_epoch,
 )
-from kiro_crew.session_pid_harness import (
+from kiro_crew.session_pid_harness import (  # noqa: F401
     _is_managed_agent_process,
     _pid_cmdline,
     _work_orphan_basename,
@@ -60,7 +60,6 @@ from kiro_crew.session_pid_mappings import (
     _prune_stale_session_token_files,
 )
 from kiro_crew.session_pid_orphan_kill import (
-    _kill_orphan_browser_daemon,
     _kill_orphan_gatewayd,
     _kill_orphan_mcp_descendants,
     _orphan_descendants,
@@ -72,7 +71,6 @@ from kiro_crew.session_pid_orphan_scan import (
     _ORPHAN_SWEEP_MAX_KILLS,
     _accepted_subreaper_pids,
     _env_has_kirocrew_marker,
-    _is_sweepable_orphan_browser_daemon,
     _is_sweepable_orphan_gatewayd,
     _is_sweepable_orphan_mcp,
     _is_sweepable_orphan_work,
@@ -1170,31 +1168,6 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                     pid, cmdline, work_age, budget=_ORPHAN_SWEEP_MAX_KILLS - killed
                 )
                 continue
-            # Stranded browser daemon. Re-verify the FULL identity — argv
-            # shape, exec-time environ, live-owner probe and the age floor —
-            # immediately before signalling, so a PID recycled since the find
-            # phase cannot inherit the verdict.
-            daemon_age = _linux_pid_age(pid) if sys.platform == "linux" else 0.0
-            if _is_sweepable_orphan_browser_daemon(pid, cmdline, daemon_age):
-                live_token = _pid_start_token(pid)
-                if root_token is None or live_token is None or live_token != root_token:
-                    logger.debug(
-                        "Orphan browser sweep: skipping pid=%d — identity changed "
-                        "or unavailable before TERM (pre=%r post=%r)",
-                        pid,
-                        root_token,
-                        live_token,
-                    )
-                    continue
-                live_cmdline = _pid_cmdline(pid)
-                if not live_cmdline or live_cmdline != cmdline:
-                    logger.debug(
-                        "Orphan browser sweep: skipping pid=%d — cmdline changed "
-                        "or became unreadable before TERM",
-                        pid,
-                    )
-                    continue
-                killed += _kill_orphan_browser_daemon(pid, live_cmdline)
         except (
             ProcessLookupError,
             PermissionError,
@@ -1352,18 +1325,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _settle_retraction_leftover,
     )
     from kiro_crew.session_pid_orphan_kill import (  # noqa: F401
-        _BROWSER_DAEMON_TERM_GRACE_SECONDS,
         _GATEWAYD_TERM_GRACE_SECONDS,
         _pid_parent_and_token,
         _prune_from_orphan_walk,
         _sel_orphan_mcp_subtree_kill,
     )
     from kiro_crew.session_pid_orphan_scan import (  # noqa: F401
-        _BROWSER_DAEMON_ENTRY,
-        _BROWSER_PLAUSIBLE_OWNER_NAMES,
-        _BROWSER_PLAUSIBLE_OWNER_PREFIXES,
-        _BROWSER_SESSION_ENV,
-        _BROWSER_SESSION_PREFIX,
         _GATEWAY_MARKERS,
         _GATEWAYD_MODULE,
         _MARKED_MCP_LAUNCHER_MARKERS,
@@ -1375,17 +1342,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX,
         _SANDBOX_LAUNCHER_MARKER,
         _XDIST_BOOTSTRAP,
-        _browser_daemon_session_arg,
-        _browser_process_name_is_plausible,
-        _browser_session_owner_alive,
-        _browser_sweep_decision,
         _env_is_sandbox_tool,
         _env_spawn_home,
         _env_spawn_instance,
         _env_value,
         _gatewayd_socket_arg,
         _is_agent_runtime_anchor,
-        _is_generated_browser_session,
         _is_marked_mcp_launcher,
         _is_marked_sandbox_credential_helper,
         _is_orphan_mcp,

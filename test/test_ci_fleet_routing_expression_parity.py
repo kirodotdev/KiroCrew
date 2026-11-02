@@ -171,7 +171,6 @@ _PERMANENT_EXCEPTIONS = {
     # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
     # was rejected. Neither fires on a pull request or declares merge_group.
     ("merge-queue-ruleset.yml", "check"),
-    ("playwright-cli-banner.yml", "check"),
     # The same no-actor reason, reached by a workflow_run completion rather than a
     # schedule: the event names the finished run, never a collaborator. It takes
     # the group by LABEL, not `group:`, because the trigger carries no
@@ -238,9 +237,6 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
     ("fix-loop-analysis.yml", "analyze"): (
-        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
-    ),
-    ("playwright-cli-banner.yml", "check"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
     ("ship-report.yml", "report"): (

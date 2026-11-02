@@ -415,7 +415,6 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
 from kiro_crew.atomic_write import atomic_write  # noqa: F401
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS  # noqa: F401
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation  # noqa: F401

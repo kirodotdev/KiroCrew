@@ -702,13 +702,6 @@ class DashboardState:
         self._refine_error: str = ""
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
-        self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
-        self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        # The one browser install job (browser_cli.install_job.BrowserInstallJob)
-        # and the InstallScope owning its subprocesses. In memory only: a gateway
-        # start has no job, so a "running" state never outlives its process.
-        self._browser_install_job: Any = None
-        self._browser_install_scope: Any = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
@@ -741,8 +734,8 @@ class DashboardState:
         self._prevent_sleep_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Drops the inhibitor's pre-exec stop; run by the cleanup hook.
         self._prevent_sleep_unregister: Callable[[], None] | None = None
-        # Drops the browser view's pre-exec stop; run by its cleanup hook.
-        self._browser_view_unregister: Callable[[], None] | None = None
+        # Drops the Browser Harness supervisor's pre-exec stop; run by its cleanup hook.
+        self._browser_harness_unregister: Callable[[], None] | None = None
 
         # Knowledge Library
         self._knowledge_store: "KnowledgeStore | None" = None  # Lazy-initialized on first access
@@ -1230,6 +1223,7 @@ class DashboardState:
     broadcast_ws = _slots_push.broadcast_ws
     broadcast_context_usage = _slots_push.broadcast_context_usage
     deliver_ws_owners = _slots_push.deliver_ws_owners
+    deliver_ws_owners_bytes = _slots_push.deliver_ws_owners_bytes
     broadcast_ws_owners = _slots_push.broadcast_ws_owners
     ws_client_count = _slots_push.ws_client_count
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
@@ -1240,7 +1234,6 @@ class DashboardState:
     fold_watch_routing = _slots_push.fold_watch_routing
     fold_apply_watch = _slots_push.fold_apply_watch
     add_fold_watch_listener = _slots_push.add_fold_watch_listener
-    broadcast_browser_event = _slots_push.broadcast_browser_event
     register_ws = _slots_push.register_ws
     send_members_subscribed = _slots_push.send_members_subscribed
     unregister_ws = _slots_push.unregister_ws

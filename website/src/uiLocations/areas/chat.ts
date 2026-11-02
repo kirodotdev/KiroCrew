@@ -248,25 +248,27 @@ export const LOCATIONS = {
       requires: [{ kind: 'shown_by', location: 'chat.side-panel-open', when: 'side_panel_closed' }],
     }],
   },
-  // The "+" menu's Browser row: opens the built-in browser view as a panel tab
-  // (WebPreviewPanel), where a person watches and drives the agent's browser.
-  // The empty panel's launcher grid offers the same view; not registered.
+  // The "+" menu's Preview row: opens the Preview tab (WebPreviewPanel), a
+  // sandboxed frame of a local dev server the person runs. Only the origins in
+  // `dashboard.browser_local_origins` open there; the agent never drives it, and
+  // its own browser is the live card in the chat. The empty panel's launcher
+  // grid offers the same view; not registered.
   'chat.side-panel.browser': {
     kind: 'menu-item',
     terms: {
       en: [
-        'built-in browser', 'browser panel', 'browser view', 'open the browser', 'watch the agent browse',
-        'see the web page the agent opened', 'open a web page in the dashboard',
+        'preview tab', 'local preview', 'preview my dev server', 'open localhost in the dashboard',
+        'see my vite dev server', 'preview a local web server',
       ],
-      'zh-CN': ['内置浏览器', '浏览器面板', '浏览器视图', '打开浏览器', '看助手浏览网页', '仪表盘里打开网页'],
-      ja: ['内蔵ブラウザ', 'ブラウザパネル'],
-      ko: ['내장 브라우저', '브라우저 패널'],
-      es: ['navegador integrado', 'panel del navegador'],
-      fr: ['navigateur intégré', 'panneau du navigateur'],
-      de: ['integrierter Browser', 'Browserbereich'],
-      pt: ['navegador integrado', 'painel do navegador'],
-      it: ['browser integrato', 'pannello del browser'],
-      ru: ['встроенный браузер', 'панель браузера'],
+      'zh-CN': ['预览标签', '本地预览', '预览我的开发服务器', '仪表板里打开 localhost'],
+      ja: ['プレビュータブ', 'ローカルプレビュー'],
+      ko: ['미리보기 탭', '로컬 미리보기'],
+      es: ['pestaña de vista previa', 'vista previa local'],
+      fr: ['onglet aperçu', 'aperçu local'],
+      de: ['Vorschau-Tab', 'lokale Vorschau'],
+      pt: ['aba de pré-visualização', 'pré-visualização local'],
+      it: ['scheda anteprima', 'anteprima locale'],
+      ru: ['вкладка предпросмотра', 'локальный предпросмотр'],
     },
     placements: [{ surface: 'chat', parent: 'chat.side-panel.add', entry: 'menu' }],
   },

@@ -195,3 +195,9 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @import "./styles/highlights-and-page-zoom.css";
 @import "./styles/liquid-glass.css";
 @import "./styles/content-fit.css";
+
+/* The live browser card in the person's control sets the pinned-prompt band aside
+   (pages/chat/browserLiveClearance.ts); it keeps its box, so nothing reflows. */
+html[data-browser-live-takeover] [data-pinned-prompt-band] {
+  visibility: hidden !important;
+}
