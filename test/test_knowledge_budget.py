@@ -1016,7 +1016,8 @@ class TestBackgroundDeferralStaysRetryable:
         findings = str(tmp_path / "findings.md")
         store = KnowledgeStore(str(tmp_path / "k.db"))
         try:
-            sid = publication._add_source_marked_syncing(store, "Research: q", findings)
+            sid, created = publication._add_source_marked_syncing(store, "Research: q", findings)
+            assert created
             pipeline = SimpleNamespace(ingest_file=AsyncMock(
                 side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60)))
 
