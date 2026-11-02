@@ -5,9 +5,9 @@ All notable changes to KiroCrew are documented in this file.
 ## [0.12.0] - 2026-11-01
 
 Mates (a working name, final name TBD) are now on for everyone, two more
-coding agents join the harness list, and a new Explore panel shows what to try
-next. Chat, the sidebar and notifications pick up many small controls, and
-Ultra Mode arrives as a preview you can switch on.
+coding agents join the harness list, and chat, the sidebar and notifications
+pick up many small controls. Ultra Mode and a new Explore panel arrive as
+previews you can switch on.
 
 ### Mates for everyone (name TBD)
 
@@ -33,11 +33,8 @@ Ultra Mode arrives as a preview you can switch on.
 - **Chat commands on KAS**: `/model`, `/tools` and `/mcp` work again on the
   default KAS backend, and `/model <id>` switches the model like the picker.
 
-### Explore and settings
+### Settings and themes
 
-- **Explore**: the "Explore" pill in the top bar opens a list of features you
-  have tried and not yet tried, and a new chat shows a "Try today" card; turn both
-  off at Settings > Display > Explore.
 - **Developer settings for everyone**: Developer Mode is gone, so Settings >
   Developer always shows Feature Previews, Logs, System, Telemetry, Storage, MCP
   Management, Memory, Config and Debug tools, and Feature Previews switches are
@@ -116,6 +113,9 @@ Developer > Feature Previews and is off until you turn it on.
 - **Ultra Mode**: the "Ultra Mode" chip on a new chat runs it on a conductor
   that hands each task to its own worker chat, and the side panel's Board tab
   shows the crew by what needs you, with a catch-up message when you come back.
+- **Explore**: the "Explore" pill in the top bar opens a list of features you
+  have tried and not yet tried, and a new chat shows a "Try today" card; once
+  the preview is on, turn both off at Settings > Display > Explore.
 - **Agent harness per mate (name TBD)**: a mate's profile gains an "Agent
   harness" row, so one mate can run on Claude Code while the rest stay on KAS.
 - **Session Environments**: Settings > Session Environments connects Coder,
@@ -130,9 +130,8 @@ instead of leaving the chat stuck on thinking, and a reply keeps its footer
 however the turn ends. Regenerate that ends empty keeps the previous reply, and
 sessions with only sub-agents running stay under the In progress filter.
 
-**Mates (name TBD) and channels.** Mates you created are listed even with an
-empty chat, and a mate stays silent when it has nothing to say. Slack replies
-post only the
+**Mates and channels.** Mates you created are listed even with an empty chat,
+and a mate stays silent when it has nothing to say. Slack replies post only the
 final answer, Slack Socket Mode works behind a SOCKS proxy, and the Atlassian
 connection's Jira and Confluence tools work again.
 
