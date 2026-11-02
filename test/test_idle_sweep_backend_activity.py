@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_update_provider import _UNALLOCATABLE_PID
 
-from kiro_crew.acp import runtime_reader_loop
+from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -317,7 +317,7 @@ class TestIdleSweep:
         self, manager, tmp_path, monkeypatch, manual_clock, method
     ):
         now = manual_clock.monotonic
-        monkeypatch.setattr(runtime_reader_loop, "time", SimpleNamespace(monotonic=now))
+        monkeypatch.setattr(acp_runtime, "time", SimpleNamespace(monotonic=now))
         rt, reader = _runtime(tmp_path)
         rt._pid = None
         rt._subagent_owner = "owner"

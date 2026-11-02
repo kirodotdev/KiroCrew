@@ -401,6 +401,9 @@ state are composed behind that facade:
   `session_lifecycle_parts/` owners below
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
+- `session_idle_clock.py` — `last_activity`, the bounded clock the idle scan
+  and its post-probe recheck read (see *Idle cleanup*); `session_cleanup.py`
+  imports it as `_last_activity`
 
 `SessionLifecycleService` is defined in `session_lifecycle.py`; its behaviour lives in
 the `session_lifecycle_parts/` owner modules, one responsibility each. A member's body is
@@ -1973,8 +1976,10 @@ against sweep completeness, and are torn down at `close_all`.
   expiration by at most one additional idle window. Beyond two windows since
   the last dispatched turn, passive traffic alone no longer prevents expiration
   on the next sweep. This bounds retention because frames can come from a
-  looping backend and do not establish finite work. Runtime stamps and sweep
-  reads use injectable `time.monotonic` clocks. Providers without a numeric
+  looping backend and do not establish finite work. The runtime stamps with
+  `time.monotonic()` in `acp/runtime_reader_loop.py`; the sweep reads
+  `SessionCleanupDeps.monotonic`, which `session.py` wires to the same clock.
+  Providers without a numeric
   stamp use `last_used` alone. Busy-turn, attached-subagent, pending-injection
   and harness-background launch guards apply independently on both axes; their
   work evidence is separate from the passive-frame clock. Ordinary session-tagged frames can

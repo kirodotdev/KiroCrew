@@ -30,6 +30,7 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.runtime_reconcile import build_reconciler
+from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -167,18 +168,6 @@ def _no_pending_injection(key: str) -> bool:
 def _no_background_launch(provider: LLMProvider) -> tuple[float, str] | None:
     """Default background-launch probe: no provider reports a launch."""
     return None
-
-
-def _last_activity(session: SessionEntry, timeout_secs: int) -> float:
-    """Backend frames grant at most one extra idle window.
-
-    Passive traffic is not proof of finite work. Capping its contribution keeps
-    a looping backend from retaining an unlocked session indefinitely.
-    """
-    at = getattr(getattr(session, "provider", None), "session_activity_at", None)
-    if isinstance(at, (int, float)) and not isinstance(at, bool):
-        return max(session.last_used, min(at, session.last_used + timeout_secs))
-    return session.last_used
 
 
 @dataclass(slots=True)
