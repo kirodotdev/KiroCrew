@@ -362,7 +362,6 @@ test/test_cron_message_cap.py
 test/test_cron_preview_cmd.py
 test/test_cron_script.py
 test/test_cron_sdk.py
-test/test_cron_skip_dates.py
 test/test_cron_slack_delivery.py
 test/test_cron_thread_routing.py
 test/test_cron_timezone_display.py
