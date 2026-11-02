@@ -9,8 +9,8 @@
  * rather than a Dev-Fleet-only second spelling of it.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import * as api from '../pages/devFleetApi'
-import { ApiError } from '../api/client'
+import * as api from './devFleetApi'
+import { ApiError } from '../../api/client'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -88,5 +88,20 @@ describe('devFleetApi namespaces', () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
     await api.post('/sync', {})
     expect(spy.mock.calls[0][0]).toBe('/apps/dev-fleet/api/sync')
+  })
+})
+
+describe('devFleetApi behind an interposed access proxy', () => {
+  const CHALLENGE_PAGE = '<!DOCTYPE html><html><body><h1>Access Required</h1>'
+    + '<p><a href="https://gate.example/login">Sign in</a></p></body></html>'
+
+  it('names the proxy rather than answering the bare status', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(CHALLENGE_PAGE, { status: 403, headers: { 'content-type': 'text/html; charset=UTF-8' } }),
+    )
+    const err = await failureOf(api.get('/state'))
+    expect(err.message).not.toMatch(/^HTTP 403$/)
+    expect(err.message).toMatch(/access proxy/i)
+    expect(err.edgeChallenge).toBe(true)
   })
 })

@@ -1,5 +1,5 @@
 /**
- * Dev Fleet — worktree management page ported to KiroCrew SPA.
+ * Dev Fleet — worktree management page ported to the Kiro Crew SPA.
  * Manages git worktrees, pod instances, syncing, pruning, and rebasing.
  *
  * This file is the page's import path. It keeps the page's state, effects and
@@ -15,22 +15,22 @@ import { useState, useRef, useCallback, useEffect, type CSSProperties, type Reac
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Card, CardTitle, Btn, EmptyState, ContentSkeleton, PageHeader, SearchInput, Badge,
-} from '../components/ui'
-import SimpleSelect from '../components/SimpleSelect'
-import InfoTip from '../components/InfoTip'
-import Modal from '../components/Modal'
-import Clickable from '../components/Clickable'
-import ErrorNotice from '../components/ErrorNotice'
+} from '../../components/ui'
+import SimpleSelect from '../../components/SimpleSelect'
+import InfoTip from '../../components/InfoTip'
+import Modal from '../../components/Modal'
+import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useNavigate } from 'react-router-dom'
-import { useAppDispatch } from '../store'
-import { addNotification } from '../store/notificationsSlice'
-import { setPendingInput } from '../store/chatSlice'
+import { useAppDispatch } from '../../store'
+import { addNotification } from '../../store/notificationsSlice'
+import { setPendingInput } from '../../store/chatSlice'
 import { Server, RefreshCw, ChevronRight, Trash2, LoaderCircle } from 'lucide-react'
 import * as api from './devFleetApi'
-import { ApiError } from '../api/client'
+import { ApiError } from '../../api/client'
 
-import { i18nT } from '../i18n/t'
-import { compareText } from '../i18n/format'
+import { i18nT } from '../../i18n/t'
+import { compareText } from '../../i18n/format'
 import {
   readDismissedUndoKey, persistDismissedUndoKey, POLL_MS, sleep, filterStepMarkers, syncFailureTail,
   _activeSyncPolls, awaitGatewayBackGlobal, type Worktree, type UndoTarget, type FleetData, type SyncRun,

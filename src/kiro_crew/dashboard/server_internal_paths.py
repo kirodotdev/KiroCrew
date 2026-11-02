@@ -2,12 +2,17 @@
 
 Which paths only internal processes may call (loopback plus ``X-Internal-Secret``),
 which the browser may also call, and the constants the deny-audit, CSRF and audit
-layers read with them. Pure data: ``kiro_crew.dashboard.server`` imports every name
+layers read with them. Pure data (a shipped built-in app's exact strict paths are
+data too, read from its host grants): ``kiro_crew.dashboard.server`` imports every name
 here and is the only module that does, so the server's binding is the one its owners
 read and the one a test rebinds.
 """
 
 from __future__ import annotations
+
+from kiro_crew.apps.builtin_host_grants import (
+    strict_internal_paths as _builtin_strict_internal_paths,
+)
 
 # Strict internal API paths — exact paths that ONLY internal processes
 # (mcp-core, doctor, cron) call, never the browser. Access requires loopback
@@ -97,32 +102,6 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
-        # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
-        # ``pod_restart`` / ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
-        # runs behind a sandbox with its own user namespace, so its shells cannot
-        # connect the systemd user bus every pod verb needs; the gateway holds the
-        # host bus and does the systemd part on the agent's behalf. Without these
-        # entries the tools 403: an agent has no dashboard cookie, the gateway
-        # mints its internal secret in-process and never puts it in an agent's
-        # env, and ``.local_secret`` is on the sensitive-path denylist.
-        #
-        # STRICT, not mixed: no browser calls these. The dashboard's own pod
-        # buttons go to the app backend through the ``/apps/dev-fleet/api/*``
-        # reverse proxy, which is a different surface with cookie auth. Each
-        # handler re-asserts loopback AND ``internal_auth`` itself, because a
-        # ``local_only=False`` deployment reclassifies strict paths as mixed —
-        # same reason ``/api/computer-use/frame`` re-asserts both.
-        #
-        # FIVE EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
-        # match is ``path == p or path.startswith(p + "/")``, so a prefix entry
-        # would silently admit every future route under that segment — and this
-        # app's neighbourhood includes worktree PRUNE and the Make Live cutover,
-        # which must never become reachable by holding the internal secret.
-        "/api/apps/dev-fleet/pod/up",
-        "/api/apps/dev-fleet/pod/restart",
-        "/api/apps/dev-fleet/pod/down",
-        "/api/apps/dev-fleet/pod/status",
-        "/api/apps/dev-fleet/pod/list",
         "/api/session-tool-policy",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
@@ -258,6 +237,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # never authorize this leaf.
         "/api/autonudge/session-monitor",
     }
+    # A shipped built-in app's own agent-facing routes, declared in its host grants
+    # (``strict_internal_paths``): leaf paths under that app's own namespace. The seam
+    # refuses any path outside it, so a built-in cannot claim a core route or another
+    # app's; each entry still admits its children here, so a row names leaf verbs only.
+    | _builtin_strict_internal_paths()
 )
 
 

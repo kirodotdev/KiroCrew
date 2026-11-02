@@ -5,7 +5,7 @@
  * verdict and status labels, the Switch back dismissal receipt and the small
  * formatters the rows use.
  */
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 
 const UNDO_DISMISSED_STORAGE_KEY = 'kc-dev-fleet-undo-dismissed'
 

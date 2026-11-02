@@ -1,6 +1,7 @@
 [
   "src/apps/aws-control/ConsoleView.test.tsx",
   "src/apps/aws-control/shared.test.tsx",
+  "src/apps/dev-fleet/DevFleetPage.test.tsx",
   "src/apps/papyrus/CoAuthorPanel.cov80.test.tsx",
   "src/components/FilePickerMenu.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
@@ -63,7 +64,6 @@
   "src/test/ConnectionsPage.coverage.test.tsx",
   "src/test/CrewCompanionPet.coverage.test.tsx",
   "src/test/DesignTweakHistoryCov80.test.tsx",
-  "src/test/DevFleetPage.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FolderConfigModal.test.tsx",

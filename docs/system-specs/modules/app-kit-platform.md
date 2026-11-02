@@ -4396,7 +4396,7 @@ change lands in its owner.
 | `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
 | `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), and the thread-waitable shutdown signal |
 | `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
-| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred Dev Fleet spawn |
+| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred spawn of every backend whose host grants ask for the bound port |
 
 Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 `provisioning`, `termination`, `stale_reap`, `registration`, `restart`, `supervision`,
@@ -4416,7 +4416,7 @@ reaches the call site in whichever owner makes the call. The mutable state is on
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
 through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEV_FLEET_DEFERRED` in
+one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
 `startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
@@ -4925,6 +4925,44 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_static.py`, `apps/routes_art.py`, `apps/routes_listing.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
+
+## 30. What a built-in asks of the host is the built-in's own data
+
+The core names no built-in app. Where a shipped built-in needs something from the host
+that no manifest field may ask for, the built-in declares it and the core reads it
+through one seam that is empty by default:
+
+- **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
+  a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
+  backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
+  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
+  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
+  `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
+  (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`
+  (`kiro_relay/limits._LOCAL_CREDENTIAL_EXACT`). The loader looks for the file on disk
+  before importing, so a built-in that grants nothing is never imported, and it reads
+  the rows once per process. A row may grant only its own app (`app` must be the
+  package's installed name), every path must sit under that app's own
+  `/api/apps/<app>/` or `/apps/<app>/` namespace and not end in `/` (the strict tier
+  also admits an entry's children, so a row names leaf verbs), and a forwarded variable must be a
+  `KIROCREW_*` name; a malformed row raises at load, so a grant cannot silently stop
+  applying. Only `BUILTIN_NAMES` is read: an installed or registry app can claim none
+  of this, whatever its manifest says.
+- **Agent-template placeholders** (`bridges_agents._placeholder_values`). A built-in
+  whose shipped agent config names a runtime path ships `agent_placeholders.py` with a
+  `placeholder_values()` the gateway calls to compute them; a result that is not a
+  `{"{NAME}": str}` mapping is refused whole, and an app with no such module gets `{}`
+  (its template stays unrendered and unregistered).
+
+A capability the core itself offers lives in the core, and an app that needs it too
+imports it there rather than the other way round: the file panel's slide previews and
+PPTX Maker both find `soffice` (and its install hint) through
+`kiro_crew.soffice_discovery`, the only copy in the repository. `test/test_core_app_independence.py`
+fails on any module outside `apps/builtins/` that imports Dev Fleet or PPTX Maker.
+
+Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
+`apps/builtins/dev_fleet/host_grants.py`, `apps/builtins/pptx_maker/agent_placeholders.py`.
 
 ## Windows stale-backend cleanup capacity
 

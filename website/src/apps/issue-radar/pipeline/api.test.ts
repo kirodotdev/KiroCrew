@@ -9,7 +9,7 @@
  * the guaranteed shape on every degraded path), not merely line execution.
  *
  * Fetch-mocking idiom copied from `src/test/apiRewind.test.ts` /
- * `src/test/devFleetApi.test.ts`: spy on `globalThis.fetch`, restore after each.
+ * `src/apps/dev-fleet/devFleetApi.test.ts`: spy on `globalThis.fetch`, restore after each.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 

@@ -718,8 +718,9 @@ def _preserve_user_agent_edits(
 #: can move, or a dependency resolved from the installed Python package — cannot
 #: express it in the packaged file at all.
 #:
-#: `pptx-maker` is that case: its MCP server lives under the provisioned engine root
-#: and is launched with `uv`, neither of which has a fixed location.
+#: Such a builtin ships an ``agent_placeholders`` submodule whose
+#: ``placeholder_values()`` computes them (an MCP server under a provisioned engine
+#: root, launched with a ``uv`` resolved per host, has no fixed location).
 
 
 _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
@@ -734,40 +735,43 @@ _RENDERED_AGENTS_DIRNAME = "rendered-agents"
 def _placeholder_values(app_name: str) -> dict[str, str]:
     """Trusted substitutions for *app_name*'s agent templates, or ``{}``.
 
-    Every value is COMPUTED HERE, in the gateway, from the data home and the installed
+    Every value is COMPUTED in the gateway process, by the builtin's own shipped
+    ``agent_placeholders.placeholder_values()``, from the data home and the installed
     Python package — the same way the app's own provisioner computes them. Nothing is
     read back from disk, so there is nothing for an attacker with write access to the
-    engine directory to influence.
+    engine directory to influence. Only a package in ``BUILTIN_NAMES`` is consulted, so
+    the code that computes them is shipped package code, never an installed app's.
 
-    An unknown app gets ``{}``, which leaves its template unrendered and therefore
-    unregistered (see :func:`_render_shipped_agent`) — fail-closed, so adding a
-    placeholder to a new app's config is inert until its values are named here.
+    An app with no such module gets ``{}``, which leaves its template unrendered and
+    therefore unregistered (see :func:`_render_shipped_agent`) — fail-closed, so adding
+    a placeholder to a new app's config is inert until its package computes the value.
+    A result that is not a ``{"{NAME}": str}`` mapping is refused whole the same way.
     """
-    if app_name != "pptx-maker":
+    import importlib
+
+    from kiro_crew.apps import builtins
+
+    package = app_name.replace("-", "_")
+    if package not in builtins.BUILTIN_NAMES:
+        return {}
+    # Looked for on disk first: a builtin with no placeholders is never imported here.
+    if not (Path(builtins.__file__).parent / package / "agent_placeholders.py").is_file():
         return {}
     # Imported lazily and defensively: this is a builtin's own module, and a
     # registration path must not fail because one app's package is unimportable.
     try:
-        from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_paths
-        from kiro_crew.apps.builtins.pptx_maker.backend import provision as pptx_provision
+        module = importlib.import_module(f"{builtins.__name__}.{package}.agent_placeholders")
+        values = module.placeholder_values()
     except Exception:  # pragma: no cover - defensive
         logger.warning("App %s: cannot resolve placeholder values", app_name)
         return {}
-    uv_bin = pptx_provision.resolve_uv()
-    if not uv_bin:
+    if not isinstance(values, dict) or not all(
+        isinstance(k, str) and _TEMPLATE_PLACEHOLDER_RE.fullmatch(k) and isinstance(v, str)
+        for k, v in values.items()
+    ):
+        logger.warning("App %s: placeholder values are malformed, none applied", app_name)
         return {}
-    return {
-        "{UV_BIN}": uv_bin,
-        "{ENGINE_ROOT}": str(pptx_paths.engine_root()),
-        "{ENGINE_MCP_DIR}": str(pptx_paths.engine_mcp_dir()),
-        "{APP_PROMPTS}": str(app_dir(app_name) / "prompts"),
-        # The engine invokes `pdftoppm`/`soffice` BY NAME from inside its MCP
-        # server, which kiro-cli spawns from this config — not from any gateway
-        # subprocess. So the app's managed tool dir has to be on the PATH declared
-        # here or the managed install is invisible at the one moment it matters.
-        # Appended, so a real system poppler still wins the engine's own lookup.
-        "{TOOLS_PATH}": pptx_provision.mcp_tools_path(),
-    }
+    return values
 
 
 def _render_shipped_agent(

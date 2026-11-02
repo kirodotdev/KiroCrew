@@ -857,7 +857,7 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > In `pod_required` mode, keep the worktree byte-clean and run `kirocrew pod
 > scenarios`, choose the closest shipped state, boot the UNMODIFIED worktree in
 > that scenario, and drive the externally visible failing behavior through
-> `pod api`, pod-e2e/Playwright, or another real product route. Run pod
+> `pod api`, pod-e2e/Playwright (Dev Fleet app), or another real product route. Run pod
 > status/token/API commands through the worktree's `./.venv/bin/kirocrew` after
 > provisioning: the globally installed binary may be sandbox-blind to the pod
 > process's sockets and fail closed on ownership proof. If `playwright-cli`

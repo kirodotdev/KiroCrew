@@ -110,13 +110,12 @@ class TestNoBackendGetsThePointerBack:
 
     def test_the_isolated_startup_stays_scoped_to_md_notebook(self) -> None:
         """The ``-I`` rider the carve-out needed is gone with it: dev-fleet owns no
-        hidden leaf, and the isolated start is keyed on md-notebook alone. (The
-        ``DEV_FLEET_APP_NAME`` constant in ``apps.backend`` names the bound-port
-        deferral, not a carve-out.)"""
-        import kiro_crew.apps.backend as backend_mod
+        hidden leaf, and the isolated start is keyed on md-notebook alone. (Its
+        ``bound_port`` host grant names the bound-port deferral, not a carve-out.)"""
+        import kiro_crew.apps.backend  # noqa: F401 -- the source read below
 
         source = inspect.getsource(sys.modules["kiro_crew.apps.backend"])
-        assert backend_mod.DEV_FLEET_APP_NAME not in sandbox._APP_BACKEND_OWNED_LEAVES
+        assert "dev-fleet" not in sandbox._APP_BACKEND_OWNED_LEAVES
         assert "_shipped_md_notebook" in source
         assert "_shipped_dev_fleet" not in source
 

@@ -20,10 +20,10 @@ import { dirname, join, relative, resolve } from 'node:path'
 
 import * as facade from './DevFleetPage'
 import * as model from './devFleetPageModel'
-import { pageFamilyFiles } from '../test/pageFamily'
+import { pageFamilyFiles } from '../../test/pageFamily'
 
 const DIR = __dirname
-const SRC = resolve(DIR, '..')
+const SRC = resolve(DIR, '..', '..')
 const FACADE = join(DIR, 'DevFleetPage.tsx')
 const owners = pageFamilyFiles('DevFleetPage', DIR).slice(1)
 const read = (p: string) => readFileSync(p, 'utf8')
