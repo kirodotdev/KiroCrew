@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
@@ -60,7 +61,7 @@ def _builder(tmp_path) -> ContextBuilder:
 def _record(**fields: Any) -> None:
     CrewLog.create(lg.KIND_SESSION, "acp-1", owner="owner", agent="kirocrew", slot=SLOT)
     sl.record(SLOT, session_id="acp-1", **fields)
-    assert crew_log_emit.flush(), "the crew log writer did not drain"
+    assert_drained()
 
 
 def _turn(tmp_path, text: str = "next", **kw: Any) -> str:
