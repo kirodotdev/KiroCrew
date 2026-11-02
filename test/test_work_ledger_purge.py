@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -205,8 +205,7 @@ def test_newest_activity_falls_back_to_the_directory_when_the_header_is_gone(mon
     directory = wl.conductor_dir(CONDUCTOR)
     path = wl.item_path(CONDUCTOR, item_id)
     record = json.loads(path.read_text(encoding="utf-8"))
-    # nosemgrep: kirocrew.test-naive-local-time -- an aware stamp 90 days back; only its distance from now is read
-    record["closed_at"] = (datetime.now().astimezone() - timedelta(days=90)).isoformat()
+    record["closed_at"] = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     path.write_text(json.dumps(record), encoding="utf-8")
     (directory / "conductor.json").unlink()  # the directory is written to NOW
     _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
