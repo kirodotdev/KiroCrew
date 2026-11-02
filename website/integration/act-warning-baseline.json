@@ -23,7 +23,6 @@
   "src/test/ArtifactDetailPage.test.tsx",
   "src/test/ArtifactPanelCoverage.test.tsx",
   "src/test/ArtifactsPageCoverage.test.tsx",
-  "src/test/BottomTerminalPanel.hydrateGate.test.tsx",
   "src/test/BottomTerminalPanel.popout.test.tsx",
   "src/test/BottomTerminalPanel.rename.test.tsx",
   "src/test/ChatFooter.test.tsx",
