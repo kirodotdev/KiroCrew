@@ -812,8 +812,14 @@ async def test_whatever_lands_after_the_claim_the_run_is_completed_once(
     whole on disk."""
     import time as _time
 
+    import kiro_crew.subagent as subagent
     import kiro_crew.subagent_persistence as sp
 
+    # The claimed write's own bound counts wall-clock from its drain's first
+    # await. At 5 s a loaded runner lets it expire while the gate still holds
+    # the write, and the run is ``done`` before the test looks. Past the gate's
+    # 15 s hold, the gate alone decides when the write lands.
+    monkeypatch.setattr(subagent, "_STATE_DRAIN_TIMEOUT", 60.0)
     gate = _GatedResultWrite(monkeypatch)
     factory, calls = _answer_stream()
     mgr = _manager(_mock_sessions(factory))
