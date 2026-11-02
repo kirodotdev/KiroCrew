@@ -230,6 +230,21 @@ describe('TreeNode', () => {
     expect(screen.getByText('index.ts')).toBeInTheDocument()
   })
 
+  it('tells assistive tech whether a folder row is open, and gives a file row no expanded state', () => {
+    const closed = renderWithQuery(
+      <TreeNode node={dirNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} />,
+    )
+    expect(screen.getByRole('button', { name: 'src' })).toHaveAttribute('aria-expanded', 'false')
+    closed.unmount()
+
+    renderWithQuery(
+      <TreeNode node={dirNode} depth={0} expanded={{ '/home/user/src': true }} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} />,
+    )
+    expect(screen.getByRole('button', { name: 'src' })).toHaveAttribute('aria-expanded', 'true')
+    // The child file row inside the open folder only selects.
+    expect(screen.getByRole('button', { name: 'index.ts' })).not.toHaveAttribute('aria-expanded')
+  })
+
   it('surfaces the error, not a perpetual loading label, when a child folder fails to load', async () => {
     // A childless dir lazy-loads on expand; when that fetch rejects (e.g. a
     // symlink resolving outside the allow-list) the row must surface the error
