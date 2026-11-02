@@ -2,8 +2,6 @@
 advertised model list.
 """
 
-import asyncio
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,8 +9,10 @@ import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
 
+import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import _DRAIN_DURATION, _DRAIN_IDLE_EXIT, AcpClient, AcpError
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.testing.clock import ManualClock
 
 # ── Coverage push: session lifecycle ──
 
@@ -648,9 +648,13 @@ class TestAcpClientDrainEarlyExit:
         )
 
     @pytest.mark.asyncio
-    async def test_drain_exits_early_when_quiet(self, tmp_path):
+    async def test_drain_exits_early_when_quiet(self, tmp_path, monkeypatch):
         from kiro_crew.acp.types import JsonRpcMessage
 
+        # The drain reads the virtual clock below, so a quiet poll costs exactly the time it
+        # was asked to wait. Starting at zero keeps the idle window's float arithmetic exact.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         # Pre-buffered notification (arrived during _wait_for_response) — exercises
         # the buffered-drain path in addition to the live-read path (CR feedback).
@@ -674,30 +678,34 @@ class TestAcpClientDrainEarlyExit:
                 m = msgs[calls["n"]]
                 calls["n"] += 1
                 return m
-            await asyncio.sleep(timeout)  # honor the poll timeout, return nothing
+            clock.sleep(timeout)  # honor the poll timeout on the virtual clock, return nothing
             return None
 
         client._read_message = fake_read  # type: ignore[assignment]
 
-        start = time.monotonic()
-        # Hard cap 10s; idle window 0.2s for a fast test.
+        start = clock.monotonic()
+        # Hard cap 10s; idle window 0.2s.
         await client._drain_notifications(duration=10.0, idle_exit=0.2)
-        elapsed = time.monotonic() - start
+        elapsed = clock.monotonic() - start
 
-        # Tight window proves it was the IDLE exit that fired (~0.2s after the last
-        # live message), not the 10s cap NOR an instant exit from a swallowed
-        # exception / always-None read (CR feedback). Floor guards against the
-        # idle logic being deleted; ceiling guards against the full-cap wait.
-        # flake-ok: the idle-exit window is the subject here: the floor proves the 0.2 s idle exit fired and the ceiling that the 10 s cap did not; a virtual clock is tracked for a de-flake pass
-        assert 0.15 < elapsed < 1.0, f"expected ~0.2s idle exit, got {elapsed:.2f}s"
+        # Exactly one quiet poll, as long as the idle window, ended the drain: it was the
+        # IDLE exit that fired (0.2s after the last live message), not the 10s cap (the
+        # polls would add up to 10s) NOR an instant exit from a swallowed exception /
+        # always-None read (no time would pass).
+        assert elapsed == pytest.approx(0.2), f"expected ~0.2s idle exit, got {elapsed:.2f}s"
         assert calls["n"] == 2  # both LIVE notifications were drained
         # The buffered notification is consumed + the buffer cleared by the drain.
         assert client._mcp_notifications == []
 
     @pytest.mark.asyncio
-    async def test_drain_respects_hard_cap_when_chatty(self, tmp_path):
+    async def test_drain_respects_hard_cap_when_chatty(self, tmp_path, monkeypatch):
         from kiro_crew.acp.types import JsonRpcMessage
 
+        # The drain reads the virtual clock below; each message of the chatty stream
+        # arrives 0.1s after the previous one, so the cap is reached after a fixed number
+        # of reads whatever the host's speed.
+        clock = ManualClock(monotonic_start=0.0)
+        clock.install(monkeypatch, acp_client)
         client = AcpClient(work_dir=tmp_path)
         client._mcp_notifications = []
 
@@ -706,17 +714,18 @@ class TestAcpClientDrainEarlyExit:
 
         async def fake_read(timeout):
             reads["n"] += 1
+            clock.advance(0.1)
             return JsonRpcMessage(method="_kiro.dev/mcp/progress", params={"name": "slow"})
 
         client._read_message = fake_read  # type: ignore[assignment]
 
-        start = time.monotonic()
+        start = clock.monotonic()
         await client._drain_notifications(duration=0.5, idle_exit=5.0)
-        elapsed = time.monotonic() - start
+        elapsed = clock.monotonic() - start
 
-        # Idle never triggers (always chatty), so the 0.5s cap bounds it.
-        # flake-ok: the hard cap is the subject here: the floor proves the 0.5 s cap was waited out and the ceiling that it bounded the chatty stream; a virtual clock is tracked for a de-flake pass
-        assert 0.4 < elapsed < 2.0, f"hard cap not respected (took {elapsed:.2f}s)"
+        # Idle never triggers (always chatty), so the 0.5s cap bounds it: the drain read
+        # until the virtual clock reached the cap, and stopped there.
+        assert elapsed == pytest.approx(0.5), f"hard cap not respected (took {elapsed:.2f}s)"
         # Confirm the drain loop actually iterated (processed reads), not just
         # that the timer expired (CR feedback).
         assert reads["n"] > 0, "drain loop never read a message during the cap window"
