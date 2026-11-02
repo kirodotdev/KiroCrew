@@ -9,7 +9,6 @@ handler, and the exact replies of the commands the dispatcher answers itself.
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -18,9 +17,11 @@ import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import _dispatcher, _dm, _origin, _tg_origin
 
+from kiro_crew import safety_override_grant
 from kiro_crew.messaging.session_resume import RoutingDecision
 from kiro_crew.telegram.commands import build_help_text
 from kiro_crew.telegram.transport import TelegramInboundMessage
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestYoloCommand:
@@ -59,7 +60,7 @@ class TestYoloCommand:
         finally:
             self._reset()
 
-    def test_off_on_a_lapsed_grant_closes_the_renew_grace_window(self) -> None:
+    def test_off_on_a_lapsed_grant_closes_the_renew_grace_window(self, monkeypatch: Any) -> None:
         """ "/yolo off" must revoke a grant whose TTL already elapsed.
 
         ``deactivate()`` zeroes the past deadline, and that is what shuts the
@@ -68,14 +69,16 @@ class TestYoloCommand:
         after the operator had been told "YOLO OFF".
         """
         so = self._reset()
+        clock = ManualClock()
+        clock.install(monkeypatch, safety_override_grant)
         d, cli, _ = _dispatcher({7})
         try:
             asyncio.run(d.handle_message(_dm("/yolo on")))
             assert so.is_active() is True
 
-            # Lapse the grant but stay inside the renew grace window.
-            # flake-ok: pre-existing real-clock expiry set 10 s in the past, moved verbatim; tracked for a de-flake pass
-            so._expires_at = time.monotonic() - 10
+            # Lapse the grant but stay inside the renew grace window: the deadline is
+            # read on the injected clock, ten seconds before its now.
+            so._expires_at = clock.monotonic() - 10
             assert so.is_active() is False, "precondition: the grant has lapsed"
 
             asyncio.run(d.handle_message(_dm("/yolo off")))
