@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render as rtlRender, screen } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import McpOAuthBanner, { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
+import McpOAuthBanner, { mcpServerLabel, renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import type { ChatMessage } from '../types'
 
 // The banner's relay affordance reads the query client (it invalidates
@@ -368,5 +368,48 @@ describe('renderMcpOAuthMessage', () => {
       render(<>{node}</>)
       expect(screen.getByText(/authentication failed: unsafe URL scheme/i)).toBeInTheDocument()
     })
+  })
+})
+
+// Issue #28524: a Power's namespaced id (`power-figma-figma`) reads as a typo on
+// the card, so a doubled Power id shows its one name instead.
+describe('mcpServerLabel', () => {
+  it('collapses a doubled Power id to its capitalized name', () => {
+    expect(mcpServerLabel('power-figma-figma')).toEqual({ text: 'Figma', isId: false })
+  })
+
+  it('collapses a doubled Power id whose name has hyphens', () => {
+    expect(mcpServerLabel('power-aws-docs-aws-docs')).toEqual({ text: 'Aws-docs', isId: false })
+  })
+
+  it('keeps any other Power id whole, because power and server cannot be split reliably', () => {
+    expect(mcpServerLabel('power-stripe-payments')).toEqual({ text: 'power-stripe-payments', isId: true })
+  })
+
+  it('leaves a non-Power id untouched', () => {
+    expect(mcpServerLabel('linear')).toEqual({ text: 'linear', isId: true })
+    expect(mcpServerLabel('figma-figma')).toEqual({ text: 'figma-figma', isId: true })
+  })
+})
+
+describe('McpOAuthBanner Power label', () => {
+  it('shows the readable name in normal text, in the sentence and on the button', () => {
+    render(
+      <McpOAuthBanner
+        serverName="power-figma-figma"
+        oauthUrl="https://mcp.figma.com/authorize"
+        completed={false}
+      />,
+    )
+    expect(screen.getByRole('link', { name: /Authorize Figma/ })).toBeInTheDocument()
+    expect(screen.queryByText(/power-figma-figma/)).not.toBeInTheDocument()
+    const lead = screen.getByText('Figma', { selector: 'span' })
+    expect(lead).not.toHaveClass('font-mono')
+    expect(lead).toHaveClass('font-semibold')
+  })
+
+  it('keeps the code font for a server id it cannot make readable', () => {
+    render(<McpOAuthBanner serverName="linear" oauthUrl="" completed={true} />)
+    expect(screen.getByText('linear', { selector: 'span' })).toHaveClass('font-mono')
   })
 })
