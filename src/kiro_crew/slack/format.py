@@ -21,6 +21,7 @@ from kiro_crew.messaging.display_safety import (
     slack_mrkdwn_reading,
     strip_ansi,
 )
+from kiro_crew.messaging.markup import flatten_mermaid_body
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
@@ -1053,72 +1054,26 @@ def _convert_tables(text: str) -> str:
 # ``[ \t]*`` rather than ``\s*`` before the newline: ``\s`` matches the newline too, so
 # an unclosed block of blank lines backtracked polynomially. The body is stripped.
 _MERMAID_BLOCK_RE = re.compile(r"```mermaid[ \t]*\n(.*?)```", re.DOTALL)
-# graph/flowchart edges: A[label] -->|text| B[label]  or  A --> B
-_GRAPH_EDGE_RE = re.compile(
-    r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
-    r"\s*(-->|---|-\.->|==>)(?:\|([^|]*)\|)?\s*"
-    r"(\w+)(?:\[([^\]]*)\]|\{([^}]*)\}|(?:\([^)]*\)))?"
-)
-# sequence: Actor->>Actor: message
-_SEQ_RE = re.compile(r"(\S+?)\s*(->>|-->>|->|-->)\s*(\S+?):\s*(.+)")
 
 
 def _convert_mermaid(text: str) -> str:
-    """Replace ```mermaid blocks with readable text diagrams."""
+    """Replace ```mermaid blocks with readable text diagrams.
+
+    The diagram reading is :func:`kiro_crew.messaging.markup.flatten_mermaid_body`,
+    the one every channel shares. A graph or sequence diagram it cannot read
+    stays as its bare source; any other diagram type becomes a plain code block.
+    """
 
     def _replace(m: re.Match) -> str:  # type: ignore[type-arg]
         body = m.group(1).strip()
         first = body.split("\n", 1)[0].strip().lower()
 
-        if first.startswith(("graph ", "flowchart ")):
-            return _mermaid_graph(body)
-        if first.startswith("sequencediagram"):
-            return _mermaid_sequence(body)
+        if first.startswith(("graph ", "flowchart ", "sequencediagram")):
+            return flatten_mermaid_body(body) or body
         # Unknown diagram type — show as plain code block
         return f"```\n{body}\n```"
 
     return _MERMAID_BLOCK_RE.sub(_replace, text)
-
-
-def _mermaid_graph(body: str) -> str:
-    """Convert graph/flowchart to text arrows."""
-    labels: dict[str, str] = {}
-    edges: list[str] = []
-    for line in body.split("\n")[1:]:  # skip "graph TD" line
-        m = _GRAPH_EDGE_RE.search(line.strip())
-        if not m:
-            continue
-        src, sl1, sl2, _, edge_label, dst, dl1, dl2 = m.groups()
-        if sl1 or sl2:
-            labels[src] = sl1 or sl2
-        if dl1 or dl2:
-            labels[dst] = dl1 or dl2
-        src_name = labels.get(src, src)
-        dst_name = labels.get(dst, dst)
-        arrow = f" ({edge_label.strip()}) " if edge_label else " "
-        edges.append(f"  {src_name} →{arrow}{dst_name}")
-    return "\n".join(edges) if edges else body
-
-
-def _mermaid_sequence(body: str) -> str:
-    """Convert sequenceDiagram to text arrows."""
-    lines: list[str] = []
-    for line in body.split("\n")[1:]:  # skip "sequenceDiagram"
-        m = _SEQ_RE.match(line.strip())
-        if not m:
-            continue
-        src, arrow_type, dst, msg = m.groups()
-        # Mermaid arrows read left-to-right (src → dst), so the glyph must point
-        # toward dst. ">>" is a solid arrowhead; "--" marks a dashed (reply) line.
-        # Keep the four arrow types visually distinct and rightward so dashed
-        # replies and dashed-open arrows don't render identically or point back
-        # at the source.
-        if "--" in arrow_type:
-            arrow = "⇒" if ">>" in arrow_type else "⤳"  # dashed reply vs dashed open
-        else:
-            arrow = "→" if ">>" in arrow_type else "⇢"  # solid reply vs solid open
-        lines.append(f"  {src} {arrow} {dst}: {msg.strip()}")
-    return "\n".join(lines) if lines else body
 
 
 # Slack message character limit (API rejects above ~4000)

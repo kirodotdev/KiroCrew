@@ -587,10 +587,9 @@ class TestMermaidSequenceArrows:
 
     @staticmethod
     def _seq(line: str) -> str:
-        from kiro_crew.slack.format import _mermaid_sequence
+        from kiro_crew.slack.format import _convert_mermaid
 
-        # _mermaid_sequence skips the first line ("sequenceDiagram")
-        return _mermaid_sequence("sequenceDiagram\n" + line)
+        return _convert_mermaid("```mermaid\nsequenceDiagram\n" + line + "\n```")
 
     def test_dashed_arrows_point_same_direction_as_solid(self):
         # All four arrow types describe A talking to B; none should point back at A.
