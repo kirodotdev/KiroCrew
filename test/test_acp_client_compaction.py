@@ -8,7 +8,9 @@ import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
 
+from kiro_crew.acp import client_turn as client_turn_mod
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestCompactionResetsContextStats:
@@ -341,6 +343,10 @@ class TestCompactionFailureTurnBudget:
 
         monkeypatch.setattr(acp_client, "_COMPACTION_FAILED_TURN_BUDGET", 0.3)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.02)
+        # The budget and the turn deadline read the product's monotonic clock, so
+        # the stream advances that clock instead of sleeping in real time.
+        clock = ManualClock()
+        clock.install(monkeypatch, client_turn_mod)
 
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
@@ -348,9 +354,9 @@ class TestCompactionFailureTurnBudget:
         client._handle_compaction_status(self._failed_msg())
 
         async def _steady_stream(timeout: float = 0.0):
-            # flake-ok: pre-existing 50 ms pacing in the stubbed stream; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed stream; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
+            # Each frame lands 50 ms after the previous one on the manual clock,
+            # so the silence the budget measures never exceeds 50 ms.
+            clock.advance(0.05)
             return JsonRpcMessage(method=METHOD_METADATA, params={})
 
         client._read_message = _steady_stream
