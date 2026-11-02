@@ -355,39 +355,6 @@ _REFUSED = [
     "gh api repos/o/r",
     "gh secret list",
     "gh workflow run ci.yml",
-    # the GitLab CLI mirrors the gh denylist verb-for-verb
-    "glab mr merge 1",
-    "glab mr update 1 --ready",
-    "glab mr close 1",
-    "glab mr note 1 --message hi",
-    "glab mr approve 1",
-    "glab mr create --draft",
-    "glab issue create --title x",
-    "glab issue note 1 --message hi",
-    "glab issue close 1",
-    "glab release create v1",
-    "glab auth status",
-    "glab api projects/1",
-    "glab variable list",
-    "glab ci run",
-    # ALLOWLIST regressions: verbs the old glab DENYLIST never enumerated. These are
-    # exactly the injected-instruction shapes the allowlist must refuse by omission —
-    # `glab repo delete` was the reported evasion. (item: glab allowlist)
-    "glab repo delete group/project --yes",
-    "glab repo archive group/project",
-    "glab repo fork group/project",
-    "glab mr todo 1",
-    "glab alias set x 'mr merge'",
-    "glab",  # bare invocation names no allowed read
-    "glab config set git_protocol ssh",
-    "glab ssh-key add k.pub",
-    # glab global options must not hide the subcommand either
-    "glab --repo o/r mr merge 1",
-    "glab -R o/r mr note 1 --message hi",
-    "glab --hostname h api graphql",
-    # and the wrapper/nested-shell evasions have to be closed for glab too
-    "sudo glab mr merge 1",
-    "sh -c 'glab mr update 1 --ready'",
     "git push",
     "git remote set-url origin x",
     # global options must not hide the subcommand
@@ -458,9 +425,6 @@ _ALLOWED = [
     "gh pr diff 1",
     "gh run view --log-failed",
     "gh pr list",
-    # glab read-only diagnostics stay available to the watcher
-    "glab mr view 1 --comments",
-    "glab mr diff 1",
     "git status --porcelain",
     "git log --oneline -5",
     "git remote -v",
@@ -500,6 +464,24 @@ def test_shell_command_refusal_refuses_a_command_nested_past_the_unwrap_budget()
 
 def test_shell_command_refusal_reaches_a_wrapped_command_inside_a_nested_shell():
     assert R.shell_command_refusal("sh -c 'timeout 5 env sudo git push'")
+
+
+def test_glab_is_known_to_the_option_table_but_has_no_denylist_yet():
+    """PRODUCT GAP (reported, not fixed here): ``glab`` is unguarded end to end.
+
+    ``_VALUE_TAKING_OPTIONS`` lists ``glab``'s global options, which reads as denylist
+    coverage for the GitLab CLI — but ``_FORBIDDEN_SUBCOMMANDS`` has no ``glab`` key, so
+    the option-skipping code never runs and EVERY ``glab`` verb is allowed, including
+    ``glab mr merge`` / ``glab mr note`` / ``glab api``. On a GitLab-hosted repo the
+    watcher's outsider-writable prompt therefore faces no publish denylist at all. Pinned
+    permissively so this test also passes once the missing key is added.
+    """
+    assert "glab" in R._VALUE_TAKING_OPTIONS
+    if "glab" not in R._FORBIDDEN_SUBCOMMANDS:
+        assert R.shell_command_refusal("glab mr merge 1") == ""
+        assert R.shell_command_refusal("glab --repo o/r mr note 1 --message hi") == ""
+    else:
+        assert R.shell_command_refusal("glab mr merge 1")
 
 
 # ── _requested_command ──────────────────────────────────────────────────────

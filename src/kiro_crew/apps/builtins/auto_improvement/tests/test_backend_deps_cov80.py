@@ -57,6 +57,62 @@ class TestWhich:
         assert deps._which("nope") == ""
 
 
+class TestGlabAuthenticated:
+    """glab's login is checked on the target host alone, with the host-pinned env."""
+
+    def test_the_probe_names_the_target_host_and_withholds_the_saas_token(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        which["glab"] = _stub_bin("glab")
+        monkeypatch.setenv("GITLAB_TOKEN", "glpat-saas")
+        monkeypatch.setenv("GITLAB_HOST", "elsewhere.example")
+        seen: dict[str, Any] = {}
+
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen["cmd"], seen["env"] = cmd, kwargs.get("env")
+            return _proc(0)
+
+        monkeypatch.setattr(deps.subprocess, "run", _run)
+        assert deps._glab_authenticated("gitlab.corp.example") == (True, "authenticated")
+        assert seen["cmd"] == ["glab", "auth", "status", "--hostname", "gitlab.corp.example"]
+        assert seen["env"]["GITLAB_HOST"] == "gitlab.corp.example"
+        assert "GITLAB_TOKEN" not in seen["env"]
+
+    @pytest.mark.parametrize(
+        ("target_url", "host"),
+        [
+            ("https://gitlab.example.com:8443/g/p", "gitlab.example.com:8443"),
+            ("https://www.gitlab.com/g/p", "gitlab.com"),
+            ("https://GitLab.example.com:443/g/p", "gitlab.example.com"),
+            ("http://gitlab.example.com/g/p", ""),
+        ],
+    )
+    def test_the_probe_uses_the_host_intake_stores(
+        self, target_url: str, host: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-443 port is kept and ``www.gitlab.com`` folds to ``gitlab.com``, so an
+        authenticated target is not reported as logged out."""
+        monkeypatch.setattr(deps, "read_json", lambda *_a: {"target_url": target_url})
+        assert deps._configured_host() == host
+
+    def test_a_github_target_never_runs_glab(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        which["glab"] = _stub_bin("glab")
+        which["gh"] = _stub_bin("gh")
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
+        ran: list[list[str]] = []
+
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            ran.append(cmd)
+            return _proc(0)
+
+        monkeypatch.setattr(deps.subprocess, "run", _run)
+        report = deps.check_deps()
+        assert not [cmd for cmd in ran if cmd and cmd[0] == "glab"]
+        assert {d["id"]: d for d in report["deps"]}["glab"]["ok"] is True
+
+
 class TestGhAuthenticated:
     def test_gh_absent_is_reported_without_running_anything(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch

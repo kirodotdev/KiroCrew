@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from urllib.parse import urlparse
 
 from kiro_crew.github_runner import gitlab_ambient_token_allowed
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -34,6 +35,26 @@ def canonical_gitlab_host(host: str) -> str:
     return "gitlab.com" if value in GITLAB_SAAS_HOSTS else value
 
 
+def gitlab_url_host(url: str) -> str:
+    """The canonical GitLab host an ``https`` URL names, or ``""``.
+
+    The same spelling intake stores: lower-cased, trailing dot dropped, a non-443
+    port kept (``gitlab.example.com:8443``), and ``www.gitlab.com`` folded to
+    ``gitlab.com``. A parse failure or another scheme yields ``""``, which
+    :func:`glab_env` treats as "not gitlab.com" (fail closed).
+    """
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        return ""
+    if parsed.scheme != "https" or not host:
+        return ""
+    host = canonical_gitlab_host(host)
+    return f"{host}:{port}" if port and port != 443 else host
+
+
 def glab_env(host: str) -> dict[str, str]:
     """The child environment for a ``glab`` call against ``host``.
 
@@ -45,8 +66,17 @@ def glab_env(host: str) -> dict[str, str]:
     it. An empty ``host`` also leaves ``GITLAB_HOST`` unset (fail closed: no token, no
     chosen host).
     """
+    return host_pinned_env(dict(os.environ), host)
+
+
+def host_pinned_env(base: dict[str, str], host: str) -> dict[str, str]:
+    """``base`` with the same host pin and token fence :func:`glab_env` applies.
+
+    For a caller that builds its own environment first (the clone's scrubbed git
+    environment, whose ``glab auth git-credential`` helper is a ``glab`` child too).
+    """
     pinned = canonical_gitlab_host(host)
-    env = {k: v for k, v in os.environ.items() if k not in _HOST_STEERING_ENV}
+    env = {k: v for k, v in base.items() if k not in _HOST_STEERING_ENV}
     if not gitlab_ambient_token_allowed(pinned):
         for key in GITLAB_SAAS_TOKEN_ENV:
             env.pop(key, None)

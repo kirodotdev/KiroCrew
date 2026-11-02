@@ -39,7 +39,6 @@ commit stays local and recoverable, and nothing escapes silently.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -55,6 +54,9 @@ logger = logging.getLogger(__name__)
 #: ``git branch -r`` can see at a glance which refs this app created, and so the
 #: protected-branch denylist can never match one.
 BRANCH_PREFIX = "auto-improvement"
+
+#: The characters a generated branch's ``kind`` part may keep.
+_BRANCH_KIND_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 #: Push/network operations are bounded so a hung remote cannot wedge a run.
 _PUSH_TIMEOUT_S = 120.0
@@ -221,7 +223,14 @@ class ProviderPRRecipe:
 
     def branch_name(self, *, kind: str, fingerprint: str) -> str:
         """Generated, app-namespaced branch for this fix. Never a human's branch."""
-        safe_kind = re.sub(r"[^a-z0-9]+", "-", (kind or "fix").lower()).strip("-") or "fix"
+        # Keep [a-z0-9]; every run of other characters becomes one "-".
+        parts: list[str] = []
+        for ch in (kind or "fix").lower():
+            if ch in _BRANCH_KIND_CHARS:
+                parts.append(ch)
+            elif not parts or parts[-1] != "-":
+                parts.append("-")
+        safe_kind = "".join(parts).strip("-") or "fix"
         return f"{BRANCH_PREFIX}/{safe_kind}-{fingerprint}"
 
     def _authorize(self, branch: str) -> tuple[bool, str]:

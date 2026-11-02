@@ -138,7 +138,7 @@ class TestDeps:
     ) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "authenticated"))
-        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda _host: (True, "authenticated"))
         monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         out = deps.check_deps()
         required = {d["id"] for d in out["deps"] if d["required"]}
@@ -148,7 +148,7 @@ class TestDeps:
     def test_a_gitlab_target_swaps_the_required_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "authenticated"))
-        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda _host: (True, "authenticated"))
         monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITLAB)
         out = deps.check_deps()
         required = {d["id"] for d in out["deps"] if d["required"]}
@@ -159,7 +159,7 @@ class TestDeps:
         PR is drafted, which is the worst moment to discover it."""
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (False, "not logged in"))
-        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda _host: (True, "authenticated"))
         monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         out = deps.check_deps()
         assert out["ok"] is False and "gh" in out["blocking"]
@@ -167,7 +167,7 @@ class TestDeps:
     def test_missing_ruff_is_optional(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: "" if b == "ruff" else f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "ok"))
-        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "ok"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda _host: (True, "ok"))
         out = deps.check_deps()
         assert out["ok"] is True
         assert [d for d in out["deps"] if d["id"] == "ruff"][0]["ok"] is False

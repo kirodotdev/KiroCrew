@@ -82,7 +82,8 @@ not fill the chat surface with agent cards.
   GitLab repositories
 - A GitHub or GitLab repository you can open pull/merge requests against.
   gitlab.com works out of the box; a self-hosted GitLab instance works once its
-  host is listed in the `dashboard.gitlab_hosts` allowlist.
+  host is listed in the `dashboard.gitlab_hosts` allowlist and resolves to a public
+  address (one on a private, RFC 1918 network is refused).
 
 ## Layout
 

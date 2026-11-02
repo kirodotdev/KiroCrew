@@ -1094,6 +1094,50 @@ class TestPublishRoutesByProvider:
         assert pr_watchers._is_merge_request_url(self.PR) is False
         assert pr_watchers._is_merge_request_url("") is False
 
+    #: A GitHub repo whose NAME is ``merge_requests`` — a substring test sends it to glab.
+    GH_REPO_NAMED_MR = "https://github.com/example/merge_requests/pull/1"
+
+    def test_a_github_repo_named_merge_requests_stays_on_github(self) -> None:
+        assert pr_watchers._is_merge_request_url(self.GH_REPO_NAMED_MR) is False
+        assert pr_watchers.is_watchable_pr(self.GH_REPO_NAMED_MR) is True
+
+    def test_a_github_repo_named_merge_requests_is_published_with_gh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gh_calls, glab_calls = self._cli_recorders(monkeypatch)
+        ok, reason = pr_watchers.publish_if_authorized(self.GH_REPO_NAMED_MR, _green_status())
+        assert ok is True, reason
+        assert gh_calls == [("pr", "ready", self.GH_REPO_NAMED_MR)]
+        assert glab_calls == [], "glab must never touch a GitHub PR"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/o/r/merge_requests/3",  # no ``/-/`` separator
+            "https://github.com/merge_requests/merge_requests/pull/1",
+            "https://github.com/o/r/pull/1?x=/-/merge_requests/2",  # query is not path
+            "https://github.com/o/r/pull/1#/-/merge_requests/2",  # fragment is not path
+            "https://gitlab.com/-/merge_requests/5",  # no project path
+        ],
+    )
+    def test_mr_detection_needs_the_gitlab_path_shape(self, url: str) -> None:
+        assert pr_watchers._is_merge_request_url(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://gitlab.example.com/group/proj/-/merge_requests/7",
+            "https://gitlab.com/group/sub/proj/-/merge_requests/12/",
+            "https://gitlab.com/g/p/-/merge_requests/9?tab=pipelines",
+        ],
+    )
+    def test_real_gitlab_mr_urls_are_still_merge_requests(self, url: str) -> None:
+        assert pr_watchers._is_merge_request_url(url) is True
+        assert pr_watchers.is_watchable_pr(url) is True
+
+    def test_a_github_merge_requests_path_without_the_separator_is_not_watchable(self) -> None:
+        assert pr_watchers.is_watchable_pr("https://github.com/o/r/merge_requests/3") is False
+
 
 class TestGlabHostPinnedToken:
     """`_glab` must never forward a gitlab.com token to a self-managed host.
@@ -1111,6 +1155,20 @@ class TestGlabHostPinnedToken:
         assert pr_watchers._glab_host(self.SAAS_MR) == "gitlab.com"
         assert pr_watchers._glab_host(self.SELF_MR) == "gitlab.example.com"
         assert pr_watchers._glab_host("") == ""
+
+    def test_the_mr_host_keeps_its_port_and_folds_www(self) -> None:
+        """The spelling intake stores: a non-443 port is kept, ``www.gitlab.com`` folds."""
+        port_mr = "https://gitlab.example.com:8443/g/p/-/merge_requests/3"
+        assert pr_watchers._glab_host(port_mr) == "gitlab.example.com:8443"
+        assert pr_watchers._glab_host("https://www.gitlab.com/g/p/-/merge_requests/3") == (
+            "gitlab.com"
+        )
+        assert pr_watchers._glab_host("https://gitlab.example.com:443/g/p/-/merge_requests/3") == (
+            "gitlab.example.com"
+        )
+        assert pr_watchers.glab_env(pr_watchers._glab_host(port_mr))["GITLAB_HOST"] == (
+            "gitlab.example.com:8443"
+        )
 
     def test_gitlab_com_keeps_the_saas_token_and_pins_the_host(
         self, monkeypatch: pytest.MonkeyPatch
