@@ -50,6 +50,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import SLACK_NAMESPACE, canonical_key
+from kiro_crew.messaging.script_hooks import ScriptHookTurn
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
@@ -81,6 +82,7 @@ from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
 from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.slack.renderer import SlackRenderer, _display_safe
+from kiro_crew.slack.script_hooks import runs_script_hooks
 from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
@@ -724,6 +726,12 @@ async def handle_message_transport(
             session_key, channel_id=channel, start_priority=start_priority, **_alloc
         )
         _acquired = True
+        # Taken on acquisition: a Stop from here on cancels the turn before it streams.
+        hook_turn = (
+            ScriptHookTurn.stoppable(sessions, session_key, text)
+            if runs_script_hooks(channel, user_id)
+            else None
+        )
         # Authorize the outbound-image root, which only exists once the provider
         # does. Unauthorized, `_upload_root` stays empty and `_uploads_enabled()`
         # is permanently False, so the whole extract-and-upload path is dead while
@@ -970,6 +978,9 @@ async def handle_message_transport(
             user_logged=_logged_user_turn,
             provenance={"source_thread": session_key, "source_user": user_id, "agent": _agent},
         )
+        if hook_turn is not None:
+            # The hooks match the sender's text as the turn sends it.
+            hook_turn.prompt = text
         driver = TurnDriver(
             client,
             TeeRenderer(renderer, _live) if _live is not None else renderer,
@@ -1003,6 +1014,7 @@ async def handle_message_transport(
             closing_gate=turn_ceiling.gate(session_key, lambda: sessions.begin_turn(session_key)),
             undelivered_watch_key=session_key,
             event_tap=_live.observe if _live is not None else None,
+            script_hooks=hook_turn,
         )
         # The thread's owner as of the moment the turn starts producing output.
         # A dashboard link landing during the run moves the conversation to a
