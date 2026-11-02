@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _member_names_for_slug,
     _sel,
 )
+from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
 
@@ -611,38 +612,12 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
     """
     if slot._member_approval_seeded:
         return
-    from kiro_crew.approval_mode_policy import clamp_session_mode, verdict_pending
+    from kiro_crew.approval_mode_policy import verdict_pending
 
     if verdict_pending():
         # The policy answer is not final yet: seed on a later open or turn, rather
         # than commit a passing deny as this thread's mode.
         return
     slot._member_approval_seeded = True
-
-    # The Profile cannot raise a thread above what the policy allows.
-    effective = clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE)
-    if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
-        return
-    key = effective_session_key(slot)
-    for sharing in state._slots.values():
-        if effective_session_key(sharing) == key:
-            if effective == "trust":
-                sharing._trust = True
-            else:
-                sharing._trust_reads = True
-            # The Profile decides this slot's mode, not its creator's changes.
-            sharing._posture_inherited = False
-    # Keyed on what the slot actually holds: the setter refuses a denied grant.
-    held_trust = any(
-        s._trust_held for s in state._slots.values() if effective_session_key(s) == key
-    )
-    state.sessions.set_approval_policy(key, "auto" if held_trust else "")
-    try:
-        _sel().log_api_access(
-            caller="dashboard:member_profile",
-            operation=f"mode_change:{effective}",
-            outcome="enabled",
-            resources=slot.key,
-        )
-    except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.warning("SEL audit failed for member approval seed", exc_info=True)
+    effective = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+    seed_slot_approval(state, slot, effective, caller="dashboard:member_profile", sel=_sel)

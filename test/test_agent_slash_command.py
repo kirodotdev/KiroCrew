@@ -212,6 +212,22 @@ async def test_a_caller_whose_gate_closes_before_the_commit_is_refused(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_a_code_channel_pick_leaves_one_agent_row(tmp_path, monkeypatch):
+    """The code channel's picker runs the real switch transaction with
+    ``notice=False`` and writes its own line: one pick, one row (iamwhatever r113)."""
+    from kiro_crew.slack.code_channels import agent_picker
+
+    state, slot = await _chat_with_worker(tmp_path, monkeypatch)
+    before = len(slot.messages)
+    ok, _body = await agent_picker._switch(state, slot, WORKER, lambda: True)
+    assert ok and slot.agent == WORKER
+    assert slot.messages[before:] == []  # the transaction itself adds no boundary row
+    await agent_picker._announce(state, slot, WORKER, "")
+    added = slot.messages[before:]
+    assert len(added) == 1 and WORKER in added[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_unknown_agent_is_refused_and_changes_nothing(tmp_path, monkeypatch):
     state, slot = await _chat_with_worker(tmp_path, monkeypatch)
     before = (slot.agent, slot.agent_kind, slot.workspace, slot.memory_store)

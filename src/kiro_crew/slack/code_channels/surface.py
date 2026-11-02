@@ -251,6 +251,28 @@ def channel_policy_refusal(channel_id: str, *, operation: str, caller: str) -> s
         return "channel policy unreadable"
 
 
+def display_text(text: str, *, mentions: bool = True) -> str:
+    """Text for a code-channel surface, through the shared outbound display sink.
+
+    The only ``display_safe_for`` call in a code channel (``wrapup`` delegates
+    here), so code-channel text is never sanitized two ways: control comments
+    stripped, display-form credential and exfiltration redaction through the
+    active platform context (an installation's own patterns apply), and, with
+    *mentions*, Slack's mention grammar defanged. ``mentions=False`` is for text
+    no Slack message parses (a dashboard transcript row).
+    """
+    from dataclasses import replace
+
+    from kiro_crew.messaging.renderer import display_safe_for
+    from kiro_crew.platform.context import redact_via_context
+    from kiro_crew.slack.transport import SLACK_CAPABILITIES
+
+    capabilities = (
+        SLACK_CAPABILITIES if mentions else replace(SLACK_CAPABILITIES, mention_grammars=False)
+    )
+    return display_safe_for(text, capabilities, redactor=redact_via_context)
+
+
 def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     """Every Slack action/interaction handler of the code channel, with how many
     :func:`channel_policy_refusal` calls it makes: one before any side effect and
@@ -270,10 +292,33 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     handler belongs on this list; its test
     (``test_every_policy_gated_handler_checks_at_entry_and_at_its_commit_point``)
     holds the counts.
+
+    The owner controls (the agent picker's select and ``/kirocrew agent``, the
+    Approval mode select and ``/kirocrew approval``, "Trust this channel", a worker
+    card's buttons) all enter through ``agent_picker.authorize`` and commit
+    through ``agent_picker._sync_gates``, so those two carry the guard for all of
+    them; ``test_every_owner_control_meets_the_policy_at_entry_and_commit``
+    holds that every control reaches both. Their routers
+    (``interactions.dispatch``, ``worker_approvals.dispatch_card_click``) pair the
+    ``channels`` gate with ``channel_refusal``, the inbound-gate ratchet's form
+    (``test_every_slack_inbound_gate_also_asks_the_channel`` holds them), so they
+    are not counted here. A change to Normal and a worker card's Reject only take
+    a grant away: Normal is never held back at its commit, a Reject is.
     """
-    from kiro_crew.slack.code_channels import commands, routing, tools, wrapup
+    from kiro_crew.slack.code_channels import (
+        agent_picker,
+        commands,
+        routing,
+        tools,
+        worker_approvals,
+        wrapup,
+    )
 
     return (
+        (agent_picker.authorize, 1),  # every owner control's entry
+        (agent_picker._sync_gates, 1),  # every owner control's commit fence
+        (worker_approvals.handle_click, 1),  # a worker card's Reject at its commit
+        (worker_approvals.relay, 1),  # a worker's card, right before it posts
         (commands.handle_slash, 2),  # /summarize, /wrap-up, /create-pr
         (routing.deliver_directed, 2),  # the bind, then the turn a command runs
         (routing._refuse_bind_if_policy_refuses, 1),  # in _bind_channel: cut, then session

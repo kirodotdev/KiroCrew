@@ -78,6 +78,8 @@ class FakeSlack:
         self.removed_reactions: list[tuple[str, str, str]] = []
         self.blocks: dict[str, list[dict[str, Any]]] = {}
         self.edits: list[tuple[str, str, str, list[dict[str, Any]] | None]] = []
+        #: Each ephemeral's blocks (None for a text-only one), in post order.
+        self.ephemeral_blocks: list[list[dict[str, Any]] | None] = []
         self._n = 0
 
     async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
@@ -112,6 +114,7 @@ class FakeSlack:
 
     async def post_ephemeral(self, channel: str, user: str, text: str, **_k: Any) -> None:
         self.ephemerals.append((channel, user, text))
+        self.ephemeral_blocks.append(_k.get("blocks"))
 
     async def fetch_thread_replies(self, channel: str, ts: str, **_k: Any) -> list[dict[str, Any]]:
         return list(self.thread)
@@ -303,11 +306,15 @@ class Env:
         monkeypatch.setattr(routing, "_persist_request", persist_request)
         # The agents the pickers list (never the host's real agent directory).
         self.agents: list[str] | None = ["kirocrew", "kirocrew-conductor", "builder"]
+        #: What each listed agent does (its spec's description); unlisted: none.
+        self.agent_descriptions: dict[str, str] = {}
 
-        async def agent_choices(_project_dir: Any) -> list[str] | None:
-            return list(self.agents) if self.agents is not None else None
+        async def agent_menu(_project_dir: Any) -> dict[str, str] | None:
+            if self.agents is None:
+                return None
+            return {n: self.agent_descriptions.get(n, "") for n in self.agents}
 
-        monkeypatch.setattr(agent_picker, "agent_choices", agent_choices)
+        monkeypatch.setattr(agent_picker, "agent_menu", agent_menu)
         status.set_slack_provider(lambda: self.slack)
 
     def info(self, channel: str, **kwargs: Any) -> None:

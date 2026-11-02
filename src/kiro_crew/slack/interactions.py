@@ -178,16 +178,22 @@ async def dispatch(payload: dict) -> None:
             resources=action_id,
             error="unauthorized user",
         )
-        from kiro_crew.slack.code_channels import agent_picker
+        from kiro_crew.slack.code_channels import agent_picker, approval_picker
 
+        refusal = "⛔ You are not authorized to use these buttons."
         if action_id == agent_picker.AGENT_SELECT_ACTION_ID:
             # Slack Code's agent picker records each change decision as its own.
             agent_picker.audit_refused_pick(payload, "unauthorized user")
+            refusal = agent_picker.OWNER_ONLY_TEXT
+        elif action_id in (
+            approval_picker.APPROVAL_SELECT_ACTION_ID,
+            approval_picker.APPROVAL_CONFIRM_ACTION_ID,
+        ):
+            approval_picker.audit_refused_pick(payload, "unauthorized user")
+            refusal = approval_picker.OWNER_ONLY_TEXT
         if _orch and _orch.slack and channel and user_id:
             try:
-                await _orch.slack.post_ephemeral(
-                    channel, user_id, "⛔ You are not authorized to use these buttons."
-                )
+                await _orch.slack.post_ephemeral(channel, user_id, refusal)
             except Exception:
                 logger.debug("Failed to send ephemeral rejection", exc_info=True)
         return
@@ -221,13 +227,22 @@ async def dispatch(payload: dict) -> None:
     from kiro_crew.slack.code_channels.agent_picker import AGENT_SELECT_ACTION_ID, handle_select
 
     if action_id == AGENT_SELECT_ACTION_ID:
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info(
                 "slack code channel agent pick dropped: denied by channels governance policy"
             )
             return
         if await handle_select(_orch, payload):
             return
+
+    # ── Slack Code: approval-card controls (owner-only, audited there) ──
+    from kiro_crew.slack.code_channels.worker_approvals import dispatch_card_click
+
+    if await dispatch_card_click(_orch, payload, action_id):
+        return
 
     # ── OPTIONS choice buttons / "Choose several..." menu ──
     # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show

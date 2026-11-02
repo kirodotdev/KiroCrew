@@ -16,6 +16,17 @@ export interface SlackCodeDraft {
   /** INHERIT_MODEL ('auto') = keep the agent's own model. */
   model: string
   effort: string
+  /** One of APPROVAL_MODES; 'ask' (the default) is stored as unset. */
+  approval: string
+}
+
+/** The approval modes a code channel's session can start in, in picker order.
+ *  The labels are the session approval picker's own, so the mode reads the same
+ *  here and on the session where it can be changed later. */
+export const APPROVAL_MODES = ['ask', 'trust_reads', 'trust'] as const
+
+function approvalFromWire(raw: string | null | undefined): string {
+  return raw === 'trust_reads' || raw === 'trust' ? raw : 'ask'
 }
 
 export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
@@ -32,6 +43,7 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
     agent: d?.agent ?? '',
     model: d?.model ?? INHERIT_MODEL,
     effort: d?.reasoning_effort ?? '',
+    approval: approvalFromWire(d?.approval_mode),
   }
 }
 
@@ -49,6 +61,7 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
     agent: x.agent || null,
     model: x.model && x.model !== INHERIT_MODEL ? x.model : null,
     reasoning_effort: x.effort || null,
+    approval_mode: x.approval === 'ask' ? null : x.approval,
   })
   const next = wire(d)
   const prev = wire(saved)
