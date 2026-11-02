@@ -10,6 +10,11 @@ import { i18nT } from '../../i18n/t'
 import { sp } from './elements'
 import { useMarkdownTableColumns } from './useMarkdownTableColumns'
 
+/** 5u above the table (one step past a paragraph, so the grid reads as its own
+ *  block) and nothing below: under the table sits the action row, and the
+ *  next block's own top margin is the gap after it (#27001). */
+const TABLE_WRAPPER_CLS = 'mt-[1.25em] mb-0'
+
 const TABLE_ACTION_BTN_CLS = 'flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
 
 /** A markdown table plus the row of copy actions beneath it.
@@ -105,7 +110,7 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
     : <Icon size={13} aria-hidden="true" />
 
   return (
-    <div className="markdown-table my-3 group/table" data-testid="markdown-table" data-expanded={expanded ? '' : undefined}>
+    <div className={`markdown-table ${TABLE_WRAPPER_CLS} group/table`} data-testid="markdown-table" data-expanded={expanded ? '' : undefined}>
       {/* A hidden scrollbar leaves no sign that columns sit past an edge, so
           fade whichever edge still clips. The fade is a `mask-image` on the
           scroller itself (the proven edge-fade pattern — ThinkingBlock,
@@ -138,8 +143,8 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
       ><table {...sp(node)} ref={setTable} style={columns.tableStyle} className={columns.resized
         // A narrowed fixed-layout column clips its content instead of painting
         // it over the neighbour; a header label ellipsizes (it never wraps).
-        ? 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal] [&_th]:overflow-hidden [&_th]:text-ellipsis [&_td]:overflow-hidden'
-        : 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]'}>{columns.colgroup}{children}</table>{columns.grips}</div>
+        ? 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal] [&_tbody>tr:last-child>td]:border-b-0 [&_th]:overflow-hidden [&_th]:text-ellipsis [&_td]:overflow-hidden'
+        : 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal] [&_tbody>tr:last-child>td]:border-b-0'}>{columns.colgroup}{children}</table>{columns.grips}</div>
       <div className={`mt-0.5 flex items-center justify-end gap-1 select-none opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
         {/* Shown only where a table can widen (index.css: a top-level
             assistant table in an unbordered transcript bubble); everywhere

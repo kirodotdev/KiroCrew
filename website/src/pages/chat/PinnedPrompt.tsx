@@ -138,7 +138,8 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * The card is a pixel-for-pixel copy of the user bubble's own box — same
  * `px-4 mx-auto` content column, right-aligned, the bubble's own `max-w-full`
  * cap (so both follow Settings → Chat → Content Width, #8398), `px-4 py-2
- * rounded-xl bg-card text-sm` with an inner `my-1 leading-6` paragraph —
+ * rounded-xl bg-card text-sm` with an inner `my-0 leading-normal` paragraph (the
+ * renderer's first paragraph, whose top margin the root resets) —
  * because the transcript row it represents is hidden while it is pinned (see
  * ChatTranscriptView's row `visibility`; the row's action strip beneath the bubble is
  * re-shown in place by index.css's `[data-pinned-standin]` rule, since this card
@@ -369,10 +370,10 @@ export default function PinnedPrompt({
     // `deltaMode` is not always pixels. Firefox reports lines, and page mode exists
     // too; treating either as pixels would move the transcript by a few px when the
     // reader asked for a screen. The line height to convert with is the PARAGRAPH's
-    // (`my-1 leading-6`, 24px), not the box's: `box` is the `.user-bubble` div and its
+    // (`leading-normal`, 1.5), not the box's: `box` is the `.user-bubble` div and its
     // `text-sm` sets line-height to 1.25rem (20px), while `.user-bubble` in index.css
-    // only sets `background-color`. Reading the box made a line-mode wheel travel 20px
-    // per line instead of 24 — short by a sixth, on every notch.
+    // only sets `background-color`. Reading the box made a line-mode wheel travel short
+    // of a line on every notch.
     const lineHeight = parseFloat(getComputedStyle(textRef.current ?? box).lineHeight) || 24
     const pixels = (e: WheelEvent) => {
       if (e.deltaMode === 1) return e.deltaY * lineHeight
@@ -790,7 +791,7 @@ export default function PinnedPrompt({
               // nothing. A cut line with nothing to say "more" read as a rendering
               // defect, not a scroll region — the scrollbar is overlay-hidden on
               // macOS and absent from a headless capture.
-              className={`my-1 leading-6 min-h-0 ${folding
+              className={`my-0 leading-normal min-h-0 ${folding
                 ? 'whitespace-pre-wrap break-words overflow-hidden'
                 : expanded
                   ? `whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto${moreBelow ? ' pinned-scroll-more' : ''}`
@@ -876,9 +877,10 @@ export default function PinnedPrompt({
               aria-label={expanded
                 ? i18nT('pages.chat.pinnedPrompt.collapse_pinned_prompt')
                 : i18nT('pages.chat.pinnedPrompt.expand_pinned_prompt')}
-              /* my-1 + one line box mirrors the paragraph's own metrics, so the
-                 icon centres on the first line and adds no height to the card. */
-              className="shrink-0 my-1 h-6 flex items-center bg-transparent border-none p-0 m-0 text-muted hover:text-text transition-colors cursor-pointer"
+              /* One line box (1.5em, the paragraph's `leading-normal`) mirrors the
+                 paragraph's own metrics, so the icon centres on the first line and
+                 adds no height to the card. */
+              className="shrink-0 h-[1.5em] flex items-center bg-transparent border-none p-0 m-0 text-muted hover:text-text transition-colors cursor-pointer"
             >
               <ChevronDown
                 size={16}

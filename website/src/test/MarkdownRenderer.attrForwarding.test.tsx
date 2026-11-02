@@ -31,14 +31,14 @@ describe('MarkdownRenderer — overrides forward sanitize-admitted attributes', 
     expect(td!.getAttribute('rowspan')).toBe('2')
     // The override's own styling is untouched by the forward.
     expect(th!.className).toContain('border-b')
-    expect(td!.className).toContain('px-3')
+    expect(td!.className).toContain('py-[0.625em]')
   })
 
   it('keeps an explicit value on a list item', () => {
     const { container } = render(<MarkdownRenderer content={'<ol><li value="5">five</li><li>six</li></ol>'} />)
     const li = container.querySelector('li')
     expect(li!.getAttribute('value')).toBe('5')
-    expect(li!.className).toContain('leading-relaxed')
+    expect(li!.className).toContain('leading-normal')
   })
 
   it('never forwards class from the source, so the override owns styling', () => {
@@ -46,7 +46,7 @@ describe('MarkdownRenderer — overrides forward sanitize-admitted attributes', 
     // the hast node — but the override sets className itself and must win.
     const { container } = render(<MarkdownRenderer content={'<ol><li class="attacker">x</li></ol>'} />)
     const li = container.querySelector('li')
-    expect(li!.className).toContain('leading-relaxed')
+    expect(li!.className).toContain('leading-normal')
     expect(li!.className).not.toContain('attacker')
   })
 
