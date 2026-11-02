@@ -700,6 +700,17 @@ custom-rules:
       empty states, warnings, or status text about something that has not
       failed — those are not errors and must not be dressed as one.
 
+      One exception, and it is a closed list: the expected end states named in
+      `EXPECTED_END_STATES` (`src/components/expectedEndStates.ts`) render as
+      status (`StatusNotice`) even though they arrive as a refused request or a
+      stopped loop, because nothing on the user's side went wrong —
+      `approval_gone` (a press on an approval already expired, decided elsewhere
+      or replaced) and `interrupted_cycle` (a loop cycle cut off by a restart,
+      owed and resumed). A surface opts in only through `isExpectedEndState`;
+      every outcome not on that list is still an error. Adding an entry is a
+      product decision recorded with this rule, never a way for one surface to
+      quiet its own failure.
+
       `askAgent` is opt-in, and the direction of that default is the safety
       property (the prop's doc comment says why). The hand-off NAVIGATES to the
       chat and unmounts the tree that rendered the banner, destroying any

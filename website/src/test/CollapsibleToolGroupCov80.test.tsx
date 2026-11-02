@@ -156,10 +156,10 @@ describe('CollapsibleToolGroup approval dispatch', () => {
 
     fireEvent.click(screen.getByText(T('approve')))
 
-    // A refused decide is a failed request: it renders through ErrorNotice
-    // (errors-use-error-notice), the gone sentence included.
-    const gone = await screen.findByRole('alert')
-    expect(gone).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText(T('approve'))).not.toBeInTheDocument()
     expect(screen.queryByText(T('reject'))).not.toBeInTheDocument()
     // Nothing is left to decide, so the header no longer says one is needed.
@@ -177,7 +177,7 @@ describe('CollapsibleToolGroup approval dispatch', () => {
     )
     expect(screen.getByTestId('tool-group-approval-preview').className).toContain('amber')
     fireEvent.click(screen.getByText(T('approve')))
-    await screen.findByRole('alert')
+    await screen.findByRole('status')
     expect(screen.getByTestId('tool-group-approval-preview').className).not.toContain('amber')
   })
 

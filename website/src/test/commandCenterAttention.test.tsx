@@ -322,10 +322,21 @@ describe('task dashboard input routing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument())
     expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument()
-    // The refused press is a failed request: it renders through ErrorNotice
-    // (errors-use-error-notice) in the sentence every approval surface uses.
-    expect(screen.getByRole('alert')).toHaveTextContent('This approval expired, was already decided, or was replaced by a newer request')
+    // A gone approval is an expected end state: it renders as status, in the
+    // sentence every approval surface uses, never as an error notice.
+    expect(screen.getByTestId('attention-approval-gone')).toHaveTextContent('This approval expired, was already decided, or was replaced by a newer request')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=child')
+  })
+
+  it('drops the decision help with the buttons once an approval is gone', async () => {
+    vi.spyOn(api, 'decideApproval').mockRejectedValue(new ApiError(404, 'expired'))
+    renderWithProviders(<AttentionCard item={approval} title="Worker" />)
+    expect(screen.getByText('Reject once refuses this request. Permission mode stays the same.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
+    await screen.findByTestId('attention-approval-gone')
+    expect(screen.queryByText('Reject once refuses this request. Permission mode stays the same.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Responding here resolves this request. Other views show the result when refreshed.')).not.toBeInTheDocument()
   })
 
   it.each([false, true])('preserves the selected answer after an uncertain direct delivery (snapshot running=%s)', async running => {

@@ -373,7 +373,7 @@ function ChatInput({
   const {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
@@ -402,7 +402,7 @@ function ChatInput({
   // Timed client-side from the frame that carried the decline; see the hook.
   const stopDeclinedArmed = useStopDeclinedHint(stopDeclined)
 
-  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError })
+  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus })
 
   const {
     inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed,
@@ -1270,6 +1270,7 @@ function ChatInput({
       {approvalNotice && (approvalNoticeKind === 'status' || approvalNoticeKind === 'settled') && (
         <div
           role="status"
+          data-testid="approval-decision-status"
           className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
         >
           {approvalNoticeKind === 'settled' ? <CheckCircle size={12} className="text-ok shrink-0" /> : <Lock size={12} className="text-warn shrink-0" />}

@@ -5,8 +5,10 @@ import { purposeFromToolArgs } from '../../utils/toolPurpose'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { ToolInputText } from '../../components/ToolInputText'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { ApiError } from '../../api/client'
-import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { approvalRefusalEndState } from '../../api/apiError'
+import { isExpectedEndState, type ExpectedEndState } from '../../components/expectedEndStates'
 import { useRowDisclosure } from './rowDisclosure'
 import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
@@ -129,12 +131,12 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   const buttonsRef = useRef<HTMLDivElement | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [localResolved, setLocalResolved] = useState<string | null>(null)
-  const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
+  const [failure, setFailure] = useState<{ endState: ExpectedEndState | null; message: string; attempted: string } | null>(null)
   const needsAttention = !!hasPermission && !localResolved
   // A press the server refused as gone leaves nothing to decide: the header
   // drops its pending dot and "Approval needed" and reads as a plain tool
   // group, while the notice below says what became of the request.
-  const headerPending = needsAttention && !failure?.terminal
+  const headerPending = needsAttention && !failure?.endState
 
   // Skip the first run: on mount the disclosure already starts from
   // `restingExpanded` (the fallback above), and writing it here would overwrite
@@ -223,7 +225,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
         setSubmitting(false)
         const refusal = err instanceof ApiError ? err : null
         setFailure({
-          terminal: isTerminalApprovalRefusal(err),
+          endState: approvalRefusalEndState(err),
           message: refusal?.message ?? '',
           attempted: decision,
         })
@@ -235,7 +237,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   // silently choose a different verdict. Terminal refusals have no live action
   // to restore: the approval is already gone.
   useEffect(() => {
-    if (!failure || failure.terminal) return
+    if (!failure || failure.endState) return
     const buttons = Array.from(buttonsRef.current?.querySelectorAll('button') ?? [])
     if (!buttons.length) return
     const target = failure.attempted === 'approved' ? buttons[0]
@@ -281,7 +283,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
       {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!preview) && (
         // The amber bar marks a request still waiting; after a refusal for one
         // that is gone it takes the group's own neutral bar.
-        <div data-testid="tool-group-approval-preview" className={`mt-1 ml-4 pl-3 ${failure?.terminal ? 'shadow-[inset_2px_0_0_0_var(--border)]' : 'shadow-[inset_2px_0_0_0_var(--color-amber-400)]'} forced-colors:border-l-2`}>
+        <div data-testid="tool-group-approval-preview" className={`mt-1 ml-4 pl-3 ${failure?.endState ? 'shadow-[inset_2px_0_0_0_var(--border)]' : 'shadow-[inset_2px_0_0_0_var(--color-amber-400)]'} forced-colors:border-l-2`}>
           {isBatch ? (
             <>
               {/* Batch: preview EVERY pending call so "Approve all N" is not a
@@ -311,7 +313,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
           )}
         </div>
       )}
-      {needsAttention && (onApprove || onApproveBatch) && !failure?.terminal && (
+      {needsAttention && (onApprove || onApproveBatch) && !failure?.endState && (
         <div ref={buttonsRef} className="mt-1 ml-4 pl-3 flex gap-2 flex-wrap">
           <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {isBatch ? i18nT('pages.chat.collapsibleToolGroup.approve_all', { count: pendingPermCount }) : i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
           {canTrust && !isBatch && <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>}
@@ -319,20 +321,20 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
         </div>
       )}
 
-      {failure !== null && (
-        // A refused decide is a failed request (errors-use-error-notice), the
-        // gone refusal included. Hand-off on by default. The approval buttons
-        // hold no draft of their own, and the main chat's composer draft is
-        // persisted per slot (ChatPage saves it on slot switch) while the
-        // hand-off opens a FRESH slot.
+      {failure !== null && (isExpectedEndState(failure.endState) ? (
+        // A gone approval is status, not a failure: a muted status row, not the
+        // red hand-off error below.
+        <StatusNotice variant="inline" className="mt-1 ml-4 pl-3" message={i18nT('components.approvalCard.approval_no_longer_pending')} />
+      ) : (
+        // Hand-off on by default. The approval buttons hold no draft of their
+        // own, and the main chat's composer draft is persisted per slot (ChatPage
+        // saves it on slot switch) while the hand-off opens a FRESH slot.
         // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
         // composer draft is unsaved local state the navigation would drop.
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
-      )}
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.message
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+          : i18nT('components.approvalCard.decision_failed')} />
+      ))}
 
       {expanded && <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--border)] forced-colors:border-l-2 flex flex-col gap-1">
         {children}

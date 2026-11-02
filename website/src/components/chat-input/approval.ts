@@ -5,7 +5,8 @@ import { useAppSelector, type useAppDispatch } from '../../store'
 import { pendingQuestionFor, resolveApprovalRow, resolveShownApprovalRow, openActivityToTool, openActivityToTab, selectSlotMessages, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
 import { api } from '../../api/client'
-import { isNotFoundError, isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
+import { approvalRefusalEndState, isNotFoundError, noPendingApprovalError } from '../../api/apiError'
+import { isExpectedEndState, type ExpectedEndState } from '../expectedEndStates'
 import { safeSetItem, safeGetItem } from '../../utils/safeStorage'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -285,6 +286,14 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     setApprovalNoticeKind('error')
     setApprovalNotice(message)
   }, [])
+  // A gone spawn approval (expired, decided elsewhere, replaced) is status, not
+  // a failure — the same split the tool path's 404 branch makes with
+  // `setApprovalNoticeKind('status')` — so the banner reads it in the status
+  // register rather than the error one. #18203.
+  const showApprovalStatus = useCallback((message: string) => {
+    setApprovalNoticeKind('status')
+    setApprovalNotice(message)
+  }, [])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
@@ -429,7 +438,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
@@ -438,11 +447,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
   showApprovalError: (message: string) => void
+  showApprovalStatus: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -489,14 +499,16 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
   // owner both surfaces read (#11180), instead of leaving buttons that can only
   // re-send it. The refusal names the request the card was raised for, so a
   // newer request that took over the id keeps its card live.
-  const withdrawGoneSpawn = useCallback((a: SubagentActivity, target: CoordinatorApprovalTarget | null) => {
+  const withdrawGoneSpawn = useCallback((a: SubagentActivity, target: CoordinatorApprovalTarget | null, endState: ExpectedEndState) => {
     const approvalId = a.approval_id
     if (!approvalId) return
     dispatch(markSubagentApprovalGone({ id: a.id, approval_id: approvalId, target }))
-    // A rejected request, so an error surface, and the only one: the
-    // refusal is reported once, by the surface that sent it. The chip and
-    // the activity card show this id's liveness as neutral status.
-    showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+    // A gone approval (expired, decided elsewhere, replaced) is status, not
+    // a failure: nothing on the user's side went wrong. Reported once, by the
+    // surface that sent it; the chip and the activity card show this id's
+    // liveness as neutral status too.
+    const notice = isExpectedEndState(endState) ? showApprovalStatus : showApprovalError
+    notice(i18nT('components.approvalCard.approval_no_longer_pending'))
     // The liveness read that settles the card. A refusal leaves it
     // unresolved (the chip's poll retries) and is reported, not swallowed,
     // on its own notice so the refusal above stays on screen: until the
@@ -506,14 +518,14 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
         .catch(() => setLivenessFailedFor(a.id))
     }
-  }, [dispatch, slotId, showApprovalError])
+  }, [dispatch, slotId, showApprovalError, showApprovalStatus])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
     // Bound to the request the spawn card was raised for; one that names none
     // has nothing live to decide.
     const target = a.approval_target
     if (!target) {
-      withdrawGoneSpawn(a, null)
+      withdrawGoneSpawn(a, null, 'approval_gone')
       return
     }
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
@@ -529,8 +541,9 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: i18nT('hooks.useWebSocket.approval_rejected') }))
       }
     }).catch((err: unknown) => {
-      if (isTerminalApprovalRefusal(err)) {
-        withdrawGoneSpawn(a, target)
+      const endState = approvalRefusalEndState(err)
+      if (endState) {
+        withdrawGoneSpawn(a, target, endState)
         return
       }
       // Any other failure left the decision unrecorded: the buttons come back

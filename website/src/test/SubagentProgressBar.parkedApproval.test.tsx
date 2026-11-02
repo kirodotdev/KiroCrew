@@ -174,7 +174,7 @@ describe('subagent whose spawn approval is gone', () => {
     const { container } = chip({ parked: 2, seed: goneSeed })
     // The refused request already reported itself where it was pressed (the
     // composer or the activity card); a second copy here would show the same
-    // red sentence on two surfaces at once.
+    // sentence on two surfaces at once.
     expect(container.textContent).not.toContain(GONE_ERROR)
     expect(container.querySelector('[role="alert"]')).toBeNull()
     // The open liveness question: neutral, on the row and the count.
