@@ -156,14 +156,21 @@ const KIRO_CLI_MISSING_KIND = 'kiro_cli_missing'
 export const isKiroCliMissing = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === KIRO_CLI_MISSING_KIND || (m.meta as { kind?: string } | undefined)?.kind === KIRO_CLI_MISSING_KIND
 
-/** Row kind the backend stamps on the error a Kiro Cloud chat leaves when its
- *  cloud session could not be reopened and a new cloud session started with the
- *  conversation replayed (`providers/acp_runtime_start.py`). The row's wire text
- *  is the channel fallback; the card shows the localized sentence instead. */
-const CLOUD_SESSION_REPLAYED_KIND = 'cloud_session_replayed'
+/** Row kinds the backend stamps on the error a Kiro Cloud chat leaves when it
+ *  moved onto a new cloud sandbox (`providers/acp_runtime_start.py`): its cloud
+ *  session could not be reopened (`replayed`), or Edit & Resend, a reset or
+ *  compaction dropped it (`replaced`). The row's wire text is the channel
+ *  fallback; the card shows the localized sentence instead. */
+const CLOUD_SESSION_NOTICE_KEYS: Record<string, string> = {
+  cloud_session_replayed: 'sessionEnvironments.kiroCloud.replayed',
+  cloud_session_replaced: 'sessionEnvironments.kiroCloud.replaced',
+}
 
-const isCloudSessionReplayed = (meta: ChatMessage['meta']): boolean =>
-  (meta as { kind?: string } | undefined)?.kind === CLOUD_SESSION_REPLAYED_KIND
+/** The catalog key of a Kiro Cloud sandbox notice row, or `''`. */
+const cloudSessionNoticeKey = (meta: ChatMessage['meta']): string => {
+  const kind = (meta as { kind?: string } | undefined)?.kind
+  return (kind && Object.hasOwn(CLOUD_SESSION_NOTICE_KEYS, kind) && CLOUD_SESSION_NOTICE_KEYS[kind]) || ''
+}
 
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
@@ -593,8 +600,9 @@ export const ErrorCard = memo(function ErrorCard({
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = isCloudSessionReplayed(meta)
-    ? i18nT('sessionEnvironments.kiroCloud.replayed')
+  const cloudNotice = cloudSessionNoticeKey(meta)
+  const content = cloudNotice
+    ? i18nT(cloudNotice)
     : (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still

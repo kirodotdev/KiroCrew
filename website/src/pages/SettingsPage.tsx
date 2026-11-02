@@ -48,7 +48,13 @@ const AgentRunSettings = lazy(() =>
 const BrowserPanel = lazy(() =>
   import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
 )
-import { SessionEnvironmentsCard } from './settings/SessionEnvironmentsCard'
+/**
+ * Lazy: the Session Environments card (Coder, Sprites, boxd and Kiro Cloud editors)
+ * mounts only behind its feature preview, so most Settings visits never need it.
+ */
+const SessionEnvironmentsCard = lazy(() =>
+  import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
 import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
@@ -317,7 +323,11 @@ export default function SettingsPage() {
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
-          <SettingsCard><SessionEnvironmentsCard /></SettingsCard>
+          <SettingsCard>
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <SessionEnvironmentsCard />
+            </Suspense>
+          </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'releases' && <ReleasesPanel />}

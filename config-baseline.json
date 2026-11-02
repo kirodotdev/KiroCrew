@@ -3877,8 +3877,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Kiro Cloud Profiles",
-      "help": "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, repositories}. The session runs in a Kiro cloud sandbox through KAS, without Kiro Crew's tools, MCP servers or governance gate; the gateway's Kiro sign-in authenticates.",
+      "label": "Kiro Cloud Sessions Profiles",
+      "help": "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, repositories}. The session runs in a Kiro Cloud Sessions sandbox through Kiro Agent, without Kiro Crew's tools, MCP servers or governance gate; the gateway's Kiro sign-in authenticates.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []

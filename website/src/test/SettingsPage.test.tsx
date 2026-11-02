@@ -103,21 +103,24 @@ describe('SettingsPage tabs', () => {
     expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
   })
 
-  it('reacts to opt-in without reload and opens the dedicated settings panel', () => {
+  it('reacts to opt-in without reload and opens the dedicated settings panel', async () => {
     renderAt('/settings/developer')
     act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, true))
     fireEvent.click(screen.getByRole('button', { name: 'Session Environments' }))
-    expect(screen.getByTestId('session-environments-panel')).toBeInTheDocument()
+    // The card is a lazy chunk, fetched once its tab opens: the wait names that boundary.
+    expect(await screen.findByTestId('session-environments-panel', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByTestId('developer-panel')).not.toBeInTheDocument()
     act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, false))
     expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
   })
 
-  it('opens a bookmarked Session Environments tab when enabled', () => {
+  it('opens a bookmarked Session Environments tab when enabled', async () => {
     localStorage.setItem(PREVIEW_SESSION_ENVIRONMENTS, '1')
     renderAt('/settings/session-environments')
-    expect(screen.getByTestId('session-environments-panel')).toBeInTheDocument()
+    // A real async chain: the React.lazy import of the card resolves, then Suspense
+    // renders it. findBy*'s 1000ms default can lose that under coverage load.
+    expect(await screen.findByTestId('session-environments-panel', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
   it('updates Session Environments visibility when another browser tab toggles it', () => {

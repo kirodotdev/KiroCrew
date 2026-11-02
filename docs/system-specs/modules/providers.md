@@ -827,7 +827,9 @@ profile on that template; no match reads `false`. Without systemd the
 
 ### Kiro Cloud Sessions
 
-Kiro Cloud profiles (`session_environments.kiro_cloud_profiles`: `id`, `name`,
+Kiro Cloud Sessions is Kiro Agent's feature that runs a whole session in a
+cloud sandbox. Kiro Crew reaches it only through Kiro Agent (the KAS backend),
+never by calling Kiro's cloud itself. Kiro Cloud Sessions profiles (`session_environments.kiro_cloud_profiles`: `id`, `name`,
 `repositories`, each `name` or `owner/name`, at most 10, no other key) are the
 one provider whose AGENT runs remotely, so the "engine stays on the gateway"
 rule above does not hold for them. A profile id names one provider: the config
@@ -900,7 +902,7 @@ session with messages and that durable record is locked even though no registry
 row exists, since its history lives in Kiro's cloud store. Archiving leaves the
 cloud session to Kiro.
 
-Kiro Cloud turns survive client disconnects. `turn_survives_disconnect` is False
+Kiro Cloud Sessions turns survive client disconnects. `turn_survives_disconnect` is False
 on `LLMProvider` and True only on the installed cloud harness's providers, so a
 graceful gateway shutdown skips their cooperative cancel and kills only the local
 relay. An explicit user Stop still cancels normally. The cloud teardown policy is
@@ -912,7 +914,7 @@ delete there would destroy the sandbox with any unpushed work in it. Only a star
 own cleanup of a session it minted and recorded nowhere deletes; other KAS and local
 sessions are unchanged.
 
-Kiro Cloud is unavailable to incognito and temporary chats. Such a chat never reopens
+Kiro Cloud Sessions is unavailable to incognito and temporary chats. Such a chat never reopens
 its native session (resume is for persistent chats only), so after an idle eviction
 or a restart a cloud start would mint a new sandbox and silently strand the earlier
 one's files. It is refused before any sandbox exists, at three points: the start
@@ -938,8 +940,18 @@ the provider. The next dashboard claim surfaces it as a persisted `error` row
 (something the user had did not reopen, so it renders through the transcript's
 `ErrorCard`, per `errors-use-error-notice`), not prompt context, with
 `meta.kind = cloud_session_replayed`; the card renders that kind's localized
-sentence in every locale. No row is emitted for a successful reload or an
-ordinary local/KAS fallback.
+sentence in every locale. A load that replays no earlier turn is a failed load
+here too (`require_replay`), so it takes the same fallback and notice.
+
+A start that reaches `session/new` with no reopen attempted, because Edit &
+Resend, a reset or compaction dropped the session's resume id, still replaces
+the cloud session the chat's choice row recorded. `record_cloud_session` returns
+that earlier id, read under the same lock as the write; when it differs from the
+new one the start stores the same kind of notice with
+`meta.kind = cloud_session_replaced`, saying the chat now runs on a new sandbox
+and that the earlier one was not deleted and is still listed in Kiro Web. No row
+is emitted for a successful reload, a first start, or an ordinary local/KAS
+fallback.
 
 ## Essential-context delivery contract
 
