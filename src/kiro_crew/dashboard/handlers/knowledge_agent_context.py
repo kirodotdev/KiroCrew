@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from aiohttp import web
 
@@ -25,6 +26,8 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.ingestion import _redact
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
+
+logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 # ---------- Knowledge Fetch (for chat context injection) ----------
 
@@ -128,6 +131,19 @@ async def search_for_context(request: web.Request) -> web.Response:
     # the shared model.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
+    # Remote bedrock_kb sources are queried live under a hard timeout and
+    # fail OPEN (empty on any failure), then interleaved by rank inside the
+    # shared helper. to_thread keeps the boto round trips off the event
+    # loop; the bound lives inside the helper. The deferred import ALSO runs
+    # inside the thread: importing boto3 on first use takes long enough to
+    # stall every gateway task if it ran on the loop.
+    def _augment_in_thread():
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        return bedrock_kb.augment_with_remote(store, q, limit, results)
+
+    results = await asyncio.to_thread(_augment_in_thread)
+
     cards = []
     total_tokens = 0
     for r in results:
@@ -200,3 +216,80 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
         status=result.get("status", ""),
     )
     return web.json_response(result)
+
+
+async def remote_search(request: web.Request) -> web.Response:
+    """POST /api/knowledge/remote-search — raw bedrock_kb results (INTERNAL).
+
+    Exists for exactly one caller: the sandboxed MCP server's remote leg.
+    The sandbox seals ``aws_service_consent.json`` with a file-level
+    self-bind, which PINS THE INODE — a host-side withdrawal replaces the
+    file by atomic rename, so a sandboxed process keeps reading the old,
+    still-granted bytes. Consent must therefore be evaluated in THIS
+    process, which reads the live keystone store; the MCP process receives
+    results, never a consent verdict of its own. Loopback +
+    X-Internal-Secret via the mixed-internal registry, and STRICT-internal
+    on top: the mixed registry also admits cookie-authenticated browsers,
+    but these results are RAW connector output (un-redacted content), so a
+    browser session is refused — the dashboard's own surfaces get remote
+    results through search-for-context, which redacts.
+    """
+    if request.get("internal_auth") is not True:
+        # Best-effort SEL denial, mirroring every peer internal-auth handler:
+        # an ordinary cookie session CAN reach this refusal through the
+        # mixed-path middleware, and an unaudited denial is invisible to
+        # `kirocrew security events`. Late-binding sel() is the package's
+        # standing circular-import exception.
+        try:
+            import kiro_crew.dashboard.handlers as _pkg
+
+            _pkg.sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="knowledge_remote_search",
+                outcome="denied",
+                source="dashboard",
+                resources=request.path,
+                error="internal secret required",
+            )
+        except Exception:
+            pass
+        return web.json_response(
+            {"error": "internal callers only", "code": "internal_only"}, status=403
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        # ``[]`` or a bare scalar is valid JSON but reaches ``.get`` otherwise.
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    query = str(body.get("query") or "").strip()
+    try:
+        limit = max(1, min(int(body.get("limit") or 5), 20))
+    except (TypeError, ValueError):
+        limit = 5
+    source_id = body.get("source_id")
+    if not query:
+        return web.json_response({"results": []})
+    store = _store(request)
+
+    def _run() -> list[dict]:
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        # The BOUNDED variant: the connector's admission semaphore caps
+        # concurrent remote legs and its wall-clock budget cancels laggards —
+        # calling the raw search here bypassed both, so repeated MCP searches
+        # could queue unbounded threads that keep issuing paid calls after
+        # their caller timed out.
+        return bedrock_kb.search_remote_sources_bounded(
+            store, query, limit, source_id=str(source_id) if source_id else None
+        )
+
+    try:
+        results = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.info("remote-search leg failed open: %s", e.__class__.__name__)
+        results = []
+    return web.json_response({"results": results})

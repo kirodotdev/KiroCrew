@@ -18,6 +18,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_config_text
 from kiro_crew.dashboard.handlers.knowledge_agent_context import (
     add_agent_document_route,
+    remote_search,
     search_for_context,
 )
 from kiro_crew.dashboard.handlers.knowledge_bundles import export_all, export_item, import_bundle
@@ -261,6 +262,40 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+
+        # Amazon Bedrock KB: live-retrieval source with no local items. The
+        # proxy keeps the optional subsystem OFF the gateway boot path
+        # (no-new-work-on-gateway-boot-path): constructing it does no work,
+        # and the bedrock_kb module (and, inside it, boto3) loads on the
+        # first validate/sync call. The connector reports the missing
+        # [bedrock] extra itself when boto3 is absent.
+        class _LazyBedrockKBConnector(BaseConnector):
+            def _real(self) -> "BaseConnector":
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector()
+
+            def source_type(self) -> str:
+                return "bedrock_kb"
+
+            def validate_config(self, config: dict) -> tuple[bool, str]:
+                return self._real().validate_config(config)
+
+            def validate_registration(self, config: dict) -> tuple[bool, str, str]:
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector().validate_registration(config)
+
+            async def detect_changes(self, source: dict) -> bool:
+                # Mirrors the real connector: a live-retrieval source never
+                # syncs, and answering False here avoids loading the module
+                # from SyncScheduler.sync_all sweeps.
+                return False
+
+            async def fetch(self, source: dict) -> tuple[str, dict]:
+                return await self._real().fetch(source)
+
+        connectors["bedrock_kb"] = _LazyBedrockKBConnector()
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
@@ -331,6 +366,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/embedding/status", get_embedding_status)
     app.router.add_post("/api/knowledge/embedding/generate", batch_embed_items)
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
+    app.router.add_post("/api/knowledge/remote-search", remote_search)
 
     # Pool lifecycle: lazy start on first request, shutdown on app exit
     app.on_cleanup.append(_shutdown_knowledge_pools)
