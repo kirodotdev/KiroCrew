@@ -142,7 +142,7 @@ describe('PrFiltersSection', () => {
   it('shows Clear only while a PR filter is active and calls clearPrFilters', () => {
     const value = setContext()
     const { unmount } = render(<PrFiltersSection />)
-    expect(screen.queryByRole('button', { name: /clear/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument()
     unmount()
 
     setContext({ anyPrFilterActive: true, clearPrFilters: value.clearPrFilters })
