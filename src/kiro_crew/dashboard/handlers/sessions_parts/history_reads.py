@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
     _app_transcript_refusal,
     _audit_app_allow,
 )
+from kiro_crew.dashboard.session_open_marks import mark_open_sessions
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import (
     _SEARCH_SCAN_WINDOW,
@@ -492,6 +493,9 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         sessions = await asyncio.get_running_loop().run_in_executor(
             None, state.conversation_log.search_sessions, q, limit
         )
+        # The dashboard's own search ranks open tabs first. Only this arm marks
+        # them: an app caller and a remote crew read get the rows unchanged.
+        mark_open_sessions(sessions, state)
     for s in sessions:
         for field in SESSION_SEARCH_TEXT_FIELDS:
             value = s.get(field)

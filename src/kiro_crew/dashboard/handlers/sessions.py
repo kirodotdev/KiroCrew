@@ -194,6 +194,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import internal_memory_scope  # noqa: F401
     from kiro_crew.dashboard.interaction_coordinator import _slot_decision  # noqa: F401
+    from kiro_crew.dashboard.session_open_marks import mark_open_sessions  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.history import ConversationLog  # noqa: F401
     from kiro_crew.history import _SEARCH_SCAN_WINDOW  # noqa: F401

@@ -127,7 +127,11 @@ export default function CommandPalette({
   const vv = useVisualViewport()
   // P0 providers. Each is memoized inside its hook, so identities are stable.
   const all = useAllAggregator()
-  const sessions = useSessionsProvider({ openInSplit })
+  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // The sessions open right now, as a stable string. The server marks which hits
+  // they own, so a change here must not reuse a cached search reply.
+  const openSessionsKey = useMemo(() => slots.map(slot => slot.key).sort().join('\u0000'), [slots])
+  const sessions = useSessionsProvider({ openInSplit, openSessionsKey })
   const pages = usePagesProvider()
   const actions = useActionsProvider({ openShortcuts: openShortcuts ?? NOOP })
 
@@ -362,8 +366,8 @@ export default function CommandPalette({
   // unread / pin / recency), but React Query only re-invokes search() on a KEY
   // change — a re-memoized provider identity alone does nothing. Fold a
   // fingerprint of that live state into the key so status dots and MRU order
-  // update while the palette is open instead of freezing at open-time.
-  const slots = useAppSelector(selectSlotsWithLiveLastTs)
+  // update while the palette is open instead of freezing at open-time. `slots`
+  // is read at the top of the component.
   const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   // Rows render a tool status through toolStatusLabel, so the purpose-vs-raw-title
@@ -389,8 +393,11 @@ export default function CommandPalette({
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
   )
+  // The Sessions and All tabs rank open tabs first from the server's `open`
+  // flag, so a tab opening or closing must re-run their search too.
+  const openTabsKey = activeProvider.id === 'sessions' || activeProvider.id === 'all' ? openSessionsKey : ''
   const { data: results = [], isLoading: loading, isError, refetch } = useQuery({
-    queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],
+    queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint, openTabsKey],
     queryFn: () => Promise.resolve(activeProvider.search(debouncedQuery)),
     enabled: open,
     placeholderData: (prev) => prev ?? [],

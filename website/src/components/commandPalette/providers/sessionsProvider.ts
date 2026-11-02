@@ -13,7 +13,6 @@ import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import type { Result, ResourceProvider } from '../types'
-import { normalizeKey } from './recentsProvider'
 
 /**
  * Sessions provider for the Search Everywhere command palette.
@@ -82,6 +81,9 @@ export interface SessionSearchItem {
   instance_id?: string
   /** Display name of the owning remote instance (raw, never translated). */
   instance_name?: string
+  /** Set by the server on a LOCAL row whose transcript an open dashboard tab
+   *  owns. Open hits rank above history (#21290). Never set on a remote row. */
+  open?: boolean
 }
 
 /** Shape of the `/api/sessions/search` response envelope. */
@@ -113,13 +115,6 @@ export interface SessionsProviderDeps {
   openSession: (ref: SessionRef) => void
   /** Open a session in a split pane / Session Grid (⌘Enter). Optional. */
   openInSplit?: (ref: SessionRef) => void
-  /**
-   * Whether a LOCAL session is open in the dashboard right now (#21290). Called
-   * with the live slot key: a history key's `dashboard_` prefix is stripped first.
-   * Open hits rank above history; order inside each tier is unchanged.
-   * Optional: without it every row is one tier, as before.
-   */
-  isOpenSession?: (key: string) => boolean
 }
 
 function sessionIcon() {
@@ -131,7 +126,7 @@ function sessionIcon() {
  * Pure (no hooks) so it can be exercised directly in tests.
  */
 export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProvider {
-  const { fetchSessions, fetchFolders, openSession, openInSplit, isOpenSession } = deps
+  const { fetchSessions, fetchFolders, openSession, openInSplit } = deps
 
   return {
     id: PROVIDER_ID,
@@ -227,8 +222,8 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
             : undefined
         const id = remote ? `${PROVIDER_ID}:${s.instance_id}:${s.key}` : `${PROVIDER_ID}:${s.key}`
         backendIndexById.set(id, backendIndex)
-        // History keys carry a `dashboard_` prefix the live slot key lacks.
-        if (!remote && isOpenSession?.(normalizeKey(s.key))) openIds.add(id)
+        // The server marks a local row its open tab owns; a remote row never counts.
+        if (!remote && s.open === true) openIds.add(id)
         return {
           id,
           providerId: PROVIDER_ID,
@@ -307,8 +302,9 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
 export function useSessionsProvider(opts?: {
   openInSplit?: (ref: SessionRef) => void
   active?: boolean
-  /** Keys of the sessions open in this dashboard; their hits rank first. */
-  openSessionKeys?: ReadonlySet<string>
+  /** Changes whenever a tab opens or closes. The server marks open hits, so a
+   *  cached reply from before the change must not be reused. */
+  openSessionsKey?: string
 }): ResourceProvider {
   const dispatch = useAppDispatch()
   // Read on the focus frame after a resume: only a resume that took the view
@@ -320,8 +316,8 @@ export function useSessionsProvider(opts?: {
   const active = opts?.active ?? true
   // Read at search time through a ref, so a slot update does not rebuild the
   // provider (same pattern as hasWarmRef below).
-  const openKeysRef = useRef(opts?.openSessionKeys)
-  openKeysRef.current = opts?.openSessionKeys
+  const openKeyRef = useRef(opts?.openSessionsKey ?? '')
+  openKeyRef.current = opts?.openSessionsKey ?? ''
   // True when at least one remote instance holds a live connection; drives the
   // federated-vs-local endpoint choice per keystroke without rebuilding the
   // provider (read via ref inside the memoized fetch). Guarded read: the
@@ -357,7 +353,9 @@ export function useSessionsProvider(opts?: {
             // The endpoint is part of the key: federated and local replies for
             // the same q are different result sets and must not share a cache
             // entry across a connect/disconnect.
-            queryKey: ['palette', 'sessions', hasWarmRef.current ? 'federated' : 'local', q],
+            // The open-tab set is part of the key too: the reply's `open` flags
+            // describe the tabs open when it was answered.
+            queryKey: ['palette', 'sessions', hasWarmRef.current ? 'federated' : 'local', q, openKeyRef.current],
             queryFn: async () => {
               if (!hasWarmRef.current) return api.sessionsSearch(q)
               try {
@@ -401,7 +399,6 @@ export function useSessionsProvider(opts?: {
           navigate('/chat')
         },
         openInSplit,
-        isOpenSession: (key) => openKeysRef.current?.has(key) ?? false,
       }),
     [dispatch, store, navigate, queryClient, openInSplit, selectInstance],
   )
