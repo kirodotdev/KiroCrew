@@ -15873,7 +15873,14 @@
         "view_audit": "ऑडिट",
         "view_episodic": "एपिसोडिक",
         "view_semantic": "सिमैंटिक",
-        "view_switch_label": "मेमोरी दृश्य"
+        "view_switch_label": "मेमोरी दृश्य",
+        "column_key": "कुंजी",
+        "column_value": "मान",
+        "column_confidence": "विश्वास स्तर",
+        "column_source": "स्रोत",
+        "column_event": "इवेंट",
+        "column_key_type": "कुंजी/प्रकार",
+        "column_details": "विवरण"
       },
       "wakatimeTab": {
         "active_projects": "जिन परियोजनाओं पर तुमने काम किया",

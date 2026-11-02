@@ -15572,7 +15572,14 @@
         "view_audit": "감사",
         "view_episodic": "일화",
         "view_semantic": "의미",
-        "view_switch_label": "기억 보기"
+        "view_switch_label": "기억 보기",
+        "column_key": "키",
+        "column_value": "값",
+        "column_confidence": "신뢰도",
+        "column_source": "출처",
+        "column_event": "이벤트",
+        "column_key_type": "키/유형",
+        "column_details": "세부 정보"
       },
       "wakatimeTab": {
         "active_projects": "작업한 프로젝트",

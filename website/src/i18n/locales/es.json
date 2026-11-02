@@ -16174,7 +16174,14 @@
         "view_audit": "Auditoría",
         "view_episodic": "Episódica",
         "view_semantic": "Semántica",
-        "view_switch_label": "Vista de memoria"
+        "view_switch_label": "Vista de memoria",
+        "column_key": "Clave",
+        "column_value": "Valor",
+        "column_confidence": "Confianza",
+        "column_source": "Origen",
+        "column_event": "Evento",
+        "column_key_type": "Clave/Tipo",
+        "column_details": "Detalles"
       },
       "wakatimeTab": {
         "active_projects": "Proyectos en los que trabajaste",

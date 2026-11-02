@@ -15873,7 +15873,14 @@
         "view_audit": "Audit",
         "view_episodic": "Episodisch",
         "view_semantic": "Semantisch",
-        "view_switch_label": "Erinnerungsansicht"
+        "view_switch_label": "Erinnerungsansicht",
+        "column_key": "Schlüssel",
+        "column_value": "Wert",
+        "column_confidence": "Konfidenz",
+        "column_source": "Quelle",
+        "column_event": "Ereignis",
+        "column_key_type": "Schlüssel/Typ",
+        "column_details": "Details"
       },
       "wakatimeTab": {
         "active_projects": "Bearbeitete Projekte",

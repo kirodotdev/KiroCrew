@@ -16475,7 +16475,14 @@
         "view_audit": "Аудит",
         "view_episodic": "Эпизодическая",
         "view_semantic": "Семантическая",
-        "view_switch_label": "Вид памяти"
+        "view_switch_label": "Вид памяти",
+        "column_key": "Ключ",
+        "column_value": "Значение",
+        "column_confidence": "Уверенность",
+        "column_source": "Источник",
+        "column_event": "Событие",
+        "column_key_type": "Ключ/тип",
+        "column_details": "Подробности"
       },
       "wakatimeTab": {
         "active_projects": "Проекты, над которыми вы работали",

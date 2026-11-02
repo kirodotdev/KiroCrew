@@ -1058,6 +1058,13 @@
     "sharedCrew.first_share_stop_tailscale": "First-share warning: where to stop sharing while Tailscale access rules decide; Invites is the invite list heading on the same page.",
     "sharedCrew.first_share_laptop": "Laptop warning: sleep cuts teammates off; Crew keeps it awake while they are connected.",
     "sharedCrew.first_share_laptop_no_keep_awake": "Laptop warning when this computer cannot be kept awake.",
-    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link."
+    "sharedCrew.direct_link_note": "Direct-link access follows Tailscale access rules; Tailscale alone decides who opens the link.",
+    "pages.overview.vectorMemoryCard.column_key": "Column header in the Vector Memory card's Semantic Memory table: the name of a stored fact (for example user.name). A noun, not a keyboard key or a password.",
+    "pages.overview.vectorMemoryCard.column_value": "Column header in the Vector Memory card's Semantic Memory table: the stored value of a fact.",
+    "pages.overview.vectorMemoryCard.column_confidence": "Column header in the Vector Memory card's Semantic Memory table: how certain the system is about a fact, shown as a number from 0 to 1.",
+    "pages.overview.vectorMemoryCard.column_source": "Column header in the Vector Memory card's Semantic Memory table: who wrote the fact (the user, or automatic extraction). Not source code.",
+    "pages.overview.vectorMemoryCard.column_event": "Column header in the Vector Memory card's Audit Trail table: the kind of memory event logged (create, update, delete, conflict, block).",
+    "pages.overview.vectorMemoryCard.column_key_type": "Column header in the Vector Memory card's Audit Trail table: the key of the semantic fact the event touched, or the memory type (episodic) when there is no key. Keep the slash.",
+    "pages.overview.vectorMemoryCard.column_details": "Column header in the Vector Memory card's Audit Trail table: the new or old value the event recorded."
   }
 }

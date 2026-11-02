@@ -15572,7 +15572,14 @@
         "view_audit": "監査",
         "view_episodic": "エピソード的",
         "view_semantic": "意味的",
-        "view_switch_label": "メモリ表示"
+        "view_switch_label": "メモリ表示",
+        "column_key": "キー",
+        "column_value": "値",
+        "column_confidence": "信頼度",
+        "column_source": "ソース",
+        "column_event": "イベント",
+        "column_key_type": "キー/種類",
+        "column_details": "詳細"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",
