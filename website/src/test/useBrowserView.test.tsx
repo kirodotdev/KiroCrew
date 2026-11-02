@@ -69,7 +69,10 @@ describe('useBrowserView', () => {
   it('does not read the status at all when disabled', async () => {
     const calls = stubFetch({ '/api/browser/view': { status: 200, body: RUNNING } })
     renderHookWithProviders(() => useBrowserView(false))
-    await new Promise((r) => setTimeout(r, 20))
+    // Positive signal first: the shared render wrapper's ThemeProvider issues
+    // its own request on mount. Once that has gone out, the window in which a
+    // browser-view read would have happened has passed.
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
     // Filtered rather than asserted empty: the shared render wrapper's
     // ThemeProvider fetches on its own, and folding those into this assertion
     // would make it fail for a reason that has nothing to do with the hook.
