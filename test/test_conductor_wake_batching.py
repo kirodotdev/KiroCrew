@@ -87,9 +87,19 @@ def _instrument_arms(svc, arms: "list[float | None]") -> None:
     for, so the task is a stand-in. What it keeps is what ``_window_open`` consults: the
     push mark cleared on every arm, exactly as the real ``_arm_timer`` clears it, and a
     LIVE entry in ``_timers`` for the loop -- without one the window would read as closed
-    and every report would arm, which is the opposite of what these cases measure. The
-    service's own ``stop`` cancels what is left in that table.
+    and every report would arm, which is the opposite of what these cases measure. Every
+    stand-in parks on one event this helper owns. The next arm cancels the stand-in it
+    replaces, and ``stop`` cancels what is left in that table and is then followed by
+    setting the event, so a park ends on a signal the test sets and is not left waiting.
     """
+    release = asyncio.Event()
+    real_stop = svc.stop
+
+    def _stop(*args, **kwargs) -> None:
+        try:
+            real_stop(*args, **kwargs)
+        finally:
+            release.set()
 
     def _spy(armed, delay=None) -> None:
         arms.append(delay)
@@ -97,10 +107,10 @@ def _instrument_arms(svc, arms: "list[float | None]") -> None:
         stale = svc._timers.get(armed.id)
         if stale is not None:
             stale.cancel()
-        # flake-ok: pre-existing hour-long parked sleep standing in for a live armed timer, which the next arm or svc.stop() cancels, moved verbatim; tracked for a de-flake pass
-        svc._timers[armed.id] = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
+        svc._timers[armed.id] = asyncio.get_running_loop().create_task(release.wait())
 
     svc._arm_timer = _spy  # type: ignore[method-assign]
+    svc.stop = _stop  # type: ignore[method-assign]
 
 
 def test_a_burst_inside_one_window_costs_one_turn_naming_every_item(tmp_path, monkeypatch):
