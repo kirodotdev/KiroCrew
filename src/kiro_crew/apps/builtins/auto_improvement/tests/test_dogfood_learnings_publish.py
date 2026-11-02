@@ -913,11 +913,10 @@ class TestOnlyTheCommitThePipelineMadeIsPublished:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- a class-scoped autouse pin moved verbatim with its class; no dogfood-learnings module calls monkeypatch.undo()
-    def _safe_repository(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(clone_setup, "_repository_is_safe", lambda _clone: True)
-        monkeypatch.setattr(clone_setup, "_push_disabled", lambda _clone: True)
-        monkeypatch.setattr(clone_setup, "_repository_is_isolated", lambda _clone: True)
+    def _safe_repository(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(clone_setup, "_repository_is_safe", lambda _clone: True)
+        _floor_monkeypatch.setattr(clone_setup, "_push_disabled", lambda _clone: True)
+        _floor_monkeypatch.setattr(clone_setup, "_repository_is_isolated", lambda _clone: True)
 
     def test_the_report_only_reviewer_has_no_edit_grant(self) -> None:
         """The prompt lost the sentence sanctioning an in-place fix; the CAPABILITY has to go
