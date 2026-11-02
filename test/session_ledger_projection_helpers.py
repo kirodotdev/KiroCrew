@@ -22,11 +22,10 @@ LATER_SESSION = "acp-2"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the modules that import it calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Own data home, crew log on, and no writer state carried between tests."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
     crew_log.forget_slot_folds()
     yield
