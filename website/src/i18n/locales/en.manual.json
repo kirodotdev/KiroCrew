@@ -2355,9 +2355,7 @@
     },
     "commentsSidebar": {
       "agent": "Agent",
-      "hide": "Hide",
       "scroll_to_the_highlighted_text": "Scroll to the highlighted text",
-      "show": "Show",
       "unknown": "Unknown",
       "anchor_text_no_longer_found_in_content": "Anchor text no longer found in content",
       "failed_to_sync_to_provider": "Failed to sync to provider",

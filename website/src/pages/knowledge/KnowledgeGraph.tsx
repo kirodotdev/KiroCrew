@@ -795,8 +795,10 @@ export default function KnowledgeGraph({
       {loadError}
       <div className="px-4 py-2 border-b border-border flex items-center gap-3 text-[12px] text-muted shrink-0">
         <span>
-          {graphData.nodes.length} {i18nT('pages.knowledge.knowledgeGraph.nodes')}{' '}
-          {graphData.edges.length} {i18nT('pages.knowledge.knowledgeGraph.edges')}
+          {i18nT('pages.knowledge.knowledgeGraph.graph_counts', {
+            nodes: i18nT('pages.knowledge.knowledgeGraph.nodes_count', { count: graphData.nodes.length }),
+            edges: i18nT('pages.knowledge.knowledgeGraph.edges_count', { count: graphData.edges.length }),
+          })}
         </span>
         <button
           onClick={recenter}

@@ -1385,7 +1385,6 @@
           "diff": "Diff",
           "draft": "Draft",
           "expand_comment": "Expand comment",
-          "failing": "failing",
           "files": "Files",
           "from": "from",
           "into": "into",
@@ -1414,18 +1413,24 @@
           "open": "Open",
           "opened": "opened",
           "opened_2": "Opened",
-          "passed": "passed",
           "referenced_this_in": "referenced this in",
           "removed_the": "removed the",
           "reopened_this": "reopened this",
           "reviewers": "Reviewers",
-          "running": "running",
           "show_less": "Show less",
           "show_more": "Show more",
           "timeline": "Timeline",
           "unassigned": "unassigned",
           "unknown_branches": "Unknown branches",
-          "updated": "Updated"
+          "updated": "Updated",
+          "failing_count_one": "{{count}} failing",
+          "failing_count_other": "{{count}} failing",
+          "running_count_one": "{{count}} running",
+          "running_count_other": "{{count}} running",
+          "passed_count_one": "{{count}} passed",
+          "passed_count_other": "{{count}} passed",
+          "skipped_count_one": "{{count}} skipped",
+          "skipped_count_other": "{{count}} skipped"
         },
         "prFiltersSection": {
           "assigned_to_me": "Assigned to me",
@@ -4712,12 +4717,15 @@
       "reply_2": "Reply",
       "resolve": "Resolve",
       "resolve_human_only": "Resolve (human-only)",
-      "resolved": "resolved",
       "review": "Review",
       "save": "Save",
       "shared_comment": "Shared comment",
       "to_send": "To send",
-      "to_send_hint": "Not sent yet. Submit sends this comment to the chat."
+      "to_send_hint": "Not sent yet. Submit sends this comment to the chat.",
+      "show_resolved_count_one": "Show {{count}} resolved",
+      "show_resolved_count_other": "Show {{count}} resolved",
+      "hide_resolved_count_one": "Hide {{count}} resolved",
+      "hide_resolved_count_other": "Hide {{count}} resolved"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Changes update the preview as you type.",
@@ -4834,9 +4842,6 @@
       "empty_file": "Empty file",
       "html_preview": "HTML Preview",
       "invalid_json": "Invalid JSON:",
-      "items": "items",
-      "lines": "lines",
-      "more": "more",
       "null": "null",
       "office_download_hint": "Preview isn't available for this file. Download to open in Word, Excel, PowerPoint, or a compatible viewer.",
       "office_download_original": "Download original",
@@ -4844,8 +4849,14 @@
       "office_preview_truncated": "Preview shows only the beginning of this document. Download the original for the full contents.",
       "open_in_new_tab": "Open in new tab",
       "pdf_preview": "PDF Preview",
-      "rows": "rows",
-      "showing_500_of": "Showing 500 of"
+      "showing_first_rows_one": "Showing {{shown}} of {{count}} row",
+      "showing_first_rows_other": "Showing {{shown}} of {{count}} rows",
+      "items_count_one": "{{count}} item",
+      "items_count_other": "{{count}} items",
+      "lines_count_one": "{{count}} line",
+      "lines_count_other": "{{count}} lines",
+      "more_count_one": "{{count}} more",
+      "more_count_other": "{{count}} more"
     },
     "folderProjectHint": {
       "differs": "Commands, files and search here use {{current}}, not this folder's {{folder}}.",
@@ -6955,8 +6966,10 @@
         "dismiss": "Dismiss",
         "dismiss_knowledge_results": "Dismiss knowledge results",
         "inject_context": "Inject Context",
-        "selected": "selected ·",
-        "tokens": "tokens"
+        "selected_count_one": "{{count}} selected",
+        "selected_count_other": "{{count}} selected",
+        "tokens_count_one": "{{count}} token",
+        "tokens_count_other": "{{count}} tokens"
       },
       "mcpInfoButton": {
         "disabled": "disabled",
@@ -8193,11 +8206,9 @@
         "type_document": "document"
       },
       "knowledgeGraph": {
-        "edges": "edges",
         "ingest_documents_to_build_the_entity_graph": "Ingest documents to build the entity graph",
         "loading_graph": "Loading graph...",
         "no_graph_data_yet": "No graph data yet",
-        "nodes": "nodes,",
         "all_sources": "All sources",
         "filter_by_source": "Filter by source",
         "recenter": "Recenter",
@@ -8206,7 +8217,12 @@
         "graph_region_label": "Knowledge entity graph",
         "load_failed": "Could not load the knowledge graph",
         "load_failed_unknown": "The read failed without a reason.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "nodes_count_one": "{{count}} node",
+        "nodes_count_other": "{{count}} nodes",
+        "edges_count_one": "{{count}} edge",
+        "edges_count_other": "{{count}} edges",
+        "graph_counts": "{{nodes}}, {{edges}}"
       },
       "sourceGroup": {
         "next": "Next →",
@@ -8313,9 +8329,10 @@
       "filter_logs_2": "Filter logs...",
       "live_logs": "Live Logs",
       "log_level": "Log Level:",
-      "matches": "matches",
       "matches_only": "Matches only",
-      "real_time_application_output": "Real-time application output"
+      "real_time_application_output": "Real-time application output",
+      "matches_count_one": "{{count}} match",
+      "matches_count_other": "{{count}} matches"
     },
     "mcpGatewayCard": {
       "backends": "Backends",
