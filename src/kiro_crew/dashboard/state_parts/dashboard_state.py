@@ -640,6 +640,9 @@ class DashboardState:
         # hand-edit left in a shape the loader could not validate (mirrors the
         # cron-folder unparsed-entry preservation).
         self._unparsed_chat_pin_entries: list[Any] = []
+        # True while a present chat_pins.json failed to parse at load: the
+        # in-memory list is empty but the file is not, so save_chat_pins refuses.
+        self._chat_pins_load_failed: bool = False
         # Serializes pin mutation + persistence so concurrent requests cannot
         # interleave snapshots and replace chat_pins.json out of order.
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
@@ -673,6 +676,10 @@ class DashboardState:
         # a legitimately-empty vocabulary (user deleted every tag) must still
         # prune dangling ids while an unreadable one must not wipe anything.
         self._tags_authoritative: bool = False
+        # True while a present tags.json / tag_boards.json failed to load: the
+        # file holds rows this process never saw, so that store's writers refuse.
+        self._tags_load_failed: bool = False
+        self._tag_boards_load_failed: bool = False
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
         self._tag_boards: list[dict[str, Any]] = []
         # Malformed tag-board (sidebar column) entries dropped at load time,
