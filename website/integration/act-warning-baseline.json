@@ -33,7 +33,6 @@
   "src/test/ChatPageDrafts.test.tsx",
   "src/test/ChatPageW3Coverage.test.tsx",
   "src/test/ChatSidebar.renameFailureRecovery.test.tsx",
-  "src/test/ChatSidebar.toolStatusSetting.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/DevFleetPage.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
