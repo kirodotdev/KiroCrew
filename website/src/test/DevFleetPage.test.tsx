@@ -976,6 +976,8 @@ describe('DevFleetPage', () => {
     expect(screen.getByTestId('prune-item-wt-b')).toHaveAttribute('data-status', 'failed')
     expect(screen.getByText('pod still active after shutdown')).toBeInTheDocument()
     expect(screen.getByText('Prune complete')).toBeInTheDocument()
+    // The toast is one catalog plural, failed count included -- not "worktree(s)".
+    expect(screen.getByText('Pruned 1 worktree (1 failed)')).toBeInTheDocument()
   }, 15000)
 
   it('force-only prune counts the forced worktree and reports success (issue #4128)', async () => {
@@ -1025,7 +1027,7 @@ describe('DevFleetPage', () => {
     expect(screen.getByText((_, el) => el?.textContent === 'Finished 1/1')).toBeInTheDocument()
     expect(screen.getByText('Prune complete')).toBeInTheDocument()
     // Success toast (green), not the red "Prune: 0 failed".
-    expect(screen.getByText('Pruned 1 worktree(s)')).toBeInTheDocument()
+    expect(screen.getByText('Pruned 1 worktree')).toBeInTheDocument()
     expect(screen.queryByText(/Prune: \d+ failed/)).not.toBeInTheDocument()
     // The forced name went out in force_names, not the regular names list.
     // pruneExecute now always includes discard_untracked_paths as a MAP (empty
