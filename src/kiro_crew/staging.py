@@ -12,12 +12,12 @@ extraction, or a nightly backup of a large data home, can fill ``/tmp`` (50% of
 RAM) or push the gateway's cgroup into reclaim; with no swap the pages cannot be
 reclaimed, and a full ``/tmp`` hands every other process on the host ``ENOSPC``.
 
-The import's UPLOAD spool (the 2 GiB ``.zip`` written before extraction) is NOT
-staged here: ``dashboard.part_stream`` creates it on the serving event loop under a
-cancellation-safety invariant shared by three upload handlers, and pointing that
-on-loop create at a data home that may be NFS would risk freezing the loop on a
-stalled metadata op. The spool stays in the system temp dir; this module stages the
-large extraction/build work, not that spool.
+The import's UPLOAD spool (the up-to-2 GiB ``.zip`` written before extraction)
+stages here too, in a per-call subdirectory the dashboard import handler creates
+off the event loop. ``dashboard.part_stream`` then creates and discards the
+``.part`` file inside it with one synchronous metadata call on the loop -- the
+same bounded on-loop create composer uploads make into the data home's
+``uploads`` leaf.
 
 :func:`staging_dir` returns ``<data home>/staging``, a sibling of the scratch
 and work roots on the SAME real disk as the destination the staged bytes are
@@ -33,7 +33,7 @@ That residue is what :func:`sweep_staging` reclaims. It is NOT redirecting the
 gateway's ``tempfile`` base: ``sandbox_mount_sweep._mount_source_candidate_roots``
 deliberately keys the namespace launcher's last-resort bind-source root on
 ``tempfile.gettempdir()`` and documents that the two must agree, so this module
-touches only the three named staging sites and leaves ``tempfile.tempdir``
+touches only the named staging sites and leaves ``tempfile.tempdir``
 alone.
 
 The root is owner-only (0700) and link-checked, the same tightening every
