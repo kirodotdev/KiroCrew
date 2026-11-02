@@ -56,6 +56,83 @@ public static class KiroInstallerCapture {
 }
 "@
 
+# Names every window a set of processes owns, with the text of each control in
+# it. A message box an installer is blocked on is a "#32770" dialog whose Static
+# child carries the message, so this is what tells "waiting on a dialog" apart
+# from "busy in a loop". Text is read with WM_GETTEXT under a timeout, because
+# GetWindowText does not read a control's text across processes.
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class KiroWindowProbe {
+  private delegate bool EnumProc(IntPtr handle, IntPtr parameter);
+
+  [DllImport("user32.dll")]
+  private static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+
+  [DllImport("user32.dll")]
+  private static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr parameter);
+
+  [DllImport("user32.dll")]
+  private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  private static extern int GetClassName(IntPtr handle, StringBuilder name, int capacity);
+
+  [DllImport("user32.dll")]
+  private static extern bool IsWindowVisible(IntPtr handle);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  private static extern IntPtr SendMessageTimeout(IntPtr handle, uint message, IntPtr wParam,
+    StringBuilder lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+  private const uint WM_GETTEXT = 0x000D;
+  private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+  private static string ClassOf(IntPtr handle) {
+    StringBuilder name = new StringBuilder(256);
+    GetClassName(handle, name, name.Capacity);
+    return name.ToString();
+  }
+
+  private static string TextOf(IntPtr handle) {
+    StringBuilder text = new StringBuilder(1024);
+    IntPtr ignored;
+    if (SendMessageTimeout(handle, WM_GETTEXT, (IntPtr)text.Capacity, text,
+        SMTO_ABORTIFHUNG, 1000, out ignored) == IntPtr.Zero) {
+      return "<no answer>";
+    }
+    return text.ToString();
+  }
+
+  public static string[] Describe(uint[] processIds) {
+    HashSet<uint> wanted = new HashSet<uint>(processIds);
+    List<string> lines = new List<string>();
+    EnumWindows(delegate (IntPtr top, IntPtr unused) {
+      uint owner;
+      GetWindowThreadProcessId(top, out owner);
+      if (!wanted.Contains(owner)) {
+        return true;
+      }
+      lines.Add(String.Format("pid {0} window 0x{1:X} class={2} visible={3} text='{4}'",
+        owner, top.ToInt64(), ClassOf(top), IsWindowVisible(top), TextOf(top)));
+      EnumChildWindows(top, delegate (IntPtr child, IntPtr unusedChild) {
+        string text = TextOf(child);
+        if (text.Length > 0) {
+          lines.Add(String.Format("  child class={0} text='{1}'", ClassOf(child), text));
+        }
+        return true;
+      }, IntPtr.Zero);
+      return true;
+    }, IntPtr.Zero);
+    return lines.ToArray();
+  }
+}
+"@
+
 # The NSIS wizard's Cancel button (IDCANCEL), a direct child of the wizard
 # window; installer.nsh reaches the same control as `GetDlgItem $HWNDPARENT 2`.
 $NsisWizardCancelId = 2
@@ -599,6 +676,152 @@ try {
   }
 }
 }
+
+# Silent re-install over the existing install, with nothing of it running.
+# electron-updater applies an update by re-running the installer over the
+# install, and a re-run first runs the previous version's uninstaller with
+# `--updated`, which moves every installed file into its own temp directory
+# before the new payload is published. When the re-run does not finish within
+# the ceiling, the failure names what it is waiting on: every window the
+# installer owns with its text (a message box shows up as a "#32770" dialog),
+# its live descendants, any process running from the install tree, the
+# install-tree path lengths, and the exit code the previous version's
+# uninstaller returns when run the way the installer runs it.
+$MaxReinstallSeconds = 300
+
+function Get-InstallTreeStats {
+  $files = @(Get-ChildItem -LiteralPath $installLocationFull -Recurse -Force -File -ErrorAction SilentlyContinue)
+  $longest = @($files | Sort-Object { $_.FullName.Length } -Descending | Select-Object -First 5)
+  $maxRelative = 0
+  if ($longest.Count -gt 0) {
+    $maxRelative = $longest[0].FullName.Length - $installLocationFull.Length
+  }
+  [pscustomobject]@{
+    Count = $files.Count
+    Longest = $longest
+    MaxRelative = $maxRelative
+  }
+}
+
+function Write-InstallTreeStats {
+  param([string]$Label)
+
+  $stats = Get-InstallTreeStats
+  $tempPath = [IO.Path]::GetTempPath().TrimEnd("\")
+  # The previous version's uninstaller moves each file to
+  # <temp>\ns<xxxxx>.tmp\old-install\<relative path>; Win32 file calls refuse a
+  # path of 260 characters or more.
+  $movedPrefix = "$tempPath\nsa0000.tmp\old-install"
+  Write-Host ("  ${Label}: $($stats.Count) file(s) under $installLocationFull " +
+    "(root $($installLocationFull.Length) chars, temp '$tempPath' $($tempPath.Length) chars, " +
+    "longest relative path $($stats.MaxRelative) chars, longest moved path about " +
+    "$($movedPrefix.Length + $stats.MaxRelative) chars)")
+  foreach ($file in $stats.Longest) {
+    Write-Host "    $($file.FullName.Length) chars: $($file.FullName)"
+  }
+}
+
+function Write-ReinstallDiagnostics {
+  param($Reinstall)
+
+  $allProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)
+  $treeIds = @([uint32]$Reinstall.Id)
+  $frontier = @($Reinstall.Id)
+  while ($frontier.Count -gt 0) {
+    $next = @()
+    foreach ($parentId in $frontier) {
+      foreach ($child in @($allProcesses | Where-Object { $_.ParentProcessId -eq $parentId })) {
+        Write-Host "  installer descendant: pid $($child.ProcessId) (parent $parentId) $($child.Name): $($child.CommandLine)"
+        $treeIds += [uint32]$child.ProcessId
+        $next += $child.ProcessId
+      }
+    }
+    $frontier = $next
+  }
+  $windows = @([KiroWindowProbe]::Describe([uint32[]]$treeIds))
+  if ($windows.Count -eq 0) {
+    Write-Host "  the installer and its descendants own no windows."
+  }
+  foreach ($line in $windows) {
+    Write-Host "  $line"
+  }
+  foreach ($inTree in @($allProcesses | Where-Object {
+      $_.ExecutablePath -and
+      $_.ExecutablePath.StartsWith("$installLocationFull\", [StringComparison]::OrdinalIgnoreCase)
+    })) {
+    Write-Host "  still running from the install tree: pid $($inTree.ProcessId) $($inTree.ExecutablePath)"
+  }
+  Write-InstallTreeStats "install tree at the ceiling"
+  return $treeIds
+}
+
+Write-InstallTreeStats "install tree before the re-install"
+$reinstallTimer = [System.Diagnostics.Stopwatch]::StartNew()
+$reinstall = Start-Process -FilePath $installer.FullName -ArgumentList @(
+  "/S",
+  "/currentuser",
+  "/D=$requestedInstallRoot"
+) -PassThru
+# Hold the handle now: a process object that first asks for its exit code after
+# the process is gone can report none.
+$null = $reinstall.Handle
+if (-not $reinstall.WaitForExit($MaxReinstallSeconds * 1000)) {
+  Write-Host "Re-install with nothing running was still running after $MaxReinstallSeconds seconds."
+  $treeIds = Write-ReinstallDiagnostics $reinstall
+  $stuckWindow = [IntPtr]::Zero
+  $reinstall.Refresh()
+  if ($reinstall.MainWindowHandle -ne [IntPtr]::Zero) {
+    $stuckWindow = $reinstall.MainWindowHandle
+    try {
+      Save-InstallerWindow $stuckWindow (Join-Path $evidence "reinstall-stuck-window.png")
+    } catch {
+      Write-Host "  could not capture the installer's main window: $_"
+    }
+  }
+  foreach ($id in ($treeIds | Sort-Object -Descending)) {
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+  }
+  $reinstall.WaitForExit(10000) | Out-Null
+
+  # Run the previous version's uninstaller exactly as the installer's
+  # uninstallOldVersion does, and report its exit code and what it left.
+  $oldUninstaller = Get-ChildItem -LiteralPath $installLocationFull -File -Filter "Uninstall*.exe" |
+    Select-Object -First 1
+  if ($oldUninstaller) {
+    $probeCopy = Join-Path $evidence "old-uninstaller-probe.exe"
+    Copy-Item -LiteralPath $oldUninstaller.FullName -Destination $probeCopy -Force
+    $probe = Start-Process -FilePath $probeCopy -ArgumentList @(
+      "/S", "/KEEP_APP_DATA", "/currentuser", "--updated", "_?=$installLocationFull"
+    ) -PassThru
+    $null = $probe.Handle
+    if ($probe.WaitForExit(120000)) {
+      Write-Host "  the previous version's uninstaller, run as the installer runs it, exited with code $($probe.ExitCode)."
+    } else {
+      Write-Host "  the previous version's uninstaller, run as the installer runs it, was still running after 120 seconds."
+      foreach ($line in @([KiroWindowProbe]::Describe([uint32[]]@([uint32]$probe.Id)))) {
+        Write-Host "  $line"
+      }
+      Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+    }
+    Write-InstallTreeStats "install tree after that uninstaller"
+  } else {
+    Write-Host "  no uninstaller is left in $installLocationFull."
+  }
+  throw "Re-install with nothing running did not finish within the $MaxReinstallSeconds-second ceiling."
+}
+$reinstallTimer.Stop()
+$reinstall.Refresh()
+if ($reinstall.ExitCode -ne 0) {
+  Write-InstallTreeStats "install tree after the failed re-install"
+  throw "Re-install with nothing running exited with code $($reinstall.ExitCode)."
+}
+$reinstallSeconds = [Math]::Round($reinstallTimer.Elapsed.TotalSeconds, 2)
+Write-Host "Re-install with nothing running completed in $reinstallSeconds seconds."
+if ($env:GITHUB_STEP_SUMMARY) {
+  Add-Content -Path $env:GITHUB_STEP_SUMMARY `
+    -Value "Windows silent re-install with nothing running: **$reinstallSeconds seconds** (ceiling: $MaxReinstallSeconds seconds)."
+}
+Assert-PreExistingTreeIntact "The re-install"
 
 $uninstaller = Get-ChildItem -LiteralPath $installLocation -File -Filter "Uninstall*.exe" |
   Select-Object -First 1
