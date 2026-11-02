@@ -828,7 +828,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <StatePill state={state} draft={draft} merged={merged} />
               {/* Copy-link is an action control and lives in the overflow menu —
                   see DetailOverflowMenu. Only the outbound #number stays here. */}
-              <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
+              <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })} className="font-mono text-muted hover:text-accent hover:underline">
                 #{pull.number}
               </a>
             </>}

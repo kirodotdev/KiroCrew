@@ -2483,6 +2483,9 @@
         "providerBadge": {
           "self_managed_instance": "Собственный экземпляр: {{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "Открыть в {{provider}}"
+        },
         "readOnlyTag": {
           "read_only": "Только чтение",
           "read_only_repo_needs_triage_or_push_access": "Репозиторий только для чтения — нужен доступ triage или push"

@@ -2385,6 +2385,9 @@
         "providerBadge": {
           "self_managed_instance": "セルフマネージドインスタンス：{{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "{{provider}} で開く"
+        },
         "readOnlyTag": {
           "read_only": "読み取り専用",
           "read_only_repo_needs_triage_or_push_access": "読み取り専用リポジトリ — トリアージまたはプッシュ権限が必要です"

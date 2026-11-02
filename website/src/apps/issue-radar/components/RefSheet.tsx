@@ -153,8 +153,8 @@ export default function RefSheet() {
                   href={refUrl(active, { kind: isPr ? 'pull' : 'issue', number: top.number })}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label={`Open on ${terms.providerName}`}
-                  title={`Open on ${terms.providerName}`}
+                  aria-label={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })}
+                  title={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })}
                   className={ICON_BTN}
                 >
                   <ExternalLink className="lucide-inline" aria-hidden="true" />

@@ -2385,6 +2385,9 @@
         "providerBadge": {
           "self_managed_instance": "자체 관리 인스턴스: {{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "{{provider}}에서 열기"
+        },
         "readOnlyTag": {
           "read_only": "읽기 전용",
           "read_only_repo_needs_triage_or_push_access": "읽기 전용 저장소 — 심사 또는 푸시 권한이 필요합니다"

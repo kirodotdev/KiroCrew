@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 import type {
   Issue, IssueDetailData, IssueDetailResponse, IssueAiResponse,
@@ -1209,5 +1211,17 @@ describe('IssueDetail — provider vocabulary', () => {
     // Author links resolve on the self-managed host, not github.com.
     expect(within(sidebar()).getByRole('link', { name: 'dave' }).getAttribute('href'))
       .toBe('https://gitlab.example.com/dave')
+  })
+
+  it('titles the #number link-out in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      const { header } = renderPane()
+      await waitFor(() => expect(within(header()).getByRole('link', { name: '#11' })).toBeTruthy())
+      expect(within(header()).getByRole('link', { name: '#11' }).getAttribute('title'))
+        .toBe('Auf GitHub öffnen')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 })

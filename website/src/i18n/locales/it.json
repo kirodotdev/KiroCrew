@@ -2421,6 +2421,9 @@
         "providerBadge": {
           "self_managed_instance": "Istanza autogestita: {{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "Apri su {{provider}}"
+        },
         "readOnlyTag": {
           "read_only": "Sola lettura",
           "read_only_repo_needs_triage_or_push_access": "Repository di sola lettura — richiede accesso triage o push"
