@@ -165,7 +165,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 agent_dir = _agent_dir(agent_id)
                 result_path = agent_dir / "result.txt"
                 result = ""
-                if result_path.exists() and not is_sensitive_path(str(result_path)):
+                if await asyncio.to_thread(result_path.exists) and not is_sensitive_path(
+                    str(result_path)
+                ):
                     try:
                         result = await asyncio.to_thread(
                             result_path.read_text, encoding="utf-8", errors="replace"
