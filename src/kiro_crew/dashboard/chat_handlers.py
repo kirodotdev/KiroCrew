@@ -34,7 +34,7 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # n
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
-from kiro_crew.atomic_write import atomic_write  # noqa: F401
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -170,6 +170,7 @@ from kiro_crew.dashboard.chat_api.project_lists import (  # noqa: F401
     _favorite_projects_path,
     _favorites_unreadable_response,
     _load_favorite_projects,
+    _load_recent_projects,
     _probe_favorite_candidate,
     _read_favorite_projects,
     _recent_projects_path,
@@ -1109,6 +1110,14 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
 
 
 _MAX_RECENT_PROJECTS = 100
+
+# The recents save is a read-modify-write of one file, run on worker threads by the
+# slot project route and the set_project directive, so two overlapping saves would each
+# write back the snapshot they read and one entry would be lost. One lock serialises
+# the whole transaction, and the picker's read loads under it too: on Windows a rename
+# cannot replace a file another handle has open, so a read open during a save's rename
+# failed that save.
+_recent_projects_lock = threading.Lock()
 
 
 # Favourites are a SEPARATE file from the recents list, not a flag on its rows, because
