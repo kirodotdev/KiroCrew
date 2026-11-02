@@ -739,14 +739,17 @@ def _fold_batch(
             key = (creator, _WORKERS_FOLD)
             work[key] = max(work.get(key, 0), seq)
     for slot in closed_slots:
-        # The savepoint story for a slot fold is the memo, so dropping it costs the next
-        # read one cold fold of a unit that has stopped growing -- and holds nothing for
-        # a session that will never append again.
+        # The memo holds nothing for a session that will never append again, so it is
+        # dropped -- after its savepoint is brought up to the closer, so the next read
+        # resumes from disk instead of folding every unit cold.
         #
         # NAMED, one fold at a time. A bare ``slot=`` matches every ``(home, slot, *)``
         # memo, and a ``session/closed`` is not always the end of a board: a slot reset,
         # or one worker unit of a LIVE crew, would take that crew's other cells with it.
         for eager_name in projection.EAGER_SLOT_FOLD_NAMES:
+            # Sealed first: the savepoint written here is what the next read resumes
+            # from, so the drop costs a tail read rather than a cold fold.
+            projection.seal_slot_fold(slot, eager_name)
             projection.forget_slot_folds(slot=slot, name=eager_name)
         # The memo cell is gone, so the next value is a rebuild: publish it as
         # ``snapshot_needed`` rather than a delta against a board nobody will extend.

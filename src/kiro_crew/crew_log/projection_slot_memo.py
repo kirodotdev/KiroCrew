@@ -1052,6 +1052,8 @@ def _fold_slot_warm_locked(
     # it was written, where the cold fold below streams every unit from its first record.
     if known and units:
         resumed = _resume_slot_fold(name, units, marks, slot=slot)
+        if resumed is None:
+            resumed = _resume_older_slot_fold(name, units, marks, slot=slot)
         if resumed is not None:
             _note_slot_fold_origin("savepoint")
             resumed = _persist_slot_fold(name, resumed, slot=slot, sampled=marks[-1])
@@ -1291,8 +1293,77 @@ def _resume_slot_fold(
     )
 
 
+def _resume_older_slot_fold(
+    name: str, units: "tuple[str, ...]", marks: "tuple[_UnitMark, ...]", *, slot: str
+) -> "_SlotMemo | None":
+    """A cell resumed from the savepoint beside an OLDER unit, carried over the rest.
+
+    The shape a restart after a rollover leaves: the newest unit is new and has no
+    savepoint, but the unit before it does. The savepoint is read the same way
+    :func:`_resume_slot_fold` reads one beside the newest unit, over the unit list it was
+    written for (a savepoint beside unit *k* always names the list ending at *k*), and the
+    cell it yields is then carried over the units after it by
+    :func:`_continue_into_new_units` -- the warm rollover path, with its own
+    :func:`_extended` and :func:`_folded_prefix_holds` checks. So the value is the one a
+    cold fold over *units* reaches, and anything either step refuses folds cold.
+
+    The newest unit with a savepoint wins; ``None`` when no older unit has one.
+    """
+    for count in range(len(units) - 1, 0, -1):
+        held = _resume_slot_fold(name, units[:count], marks[:count], slot=slot)
+        if held is None:
+            continue
+        if not (
+            _extended(units, marks, held)
+            and _folded_prefix_holds(held.units[-1], held, marks[count - 1])
+        ):
+            return None
+        return _continue_into_new_units(name, held, units, marks)
+    return None
+
+
+def seal_slot_fold(slot: str, name: str) -> None:
+    """Bring *slot*'s warm *name* cell up to its log and write its savepoint, if held.
+
+    Called when the slot's session closes, just before the eager worker forgets the
+    cell. The unit has stopped growing, so the savepoint written here is the one a
+    later read (a restart, or a reopen that starts a new unit) resumes from instead of
+    folding every unit cold. It is written however few entries arrived since the last
+    one: the usual threshold exists to spare a growing log repeated writes, and a
+    closed unit will not be written again.
+
+    A no-op without a held cell, and never a cold fold: a cell that cannot be carried
+    forward is left to the read path. Never raises.
+    """
+    key = (str(data_home()), slot, name)
+    with _slot_memo_guard:
+        memo = _slot_memos.get(key)
+    if memo is None:
+        return
+    entry = _acquire_fold_lock(key)
+    try:
+        with entry.lock:
+            _fold_slot_warm_locked(name, key, memo.units, slot=slot, allow_cold=False)
+            with _slot_memo_guard:
+                held = _slot_memos.get(key)
+            if held is None or not held.marks:
+                return
+            sealed = _persist_slot_fold(name, held, slot=slot, sampled=held.marks[-1], final=True)
+            if sealed is not held:
+                _remember_slot_fold(key, sealed)
+    except Exception:
+        log_exception_text(logger, logging.DEBUG, "crew log slot %s could not seal %s", slot, name)
+    finally:
+        _release_fold_lock(key, entry)
+
+
 def _persist_slot_fold(
-    name: str, memo: _SlotMemo, *, slot: str, sampled: "_UnitMark | None"
+    name: str,
+    memo: _SlotMemo,
+    *,
+    slot: str,
+    sampled: "_UnitMark | None",
+    final: bool = False,
 ) -> _SlotMemo:
     """*memo*, with its savepoint on disk brought forward when a write is owed.
 
@@ -1356,7 +1427,9 @@ def _persist_slot_fold(
     _state, watermark = cell
     from kiro_crew.crew_log import checkpoint as savepoints
 
-    if not savepoints.write_is_earned(watermark, memo.saved):
+    # *final* is :func:`seal_slot_fold`'s write on a closed unit: owed for any advance.
+    owed = watermark > memo.saved if final else savepoints.write_is_earned(watermark, memo.saved)
+    if not owed:
         return memo
     handle = open_session_log(memo.units[-1])
     if handle is None:

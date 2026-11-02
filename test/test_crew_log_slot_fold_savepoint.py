@@ -670,6 +670,170 @@ def test_a_savepoint_is_not_read_across_slots(_cheap_writes):
 
 
 # --------------------------------------------------------------------------- #
+# a restart after a rollover resumes from an older unit's savepoint
+# --------------------------------------------------------------------------- #
+
+THIRD = "acp-sp-third"
+
+
+def test_a_restart_after_a_rollover_resumes_from_the_older_units_savepoint(_cheap_writes):
+    """A new unit has no savepoint yet, so the one beside the unit before it is used.
+
+    Red without ``_resume_older_slot_fold``: the read folds both units from empty.
+    """
+    _unit(FIRST)
+    _steps(FIRST, 1, 6)
+    assert _read((FIRST,)) == _cold((FIRST,))
+    _unit(SECOND)
+    _steps(SECOND, 7, 9)
+    units = (FIRST, SECOND)
+    assert not _savepoint_path(SECOND).exists(), "only the older unit has a savepoint"
+
+    value, parsed = _restart(units)
+
+    assert parsed == 3, "the first unit is below its savepoint; only the new unit is read"
+    assert value == _cold(units)
+    assert _savepoint_path(SECOND).is_file(), "the resumed cell writes one for the new unit"
+    _steps(SECOND, 10, 11)
+    assert _read(units) == _cold(units), "the resumed cell continues like any other"
+
+
+def test_the_newest_unit_with_a_savepoint_is_the_one_resumed(_cheap_writes):
+    """With savepoints beside two older units, the newer one wins; without it, the older."""
+    _unit(FIRST)
+    _steps(FIRST, 1, 4)
+    _read((FIRST,))
+    _unit(SECOND)
+    _steps(SECOND, 5, 8)
+    _read((FIRST, SECOND))
+    _unit(THIRD)
+    _steps(THIRD, 9, 10)
+    units = (FIRST, SECOND, THIRD)
+
+    value, parsed = _restart(units)
+    assert (value, parsed) == (_cold(units), 2), "resumed beside SECOND: only THIRD is read"
+
+    _savepoint_path(SECOND).unlink()
+    _savepoint_path(THIRD).unlink()
+    value, parsed = _restart(units)
+    assert (value, parsed) == (_cold(units), 6), "resumed beside FIRST: SECOND and THIRD"
+
+
+def test_an_older_unit_that_grew_after_its_savepoint_folds_its_tail_first(_cheap_writes):
+    """An older unit is not closed to writes, so its tail is folded before the new unit."""
+    _unit(FIRST)
+    _steps(FIRST, 1, 4)
+    _read((FIRST,))
+    _steps(FIRST, 5, 6)
+    _unit(SECOND)
+    _steps(SECOND, 7, 8)
+    units = (FIRST, SECOND)
+
+    value, parsed = _restart(units)
+
+    assert parsed == 4
+    assert value == _cold(units)
+    assert json.loads(value)["next"] == "step 8"
+
+
+def _a_unit_listed_before_the_held_ones(units: tuple[str, ...]) -> tuple[str, ...]:
+    _unit(THIRD)
+    _steps(THIRD, 50, 51)
+    return (THIRD, *units)
+
+
+def _the_older_prefix_rewritten(units: tuple[str, ...]) -> tuple[str, ...]:
+    _rewrite_the_prefix(units[:1])
+    return units
+
+
+def _an_earlier_unit_recreated(units: tuple[str, ...]) -> tuple[str, ...]:
+    _recreate_an_earlier_unit(units)
+    return units
+
+
+def _the_older_savepoint_corrupt(units: tuple[str, ...]) -> tuple[str, ...]:
+    _corrupt_the_savepoint(units[:1])
+    return units
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        _a_unit_listed_before_the_held_ones,
+        _the_older_prefix_rewritten,
+        _an_earlier_unit_recreated,
+        _the_older_savepoint_corrupt,
+    ],
+    ids=[
+        "a-unit-listed-before-the-held-ones",
+        "the-older-units-prefix-was-rewritten",
+        "an-earlier-unit-was-recreated",
+        "the-older-savepoint-is-not-readable",
+    ],
+)
+def test_an_older_savepoint_that_does_not_describe_the_list_folds_cold(_cheap_writes, damage):
+    """Every admission check on the newest unit's savepoint holds for an older one too."""
+    _unit(FIRST)
+    _steps(FIRST, 1, 4)
+    _read((FIRST,))
+    _unit(SECOND)
+    _steps(SECOND, 5, 6)
+
+    units = damage((FIRST, SECOND))
+    value, parsed = _restart(units)
+
+    assert value == _cold(units)
+    assert parsed >= 6, "the savepoint was refused and every unit was folded"
+
+
+def test_sealing_a_closed_slot_writes_a_savepoint_below_the_threshold():
+    """``seal_slot_fold`` brings the cell up to the log and writes, however few entries.
+
+    The real 256-entry threshold is left in place: a closed unit will not grow again, so
+    a write held back for it is a cold fold on the next restart or reopen. Red without
+    ``final``.
+    """
+    _unit(FIRST)
+    _steps(FIRST, 1, 4)
+    _read((FIRST,))
+    assert not _savepoint_path(FIRST).exists(), "below the threshold, no write yet"
+    _steps(FIRST, 5, 6)
+
+    crew_log.seal_slot_fold(SLOT, "ledger")
+
+    assert _savepoint_path(FIRST).is_file()
+    value, parsed = _restart((FIRST,))
+    assert (value, parsed) == (_cold((FIRST,)), 0), "the seal folded the tail it wrote"
+    _unit(SECOND)
+    _steps(SECOND, 7, 8)
+    value, parsed = _restart((FIRST, SECOND))
+    assert (value, parsed) == (_cold((FIRST, SECOND)), 2), "a reopen reads the new unit only"
+
+
+def test_sealing_a_slot_with_no_warm_cell_folds_and_writes_nothing():
+    """No held cell means nothing to seal: never a cold fold on the eager worker."""
+    _unit(FIRST)
+    _steps(FIRST, 1, 4)
+    parsed = {"entries": 0}
+    real = CrewLog.iter_from
+
+    def counted(self, *args, **kwargs):
+        for entry in real(self, *args, **kwargs):
+            parsed["entries"] += 1
+            yield entry
+
+    CrewLog.iter_from = counted  # type: ignore[method-assign]
+    try:
+        crew_log.seal_slot_fold(SLOT, "ledger")
+    finally:
+        CrewLog.iter_from = real  # type: ignore[method-assign]
+
+    assert parsed["entries"] == 0
+    assert not _savepoint_path(FIRST).exists()
+
+
+# --------------------------------------------------------------------------- #
 # what the file is, and is not
 # --------------------------------------------------------------------------- #
 

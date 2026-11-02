@@ -87,6 +87,49 @@ def test_a_closed_session_drops_the_slots_eager_memos():
     )
 
 
+def test_a_closed_session_seals_the_cell_it_drops_so_a_reopen_reads_only_the_new_unit():
+    """Before the drop, the closer writes the cell's savepoint, however few entries it has.
+
+    So a reopen (a new unit on the same slot) resumes from disk and reads the new unit
+    only. Red without the seal: no savepoint exists below 256 entries and the reopen
+    folds every unit from empty.
+    """
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    slot = WORK_SLOT
+    handle = _slot_log("s-seal-1", slot)
+    seq = _work_entry(handle, "it-1")
+    eager.note_commit("s-seal-1", "work/recorded", seq)
+    assert eager.drain(timeout=10.0)
+    path = savepoints.slot_checkpoint_path(lg.KIND_SESSION, "s-seal-1", "work")
+    assert not path.exists(), "below the write threshold, no savepoint before the close"
+
+    closed = handle.append("session/closed", {"reason": "done"}, src=GATEWAY)
+    eager.note_commit("s-seal-1", "session/closed", int(closed.seq))
+    assert eager.drain(timeout=10.0)
+
+    assert (slot, "work") not in _memo_keys()
+    assert path.is_file(), "the closer sealed the cell before dropping it"
+    reopened = _slot_log("s-seal-2", slot)
+    _work_entry(reopened, "it-2")
+    units = ("s-seal-1", "s-seal-2")
+    parsed = {"entries": 0}
+    real = CrewLog.iter_from
+
+    def counted(self, *args, **kwargs):
+        for entry in real(self, *args, **kwargs):
+            parsed["entries"] += 1
+            yield entry
+
+    with unittest.mock.patch.object(CrewLog, "iter_from", counted):
+        warm = crew_log.fold_slot_warm("work", units, slot=slot)
+    assert parsed["entries"] == 1, "only the new unit's one entry is read"
+    assert json.dumps(crew_log.projection_of(warm).value, sort_keys=True, default=str) == (
+        json.dumps(crew_log.fold_slot("work", units, slot=slot).value, sort_keys=True, default=str)
+    )
+
+
 def _one_item_cell_bytes(name: str, items: int = 1) -> int:
     """What a ``name`` cell holding *items* records is charged, read off a stored memo.
 
