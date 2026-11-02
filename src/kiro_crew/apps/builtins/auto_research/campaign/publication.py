@@ -15,12 +15,14 @@ HTTP status decisions stay with the route adapters in ``handlers``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html as html_mod
 import json
 import logging
 import re
 import sqlite3
 import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -380,6 +382,31 @@ async def _author_report_html(
     # publishable artifact (HTML-escaping does NOT remove leaked credentials /
     # exfil URLs — that's this step). Applied uniformly to both paths.
     return untrusted._redact_finding({"v": html})["v"]
+
+
+# Per-campaign report-export locks with a holder count each, so an entry is
+# dropped once no export holds or waits for it and the dict stays bounded.
+_report_export_locks: dict[str, list[Any]] = {}
+
+
+@contextlib.asynccontextmanager
+async def _report_export_lock(cid: str) -> AsyncIterator[None]:
+    """Serialize one campaign's slug read → create-or-update → slug persist.
+
+    Two exports that both read an unbound slug would each create an artifact and
+    the later persist would orphan the other. Holding this across the sequence,
+    with the slug re-read inside it, makes the second export update the first
+    one's artifact. Only touched on the event loop, so no thread guard is needed.
+    """
+    entry = _report_export_locks.setdefault(cid, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            del _report_export_locks[cid]
 
 
 def _persist_report_slug(cid: str, slug: str) -> None:
