@@ -584,6 +584,44 @@ def upstream_repo(tmp_path):
     return root, bares
 
 
+def _full_lend_frame(link: "ProxyLink") -> dict | None:
+    """The gateway's first complete ``lend`` frame on the link, once it is sent."""
+    for line in bytes(link.sent).splitlines():
+        frame = json.loads(line)
+        if frame.get("t") == "lend" and not frame.get("partial"):
+            return frame
+    return None
+
+
+async def _wait_for_full_lend(port_file: Path, lend: Path, link: "ProxyLink") -> None:
+    """Wait until the proxy's lend file holds the gateway's complete host list.
+
+    The lend file exists from the first partial list on, and the proxy then
+    swaps each newer list in with ``os.replace``. A read during a swap fails on
+    Windows (and a reader's open handle makes the swap itself fail), so the
+    wait never opens the lend file: it waits for the complete frame on the
+    link, then for the file to reach that list's size by ``stat``. The proxy
+    writes no other list after it, so ``git_proxy_env`` reads a settled file.
+    """
+    await async_wait_until(
+        port_file.exists, off_loop=True, describe=lambda: "guest proxy port unpublished"
+    )
+    port = (await asyncio.to_thread(port_file.read_text, encoding="ascii")).strip()
+    frame = await async_wait_until(
+        lambda: _full_lend_frame(link), describe=lambda: "no complete lend frame sent"
+    )
+    # The proxy writes the list in text mode, so its newline is ``os.linesep``
+    # on disk (``\r\n`` on Windows). ``_write_lend`` drops a host name outside
+    # ``[a-z0-9.-]``; the gateway hosts these tests use all match, so every
+    # name in the frame reaches the file.
+    size = len(" ".join([port, *frame["hosts"]])) + len(os.linesep)
+    await async_wait_until(
+        lambda: lend.exists() and lend.stat().st_size == size,
+        off_loop=True,
+        describe=lambda: f"lend file never reached the complete list ({size} bytes)",
+    )
+
+
 async def _run_channel(tmp_path, upstream, *, credential_source=None):
     port_file = tmp_path / "git-proxy.port"
     process = await asyncio.create_subprocess_exec(
@@ -619,11 +657,7 @@ async def _run_channel(tmp_path, upstream, *, credential_source=None):
         )
         serve = asyncio.ensure_future(channel.serve())
         lend = Path(str(port_file) + workspace_tools.GIT_PROXY_LEND_SUFFIX)
-        await async_wait_until(
-            lambda: port_file.exists() and lend.exists(),
-            off_loop=True,
-            describe=lambda: "guest proxy port or lendable hosts unpublished",
-        )
+        await _wait_for_full_lend(port_file, lend, link)
         return process, serve, port_file, link
     except BaseException:
         try:
