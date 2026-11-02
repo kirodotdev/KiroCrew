@@ -31,7 +31,7 @@ from kiro_crew.subagent_manager import admission as admission_mod
 from kiro_crew.taskq import dependency as dep_mod
 from kiro_crew.taskq import model
 from kiro_crew.taskq import store as store_mod
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -434,8 +434,7 @@ async def test_drain_request_during_a_drain_runs_a_second_pass(
     monkeypatch.setattr(mgr, "_drain_queue_pass", _counted_pass)
     mgr._drain_queue()
     task = getattr(mgr, "_drain_task")
-    # flake-ok: the pump task ends after its coalesced second pass, inside the suite timeout; pre-existing, moved verbatim
-    await task
+    await await_until(task, what="the coalesced second drain pass")
     assert passes == [0, 1], "the coalesced request produced exactly one more pass"
     assert getattr(mgr, "_drain_again") is False
     await mgr.cancel_all()
@@ -490,8 +489,7 @@ async def test_a_spawn_during_the_parked_claim_queues_instead_of_overshooting(
     assert loser.id not in mgr._agents
     assert mgr._running_count == 1
     release.set()
-    # flake-ok: the drain ends once the release on the line above lets the parked claim finish; pre-existing, moved verbatim
-    await drain
+    await await_until(drain, what="the drain that was parked on the claim")
     await async_wait_until(
         lambda: "parked" in mgr._agents, describe=lambda: "spawned agent not yet in _agents"
     )
@@ -642,8 +640,7 @@ async def test_nested_child_of_a_blocked_parent_runs_w3_off_loop(
     parent = live
 
     async def _hang(info: Any) -> None:  # the child stays live for the scenario
-        # flake-ok: the child's run parks here on purpose until the cancel_all that ends the test; pre-existing, moved verbatim
-        await asyncio.Event().wait()
+        await finished(asyncio.Event().wait(), "the cancel_all that ends the child's run")
 
     monkeypatch.setattr(mgr, "_run", _hang)
     before = store.loop_thread_calls
