@@ -24,6 +24,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -1229,6 +1230,9 @@ class WebexClient:
                             # paces exactly like a missing one. The clamp below is
                             # what bounds the wait either way.
                             retry_after = 1.0
+                        if not math.isfinite(retry_after):
+                            # NaN survives the clamp and would sleep forever.
+                            retry_after = 1.0
                         await asyncio.sleep(min(max(retry_after, 0.5), 10.0))
                         continue
                     if 200 <= resp.status < 300:
@@ -1250,10 +1254,16 @@ class WebexClient:
 
 
 def _retry_after(headers: Any) -> float:
-    """The scan retry delay, clamped. A missing header must not mean zero."""
+    """The scan retry delay, clamped. A missing header must not mean zero.
+
+    A non-finite value counts as missing: NaN survives the clamp and would
+    make ``asyncio.sleep`` wait forever.
+    """
     try:
         value = float(headers.get("Retry-After") or _RETRY_AFTER_MIN_S)
     except (TypeError, ValueError):
+        value = _RETRY_AFTER_MIN_S
+    if not math.isfinite(value):
         value = _RETRY_AFTER_MIN_S
     return min(max(value, _RETRY_AFTER_MIN_S), _RETRY_AFTER_MAX_S)
 

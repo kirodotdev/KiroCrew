@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import platform
 from typing import Any
 
@@ -240,6 +241,9 @@ class WakaTimeClient:
                         try:
                             retry_after = float(resp.headers.get("Retry-After", "1"))
                         except (TypeError, ValueError):
+                            retry_after = 1.0
+                        if not math.isfinite(retry_after):
+                            # NaN survives the clamp and would sleep forever.
                             retry_after = 1.0
                         await asyncio.sleep(min(max(retry_after, 0.5), 10.0))
                         continue

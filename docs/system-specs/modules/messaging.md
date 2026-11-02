@@ -4306,7 +4306,8 @@ worse than one clean bubble followed by its pictures. The picture send is
   `TELEGRAM_MAX_MEDIA_GROUP` (10) and `TELEGRAM_MAX_TOTAL_UPLOAD_BYTES` (25 MiB,
   the aggregate that bounds resident bytes — ten photos at the per-file ceiling
   would be 100 MiB). `_api_multipart` sits beside `_api` and both run through one
-  `_api_request`, so the single 429 `retry_after` back-off exists once. The body is
+  `_api_request`, so the single 429 `retry_after` back-off exists once; a
+  non-finite `retry_after` (JSON `NaN`, `Infinity`) waits the 1s default. The body is
   a FACTORY, rebuilt per attempt, because an aiohttp form is consumed as it is
   written. Every `attach://` descriptor is built where its part is added.
 - **Only semantic seals extract, once.** `_rotate_on_length` holds the earliest
@@ -4588,7 +4589,8 @@ channel. Activity events are treated purely as signals: the raw UUID is
 Hydra-encoded (`base64("ciscospark://us/MESSAGE/{uuid}")`) and the message is
 hydrated via the documented `GET /v1/messages/{id}` REST call in a background
 task so the receive loop keeps breathing during long turns. Outbound is REST
-(`POST/PUT/DELETE /v1/messages`) with a single 429 `Retry-After` back-off; an
+(`POST/PUT/DELETE /v1/messages`) with a single 429 `Retry-After` back-off (a
+non-finite value counts as absent, here and in the 423 scan wait); an
 email-shaped conversation id maps onto `toPersonEmail` (opens/reuses the 1:1
 space server-side). Outbound markdown is bounded in UTF-8 BYTES, not
 characters — Webex's limit is 7439 bytes. The renderer's own final answer is
@@ -5645,7 +5647,7 @@ gateway record an answer the user never received. Callers that legitimately
 tolerate failure — the typing indicator, a cosmetic in-place edit, a command
 acknowledgement — catch it at their own call site. Retries cover Teams' documented
 transient set, which is **wider than the usual 429-only rule**: `412`, `429`, `502`
-and `504`, honouring `Retry-After` and otherwise backing off exponentially. The
+and `504`, honouring a finite `Retry-After` and otherwise backing off exponentially. The
 status badge is bidirectional — a delivered activity clears a stale failure, and
 `_notify_state` dedupes on the transition so a healthy channel does not republish
 per send nor overwrite the first failure reason. Before the request is made,
