@@ -407,12 +407,19 @@ async def test_the_declared_name_scan_also_runs_off_the_event_loop(
     )
     scan_threads: list[int] = []
     real_scan = sessions_mod.spec_by_declared_name
+    real_walk = sessions_mod.iter_declared_specs
 
     def recording_scan(*args, **kwargs):  # type: ignore[no-untyped-def]
         scan_threads.append(threading.get_ident())
         return real_scan(*args, **kwargs)
 
+    def recording_walk(*args, **kwargs):  # type: ignore[no-untyped-def]
+        # The memo's every-name prefill: the walk that answers first.
+        scan_threads.append(threading.get_ident())
+        yield from real_walk(*args, **kwargs)
+
     monkeypatch.setattr(sessions_mod, "spec_by_declared_name", recording_scan)
+    monkeypatch.setattr(sessions_mod, "iter_declared_specs", recording_walk)
 
     loop_thread = threading.get_ident()
     response = await _call(monkeypatch, tmp_path)

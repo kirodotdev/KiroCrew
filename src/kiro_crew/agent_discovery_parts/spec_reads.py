@@ -15,7 +15,7 @@ import errno
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from kiro_crew import hooks
 from kiro_crew.agent_spec_format import (
@@ -687,6 +687,27 @@ def declared_spec_entry(
             redact_log_via_context(names),
         )
     return None if match is None else (match_paths[0], match)
+
+
+def iter_declared_specs(
+    agents_dir: Path, *, operation: str, source: str
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(declared name, parsed spec)`` for every spec in *agents_dir* that declares one.
+
+    The walk :func:`spec_by_declared_name` makes, through the same reader and
+    under the caller's SEL labels, without choosing a name: a caller that needs
+    the answer for every declared name reads the directory once instead of once
+    per name. A spec that is refused, is not an object, or declares no string
+    ``name`` is skipped, as that scan skips it. Each parse is yielded and then
+    dropped, so the caller decides what to keep. Propagates ``OSError`` from
+    the directory walk itself.
+    """
+    for path in iter_agent_spec_files(agents_dir):
+        spec = _read_agent_spec(path, operation=operation, source=source)
+        if isinstance(spec, dict):
+            name = spec.get("name")
+            if isinstance(name, str):
+                yield name, spec
 
 
 def agent_spec_stems(agents_dir: Path, *, operation: str, source: str) -> list[str]:

@@ -158,6 +158,8 @@ if TYPE_CHECKING:
         ManagedToolPolicyUnreadable,
         _ambiguous_spec_reason,
         _policy_answer,
+        _policy_of_spec,
+        _prefill_managed_tool_policies,
         _read_managed_tool_policy_sync,
         _read_managed_tool_policy_uncached,
         _refuse_if_any_spec_is_unreadable,
@@ -176,7 +178,9 @@ if TYPE_CHECKING:
     from kiro_crew.agent_discovery import AgentsDirMemo  # noqa: F401
     from kiro_crew.agent_discovery import AmbiguousAgentSpecError  # noqa: F401
     from kiro_crew.agent_discovery import SensitiveAgentSpecPathError  # noqa: F401
+    from kiro_crew.agent_discovery import _AGENTS_DIR_MEMO_MAX_KEYS  # noqa: F401
     from kiro_crew.agent_discovery import _SpecReadRefused  # noqa: F401
+    from kiro_crew.agent_discovery import iter_declared_specs  # noqa: F401
     from kiro_crew.agent_discovery import plain_markdown_document  # noqa: F401
     from kiro_crew.agent_discovery import read_agent_spec_strict  # noqa: F401
     from kiro_crew.agent_discovery import spec_by_declared_name  # noqa: F401
