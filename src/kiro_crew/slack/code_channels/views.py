@@ -52,6 +52,10 @@ from kiro_crew.slack.code_channels.surface_store import get_async, update_async
 
 logger = logging.getLogger(__name__)
 
+#: The one wall clock a recorded view's stamp and :func:`reconcile`'s "asked
+#: at" are both read from, so tests can hand both the same fake clock.
+_wall: Callable[[], float] = time.time
+
 #: What a view write refused by Slack's own Stop raises (no agents.* call
 #: for the channel until its next turn).
 STOPPED = "stopped"
@@ -81,6 +85,11 @@ async def _refusal(channel_id: str, admits: Admits | None) -> str:
         return CHANNEL_OFF
 
 
+#: What a view write raises when the caller's own fence refused it at the cap
+#: (no removal was made; the caller's pre-send check, not Slack, said no).
+FENCED = "fenced"
+
+
 def _stopped(channel_id: str) -> bool:
     from kiro_crew.slack.code_channels import surface
 
@@ -102,6 +111,21 @@ PR_VIEW_TYPE = "pull_request"
 #: Pull-request tabs a channel keeps: five, less Plan, Code and Workers. With
 #: both held, an agent's own tabs may be displaced entirely (they give way first).
 MAX_PR_TABS = 2
+#: Whose pull request a PR tab shows, recorded when it is written: the channel's
+#: own (its workspace record) or a worker's (the conductor's ledger). A tab keeps
+#: its origin after the channel's own PR moves on, so its removal is fenced by
+#: what it SHOWS, not by what the channel's current PR happens to be.
+ORIGIN_OWN = "own"
+ORIGIN_WORKER = "worker"
+ORIGINS = frozenset({ORIGIN_OWN, ORIGIN_WORKER})
+
+
+def from_ledger(view: dict[str, Any]) -> bool:
+    """Whether a recorded PR tab shows ledger content (a worker's PR). A tab with
+    no recorded origin is taken as one (fails closed)."""
+    return view.get("origin") != ORIGIN_OWN
+
+
 #: Most view entries remembered per channel (Slack holds five; a margin for churn).
 MAX_RECORDED = 16
 
@@ -143,6 +167,8 @@ def _entry(view: dict[str, Any]) -> dict[str, str]:
     }
     if view.get("url"):
         entry["url"] = str(view["url"])
+    if view.get("origin") in ORIGINS:
+        entry["origin"] = str(view["origin"])
     return entry
 
 
@@ -160,13 +186,9 @@ _record_locks: dict[str, asyncio.Lock] = {}
 
 
 def _record_lock(channel_id: str) -> asyncio.Lock:
-    lock = _record_locks.get(channel_id)
-    if lock is None:
-        if len(_record_locks) > 4096:
-            for key in [k for k, v in _record_locks.items() if not v.locked()]:
-                _record_locks.pop(key, None)
-        lock = _record_locks[channel_id] = asyncio.Lock()
-    return lock
+    # Never pruned: one per code channel (a bounded set), and a lock dropped
+    # between its release and its next waiter's wake-up would let two writers in.
+    return _record_locks.setdefault(channel_id, asyncio.Lock())
 
 
 def _stamp(view: dict[str, Any]) -> float:
@@ -187,9 +209,22 @@ def _protected_first(entries: list[dict[str, str]]) -> list[dict[str, str]]:
     return [v for v in entries if id(v) not in drop][-MAX_RECORDED:]
 
 
-async def record_view(channel_id: str, *, key: str, view_id: str, type: str, url: str = "") -> None:
-    """Remember that this gateway wrote view *key* (made or updated) just now."""
-    entry = {"key": key, "view_id": view_id, "type": type, "at": f"{time.time():.6f}", "url": url}
+async def record_view(
+    channel_id: str, *, key: str, view_id: str, type: str, url: str = "", origin: str = ""
+) -> None:
+    """Remember that this gateway wrote view *key* (made or updated) just now.
+
+    *origin* (a pull-request tab's): whose PR it shows, :data:`ORIGIN_OWN` (the
+    channel's own, from its workspace record) or :data:`ORIGIN_WORKER`.
+    """
+    entry = {
+        "key": key,
+        "view_id": view_id,
+        "type": type,
+        "at": f"{_wall():.6f}",
+        "url": url,
+        "origin": origin,
+    }
     async with _record_lock(channel_id):
         record = await get_async(channel_id)
         kept = [dict(v) for v in (record.views if record else ()) if v.get("key") != key]
@@ -199,6 +234,23 @@ async def record_view(channel_id: str, *, key: str, view_id: str, type: str, url
             # In the same write, so a reconcile never sees the entry without the id.
             changes["plan_view_id"] = view_id
         await update_async(channel_id, **changes)
+
+
+async def set_origin(channel_id: str, key: str, origin: str) -> None:
+    """Re-label the recorded view *key*'s :data:`ORIGINS` (no Slack call)."""
+    if origin not in ORIGINS:
+        return
+    async with _record_lock(channel_id):
+        record = await get_async(channel_id)
+        if record is None:
+            return
+        kept = [dict(v) for v in record.views]
+        hit = [v for v in kept if v.get("key") == key]
+        if not hit or all(v.get("origin") == origin for v in hit):
+            return
+        for v in hit:
+            v["origin"] = origin
+        await update_async(channel_id, views=kept)
 
 
 async def forget_view(channel_id: str, key: str) -> None:
@@ -224,7 +276,7 @@ async def reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
     list cannot be read.
     """
     # Recorded times are kept to the microsecond: a hair of tolerance for rounding.
-    asked_at = time.time() - 1e-6
+    asked_at = _wall() - 1e-6
     listed = await client.list_views(channel_id)
     live_ids = {str(v.get("view_id") or "") for v in listed if v.get("view_id")}
     async with _record_lock(channel_id):
@@ -253,11 +305,16 @@ async def reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
 
 
 def _candidates(ours: list[dict[str, str]], for_key: str) -> list[dict[str, str]]:
-    """The views of ours *for_key* may displace, in the order they go (see the module)."""
+    """The views of ours *for_key* may displace, in the order they go (see the module).
+
+    The Code tab (:data:`DIFF_KEY`) is not in the view record, so a recorded
+    view under that key is another view (an agent's) and may give way to it.
+    """
+    itself = "" if for_key == DIFF_KEY else for_key
     agent = [
         v
         for v in ours
-        if v.get("key") not in PROTECTED_KEYS and not is_pr_tab(v) and v.get("key") != for_key
+        if v.get("key") not in PROTECTED_KEYS and not is_pr_tab(v) and v.get("key") != itself
     ]
     agent.sort(key=_stamp)
     if for_key not in PROTECTED_KEYS and for_key != DIFF_KEY:
@@ -292,10 +349,11 @@ _locks: dict[str, asyncio.Lock] = {}
 
 
 def _lock(channel_id: str) -> asyncio.Lock:
-    """The channel's view lock: every view upsert by a tool, and every eviction."""
-    if len(_locks) > 4096:
-        for key in [k for k, v in _locks.items() if not v.locked()]:
-            _locks.pop(key, None)
+    """The channel's view lock: every view upsert by a tool, and every eviction.
+
+    Never pruned, like :func:`_record_lock`: a lock dropped between its release
+    and its next waiter's wake-up would let two writers into one channel.
+    """
     return _locks.setdefault(channel_id, asyncio.Lock())
 
 
@@ -351,13 +409,19 @@ async def _settle_lost_removal(client: Any, channel_id: str, view: dict[str, str
 
 
 async def remove_ours(
-    client: Any, channel_id: str, key: str, *, admits: Admits | None = None
+    client: Any,
+    channel_id: str,
+    key: str,
+    *,
+    admits: Admits | None = None,
+    refused: Callable[[CodeChannelApiError], None] | None = None,
 ) -> bool:
     """Remove the view of ours recorded under *key*, by its recorded id. True when gone.
 
     A view Slack does not have (``view_not_found``) counts as gone too. Any other refusal,
     or a write gate (*admits*, else the package's own) that no longer admits a write,
-    keeps the record, so the next pass tries again.
+    keeps the record, so the next pass tries again. Slack's refusal is handed to
+    *refused* (when given), so the caller's back-off can read its ``retry_after``.
     """
     record = await get_async(channel_id)
     view = recorded(record, key)
@@ -370,6 +434,8 @@ async def remove_ours(
     except CodeChannelApiError as exc:
         if exc.code != "view_not_found":
             logger.info("code channel %s: view %s not removed: %s", channel_id, key, exc.code)
+            if refused is not None:
+                refused(exc)
             return False
     await forget_view(channel_id, key)
     return True
@@ -384,6 +450,7 @@ async def write_view(
     write: Callable[[], Awaitable[str]],
     admits: Admits | None = None,
     url: str = "",
+    origin: str = "",
 ) -> tuple[str, str]:
     """Run the ``setView`` *write* for view *key*, making room once at the cap.
 
@@ -401,7 +468,14 @@ async def write_view(
     """
     async with _lock(channel_id):
         return await _write_view(
-            client, channel_id, key=key, type=type, write=write, admits=admits, url=url
+            client,
+            channel_id,
+            key=key,
+            type=type,
+            write=write,
+            admits=admits,
+            url=url,
+            origin=origin,
         )
 
 
@@ -414,6 +488,7 @@ async def _write_view(
     write: Callable[[], Awaitable[str]],
     admits: Admits | None,
     url: str = "",
+    origin: str = "",
 ) -> tuple[str, str]:
     removed = ""
     # Asked again once the lock is held: the wait for it can outlast an Off, a
@@ -437,5 +512,5 @@ async def _write_view(
         # The refusal wrote nothing, so this is the request's first landing,
         # not a retried write.
         view_id = await write()
-    await record_view(channel_id, key=key, view_id=view_id, type=type, url=url)
+    await record_view(channel_id, key=key, view_id=view_id, type=type, url=url, origin=origin)
     return view_id, removed

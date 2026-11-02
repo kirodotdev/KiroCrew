@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -64,10 +65,28 @@ FULL_RETRY_SECS = 600.0
 #: (someone may have removed one, which would leave its links pointing nowhere).
 RELIST_SECS = 900.0
 #: A refusal answered with "fenced" by our own pre-send check (not Slack's).
-FENCED = "fenced"
+FENCED = views.FENCED
+#: Refusals that are a fence, not a failure: nothing is held or retried for them
+#: (``views.STOPPED``: Slack's Stop landed while room was made).
+_FENCED_CODES = frozenset(
+    {
+        FENCED,
+        views.STOPPED,
+        views.CHANNEL_OFF,
+        # surface.write_refusal's own codes (the package's write gate).
+        "channels_policy",
+        "archived",
+        "out_of_scope",
+        "error",
+    }
+)
 #: Backoff for a failed write: first, then x3 per failure, capped.
 _RETRY_FIRST_SECS = 5.0
 _RETRY_CAP_SECS = 300.0
+#: 5 s x 3**4 = 405 s, already past the cap: no larger power is ever needed.
+_RETRY_MAX_EXPONENT = 4
+#: The most a Slack ``Retry-After`` may hold a tab back (a bad header never strands it).
+_RETRY_AFTER_CAP_SECS = 3600.0
 _MAX_TRACKED = 4096
 _FOREVER = float("inf")
 
@@ -166,8 +185,13 @@ def _backoff(channel: str, key: str, code: str, retry_after: float = 0.0) -> flo
     if len(_failures) > _MAX_TRACKED:
         _failures.clear()
     count = _failures.get((channel, key), 0) + 1
-    _failures[(channel, key)] = count
-    delay = max(min(_RETRY_FIRST_SECS * 3 ** (count - 1), _RETRY_CAP_SECS), retry_after)
+    _failures[(channel, key)] = min(count, _RETRY_MAX_EXPONENT + 1)  # never grows unbounded
+    # The exponent is clamped BEFORE the power is taken: the cap is reached long
+    # before it, and an unbounded power overflows a float after ~650 failures.
+    backoff = _RETRY_FIRST_SECS * 3 ** min(count - 1, _RETRY_MAX_EXPONENT)
+    # A Retry-After that is no finite, non-negative number counts as none.
+    asked = retry_after if math.isfinite(retry_after) and retry_after > 0 else 0.0
+    delay = max(min(backoff, _RETRY_CAP_SECS), min(asked, _RETRY_AFTER_CAP_SECS))
     _note(channel, key, code, until=_clock() + delay)
     return delay
 
@@ -188,32 +212,57 @@ def _refusal(channel: str, key: str, view_type: str, exc: CodeChannelApiError) -
     if exc.code == views.TOO_MANY_VIEWS:
         _note(channel, key, exc.code, until=_clock() + FULL_RETRY_SECS)
         return 0.0
-    return _backoff(channel, key, exc.code)
+    # A rate limit's Retry-After holds the tab at least that long.
+    return _backoff(channel, key, exc.code, retry_after=exc.retry_after)
 
 
-async def _may_write(binding: Any) -> bool:
-    """The fences every write to the channel honours (archive, Stop, the channels policy)."""
+async def _write_refusal(binding: Any, *, ledger: bool = True) -> str:
+    """Why a tab write or removal may not go out now (``""``: it may).
+
+    The package's write gate (:func:`..surface.write_refusal`: the channels policy
+    first, then archive and Slack's Stop read after it, with no await between)
+    plus, for what the conductor's ledger supplies (*ledger*: the Workers tab and
+    the workers' PR tabs), the board's scope, so a channel that turned shared or
+    whose slot was relinked gets none of those written or removed from here. The
+    channel's OWN PR tab (from its workspace record, not the ledger) is not ledger
+    content: it needs no worker hand-off (``ledger=False``) and is held to the
+    channel's activation (Off or Review) instead, which the scope also asks.
+    """
+    from kiro_crew.slack.code_channels.board import source
+
     channel = str(getattr(binding, "channel_id", "") or "")
-    if not channel or await surface.is_archived(binding) or surface.channel_stopped(channel):
-        return False
-    return await surface.outbound_permitted()
+    if not channel:
+        return FENCED
+    if ledger:
+        return await surface.write_refusal(
+            channel,
+            binding,
+            scope=lambda: source.scope_admits(surface.dashboard_state(), binding),
+        )
+    return await surface.write_refusal(channel, binding, activation=True)
 
 
-def _fence(binding: Any) -> Callable[[], Awaitable[str]]:
-    """The same fences as :mod:`.views`'s write gate (``""``: admitted), asked
-    right before each write, each removal and the resend."""
+async def _may_write(binding: Any, *, ledger: bool = True) -> bool:
+    return not await _write_refusal(binding, ledger=ledger)
+
+
+def _fence(binding: Any, *, ledger: bool = True) -> Callable[[], Awaitable[str]]:
+    """The same gate, for :mod:`.views` to ask right before each write, each removal
+    and the resend (``""``: admitted, else the refusal code)."""
 
     async def _ask() -> str:
-        return "" if await _may_write(binding) else FENCED
+        return await _write_refusal(binding, ledger=ledger)
 
     return _ask
 
 
-def _fenced_write(binding: Any, send: Callable[[], Any]) -> Callable[[], Any]:
+def _fenced_write(
+    binding: Any, send: Callable[[], Any], *, ledger: bool = True
+) -> Callable[[], Any]:
     """*send* behind the fences, checked again right before every attempt."""
 
     async def _write() -> Any:
-        if not await _may_write(binding):
+        if not await _may_write(binding, ledger=ledger):
             raise CodeChannelApiError("agents.conversations.setView", FENCED)
         return await send()
 
@@ -241,7 +290,7 @@ async def _relist(client: Any, channel: str, record: Any) -> Any:
 
 
 async def sync_pr_tabs(
-    binding: Any, wanted: list[PrRef], settled: set[int] | None = None
+    binding: Any, wanted: list[PrRef], settled: set[int] | None = None, *, own: int = 0
 ) -> dict[int, str]:
     """Bring the channel's PR tabs toward *wanted*; returns ``{PR number: view id}`` held.
 
@@ -249,35 +298,77 @@ async def sync_pr_tabs(
     only when its PR is settled, or when *wanted* already fills every PR slot
     with newer PRs; one this pass simply did not see stays. Removes first (it
     frees room), then opens or re-points the wanted ones. Never raises.
+
+    *own* is the channel's own PR number (its workspace record's). Its tab is the
+    channel's, not the ledger's: it is kept current outside the board's scope too
+    (worker hand-off off, a shared channel). A worker's PR tab is opened or
+    re-pointed or removed only while the board's scope admits the channel. Out of
+    scope only the own PR is wanted or known settled, the workers' tabs stay as
+    they are, and the own PR waits for a free slot if they fill both.
     """
+    from kiro_crew.slack.code_channels.board import source
+
     channel = str(getattr(binding, "channel_id", "") or "")
     settled = settled or set()
+    own_key = views.pr_key(own) if own else ""
+
+    def ledger(key: str) -> bool:
+        return key != own_key
+
     try:
         client = surface.client()
-        if client is None or not await _may_write(binding):
+        if client is None or not await _may_write(binding, ledger=False):
             return {}
         record = await _relist(client, channel, await get_async(channel))
         held = [v for v in (getattr(record, "views", None) or ()) if views.is_pr_tab(v)]
+        scoped = source.scope_admits(surface.dashboard_state(), binding)
+        if not scoped:
+            # Out of the board's scope: only the channel's own PR is wanted or
+            # known settled; nothing the ledger supplied is used.
+            wanted = [p for p in wanted if own_key and views.pr_key(p.number) == own_key]
+            settled = {n for n in settled if own_key and views.pr_key(n) == own_key}
         want = {views.pr_key(p.number): p for p in wanted}
         stale = [v for v in held if v["key"] not in want]
         unseen = [v for v in stale if views.pr_number(v) not in settled]
-        # An unseen tab (its PR was not read this pass) goes only when the newest
-        # PR slots are taken by newer PRs SEEN open; otherwise it keeps its slot,
-        # even over an older wanted PR, which then waits for room.
-        ranked = sorted(
-            [(p.number, "want", k) for k, p in want.items()]
-            + [(views.pr_number(v), "keep", v["key"]) for v in unseen],
-            reverse=True,
-        )[: views.MAX_PR_TABS]
-        keep = [v for v in unseen if (views.pr_number(v), "keep", v["key"]) in ranked]
-        want = {k: p for k, p in want.items() if (p.number, "want", k) in ranked}
+
+        # An unseen tab (its PR was not read this pass) goes only when every PR
+        # slot is taken by something newer. For a worker's tab that is only PRs
+        # SEEN open this pass, never another unseen tab: a pass whose board read
+        # failed (only the own PR seen) removes no worker's tab. The channel's
+        # former own-PR tabs also give way to its newer ones, oldest first. A
+        # kept tab holds its slot even over an older wanted PR, which then waits.
+        def _newer(view: dict[str, Any]) -> int:
+            n = views.pr_number(view)
+            count = sum(p.number > n for p in want.values())
+            if not views.from_ledger(view):
+                count += sum(not views.from_ledger(o) and views.pr_number(o) > n for o in unseen)
+            return count
+
+        keep = [v for v in unseen if _newer(v) < views.MAX_PR_TABS]
+        free = max(0, views.MAX_PR_TABS - len(keep))
+        want = dict(sorted(want.items(), key=lambda kv: kv[1].number, reverse=True)[:free])
         for view in stale:
             if view in keep or _held(channel, f"remove:{view['key']}"):
                 continue
-            if await views.remove_ours(client, channel, view["key"], admits=_fence(binding)):
+            # By what the tab SHOWS, recorded when it was written: a former own
+            # PR's tab stays the channel's after its own PR moves on.
+            worker = views.from_ledger(view)
+            if not scoped and worker:
+                continue  # a worker's tab: neither written nor removed out of scope
+            # A worker's tab is asked the scope again right before its removal;
+            # the channel's own takes the channel fences only.
+            fence = _fence(binding, ledger=worker)
+            refused: list[CodeChannelApiError] = []
+            if await views.remove_ours(
+                client, channel, view["key"], admits=fence, refused=refused.append
+            ):
                 _succeeded(channel, f"remove:{view['key']}")
+            elif await fence():
+                continue  # fenced, not failed: nothing to back off from
             else:
-                _backoff(channel, f"remove:{view['key']}", "view_remove_failed")
+                # Slack's own Retry-After (a rate limit) holds the removal too.
+                wait = refused[-1].retry_after if refused else 0.0
+                _backoff(channel, f"remove:{view['key']}", "view_remove_failed", retry_after=wait)
         for key, pr in want.items():
             # Checked per PR: a refusal of the type on one PR stops the rest.
             if _held(channel, f"type:{views.PR_VIEW_TYPE}"):
@@ -285,6 +376,17 @@ async def sync_pr_tabs(
             record = await get_async(channel)
             current = views.recorded(record, key)
             if current is not None and current.get("url") == pr.url:
+                # Up already. Its origin follows whose PR it now shows (a worker's
+                # PR that became the channel's own, or the reverse), so its later
+                # removal is fenced by that.
+                origin = views.ORIGIN_WORKER if ledger(key) else views.ORIGIN_OWN
+                # Re-labelled as the channel's own only while the board's scope
+                # admits it (asked right before, no await between): out of scope a
+                # worker's tab stays exactly as it is.
+                if origin == views.ORIGIN_WORKER or source.scope_admits(
+                    surface.dashboard_state(), binding
+                ):
+                    await views.set_origin(channel, key, origin)
                 continue
             if _held(channel, key):
                 continue
@@ -292,7 +394,7 @@ async def sync_pr_tabs(
             if current is None and sum(views.is_pr_tab(v) for v in recorded) >= (views.MAX_PR_TABS):
                 # A removal that failed still holds its slot: a new PR waits.
                 continue
-            await _open_pr_tab(client, binding, key, pr)
+            await _open_pr_tab(client, binding, key, pr, ledger=ledger(key))
         record = await get_async(channel)
         return {
             views.pr_number(v): str(v["view_id"])
@@ -304,7 +406,9 @@ async def sync_pr_tabs(
         return {}
 
 
-async def _open_pr_tab(client: Any, binding: Any, key: str, pr: PrRef) -> None:
+async def _open_pr_tab(
+    client: Any, binding: Any, key: str, pr: PrRef, *, ledger: bool = True
+) -> None:
     channel = binding.channel_id
 
     def _send() -> Any:
@@ -322,12 +426,13 @@ async def _open_pr_tab(client: Any, binding: Any, key: str, pr: PrRef) -> None:
             channel,
             key=key,
             type=views.PR_VIEW_TYPE,
-            write=_fenced_write(binding, _send),
+            write=_fenced_write(binding, _send, ledger=ledger),
             url=pr.url,
-            admits=_fence(binding),
+            admits=_fence(binding, ledger=ledger),
+            origin=views.ORIGIN_WORKER if ledger else views.ORIGIN_OWN,
         )
     except CodeChannelApiError as exc:
-        if exc.code != FENCED:
+        if exc.code not in _FENCED_CODES:
             _refusal(channel, key, views.PR_VIEW_TYPE, exc)
         return
     except CodeChannelError as exc:  # refused locally, before it was sent
@@ -423,6 +528,11 @@ async def _publish_workers(
     if not await _may_write(binding):
         return "fenced"
     record = await get_async(channel)
+    from kiro_crew.slack.code_channels.board import stops
+
+    # The last await before rendering: a worker that moved to a newer turn
+    # meanwhile is not shown as stopped.
+    snapshot = stops.reconcile(snapshot)
     exists = views.recorded(record, key) is not None
     rows = tuple(getattr(snapshot, "rows", ()) or ())
     if not rows and not exists:
@@ -463,7 +573,7 @@ async def _publish_workers(
             admits=_fence(binding),
         )
     except CodeChannelApiError as exc:
-        if exc.code == FENCED:
+        if exc.code in _FENCED_CODES:
             return "fenced"
         delay = _refusal(channel, key, "block_kit", exc)
         if delay:
@@ -478,10 +588,15 @@ async def _publish_workers(
         for table in (_sent, _last_write):
             for stale in [c for c in table if c != channel][: _MAX_TRACKED // 2]:
                 table.pop(stale, None)
-    # A tab removed to fit this one may be linked from what was just written:
-    # the next pass writes it again without that link.
-    _sent[channel] = "" if views.is_pr_tab({"key": removed, "type": "pull_request"}) else digest
     _last_write[channel] = now
+    if views.is_pr_tab({"key": removed, "type": views.PR_VIEW_TYPE}):
+        # A PR tab removed to fit this one is linked from what was just written.
+        # The next pass writes it again without that link, and one is armed for
+        # when the edit gap allows it: a finished board gets no other trigger.
+        _sent[channel] = ""
+        _retry_at[channel] = max(_retry_at.get(channel, 0.0), WORKERS_MIN_GAP_SECS)
+        return "written"
+    _sent[channel] = digest
     return "written"
 
 

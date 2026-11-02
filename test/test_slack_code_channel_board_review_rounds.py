@@ -87,7 +87,7 @@ def test_the_sidebar_summary_comes_from_the_pr_filled_board(monkeypatch):
     async def read_board(st, b):
         return unfilled
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         return "updated"
 
     async def no_filing(binding, snapshot):
@@ -139,7 +139,7 @@ def test_a_board_not_shown_at_send_time_clears_the_sidebar_summary(monkeypatch, 
     monkeypatch.setattr(links, "link_builder", lambda: _link)
     source.set_scope_predicate(lambda st, b: True)
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         return answer
 
     monkeypatch.setattr(publisher, "publish", fake_publish)
