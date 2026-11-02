@@ -61,7 +61,6 @@
   "src/test/ChatSidebarCoverage.test.tsx",
   "src/test/ChatSidebarMoreCoverage.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",
-  "src/test/CrewCompanionPet.coverage.test.tsx",
   "src/test/DesignTweakHistoryCov80.test.tsx",
   "src/test/DevFleetPage.test.tsx",
   "src/test/EditableCodeBlock.editorActions.test.tsx",
