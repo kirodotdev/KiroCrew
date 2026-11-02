@@ -214,6 +214,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers.files import _probe_busy_response  # noqa: F401
     from kiro_crew.dashboard.handlers.files import _run_path_probe  # noqa: F401
     from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
+    from kiro_crew.dashboard.session_export import content_disposition  # noqa: F401
     from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure  # noqa: F401
     from kiro_crew.dashboard.upload_limits import knowledge_upload_max_bytes  # noqa: F401
     from kiro_crew.executors import run_in_embed_pool  # noqa: F401
