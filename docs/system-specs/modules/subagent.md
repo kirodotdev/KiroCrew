@@ -3824,17 +3824,18 @@ when the parent's own call already returned every member it carries:
   `written: true` changes anything: a `kirocrew-core` that marks without it
   (one from before the mark moved behind the write) flags no record and touches
   no tab slot, so its members keep their completion events, a queued one
-  included. A dashboard-born parent's slot takes only the ids a written mark
-  flagged: they go on `_subagents_inline_collected`, the synthesis turn's
+  included. A mark touches no tab slot itself: a tab that shows the parent
+  takes the flagged ids only at the landed release of the turn that received
+  them, where they go on `_subagents_inline_collected`, the synthesis turn's
   bookkeeping, and a completion of theirs already queued there is settled
-  (`_settle_collected_on_slot`). A tab that shows any other parent is settled
-  the same way, but only by the landed release of the turn that received them.
-- **A mark is pending until its turn releases, for every parent that is not
-  dashboard-born.** `written` means the reply's bytes reached kiro-cli's pipe,
-  not that the parent's model finished with them: a cron deadline, a stop, a
-  reap or a failure can still end the turn first. So for every parent but a
-  dashboard-born one (`parent_turns.settles_at_release`), whether or not a tab
-  shows it, `mark-collected` holds the mark, pending (`_inline_state`,
+  (`_settle_collected_on_slot`).
+- **A mark is pending until its turn releases, for every parent.** `written`
+  means the reply's bytes reached kiro-cli's pipe, not that the parent's model
+  finished with them: a cron deadline, a stop, a reap or a failure can still
+  end the turn first. So for every parent, a dashboard tab's own turn included
+  (a user who presses Stop after the reply reached kiro-cli still gets the
+  result), whether or not a tab shows it, `mark-collected` holds the mark,
+  pending (`_inline_state`,
   `_inline_token`), under an attempt of the parent's permit: the token
   `(key, task, epoch)`, the canonical key, the task holding the permit and the
   attempt's epoch (`SessionManager.turn_token`, `kiro_crew.parent_turns`). An
