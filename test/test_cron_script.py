@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import threading
-from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -1046,11 +1045,14 @@ def run(ctx):
 """,
         )
         original_popen_limited = cron_script.popen_limited
-        monkeypatch.setattr(
-            cron_script,
-            "popen_limited",
-            partial(original_popen_limited, cwd=tmp_path),
-        )
+        # The spawn paths PIN the child's working directory to a dir that cannot resolve
+        # into the apps tree (``_safe_cron_cwd``), passing ``cwd=`` explicitly at the call
+        # site -- which overrides any ``cwd`` a ``partial`` wrapper supplies. Drive the real
+        # pin: ``chdir`` into ``tmp_path`` (the patched home, whose apps tree is
+        # ``tmp_path/.kiro/crew/apps``), so the gateway cwd the pin reads is ``tmp_path``
+        # itself -- outside the apps tree -- and the child is pinned there.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cron_script, "popen_limited", original_popen_limited)
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = run_script_sandboxed(script_path + ":run", "test-job", str(marker))
         assert result["status"] == status

@@ -528,6 +528,8 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_required_mask_targets: tuple[str, ...] = (),
+    extra_mask_guard_targets: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
@@ -944,6 +946,7 @@ def wrap_argv(
             extra_hidden_dirs
             or extra_visible_dirs
             or extra_private_dirs
+            or extra_required_mask_targets
             or extra_writable_dirs
             or extra_expose_files
             or exec_cwd
@@ -960,6 +963,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_required_mask_targets=extra_required_mask_targets,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
                 exec_cwd=exec_cwd,
@@ -982,6 +986,8 @@ def wrap_argv(
             or extra_hidden_dir_ids
             or extra_visible_dirs
             or extra_private_dirs
+            or extra_required_mask_targets
+            or extra_mask_guard_targets
             or extra_writable_dirs
             or extra_expose_files
         ):
@@ -995,6 +1001,8 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_required_mask_targets=extra_required_mask_targets,
+                extra_mask_guard_targets=extra_mask_guard_targets,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )

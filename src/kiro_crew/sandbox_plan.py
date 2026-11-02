@@ -106,6 +106,12 @@ class SandboxRequest:
     extra_expose_files: tuple[str, ...] = ()
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = ()
     required_mask_targets: tuple[str, ...] = ()
+    #: Mask targets that get the SAME Seatbelt rename/ancestor guard and staging read-deny
+    #: as ``required_mask_targets`` but may legitimately be ABSENT at spawn (a cron app's
+    #: staging ``.<name>-secret-tmp`` and the live leaf it will be restored to mid-update).
+    #: Guarded, never required, so an absent one does not refuse the spawn. Seatbelt-only,
+    #: deny-only; a caller that passes none is unaffected.
+    mask_guard_targets: tuple[str, ...] = ()
     #: Name -> the identity a pre-spawn pass recorded for it: ``(dev, ino, is_link)``,
     #: optionally followed by the kind the name reached and the referent's dev and ino.
     mask_occupants: tuple[tuple[str, tuple[int, ...]], ...] = ()
@@ -1055,7 +1061,79 @@ def _seatbelt_plan(
     ancestor_guards = list(
         dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
     )
+    # Rename-around guard for caller-supplied REQUIRED mask targets (a cron child's app
+    # ``.app_secret`` leaves). A Seatbelt caller mask denies read/write/link on the secret
+    # PATH only, under ``(allow default)``; nothing stops a child renaming the bundle (or
+    # the ``apps`` dir) so the secret surfaces at a path no rule names. On the namespace
+    # backend the leaf is a bind mount, so a rename of its parent fails EBUSY and the mask
+    # holds; on Seatbelt the path rule does not follow the rename. So seal every ancestor
+    # directory of each required secret, from its own parent up to (but not including) the
+    # home root, with a LITERAL ``file-write*`` deny -- the same pattern the profile already
+    # uses for runtime parents. Literal (not subpath): it blocks renaming/replacing the
+    # directory entry itself without denying writes to the bundle's ``data/`` beneath it.
+    # Also seal the predictable ``.<name>-secret-tmp`` staging sibling an update leaves, and
+    # the resolved referent of a secret stored behind a symlink (a path rule on the symlink
+    # name does not cover the file it points at). These two are CREDENTIAL paths, not just
+    # rename-sensitive directories, so they need READ and hard-link denies too -- a
+    # write-deny alone leaves the bytes readable. They are collected into
+    # ``_secret_literal_denies`` (rendered as ``file-read*`` + ``file-link`` literal denies
+    # via the plan's ``files``) AND kept in ``ancestor_guards`` for the write-deny, so the
+    # staging path a mid-run ``update_app`` creates is denied in every direction even though
+    # it is ABSENT at spawn time -- a Seatbelt path rule holds for a name that does not
+    # exist yet, so the deny is in force the moment the update materialises the path. Deny-
+    # only: this loosens nothing, and it is derived solely from ``required_mask_targets``
+    # and ``mask_guard_targets`` (the optional staging/live leaves an in-flight update
+    # leaves), so a caller that passes none (every non-cron caller) is unaffected. The
+    # mask-guard targets get the identical rename/ancestor seal and staging read-deny even
+    # though they are NOT required -- a credential that exists only under its staging name
+    # must still be unrenameable, or a macOS child could rename ``apps`` and read it at the
+    # new path.
+    _home_root = home.rstrip(sep) or sep
+    _secret_literal_denies: list[str] = []
+
+    def _seal_ancestors_of(_leaf: str) -> None:
+        # Seal the staging sibling and every ancestor directory of ``_leaf`` up to (not
+        # including) the home root. Used for BOTH the lexical secret path and its resolved
+        # (canonical) path: when a DIRECTORY COMPONENT of the secret is a symlink, the
+        # lexical ancestors are not the real directories a rename would move, so the
+        # canonical ancestors must be sealed too or a child renames a resolved parent and
+        # reads ``.app_secret`` beneath the new name past the leaf's literal deny.
+        _parent = os.path.dirname(_leaf.rstrip(sep))
+        # The staging sibling an ``update_app`` leaves during a swap: it sits in the apps
+        # dir (the bundle's parent), named ``.<bundle>-secret-tmp``. Denied for READ as
+        # well, because a cron child running while another app updates could otherwise read
+        # the live credential the update parks there.
+        _bundle = os.path.basename(_parent)
+        _apps_dir = os.path.dirname(_parent)
+        if _bundle and _apps_dir:
+            _staging = os.path.join(_apps_dir, f".{_bundle}-secret-tmp")
+            ancestor_guards.append(_staging)
+            _secret_literal_denies.append(_staging)
+        while _parent and _parent.rstrip(sep) not in ("", _home_root) and _parent != sep:
+            ancestor_guards.append(_parent)
+            _nxt = os.path.dirname(_parent)
+            if _nxt == _parent:
+                break
+            _parent = _nxt
+
+    for _secret in (*request.required_mask_targets, *request.mask_guard_targets):
+        _abs = os.path.abspath(_secret)
+        _resolved = os.path.realpath(_secret)
+        _seal_ancestors_of(_abs)
+        if _resolved != _abs:
+            # A symlinked secret (or one reached through a symlinked directory component):
+            # a path deny on the link name does not cover its referent, and the lexical
+            # ancestors are not the real directories, so deny the resolved leaf for
+            # read/link and seal its canonical ancestors too.
+            ancestor_guards.append(_resolved)
+            _secret_literal_denies.append(_resolved)
+            _seal_ancestors_of(_resolved)
+    ancestor_guards = list(dict.fromkeys(ancestor_guards))
     home_files = [os.path.join(home, f) for f in files]
+    # The credential literals (staging siblings, symlinked referents) ride the same
+    # ``files`` channel, which renders ``file-read*`` + ``file-link`` literal denies; the
+    # write-deny they also need is already on them through ``ancestor_guards`` above.
+    home_files = list(dict.fromkeys(home_files + _secret_literal_denies))
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
     # last-match-wins, so this allow overrides only the runtime parent's write seal.
     writable, carveout_refusals = writable_carveouts(
