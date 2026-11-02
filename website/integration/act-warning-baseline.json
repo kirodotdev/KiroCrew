@@ -31,7 +31,6 @@
   "src/test/LexicalComposerInput.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/McpAppFrame.test.tsx",
-  "src/test/ProjectsPage.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
   "src/test/SettingsChatPanelCoverage.test.tsx",
   "src/test/TerminalRegistryCoverage.test.tsx",
