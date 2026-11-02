@@ -158,7 +158,6 @@ src/kiro_crew/deploy/render.py
 src/kiro_crew/deploy/scan.py
 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
 src/kiro_crew/deploy/skills/artifact-deploy/scripts/reaper_lambda/index.py
-src/kiro_crew/deploy/skills/artifact-deploy/templates/handler-example.py
 src/kiro_crew/deploy/webapp_types.py
 src/kiro_crew/discord/attachments.py
 src/kiro_crew/doc_parser.py
