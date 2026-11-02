@@ -98,6 +98,32 @@ permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+`useChatLauncher().openChat(options)` also accepts two options for a NEW session,
+both ignored when `slotKey` is set:
+
+- `memoryMode`: `'persistent'`, `'incognito'` or `'temporary'`, in place of the
+  owner's default. An unknown value is ignored.
+- `sessionFolder: false`: keep the session out of a per-chat session folder even when
+  the owner turned those on.
+
+Either one opens a new draft session, as `autoSend: false` does: the `message` is
+staged in the composer for the user to send. A host older than these options opens an
+ordinary new chat instead.
+
+Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
+resolves through:
+
+| Export | From | What |
+|---|---|---|
+| `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
+| `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
+| `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
+| `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
+
+A bundle that must also load on an older host reads these through a namespace import
+(`import * as sdk from '@kirocrew/app-sdk'`) and falls back when one is `undefined`. A
+named import of a name the host lacks fails the whole bundle at load time.
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -1127,6 +1153,83 @@ the Application it was given. The same rule runs the other way, so adding a `rou
 hook does not hand the object to a teardown whose startup never held it. Declare
 `on_shutdown` whenever you declare `on_startup`: anything you spawn outlives the
 startup call, and teardown is the only thing that stops it.
+
+### Owner gate (`ctx.require_owner`)
+
+Refuses a write to anyone but the dashboard owner, with the host's own refusal:
+
+```python
+async def save_item(request, ctx):
+    denied = await ctx.require_owner(request, "save_item")
+    if denied is not None:
+        return denied          # the host's 403 owner_only, or 401 for a stale session
+    ...
+```
+
+It returns `None` when the caller is the dashboard owner and the response to return
+otherwise. That response is the one the host's own owner-only routes send: a 403 with
+code `owner_only`, or a 401 when a pre-owner session is stale. A denial is audited
+with operation `<app>.<operation>`. The app half comes from the context, so a row
+cannot be attributed to another app. An `operation` that is not a short identifier
+(letters, digits, `_ . : -`, at most 64 characters) is recorded as `<app>.unnamed`;
+the request is still denied.
+
+The gate is strict: an app token is not the owner, so it is refused too. To keep an
+app token (which the token middleware already confines to your `permissions.api`)
+on its existing path, call the gate only for dashboard callers, which carry no app
+claim:
+
+```python
+if not request.get("app"):
+    denied = await ctx.require_owner(request, "save_item")
+```
+
+No permission gates it, because it only removes access. On a host without it, refuse
+the write (fail closed) rather than allow it:
+
+```python
+gate = getattr(ctx, "require_owner", None)
+if gate is None:
+    return web.json_response({"error": "owner authorization required", "code": "owner_only"}, status=403)
+```
+
+### Shared embedder (`ctx.embed`)
+
+The model the host's own memory embeds with, and the bounded pool its embedding work
+runs on. Use it so your stored vectors share the host's model and width, and so your
+app does not load a second copy of the model.
+
+```python
+def _index(store, text):            # runs on the embed pool, off the event loop
+    vector = ctx.embed.embed_sync(text)   # None: no model can serve; use keywords
+    store.save(text, vector, model=ctx.embed.model_id)
+
+async def add_item(request, ctx):
+    await ctx.embed.run(_index, store, text)
+```
+
+| Member | Returns |
+|---|---|
+| `available()` | `True` when the model is loaded, or can load on demand. May read model metadata, so call it off the loop. |
+| `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
+| `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
+| `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+
+It never raises into your code: a missing embedding extra, a model that cannot load
+and a failing embed all read as `None`, and the first failure is logged once per
+process. It is always present, like `ctx.scrub`, because it adds no reach your
+in-gateway code lacks. On an older host, `getattr(ctx, "embed", None)` is `None`;
+fall back to `asyncio.to_thread` and keyword search.
+
+### App Kit seam level (`ctx.sdk_level`)
+
+An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
+the shared embedder, structural routes (see `backend.hooks.routes` in
+[manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Read it
+with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
+`ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
+The dashboard exports the same number as `APP_SDK_LEVEL`.
 
 ### Lessons
 

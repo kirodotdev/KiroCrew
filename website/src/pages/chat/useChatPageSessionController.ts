@@ -6,6 +6,7 @@ import type { NavigateFunction, NavigationType } from 'react-router-dom'
 
 import { api } from '../../api/client'
 import type { ChatLaunchOptions } from '../../app-sdk'
+import { chatLaunchMemoryMode, chatLaunchOpensDraft } from '../../app-sdk/chatLaunch'
 import { i18nT } from '../../i18n/t'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
 import { useAppSelector, useAppStore, type AppDispatch } from '../../store'
@@ -277,6 +278,9 @@ export function useChatPageSessionController({
   const initialNewRef = useRef(searchParams.get('new') === '1')
   const newRequestConsumedRef = useRef(false)
   const appDraftAgentRef = useRef<string | undefined>(undefined)
+  // The claimed launch's new-session shape (`openChat`'s `memoryMode` /
+  // `sessionFolder`), spent with the create exactly like the agent above.
+  const appDraftSlotOptionsRef = useRef<{ memory_mode?: string; sessionFolder?: false }>({})
   /**
    * A prompt to seed the new session's composer with, carried by the SAME cold
    * URL that asks for the session: `/chat?new=1&prefill=<text>`. This is the deep
@@ -412,7 +416,7 @@ export function useChatPageSessionController({
     // onSuccess would land after that read, so nothing would consume it.
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
-      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, prefill: prompt || undefined }))
+      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
       // Spent once: a retry of a failed create still carries the same intent, but
@@ -462,16 +466,29 @@ export function useChatPageSessionController({
     initialNewRef.current = false
     initialPrefillRef.current = searchParams.get('prefill') ?? initialPrefillRef.current
     const launchWindow = window as Window & {
-      __mc_chat_launch?: { ts?: number; message?: string; agent?: string; slotKey?: string; autoSend?: boolean }
+      __mc_chat_launch?: {
+        ts?: number; message?: string; agent?: string; slotKey?: string; autoSend?: boolean
+        memoryMode?: unknown; sessionFolder?: unknown
+      }
     }
     const launch = launchWindow.__mc_chat_launch
     appDraftAgentRef.current = undefined
-    if (!embedded && launch?.autoSend === false && !launch.slotKey
+    appDraftSlotOptionsRef.current = {}
+    // A launch that shapes the NEW session (memory mode, no session folder) is a
+    // draft too: its message is staged, never sent, so the session's mode is
+    // settled before a first turn could read or write memory.
+    const launchMemoryMode = chatLaunchMemoryMode(launch?.memoryMode)
+    const launchNoSessionFolder = launch?.sessionFolder === false
+    if (!embedded && launch && chatLaunchOpensDraft(launch)
       && Date.now() - (launch.ts ?? 0) <= 10_000) {
       // Retain the claimed draft through create failure/retry. The create
       // mutation is the single owner of the prefill handoff.
       initialPrefillRef.current = launch.message ?? ''
       appDraftAgentRef.current = launch.agent
+      appDraftSlotOptionsRef.current = {
+        ...(launchMemoryMode ? { memory_mode: launchMemoryMode } : {}),
+        ...(launchNoSessionFolder ? { sessionFolder: false as const } : {}),
+      }
       delete launchWindow.__mc_chat_launch
     }
     newSessionRef.current = true

@@ -313,6 +313,44 @@ At most one enabled app owns a slot. When two enabled apps declare the same
 `replaces`, the first by app name wins and the collision is reported -- the winner
 does not depend on which app was enabled or installed more recently.
 
+### `l10n` — Listing Copy per Locale
+
+Optional. Your app's display name, description, page label and highlights in other
+languages. The dashboard shows them in place of the English fields for a reader whose
+language matches: first the exact locale, then its base language, then the English
+field.
+
+```json
+{
+  "l10n": {
+    "de": {
+      "displayName": "Einkaufsberater",
+      "description": "Merkt sich, was dir wichtig ist, und hilft beim Vergleichen.",
+      "pageLabel": "Einkauf",
+      "highlights": ["Merkt sich Größen und Vorlieben", "Vergleicht Angebote"]
+    },
+    "zh-CN": { "displayName": "购物顾问" }
+  }
+}
+```
+
+| Rule | Limit |
+|------|-------|
+| Locale key | `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$` (`de`, `pt-BR`, `zh-CN`), at most 32 locales |
+| `displayName` | string, at most 120 characters |
+| `description` | string, at most 1000 characters |
+| `pageLabel` | string, at most 60 characters |
+| `highlights` | array of at most 12 strings, each at most 300 characters |
+
+Every field is optional. A locale with an unknown key or a value over its limit is
+**dropped** and the install logs a warning; the rest of the block, and the install,
+are unaffected. The block is listing content, not a signed field, so it is not part of
+the admission signature. A built-in's own dashboard catalog keys take precedence
+over it.
+
+The published store listing does not carry `l10n` yet, so a store row you have not
+installed shows the English fields.
+
 ## Declarative contributions
 
 ### `contributes.commands` — Adding Rows to the Command Bar
@@ -943,6 +981,28 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
 
+**The `routes` callable** receives the app context and returns a list of routes.
+Each route is any object with three attributes, so the app declares its own
+dataclass and never imports `kiro_crew`:
+
+```python
+from dataclasses import dataclass
+from typing import Any, Callable
+
+@dataclass(frozen=True)
+class Route:
+    method: str        # GET, POST, PUT, DELETE or PATCH (any case)
+    path: str          # relative to /api/apps/<app>/, at most 512 characters
+    handler: Callable  # async (request, ctx) -> response
+
+def register_routes(ctx):
+    return [Route("GET", "/items", list_items), Route("POST", "/items/{item_id}", save_item)]
+```
+
+An item whose `method` is not one of those five, whose `path` is not a string of at
+most 512 characters, or whose `handler` is not callable is skipped with a warning.
+The built-ins' `AppRoute` class is still accepted.
+
 `hooks.routes` handlers are wired up when the app is enabled **through the
 Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
 gateway startup (`on_gateway_startup`) -- so on that path they go live without
@@ -971,7 +1031,9 @@ Python already runs in the Gateway process with full filesystem access, so a
 symlinked sibling resolves wherever it points. Do not use a bare
 `import config`: `sys.modules["config"]` is process-global, so two apps each
 shipping a `config.py` would end up sharing one module. `from kiro_crew...`
-absolute imports are for built-in apps only.
+absolute imports are for built-in apps only; an installed app reaches the host
+through its context (`ctx.require_owner`, `ctx.embed`, `ctx.scrub` and the other
+[context members](api-reference.md#owner-gate-ctxrequire_owner)).
 
 **Python dependencies.** Runtime `requirements.txt` provisioning — the
 `data/.kirocrew-deps/` tree described in the stdio `command`-resolution passage

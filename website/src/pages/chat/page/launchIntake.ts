@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, t
 import type { SetURLSearchParams } from 'react-router-dom'
 
 import type { ChatLaunchOptions } from '../../../app-sdk'
+import { chatLaunchOpensDraft } from '../../../app-sdk/chatLaunch'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
@@ -442,7 +443,10 @@ export function useAppLaunchIntake({
   useEffect(() => {
     if (embedded || !connected) return
     const launchWindow = window as Window & {
-      __mc_chat_launch?: { ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean }
+      __mc_chat_launch?: {
+        ts?: number; agent?: string; message?: string; slotKey?: string; autoSend?: boolean
+        memoryMode?: unknown; sessionFolder?: unknown
+      }
     }
     const intent = appSlotLaunch ?? launchWindow.__mc_chat_launch
     if (!intent) return
@@ -452,7 +456,7 @@ export function useAppLaunchIntake({
         return
       }
       // The controller owns existing-slot activation and fresh-draft creation.
-      if (intent.slotKey || intent.autoSend === false) return
+      if (intent.slotKey || chatLaunchOpensDraft(intent)) return
       delete launchWindow.__mc_chat_launch
     } else {
       if (slotLoading) return
