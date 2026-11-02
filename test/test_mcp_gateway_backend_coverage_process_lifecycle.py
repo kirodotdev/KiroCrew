@@ -57,6 +57,7 @@ from kiro_crew.mcp_gateway.backend import (
     send_initialize,
     spawn_backend,
 )
+from kiro_crew.testing.wait import await_until
 
 # --- Cancellation / recycle / shutdown -------------------------------------
 
@@ -232,14 +233,17 @@ class TestRecycleIfIdle:
         assert "kill failed" not in (backend.dead_reason or "")
 
 
+async def _parked_until_cancelled() -> None:
+    """A pump that never ends on its own; the code under test or the test cancels it."""
+    await asyncio.Event().wait()
+
+
 class TestBackgroundTasksAndShutdown:
     @pytest.mark.asyncio
     async def test_cancel_background_tasks_clears_both_pumps(self) -> None:
         backend = _make_backend()
-        # flake-ok: pre-existing never-ending stand-in task the code under test cancels, moved verbatim
-        backend._stdout_task = asyncio.create_task(asyncio.sleep(3600))
-        # flake-ok: pre-existing never-ending stand-in task the code under test cancels, moved verbatim
-        backend._stderr_task = asyncio.create_task(asyncio.sleep(3600))
+        backend._stdout_task = asyncio.create_task(_parked_until_cancelled())
+        backend._stderr_task = asyncio.create_task(_parked_until_cancelled())
         await backend._cancel_background_tasks()
         assert backend._stdout_task is None and backend._stderr_task is None
 
@@ -452,8 +456,7 @@ class TestSpawnBackend:
         assert backend.pid == 5150
         assert backend._last_ping_response_mono > 0
         assert backend._stderr_task is not None
-        # flake-ok: pre-existing await of the stderr drain, which ends at the fake pipe's EOF, moved verbatim
-        await backend._stderr_task
+        await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
 
     @pytest.mark.asyncio
     async def test_spawn_captures_the_start_id_before_any_await(
@@ -472,8 +475,7 @@ class TestSpawnBackend:
         assert backend.start_id == "spawn-5150"
         assert seen == [5150]
         if backend._stderr_task is not None:
-            # flake-ok: pre-existing await of the stderr drain, which ends at the fake pipe's EOF, moved verbatim
-            await backend._stderr_task
+            await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
 
     @pytest.mark.asyncio
     async def test_no_stderr_pipe_means_no_drain_task(self, fake_spawn: dict[str, Any]) -> None:
@@ -529,16 +531,17 @@ class TestSendInitialize:
     @pytest.mark.asyncio
     async def test_refuses_to_race_a_running_stdout_pump(self) -> None:
         backend = _make_backend()
-        # flake-ok: pre-existing never-ending stand-in pump task that the test's finally cancels, moved verbatim
-        task = asyncio.create_task(asyncio.sleep(3600))
+        task = asyncio.create_task(_parked_until_cancelled())
         backend._stdout_task = task
         try:
             with pytest.raises(RuntimeError, match="must run before the stdout pump"):
                 await send_initialize(backend)
         finally:
             task.cancel()
-            # flake-ok: pre-existing await of the stand-in task the finally just cancelled, moved verbatim
-            await asyncio.gather(task, return_exceptions=True)
+            await await_until(
+                asyncio.gather(task, return_exceptions=True),
+                what="stand-in pump task after the cancel",
+            )
 
     @pytest.mark.asyncio
     async def test_error_response_raises_value_error(self) -> None:
