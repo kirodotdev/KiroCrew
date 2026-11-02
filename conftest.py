@@ -374,6 +374,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
 # Host seams and process singletons pinned for every test.
 from conftest_floor_seams import (  # noqa: E402,F401 -- bound for pytest and for tests
     _isolate_agent_state_sidecar,
+    _isolate_kiro_cli_sign_in_store,
     _isolate_launchd_paths,
     _isolate_pre_exec_stops,
     _isolate_sandbox_mount_source_roots,
