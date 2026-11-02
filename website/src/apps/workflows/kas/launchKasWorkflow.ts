@@ -17,6 +17,7 @@
  */
 import { useCallback } from 'react'
 
+import { AcceptedBodyUnreadable } from '../../../api/apiError'
 import { api, type KasRecipe } from '../../../api/client'
 import { useAppDispatch } from '../../../store'
 import { createSlot, deleteSlot } from '../../../store/chatSlice'
@@ -102,6 +103,10 @@ export async function launchKasWorkflow(steps: KasLaunchSteps, args: KasLaunchAr
       ...(effort ? { effort } : {}),
     })
   } catch (err) {
+    // A 2xx whose body could not be read: the server ACCEPTED the run, which
+    // lives in this chat. Discarding it would close the chat and cancel that
+    // run, so keep it and pass the error on (as `appSendWire.ts` does).
+    if (err instanceof AcceptedBodyUnreadable) throw err
     // The launch was refused, so the chat holds nothing and never will: an
     // empty "Workflow: …" chat left behind would read as a run that started.
     // A failed cleanup must not mask the refusal the user needs to see.

@@ -9,8 +9,11 @@ import {
   dockSummary,
   findNode,
   findNodeByPath,
+  foldReplies,
   humanizeInputName,
+  isParentMessageTool,
   isRejectOption,
+  lastStepNote,
   leafSteps,
   liveStatusLine,
   liveStepProgress,
@@ -26,7 +29,7 @@ import {
   stepRetryable,
   windowRuns,
 } from './kasModel'
-import type { KasRunCapability } from '../../../api/client'
+import type { KasRunCapability, KasStepEntry } from '../../../api/client'
 import { getKasSelection, resetKasSelections, setKasSelection } from './kasSelection'
 
 describe('kasModel — controls follow row.controls', () => {
@@ -315,5 +318,34 @@ describe('kasSelection', () => {
     expect(getKasSelection('chat-1')).toBeNull()
     expect(getKasSelection(null)).toBeNull()
     resetKasSelections()
+  })
+})
+
+
+describe('kasModel — a step note is Kiro Agent\'s own send_message only', () => {
+  const tool = (name: string, input: string): Extract<KasStepEntry, { kind: 'tool' }> => ({
+    kind: 'tool', id: name, ts: null, toolCallId: name, name, title: name, toolKind: null, status: 'completed', input, output: null,
+  })
+  const note = '{"message":"Pick a colour: Red or Blue?","severity":"warning"}'
+
+  it('reads Kiro Agent\'s bare send_message as the step\'s note', () => {
+    const native = tool('send_message', note)
+    expect(isParentMessageTool(native)).toBe(true)
+    expect(lastStepNote([native])).toEqual({ text: 'Pick a colour: Red or Blue?', severity: 'warning' })
+    expect(foldReplies([native]).map(b => b.kind)).toEqual(['parent'])
+  })
+
+  it('leaves an MCP server\'s send_message, Crew\'s own included, as an ordinary tool row', () => {
+    for (const name of ['@kirocrew-core/send_message', 'mcp_kirocrew_core_send_message', 'kirocrew-core.send_message', 'other_send_message']) {
+      const crew = tool(name, '{"text":"Build finished"}')
+      expect(isParentMessageTool(crew)).toBe(false)
+      expect(lastStepNote([crew])).toBeNull()
+      expect(foldReplies([crew]).map(b => b.kind)).toEqual(['work'])
+    }
+  })
+
+  it('names the parked step\'s question from its own note, not a later Crew notification', () => {
+    const entries = [tool('send_message', note), tool('@kirocrew-core/send_message', '{"text":"Build finished"}')]
+    expect(lastStepNote(entries)?.text).toBe('Pick a colour: Red or Blue?')
   })
 })
