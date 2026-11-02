@@ -65,7 +65,9 @@ const slots = TITLES.map((title, i) => ({
   running: false,
   agent: 'kirocrew',
   created: '2026-10-01T01:00:00Z',
-  last_ts: new Date(Date.parse('2026-10-13T16:00:00Z') - i * 3600_000).toISOString(),
+  // Relative to now: a fixed date ages the rows into the collapsed
+  // "sleeping sessions" group and leaves nothing to scroll.
+  last_ts: new Date(Date.now() - (i + 1) * 60_000).toISOString(),
   folder_id: '',
 }))
 
@@ -208,6 +210,53 @@ async function boot(page) {
   const y1 = Math.min(VIEWPORT.height, Math.max(rb.b, hb ? hb.y + hb.height : rb.b) + 40)
   const clip = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
   await page.screenshot({ path: `${OUT}/settings-toggle.png`, scale: 'css', clip })
+  await context.close()
+}
+
+// ── Fade, motion on: the chips fade in when the peek starts and fade out when
+// it ends. Opacity is sampled on every animation frame in the page, so the
+// check does not depend on how long a screenshot takes; the still is taken
+// right after the peek ends and shows the layer part way through its fade.
+{
+  const { context, page } = await openPage({ reducedMotion: 'no-preference' })
+  const lane = await boot(page)
+  await page.mouse.move(lane.x + lane.width * 0.45, lane.y + Math.min(lane.height * 0.4, 260))
+  await page.waitForTimeout(400)
+  /** Wheel or blur in the page, then record the layer's opacity per frame. */
+  const sample = (action, ms) => page.evaluate(({ action, ms, laneSel }) => new Promise(done => {
+    const read = () => {
+      const layer = document.querySelector('[data-testid="scroll-peek-layer"]')
+      const chip = layer?.querySelector('[data-scroll-peek-title]')
+      if (!layer || !chip) return null
+      return Number(getComputedStyle(layer).opacity) * Number(getComputedStyle(chip).opacity)
+    }
+    if (action === 'wheel') {
+      const lane = document.querySelector(laneSel)
+      lane.scrollTop += 100
+      lane.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }))
+    } else {
+      window.dispatchEvent(new Event('blur'))
+    }
+    const out = []
+    const t0 = performance.now()
+    const tick = () => {
+      out.push(read())
+      if (performance.now() - t0 < ms) requestAnimationFrame(tick)
+      else done(out)
+    }
+    requestAnimationFrame(tick)
+  }), { action, ms, laneSel: '[data-peek-probe-lane]' })
+  const partial = xs => xs.filter(o => o !== null && o > 0.02 && o < 0.98).length
+  const fadeIn = await sample('wheel', 300)
+  check('fade: chips fade in', partial(fadeIn) > 0 && fadeIn.at(-1) === 1, JSON.stringify(fadeIn.map(o => o === null ? null : +o.toFixed(2))))
+  await page.waitForTimeout(200)
+  const fadeOut = await sample('blur', 300)
+  check('fade: chips fade out, then the layer is gone', partial(fadeOut) > 0 && fadeOut.at(-1) === null, JSON.stringify(fadeOut.map(o => o === null ? null : +o.toFixed(2))))
+  // The still: start a peek again, end it, and photograph the first frames.
+  await page.mouse.wheel(0, 100)
+  await page.waitForTimeout(400)
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+  await page.screenshot({ path: `${OUT}/fade-out.png`, scale: 'css' })
   await context.close()
 }
 
