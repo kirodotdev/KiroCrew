@@ -346,6 +346,10 @@ class TestRestartExitedBackend:
             resources="app",
             error="signature required",
         )
+        # Supervision ended for good, so the attempt counter is cleared: a derived
+        # "repeatedly failing to restart" banner (routes.handle_list_apps) must not
+        # keep telling the operator to retry a restart that policy now refuses.
+        assert "app" not in bmod._restart_attempts
 
     def test_admission_revet_error_stops_restart_and_audits_denial(
         self, monkeypatch: pytest.MonkeyPatch
