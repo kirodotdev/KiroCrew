@@ -14419,7 +14419,9 @@
         "crewmate_harness": "Harness de l’agent par coéquipier",
         "crewmate_harness_desc": "Ajoute un réglage Harness de l’agent au profil de chaque coéquipier, pour qu’un coéquipier puisse tourner avec un autre outil de code IA, comme Claude Code, et ses modèles, pendant que les autres gardent celui par défaut.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre sur un tableau."
+        "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre sur un tableau.",
+        "explore": "Explorer",
+        "explore_desc": "Ajoute Explorer à la barre du haut : des fonctionnalités à essayer, ta progression et une carte « À essayer aujourd'hui » dans une nouvelle discussion."
       },
       "kasBundleCard": {
         "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",

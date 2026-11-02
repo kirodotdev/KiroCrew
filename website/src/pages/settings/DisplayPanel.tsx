@@ -43,6 +43,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
@@ -274,8 +275,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Explore (RFC "Milestones for New-User Feature Discovery" 4.9): the main
   // switch. Default on; only a literal `false` is off. Shown only when the
   // gateway's config carries the key: an older gateway refuses the write, and
-  // a toggle that can only fail is worse than none.
-  const milestonesSupported = typeof mcQ.data?.dashboard?.milestones_enabled === 'boolean'
+  // a toggle that can only fail is worse than none. Hidden too while the
+  // Explore Feature Preview is off, since nothing it switches is drawn then.
+  const explorePreview = useExplorePreview()
+  const milestonesSupported = explorePreview && typeof mcQ.data?.dashboard?.milestones_enabled === 'boolean'
   const shownMilestones = overlay.shown('dashboard.milestones_enabled', mcQ.data?.dashboard?.milestones_enabled !== false)
   const [milestonesError, setMilestonesError] = useState<string | null>(null)
   const milestonesMutOpts = (path: 'dashboard.milestones_enabled') => {

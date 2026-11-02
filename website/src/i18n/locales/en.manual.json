@@ -9373,7 +9373,9 @@
         "crewmate_harness": "Agent harness per mate",
         "crewmate_harness_desc": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board."
+        "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board.",
+        "explore": "Explore",
+        "explore_desc": "Adds Explore to the top bar: features to try, your progress, and a Try today card on a new chat."
       },
       "kasBundleCard": {
         "toggle_label": "Run KAS on {{productName}}'s own engine",

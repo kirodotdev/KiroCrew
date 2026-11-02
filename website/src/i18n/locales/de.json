@@ -14156,7 +14156,9 @@
         "crewmate_harness": "Agent-Harness pro Crewmate",
         "crewmate_harness_desc": "Fügt dem Profil jedes Crewmates eine Einstellung Agent-Harness hinzu, damit ein Crewmate mit einem anderen KI-Coding-Tool wie Claude Code und dessen Modellen laufen kann, während die übrigen beim Standard bleiben.",
         "crew_mode": "Ultra Mode",
-        "crew_mode_desc": "Lässt einen Chat Aufgaben an eine Crew übergeben und sie auf einem Board verfolgen."
+        "crew_mode_desc": "Lässt einen Chat Aufgaben an eine Crew übergeben und sie auf einem Board verfolgen.",
+        "explore": "Entdecken",
+        "explore_desc": "Fügt Entdecken zur oberen Leiste hinzu: Funktionen zum Ausprobieren, dein Fortschritt und eine Karte „Heute ausprobieren“ in einem neuen Chat."
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
