@@ -46,6 +46,8 @@ import pytest
 from remote_crew_chaining_helpers import _FakeTunnel, _mgr
 
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestTheHopOwnershipInvariantHolds:
@@ -217,13 +219,12 @@ class TestLentHopReservation:
         # Time passes beyond the 2h the token was issued under. Moved by replacing the
         # registry's clock, because `lend_hop` takes the LATER of the deadlines -- so a
         # shorter one cannot fake expiry, which is the property that stops a
-        # second mint from shortening a reservation an earlier one earned.
+        # second mint from shortening a reservation an earlier one earned. The clock is
+        # the registry module's own, set one second past the lease's recorded deadline.
         from kiro_crew.instances import registry as reg_mod
 
-        later = time.time() + 3 * 3600
-        # flake-ok: pre-existing rebind of the registry's stdlib time.time for the whole worker, scoped by monkeypatch, moved verbatim
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing rebind of the registry's stdlib clock moved verbatim; scoped by monkeypatch
-        monkeypatch.setattr(reg_mod.time, "time", lambda: later)
+        deadline = reg.live_hop_lease_deadlines()[hop]
+        ManualClock(start=deadline + 1).install(monkeypatch, reg_mod)
         assert hop not in mgr._reserved_ports(), "withheld the port past the token's life"
 
     def test_the_reservation_survives_a_restart(self, tmp_path, monkeypatch):
@@ -759,10 +760,13 @@ class TestLentHopReservation:
             # under test is that the seam binds on its way out, not that something
             # later reconciles it.
             held = hop in mgr._hop_guard.held_ports()
-            for task in list(mgr._recovery_tasks):
+            recoveries = list(mgr._recovery_tasks)
+            for task in recoveries:
                 task.cancel()
-            # flake-ok: pre-existing one-tick yield, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            # The cancelled recoveries have finished before the loop is torn down.
+            await async_wait_until(
+                lambda: all(task.done() for task in recoveries), describe=lambda: repr(recoveries)
+            )
             return held
 
         try:
@@ -1061,8 +1065,10 @@ class TestALentCredentialIsShortLived:
         return mint
 
     def test_the_lent_lifetime_the_lease_and_the_answer_are_one_capped_number(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, manual_clock
     ):
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew.instances import registry as reg_mod
         from kiro_crew.instances.constants import LENT_HOP_TTL_CAP
         from kiro_crew.instances.token_mint import ttl_to_seconds
 
@@ -1074,7 +1080,11 @@ class TestALentCredentialIsShortLived:
         assert hop > 0
         asked.clear()  # the connect's own mint is this gateway's pane, not the lent one
 
-        before = time.time()
+        # The mint reads the manager's clock for the deadline and the registry reads its
+        # own to clamp and to list it: one frozen instant for both makes the length exact.
+        manual_clock.install(monkeypatch, stm)
+        manual_clock.install(monkeypatch, reg_mod)
+        before = manual_clock.time()
         ok, payload = asyncio.run(mgr.mint_embed_token("c", 9191))
         assert ok is True
 
@@ -1084,16 +1094,19 @@ class TestALentCredentialIsShortLived:
         assert asked == [LENT_HOP_TTL_CAP], f"the remote crew was asked for {asked}"
         assert payload["ttl"] == LENT_HOP_TTL_CAP, "reported a lifetime it did not mint"
         deadline = reg.live_hop_lease_deadlines()[hop]
-        # flake-ok: pre-existing wall-clock window around one in-process mint, moved verbatim; 30 s of slack
         assert deadline - before == pytest.approx(
-            cap, abs=30
+            cap
         ), f"the lease runs {round(deadline - before)}s, not the {cap}s it lent under"
 
-    def test_a_row_shorter_than_the_cap_keeps_its_own_lifetime(self, tmp_path, monkeypatch):
+    def test_a_row_shorter_than_the_cap_keeps_its_own_lifetime(
+        self, tmp_path, monkeypatch, manual_clock
+    ):
         """A minimum, not an assignment. An operator who wants a tighter window than
         the cap gets it; raising the cap to their row would widen the exposure they
         asked to narrow.
         """
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew.instances import registry as reg_mod
         from kiro_crew.instances.constants import LENT_HOP_TTL_CAP
         from kiro_crew.instances.token_mint import ttl_to_seconds
 
@@ -1106,13 +1119,15 @@ class TestALentCredentialIsShortLived:
         hop = mgr.status("c").local_port
         asked.clear()
 
-        before = time.time()
+        # One frozen instant for the manager's deadline and the registry's own reads.
+        manual_clock.install(monkeypatch, stm)
+        manual_clock.install(monkeypatch, reg_mod)
+        before = manual_clock.time()
         assert asyncio.run(mgr.mint_embed_token("c", 9191))[0] is True
 
         assert asked == ["5m"], f"lent under {asked} instead of the shorter row"
         deadline = reg.live_hop_lease_deadlines()[hop]
-        # flake-ok: pre-existing wall-clock window around one in-process mint, moved verbatim; 30 s of slack
-        assert deadline - before == pytest.approx(ttl_to_seconds("5m"), abs=30)
+        assert deadline - before == pytest.approx(ttl_to_seconds("5m"))
 
     def test_this_gateways_own_pane_keeps_the_rows_lifetime(self, tmp_path, monkeypatch):
         """The cap is on the credential that LEAVES. This gateway's own pane is not
@@ -1209,7 +1224,7 @@ class TestTheRetainedLeaseMapIsBounded:
         reg.lend_hop(20000, soon + 300)
         assert reg.live_hop_lease_deadlines()[20000] == pytest.approx(soon + 300)
 
-    def test_admission_clamps_a_deadline_past_the_cap(self, tmp_path):
+    def test_admission_clamps_a_deadline_past_the_cap(self, tmp_path, monkeypatch, manual_clock):
         """The writer already clamps; this is the bound holding for EVERY writer.
 
         Read from the RAW FILE, not through the registry: the loader clamps too, so a read
@@ -1217,21 +1232,23 @@ class TestTheRetainedLeaseMapIsBounded:
         admission's clamp deleted. Mutation M40 proved exactly that -- it survived a
         through-the-registry assertion -- so the two bounds have to be measured apart.
         """
+        from kiro_crew.instances import registry as reg_mod
         from kiro_crew.instances.constants import HOP_LEASE_DEADLINE_CAP_SECS
         from kiro_crew.instances.registry import InstancesRegistry
 
+        # The clamp is `now + cap` on the registry's clock; frozen, the bound is exact.
+        manual_clock.install(monkeypatch, reg_mod)
         path = tmp_path / "instances.json"
         reg = InstancesRegistry(path=path)
-        reg.lend_hop(20001, time.time() + 86400 * 30)
+        reg.lend_hop(20001, manual_clock.time() + 86400 * 30)
         stored = float(json.loads(path.read_text())["hop_leases"]["20001"])
-        # flake-ok: pre-existing wall-clock ceiling with 5 s of slack, moved verbatim
-        assert stored <= time.time() + HOP_LEASE_DEADLINE_CAP_SECS + 5, (
+        assert stored <= manual_clock.time() + HOP_LEASE_DEADLINE_CAP_SECS, (
             f"a month-long deadline was WRITTEN as {stored}, so one write can withhold a "
             f"port far past the cap the writer respects -- the loader hides this on read"
         )
 
     def test_the_loader_clamps_a_far_future_deadline_that_no_overflow_shed_would_remove(
-        self, tmp_path
+        self, tmp_path, monkeypatch, manual_clock
     ):
         """The load clamp measured ALONE, with the map under the count cap.
 
@@ -1240,26 +1257,29 @@ class TestTheRetainedLeaseMapIsBounded:
         removes the very lease that would prove the clamp missing. Mutation M42 survived
         the combined assertion for that reason.
         """
+        from kiro_crew.instances import registry as reg_mod
         from kiro_crew.instances.constants import HOP_LEASE_DEADLINE_CAP_SECS, HOP_LEASE_MAX
         from kiro_crew.instances.registry import InstancesRegistry
 
-        now = time.time()
+        manual_clock.install(monkeypatch, reg_mod)
+        now = manual_clock.time()
         path = tmp_path / "instances.json"
         path.write_text(
             json.dumps({"instances": [], "hop_leases": {"25000": now + 86400 * 365}}) + "\n"
         )
+        # The loader anchors its clamp to the file's mtime; pin it to the same instant.
+        os.utime(path, (now, now))
         reg = InstancesRegistry(path=path)
         live = reg.live_hop_lease_deadlines()
 
         assert len(live) == 1 <= HOP_LEASE_MAX, "fixture is not under the count cap"
-        # flake-ok: pre-existing wall-clock ceiling with 5 s of slack, moved verbatim
-        assert live[25000] <= now + HOP_LEASE_DEADLINE_CAP_SECS + 5, (
+        assert live[25000] <= now + HOP_LEASE_DEADLINE_CAP_SECS, (
             f"a deadline a year out survived the load as {live[25000]}, so a foreign write "
             f"withholds that port for a year across every restart"
         )
 
     def test_the_loader_clamps_a_stored_deadline_and_sheds_the_furthest_future_overflow(
-        self, tmp_path, caplog
+        self, tmp_path, monkeypatch, manual_clock, caplog
     ):
         """A foreign write is already on disk, so the loader clamps instead of refusing.
 
@@ -1267,10 +1287,12 @@ class TestTheRetainedLeaseMapIsBounded:
         pin the cap's worth of ports for the full horizon. Loud with a count, because every
         shed lease makes a port allocatable while a credential may still name it.
         """
+        from kiro_crew.instances import registry as reg_mod
         from kiro_crew.instances.constants import HOP_LEASE_DEADLINE_CAP_SECS, HOP_LEASE_MAX
         from kiro_crew.instances.registry import InstancesRegistry
 
-        now = time.time()
+        manual_clock.install(monkeypatch, reg_mod)
+        now = manual_clock.time()
         # Written directly, not through `lend_hop`: admission would refuse this map, which
         # is exactly why the loader is the only place it can appear.
         over = HOP_LEASE_MAX + 20
@@ -1279,6 +1301,8 @@ class TestTheRetainedLeaseMapIsBounded:
         discarded = len(leases) - HOP_LEASE_MAX
         path = tmp_path / "instances.json"
         path.write_text(json.dumps({"instances": [], "hop_leases": leases}) + "\n")
+        # The loader anchors its clamp to the file's mtime; pin it to the same instant.
+        os.utime(path, (now, now))
 
         with caplog.at_level(logging.ERROR):
             reg = InstancesRegistry(path=path)
@@ -1287,8 +1311,7 @@ class TestTheRetainedLeaseMapIsBounded:
         assert (
             len(live) == HOP_LEASE_MAX
         ), f"the loader kept {len(live)} leases, so the retained map is still unbounded"
-        # flake-ok: pre-existing wall-clock ceiling with 5 s of slack, moved verbatim
-        assert max(live.values()) <= now + HOP_LEASE_DEADLINE_CAP_SECS + 5, (
+        assert max(live.values()) <= now + HOP_LEASE_DEADLINE_CAP_SECS, (
             "a stored deadline past the cap survived the load, so a foreign write can "
             "withhold a port for as long as it likes"
         )
