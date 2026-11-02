@@ -1871,9 +1871,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {/* The live dot leads the name, where the eye lands when
                       scanning a long list. It carries the row's working state
                       on its own (the status line below may be truncated or
-                      read separately), so it keeps a real accessible name. */}
+                      read separately), so it keeps a real accessible name.
+                      The Manual drag handle's box ends at the content column's
+                      edge, so on a row that shows it the dot takes a 4px left
+                      margin and the grip and the dot read as two marks. */}
                   {showLiveDot && (
-                    <span className="session-live-dot animate-pulse" role="img" aria-label={i18nT('pages.chatSidebar.running_marker')} title={i18nT('pages.chatSidebar.running_marker')} data-testid="session-live-dot" />
+                    <span className={`session-live-dot animate-pulse${manualHandle ? ' ml-1' : ''}`} role="img" aria-label={i18nT('pages.chatSidebar.running_marker')} title={i18nT('pages.chatSidebar.running_marker')} data-testid="session-live-dot" />
                   )}
                   {/* A menu-started Regenerate title closes its menu at once, so
                       the row itself says the model call is running. */}
