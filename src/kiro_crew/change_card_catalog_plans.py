@@ -562,8 +562,11 @@ def build_preview(
             for k, v in changed.items()
         ]
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
+        from kiro_crew.agent_url_path import agent_record_write
+
+        # Name in the body when the path would carry an encoded name (#20083).
         out["apply"] = [
-            step("PUT", f"/api/agents/{_q(p['name'])}", _crewmate_put_body(changed, stored))
+            step("PUT", *agent_record_write(p["name"], _crewmate_put_body(changed, stored)))
         ]
     elif kind == KIND_CREWMATE_GOAL:
         if not snapshot.get("exists") or not snapshot.get("slug"):
@@ -1189,7 +1192,9 @@ def import_undo(
     if IMPORT_STEP_RULES in roles:
         body = {"member": name, "rules": ""}
         plan.append(step("PUT", f"/api/members/{_q(slug)}/rules", body))
-    plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+    from kiro_crew.agent_url_path import agent_path
+
+    plan.append(step("DELETE", agent_path(str(name))))
     return plan
 
 
@@ -1316,7 +1321,9 @@ def _kr_line(
 def _capability_plan(member: str, revision: str, draft: dict[str, Any]) -> list[dict[str, Any]]:
     base = {"revision": revision, **copy.deepcopy(draft)}
     fills = [_step_fill("preview_token", 0, "preview_token")]
-    path = f"/api/agents/{_q(member)}/capabilities"
+    from kiro_crew.agent_url_path import agent_path
+
+    path = agent_path(member, "/capabilities")
     return [
         step("POST", path + "/preview", base),
         step("PUT", path, _with_fills(base, fills), fill=fills),

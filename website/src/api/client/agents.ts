@@ -8,6 +8,7 @@
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
 import { activeLocale } from '../../i18n/format'
+import { agentPath } from '../agentPath'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -562,8 +563,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       }
       return put('/api/agents/' + encodeURIComponent(name), body).then(j)
     },
-    deleteKirocrewAgent: (name: string) =>
-      del('/api/agents/' + encodeURIComponent(name)).then(j),
+    deleteKirocrewAgent: (name: string) => del(agentPath(name)).then(j),
     /** Stage a crew's picture on the server (a `.pending` file only — the
      *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
      *  keeping the editor's Apply→Save two-step a real commit point). */
@@ -609,7 +609,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     uploadCrewAvatar: (name: string, file: Blob) => {
       const form = new FormData()
       form.append('file', file, 'avatar.png')
-      return fetch('/api/agents/' + encodeURIComponent(name) + '/avatar', {
+      return fetch(agentPath(name, '/avatar'), {
         method: 'POST',
         body: form,
       }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>

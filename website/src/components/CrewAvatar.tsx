@@ -57,6 +57,7 @@ import {
   type AvatarMotions,
   type AvatarSounds,
 } from '../lib/crewAvatarState'
+import { agentPath } from '../api/agentPath'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
 import {
   DEFAULT_POSE_BG,
@@ -422,7 +423,7 @@ export default function CrewAvatar({
   // waiting out the browser cache.
   const imageSrc = image
     ? (image.pendingData ??
-      `/api/agents/${encodeURIComponent(seed)}/avatar${image.v ? `?v=${image.v}` : ''}`)
+      `${agentPath(seed, '/avatar')}${image.v ? `?v=${image.v}` : ''}`)
     : null
   const ghost = (
     <img
