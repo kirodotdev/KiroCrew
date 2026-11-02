@@ -655,7 +655,7 @@ async def test_a_view_tab_recorded_after_the_listing_survives_its_reconcile(env:
             await asyncio.wait_for(release.wait(), timeout=10)
             return [{"view_id": "Va", "view_key": "a"}]  # read before Vb and the Plan tab
 
-    reconciling = asyncio.ensure_future(views._reconcile(Client(), CH))
+    reconciling = asyncio.ensure_future(views.reconcile(Client(), CH))
     await asyncio.wait_for(listed.wait(), timeout=10)
     await views.record_view(CH, key="b", view_id="Vb", type="html")
     await views.record_view(CH, key="plan", view_id="Vplan", type="canvas")

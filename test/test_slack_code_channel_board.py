@@ -308,6 +308,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "step",
         "turn_started_at",
         "approval_key",  # a digest only for the alert token, never rendered
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 

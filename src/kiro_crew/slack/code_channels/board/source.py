@@ -353,6 +353,7 @@ def project(
     tool_of: Callable[[str], str] | None = None,
     activity_of: Callable[[str], model.Activity] | None = None,
     approval_of: Callable[[str], model.Activity] | None = None,
+    stopped_of: Callable[[str], Any] | None = None,
 ) -> model.BoardSnapshot:
     """The published snapshot: EVERY ledger item reduced to a :class:`~.model.WorkerRow`.
 
@@ -394,6 +395,7 @@ def project(
             approval_key = model.approval_key(asked.approval_id)
         elif state == model.IDLE and item.status == "progress" and item.summary:
             step = model.safe_line(str(item.summary), first_line=True)
+        stop = stopped_of(worker) if stopped_of is not None and worker else None
         rows.append(
             model.WorkerRow(
                 item_id=str(item.item_id),
@@ -416,6 +418,8 @@ def project(
                 step=step,
                 turn_started_at=turn_started_at,
                 approval_key=approval_key,
+                stopped_by=str(getattr(stop, "user", "") or ""),
+                stopped_at=str(getattr(stop, "at", "") or ""),
             )
         )
     goal = model.safe_line(
@@ -454,6 +458,8 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
     # The scrub's first host-name read is a reverse DNS lookup: warm its cache
     # off the event loop, since ``project`` runs inline.
     await asyncio.to_thread(model._host_names)
+    from kiro_crew.slack.code_channels.board import stops
+
     return project(
         record,
         list(items),
@@ -461,4 +467,5 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
         tool_of=lambda key: live(key)[1],
         activity_of=lambda key: worker_activity(state, key),
         approval_of=lambda key: approval_activity(state, key),
+        stopped_of=lambda key: stops.current(state, key),
     )

@@ -583,16 +583,21 @@ async def call(
     except CodeChannelApiError as exc:
         code = exc.code
         if code == "too_many_views" and room_for:
-            from kiro_crew.slack.code_channels.views import make_room
+            from kiro_crew.slack.code_channels.views import is_pr_tab, make_room
 
-            if await make_room(
+            removed = await make_room(
                 client,
                 record.channel_id,
-                # The Code tab is not in the view record: every recorded
-                # tab of ours may make room for it (none is kept by name).
-                for_key="",
+                # The Code tab is not in the view record: it is named so the
+                # channel's own PR tabs may give way to it after the agent's.
+                for_key=room_for,
                 admits=_view_gate(record.channel_id, fence),
-            ):
+            )
+            if removed:
+                if is_pr_tab({"key": removed, "type": "pull_request"}):
+                    # A PR tab gave way: the board posted this pass may link
+                    # it, so one more pass re-renders it without that link.
+                    svc._again.add(record.key)
                 return await svc._call(method, record, *args, fence=fence, **kwargs)
     except CodeChannelError as exc:  # refused locally, before it was sent
         logger.warning("code channel %s: %s not sent: %s", record.channel_id, method, exc)
