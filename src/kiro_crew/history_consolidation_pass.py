@@ -1344,9 +1344,11 @@ async def _call_llm(
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
-    charged rather than risk an unbounded retry loop over real spend. The one
-    exception is ``AcpAuthRequired`` raised before any text streamed, on a backend
-    that reports usage and shows none billed: a signed-out kiro-cli ran no model.
+    charged rather than risk an unbounded retry loop over real spend. The
+    exceptions are ``AcpAuthRequired`` and an error tagged ``connection_failure``
+    raised before any text streamed, on a backend that reports usage and shows
+    none billed: a signed-out kiro-cli, or a host with no network path to the
+    provider, ran no model.
     """
     if not self._sessions:
         self._logger.warning("LLM consolidation skipped — no session manager")
@@ -1424,19 +1426,32 @@ async def _call_llm(
             # Matched by class name: the ACP exception type lives behind the
             # agent-SDK import boundary, which application code may not cross
             # (the same handle as ``_is_auth_required`` in dashboard/chat_threads.py).
+            # A dropped network path is the same: a Mac's DarkWake runs the timers
+            # with no usable network, so a night of sleep would otherwise spend
+            # every attempt on turns that never reached the provider. Only the
+            # ``connection_failure`` tag counts, set from the raw frame; a 5xx
+            # the provider answered with is still charged.
+            signed_out = type(exc).__name__ == "AcpAuthRequired"
+            unreachable = getattr(exc, "connection_failure", None) is True
             if (
-                type(exc).__name__ == "AcpAuthRequired"
+                (signed_out or unreachable)
                 and not reply
                 and getattr(client, "reports_turn_usage", False) is True
                 and not usage_has_billing(
                     provider_last_turn_usage(client, since=stats_before, consume=False)
                 )
             ):
+                if signed_out:
+                    self._logger.warning(
+                        "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                        _time.monotonic() - t_start,
+                    )
+                    raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
                 self._logger.warning(
-                    "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                    "LLM consolidation turn could not reach the model backend after %.1fs",
                     _time.monotonic() - t_start,
                 )
-                raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
+                raise _ConsolidationNotDispatched("model backend unreachable") from exc
             # The model and the prompt size are the two facts a context-window
             # overflow or a 429 is diagnosed from.
             self._logger.warning(

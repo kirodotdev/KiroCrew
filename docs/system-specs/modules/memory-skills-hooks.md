@@ -3632,7 +3632,10 @@ so does a reply that does not parse. A turn that fails with `AcpAuthRequired`
 terms: nothing streamed, and a backend in that set shows no billing on any
 attempt of the turn. An auth failure after text or billing, or from a backend
 outside that set, is charged like any other failed turn, so a login lapse
-overnight cannot abandon a span unread.
+overnight cannot abandon a span unread. A turn that fails on an error tagged
+`connection_failure` (the network path to the provider dropped, as on a Mac in
+DarkWake overnight) takes the same backoff on the same terms; a 5xx the
+provider answered with is still charged.
 
 ### Cross-Platform
 
