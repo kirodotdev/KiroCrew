@@ -1736,9 +1736,8 @@ class TestIsDeniedReDoSResistance:
         alt = ["danger-alpha|danger-beta"]
         assert is_denied("please run danger-alpha now", denied_regexes=alt) is None
         assert is_denied("totally safe command", denied_regexes=alt) is None
-        start = time.perf_counter()
-        is_denied("x" * 40000, denied_regexes=alt)
-        assert time.perf_counter() - start < self._BUDGET_SECONDS
+        cost = self._cpu_cost(lambda: is_denied("x" * 40000, denied_regexes=alt))
+        assert cost < self._BUDGET_SECONDS
 
     def test_malformed_user_regex_does_not_crash_or_spam(self):
         # A malformed custom regex is skipped (never matches), the gate stays up

@@ -45,7 +45,8 @@ class TestUserRegexReDoSGate:
 
     # Load-tolerant ceiling (see TestIsDeniedReDoSResistance): only has to
     # separate linear from catastrophic (seconds-to-minutes), not assert a
-    # sub-100ms wall clock on a shared, parallel CI runner.
+    # sub-100ms cost. Read on thread CPU, so the time this worker spends
+    # descheduled behind its siblings on a shared runner is not billed to it.
     _BUDGET_SECONDS = 5.0
 
     _CATASTROPHIC = (
@@ -132,20 +133,18 @@ class TestUserRegexReDoSGate:
         # 20k input must stay fast (the git-publish patterns are filtered by
         # is_denied, the rest are linear).
         hostile = "aws " + ("-x " * 5000) + "delete-"
-        start = time.perf_counter()
+        start = time.thread_time()
         is_denied(hostile)
-        # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
-        assert time.perf_counter() - start < self._BUDGET_SECONDS
+        assert time.thread_time() - start < self._BUDGET_SECONDS
 
     def test_catastrophic_user_regex_does_not_freeze_is_denied(self):
         # REQUIREMENT: a stored catastrophic pattern must be skipped, not run —
         # is_denied on a long adversarial input stays far under the budget.
         hostile = "a" * 2000 + "!"
         for pat in self._CATASTROPHIC:
-            start = time.perf_counter()
+            start = time.thread_time()
             result = is_denied(hostile, denied_regexes=[pat])
-            elapsed = time.perf_counter() - start
-            # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
+            elapsed = time.thread_time() - start
             assert elapsed < self._BUDGET_SECONDS, f"{pat}: {elapsed:.3f}s"
             # Disabled (skipped) — it must not match.
             assert result is None, pat
@@ -154,10 +153,9 @@ class TestUserRegexReDoSGate:
         # Defense-in-depth: a catastrophic user pattern stored ALONGSIDE the
         # built-ins is skipped (no freeze) while the built-ins still enforce.
         regexes = ["(a+)+$", *[r.pattern for r in BUILTIN_DENIED_RULES]]
-        start = time.perf_counter()
+        start = time.thread_time()
         benign = is_denied("a" * 3000 + "!", denied_regexes=regexes)
-        # flake-ok: pre-existing load-tolerant 5 s ceiling that only separates linear from catastrophic matching, moved verbatim; tracked for a de-flake pass
-        assert time.perf_counter() - start < self._BUDGET_SECONDS
+        assert time.thread_time() - start < self._BUDGET_SECONDS
         assert benign is None
         # A real destructive command is still denied despite the stored junk.
         assert (
@@ -513,7 +511,9 @@ class TestSelfModuleIndexIsLinear:
         The absolute budget stays as the machine-independent catastrophic-blowup
         backstop: the pre-fix quadratic spent 1.94s where the bound is 0.5s, and it
         also catches cost added outside the instrumented calls, where the counts
-        cannot see it.
+        cannot see it. It is read on thread CPU, not the wall clock: the scan runs
+        on this thread, and a wall reading bills a loaded runner's scheduling to it
+        (0.507s against a scan that costs about 0.08s of CPU under coverage).
         """
         import time
 
@@ -529,11 +529,10 @@ class TestSelfModuleIndexIsLinear:
         # this test runs alone.
         security._is_self_restart(build(250))
         text = build(2000)
-        start = time.perf_counter()
+        start = time.thread_time()
         assert security._is_self_restart(text) is True
-        large = time.perf_counter() - start
+        large = time.thread_time() - start
         # Base spent 1.94 s here; a quadratic scan cannot come near this ceiling.
-        # flake-ok: pre-existing 0.5 s backstop on a scan the base spent 1.94 s on; the linearity is pinned by call counts below; moved verbatim, tracked for a de-flake pass
         assert large < 0.5, f"2k tokens took {large:.3f}s"
 
         real_scan = security._self_module_flag_scan
@@ -955,15 +954,15 @@ class TestPolynomialBacktrackingStaysBounded:
         assert matcher._bounded is True, "must not take the unbounded full-input path"
 
     def test_the_flagged_pattern_evaluates_fast_on_a_long_input(self):
-        # The actual property under test is wall-clock: on the bounded engine a
+        # The actual property under test is cost: on the bounded engine a
         # 20k-character command must not stall the gate. Unbounded, this input
-        # would take minutes.
+        # would take minutes. Thread CPU, so a sibling worker's slice is not
+        # billed to the match.
         matcher = security._DenyMatcher("a+a+$")
         subject = "a" * 20000 + "!"
-        start = time.perf_counter()
+        start = time.thread_time()
         matcher.match(subject)
-        elapsed = time.perf_counter() - start
-        # flake-ok: pre-existing 1 s wall-clock ceiling on a 20k-character input that takes minutes unbounded, moved verbatim; tracked for a de-flake pass
+        elapsed = time.thread_time() - start
         assert elapsed < 1.0, f"deny evaluation took {elapsed:.1f}s — gate would stall"
 
 
