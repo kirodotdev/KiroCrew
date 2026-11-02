@@ -207,8 +207,8 @@ class KasCloudSandboxHarness(KasHarness):
             from kiro_crew.acp.session_handle import AcpRuntimeError
 
             raise AcpRuntimeError(
-                "Kiro Cloud Sessions are not available to this sign-in: the Kiro agent "
-                "server did not offer cloud sandboxes. Sign in to Kiro with an account "
+                "Kiro Cloud Sessions are not available to this sign-in: Kiro Agent "
+                "did not offer cloud sandboxes. Sign in to Kiro with an account "
                 "that has Kiro Cloud Sessions, or choose another session environment."
             )
         cloud: dict[str, Any] = {}

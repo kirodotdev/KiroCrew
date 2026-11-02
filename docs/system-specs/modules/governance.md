@@ -3010,8 +3010,8 @@ Jev decision seam's paid external egress — the consent PUT plus the gate's own
 keystone read, every layer honoured; see below), and
 `capabilities.decisions_local` (a local decision-model preset, which only narrows
 `capabilities.decisions`; see [the Jev decision seam](#the-jev-decision-seam--capabilitiesdecisions)), and
-`capabilities.kiro_cloud_sessions` (opt-in, `capability_default=False`: a Kiro
-Cloud session runs its agent and tools in Kiro's cloud, outside every scope of
+`capabilities.kiro_cloud_sessions` (opt-in, `capability_default=False`: a session
+on Kiro Agent's Kiro Cloud Sessions feature runs its agent and tools in Kiro's cloud, outside every scope of
 this ceiling. `coder.session_launch.kiro_cloud_governance_refusal` refuses
 the start with `SessionEnvironmentUnavailable` when the policy or the session's
 profile governs any scope other than this row (no second scope list, so a
