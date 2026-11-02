@@ -41,6 +41,7 @@ from unittest import mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew.apps.builtins.issue_radar.backend import (
@@ -163,7 +164,7 @@ def _bulk_no_move_lines(
                 "event_kind": kind,
             },
         )
-    assert crew_log_emit.flush(timeout=30.0), "the crew log writer did not drain the filler"
+    assert_drained()
 
 
 class FoldTest(unittest.TestCase):

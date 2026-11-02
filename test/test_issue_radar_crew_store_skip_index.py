@@ -11,6 +11,7 @@ the carry of a pre-projection ``skipped.json`` in
 """
 
 import pytest
+from crew_log_drain import assert_drained
 from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     OWNER,
     REPO,
@@ -240,7 +241,7 @@ def test_a_pass_after_another_crews_decision_defers_to_it_whatever_the_clocks_sa
         "event_kind": "skip",
     }
     crew_log_emit.on_radar_recorded(sid_b, stale_clock)
-    assert crew_log_emit.flush(timeout=5)
+    assert_drained()
     crew_log_projection.forget_slot_folds()
     standing = cs.read_skips(OWNER, REPO, tmp_path)["42"]
     assert (standing["crew_id"], standing["reason"]) == (a["id"], "A saw it first")

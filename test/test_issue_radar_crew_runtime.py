@@ -44,6 +44,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from crew_log_drain import assert_drained
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
@@ -161,11 +162,10 @@ class TestSeedingSurvivesABriefLogLock:
         first, so the only holder the on-loop write can meet is the planted one.
         """
         from kiro_crew.crew_log import eager as crew_log_eager
-        from kiro_crew.crew_log import emit as crew_log_emit
 
         crew = _crew(tmp_path, unattended=True)
         _item(tmp_path, crew["id"], 2201, phase="awaiting-ci")
-        assert crew_log_emit.flush(timeout=30), "the setup write never landed"
+        assert_drained()
         assert crew_log_eager.drain(timeout=30), "the setup write's fold never settled"
         probes = self._hold_the_log_lock_during_read_back(monkeypatch)
 
