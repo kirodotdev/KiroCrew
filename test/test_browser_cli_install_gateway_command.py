@@ -18,6 +18,7 @@ from browser_cli_install_helpers import _default_no_os_deps  # noqa: F401
 from browser_cli_install_helpers import isolated_browser_cache_fixture  # noqa: F401
 
 from kiro_crew.browser_cli import install as mod
+from kiro_crew.browser_cli import install_launcher as launcher
 
 
 class TestWindowsGatewayCommand:
@@ -97,6 +98,203 @@ class TestWindowsGatewayCommand:
 
         assert replaced == staged
         assert replaced.read_bytes() == b"replacement node"
+
+    def test_install_replaces_a_running_node_exe_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reinstall while a managed ``node.exe`` is still running must not die
+        at stage-node. Windows refuses to rename over a running executable, so
+        the first replace raises ``PermissionError`` ("Access is denied"); the
+        running image is then renamed aside (which Windows allows), freeing the
+        name, and the staged copy lands. The real ``os.replace`` runs the swap
+        here -- only the first overwrite of the destination is forced to raise."""
+        crew = tmp_path / "crew"
+        source = tmp_path / "node.exe"
+        source.write_bytes(b"new node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
+
+        destination = crew / "playwright-cli" / "node.exe"
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"running node")
+
+        real_replace = os.replace
+        refused: dict[str, int] = {"count": 0}
+
+        def flaky_replace(src, dst, *args, **kwargs):
+            # Only the first attempt to overwrite the running destination is the
+            # Windows "Access is denied" the running image produces.
+            if str(dst) == str(destination) and refused["count"] == 0:
+                refused["count"] += 1
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(launcher.os, "replace", flaky_replace)
+
+        staged = mod._stage_managed_node(str(source))
+
+        assert staged == destination
+        assert staged.read_bytes() == b"new node"
+        assert refused["count"] == 1, "the running-image overwrite was exercised"
+        # No dead sidecar is left behind: the retired running image was removed.
+        assert not list(destination.parent.glob(".node.exe.*.old"))
+
+    def test_two_swaps_in_one_process_use_distinct_retired_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two reinstalls in one gateway process, each hitting the running-image
+        lock, must not collide on the retired sidecar name. If the first retired
+        node.exe is still running (its best-effort delete failed, so it stays on
+        disk), a pid-only name would make the second move-aside try to overwrite
+        that running retired image and fail. A unique token per swap keeps the
+        second move-aside landing on a free name."""
+        crew = tmp_path / "crew"
+        source = tmp_path / "node.exe"
+        source.write_bytes(b"gen1")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
+
+        destination = crew / "playwright-cli" / "node.exe"
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"gen0")
+
+        real_replace = os.replace
+        locked_retired: set[str] = set()
+
+        def flaky_replace(src, dst, *args, **kwargs):
+            # Overwriting a node.exe that is still present (the running image) is
+            # locked, forcing the move-aside. Once it has been renamed away the
+            # name is free, so the staged copy's move-in succeeds. A retired
+            # sidecar that is "still running" cannot be overwritten either.
+            if str(dst) == str(destination) and str(src) != str(destination) and Path(dst).exists():
+                raise PermissionError(13, "Access is denied")
+            if str(dst) in locked_retired:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dst, *args, **kwargs)
+
+        real_unlink = os.unlink
+
+        def locking_unlink(path, *args, **kwargs):
+            # A retired running node.exe cannot be deleted: it stays on disk and
+            # its name stays locked against a later overwrite. Any other unlink
+            # (temp cleanup, tmp_path teardown via dir_fd) is left real.
+            if str(path).endswith(".old") and not args and not kwargs:
+                locked_retired.add(str(path))
+                return None
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(launcher.os, "replace", flaky_replace)
+        monkeypatch.setattr(launcher.os, "unlink", locking_unlink)
+
+        mod._stage_managed_node(str(source))
+        assert destination.read_bytes() == b"gen1"
+
+        source.write_bytes(b"gen2")
+        mod._stage_managed_node(str(source))
+        assert destination.read_bytes() == b"gen2"
+
+        # Two distinct retired sidecars survive -- no name was reused.
+        sidecars = sorted(p.name for p in destination.parent.glob(".node.exe.*.old"))
+        assert len(sidecars) == 2, sidecars
+        assert len(set(sidecars)) == 2, "each swap retired to its own name"
+
+    def test_stage_clears_a_leftover_retired_node_image(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prior swap left a ``.node.exe.<pid>.old`` the running process held.
+        The next stage clears it before staging, never touching live node.exe."""
+        crew = tmp_path / "crew"
+        source = tmp_path / "node.exe"
+        source.write_bytes(b"fresh node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
+
+        leaf = crew / "playwright-cli"
+        leaf.mkdir(parents=True)
+        stale = leaf / ".node.exe.4242.old"
+        stale.write_bytes(b"dead image")
+
+        mod._stage_managed_node(str(source))
+
+        assert not stale.exists()
+        assert (leaf / "node.exe").read_bytes() == b"fresh node"
+
+    def test_install_names_the_running_node_when_the_swap_cannot_proceed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If even renaming the running image aside fails, the destination is
+        genuinely pinned. The error names the running ``node.exe`` and the
+        remedy instead of propagating a bare "Access is denied"."""
+        crew = tmp_path / "crew"
+        source = tmp_path / "node.exe"
+        source.write_bytes(b"new node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
+
+        destination = crew / "playwright-cli" / "node.exe"
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"running node")
+
+        def always_refuse_destination(src, dst, *args, **kwargs):
+            # Overwriting node.exe AND moving it aside both fail: the whole leaf
+            # is locked, as a directory held open on Windows would be.
+            if str(src) == str(destination) or str(dst) == str(destination):
+                raise PermissionError(13, "Access is denied")
+            return os.replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(launcher.os, "replace", always_refuse_destination)
+
+        with pytest.raises(OSError) as excinfo:
+            mod._stage_managed_node(str(source))
+
+        message = str(excinfo.value)
+        assert str(destination) in message
+        assert "is in use" in message
+        assert "install the browser" in message
+        # The surfaced error is actionable, not the bare OS text.
+        assert message != "Access is denied"
+        # The running image was left in place; no half-done swap.
+        assert destination.read_bytes() == b"running node"
+
+    def test_posix_staging_never_renames_the_destination_aside(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-Windows behaviour is unchanged: a single plain ``os.replace`` and
+        no retired-image sidecar, because POSIX renames over an open executable."""
+        crew = tmp_path / "crew"
+        source = tmp_path / "node"
+        source.write_bytes(b"new node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
+
+        destination = crew / "playwright-cli" / "gateway-node"
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(b"running node")
+
+        replace_dests: list[str] = []
+        real_replace = os.replace
+
+        def record_replace(src, dst, *args, **kwargs):
+            replace_dests.append(str(dst))
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(launcher.os, "replace", record_replace)
+
+        mod._stage_managed_node(str(source))
+
+        assert destination.read_bytes() == b"new node"
+        assert replace_dests == [str(destination)], "exactly one direct replace, no aside"
+        assert not list(destination.parent.glob(".gateway-node.*.old"))
 
 
 def _attributed_lifecycle_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
