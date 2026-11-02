@@ -26,6 +26,7 @@ from slack_options_lifecycle_helpers import (
 )
 
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 class TestLinkTimeBackfill:
@@ -60,8 +61,7 @@ class TestLinkTimeBackfill:
         release = asyncio.Event()
 
         async def _gated_post_blocks(*_args, **_kwargs):
-            # flake-ok: pre-existing gate on the replay's own post, released by the test right after its pending-task check; moved verbatim and tracked for a de-flake pass
-            await release.wait()
+            await await_until(release, what="the test to release the replay's post gate")
             return "opt_ts"
 
         state.slack_client.post_blocks = AsyncMock(side_effect=_gated_post_blocks)
@@ -653,11 +653,10 @@ class TestEveryOutstandingControlIsExpired:
         lock = options_edit_lock("C-1", "opt-1")
         async with lock:
             expiring = asyncio.create_task(expire_slack_options(state, slot.key))
-            # flake-ok: pre-existing one-tick yield so the queued expiry reaches the held lock; moved verbatim and tracked for a de-flake pass
-            await asyncio.sleep(0)  # let the expiry reach the lock and block
+            # Wait until the expiry is parked on the held lock, not one loop turn.
+            await until_parked(lock._lock)
             forget_slack_options(state, slot.key, "opt-1")
-        # flake-ok: pre-existing await of the expiry task the test released by leaving the lock; moved verbatim and tracked for a de-flake pass
-        await expiring
+        await await_until(expiring, what="the expiry to finish once the lock is released")
 
         assert slack.update_message.await_count == 0, (
             "the expiry must skip its edit once the click dropped the record -- "
