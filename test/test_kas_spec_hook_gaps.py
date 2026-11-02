@@ -247,7 +247,7 @@ def test_one_confirm_hook_reads_in_the_singular():
 
 
 def test_a_kiro_cli_turn_is_not_gated_and_reads_no_spec(monkeypatch):
-    def must_not_read(_agent, _project_dir=None):
+    def must_not_read(_agent, _project_dir=None, **_kw):
         raise AssertionError("a kiro-cli turn must not read the spec")
 
     monkeypatch.setattr(spec_hooks, "crew_fired_spec_hooks", must_not_read)
@@ -612,7 +612,7 @@ def _subagent_run(
     )
     from kiro_crew.subagent import SubagentInfo, SubagentManager
 
-    def read(agent, _project_dir=None):
+    def read(agent, _project_dir=None, **_kw):
         if unreadable:
             raise OSError("unreadable")
         if switch_to:
@@ -867,7 +867,7 @@ def _task_step(
     monkeypatch.setattr(
         spec_hooks,
         "crew_fired_spec_hooks",
-        lambda agent, _project_dir=None: (
+        lambda agent, _project_dir=None, **_kw: (
             [_agent_hook(agent) if switch_to else _spec_hook("*")],
             [],
             0,
@@ -1003,7 +1003,7 @@ def test_a_step_that_switched_and_failed_retries_under_the_switched_agents_hooks
     monkeypatch.setattr(
         spec_hooks,
         "crew_fired_spec_hooks",
-        lambda agent, _project_dir=None: ([_agent_hook(agent)], [], 0),
+        lambda agent, _project_dir=None, **_kw: ([_agent_hook(agent)], [], 0),
     )
     fired: list = []
 
@@ -1692,7 +1692,7 @@ def test_a_shared_subagent_session_is_checked_after_it_is_created(monkeypatch):
 
     monkeypatch.setattr(subagent_mod, "replace_stale_shared_session", replace)
     monkeypatch.setattr(
-        spec_hooks, "crew_fired_spec_hooks", lambda agent, _project_dir=None: ([], [], 0)
+        spec_hooks, "crew_fired_spec_hooks", lambda agent, _project_dir=None, **_kw: ([], [], 0)
     )
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
