@@ -1553,8 +1553,8 @@ rather than redirected, because a 302 preserves the query. A navigation that
 already bears this gateway's session cookie (`mc_token_<port>` or
 `mc_refresh_<port>` for the port in its Host, `refresh_tokens.bears_session_cookie_for_host`)
 is served in place too: the cookie is host-only, so a browser signed in on
-`127.0.0.1` would arrive at `localhost` with no session and read "Session expired"
-(#22843). That gate does not depend on which families are bound. The redirect itself does: when the canonical
+`127.0.0.1` would arrive at `localhost` with no session and read "Session
+expired". That gate does not depend on which families are bound. The redirect itself does: when the canonical
 host is an ambiguous loopback name, the 302 is withheld while this gateway does not
 hold every loopback family that name resolves to
 (`build_host_canonical_redirect(holds_every_family=...)`), because the browser

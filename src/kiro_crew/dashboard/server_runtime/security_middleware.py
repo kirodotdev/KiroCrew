@@ -548,7 +548,7 @@ def build_host_canonical_redirect(
     (``mc_token_<port>`` or ``mc_refresh_<port>`` for the port it dialled) is also
     served where it was sent. The cookie is host-only, so a browser signed in on
     127.0.0.1 does not carry it to ``localhost``: the 302 would land it on a host
-    where it has no session, and the page would read "Session expired" (#22843).
+    where it has no session, and the page would read "Session expired".
     Another port's cookie in the same jar is not a session here and does not
     hold the redirect.
 

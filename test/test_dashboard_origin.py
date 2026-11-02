@@ -895,7 +895,7 @@ class TestBuildHostCanonicalRedirect:
         # The session cookie is host-only, so a browser signed in on 127.0.0.1
         # does not carry it to localhost. Redirecting its document navigation
         # there lands it on a host where it has no session: every API call 403s
-        # with X-Auth-Required and the page reads "Session expired" (#22843).
+        # with X-Auth-Required and the page reads "Session expired".
         # A navigation bearing this gateway's session is served where it was sent.
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
