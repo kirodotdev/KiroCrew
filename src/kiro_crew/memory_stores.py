@@ -768,8 +768,9 @@ def unusable_legacy_binding(config, member: str) -> str | None:
     binding and stays refused by the callers: ownership cannot be verified for a
     store that has no path, and a refusal is the only answer that adopts nothing.
 
-    Pure -- no filesystem call and no config load -- so the dashboard handler and
-    the CLI can both ask with the config they already hold.
+    Pure -- no filesystem call and no config load. Neither update surface moves
+    such a binding: the dashboard PUT and ``kirocrew agent update`` refuse every
+    changed ``memory_store``.
     """
     agent = config.agents.get(member)
     if agent is None:
