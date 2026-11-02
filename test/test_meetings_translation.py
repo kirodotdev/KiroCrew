@@ -100,6 +100,16 @@ class TestCleanTranslation:
             ("```text\nBonjour\n```", "Bonjour"),
             # A model that ignores "one line" is commentating, not translating.
             ("Bonjour\nThis is a translation of hello.", "Bonjour"),
+            # A leading label is scaffolding, on the same line or its own.
+            ("Translation: Hola a todos", "Hola a todos"),
+            ("translation:Hola", "Hola"),
+            ("TRANSLATION :  Hola", "Hola"),
+            ("Translation:\nHola a todos", "Hola a todos"),
+            ("```\nTranslation: Hola\n```", "Hola"),
+            ("Translation:\n```\nHola\n```", "Hola"),
+            # Only a leading label: the word inside a translation stays.
+            ("La translation: ok", "La translation: ok"),
+            ("Translation", "Translation"),
             ("", ""),
             ("\n\n", ""),
         ],
