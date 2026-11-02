@@ -1826,6 +1826,14 @@ export function buildSrcdoc({
   //     script) is deliberate: a head script's error task can run before any
   //     body script executes, so only the element's own handler is free of
   //     that ordering hazard. Static trusted string — no LLM content.
+  //
+  // A document served from /sandbox-doc/ never makes this request: the gateway
+  // swaps the tag for an inline copy of the same runtime on the way out
+  // (src/kiro_crew/tailwind_runtime.py). The frame's own request carries no
+  // cookie, and a proxy that authenticates by cookie (a single-sign-on tunnel)
+  // refuses it. The gateway finds the tag by its src path, and
+  // test/test_tailwind_runtime.py renders the template below, so a change to
+  // the tag's shape fails that test rather than silently linking it again.
   const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
   const finished = serialized.replace(
     /<meta name="x-script-placeholder" data-src="([^"]*)">/,

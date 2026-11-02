@@ -33,13 +33,11 @@ import hashlib
 import html as _html
 import logging
 import os
-import re
 import tempfile
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import AsyncIterator, Final
 
 # Concrete publish providers are NOT imported here. In the public edition no
@@ -69,6 +67,7 @@ from kiro_crew.publish_provider import (
     get_provider,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.tailwind_runtime import TAILWIND_RUNTIME_FILE, script_text
 
 logger = logging.getLogger(__name__)
 
@@ -148,21 +147,10 @@ _CSP = (
 #: ``@tailwindcss/browser`` dependency). ``website/src/lib/vendorPaths.ts`` is
 #: the URL-path source of truth for the dashboard's own consumers; this is the
 #: on-disk copy of the same asset, read at publish time because a published
-#: document is viewed outside the dashboard and cannot resolve its origin.
-_TAILWIND_RUNTIME_FILE = (
-    Path(__file__).resolve().parent / "static" / "dist" / "vendor" / "tailwindcss-browser.js"
-)
-
-#: Matches a raw-text script terminator in any ASCII casing, capturing the tag
-#: name so a substitution can preserve it. HTML tokenization compares
-#: ``</script`` case-insensitively, so a lowercase-only escape lets ``</SCRIPT>``
-#: close an inlined script early; preserving the matched casing keeps the
-#: neutralised text byte-identical to the source once the browser reads ``<\/``
-#: back as ``/``. ``re.ASCII`` bounds the folding to ASCII: Python otherwise
-#: folds U+017F onto ``s`` and U+0131/U+0130 onto ``i``, so ``</ſcript>`` — which
-#: the HTML tokenizer does NOT treat as a terminator — would take a stray
-#: backslash and could corrupt a raw string literal in the bundle.
-_SCRIPT_CLOSE_RE = re.compile(r"</(script)", re.IGNORECASE | re.ASCII)
+#: document is viewed outside the dashboard and cannot resolve its origin. The
+#: path lives in ``kiro_crew.tailwind_runtime``, which the frame-document channel
+#: inlines the same file from.
+_TAILWIND_RUNTIME_FILE = TAILWIND_RUNTIME_FILE
 _BASE_BODY_CSS = (
     "body { margin: 0; padding: 16px; font-family: -apple-system, "
     "BlinkMacSystemFont, 'Segoe UI', sans-serif; }"
@@ -283,10 +271,11 @@ def wrap_widget_html(inner_html: str) -> str:
     # the dashboard origin the frontend serves it from, and the provider hosts a
     # single file with no sibling asset. Inlining is what keeps the document
     # self-contained AND eval-free. A raw-text terminator in the source would
-    # close this element early, so every casing of `</script` is neutralised
-    # (the current bundle contains none; the escape keeps a dependency bump from
-    # turning that into a silent break).
-    runtime = _SCRIPT_CLOSE_RE.sub(lambda m: "<\\/" + m.group(1), _tailwind_runtime_js())
+    # close this element early, so `script_text` neutralises every casing of
+    # `</script` and refuses a bundle it cannot make safe (the current bundle
+    # needs neither; the checks keep a dependency bump from turning that into a
+    # silent break).
+    runtime = script_text(_tailwind_runtime_js()) or ""
     runtime_tag = f"<script>{runtime}</script>" if runtime else ""
     return (
         "<!DOCTYPE html>\n<html><head>"
