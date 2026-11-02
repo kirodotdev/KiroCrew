@@ -418,7 +418,6 @@ test/test_deploy_round29_fixes.py
 test/test_deploy_round2_fixes.py
 test/test_deploy_round30_fixes.py
 test/test_deploy_round32_fixes.py
-test/test_deploy_round34_fixes.py
 test/test_deploy_round35_fixes.py
 test/test_deploy_round37_fixes.py
 test/test_deploy_round38_fixes.py
