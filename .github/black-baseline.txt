@@ -610,7 +610,6 @@ test/test_pptx_maker_library.py
 test/test_pptx_maker_paths.py
 test/test_pptx_maker_routes.py
 test/test_prepare_pr_local_review.py
-test/test_prepare_pr_status.py
 test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py
