@@ -18,10 +18,10 @@ import { describe, it, expect, vi, afterAll } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import React from 'react'
 
-import Composer from '../apps/design-critique/Composer'
+import Composer from './Composer'
 // `/all` for the 11 authored catalogs this file reads: `../i18n` registers
 // English only.
-import { i18next } from '../i18n/all'
+import { i18next } from '../../i18n/all'
 
 const noop = () => {}
 

@@ -32,12 +32,12 @@ import React from 'react'
 import { render, screen, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach, afterAll } from 'vitest'
 
-import Composer from '../apps/design-critique/Composer'
-import ScopingPicker from '../apps/design-critique/ScopingPicker'
+import Composer from './Composer'
+import ScopingPicker from './ScopingPicker'
 // `/all` for the Chinese catalog `withSentinel` injects into and restores from:
 // `../i18n` registers English only, which would make the restore a no-op.
-import { i18next } from '../i18n/all'
-import type { Scope, StagedItem } from '../apps/design-critique/types'
+import { i18next } from '../../i18n/all'
+import type { Scope, StagedItem } from './types'
 
 const noop = () => {}
 

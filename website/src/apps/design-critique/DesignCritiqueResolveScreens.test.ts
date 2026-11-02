@@ -7,8 +7,8 @@
 // screen and uses the model only for the (nicer) label.
 import { describe, expect, it } from 'vitest'
 
-import { resolveScreens } from '../apps/design-critique/utils'
-import type { Report, Screen } from '../apps/design-critique/types'
+import { resolveScreens } from './utils'
+import type { Report, Screen } from './types'
 
 const url = '/api/file-raw?path=%2FUsers%2Fme%2F.kiro%2Fcrew%2Fuploads%2Fabc_shot.png'
 const uploaded: Screen[] = [{ step: 1, label: 'Screen 1', url }]

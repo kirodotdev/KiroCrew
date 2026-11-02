@@ -641,8 +641,9 @@ copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
-allows. The aws-control and Files gates call it with their own package and names,
-and the next app to leave adds a gate that does the same, never another scanner.
+allows. The aws-control, Files and Design Critique gates call it with their own
+package and names, and the next app to leave adds a gate that does the same, never
+another scanner.
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -4788,6 +4789,40 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
 
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
+## 23a. A built-in's worker slot mode is a seam the built-in fills
+
+A slot's `mode` is fixed at creation, and the chat sidebar lists only `""` slots, so an
+app whose throwaway worker slots must stay off the sidebar creates them under a mode of
+its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept only
+`chat_handlers._CREATABLE_MODES`, which is `""` followed by `seams.worker_slot_modes()`
+(section 30); the core spells no app's mode.
+
+- **Registration.** A builtin's `seams.py` calls `seams.register_worker_slot_mode(app_id)`
+  with its own id when it is imported. A non-`str` id is refused with `ValueError`; the
+  loader logs that module and skips it, like any broken provider.
+- **Built-ins only, in practice.** `chat_handlers` reads the seam once, at import, and
+  that first lookup is what loads the builtin seams modules. An installed app's
+  `on_startup` runs later, so it reaches no create path, and no manifest field is read.
+  With no builtin registering one, the create paths accept `""` alone. The mode-switch
+  (`chat_folders._VALID_MODES`) and fork-override allowlists stay narrower on purpose.
+- **Light package.** The lookup imports the app's package `__init__`, so Design
+  Critique serves `register_routes` from a module `__getattr__` that imports its route
+  module on first access. That access is the boot route loop's guarded lookup, so an
+  unreadable route file is skipped like any unreadable app, not fatal.
+
+Design Critique is held to it by `test/test_core_design_critique_decoupling.py`, which
+runs the shared `test/core_app_independence.py` scans: no module under `src/kiro_crew`
+outside `apps/builtins/`, and no `scripts/` file, imports the app's package or names
+`design_critique` / `design-critique` in a non-docstring string. Its UI is held the
+same way by `website/src/apps/design-critique/designCritiqueBoundary.test.ts`: outside that
+directory only the `/design-critique` row of `apps/builtinRegistry.ts` imports from it,
+and the app's backend and frontend tests live in its own directories.
+
+Writers: `apps/seams.py`, `apps/builtins/design_critique/seams.py`.
+Tests: `test/test_app_seams.py`,
+`apps/builtins/design_critique/tests/test_worker_slot_mode.py`,
+`apps/builtins/design_critique/tests/test_unreadable_routes_skipped.py`.
+
 ## 24. A backend's principal claim is opt-in and bound to one request
 
 `X-KiroCrew-Proxy` proves only that the gateway forwarded a request. An app whose
@@ -5151,6 +5186,7 @@ this repository without core changing.
 | `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
 | `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
 | `stopped_loop_tombstone` | `StoppedLoopTombstone`: `keeps_stopped_loop(slot_key, app_id)` | `dashboard/session_directive_apply_monitor.py` `_keeps_stopped_loop` (the stop of a legacy autonudge loop) | the loop row is removed, as for every other legacy loop (see `knowledge.md`, "Repository boundary") |
+| worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
 seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
@@ -5164,6 +5200,7 @@ an installed app's `on_startup` hook, calls `seams.register` itself.
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
 registering it is refused with `ValueError`, so the answer cannot depend on import order.
+Worker slot modes are the exception: each app registers its own id.
 A broken provider module is logged and skipped. The one-time load holds its own lock,
 never the registry's, so a provider module registering from another thread cannot
 deadlock it; a seams module therefore only registers while it is imported, and never

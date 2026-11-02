@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # n
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
+from kiro_crew.apps import seams as _app_seams
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
@@ -664,13 +665,14 @@ _UNOWED_WINDOW_ROLES = _TRANSIENT_ROLES - {"permission", "elicitation", "chunk",
 
 # Modes a slot may be CREATED with. A deliberate superset of the mode-SWITCH
 # allowlist (chat_folders._VALID_MODES) and the fork override allowlist
-# (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
-# Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
-# slots off the chat sidebar, which renders only plain "" slots
-# (chat/page/pageEnvironment.ts filteredSlots). Switching an existing session INTO an
-# app-worker mode, or forking one with it as an override, is not a real flow, so those two
-# allowlists deliberately stay narrower — do not "sync" them to this one.
-_CREATABLE_MODES = ("", "design-critique")
+# (chat_fork): beyond "", each entry is an app-worker mode a shipped built-in app
+# registers for itself (apps/seams.py worker_slot_modes) and assigns at birth to the
+# throwaway worker slots it opens — the custom mode keeps them off the chat sidebar,
+# which renders only plain "" slots (chat/page/pageEnvironment.ts filteredSlots).
+# Switching an existing session INTO an app-worker mode, or forking one with it as an
+# override, is not a real flow, so those two allowlists deliberately stay narrower — do
+# not "sync" them to this one.
+_CREATABLE_MODES = ("", *_app_seams.worker_slot_modes())
 
 # Deferral is an optimization, so a request shape added later must stay on the
 # synchronous path until its publication ordering has been reviewed explicitly.

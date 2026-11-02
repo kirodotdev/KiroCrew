@@ -3,8 +3,8 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import Composer from '../apps/design-critique/Composer'
-import type { Blocked, StagedItem } from '../apps/design-critique/types'
+import Composer from './Composer'
+import type { Blocked, StagedItem } from './types'
 
 /**
  * The composer decides what gets critiqued: staged screenshots (whose ORDER is

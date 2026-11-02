@@ -17,13 +17,13 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
-import { designCritiqueApi } from '../apps/design-critique/api'
-import { HKEY, JOBKEY, LIVEKEY, SLOTSKEY } from '../apps/design-critique/constants'
-import type { Ask, HistoryEntry, Report, Scope, SlotData } from '../apps/design-critique/types'
+import { designCritiqueApi } from './api'
+import { HKEY, JOBKEY, LIVEKEY, SLOTSKEY } from './constants'
+import type { Ask, HistoryEntry, Report, Scope, SlotData } from './types'
 
 // The single seam between the page and the gateway. `fileUrl` is left real: it is
 // a pure string builder and the page renders its output as an <img src>.
-vi.mock('../apps/design-critique/api', () => ({
+vi.mock('./api', () => ({
   designCritiqueApi: {
     openSlot: vi.fn(),
     getSlot: vi.fn(),
@@ -52,7 +52,7 @@ const mockApi = designCritiqueApi as unknown as {
   method: Mock
 }
 
-const DesignCritiquePage = (await import('../apps/design-critique/DesignCritiquePage')).default
+const DesignCritiquePage = (await import('./DesignCritiquePage')).default
 
 /** A finished slot whose last assistant message carries `payload` as JSON. The
  *  fence is deliberate — that is how the model actually replies, and

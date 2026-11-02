@@ -18,7 +18,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { designCritiqueApi } from '../apps/design-critique/api'
+import { designCritiqueApi } from './api'
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })

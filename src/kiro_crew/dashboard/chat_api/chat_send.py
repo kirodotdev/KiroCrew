@@ -672,13 +672,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         requested_memory_mode = None
 
     # Honor mode from the body when auto-creating a slot, mirroring memory_mode
-    # above: an app whose worker slot lives only in gateway memory (e.g. Design
-    # Critique) repeats mode on send(), so a slot recreated here after a
-    # gateway restart keeps its non-"" surface and stays out of the chat
-    # sidebar's surface allowlist. Only creation-allowlisted values pass;
-    # anything else is dropped so get_or_create_slot uses its default. Unlike
-    # memory_mode there is no mismatch error: get_or_create_slot ignores mode
-    # for an already-existing slot.
+    # above: an app whose worker slot lives only in gateway memory repeats mode
+    # on send(), so a slot recreated here after a gateway restart keeps its
+    # non-"" surface and stays out of the chat sidebar's surface allowlist.
+    # Only creation-allowlisted values pass; anything else is dropped so
+    # get_or_create_slot uses its default. Unlike memory_mode there is no
+    # mismatch error: get_or_create_slot ignores mode for an already-existing
+    # slot.
     requested_mode = body.get("mode")
     if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
         requested_mode = ""

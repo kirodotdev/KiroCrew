@@ -5,8 +5,8 @@ import {
   SEV, sevOf, KIND_LABEL, KIND_LABEL_KEY, kindLabel,
   STAGES, WRITING_STAGE, SCAN_STAGES, BLOCKED, blockedFor, KIND_WAIT,
   SAMPLE_SCREENS, SAMPLE_REPORT,
-} from '../apps/design-critique/constants'
-import type { SeverityKey } from '../apps/design-critique/types'
+} from './constants'
+import type { SeverityKey } from './types'
 
 /**
  * Every copy field in this module sits behind a GETTER so `i18nT()` runs on

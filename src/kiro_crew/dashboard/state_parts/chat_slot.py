@@ -686,7 +686,7 @@ class _ChatSlot:
         self.agent = agent
         _slot_session.init_session_fields(self)
         self.model = model
-        # "" = default chat; app workers may carry their own mode (design-critique)
+        # "" = default chat; app workers may carry their own mode (apps/seams.py)
         self.mode = mode
         self.workspace = workspace
         _slot_turns.init_turns_fields(self)
