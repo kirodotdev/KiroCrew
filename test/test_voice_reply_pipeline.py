@@ -412,11 +412,12 @@ class TestTextTypeAutoDetection:
     """Tests for --text-type dynamic selection (ssml vs text)."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
         # See TestSynthesizePolly._passthrough_sandbox.
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
-        _patch_aws_on_path(monkeypatch)
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
 
     @pytest.mark.asyncio
     async def test_ssml_input_uses_ssml_text_type(self, tmp_path) -> None:
