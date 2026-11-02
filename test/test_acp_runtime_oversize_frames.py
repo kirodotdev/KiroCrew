@@ -87,6 +87,7 @@ async def test_an_oversize_host_request_never_fails_one_of_ours():
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
     proc.stdout = reader
+    q = _register(rt, "sA")
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     rt._pending_requests[3] = future
     task = await _start_reader(rt)
@@ -96,9 +97,12 @@ async def test_an_oversize_host_request_never_fails_one_of_ours():
             + b"P" * 2048
             + b'"}\n'
         )
-        # flake-ok: pre-existing 200 ms window before a has-not-happened assertion, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.2)
+        # The reader handles frames in order. A valid frame sent after the oversize
+        # one reaches its session queue only once the oversize frame has been handled,
+        # so waiting for it is the positive signal that the window has passed.
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await _next(q["sA"])
+        assert msg.params["sessionId"] == "sA"
         assert not future.done()
         assert 3 in rt._pending_requests
     finally:
