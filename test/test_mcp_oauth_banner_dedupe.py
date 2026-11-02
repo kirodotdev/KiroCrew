@@ -1,9 +1,9 @@
 """A rejected MCP sign-in banner is shown once per server per sign-in state.
 
 kiro-cli retries a signed-out server's OAuth on every turn, and the ACP layer's
-dedupe is cleared by the server's init failure, so every user turn and every
-auto-nudge cycle used to post the same "authentication failed" banner again.
-These tests drive the dashboard's two real entry points (the session-init drain
+dedupe is cleared by the server's init failure, so without the chat's own check
+every user turn and every auto-nudge cycle posts the same "authentication
+failed" banner again. These tests drive the dashboard's two real entry points (the session-init drain
 and the mid-turn ``mcp_oauth`` arm) and check what changes do and do not bring
 the banner back.
 """
@@ -85,12 +85,13 @@ def _rejections(slot: _ChatSlot, server: str | None = None) -> list[dict]:
 
 
 @pytest.fixture(autouse=True)
-def _isolated(tmp_path, monkeypatch):
+def _isolated(tmp_path, _floor_monkeypatch):
     # No server is Connections-owned, and every test starts with no retry rounds.
-    monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (tmp_path / "absent.json",))
-    monkeypatch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
-    monkeypatch.setattr(mcp_banner_dedupe, "_generation", 0)
-    monkeypatch.setattr(mcp_banner_dedupe, "_evicted_floor", 0)
+    patch = _floor_monkeypatch
+    patch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (tmp_path / "absent.json",))
+    patch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
+    patch.setattr(mcp_banner_dedupe, "_generation", 0)
+    patch.setattr(mcp_banner_dedupe, "_evicted_floor", 0)
     assert oauth_url_contains_credential(POSTHOG_URL), "fixture must trip the gate"
     assert oauth_url_contains_credential(OTHER_IDP_URL), "fixture must trip the gate"
 
@@ -184,6 +185,35 @@ async def test_signed_in_then_signed_out_shows_it_again():
     turn = _turn(slot)
     await _on_mcp_oauth_request(turn, _event("posthog", POSTHOG_URL))
     _mark_mcp_oauth_completed(turn.state, slot, "posthog", success=True)
+    await _on_mcp_oauth_request(turn, _event("posthog", POSTHOG_URL))
+    assert len(_rejections(slot)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_sign_in_seen_only_by_the_session_report_shows_it_again():
+    """A connect the init drain or a session load consumed raises no event, so
+    the turn-start report publish is what clears the record."""
+    from kiro_crew.acp.mcp_session_report import McpSessionReport
+    from kiro_crew.acp.types import EVENT_MCP_SERVER_INITIALIZED
+    from kiro_crew.dashboard.chat_runner import _publish_session_mcp_report
+
+    report = McpSessionReport()
+    report.begin_session([])
+
+    class _Reporting(_Client):
+        def mcp_session_report(self):
+            return report
+
+    slot = _ChatSlot("s1")
+    turn = SimpleNamespace(client=_Reporting(), slot=slot, state=_State())
+    await _on_mcp_oauth_request(turn, _event("posthog", POSTHOG_URL))
+    # Still awaiting sign-in: publishing the report keeps the record.
+    _publish_session_mcp_report(turn.state, slot, turn.client)
+    await _on_mcp_oauth_request(turn, _event("posthog", POSTHOG_URL))
+    assert len(_rejections(slot)) == 1
+    # Signed in outside chat, learned only from the report.
+    report.record_event(EVENT_MCP_SERVER_INITIALIZED, "posthog")
+    _publish_session_mcp_report(turn.state, slot, turn.client)
     await _on_mcp_oauth_request(turn, _event("posthog", POSTHOG_URL))
     assert len(_rejections(slot)) == 2
 

@@ -168,12 +168,20 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
     report = _session_mcp_report(provider)
     if report is None:
         return
+    payload = report.payload()
+    # A server this session reports as connected has signed in, however that
+    # was learned: a mid-turn event, or a frame the init drain or a session
+    # load consumed without one. Its next rejection is news, so its
+    # rejected-banner record goes, before the unchanged-report early return.
+    for name in (payload or {}).get("ready") or ():
+        if isinstance(name, str) and name:
+            forget_mcp_banner(slot, name)
+            forget_mcp_banner(slot, _redact_acp_string(name))
     # Stamp the payload with the session it describes. This copy outlives its
     # owner — the report itself lives on the transport and is inherently that
     # session's — so without the id a reader cannot tell a current answer from a
     # replaced session's, which is the leak every teardown patch chased.
     session_id = str(getattr(provider, "session_id", "") or "")
-    payload = report.payload()
     if slot.set_mcp_report(payload, session_id):
         state.broadcast_ws(
             "mcp_report_update",

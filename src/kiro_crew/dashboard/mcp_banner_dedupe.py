@@ -15,7 +15,8 @@ say nothing new. A banner is shown again when anything changed:
 * the slot's ACP session differs (a new session, including "start a new chat");
 * the server signed in, or an Authorize banner was shown for it, since the last
   one (:func:`forget_mcp_banner`), so a server that goes signed-in, then
-  signed-out, is announced again;
+  signed-out, is announced again. A sign-in counts whether a mid-turn event
+  reported it or the session's MCP report lists the server as connected;
 * the user retried its sign-in from the MCP Servers page or a Connections card
   (:func:`note_mcp_sign_in_retry`), which bumps a process-wide round.
 
@@ -141,7 +142,8 @@ def rejected_banner_is_repeat(
 def forget_mcp_banner(slot: "_ChatSlot", safe_name: str) -> None:
     """Drop the slot's record for *safe_name*: its sign-in state changed.
 
-    Called when the server signs in and when an Authorize banner is shown, so a
+    Called when the server signs in (a mid-turn event, or the session's MCP
+    report listing it as connected) and when an Authorize banner is shown, so a
     later rejection is announced again.
     """
     slot._mcp_banner_shown.pop(safe_name, None)
