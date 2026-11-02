@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ def _read_cache() -> dict[str, Any] | None:
         if not path.is_file():
             return None
         age = time.time() - path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -200,7 +200,7 @@ def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
         if not path.is_file():
             return [], None
         mtime = path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return [], None
     if not isinstance(data, dict) or _FAILED_KEY in data:
