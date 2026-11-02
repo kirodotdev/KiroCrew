@@ -336,7 +336,7 @@ def test_the_child_probe_reports_present_while_this_session_owes_an_entry():
             asyncio.run(_owe(SESSION))
             assert gone("sub-1") is False, "a child was reported gone while its session owed"
             release.set()
-            assert emit.flush(timeout=10.0)
+            assert_drained()
         assert gone("sub-1") is True, "the debt outlived the entry that landed"
     finally:
         release.set()
@@ -559,7 +559,7 @@ def test_a_claim_does_not_take_back_a_pin_a_queued_closer_still_owes(monkeypatch
     )
 
     release.set()
-    assert emit.flush(timeout=20.0)
+    assert_drained()
     assert "turn/completed" in [e["type"] for e in _body()]
     assert emit.live_turn(SESSION) == 0, "the write job never released the pin it owed"
 
