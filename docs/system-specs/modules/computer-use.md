@@ -2383,6 +2383,17 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
+Editor links that name a file get a fourth verdict, `confirm`:
+`vscode://file/<path>` and `vscode://vscode-remote/ssh-remote+<host>/<path>`
+(and `vscode-insiders://`), with an optional `:line[:col]`. The handler shows a
+native dialog with the full URL and hands it to the OS only if the user picks
+Open, one dialog at a time. Its "Don't ask again" box skips the dialog for
+later links to the same editor and machine (one SSH host, or local files) until
+the app quits; the choice is held in memory only. `isEditorLink` checks the raw string, requires the
+host to pass `HOSTNAME_RE`, and refuses a `..` segment after decoding. Every
+other editor URL, such as an extension URI handler
+(`vscode://<extension-id>/…`), stays `block`.
+
 ---
 
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported
