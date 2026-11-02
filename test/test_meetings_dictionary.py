@@ -221,6 +221,21 @@ class TestMutation:
         with pytest.raises(ValueError):
             d.add_term("One more", ["one more"])
 
+    def test_add_replaces_a_term_in_a_full_dictionary(self):
+        d = DomainDictionary()
+        d.load_terms(
+            [{"correct": f"T{i}", "aliases": [f"t {i}"]} for i in range(k.MAX_DICTIONARY_TERMS)]
+        )
+        refusal: ValueError | None = None
+        try:
+            d.add_term("t0", ["tee zero"])
+        except ValueError as exc:
+            refusal = exc
+        assert refusal is None, "replacing a term in a full dictionary was refused"
+        assert len(d.terms) == k.MAX_DICTIONARY_TERMS
+        assert d.correct("tee zero") == "t0"
+        assert d.correct("t 0") == "t 0"
+
     def test_remove_term(self, dictionary):
         assert dictionary.remove_term("DynamoDB") is True
         assert dictionary.correct("dynamo db") == "dynamo db"
