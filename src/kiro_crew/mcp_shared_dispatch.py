@@ -46,6 +46,7 @@ from kiro_crew.mcp_shared_calls import (
     PENDING_CALLS_MAX,
     DeferredTool,
     ToolCancelled,
+    ToolReply,
     _declares_inflight_capability,
     _DeferredEntry,
     _remember_cancelled_id,
@@ -189,7 +190,7 @@ def _run_stdio_dispatch_loop(
     server_name: str,
     server_version: str,
     list_tools_fn: Callable[[], list[dict[str, Any]]],
-    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool | ToolReply"],
     *,
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
@@ -367,10 +368,14 @@ def _run_stdio_dispatch_loop(
             tools = [t for t in tools if t.get("name") in included]
         return tools
 
-    def _tool_response(text: str) -> dict[str, Any]:
+    def _tool_response(result: "str | ToolReply") -> dict[str, Any]:
         """Frame a tool result, flagging ``Error:`` prose when opted in."""
+        if isinstance(result, ToolReply):
+            text, images = result.text, result.images
+        else:
+            text, images = result, ()
         flagged = error_prefix_is_error and text.startswith("Error:")
-        return build_tool_response(text, is_error=flagged)
+        return build_tool_response(text, is_error=flagged, images=images)
 
     def _run_tool(
         req_id: Any,

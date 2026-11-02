@@ -34,6 +34,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.computer_use.types import (
     STATE_FILE_NAME,
     STATE_KEY_ENABLED,
+    STATE_KEY_INLINE_SCREENSHOTS,
     PolicyConfig,
 )
 from kiro_crew.config import loader as config_loader
@@ -107,6 +108,20 @@ def locked_by_policy(*, audit_tool: str = "") -> bool:
     from kiro_crew.edition_locks import policy_permits
 
     return not policy_permits("capabilities.computer_use", audit_tool=audit_tool)
+
+
+def inline_screenshots_enabled(state: "dict | None" = None) -> bool:
+    """True only when the keystone explicitly says ``inline_screenshots: true``.
+
+    Whether a Computer Use screenshot may reach the model as an image block, in
+    addition to the file path it always gets. Read from the keystone rather than
+    ``config.json`` for the reason the primary enable is: the agent can write
+    ``config.json`` from its shell, and this switch decides how much of the
+    desktop leaves the process on every observation. Strict identity against
+    ``True``, like :func:`is_enabled`. Absent means off.
+    """
+    data = load_state() if state is None else state
+    return data.get(STATE_KEY_INLINE_SCREENSHOTS) is True
 
 
 def load_policy_config(state: "dict | None" = None) -> PolicyConfig:

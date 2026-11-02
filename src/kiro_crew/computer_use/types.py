@@ -339,6 +339,8 @@ GOVERNED_VALUE_PLACEHOLDER = "<redacted:policy>"
 # this reason). See ``enable_state`` for the full rationale.
 STATE_FILE_NAME = "computer_use.json"
 STATE_KEY_ENABLED = "enabled"
+#: Keystone key for showing screenshots to the model as image blocks. Absent = off.
+STATE_KEY_INLINE_SCREENSHOTS = "inline_screenshots"
 STATE_KEY_ALLOWED_APPS = "allowed_apps"
 STATE_KEY_EXTRA_DENIED_APPS = "extra_denied_apps"
 
@@ -380,6 +382,10 @@ MAX_SCROLL_PAGES = 20.0
 # the primary channel and the image is corroboration, so 1280/q55 (measured
 # fully legible, ~8.3k tokens vs ~41k for a raw PNG) is the right trade.
 DEFAULT_ATTACH_SCREENSHOT = True
+#: Appended to the text half of a ``computer_get_state`` reply whose screenshot also
+#: travels as an image block, so the model knows the pixels are already in front of
+#: it and does not spend a call reading the file.
+INLINE_IMAGE_NOTE = "The screenshot is attached to this result as an image."
 DEFAULT_SCREENSHOT_MAX_PX = 1280
 DEFAULT_SCREENSHOT_JPEG_QUALITY = 55
 MIN_SCREENSHOT_MAX_PX = 320
@@ -1177,6 +1183,27 @@ class DriverResult:
     apps: tuple[AppRef, ...] = ()
     app: AppRef | None = None
     snapshot: Snapshot | None = None
+
+
+#: The MIME type of every screenshot the capture modules encode.
+IMAGE_MIME_JPEG = "image/jpeg"
+
+
+@dataclass(frozen=True)
+class DispatchResult:
+    """One tool reply from the dispatch chokepoint: the text, plus any screenshot.
+
+    ``text`` is exactly the string ``tools.dispatch_tool`` returns, so a text-only
+    caller relays the same reply either way. ``image`` is the JPEG of the window the
+    reply's tree describes, set only on a ``computer_get_state`` whose screenshot
+    survived every capture floor; it is empty for every other tool and on every
+    refusal. Whether the bytes reach the model is the gateway's decision, not this
+    object's.
+    """
+
+    text: str
+    image: bytes = b""
+    image_mime: str = ""
 
 
 @dataclass(frozen=True)

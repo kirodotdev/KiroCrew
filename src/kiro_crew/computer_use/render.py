@@ -1,10 +1,9 @@
 """Text rendering of app lists and accessibility snapshots.
 
-The rendered text is the ONLY thing a model ever sees from computer use: the MCP
-transport (``validation.build_tool_response``) emits
-``{"content":[{"type":"text","text":...}]}`` and cannot express an image block,
-so "tree first, relay the screenshot as a path" is a property of the transport
-rather than a policy someone can regress.
+The rendered text is what the model reads from computer use. The screenshot is
+always relayed as a path in that text; the gateway may additionally attach the
+image as an MCP image block, under the conditions ``dashboard/handlers/computer_use``
+``_inline_image`` names, so nothing here assumes the model can or cannot see it.
 
 Two invariants this module enforces, both asserted by tests:
 
