@@ -17705,7 +17705,7 @@
         "feature_suspicious_patterns": "의심스러운 Bash 패턴",
         "feature_suspicious_patterns_description": "셸 명령에서 삭제, 유출, 파이프 실행 공격 형태를 감지합니다",
         "feature_token_auth": "대시보드 토큰 인증",
-        "feature_token_auth_description": "HMAC-SHA256으로 서명되고 IP에 고정된 일회용 토큰으로, 링크와 세션에 각각 만료 시간을 적용합니다",
+        "feature_token_auth_description": "HMAC-SHA256으로 서명되고 IP에 고정된 토큰으로, 링크와 세션에 각각 만료 시간을 적용합니다",
         "feature_url_exfil": "URL 유출 감지",
         "feature_url_exfil_description": "도메인과 무관하게 URL의 의심스러운 쿼리 문자열, base64 블롭, 자격 증명 패턴을 검사합니다",
         "floor": "하한: {{n}}",

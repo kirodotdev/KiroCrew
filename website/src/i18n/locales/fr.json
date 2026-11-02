@@ -18393,7 +18393,7 @@
         "feature_suspicious_patterns": "Motifs Bash suspects",
         "feature_suspicious_patterns_description": "Détecte les formes d’attaque par suppression, exfiltration et exécution via tube dans les commandes shell",
         "feature_token_auth": "Authentification par jeton du tableau de bord",
-        "feature_token_auth_description": "Jetons à usage unique signés en HMAC-SHA256, liés à une adresse IP, avec double expiration sur le lien et sur la session",
+        "feature_token_auth_description": "Jetons signés en HMAC-SHA256, liés à une adresse IP, avec double expiration sur le lien et sur la session",
         "feature_url_exfil": "Détection d’exfiltration par URL",
         "feature_url_exfil_description": "Analyse indépendante du domaine à la recherche de chaînes de requête suspectes, de blobs base64 et de motifs d’identifiants dans les URL",
         "floor": "Plancher : {{n}}",

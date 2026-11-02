@@ -17705,7 +17705,7 @@
         "feature_suspicious_patterns": "疑わしいBashパターン",
         "feature_suspicious_patterns_description": "シェルコマンドで削除、流出、パイプ実行攻撃の形状を検出します",
         "feature_token_auth": "ダッシュボードトークン認証",
-        "feature_token_auth_description": "HMAC-SHA256署名、IP固定、リンクとセッションでの二重有効期限を持つシングルユーストークン",
+        "feature_token_auth_description": "HMAC-SHA256署名、IP固定、リンクとセッションでの二重有効期限を持つトークン",
         "feature_url_exfil": "URL流出検出",
         "feature_url_exfil_description": "ドメインに依存しないスキャンで、URLの疑わしいクエリ文字列、Base64ブロブ、およびクレデンシャルパターンを検出します",
         "floor": "下限：{{n}}",

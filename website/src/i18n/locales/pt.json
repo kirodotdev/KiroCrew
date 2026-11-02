@@ -18393,7 +18393,7 @@
         "feature_suspicious_patterns": "Padrões suspeitos de Bash",
         "feature_suspicious_patterns_description": "Detecta formatos de ataque de exclusão, exfiltração e execução via pipe em comandos de shell",
         "feature_token_auth": "Autenticação por token do dashboard",
-        "feature_token_auth_description": "Tokens assinados com HMAC-SHA256, fixados por IP e de uso único, com expiração dupla no link e na sessão",
+        "feature_token_auth_description": "Tokens assinados com HMAC-SHA256 e fixados por IP, com expiração dupla no link e na sessão",
         "feature_url_exfil": "Detecção de exfiltração por URL",
         "feature_url_exfil_description": "Varredura independente de domínio em busca de query strings suspeitas, blobs em base64 e padrões de credenciais em URLs",
         "floor": "Mínimo: {{n}}",

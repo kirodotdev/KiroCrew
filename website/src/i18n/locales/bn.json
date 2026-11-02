@@ -18049,7 +18049,7 @@
         "feature_suspicious_patterns": "সন্দেহজনক Bash প্যাটার্ন",
         "feature_suspicious_patterns_description": "শেল কমান্ডে মুছে ফেলা, পাচার আর পাইপ-এক্সিকিউশন হামলার আকার শনাক্ত করে",
         "feature_token_auth": "ড্যাশবোর্ড টোকেন অথ",
-        "feature_token_auth_description": "HMAC-SHA256 দিয়ে সই করা, IP-পিন করা, একবার ব্যবহারযোগ্য টোকেন — লিঙ্ক আর সেশন দুটোতেই আলাদা সময়সীমা",
+        "feature_token_auth_description": "HMAC-SHA256 দিয়ে সই করা, IP-পিন করা টোকেন — লিঙ্ক আর সেশন দুটোতেই আলাদা সময়সীমা",
         "feature_url_exfil": "URL এক্সফিলট্রেশন শনাক্তকরণ",
         "feature_url_exfil_description": "URL-এ সন্দেহজনক কোয়েরি স্ট্রিং, base64 ব্লব আর ক্রেডেনশিয়াল প্যাটার্নের জন্য ডোমেইন-নিরপেক্ষ স্ক্যান",
         "floor": "ন্যূনতম: {{n}}",

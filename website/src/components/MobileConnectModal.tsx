@@ -253,6 +253,8 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
   const [qrCopyFailed, setQrCopyFailed] = useState(false)
 
   const ready = status?.step === 'ready'
+  // Settings cannot lift a policy block, so the card must not route there.
+  const blockedByPolicy = status?.step === 'pinned' || status?.step === 'policy_off'
   return (
     <div className="mb-4">
       {probing && (
@@ -337,7 +339,14 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
           testId="mobile-connect-qr-error"
         />
       )}
-      {status && !ready && (
+      {status && blockedByPolicy && (
+        <p className="w-full bg-bg-elevated border border-border rounded-lg px-3 py-2.5 mb-2 text-[12px] text-muted">
+          {status.step === 'pinned'
+            ? t('components.tailnetMobile.pinned_body')
+            : t('components.tailnetMobile.policy_off_body')}
+        </p>
+      )}
+      {status && !ready && !blockedByPolicy && (
         <button
           onClick={() => { onClose(); navigate(settingsPath({ tab: 'overview' })) }}
           className="w-full flex items-center justify-between gap-2 bg-bg-elevated border border-border rounded-lg px-3 py-2.5 mb-2 text-left cursor-pointer hover:bg-bg-hover transition-colors"
