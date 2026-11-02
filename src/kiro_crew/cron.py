@@ -968,13 +968,37 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                #
+                # Only the fields this update changed are put back. A run in
+                # flight writes its own fields on the loop thread, without the
+                # store lock, onto this same object -- the failure count, the
+                # auto-pause, the one-shot park, the last status -- and a
+                # whole-record restore would undo that write. So the update is
+                # applied to a private copy first, the fields it changed are
+                # read off that copy (no other thread can touch it), and only
+                # those are written to the live job; a failed save restores
+                # each of them only while it still holds this update's value.
                 previous_limit = job.auto_pause_after_failures
-                before = copy.copy(job)
-                apply_job_update(job, kwargs, chat_folder_out)
+                staged = copy.copy(job)
+                prior = dict(staged.__dict__)
+                apply_job_update(staged, kwargs, chat_folder_out)
+                edits = {
+                    name: value
+                    for name, value in staged.__dict__.items()
+                    if name not in prior or prior[name] is not value
+                }
+                for name, value in edits.items():
+                    setattr(job, name, value)
                 try:
                     self._save()
                 except BaseException:
-                    job.__dict__.update(before.__dict__)
+                    for name, value in edits.items():
+                        if name not in job.__dict__ or job.__dict__[name] is not value:
+                            continue
+                        if name in prior:
+                            setattr(job, name, prior[name])
+                        else:
+                            delattr(job, name)
                     raise
                 job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)
