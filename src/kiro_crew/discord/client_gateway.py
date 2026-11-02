@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from kiro_crew.discord.client_rest import _coerce_float
+
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
 
@@ -62,6 +64,14 @@ _MIN_HEALTHY_CONN_SECS = 5.0
 # classification in ``_run_connection`` treats as recoverable. A real shutdown
 # (``DiscordClient.close``) keeps aiohttp's default 1000 on purpose.
 _RESUME_CLOSE_CODE = 4000
+
+# Bounds on HELLO's ``heartbeat_interval`` (seconds). Discord sends 41.25s; the
+# value goes straight to ``asyncio.sleep``, where NaN never returns and zero or a
+# negative spins the loop, so a value that is missing, non-finite or not positive
+# falls back to Discord's documented interval, and the rest is clamped.
+_DEFAULT_HEARTBEAT_SECS = 41.25
+_MIN_HEARTBEAT_SECS = 1.0
+_MAX_HEARTBEAT_SECS = 300.0
 
 
 # Gateway opcodes.
@@ -264,13 +274,21 @@ async def _run_connection(self: DiscordClient) -> None:
             self._notify_state(False, f"reconnecting (close {close_code or 'none'})")
 
 
+def _heartbeat_interval_secs(hello: Any) -> float:
+    """HELLO's ``heartbeat_interval`` (milliseconds) as a bounded sleep in seconds."""
+    raw = hello.get("heartbeat_interval") if isinstance(hello, dict) else None
+    millis = _coerce_float(raw)
+    if millis is None or millis <= 0:
+        return _DEFAULT_HEARTBEAT_SECS
+    return min(max(millis / 1000.0, _MIN_HEARTBEAT_SECS), _MAX_HEARTBEAT_SECS)
+
+
 async def _handle_frame(self: DiscordClient, ws: Any, frame: dict) -> None:
     op = frame.get("op")
     if frame.get("s") is not None:
         self._seq = frame["s"]
     if op == _OP_HELLO:
-        interval = float(frame["d"]["heartbeat_interval"]) / 1000.0
-        self._start_heartbeat(ws, interval)
+        self._start_heartbeat(ws, _heartbeat_interval_secs(frame.get("d")))
         if self._session_id and self._resume_url:
             await ws.send_json(
                 {
