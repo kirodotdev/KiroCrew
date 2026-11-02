@@ -12,7 +12,7 @@
 # reports green.
 #
 # Usage:
-#   scripts/build_crew_image.sh --base REPO@sha256:... --bundle DIR [--tag TAG]
+#   src/kiro_crew/apps/builtins/aws_control/crew/scripts/build_crew_image.sh --base REPO@sha256:... --bundle DIR [--tag TAG]
 #
 #   --base    the base image, PINNED BY DIGEST. A tag is refused: see below.
 #   --bundle  the bundle directory produced by the crew packaging build. It is
@@ -23,8 +23,8 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-readonly RUNTIME_DIR="${REPO_ROOT}/src/kiro_crew/apps/builtins/aws_control/crew/runtime"
+# This script sits in the crew tree's scripts/, beside runtime/ (the build context).
+readonly RUNTIME_DIR="$(dirname "${SCRIPT_DIR}")/runtime"
 
 BASE=""
 BUNDLE=""
