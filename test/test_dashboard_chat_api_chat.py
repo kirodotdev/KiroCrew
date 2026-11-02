@@ -23,13 +23,16 @@ class TestApiChatDrainOnDisconnect:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
 
+        parked = asyncio.Event()
+
         async def fake_run_chat(
             st, sl, msg, *, _directive_user_origin, _directive_owner_origin=False
         ):
             assert _directive_user_origin is True
             sl.append("chunk", "partial answer", "chunk")
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- not a barrier: the fake turn parks here until the disconnect cancels it; nothing waits on this sleep
-            await asyncio.sleep(60)
+            # Parks until the disconnect cancels this turn. The 30 s ceiling only
+            # bounds a lost run; nothing sets the event, so no test waits on it.
+            await asyncio.wait_for(parked.wait(), timeout=30)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
 
