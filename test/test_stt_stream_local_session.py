@@ -28,7 +28,7 @@ from stt_stream_helpers import (
 )
 
 from kiro_crew import stt
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 async def _recv(ws):
@@ -780,8 +780,10 @@ class TestLocalStreamingSession:
         # The transfer was still kicked off, which is the whole point of refusing
         # rather than failing: the model lands on disk for the next attempt.
         gate.set()
-        # flake-ok: pre-existing zero-delay yield barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: session.prepare_calls >= 1,
+            describe=lambda: f"prepare_calls={session.prepare_calls}",
+        )
         assert session.prepare_calls >= 1
 
     @pytest.mark.asyncio
@@ -1203,11 +1205,10 @@ class TestLocalStreamingSession:
         # The transfer was abandoned by this socket, not cancelled: released now, it
         # still runs to completion.
         gate.set()
-        for _ in range(100):
-            if session.prepared:
-                break
-            # flake-ok: pre-existing zero-delay yield barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: session.prepared,
+            describe=lambda: f"prepared={session.prepared}, prepare_calls={session.prepare_calls}",
+        )
         assert session.prepared is True
 
     @pytest.mark.asyncio
@@ -1249,15 +1250,19 @@ class TestLocalStreamingSession:
         # socket that asked for it, which is what makes the next attempt find the
         # weights on disk. Waiting for it here would assert the opposite property.
         #
-        # The yield is required, not incidental: `create_task` only schedules, so
-        # without giving the loop a turn the count is still zero and the assertion
-        # would read as "the transfer was never started".
-        # flake-ok: pre-existing zero-delay yield barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        # The wait is required, not incidental: `create_task` only schedules, so the
+        # count is still zero until the loop has run the fetch's first step, and the
+        # assertion would read as "the transfer was never started".
+        await async_wait_until(
+            lambda: session.prepare_calls >= 1,
+            describe=lambda: f"prepare_calls={session.prepare_calls}",
+        )
         assert session.prepare_calls >= 1
         gone.set()
-        # flake-ok: pre-existing zero-delay yield barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: session.prepared,
+            describe=lambda: f"prepared={session.prepared}, prepare_calls={session.prepare_calls}",
+        )
         assert session.prepared is True, "the detached transfer must still complete"
 
     @pytest.mark.asyncio
@@ -1348,14 +1353,15 @@ class TestLocalStreamingSession:
         still awaiting the peer and reads as not-yet-done.
         """
         outcomes = self._record_end_audits(monkeypatch)
+        fire = self._arm_cap(monkeypatch)
         self._install(monkeypatch, _FakeLocalSession())
-        # flake-ok: pre-existing real 50 ms duration cap, moved verbatim; a signal-driven cap is tracked for a de-flake pass
-        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             assert (await ws.receive_json())["type"] == "ready"
-            # Deliberately send NO audio: only the deadline task can end this.
-            assert (await ws.receive_json()) == {
+            # Deliberately send NO audio: only the deadline task can end this. It
+            # fires on the test's signal, with the session open and nothing pending.
+            fire.set()
+            assert (await _recv_json(ws)) == {
                 "type": "error",
                 "message": "max stream duration exceeded",
                 "code": "stt_max_duration_exceeded",
