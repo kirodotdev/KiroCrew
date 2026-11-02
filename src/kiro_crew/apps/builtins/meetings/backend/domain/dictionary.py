@@ -231,9 +231,12 @@ class DomainDictionary:
             raise ValueError("term or alias is too long")
         if _SURROGATE_RE.search(correct) or any(_SURROGATE_RE.search(a) for a in clean):
             raise ValueError("term or alias contains an unpaired surrogate code point")
-        if len(self.terms) >= k.MAX_DICTIONARY_TERMS:
-            raise ValueError(f"dictionary is limited to {k.MAX_DICTIONARY_TERMS} terms")
+        # The cap counts the terms that remain once the one being replaced is
+        # dropped, so editing a term in a full dictionary is a replacement, not
+        # an addition past the limit.
         existing = [(c, a) for c, a in self.terms if c.lower() != correct.lower()]
+        if len(existing) >= k.MAX_DICTIONARY_TERMS:
+            raise ValueError(f"dictionary is limited to {k.MAX_DICTIONARY_TERMS} terms")
         existing.append((correct, clean))
         self.load_terms([{"correct": c, "aliases": a} for c, a in existing])
 
