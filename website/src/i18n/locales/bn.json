@@ -472,8 +472,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "চ্যাট বা অটোপাইলটে পেস্ট করার জন্য এই সেকশনের markdown কপি করুন",
         "could_not_generate_challenges_please_try_again": "চ্যালেঞ্জ তৈরি করা যায়নি। আবার চেষ্টা করো।",
         "cycle": "সাইকেল",
-        "cycles": "সাইকেল,",
-        "cycles_2": "সাইকেল",
         "definition_of_done_optional": "সম্পন্ন হওয়ার শর্ত (ঐচ্ছিক)",
         "delete": "মুছুন",
         "delete_campaign": "ক্যাম্পেইন মুছে ফেলবেন?",
@@ -491,7 +489,6 @@
         "failed_to_add_to_knowledge_library": "নলেজ লাইব্রেরিতে যোগ করা যায়নি",
         "failed_to_export_as_artifact": "আর্টিফ্যাক্ট হিসেবে এক্সপোর্ট করা যায়নি",
         "failed_to_start_campaign_please_try_again": "ক্যাম্পেইন শুরু করা যায়নি — আবার চেষ্টা করো।",
-        "findings": "ফলাফল",
         "findings_count": "ফলাফল ({{count}})",
         "findings_so_far_are_preserved_below": "এখন পর্যন্ত পাওয়া ফলাফল নিচে সংরক্ষিত আছে।",
         "first_cycle_in_progress": "প্রথম সাইকেল চলছে...",
@@ -519,7 +516,6 @@
         "loading": "লোড হচ্ছে...",
         "max_cycles": "সর্বোচ্চ সাইকেল:",
         "max_cycles_2": "সর্বোচ্চ সাইকেল",
-        "min": "min",
         "min_20_characters": "কমপক্ষে 20 অক্ষর।",
         "model": "মডেল",
         "model_default_inherit": "ডিফল্ট (উত্তরাধিকার)",
@@ -557,7 +553,6 @@
         "resume": "আবার শুরু করুন",
         "run_autonomous_research_campaigns": "স্বয়ংক্রিয় রিসার্চ ক্যাম্পেইন চালান",
         "run_unattended_skip_clarification_questions": "নজরদারি ছাড়াই চালান (স্পষ্টীকরণ প্রশ্ন বাদ দিন)",
-        "s_idle": "s অপেক্ষা। ~",
         "scripted": "(স্ক্রিপ্টেড)",
         "searched_empty": "সার্চ করা হয়েছে (খালি):",
         "send": "পাঠাও",
@@ -581,14 +576,11 @@
         "strong": "শক্তিশালী",
         "sub_question": "উপ-প্রশ্ন {{n}}",
         "sub_questions": "উপ-প্রশ্ন",
-        "sub_questions_2": "উপ-প্রশ্ন",
         "sub_questions_guidance_count": "উপ-প্রশ্ন ও নির্দেশনা ({{count}})",
-        "suggested_from": "প্রস্তাবিত, সূত্র:",
         "the_agent_is_waiting_for_your_direction": "এজেন্ট তোমার নির্দেশের অপেক্ষায় আছে।",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI নিজেই প্রতিটি রাউন্ড পরিচালনা করে — কী অনুসন্ধান করতে হবে তা ঠিক করে, সাব-এজেন্ট সামলায়, এবং ফলাফল থেকে নতুন ইঙ্গিত পাওয়া মাত্রই সেগুলো অনুসরণ করে।",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI আগেই একটি অর্কেস্ট্রেশন স্ক্রিপ্ট লিখে দেয়; একটি নির্ধারণবাদী রানার সাব-এজেন্ট চালানোর কাজ সামলায়, আর AI কেবল পরিকল্পনা, অনুসন্ধান ও সমন্বয় করে। পুনরায় চালানো যায়, বাজেট-সীমাবদ্ধ।",
         "the_campaign_stopped_unexpectedly": "ক্যাম্পেইন অপ্রত্যাশিতভাবে থেমে গেছে।",
-        "up_to": "সর্বোচ্চ",
         "validating": "যাচাই করা হচ্ছে...",
         "validation_failed_check_your_connection_and_try": "যাচাই ব্যর্থ — তোমার কানেকশন দেখো এবং আবার চেষ্টা করো।",
         "view_report": "রিপোর্ট দেখুন",
@@ -597,7 +589,15 @@
         "when_should_the_agent_stop": "এজেন্ট কখন থামবে?",
         "your_answer": "আপনার উত্তর",
         "your_answer_2": "আপনার উত্তর...",
-        "your_guidance": "তোমার নির্দেশনা"
+        "your_guidance": "তোমার নির্দেশনা",
+        "suggested_from_sub_questions_one": "{{count}}টি উপ-প্রশ্ন থেকে প্রস্তাবিত",
+        "suggested_from_sub_questions_other": "{{count}}টি উপ-প্রশ্ন থেকে প্রস্তাবিত",
+        "estimate_one": "সর্বোচ্চ {{count}}টি চক্র, {{idle}}s নিষ্ক্রিয়। ~{{minutes}} মিনিট",
+        "estimate_other": "সর্বোচ্চ {{count}}টি চক্র, {{idle}}s নিষ্ক্রিয়। ~{{minutes}} মিনিট",
+        "findings_tally_one": "{{count}}টি ফলাফল",
+        "findings_tally_other": "{{count}}টি ফলাফল",
+        "cycles_count_one": "{{count}}টি চক্র",
+        "cycles_count_other": "{{count}}টি চক্র"
       }
     },
     "autoTriagePipeline": {
@@ -1025,12 +1025,15 @@
           "checks_running_other": "{{count}}-এর মধ্যে {{pending}} পরীক্ষা এখনও চলছে",
           "closed": "বন্ধ",
           "conflicts": "সংঘাত",
-          "failing": "ব্যর্থ",
           "merge_blocked": "merge আটকে আছে",
           "merged": "merge হয়েছে",
           "open": "খোলা",
-          "passed": "পাশ",
-          "running": "চলছে"
+          "running_count_one": "{{count}}টি চলছে",
+          "running_count_other": "{{count}}টি চলছে",
+          "passed_count_one": "{{count}}টি পাশ",
+          "passed_count_other": "{{count}}টি পাশ",
+          "failing_count_one": "{{count}}টি ব্যর্থ",
+          "failing_count_other": "{{count}}টি ব্যর্থ"
         },
         "repoSwitcher": {
           "add_a_repo": "একটা রেপো যোগ করো",
@@ -2147,14 +2150,14 @@
           "search_labels_2": "লেবেল সার্চ করুন…"
         },
         "labelPicker": {
-          "add": "যোগ করুন",
           "filter_labels": "লেবেল ফিল্টার করুন…",
           "filter_labels_2": "লেবেল ফিল্টার করুন",
           "loading_labels": "লেবেল লোড হচ্ছে…",
           "remove_this_label_no_longer_exists_on_the_repo": "সরান — এই লেবেলটি আর রিপোতে নেই",
           "saved_but_no_longer_on_this_repo": "সেভ করা আছে কিন্তু আর এই রিপোতে নেই:",
-          "suggested": "প্রস্তাবিত",
-          "this_repo_has_no_labels": "এই রিপোতে কোনো লেবেল নেই।"
+          "this_repo_has_no_labels": "এই রিপোতে কোনো লেবেল নেই।",
+          "add_suggested_one": "{{count}}টি প্রস্তাবিত যোগ করো",
+          "add_suggested_other": "{{count}}টি প্রস্তাবিত যোগ করো"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — সাইডবার প্রসারিত করতে ক্লিক করো",
@@ -2402,11 +2405,13 @@
           "close": "বন্ধ করুন",
           "close_esc": "বন্ধ করুন (Esc)",
           "close_reference": "রেফারেন্স বন্ধ করুন",
-          "deep": "গভীর",
           "issue": "ইস্যু",
           "loading": "লোড হচ্ছে #",
           "open_in_the_list_detail_column": "তালিকা + বিস্তারিত কলামে খুলুন",
-          "open_this_item_in_the_workspace": "এই আইটেমটি ওয়ার্কস্পেসে খুলুন"
+          "open_this_item_in_the_workspace": "এই আইটেমটি ওয়ার্কস্পেসে খুলুন",
+          "deep_count_one": "{{count}} গভীর",
+          "deep_count_other": "{{count}} গভীর",
+          "dialog_label": "{{repo}}-এ {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "রিপোজিটরি"
@@ -2518,7 +2523,11 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "তোমার ড্যাশবোর্ড সেটিংস লোড হয়নি, তাই GitLab ইনস্ট্যান্স তালিকাভুক্ত করা যাচ্ছে না।",
         "selection_cleared_those_projects_are_on_the_previous_instance": "নির্বাচন মুছে ফেলা হয়েছে: সেই প্রজেক্টগুলি আগের GitLab ইনস্ট্যান্সে আছে।",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "নির্বাচন মুছে ফেলা হয়েছে: সেই রিপোজিটরিগুলি আগের প্রোভাইডারের অন্তর্গত।",
-        "try_again": "আবার চেষ্টা করো"
+        "try_again": "আবার চেষ্টা করো",
+        "repos_selected_one": "{{count}}টি বেছে নেওয়া হয়েছে",
+        "repos_selected_other": "{{count}}টি বেছে নেওয়া হয়েছে",
+        "repos_found_one": "{{count}}টি পাওয়া গেছে",
+        "repos_found_other": "{{count}}টি পাওয়া গেছে"
       },
       "connectRepoModal": {
         "close": "বন্ধ করুন",
@@ -2922,7 +2931,8 @@
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।",
             "first_issue_friendly_count_one": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
-            "triage_needed_of_open": "ট্রায়াজ দরকার এমন খোলা ইস্যু: {{n}}টির মধ্যে <strong>{{triage}}</strong>টি"
+            "triage_needed_of_open": "ট্রায়াজ দরকার এমন খোলা ইস্যু: {{n}}টির মধ্যে <strong>{{triage}}</strong>টি",
+            "member_chip_title": "{{login}} — {{role}} · {{provider}}-এ খোলো"
           }
         },
         "tagging": {
@@ -2934,7 +2944,6 @@
             "created": "তৈরি হয়েছে",
             "creating": "তৈরি হচ্ছে…",
             "creating_needs_write_access": "তৈরি করতে রাইট অ্যাক্সেস প্রয়োজন",
-            "defined_by_open_issue_count": "সংজ্ঞায়িত · খোলা ইস্যুর সংখ্যা অনুসারে",
             "labels": "লেবেল",
             "looking_for_labels_this_repo_is_missing": "এই রেপোতে যে লেবেলগুলো নেই তা খোঁজা হচ্ছে…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "কিছুই নেই — রেপোর ট্যাক্সোনমি ইতিমধ্যেই এর খোলা ইস্যুগুলোর প্রয়োজন মেটায়।",
@@ -2948,7 +2957,9 @@
             "suggest_new_labels": "নতুন লেবেল প্রস্তাব করো",
             "suggested_new_labels_not_created_until_you_say_s": "প্রস্তাবিত নতুন লেবেল — আপনি না বলা পর্যন্ত তৈরি হবে না",
             "re_fetch_this_repo_s_labels_from": "{{provider}} থেকে এই রেপোর লেবেল আবার আনুন",
-            "create_this_label_on": "{{provider}}-এ এই লেবেল তৈরি করুন"
+            "create_this_label_on": "{{provider}}-এ এই লেবেল তৈরি করুন",
+            "labels_defined_one": "{{count}}টি সংজ্ঞায়িত · খোলা ইস্যুর সংখ্যা অনুসারে",
+            "labels_defined_other": "{{count}}টি সংজ্ঞায়িত · খোলা ইস্যুর সংখ্যা অনুসারে"
           },
           "untaggedIssueCard": {
             "add": "যোগ করুন",
@@ -4490,12 +4501,10 @@
         "at_least_one_source_did_not_answer_this_poll": "এই পোলে অন্তত একটি সোর্স উত্তর দেয়নি।",
         "claim": "হাতে নাও",
         "claimed": "হাতে নেওয়া",
-        "cleared": "মিটে গেছে ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· push দিয়ে আসে, তাই খালি পোলের কোনো মানে নেই",
         "every_configured_source_answered": "কনফিগার করা প্রতিটি সোর্স উত্তর দিয়েছে।",
         "everything_firing_already_has_an_incident": "এখন যা যা ফায়ার করছে সবগুলোর জন্যই আগে থেকে ইনসিডেন্ট আছে।",
         "firing": "ফায়ার করছে",
-        "firing_2": "ফায়ার করছে ·",
         "firing_not_yet_claimed": "ফায়ার করছে, এখনও হাতে নেওয়া হয়নি",
         "inbound_webhook_queued_one": "{{count}}টি ইনবাউন্ড webhook সিগন্যাল এসেছে আর পরের সাইকেলে হাতে নেওয়ার অপেক্ষায় আছে — সেটি এখনও বোর্ডে নেই।",
         "inbound_webhook_queued_other": "{{count}}টি ইনবাউন্ড webhook সিগন্যাল এসেছে আর পরের সাইকেলে হাতে নেওয়ার অপেক্ষায় আছে — সেগুলো এখনও বোর্ডে নেই।",
@@ -4519,7 +4528,6 @@
         "no_signal_sources_registered": "কোনো সিগন্যাল সোর্স নিবন্ধন করা নেই।",
         "no_sources_reporting_a_firing_signal": "কোনো সোর্স ফায়ার করা সিগন্যালের খবর দিচ্ছে না।",
         "not_polled_yet_not_the_same_as_healthy": "এখনও পোল করা হয়নি — এর মানে সব ঠিক আছে নয়",
-        "not_yet_claimed": "এখনও হাতে নেওয়া হয়নি",
         "nothing_firing_but_parked_signals_not_investigated": "কিছুই ফায়ার করছে না, তবে উপরে থামিয়ে রাখা সিগন্যালগুলো নিয়ে কোনো অনুসন্ধান হচ্ছে না",
         "nothing_firing_but_signals_parked_not_picked_up_one": "কিছুই ফায়ার করছে না — তবে প্রদানকারীর কাছে {{count}}টি সিগন্যাল থামিয়ে রাখা আছে (উপরে দেখো) আর সেগুলো হাতে নেওয়া হবে না।",
         "nothing_firing_but_signals_parked_not_picked_up_other": "কিছুই ফায়ার করছে না — তবে প্রদানকারীর কাছে {{count}}টি সিগন্যাল থামিয়ে রাখা আছে (উপরে দেখো) আর সেগুলো হাতে নেওয়া হবে না।",
@@ -4528,7 +4536,6 @@
         "one_ledger_entry_matched": "1টি লেজার এন্ট্রি মিলেছে — {{detail}}",
         "parked": "থামিয়ে রাখা",
         "parked_2": "থামিয়ে রাখা",
-        "parked_at_provider": "প্রদানকারীর কাছে থামিয়ে রাখা ·",
         "parked_at_the_provider": "প্রদানকারীর কাছে থামিয়ে রাখা",
         "poll_answered": "উত্তর দিয়েছে",
         "poll_every_configured_source_now_read_only": "এখনই কনফিগার করা প্রতিটি সোর্স পোল করো (শুধু-পঠন)",
@@ -4553,7 +4560,15 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "এই সোর্স এমন একটি স্পুলে push করে যা প্রতিটি পোলে খালি হয়ে যায়, তাই এটি যে সিগন্যাল একবার পাঠিয়েছে সেটি আর দেখা যাবে না, সমস্যাটি এখনও থাকলেও।",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "কাজ কোথা থেকে আসে। ক্রেডেনশিয়াল আর পরিধি সেটিংসে কনফিগার করো; কোনো সোর্স\n          আসলে কী ফেরায় তা দেখতে এখানেই পোল করো।",
-        "while_that_is_true_absence_of_a_signal_does_not": "সেটি সত্যি হলেও, সিগন্যাল না থাকা মানে সব সেরে গেছে নয় — হতে পারে আমরা শুধু\n                দেখতেই পারিনি।"
+        "while_that_is_true_absence_of_a_signal_does_not": "সেটি সত্যি হলেও, সিগন্যাল না থাকা মানে সব সেরে গেছে নয় — হতে পারে আমরা শুধু\n                দেখতেই পারিনি।",
+        "firing_count_one": "{{count}}টি ফায়ার করছে ·",
+        "firing_count_other": "{{count}}টি ফায়ার করছে ·",
+        "parked_count_one": "{{count}}টি প্রদানকারীর কাছে থামিয়ে রাখা ·",
+        "parked_count_other": "{{count}}টি প্রদানকারীর কাছে থামিয়ে রাখা ·",
+        "cleared_count_one": "{{count}}টি মিটে গেছে ·",
+        "cleared_count_other": "{{count}}টি মিটে গেছে ·",
+        "unclaimed_count_one": "{{count}}টি এখনও হাতে নেওয়া হয়নি",
+        "unclaimed_count_other": "{{count}}টি এখনও হাতে নেওয়া হয়নি"
       }
     },
     "papyrus": {

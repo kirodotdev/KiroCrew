@@ -455,8 +455,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "このセクションのマークダウンをコピーしてチャットまたはオートパイロットに貼り付け",
         "could_not_generate_challenges_please_try_again": "チャレンジを生成できませんでした。もう一度お試しください。",
         "cycle": "サイクル",
-        "cycles": "サイクル、",
-        "cycles_2": "サイクル",
         "definition_of_done_optional": "完了の定義（オプション）",
         "delete": "削除",
         "delete_campaign": "キャンペーンを削除しますか？",
@@ -474,7 +472,6 @@
         "failed_to_add_to_knowledge_library": "ナレッジライブラリへの追加に失敗しました",
         "failed_to_export_as_artifact": "アーティファクトとしてのエクスポートに失敗しました",
         "failed_to_start_campaign_please_try_again": "キャンペーンの開始に失敗しました。もう一度お試しください。",
-        "findings": "調査結果",
         "findings_count": "調査結果（{{count}}）",
         "findings_so_far_are_preserved_below": "これまでの調査結果は以下に保存されます。",
         "first_cycle_in_progress": "最初のサイクルが進行中です…",
@@ -502,7 +499,6 @@
         "loading": "読み込み中…",
         "max_cycles": "最大サイクル：",
         "max_cycles_2": "最大サイクル",
-        "min": "分",
         "min_20_characters": "最小 20 文字。",
         "model": "モデル",
         "model_default_inherit": "デフォルト（継承）",
@@ -540,7 +536,6 @@
         "resume": "再開",
         "run_autonomous_research_campaigns": "自動調査キャンペーンを実行",
         "run_unattended_skip_clarification_questions": "無人で実行（確認質問をスキップ）",
-        "s_idle": "秒アイドル中。~",
         "scripted": "（スクリプト化）",
         "searched_empty": "検索（空）：",
         "send": "送信",
@@ -564,14 +559,11 @@
         "strong": "強い",
         "sub_question": "サブ質問 {{n}}",
         "sub_questions": "サブ質問",
-        "sub_questions_2": "サブ質問",
         "sub_questions_guidance_count": "サブ質問とガイダンス（{{count}}）",
-        "suggested_from": "提案元",
         "the_agent_is_waiting_for_your_direction": "エージェントはあなたの指示を待機しています。",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI がすべてのラウンドを自動的に駆動します — 調査内容を決定し、サブエージェントを管理し、調査結果から新しい手がかりが得られたらそれを追跡します。",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI は事前にオーケストレーションスクリプトを作成します。決定論的なランナーがサブエージェントの実行を管理している間、AI は計画、調査、統合のみを行います。再生可能、予算制限付き。",
         "the_campaign_stopped_unexpectedly": "キャンペーンが予期せず停止しました。",
-        "up_to": "最大",
         "validating": "検証中…",
         "validation_failed_check_your_connection_and_try": "検証に失敗しました。接続を確認してもう一度お試しください。",
         "view_report": "レポートを表示",
@@ -580,7 +572,11 @@
         "when_should_the_agent_stop": "エージェントはいつ停止すべきですか？",
         "your_answer": "あなたの回答",
         "your_answer_2": "あなたの回答…",
-        "your_guidance": "あなたのガイダンス"
+        "your_guidance": "あなたのガイダンス",
+        "suggested_from_sub_questions_other": "{{count}} 件のサブ質問から提案",
+        "estimate_other": "最大 {{count}} サイクル、{{idle}} 秒アイドル。約 {{minutes}} 分",
+        "findings_tally_other": "{{count}} 件の調査結果",
+        "cycles_count_other": "{{count}} サイクル"
       }
     },
     "autoTriagePipeline": {
@@ -992,12 +988,12 @@
           "checks_running_other": "{{count}} 件中 {{pending}} 件のチェックが実行中",
           "closed": "クローズ",
           "conflicts": "コンフリクト",
-          "failing": "失敗",
           "merge_blocked": "マージ不可",
           "merged": "マージ済み",
           "open": "オープン",
-          "passed": "成功",
-          "running": "実行中"
+          "running_count_other": "{{count}} 件実行中",
+          "passed_count_other": "{{count}} 件成功",
+          "failing_count_other": "{{count}} 件失敗"
         },
         "repoSwitcher": {
           "add_a_repo": "リポジトリを追加",
@@ -2183,14 +2179,13 @@
           "search_labels_2": "ラベルを検索…"
         },
         "labelPicker": {
-          "add": "追加",
           "filter_labels": "ラベルをフィルター…",
           "filter_labels_2": "ラベルをフィルター",
           "loading_labels": "ラベルを読み込み中…",
           "remove_this_label_no_longer_exists_on_the_repo": "削除 — このラベルはもうこのリポジトリに存在しません",
           "saved_but_no_longer_on_this_repo": "保存されましたが、このリポジトリにはもうありません：",
-          "suggested": "提案",
-          "this_repo_has_no_labels": "このリポジトリにはラベルがありません。"
+          "this_repo_has_no_labels": "このリポジトリにはラベルがありません。",
+          "add_suggested_other": "提案 {{count}} 件を追加"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — クリックでサイドバーを展開",
@@ -2427,11 +2422,12 @@
           "close": "クローズ",
           "close_esc": "クローズ (Esc)",
           "close_reference": "参照をクローズ",
-          "deep": "ディープ",
           "issue": "Issue",
           "loading": "#を読み込み中",
           "open_in_the_list_detail_column": "リスト + 詳細列で開く",
-          "open_this_item_in_the_workspace": "ワークスペースでこのアイテムを開く"
+          "open_this_item_in_the_workspace": "ワークスペースでこのアイテムを開く",
+          "deep_count_other": "深さ {{count}}",
+          "dialog_label": "{{repo}} の {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "リポジトリ"
@@ -2542,7 +2538,9 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "ダッシュボードの設定を読み込めなかったため、GitLab インスタンスを一覧表示できません。",
         "selection_cleared_those_projects_are_on_the_previous_instance": "選択を解除しました: これらのプロジェクトは以前の GitLab インスタンスにあります。",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "選択を解除しました: これらのリポジトリは以前のプロバイダーに属しています。",
-        "try_again": "再試行"
+        "try_again": "再試行",
+        "repos_selected_other": "{{count}} 件選択済み",
+        "repos_found_other": "{{count}} 件見つかりました"
       },
       "connectRepoModal": {
         "close": "クローズ",
@@ -2942,7 +2940,8 @@
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分のプルリクエストで CI が失敗したら通知する",
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> 件のオープンな Issue が first-issue-friendly とマークされています",
-            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件"
+            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件",
+            "member_chip_title": "{{login}} — {{role}} · {{provider}} で開く"
           }
         },
         "tagging": {
@@ -2954,7 +2953,6 @@
             "created": "作成済み",
             "creating": "作成中…",
             "creating_needs_write_access": "作成には書き込みアクセスが必要です",
-            "defined_by_open_issue_count": "定義 · オープン Issue 数で",
             "labels": "ラベル",
             "looking_for_labels_this_repo_is_missing": "このリポジトリにないラベルを検索中…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "なし。リポジトリのタクソノミーは、オープン Issue が必要とするものをすでにカバーしています。",
@@ -2966,7 +2964,8 @@
             "suggest_new_labels": "新しいラベルを提案",
             "suggested_new_labels_not_created_until_you_say_s": "提案された新しいラベル。実際に作成するまでは作成されません",
             "re_fetch_this_repo_s_labels_from": "{{provider}} からこのリポジトリのラベルを再取得",
-            "create_this_label_on": "{{provider}} でこのラベルを作成"
+            "create_this_label_on": "{{provider}} でこのラベルを作成",
+            "labels_defined_other": "{{count}} 件定義 · オープン Issue 数で"
           },
           "untaggedIssueCard": {
             "add": "追加",
@@ -4488,12 +4487,10 @@
         "at_least_one_source_did_not_answer_this_poll": "少なくとも 1 つのソースがこのポーリングに応答しませんでした。",
         "claim": "引き受け",
         "claimed": "引き受け済み",
-        "cleared": "クリア済み ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· プッシュで配信されるため、空のポーリングは意味がありません",
         "every_configured_source_answered": "設定されたすべてのソースが応答しました。",
         "everything_firing_already_has_an_incident": "現在発火しているすべてが既にインシデントを持っています。",
         "firing": "発火中",
-        "firing_2": "発火中 ·",
         "firing_not_yet_claimed": "発火中、未引き受け",
         "inbound_webhook_queued_other": "{{count}} 件の受信 webhook シグナルが配信され、次のサイクルに取り込まれるのを待機中です。まだボード上にありません。",
         "inhibited_by_alert_go_look_at_that_alert": "{{by}} により抑制されています。より高いランクのアラームがこれをマスクしています。そのアラームを確認してください。",
@@ -4514,7 +4511,6 @@
         "no_signal_sources_registered": "登録されたシグナルソースがありません。",
         "no_sources_reporting_a_firing_signal": "発火シグナルを報告しているソースはありません。",
         "not_polled_yet_not_the_same_as_healthy": "まだポーリングされていません。これは健全であることと同じではありません",
-        "not_yet_claimed": "未引き受け",
         "nothing_firing_but_parked_signals_not_investigated": "何も発火していませんが、上記の抑制シグナルは調査されていません",
         "nothing_firing_but_signals_parked_not_picked_up_other": "何も発火していません。ただし、{{count}} 件のシグナルがプロバイダーに抑制されており（上記を参照）、取り込まれません。",
         "nothing_in_the_ledger_matched_starts_from_scratch": "台帳のどれもマッチしなかったため、調査をゼロから開始します。",
@@ -4522,7 +4518,6 @@
         "one_ledger_entry_matched": "1 件の台帳エントリがマッチしました。{{detail}}",
         "parked": "抑制中",
         "parked_2": "抑制済み",
-        "parked_at_provider": "プロバイダーに抑制 ·",
         "parked_at_the_provider": "プロバイダーに抑制されています",
         "poll_answered": "応答",
         "poll_every_configured_source_now_read_only": "設定されたすべてのソースをポーリング（読み取り専用）",
@@ -4546,7 +4541,11 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "このソースはスプールにプッシュし、各ポーリングが空にするため、既に配信したシグナルは、障害がまだ生きていても再び表示されません。",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "作業の出所。設定で認証情報とスコープを構成します。\n          ここでソースが実際に何を返すかを確認するようにポーリングします。",
-        "while_that_is_true_absence_of_a_signal_does_not": "これが真の場合でも、シグナルの不在は復旧を意味しません。単に\n                見ることができなかっただけかもしれません。"
+        "while_that_is_true_absence_of_a_signal_does_not": "これが真の場合でも、シグナルの不在は復旧を意味しません。単に\n                見ることができなかっただけかもしれません。",
+        "firing_count_other": "{{count}} 件発火中 ·",
+        "parked_count_other": "{{count}} 件プロバイダーに抑制 ·",
+        "cleared_count_other": "{{count}} 件クリア済み ·",
+        "unclaimed_count_other": "{{count}} 件未引き受け"
       }
     },
     "papyrus": {

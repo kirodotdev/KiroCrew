@@ -346,6 +346,19 @@ describe('RefSheet', () => {
     }
   })
 
+  it('names the sheet and its depth in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      setCtx({ refStack: [{ kind: 'issue', number: 1 }, { kind: 'pull', number: 2 }] })
+      renderWithQc(<RefSheet />)
+      const dialog = screen.getByRole('dialog')
+      expect(dialog.getAttribute('aria-label')).toMatch(new RegExp(`^.+ #2 im Repository ${OWNER}/${REPO}$`))
+      expect(screen.getByText('· 2 tief')).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('offers "open in the workspace" only when the list holds the row', async () => {
     setCtx({ refStack: [{ kind: 'pull', number: 3 }], pulls: [] })
     const { unmount } = renderWithQc(<RefSheet />)

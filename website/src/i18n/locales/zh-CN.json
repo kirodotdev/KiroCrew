@@ -455,8 +455,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "复制本节 Markdown，以粘贴到聊天或自动驾驶中",
         "could_not_generate_challenges_please_try_again": "无法生成质疑。请重试。",
         "cycle": "轮次",
-        "cycles": "轮，",
-        "cycles_2": "轮",
         "definition_of_done_optional": "完成标准（可选）",
         "delete": "删除",
         "delete_campaign": "删除活动？",
@@ -474,7 +472,6 @@
         "failed_to_add_to_knowledge_library": "添加到知识库失败",
         "failed_to_export_as_artifact": "导出为产物失败",
         "failed_to_start_campaign_please_try_again": "启动战役失败 — 请重试。",
-        "findings": "条结论",
         "findings_count": "结论（{{count}}）",
         "findings_so_far_are_preserved_below": "目前的结论保留在下方。",
         "first_cycle_in_progress": "第一轮进行中…",
@@ -502,7 +499,6 @@
         "loading": "正在加载…",
         "max_cycles": "最大轮次：",
         "max_cycles_2": "最大轮次",
-        "min": "分钟",
         "min_20_characters": "至少 20 个字符。",
         "model": "模型",
         "model_default_inherit": "默认（继承）",
@@ -540,7 +536,6 @@
         "resume": "恢复",
         "run_autonomous_research_campaigns": "运行自主研究战役",
         "run_unattended_skip_clarification_questions": "无人值守运行（跳过澄清问题）",
-        "s_idle": "秒空闲。~",
         "scripted": "（脚本化）",
         "searched_empty": "已搜索（无结果）：",
         "send": "发送",
@@ -564,14 +559,11 @@
         "strong": "强",
         "sub_question": "子问题 {{n}}",
         "sub_questions": "子问题",
-        "sub_questions_2": "个子问题",
         "sub_questions_guidance_count": "子问题与指引（{{count}}）",
-        "suggested_from": "建议来自",
         "the_agent_is_waiting_for_your_direction": "代理正在等待你的指示。",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI 自行驱动每一轮 — 决定调查什么、管理子代理，并随着结论浮现跟进新线索。",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI 先写好一份编排脚本；由确定性运行器管理子代理执行，AI 只负责规划、调查和综合。可重放，有预算上限。",
         "the_campaign_stopped_unexpectedly": "战役意外停止。",
-        "up_to": "最多",
         "validating": "校验中…",
         "validation_failed_check_your_connection_and_try": "验证失败 — 检查网络连接后重试。",
         "view_report": "查看报告",
@@ -580,7 +572,11 @@
         "when_should_the_agent_stop": "代理应在何时停止？",
         "your_answer": "你的回答",
         "your_answer_2": "你的回答…",
-        "your_guidance": "你的指导"
+        "your_guidance": "你的指导",
+        "suggested_from_sub_questions_other": "根据 {{count}} 个子问题建议",
+        "estimate_other": "最多 {{count}} 个周期，每次空闲 {{idle}} 秒。约 {{minutes}} 分钟",
+        "findings_tally_other": "{{count}} 项发现",
+        "cycles_count_other": "{{count}} 个周期"
       }
     },
     "autoTriagePipeline": {
@@ -992,12 +988,12 @@
           "checks_running_other": "{{count}} 项检查中有 {{pending}} 项仍在进行",
           "closed": "已关闭",
           "conflicts": "有冲突",
-          "failing": "失败",
           "merge_blocked": "合并被阻止",
           "merged": "已合并",
           "open": "开着",
-          "passed": "通过",
-          "running": "进行中"
+          "running_count_other": "{{count}} 个进行中",
+          "passed_count_other": "{{count}} 个通过",
+          "failing_count_other": "{{count}} 个失败"
         },
         "repoSwitcher": {
           "add_a_repo": "添加仓库",
@@ -2095,14 +2091,13 @@
           "search_labels_2": "搜索标签…"
         },
         "labelPicker": {
-          "add": "添加",
           "filter_labels": "筛选标签…",
           "filter_labels_2": "筛选标签",
           "loading_labels": "正在加载标签…",
           "remove_this_label_no_longer_exists_on_the_repo": "移除 — 此标签在仓库中已不存在",
           "saved_but_no_longer_on_this_repo": "已保存但仓库中已不存在：",
-          "suggested": "建议",
-          "this_repo_has_no_labels": "此仓库没有标签。"
+          "this_repo_has_no_labels": "此仓库没有标签。",
+          "add_suggested_other": "添加 {{count}} 个建议"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — 点击展开侧边栏",
@@ -2339,11 +2334,12 @@
           "close": "关闭",
           "close_esc": "关闭（Esc）",
           "close_reference": "关闭引用",
-          "deep": "层",
           "issue": "Issue",
           "loading": "加载中 #",
           "open_in_the_list_detail_column": "在列表 + 详情栏中打开",
-          "open_this_item_in_the_workspace": "在工作区中打开此项"
+          "open_this_item_in_the_workspace": "在工作区中打开此项",
+          "deep_count_other": "{{count}} 层",
+          "dialog_label": "{{repo}} 中的 {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "仓库"
@@ -2454,7 +2450,9 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "未能加载仪表板设置，因此无法列出 GitLab 实例。",
         "selection_cleared_those_projects_are_on_the_previous_instance": "已清除选择：这些项目位于之前的 GitLab 实例上。",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "已清除选择：这些仓库属于之前的提供方。",
-        "try_again": "重试"
+        "try_again": "重试",
+        "repos_selected_other": "已选择 {{count}} 个",
+        "repos_found_other": "找到 {{count}} 个"
       },
       "connectRepoModal": {
         "close": "关闭",
@@ -2854,7 +2852,8 @@
             "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的拉取请求 CI 失败时通知我",
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 gh 登录，读取你自己未关闭拉取请求上的 GitHub Actions 运行。可在 设置 → 通知 中将其静音或更改优先级。",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> 个待处理 issue 被标记为新手友好",
-            "triage_needed_of_open": "需要分类的待处理 issue：<strong>{{triage}}</strong> / {{n}}"
+            "triage_needed_of_open": "需要分类的待处理 issue：<strong>{{triage}}</strong> / {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · 在 {{provider}} 上打开"
           }
         },
         "tagging": {
@@ -2866,7 +2865,6 @@
             "created": "已创建",
             "creating": "创建中…",
             "creating_needs_write_access": "创建需要写入权限",
-            "defined_by_open_issue_count": "已定义 · 按待处理 issue 数量",
             "labels": "标签",
             "looking_for_labels_this_repo_is_missing": "正在查找此仓库缺失的标签…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "无 — 此仓库的分类体系已覆盖其待处理 issue 的需要。",
@@ -2878,7 +2876,8 @@
             "suggest_new_labels": "建议新标签",
             "suggested_new_labels_not_created_until_you_say_s": "建议的新标签 — 未经你确认不会创建",
             "re_fetch_this_repo_s_labels_from": "从 {{provider}} 重新获取此仓库的标签",
-            "create_this_label_on": "在 {{provider}} 上创建此标签"
+            "create_this_label_on": "在 {{provider}} 上创建此标签",
+            "labels_defined_other": "已定义 {{count}} 个 · 按待处理 issue 数量"
           },
           "untaggedIssueCard": {
             "add": "添加",
@@ -4400,12 +4399,10 @@
         "at_least_one_source_did_not_answer_this_poll": "至少有一个源没有响应这次轮询。",
         "claim": "接手",
         "claimed": "已接手",
-        "cleared": "已恢复 ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· 由推送投递，所以轮询为空并不说明什么",
         "every_configured_source_answered": "每个已配置的源都有响应。",
         "everything_firing_already_has_an_incident": "当前所有在报警的信号都已经有对应事件。",
         "firing": "报警中",
-        "firing_2": "报警中 ·",
         "firing_not_yet_claimed": "正在报警，尚未接手",
         "inbound_webhook_queued_other": "已投递 {{count}} 个入站 webhook 信号，正等下一个周期接手 — 它们还没上看板。",
         "inhibited_by_alert_go_look_at_that_alert": "被 {{by}} 抑制 — 有一条更高优先级的告警把它盖住了；去看那条告警。",
@@ -4426,7 +4423,6 @@
         "no_signal_sources_registered": "没有注册任何信号源。",
         "no_sources_reporting_a_firing_signal": "没有任何源报出正在报警的信号。",
         "not_polled_yet_not_the_same_as_healthy": "尚未轮询 — 这和健康不是一回事",
-        "not_yet_claimed": "尚未接手",
         "nothing_firing_but_parked_signals_not_investigated": "没有信号在报警，但上方挂起的信号没有人在调查",
         "nothing_firing_but_signals_parked_not_picked_up_other": "没有信号在报警 — 但有 {{count}} 个信号在提供方处挂起（见上方），不会被接手。",
         "nothing_in_the_ledger_matched_starts_from_scratch": "账本里没有匹配项，所以调查要从零开始。",
@@ -4434,7 +4430,6 @@
         "one_ledger_entry_matched": "匹配到 1 个账本条目 — {{detail}}",
         "parked": "已挂起",
         "parked_2": "已挂起",
-        "parked_at_provider": "在提供方处挂起 ·",
         "parked_at_the_provider": "在提供方处挂起",
         "poll_answered": "已响应",
         "poll_every_configured_source_now_read_only": "立即轮询每个已配置的源（只读）",
@@ -4458,7 +4453,11 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "此源推送到一个暂存队列，而每次轮询都会清空该队列，所以它已经投递过的信号不会再出现，即使故障仍然存在。",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "工作从哪里来。在设置中配置凭据和范围；在这里轮询就能看到一个源实际返回什么。",
-        "while_that_is_true_absence_of_a_signal_does_not": "在这种情况下，信号消失并不代表已恢复 — 可能只是我们没能去看。"
+        "while_that_is_true_absence_of_a_signal_does_not": "在这种情况下，信号消失并不代表已恢复 — 可能只是我们没能去看。",
+        "firing_count_other": "{{count}} 个报警中 ·",
+        "parked_count_other": "{{count}} 个在提供方处挂起 ·",
+        "cleared_count_other": "{{count}} 个已恢复 ·",
+        "unclaimed_count_other": "{{count}} 个尚未接手"
       }
     },
     "papyrus": {

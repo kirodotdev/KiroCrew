@@ -23,6 +23,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import {
   SIGNALS_QUERY_KEY,
   WEBHOOK_QUEUE_LIMIT,
@@ -274,6 +276,23 @@ describe('SignalsPanel', () => {
       'href',
       'https://console.example.com/alarm/1',
     )
+  })
+
+  it('counts the board in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      const { queryClient } = await renderPanel()
+      seedSignals(queryClient, {
+        poll_health: { cloudwatch: okHealth({ signals: 2 }) },
+        firing: [mkSignal(), mkSignal({ id: 'sig-2' })],
+        unclaimed: [mkSignal({ id: 'sig-2', title: 'Queue depth climbing' })],
+      })
+      expect(
+        await screen.findByText(/2 ausgelöst · 0 beim Anbieter zurückgestellt · 0 behoben · 1 noch nicht übernommen/),
+      ).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('qualifies the all-clear for a push source whose poll drains its spool', async () => {

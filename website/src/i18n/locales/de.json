@@ -472,8 +472,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "Markdown dieses Abschnitts kopieren, um es in Chat oder Autopilot einzufügen",
         "could_not_generate_challenges_please_try_again": "Rückfragen konnten nicht generiert werden. Bitte versuche es erneut.",
         "cycle": "Zyklus",
-        "cycles": "Zyklen,",
-        "cycles_2": "Zyklen",
         "definition_of_done_optional": "Definition of Done (optional)",
         "delete": "Löschen",
         "delete_campaign": "Kampagne löschen?",
@@ -491,7 +489,6 @@
         "failed_to_add_to_knowledge_library": "Hinzufügen zur Wissensbibliothek fehlgeschlagen",
         "failed_to_export_as_artifact": "Export als Artefakt fehlgeschlagen",
         "failed_to_start_campaign_please_try_again": "Kampagne konnte nicht gestartet werden — bitte versuche es erneut.",
-        "findings": "Ergebnisse",
         "findings_count": "Ergebnisse ({{count}})",
         "findings_so_far_are_preserved_below": "Die bisherigen Ergebnisse sind unten erhalten.",
         "first_cycle_in_progress": "Erster Zyklus läuft…",
@@ -519,7 +516,6 @@
         "loading": "Wird geladen…",
         "max_cycles": "Max. Zyklen:",
         "max_cycles_2": "Max. Zyklen",
-        "min": "Min.",
         "min_20_characters": "Min. 20 Zeichen.",
         "model": "Modell",
         "model_default_inherit": "Standard (übernehmen)",
@@ -557,7 +553,6 @@
         "resume": "Fortsetzen",
         "run_autonomous_research_campaigns": "Autonome Recherchekampagnen ausführen",
         "run_unattended_skip_clarification_questions": "Unbeaufsichtigt ausführen (Rückfragen überspringen)",
-        "s_idle": "s inaktiv. ~",
         "scripted": "(per Skript)",
         "searched_empty": "Durchsucht (leer):",
         "send": "Senden",
@@ -581,14 +576,11 @@
         "strong": "Stark",
         "sub_question": "Unterfrage {{n}}",
         "sub_questions": "Unterfragen",
-        "sub_questions_2": "Unterfragen",
         "sub_questions_guidance_count": "Unterfragen & Hinweise ({{count}})",
-        "suggested_from": "vorgeschlagen aus",
         "the_agent_is_waiting_for_your_direction": "Der Agent wartet auf deine Anweisung.",
         "the_ai_drives_every_round_itself_deciding_what_t": "Die KI steuert jede Runde selbst — sie entscheidet, was untersucht wird, verwaltet Subagenten und verfolgt neue Ansätze, die sich aus den Ergebnissen ergeben.",
         "the_ai_writes_an_orchestration_script_up_front_a": "Die KI schreibt vorab ein Orchestrierungsskript; ein deterministischer Runner verwaltet die Ausführung der Subagenten, während die KI nur plant, untersucht und synthetisiert. Wiederholbar, mit Budgetgrenze.",
         "the_campaign_stopped_unexpectedly": "Die Kampagne wurde unerwartet beendet.",
-        "up_to": "Bis zu",
         "validating": "Wird validiert…",
         "validation_failed_check_your_connection_and_try": "Validierung fehlgeschlagen — prüfe deine Verbindung und versuche es erneut.",
         "view_report": "Bericht anzeigen",
@@ -597,7 +589,15 @@
         "when_should_the_agent_stop": "Wann soll der Agent stoppen?",
         "your_answer": "Ihre Antwort",
         "your_answer_2": "Ihre Antwort…",
-        "your_guidance": "deine Anweisung"
+        "your_guidance": "deine Anweisung",
+        "suggested_from_sub_questions_one": "vorgeschlagen aus {{count}} Unterfrage",
+        "suggested_from_sub_questions_other": "vorgeschlagen aus {{count}} Unterfragen",
+        "estimate_one": "Bis zu {{count}} Zyklus, {{idle}}s inaktiv. ~{{minutes}} Min.",
+        "estimate_other": "Bis zu {{count}} Zyklen, {{idle}}s inaktiv. ~{{minutes}} Min.",
+        "findings_tally_one": "{{count}} Ergebnis",
+        "findings_tally_other": "{{count}} Ergebnisse",
+        "cycles_count_one": "{{count}} Zyklus",
+        "cycles_count_other": "{{count}} Zyklen"
       }
     },
     "autoTriagePipeline": {
@@ -1025,12 +1025,15 @@
           "checks_running_other": "{{pending}} von {{count}} Checks laufen noch",
           "closed": "geschlossen",
           "conflicts": "Konflikte",
-          "failing": "fehlgeschlagen",
           "merge_blocked": "Merge blockiert",
           "merged": "gemerged",
           "open": "offen",
-          "passed": "bestanden",
-          "running": "läuft"
+          "running_count_one": "{{count}} läuft",
+          "running_count_other": "{{count}} laufen",
+          "passed_count_one": "{{count}} bestanden",
+          "passed_count_other": "{{count}} bestanden",
+          "failing_count_one": "{{count}} fehlgeschlagen",
+          "failing_count_other": "{{count}} fehlgeschlagen"
         },
         "repoSwitcher": {
           "add_a_repo": "Repo hinzufügen",
@@ -2236,14 +2239,14 @@
           "search_labels_2": "Labels suchen…"
         },
         "labelPicker": {
-          "add": "Hinzufügen",
           "filter_labels": "Labels filtern…",
           "filter_labels_2": "Labels filtern",
           "loading_labels": "Labels werden geladen…",
           "remove_this_label_no_longer_exists_on_the_repo": "Entfernen — dieses Label existiert nicht mehr im Repo",
           "saved_but_no_longer_on_this_repo": "Gespeichert, aber nicht mehr in diesem Repo:",
-          "suggested": "vorgeschlagen",
-          "this_repo_has_no_labels": "Dieses Repo hat keine Labels."
+          "this_repo_has_no_labels": "Dieses Repo hat keine Labels.",
+          "add_suggested_one": "{{count}} Vorschlag hinzufügen",
+          "add_suggested_other": "{{count}} Vorschläge hinzufügen"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — Klicken zum Aufklappen der Seitenleiste",
@@ -2491,11 +2494,13 @@
           "close": "Schließen",
           "close_esc": "Schließen (Esc)",
           "close_reference": "Referenz schließen",
-          "deep": "tief",
           "issue": "Issue",
           "loading": "# wird geladen",
           "open_in_the_list_detail_column": "In der Liste + Detailspalte öffnen",
-          "open_this_item_in_the_workspace": "Dieses Element im Workspace öffnen"
+          "open_this_item_in_the_workspace": "Dieses Element im Workspace öffnen",
+          "deep_count_one": "{{count}} tief",
+          "deep_count_other": "{{count}} tief",
+          "dialog_label": "{{kind}} {{ref}} im Repository {{repo}}"
         },
         "repoSwitcher": {
           "repositories": "Repositories"
@@ -2607,7 +2612,11 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Die Dashboard-Einstellungen wurden nicht geladen, daher können keine GitLab-Instanzen aufgelistet werden.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "Auswahl zurückgesetzt: Diese Projekte liegen auf der vorherigen GitLab-Instanz.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "Auswahl zurückgesetzt: Diese Repositories gehören zum vorherigen Anbieter.",
-        "try_again": "Erneut versuchen"
+        "try_again": "Erneut versuchen",
+        "repos_selected_one": "{{count}} ausgewählt",
+        "repos_selected_other": "{{count}} ausgewählt",
+        "repos_found_one": "{{count}} gefunden",
+        "repos_found_other": "{{count}} gefunden"
       },
       "connectRepoModal": {
         "close": "Schließen",
@@ -3011,7 +3020,8 @@
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "Liest GitHub Actions-Läufe nur bei deinen eigenen offenen Pull Requests, über deine gh-Anmeldung. Stummschalten oder Priorität ändern unter Einstellungen → Benachrichtigungen.",
             "first_issue_friendly_count_one": "<strong>{{n}}</strong> offenes Issue ist als einsteigerfreundlich markiert",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> offene Issues sind als einsteigerfreundlich markiert",
-            "triage_needed_of_open": "Offene Issues, die eine Triage brauchen: <strong>{{triage}}</strong> von {{n}}"
+            "triage_needed_of_open": "Offene Issues, die eine Triage brauchen: <strong>{{triage}}</strong> von {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · auf {{provider}} öffnen"
           }
         },
         "tagging": {
@@ -3023,7 +3033,6 @@
             "created": "Erstellt",
             "creating": "Wird erstellt…",
             "creating_needs_write_access": "Erstellen erfordert Schreibzugriff",
-            "defined_by_open_issue_count": "definiert · nach Anzahl offener Issues",
             "labels": "Labels",
             "looking_for_labels_this_repo_is_missing": "Es wird nach Labels gesucht, die diesem Repo fehlen…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Keine — die Taxonomie des Repos deckt bereits ab, was seine offenen Issues benötigen.",
@@ -3037,7 +3046,9 @@
             "suggest_new_labels": "Neue Labels vorschlagen",
             "suggested_new_labels_not_created_until_you_say_s": "Vorgeschlagene neue Labels — werden erst erstellt, wenn Sie es sagen",
             "re_fetch_this_repo_s_labels_from": "Labels dieses Repos erneut von {{provider}} abrufen",
-            "create_this_label_on": "Dieses Label auf {{provider}} erstellen"
+            "create_this_label_on": "Dieses Label auf {{provider}} erstellen",
+            "labels_defined_one": "{{count}} definiert · nach Anzahl offener Issues",
+            "labels_defined_other": "{{count}} definiert · nach Anzahl offener Issues"
           },
           "untaggedIssueCard": {
             "add": "Hinzufügen",
@@ -4579,12 +4590,10 @@
         "at_least_one_source_did_not_answer_this_poll": "At least one source did not answer this poll.",
         "claim": "Claim",
         "claimed": "Claimed",
-        "cleared": "cleared ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· delivered by push, so an empty poll means nothing",
         "every_configured_source_answered": "Every configured source answered.",
         "everything_firing_already_has_an_incident": "Everything currently firing already has an incident.",
         "firing": "Firing",
-        "firing_2": "firing ·",
         "firing_not_yet_claimed": "Firing, not yet claimed",
         "inbound_webhook_queued_one": "{{count}} inbound webhook signal delivered and waiting for the next cycle to pick it up — it is not on the board yet.",
         "inbound_webhook_queued_other": "{{count}} inbound webhook signals delivered and waiting for the next cycle to pick them up — they are not on the board yet.",
@@ -4608,7 +4617,6 @@
         "no_signal_sources_registered": "No signal sources registered.",
         "no_sources_reporting_a_firing_signal": "No sources are reporting a firing signal.",
         "not_polled_yet_not_the_same_as_healthy": "not polled yet — this is not the same as healthy",
-        "not_yet_claimed": "not yet claimed",
         "nothing_firing_but_parked_signals_not_investigated": "nothing is firing, but the parked signals above are not being investigated",
         "nothing_firing_but_signals_parked_not_picked_up_one": "Nothing is firing — but {{count}} signal is parked at the provider (see above) and will not be picked up.",
         "nothing_firing_but_signals_parked_not_picked_up_other": "Nothing is firing — but {{count}} signals are parked at the provider (see above) and will not be picked up.",
@@ -4617,7 +4625,6 @@
         "one_ledger_entry_matched": "1 ledger entry matched — {{detail}}",
         "parked": "Parked",
         "parked_2": "parked",
-        "parked_at_provider": "parked at provider ·",
         "parked_at_the_provider": "Parked at the provider",
         "poll_answered": "answered",
         "poll_every_configured_source_now_read_only": "Poll every configured source now (read-only)",
@@ -4642,7 +4649,15 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "This source pushes to a spool that each poll empties, so a signal it already delivered will not appear again even if the fault is still live.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "Where work comes from. Configure credentials and scope in Settings; poll\n          here to see what a source actually returns.",
-        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look."
+        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look.",
+        "firing_count_one": "{{count}} ausgelöst ·",
+        "firing_count_other": "{{count}} ausgelöst ·",
+        "parked_count_one": "{{count}} beim Anbieter zurückgestellt ·",
+        "parked_count_other": "{{count}} beim Anbieter zurückgestellt ·",
+        "cleared_count_one": "{{count}} behoben ·",
+        "cleared_count_other": "{{count}} behoben ·",
+        "unclaimed_count_one": "{{count}} noch nicht übernommen",
+        "unclaimed_count_other": "{{count}} noch nicht übernommen"
       }
     },
     "papyrus": {

@@ -489,8 +489,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "Copia il markdown di questa sezione da incollare nella chat o nel pilota automatico",
         "could_not_generate_challenges_please_try_again": "Impossibile generare le obiezioni. Riprova.",
         "cycle": "Ciclo",
-        "cycles": "cicli,",
-        "cycles_2": "cicli",
         "definition_of_done_optional": "Definizione di completamento (facoltativo)",
         "delete": "Elimina",
         "delete_campaign": "Eliminare la campagna?",
@@ -508,7 +506,6 @@
         "failed_to_add_to_knowledge_library": "Impossibile aggiungere alla libreria delle conoscenze",
         "failed_to_export_as_artifact": "Impossibile esportare come artefatto",
         "failed_to_start_campaign_please_try_again": "Impossibile avviare la campagna — riprova.",
-        "findings": "risultati",
         "findings_count": "Risultati ({{count}})",
         "findings_so_far_are_preserved_below": "I risultati ottenuti finora sono conservati qui sotto.",
         "first_cycle_in_progress": "Primo ciclo in corso...",
@@ -536,7 +533,6 @@
         "loading": "Caricamento...",
         "max_cycles": "Numero massimo di cicli:",
         "max_cycles_2": "Numero massimo di cicli",
-        "min": "min",
         "min_20_characters": "Minimo 20 caratteri.",
         "model": "Modello",
         "model_default_inherit": "Predefinito (eredita)",
@@ -574,7 +570,6 @@
         "resume": "Riprendi",
         "run_autonomous_research_campaigns": "Esegui campagne di ricerca autonome",
         "run_unattended_skip_clarification_questions": "Esegui senza supervisione (salta le domande di chiarimento)",
-        "s_idle": "s di inattività. ~",
         "scripted": "(con script)",
         "searched_empty": "Cercato (vuoto):",
         "send": "Invia",
@@ -598,14 +593,11 @@
         "strong": "Forte",
         "sub_question": "Sotto-domanda {{n}}",
         "sub_questions": "Sotto-domande",
-        "sub_questions_2": "sotto-domande",
         "sub_questions_guidance_count": "Sotto-domande e indicazioni ({{count}})",
-        "suggested_from": "suggerito da",
         "the_agent_is_waiting_for_your_direction": "L'agente è in attesa delle tue indicazioni.",
         "the_ai_drives_every_round_itself_deciding_what_t": "L'IA guida da sé ogni round — decide cosa indagare, gestisce i subagenti e segue le nuove piste che emergono dai risultati.",
         "the_ai_writes_an_orchestration_script_up_front_a": "L'IA scrive in anticipo uno script di orchestrazione; un runner deterministico gestisce l'esecuzione dei subagenti mentre l'IA si limita a pianificare, indagare e sintetizzare. Riproducibile, con limite di budget.",
         "the_campaign_stopped_unexpectedly": "La campagna si è interrotta in modo inatteso.",
-        "up_to": "Fino a",
         "validating": "Convalida in corso...",
         "validation_failed_check_your_connection_and_try": "Convalida non riuscita — controlla la connessione e riprova.",
         "view_report": "Visualizza il report",
@@ -614,7 +606,19 @@
         "when_should_the_agent_stop": "Quando dovrebbe fermarsi l'agente?",
         "your_answer": "La tua risposta",
         "your_answer_2": "La tua risposta...",
-        "your_guidance": "le tue indicazioni"
+        "your_guidance": "le tue indicazioni",
+        "suggested_from_sub_questions_one": "suggerito da {{count}} sotto-domanda",
+        "suggested_from_sub_questions_many": "suggerito da {{count}} sotto-domande",
+        "suggested_from_sub_questions_other": "suggerito da {{count}} sotto-domande",
+        "estimate_one": "Fino a {{count}} ciclo, {{idle}} s di inattività. ~{{minutes}} min",
+        "estimate_many": "Fino a {{count}} cicli, {{idle}} s di inattività. ~{{minutes}} min",
+        "estimate_other": "Fino a {{count}} cicli, {{idle}} s di inattività. ~{{minutes}} min",
+        "findings_tally_one": "{{count}} risultato",
+        "findings_tally_many": "{{count}} risultati",
+        "findings_tally_other": "{{count}} risultati",
+        "cycles_count_one": "{{count}} ciclo",
+        "cycles_count_many": "{{count}} cicli",
+        "cycles_count_other": "{{count}} cicli"
       }
     },
     "autoTriagePipeline": {
@@ -1058,12 +1062,18 @@
           "checks_running_other": "{{pending}} controlli su {{count}} ancora in corso",
           "closed": "chiusa",
           "conflicts": "conflitti",
-          "failing": "in errore",
           "merge_blocked": "merge bloccato",
           "merged": "merged",
           "open": "aperta",
-          "passed": "superati",
-          "running": "in corso"
+          "running_count_one": "{{count}} in corso",
+          "running_count_many": "{{count}} in corso",
+          "running_count_other": "{{count}} in corso",
+          "passed_count_one": "{{count}} superato",
+          "passed_count_many": "{{count}} superati",
+          "passed_count_other": "{{count}} superati",
+          "failing_count_one": "{{count}} non superato",
+          "failing_count_many": "{{count}} non superati",
+          "failing_count_other": "{{count}} non superati"
         },
         "repoSwitcher": {
           "add_a_repo": "Aggiungi un repo",
@@ -2199,14 +2209,15 @@
           "search_labels_2": "Cerca tra le etichette…"
         },
         "labelPicker": {
-          "add": "Aggiungi",
           "filter_labels": "Filtra le etichette…",
           "filter_labels_2": "Filtra le etichette",
           "loading_labels": "Caricamento delle etichette…",
           "remove_this_label_no_longer_exists_on_the_repo": "Rimuovi — questa etichetta non esiste più nel repo",
           "saved_but_no_longer_on_this_repo": "Salvate ma non più presenti in questo repo:",
-          "suggested": "suggerito",
-          "this_repo_has_no_labels": "Questo repo non ha etichette."
+          "this_repo_has_no_labels": "Questo repo non ha etichette.",
+          "add_suggested_one": "Aggiungi {{count}} suggerito",
+          "add_suggested_many": "Aggiungi {{count}} suggeriti",
+          "add_suggested_other": "Aggiungi {{count}} suggeriti"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — clicca per espandere la barra laterale",
@@ -2465,11 +2476,14 @@
           "close": "Chiudi",
           "close_esc": "Chiudi (Esc)",
           "close_reference": "Chiudi il riferimento",
-          "deep": "profondo",
           "issue": "Issue",
           "loading": "Caricamento di #",
           "open_in_the_list_detail_column": "Apri nella colonna elenco + dettagli",
-          "open_this_item_in_the_workspace": "Apri questo elemento nel workspace"
+          "open_this_item_in_the_workspace": "Apri questo elemento nel workspace",
+          "deep_count_one": "profondità {{count}}",
+          "deep_count_many": "profondità {{count}}",
+          "deep_count_other": "profondità {{count}}",
+          "dialog_label": "{{kind}} {{ref}} nel repository {{repo}}"
         },
         "repoSwitcher": {
           "repositories": "Repository"
@@ -2582,7 +2596,13 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Le impostazioni della dashboard non sono state caricate, quindi non è possibile elencare le istanze GitLab.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "Selezione annullata: quei progetti si trovano sull'istanza GitLab precedente.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "Selezione annullata: quei repository appartengono al provider precedente.",
-        "try_again": "Riprova"
+        "try_again": "Riprova",
+        "repos_selected_one": "{{count}} selezionato",
+        "repos_selected_many": "{{count}} selezionati",
+        "repos_selected_other": "{{count}} selezionati",
+        "repos_found_one": "{{count}} trovato",
+        "repos_found_many": "{{count}} trovati",
+        "repos_found_other": "{{count}} trovati"
       },
       "connectRepoModal": {
         "close": "Chiudi",
@@ -2990,7 +3010,8 @@
             "first_issue_friendly_count_one": "<strong>{{n}}</strong> issue aperta è contrassegnata come adatta ai nuovi arrivati",
             "first_issue_friendly_count_many": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
-            "triage_needed_of_open": "Issue aperte da smistare: <strong>{{triage}}</strong> di {{n}}"
+            "triage_needed_of_open": "Issue aperte da smistare: <strong>{{triage}}</strong> di {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · apri su {{provider}}"
           }
         },
         "tagging": {
@@ -3002,7 +3023,6 @@
             "created": "Creato",
             "creating": "Creazione in corso…",
             "creating_needs_write_access": "la creazione richiede l'accesso in scrittura",
-            "defined_by_open_issue_count": "definite · per numero di issue aperte",
             "labels": "Etichette",
             "looking_for_labels_this_repo_is_missing": "Ricerca delle etichette mancanti in questo repo…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Nessuna — la tassonomia del repo copre già ciò che serve alle sue issue aperte.",
@@ -3018,7 +3038,10 @@
             "suggest_new_labels": "Suggerisci nuove etichette",
             "suggested_new_labels_not_created_until_you_say_s": "Nuove etichette suggerite — non vengono create finché non lo confermi",
             "re_fetch_this_repo_s_labels_from": "Recupera di nuovo le etichette di questo repo da {{provider}}",
-            "create_this_label_on": "Crea questa etichetta su {{provider}}"
+            "create_this_label_on": "Crea questa etichetta su {{provider}}",
+            "labels_defined_one": "{{count}} definita · per numero di issue aperte",
+            "labels_defined_many": "{{count}} definite · per numero di issue aperte",
+            "labels_defined_other": "{{count}} definite · per numero di issue aperte"
           },
           "untaggedIssueCard": {
             "add": "Aggiungi",
@@ -4580,12 +4603,10 @@
         "at_least_one_source_did_not_answer_this_poll": "At least one source did not answer this poll.",
         "claim": "Claim",
         "claimed": "Claimed",
-        "cleared": "cleared ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· delivered by push, so an empty poll means nothing",
         "every_configured_source_answered": "Every configured source answered.",
         "everything_firing_already_has_an_incident": "Everything currently firing already has an incident.",
         "firing": "Firing",
-        "firing_2": "firing ·",
         "firing_not_yet_claimed": "Firing, not yet claimed",
         "inbound_webhook_queued_many": "{{count}} inbound webhook signals delivered and waiting for the next cycle to pick them up — they are not on the board yet.",
         "inbound_webhook_queued_one": "{{count}} inbound webhook signal delivered and waiting for the next cycle to pick it up — it is not on the board yet.",
@@ -4612,7 +4633,6 @@
         "no_signal_sources_registered": "No signal sources registered.",
         "no_sources_reporting_a_firing_signal": "No sources are reporting a firing signal.",
         "not_polled_yet_not_the_same_as_healthy": "not polled yet — this is not the same as healthy",
-        "not_yet_claimed": "not yet claimed",
         "nothing_firing_but_parked_signals_not_investigated": "nothing is firing, but the parked signals above are not being investigated",
         "nothing_firing_but_signals_parked_not_picked_up_many": "Nothing is firing — but {{count}} signals are parked at the provider (see above) and will not be picked up.",
         "nothing_firing_but_signals_parked_not_picked_up_one": "Nothing is firing — but {{count}} signal is parked at the provider (see above) and will not be picked up.",
@@ -4622,7 +4642,6 @@
         "one_ledger_entry_matched": "1 ledger entry matched — {{detail}}",
         "parked": "Parked",
         "parked_2": "parked",
-        "parked_at_provider": "parked at provider ·",
         "parked_at_the_provider": "Parked at the provider",
         "poll_answered": "answered",
         "poll_every_configured_source_now_read_only": "Poll every configured source now (read-only)",
@@ -4648,7 +4667,19 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "This source pushes to a spool that each poll empties, so a signal it already delivered will not appear again even if the fault is still live.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "Where work comes from. Configure credentials and scope in Settings; poll\n          here to see what a source actually returns.",
-        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look."
+        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look.",
+        "firing_count_one": "{{count}} in allarme ·",
+        "firing_count_many": "{{count}} in allarme ·",
+        "firing_count_other": "{{count}} in allarme ·",
+        "parked_count_one": "{{count}} sospeso presso il provider ·",
+        "parked_count_many": "{{count}} sospesi presso il provider ·",
+        "parked_count_other": "{{count}} sospesi presso il provider ·",
+        "cleared_count_one": "{{count}} risolto ·",
+        "cleared_count_many": "{{count}} risolti ·",
+        "cleared_count_other": "{{count}} risolti ·",
+        "unclaimed_count_one": "{{count}} non ancora preso in carico",
+        "unclaimed_count_many": "{{count}} non ancora presi in carico",
+        "unclaimed_count_other": "{{count}} non ancora presi in carico"
       }
     },
     "papyrus": {

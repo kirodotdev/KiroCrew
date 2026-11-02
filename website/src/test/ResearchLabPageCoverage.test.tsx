@@ -31,6 +31,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import { store } from '../store'
 
 vi.mock('../api/client', () => ({
@@ -273,6 +275,28 @@ describe('ResearchLabPage — root list and wizard branches', () => {
     expect(screen.getByPlaceholderText(/How do other teams/i)).toBeInTheDocument()
   })
 
+  it('counts the sub-questions behind the suggestion in the interface language', async () => {
+    vi.mocked(api.researchGrillExpand).mockResolvedValue({
+      nodes: [researchNode('r1', 'What durability guarantees exist?'), researchNode('r2', 'What do peers use?')],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    const ta = await openWizard(user)
+    setQuestion(ta)
+    await user.click(screen.getByRole('button', { name: /Grill me/i }))
+    await screen.findByDisplayValue('What durability guarantees exist?')
+    // The page renders its strings when a step renders, so switch before the
+    // step change; the Next button is still the one rendered in English.
+    const next = screen.getByRole('button', { name: /Next/i })
+    await i18next.changeLanguage('de')
+    try {
+      await user.click(next)
+      expect(await screen.findByText('vorgeschlagen aus 2 Unterfragen')).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('a clarifier can be accepted and then expanded for a deeper round', async () => {
     vi.mocked(api.researchGrillExpand).mockResolvedValueOnce({ nodes: [clarifierNode('c1', 'Production or exploration?')] })
     const user = userEvent.setup()
@@ -319,6 +343,26 @@ describe('ResearchLabPage — root list and wizard branches', () => {
     expect(await screen.findByText(/Failed to start campaign/i)).toBeInTheDocument()
     expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Start Campaign/i })).toBeEnabled()
+  })
+
+  it('states the run estimate as one sentence, in the interface language', async () => {
+    vi.mocked(api.researchValidate).mockResolvedValue({
+      can_start: true, errors: [], warnings: [], estimated_cycles: 10, estimated_duration_min: 20,
+    })
+    const user = userEvent.setup()
+    renderPage()
+    const ta = await openWizard(user)
+    setQuestion(ta, 'A sufficiently long research question to pass the length check')
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    // Switch before the step change: the page renders its strings when a step renders.
+    const next = screen.getByRole('button', { name: /Next/i })
+    await i18next.changeLanguage('de')
+    try {
+      await user.click(next)
+      expect(await screen.findByText(/^Bis zu \d+ Zyklen, \d+s inaktiv\. ~20 Min\.$/)).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('a create that returns no id neither starts a campaign nor leaves the wizard', async () => {
