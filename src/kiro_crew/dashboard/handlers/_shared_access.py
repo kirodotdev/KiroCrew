@@ -3,7 +3,8 @@
 ``require_owner_dashboard_request`` refuses a dashboard request that does not come
 from the owner, with the audited denial body; ``admits_registry`` and
 ``admits_cloud_deployment`` ask the edition's capability manager whether a registry
-or a cloud deployment is admitted; ``_caller_bounds`` reads the bounds a credential
+or a cloud deployment is admitted (a registry must also pass the governance key
+``external_access.registry_hosts``); ``_caller_bounds`` reads the bounds a credential
 minted on the caller's authority inherits.
 
 Served through :mod:`kiro_crew.dashboard.handlers._shared`, which callers and tests
@@ -117,14 +118,26 @@ def admits_registry(kind: str, name: str, api_base: str) -> bool:
     fail-closed idiom — the reason ``safe_context_call`` is centralized is that a
     hand-rolled ``except Exception`` at a call site silently swallows
     ``PlatformCompositionError``.
+
+    Two answers must both admit, so the stricter wins: the governance key
+    ``external_access.registry_hosts`` (judged on the host of *api_base*), then the
+    edition's ``external_access`` policy. The key is asked HERE rather than in
+    ``DefaultExternalAccessPolicy`` because an edition replaces that slot whole,
+    and an edition must not be able to loosen the operator's policy. Both catalogs
+    are built once per process, so a policy change binds at the next gateway start.
     """
+    from kiro_crew.extension_governance import registry_host_denied
     from kiro_crew.platform.context import current_context
 
-    return _admits(
-        f"registry:{kind}",
-        api_base,
-        lambda: current_context().external_access.admits_registry(kind, name, api_base),
-    )
+    def _probe() -> bool:
+        # The context first, so a composition failure still propagates rather than
+        # reading as the key's fail-closed denial.
+        external_access = current_context().external_access
+        if registry_host_denied(kind, api_base) is not None:
+            return False
+        return external_access.admits_registry(kind, name, api_base)
+
+    return _admits(f"registry:{kind}", api_base, _probe)
 
 
 def admits_cloud_deployment(target: str = "aws") -> bool:

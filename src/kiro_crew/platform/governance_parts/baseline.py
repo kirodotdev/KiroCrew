@@ -44,6 +44,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # Kept off by the owner (D3), while ``apps`` opened.
     "app_versions": _OFF,
     "network.egress": _OFF,
+    "external_access.registry_hosts": _OFF,
     # Kept off by the owner (D3): chat services send data off the machine, and
     # their KGL control has not shipped.
     "channels": {"members": _OFF},
