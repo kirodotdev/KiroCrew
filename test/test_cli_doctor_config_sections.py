@@ -35,9 +35,8 @@ class TestEffectiveModelSection:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the Model section's autouse KIRO_HOME pin, moved verbatim; no test in test_cli_doctor_config_sections.py calls monkeypatch.undo()
-    def _isolate_kiro_home(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+    def _isolate_kiro_home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
         self._tmp = tmp_path
 
     def _agents_dir(self) -> Path:
