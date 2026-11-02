@@ -130,9 +130,10 @@ class GitError(RuntimeError):
 #: git ends EVERY fetch/push failure with the same access-rights boilerplate, and
 #: an SSH transport failure prints its diagnosis FIRST, so a last-3-lines tail
 #: reports a permission problem the operator does not have. Concretely, for a
-#: remote reachable only through a ``ProxyCommand`` in ``~/.ssh/config`` the
-#: sandbox's ``ssh -F /dev/null`` (see :mod:`kiro_crew.sandbox`) discards that
-#: config, DNS then fails, and the whole diagnosis is one line above the tail:
+#: remote reachable only through a ``ProxyCommand`` in ``~/.ssh/config``, where
+#: the sandbox falls back to ``ssh -F /dev/null`` (a strict tier, or a config ssh
+#: would refuse there; see :mod:`kiro_crew.sandbox`), that config is discarded,
+#: DNS then fails, and the whole diagnosis is one line above the tail:
 #:
 #:     ssh: Could not resolve hostname <host>: Name or service not known
 #:     fatal: Could not read from remote repository.
