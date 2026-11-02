@@ -235,6 +235,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
 from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _apply_result_view,
     _awaiting_spawn_approval,
+    _failover_fields,
     _parent_turn_holding,
     _redact,
     _session_turn_holding,
@@ -258,7 +259,10 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     STOPPED_BEFORE_START_CODE,
+    _backend_name,
+    _chain_note,
     _continue_on_loop,
+    _failover_backend,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,

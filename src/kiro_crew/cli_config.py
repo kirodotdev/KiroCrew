@@ -300,6 +300,24 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     )
                     sys.exit(1)
                 parsed = threads
+            # The failover block is refused here rather than logged and read as
+            # off at load, for the same reason. Written whole, so its parts are
+            # always checked together.
+            if key.startswith("agent.acp_failover."):
+                print(
+                    "❌ agent.acp_failover is set as one object, e.g. "
+                    '\'{"enabled": true, "chain": ["codex", "claude"]}\'',
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if key == "agent.acp_failover":
+                from kiro_crew.config.sections_agent_fields import validate_acp_failover
+
+                try:
+                    parsed = validate_acp_failover(parsed)
+                except ValueError as failover_error:
+                    print(f"❌ {key}: {failover_error}", file=sys.stderr)
+                    sys.exit(1)
             # Fourth write path to telemetry.beacon_enabled, after the dashboard
             # PATCH and `telemetry enable`. Gated here too, and BEFORE the
             # local/base split so it covers both: `--local` writes the overlay,

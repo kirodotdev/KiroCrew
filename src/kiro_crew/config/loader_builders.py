@@ -543,7 +543,9 @@ _MEMBER_HARNESS_KEY = "member_acp_backend"
 
 #: The ``agent`` fields that hold a harness id, spelled in the config-file
 #: vocabulary on disk and in ``to_dict()`` and as runtime ids on the dataclass.
-_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend")
+# ``acp_failover`` is here for the same reason: its loaded value drops chain
+# members this deployment cannot select, and a save must not erase them.
+_HARNESS_CHOICE_KEYS: tuple[str, ...] = ("acp_backend", "member_acp_backend", "acp_failover")
 
 
 def _stored_agent_dict(agent: AgentConfig) -> dict:
