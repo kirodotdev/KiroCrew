@@ -8472,6 +8472,7 @@
       "no_ci_checks_were_returned": "Nenhuma verificação de CI foi retornada.",
       "no_commits_were_returned": "Nenhum commit foi retornado.",
       "no_description_was_provided": "Nenhuma descrição foi fornecida.",
+      "open_check_details": "Abrir os detalhes da verificação {{name}}",
       "open_pull_request": "Abrir pull request",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Os resultados do provedor podem estar incompletos em {{sections}}. Abra o merge request para ver o conjunto completo.",

@@ -8333,6 +8333,7 @@
       "no_ci_checks_were_returned": "কোনো CI চেক ফেরত আসেনি।",
       "no_commits_were_returned": "কোনো কমিট ফেরত আসেনি।",
       "no_description_was_provided": "কোনো বিবরণ দেওয়া হয়নি।",
+      "open_check_details": "{{name}} চেকের বিবরণ খোলো",
       "open_pull_request": "পুল রিকোয়েস্ট খুলুন",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য মার্জ রিকোয়েস্টটি খোলো।",

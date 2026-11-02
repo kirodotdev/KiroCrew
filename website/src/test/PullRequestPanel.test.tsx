@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { PullRequestSource, PullRequestStatus } from '../types'
 import {
   MAX_PULL_REQUEST_SOURCES,
@@ -964,6 +966,20 @@ describe('PullRequestPanel', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Add to chat' })[0])
     expect(onAddToChat).toHaveBeenCalledWith(
       expect.stringContaining('Quoting a pull request comment by reviewer'))
+  })
+
+  it('names each check-details link in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderPanel()
+      fireEvent.click(await screen.findByRole('tab', { name: /Alle Prüfungen erfolgreich/ }))
+      expect(screen.getByRole('link', { name: 'Details der Prüfung test öffnen' })).toHaveAttribute(
+        'href',
+        'https://github.com/acme/widgets/actions/1',
+      )
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('drops the source strip when there is only one source to pick', async () => {

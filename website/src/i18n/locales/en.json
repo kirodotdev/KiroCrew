@@ -5280,6 +5280,7 @@
       "no_ci_checks_were_returned": "No CI checks were returned.",
       "no_commits_were_returned": "No commits were returned.",
       "no_description_was_provided": "No description was provided.",
+      "open_check_details": "Open {{name}} check details",
       "open_pull_request": "Open pull request",
       "pr_number": "PR #{{number}}",
       "pull_request_sections": "Pull request sections",

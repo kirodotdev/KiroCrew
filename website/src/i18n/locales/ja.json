@@ -8194,6 +8194,7 @@
       "no_ci_checks_were_returned": "CIチェックが返されませんでした。",
       "no_commits_were_returned": "コミットが返されませんでした。",
       "no_description_was_provided": "説明が提供されませんでした。",
+      "open_check_details": "{{name}} チェックの詳細を開く",
       "open_pull_request": "プルリクエストを開く",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}のプロバイダー結果が部分的である可能性があります。完全なセットについてはマージリクエストを開いてください。",

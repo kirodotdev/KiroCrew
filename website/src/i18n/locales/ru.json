@@ -8611,6 +8611,7 @@
       "no_ci_checks_were_returned": "CI-проверки не получены.",
       "no_commits_were_returned": "Коммиты не получены.",
       "no_description_was_provided": "Описание не указано.",
+      "open_check_details": "Открыть сведения о проверке {{name}}",
       "open_pull_request": "Открыть пул-реквест",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой мерж-реквест, чтобы увидеть полный набор.",
