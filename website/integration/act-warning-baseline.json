@@ -69,7 +69,6 @@
   "src/test/EditableCodeBlock.editorActions.test.tsx",
   "src/test/ExportSessionItem.test.tsx",
   "src/test/FolderConfigModal.test.tsx",
-  "src/test/FolderPanel.test.tsx",
   "src/test/FollowUpCard.test.tsx",
   "src/test/InstancesViewport.test.tsx",
   "src/test/KiroAccountModal.test.tsx",
