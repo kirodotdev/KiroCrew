@@ -555,8 +555,7 @@ class TestDoctorKas:
         )
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the KAS section's autouse kiro-cli pin, moved verbatim; no test in test_cli_doctor_agent_auth.py calls monkeypatch.undo()
-    def _accepting_cli(self, monkeypatch):
+    def _accepting_cli(self, _floor_monkeypatch):
         """Pin the installed kiro-cli to one that accepts the spec ``permissions``
         field, so the cases here stay about the relay and the engine.
 
@@ -564,7 +563,7 @@ class TestDoctorKas:
         kiro-cli -- absent on CI, which reads as refusing and appends an issue the
         engine cases do not expect.
         """
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             cli_doctor,
             "installed_kiro_cli_version",
             lambda: cli_doctor.SPEC_PERMISSIONS_MIN_VERSION,
