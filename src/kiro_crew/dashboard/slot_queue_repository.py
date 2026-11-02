@@ -92,6 +92,8 @@ RESTORED_QUEUE_KEY = "_restored_from_disk"
 #: :data:`DURABLE_SOURCE_CHANNELS_KEY`) and a restored entry is still judged by
 #: the channel its words came from. A hand edit that adds one only narrows.
 SOURCE_CHANNELS_KEY = "_directive_source_channels"
+#: Group id a signed-out turn stamps on entries it puts back; the group drains alone.
+PUT_BACK_KEY = "_signout_put_back"
 
 #: The durable spelling of :data:`SOURCE_CHANNELS_KEY` on a persisted entry.
 DURABLE_SOURCE_CHANNELS_KEY = "source_channels"
@@ -920,6 +922,18 @@ class SlotQueueRepository:
     def queue_pop(self, owner: Any, index: int = 0) -> dict[str, Any]:
         """Remove and return the exact entry at *index*."""
         return owner._queue.pop(index)
+
+    def queue_restore(self, owner: Any, items: list[dict[str, Any]]) -> int:
+        """Put popped entries back at the head, in order, as the same dicts.
+
+        Not an enqueue: the entries keep their ids, callbacks and row pointers,
+        so the drain treats them as the sends they were. An id already queued is
+        skipped. Returns how many went back.
+        """
+        queued = {item.get("id") for item in owner._queue}
+        restored = [item for item in items if item.get("id") not in queued]
+        owner._queue[0:0] = restored
+        return len(restored)
 
     def note_pending_subagent_delivery(
         self,

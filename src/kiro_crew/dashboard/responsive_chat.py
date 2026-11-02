@@ -27,11 +27,13 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import PUT_BACK_KEY, RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.session_lifecycle import compaction_in_flight
 
 logger = logging.getLogger(__name__)
+#: How many put-back entries share one row: it is theirs only when they drain together.
+SHARED_ROW_KEY = "_signout_shared_row"
 
 # A responsiveness attempt is bounded separately from the running task's budget.
 # Failure leaves that task and the accepted queue entry in place.
@@ -179,6 +181,10 @@ def priority_entry(item: dict) -> bool:
 
 
 def reusable_row(slot: Any, consumed: list[dict], text: str) -> dict | None:
+    if (row := _put_back_row(slot, consumed)) is not None:
+        return row
+    if any(item.get(SHARED_ROW_KEY, 1) > 1 for item in consumed):
+        return None
     if len(consumed) > 1:
         # A merged run of waiting sends: every one already has its row where it
         # was sent, so the turn anchors on the last of them and writes none.
@@ -193,6 +199,46 @@ def reusable_row(slot: Any, consumed: list[dict], text: str) -> dict | None:
     if consumed[0].get("content") != text:
         return None
     return _present_row(slot, consumed[0])
+
+
+def withdrawable_put_back(slot: Any, item: dict) -> bool:
+    """Whether *item* is a put-back entry its person may still cancel.
+
+    Its row stays as a message nobody answered. The rest of its group then
+    drains under new rows, since that row holds more than their words.
+    """
+    return bool(item.get(PUT_BACK_KEY))
+
+
+def _put_back_row(slot: Any, consumed: list[dict]) -> dict | None:
+    """The one row a put-back group already has, when the whole group drains.
+
+    Matched by identity, not text: the drain redacts a channel or app entry's
+    text before it writes the row, so the row need not equal the entry.
+    """
+    row = _held_row(slot, consumed[0]) if consumed else None
+    if row is None or len(consumed) != consumed[0].get(SHARED_ROW_KEY, 1):
+        return None
+    group = consumed[0].get(PUT_BACK_KEY)
+    if any(
+        item.get(PUT_BACK_KEY) != group or item.get("_responsive_row") is not row
+        for item in consumed
+    ):
+        return None
+    return row
+
+
+def _held_row(slot: Any, item: dict) -> dict | None:
+    """The row put-back *item* went back under, while the transcript holds it."""
+    row = item.get("_responsive_row")
+    if not item.get(PUT_BACK_KEY) or not isinstance(row, dict):
+        return None
+    if any(existing is row for existing in slot.messages):
+        return row
+    pos = item.get("_responsive_row_pos")
+    if isinstance(pos, int) and not isinstance(pos, bool) and pos < _durable_base(slot):
+        return row
+    return None
 
 
 def _restored_row(slot: Any, item: dict, text: str) -> dict | None:
@@ -260,6 +306,8 @@ def row_already_written(slot: Any, item: dict) -> bool:
     editing its queue entry would leave the transcript holding the old text and
     the drain writing the new one beside it.
     """
+    if _held_row(slot, item) is not None:
+        return True
     content = item.get("content")
     if not isinstance(content, str):
         return False
@@ -288,6 +336,7 @@ def dequeue_waiting_run(slot: Any) -> tuple[str, list[dict]] | None:
             or carries_attachments(item)
             or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
             or _present_row(slot, item) is None
+            or (run and item.get(PUT_BACK_KEY) != run[0].get(PUT_BACK_KEY))
         ):
             break
         run.append(item)
@@ -521,6 +570,9 @@ async def accept(
         return _sc_entry.chat_replay_response(queued_admission, slot_key=slot.key)
     if (closed := await _sc_entry.refuse_if_slot_closed(state, slot, queued_admission)) is not None:
         return closed
+    from kiro_crew.dashboard.chat_utils_injected_rows import withdraw_resent_put_backs
+
+    withdraw_resent_put_backs(state, slot, message, request=request)
     qid = queue_for_next_turn(
         state,
         slot,

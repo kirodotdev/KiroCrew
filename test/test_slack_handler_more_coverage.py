@@ -1394,6 +1394,8 @@ class _Slot:
         self._deferred_notes: list[dict] = []
         self.appended: list[tuple[str, str]] = []
         self.queued: list[str] = []
+        self._last_turn_auth_required = False
+        self._queue: list[dict] = []
 
     def append(self, role, text, cls="", *, broadcast_user=False, meta=None):
         # Mirror the real ``_ChatSlot.append`` contract enough for
@@ -1456,6 +1458,7 @@ class TestLinkedThreadRouting:
             _directive_channel_origin,
             _directive_source_channels,
             _commands_off,
+            _current_message,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True

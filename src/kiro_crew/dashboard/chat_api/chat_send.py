@@ -1348,21 +1348,25 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     )
     # A queued card's open editor holds the queue: a send joins it behind the
     # held entries, steer or not, rather than being answered first.
+    from kiro_crew.dashboard.chat_utils_injected_rows import signout_held, withdraw_resent_put_backs
     from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 
     _edit_held = edit_hold_blocks_user_turn(slot)
+    _so_held = signout_held(slot)
+    _signout_queued = _person_send and _so_held and not (slot.running or message.startswith("/"))
     # A card never queues or steers: any state that would queue this send instead of
     # running it now -- a hold, a behind-parked slot, a teardown hold (a pending
     # conversation discard deferred by a lingering child) or a queued card's edit
     # hold -- refuses it so the host falls back to the composer. A queued card entry
     # carries no cardOrigin marker, so it would drain later as a trusted owner turn
     # with the person's directive authority, losing every card-send restriction.
-    if card_origin and (_held or _behind_parked or _teardown_hold or _edit_held):
+    if card_origin and (_held or _behind_parked or _teardown_hold or _edit_held or _so_held):
         return card_send.busy_refusal(request, slot)
     if (
         (not (steer and not _agent_origin) and (_held or _behind_parked))
         or _teardown_hold
         or _edit_held
+        or _signout_queued
     ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
@@ -1379,6 +1383,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _closed := await _sc_entry.refuse_if_slot_closed(state, slot, _held_admission)
         ) is not None:
             return _closed
+        withdraw_resent_put_backs(state, slot, message, request=request if _person_send else None)
 
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
@@ -1467,8 +1472,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # is what lands the discard and drains the queue this send joined.
             _arm_pending_reset_retry(state, slot)
             _wake_pending_reset_retry(state, slot)
-        if _behind_parked:
-            await _start_next_queued_turn(state, slot)
+        _signout_drain = _signout_queued and _from_composer and not (_edit_held or _teardown_hold)
+        if _behind_parked or _signout_drain:
+            await _start_next_queued_turn(state, slot, allow_user_during_subagents=_signout_drain)
         elif not subagents_hold_user_messages(state, _sub_key):
             # The admission await (a config refresh included, even when admission
             # turns out off) outlived the sub-agent hold: nothing else will drain
