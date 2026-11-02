@@ -686,6 +686,63 @@ class TestGatewayLockRefusalExit:
         )
 
 
+class TestGatewayLogRotatesOnlyUnderTheLock:
+    """``kirocrew gateway`` moves gateway.log aside only once it holds the gateway lock.
+
+    A start the lock refuses runs the whole logging setup first, so before the
+    rotation waited for the lock every stray start renamed the running gateway's
+    log, and a fifth one pruned it.
+    """
+
+    @staticmethod
+    def _start(monkeypatch, lock_cls):
+        from kiro_crew.cli_logging import _stop_log_queue_listener
+
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        with (
+            patch("kiro_crew.cli.GatewayLock", lock_cls),
+            patch("kiro_crew.cli_server._gateway"),
+            patch("kiro_crew.cli.asyncio.run"),
+            patch("kiro_crew.cli.faulthandler.enable"),
+        ):
+            from kiro_crew.cli import main
+
+            try:
+                main()
+            except SystemExit:
+                pass
+            finally:
+                _stop_log_queue_listener()
+
+    def test_five_refused_starts_leave_the_running_log_in_place(self, monkeypatch, tmp_path):
+        from kiro_crew.config import config_dir
+        from kiro_crew.gateway_lock import GatewayLockError
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("running gateway\n", encoding="utf-8")
+        before = log_file.stat()
+        lock_cls = MagicMock()
+        lock_cls.return_value.acquire.side_effect = GatewayLockError(
+            tmp_path, 4242, "another gateway already owns this home", live_holder=True
+        )
+        for _ in range(5):
+            self._start(monkeypatch, lock_cls)
+        after = log_file.stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert log_file.read_text(encoding="utf-8").startswith("running gateway\n")
+        assert not log_file.with_name("gateway.log.prev").exists()
+        assert not (config_dir() / "logs" / "gateway-boots").exists()
+
+    def test_the_start_that_holds_the_lock_rotates(self, monkeypatch):
+        from kiro_crew.config import config_dir
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("last run\n", encoding="utf-8")
+        self._start(monkeypatch, MagicMock())
+        prev = log_file.with_name("gateway.log.prev")
+        assert prev.read_text(encoding="utf-8").startswith("last run\n")
+
+
 @pytest.mark.skipif(
     not hasattr(__import__("asyncio"), "set_child_watcher"),
     reason="asserts the 3.10-3.13 child-watcher semantics; the API was removed in 3.14",

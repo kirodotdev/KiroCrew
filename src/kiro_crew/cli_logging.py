@@ -24,9 +24,171 @@ import sys
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
-from kiro_crew.cli_log_files import _AppendOnlyLogFileHandler, _OwnerOnlyRotatingFileHandler
+from kiro_crew.cli_log_files import (
+    BOOT_LOG_GENERATIONS,
+    BOOT_LOG_GENERATIONS_MAX_BYTES,
+    _AppendOnlyLogFileHandler,
+    _OwnerOnlyRotatingFileHandler,
+    boot_log_dir,
+    boot_log_dir_is_linked,
+    older_boot_logs,
+)
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.log_redaction import install_log_redaction
+
+
+def _rotate_boot_logs(log_file: Path, live_size: int) -> tuple[OSError | None, list[OSError]]:
+    """Move *log_file* to ``gateway.log.prev`` at boot, keeping older boots behind it.
+
+    Called only by ``_start_gateway_log_after_lock``, so only by the process that
+    holds the gateway lock: no other gateway is running, and a start the lock
+    refuses never reaches here, so it never moves or deletes a running gateway's
+    log. Two renames, each into a name nothing else holds, and no step ever
+    undone:
+
+    1. The old ``gateway.log.prev`` moves to ``logs/gateway-boots/gateway.log.<n>``,
+       *n* one more than the largest kept (``cli_log_files.older_boot_logs``), so
+       the name is free and order never depends on the clock. If it cannot move
+       (a Windows reader holds it), stop: every file stays where it is and boot
+       appends to the live log, as before older boots were kept.
+    2. ``gateway.log`` moves to the now free ``gateway.log.prev``. If it cannot
+       move, stop the same way: the old ``.prev`` is already kept, so nothing is
+       lost, and a ``gateway.log`` another process recreated meanwhile is never
+       written over.
+
+    Only after both succeed are older boots past ``BOOT_LOG_GENERATIONS``, or past
+    ``BOOT_LOG_GENERATIONS_MAX_BYTES`` in total counted newest first from
+    *live_size* (the size of the new ``.prev``, read by the caller), deleted.
+    ``gateway.log.prev`` is never deleted, so a failed boot never costs a kept log.
+    Boot lists only ``logs/gateway-boots``, which holds at most a few files.
+
+    Returns the error that stopped the rotation (the caller keeps appending to
+    the live log) and every prune error.
+    """
+    prev = log_file.with_name(log_file.name + ".prev")
+    if boot_log_dir_is_linked(log_file):
+        # Never follow a link off the data home: keep one previous boot, as
+        # before older boots were kept, and say why.
+        try:
+            log_file.replace(prev)
+        except OSError as exc:
+            return exc, []
+        return None, [OSError(f"{boot_log_dir(log_file)} is a link; older boots not kept")]
+    try:
+        kept = older_boot_logs(log_file, strict=True)
+    except OSError as exc:
+        # The archive cannot be listed: move nothing rather than guess a number.
+        return exc, []
+    if os.path.lexists(prev):
+        archive_dir = boot_log_dir(log_file)
+        archived = archive_dir / f"{log_file.name}.{kept[0][0] + 1 if kept else 1}"
+        try:
+            archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            prev.rename(archived)
+        except OSError as exc:
+            return exc, []
+        kept.insert(0, (0, archived))
+    try:
+        log_file.rename(prev)
+    except OSError as exc:
+        return exc, []
+    return None, _prune_older_boot_logs([path for _, path in kept], live_size)
+
+
+def _prune_older_boot_logs(kept: list[Path], prev_size: int) -> list[OSError]:
+    """Delete older boots (*kept*, newest first) past the count or the byte budget.
+
+    *kept* lists only files in ``logs/gateway-boots``, never ``gateway.log`` or
+    ``gateway.log.prev``, and this runs only under the gateway lock, so it never
+    deletes a log a running gateway still writes.
+    """
+    errors: list[OSError] = []
+    total = prev_size
+    for index, path in enumerate(kept):
+        if index < BOOT_LOG_GENERATIONS:
+            try:
+                total += path.lstat().st_size
+            except OSError as exc:
+                errors.append(exc)
+                continue
+            if total <= BOOT_LOG_GENERATIONS_MAX_BYTES:
+                continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(exc)
+    return errors
+
+
+#: Size rollover of the live ``gateway.log`` (three ``.1`` .. ``.3`` backups).
+_GATEWAY_LOG_MAX_BYTES = 2 * 1024 * 1024
+#: The gateway's file handler, set by ``_setup_cli_logging("gateway")`` until
+#: ``_start_gateway_log_after_lock`` has run once.
+_GATEWAY_LOG_HANDLER: RotatingFileHandler | None = None
+#: Whether that gateway's fds 1/2 point at ``gateway.log`` (a detached start).
+_GATEWAY_LOG_DETACHED = False
+
+
+def _start_gateway_log_after_lock() -> None:
+    """Rotate ``gateway.log`` and turn on its size rollover, once the gateway lock is held.
+
+    Call it right after ``GatewayLock.acquire`` succeeds. Until then the gateway
+    appends to the live log and never renames it, so a start the lock refuses
+    leaves a running gateway's log, and every kept boot, as they were.
+
+    The records this start wrote before the lock stay at the end of the file that
+    becomes ``gateway.log.prev``; the restart relay
+    (``cli_server_restart._gateway_log_lines_since``) already reads them there.
+
+    The file handler's lock is held across the rotation, so its listener thread
+    writes nothing meanwhile, and its stream is closed first: Windows cannot rename
+    a file this process holds open. The next record reopens a fresh ``gateway.log``.
+    A failed rotation is logged and the gateway keeps appending, as before.
+    """
+    global _GATEWAY_LOG_HANDLER
+    fh = _GATEWAY_LOG_HANDLER
+    if fh is None:
+        return
+    _GATEWAY_LOG_HANDLER = None
+    log_file = Path(fh.baseFilename)
+    rotation_error: OSError | None = None
+    shift_errors: list[OSError] = []
+    rotated = False
+    fh.acquire()
+    try:
+        stream = fh.stream
+        try:
+            if stream is not None:
+                stream.flush()
+            live_size = log_file.stat().st_size
+        except FileNotFoundError:
+            live_size = 0
+        except OSError as exc:
+            live_size, rotation_error = 0, exc
+        if live_size > 0:
+            if stream is not None:
+                fh.stream = None  # type: ignore[assignment]
+                try:
+                    stream.close()
+                except OSError:
+                    pass  # flushed above; the next record opens a fresh file
+            rotation_error, shift_errors = _rotate_boot_logs(log_file, live_size)
+            rotated = rotation_error is None
+        fh.maxBytes = _GATEWAY_LOG_MAX_BYTES
+    finally:
+        fh.release()
+    if rotated and _GATEWAY_LOG_DETACHED:
+        _redirect_fds_to(log_file)
+    for shift_error in shift_errors:
+        logging.getLogger("kiro_crew").warning(
+            "could not keep an older boot's log at boot (%s)", shift_error
+        )
+    if rotation_error is not None:
+        logging.getLogger("kiro_crew").warning(
+            "could not move %s aside at boot (%s); appending to the previous run's log",
+            log_file,
+            rotation_error,
+        )
 
 
 def _fd_targets_file(fd: int, path: Path) -> bool:
@@ -270,8 +432,9 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     - the file handler attaches to the ROOT logger instead, so third-party
       WARNINGs reach the file formatted and PID-stamped rather than only as
       raw stderr;
-    - after the boot rotation, fds 1/2 are re-pointed at the live log so raw
-      writes (uncaught tracebacks, child stderr) do not land in ``.prev``.
+    - after the boot rotation (``_start_gateway_log_after_lock``), fds 1/2 are
+      re-pointed at the live log so raw writes (uncaught tracebacks, child
+      stderr) do not land in ``.prev``.
 
     In BOTH modes, for LONG-LIVED commands (``_LONG_LIVED_COMMANDS``) the file
     handler is not attached to a logger directly: the logger gets a
@@ -334,26 +497,23 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     logging.getLogger("kiro_crew").setLevel(level)
 
     # Persistent file log — respects the configured log_level.
-    # On startup, rotate gateway.log → gateway.log.prev so a crash's final
-    # lines are never lost.  Only for `gateway` subcommand
-    # to avoid renaming the file while the gateway is actively writing.
+    # Once it holds the gateway lock, the gateway rotates gateway.log →
+    # gateway.log.prev (older boots kept in logs/gateway-boots, see
+    # _start_gateway_log_after_lock) so a crash's final lines are never lost.
     # encoding="utf-8" is REQUIRED on Windows: Kiro Crew logs non-ASCII glyphs and
     # the default file encoding there is cp1252, so a RotatingFileHandler without
     # it raises UnicodeEncodeError on the first non-ASCII log record (logging
     # swallows it, but it spams "--- Logging error ---" tracebacks and drops the
     # line). ensure_utf8_console() only fixes the console streams, not this file
     # handler.
-    boot_rotation_error: OSError | None = None
-    if command == "gateway":
-        prev_log = log_file.with_suffix(".log.prev")
-        if log_file.exists() and log_file.stat().st_size > 0:
-            try:
-                log_file.replace(prev_log)
-            except OSError as exc:
-                # Keep going on the old file; reported once the handler exists.
-                boot_rotation_error = exc
-        if detached:
-            _redirect_fds_to(log_file)
+    #
+    # The gateway does NOT rotate here: this runs before the gateway lock, and a
+    # start the lock refuses must leave a running gateway's log where it is. Until
+    # ``_start_gateway_log_after_lock`` runs, the gateway appends to the live log
+    # with size rollover off, so a refused start renames nothing.
+    global _GATEWAY_LOG_HANDLER, _GATEWAY_LOG_DETACHED
+    _GATEWAY_LOG_HANDLER = None
+    _GATEWAY_LOG_DETACHED = detached
     # Detached mode uses the fd-tracking subclass: a size-based rollover
     # renames gateway.log, and without re-pointing, the redirected raw fds
     # would follow the renamed inode through .1 → .2 → .3 → unlink, losing
@@ -381,7 +541,11 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     try:
         fh: logging.FileHandler
         if rotates:
-            fh = rotating_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+            # maxBytes 0 turns the size rollover off until the gateway lock is held.
+            max_bytes = 0 if command == "gateway" else _GATEWAY_LOG_MAX_BYTES
+            fh = rotating_cls(log_file, maxBytes=max_bytes, backupCount=3, encoding="utf-8")
+            if command == "gateway":
+                _GATEWAY_LOG_HANDLER = fh
         else:
             fh = _AppendOnlyLogFileHandler(log_file, encoding="utf-8")
     except OSError as exc:
@@ -457,12 +621,6 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     else:
         target_logger.addHandler(fh)
 
-    if boot_rotation_error is not None:
-        logging.getLogger("kiro_crew").warning(
-            "could not move %s aside at boot (%s); appending to the previous run's log",
-            log_file,
-            boot_rotation_error,
-        )
     # Install secret redaction filter — scrubs Bearer tokens from all kiro_crew
     # log output before it reaches any handler. The filter also accepts literal
     # secret values to redact, but none are passed here: wiring resolved vault
