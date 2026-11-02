@@ -13964,7 +13964,13 @@
       "chat_use_lacks_oauth": "Salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso.",
       "configure_oauth_app": "Configura l’app OAuth",
       "prerequisite_github": "GitHub non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth GitHub registrata in Impostazioni → App OAuth. La pagina di consenso di GitHub mostra quell’app; approvala per continuare.",
-      "prerequisite_asana": "Asana non supporta la registrazione dinamica dei client, quindi Connetti usa l’app MCP Asana registrata in Impostazioni → App OAuth. La pagina di consenso di Asana mostra quell’app; approvala per continuare."
+      "prerequisite_asana": "Asana non supporta la registrazione dinamica dei client, quindi Connetti usa l’app MCP Asana registrata in Impostazioni → App OAuth. La pagina di consenso di Asana mostra quell’app; approvala per continuare.",
+      "prerequisite_gmail": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_google_drive": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_google_calendar": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_google_sheets": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_google_docs": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare.",
+      "prerequisite_google_slides": "Google non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth Google registrata in Impostazioni → App OAuth. La pagina di consenso di Google mostra quell’app; approvala per continuare."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",

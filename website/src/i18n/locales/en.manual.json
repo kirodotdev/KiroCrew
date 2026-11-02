@@ -6455,7 +6455,13 @@
       "chat_use_lacks_oauth": "Saved for chats that support it. Some chats can't use this kind of sign-in yet.",
       "configure_oauth_app": "Configure OAuth app",
       "prerequisite_github": "GitHub does not support dynamic client registration, so Connect uses the GitHub OAuth App registered under Settings → OAuth Apps. The GitHub consent page names that app; approve it to continue.",
-      "prerequisite_asana": "Asana does not support dynamic client registration, so Connect uses the Asana MCP app registered under Settings → OAuth Apps. The Asana consent page names that app; approve it to continue."
+      "prerequisite_asana": "Asana does not support dynamic client registration, so Connect uses the Asana MCP app registered under Settings → OAuth Apps. The Asana consent page names that app; approve it to continue.",
+      "prerequisite_gmail": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue.",
+      "prerequisite_google_drive": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue.",
+      "prerequisite_google_calendar": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue.",
+      "prerequisite_google_sheets": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue.",
+      "prerequisite_google_docs": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue.",
+      "prerequisite_google_slides": "Google does not support dynamic client registration, so Connect uses the Google OAuth App registered under Settings → OAuth Apps. The Google consent page names that app; approve it to continue."
     },
     "crewBoard": {
       "title": "Work items",

@@ -136,6 +136,12 @@ const PREREQUISITE_KEYS = {
   atlassian: 'pages.connectionsPage.prerequisite_atlassian',
   github: 'pages.connectionsPage.prerequisite_github',
   asana: 'pages.connectionsPage.prerequisite_asana',
+  gmail: 'pages.connectionsPage.prerequisite_gmail',
+  'google-drive': 'pages.connectionsPage.prerequisite_google_drive',
+  'google-calendar': 'pages.connectionsPage.prerequisite_google_calendar',
+  'google-sheets': 'pages.connectionsPage.prerequisite_google_sheets',
+  'google-docs': 'pages.connectionsPage.prerequisite_google_docs',
+  'google-slides': 'pages.connectionsPage.prerequisite_google_slides',
 } as const
 
 /**
@@ -609,6 +615,8 @@ function ConnectionCard({
             <span
               className={`flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold ${PROVIDER_TONES[provider.slug] || 'bg-accent text-accent-fg'}`}
               aria-hidden="true"
+              // A brand's initial, not prose: kept out of the render-time i18n scan.
+              data-i18n-opaque=""
             >
               {provider.name.slice(0, 1)}
             </span>

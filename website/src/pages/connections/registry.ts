@@ -6,6 +6,8 @@ export interface ConnectionProvider {
   slug: string
   tier: 1 | 2 | 3
   mcp_url: string
+  /** Scopes a new install requests; the warm path sends the same list. */
+  recommended_scopes?: string[]
   revoke_page_url: string
   docs_url: string
   /**
