@@ -412,6 +412,29 @@ async def test_a_restored_tab_loads_its_window_before_the_completion_lands(
     assert restored.task is None
 
 
+@pytest.mark.asyncio
+async def test_a_restored_tab_whose_window_cannot_be_read_takes_the_parents_own_route(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = _Slot("main")
+    restored.window_pending = True
+    done.bound_slot = restored
+    monkeypatch.setattr(
+        gw_mod, "load_window_off_loop", AsyncMock(side_effect=PermissionError(13, "in use"))
+    )
+    own_route = AsyncMock(name="_inject_subagent_into_channel_parent")
+    monkeypatch.setattr(done.orch, "_inject_subagent_into_channel_parent", own_route)
+
+    await done.done(make_info())
+    await done.drain()
+
+    own_route.assert_awaited_once()
+    assert own_route.await_args.kwargs["parent_key"] == "dashboard:main"
+    assert done.chats == [] and restored.queued == [] and restored.task is None
+    statuses = done.frames("subagent_status")
+    assert [(f["event"], f["slot"]) for f in statuses] == [("done", "evt:dashboard:main")]
+
+
 # ── records that route nothing ───────────────────────────────────────────────
 
 
