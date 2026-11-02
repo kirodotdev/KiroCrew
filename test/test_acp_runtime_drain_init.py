@@ -30,7 +30,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
-from kiro_crew.testing.wait import await_until, default_timeout
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # ── Drift-parity fixes (AcpRuntime ↔ AcpClient): #1-#4 + #5b ──
 
@@ -128,9 +128,7 @@ async def test_tool_interrupted_marker_synthesizes_complete(monkeypatch):
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        # flake-ok: pre-existing 50 ms barrier for the prompt driver to send its request, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        await _await_routed(rt, "sA")
         # Only the marker text chunk — NO {"id": req_id, "result": ...} response.
         _feed(
             reader,
@@ -177,9 +175,7 @@ async def test_unresponsive_cancel_unblocks_without_killing_runtime():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        # flake-ok: pre-existing 50 ms barrier for the prompt driver to send its request, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        await _await_routed(rt, "sA")
         await handle.cancel()
         # Backdate the cancel so the grace window has already elapsed.
         handle._cancel_ts = time.monotonic() - (handle._cancel_grace_secs + 1)
@@ -265,6 +261,25 @@ def _mcp_failure_frame(session_id: str, server: str, error: str) -> JsonRpcMessa
             "params": {"sessionId": session_id, "serverName": server, "error": error},
         }
     )
+
+
+def _signal_when_parked(monkeypatch, queue: asyncio.Queue) -> asyncio.Event:
+    """An event set when ``queue.get()`` is called with nothing queued.
+
+    That call is the consumer's arrival at the gate: whatever was staged before
+    it has been consumed, and ``Queue.get`` registers its waiter before anything
+    else can run, so the consumer is parked on the empty queue from here on.
+    """
+    parked = asyncio.Event()
+    real_get = queue.get
+
+    async def get():
+        if queue.empty():
+            parked.set()
+        return await real_get()
+
+    monkeypatch.setattr(queue, "get", get)
+    return parked
 
 
 @pytest.mark.asyncio
@@ -401,17 +416,18 @@ async def test_drain_init_credits_a_report_that_landed_before_set_mode_answered(
 
 
 @pytest.mark.asyncio
-async def test_drain_init_records_a_post_backlog_report_after_a_switch():
+async def test_drain_init_records_a_post_backlog_report_after_a_switch(monkeypatch):
     """After the stale backlog is exhausted, the active agent's own report counts."""
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
     q["sA"].put_nowait(_mcp_initialized_frame("sA", "previous-agent-server"))
+    parked = _signal_when_parked(monkeypatch, q["sA"])
 
     async def _after_switch() -> None:
-        # flake-ok: pre-existing 50 ms delay before the feeder queues the post-switch report, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- the feeder's own delay, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        # The report lands once the drain has consumed the stale backlog and
+        # waits on the emptied queue.
+        await await_until(parked, what="the drain parking behind its stale backlog")
         q["sA"].put_nowait(_mcp_initialized_frame("sA", "current-agent-server"))
 
     feeder = asyncio.create_task(_after_switch())
@@ -464,19 +480,21 @@ async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatc
     # A non-MCP frame is already queued (kiro-cli emits metadata right after
     # set_mode); it must be consumed without arming the idle exit.
     q["sA"].put_nowait(_metadata_frame("sA"))
+    parked = _signal_when_parked(monkeypatch, q["sA"])
 
-    async def _late_report() -> None:
-        # Many idle windows of silence before the server finally reports.
-        # flake-ok: pre-existing 150 ms delay that outlasts several idle windows before the late report, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- the feeder's own delay, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.15)
-        q["sA"].put_nowait(_mcp_initialized_frame("sA", "slow-npx"))
-
-    feeder = asyncio.create_task(_late_report())
+    drain = asyncio.ensure_future(handle.drain_init(duration=0.2, idle_exit=0.01))
     try:
-        await handle.drain_init(duration=0.2, idle_exit=0.01)
+        await await_until(parked, what="the drain parking on its emptied queue")
+        # Many idle windows of silence (15 of them) before the server finally
+        # reports: a drain whose idle shortcut the metadata frame had armed
+        # would have returned within the first.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(drain), timeout=0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "slow-npx"))
+        await await_until(drain, what="the drain consuming the late report")
     finally:
-        await feeder
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
     # The late report was drained rather than left to race into the first turn.
     assert q["sA"].empty()
 
@@ -582,19 +600,22 @@ async def test_drain_init_ignores_pre_switch_reports_still_waits_for_new_agent(m
     # Staged during session/new: the pre-switch agent's roster.
     q["sA"].put_nowait(_mcp_initialized_frame("sA", "parent-mode-server"))
     q["sA"].put_nowait(_metadata_frame("sA"))
+    parked = _signal_when_parked(monkeypatch, q["sA"])
 
-    async def _late_report() -> None:
-        # The switched-to agent's server reports well past the idle window.
-        # flake-ok: pre-existing 150 ms delay that outlasts several idle windows before the late report, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- the feeder's own delay, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.15)
-        q["sA"].put_nowait(_mcp_initialized_frame("sA", "subagent-slow-npx"))
-
-    feeder = asyncio.create_task(_late_report())
+    drain = asyncio.ensure_future(
+        handle.drain_init(duration=0.2, idle_exit=0.01, stale_report_frames=1)
+    )
     try:
-        await handle.drain_init(duration=0.2, idle_exit=0.01, stale_report_frames=1)
+        await await_until(parked, what="the drain parking on its emptied queue")
+        # The switched-to agent's server reports well past the idle window (15
+        # of them): the staged parent report must not have armed the shortcut.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(drain), timeout=0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "subagent-slow-npx"))
+        await await_until(drain, what="the drain consuming the late report")
     finally:
-        await feeder
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
     # Without the stale-backlog gate, the staged parent report arms the idle
     # exit and the drain returns before the late report — leaving it queued.
     assert q["sA"].empty()
@@ -627,9 +648,12 @@ async def test_reader_retains_mcp_registration_frames_during_init():
                         "params": {"sessionId": "sid-warm", "serverName": "broken"},
                     },
                 )
-                # flake-ok: pre-existing 50 ms barrier for the reader to route the fed frames, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)  # let the reader route them
+                # The reader has routed them once both sit in the staging area,
+                # which is what the new session's queue is seeded from.
+                await async_wait_until(
+                    lambda: len(rt._pending_init_notifications) == 2,
+                    describe=lambda: f"staged frames: {list(rt._pending_init_notifications)}",
+                )
                 return {"sessionId": "sid-warm"}
             return {}
 
