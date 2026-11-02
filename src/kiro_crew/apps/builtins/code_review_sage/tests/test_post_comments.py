@@ -1261,15 +1261,42 @@ class TestDraftConfirmed(unittest.TestCase):
         with unittest.mock.patch.object(discovery, "run_gh_json", failing):
             self.assertFalse(D._draft_confirmed(self.LINK, self._payload()))
 
-    def test_pending_shape_refuses_when_the_head_moved_during_posting(self):
-        """`/files` serves the CURRENT head's diff. A push that lands while the
-        draft is being posted would place the payload's lines in a diff the
-        draft is not anchored to, so a head other than the draft's commit
-        leaves the anchors unprovable."""
+    def _moved_head_stub(self, got, compare_files):
+        """The head moved past the reviewed commit: `/files` must not be read
+        (it serves the new head's diff); the reviewed commit's diff comes
+        from the immutable compare between the base and that commit."""
+        def run_gh_json(path, jq=None, *, paginate=False, host=None):
+            if "/comments" in path:
+                return got
+            if path.endswith("/files"):
+                raise AssertionError("/files serves the current head, not the reviewed one")
+            if "/compare/base1...abc123" in path:
+                return [{"files": compare_files}]
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "def456"}, "base": {"sha": "base1"}}]
+            return self._review()
+        return run_gh_json
+
+    def test_moved_head_confirms_through_the_reviewed_commits_diff(self):
+        """New pushes after the review re-map `position` onto the new head's
+        diff; `original_position` stays in the reviewed commit's diff, which
+        is what the draft is anchored to."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 9, "original_position": 4, "body": "widens scope"}]
+        with unittest.mock.patch.object(
+                discovery, "run_gh_json", self._moved_head_stub(got, self._files())):
+            self.assertEqual(D._draft_confirmed(self.LINK, self._payload()), "7")
+
+    def test_moved_head_refuses_an_original_position_elsewhere(self):
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 4, "original_position": 2, "body": "widens scope"}]
+        with unittest.mock.patch.object(
+                discovery, "run_gh_json", self._moved_head_stub(got, self._files())):
+            self.assertFalse(D._draft_confirmed(self.LINK, self._payload()))
+
+    def test_pending_shape_refuses_when_the_head_is_unknown(self):
         got = [{"path": "src/a.py", "line": None, "original_line": None,
                 "position": 4, "body": "widens scope"}]
-        self.assertFalse(self._confirm(self._review(), got, files=self._files(),
-                                       head="def456"))
         self.assertFalse(self._confirm(self._review(), got, files=self._files(),
                                        head=""))
 

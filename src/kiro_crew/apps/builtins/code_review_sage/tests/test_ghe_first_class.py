@@ -258,3 +258,58 @@ class TestEndpointsAcrossHosts(_Home, unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TestFindingsOnlyDraftIsIdentifiable(unittest.TestCase):
+    """A post of selected findings without the ship summary used to send an
+    EMPTY review body. The read-back and the stale-draft cleanup both find a
+    sage draft by the marker in the review body, so that draft could never be
+    confirmed ("the posted draft could not be confirmed") nor replaced."""
+
+    def _record(self, with_design: bool) -> dict:
+        from sage_lib import pipeline
+        pending = [{"kind": "finding", "key": "finding:0", "file": "a.md", "line": 3,
+                    "body": "x _[code-review-sage]_"}]
+        if with_design:
+            pending.append({"kind": "design", "key": "design", "body": "ship"})
+        return {"revision": "abc123", "pending_comments": pending,
+                "_pipeline": pipeline}
+
+    def test_findings_only_body_carries_the_marker(self):
+        from sage_lib import pipeline
+        payload = pipeline.build_github_review_payload(self._record(False))
+        self.assertIn(pipeline.DRAFT_MARKER, payload["body"])
+        # The marker is identification, not a delivered unit.
+        self.assertEqual(pipeline.review_payload_units(payload), 1)
+
+    def test_design_body_is_unchanged(self):
+        from sage_lib import pipeline
+        payload = pipeline.build_github_review_payload(self._record(True))
+        self.assertEqual(payload["body"], "ship")
+        self.assertEqual(pipeline.review_payload_units(payload), 2)
+
+    def test_empty_post_stays_empty(self):
+        from sage_lib import pipeline
+        payload = pipeline.build_github_review_payload(
+            {"revision": "abc123", "pending_comments": []})
+        self.assertEqual(payload["body"], "")
+        self.assertEqual(pipeline.review_payload_units(payload), 0)
+
+
+class TestRenderedMarkdown(unittest.TestCase):
+    def test_marker_only_body_is_invisible_html_comment(self):
+        from sage_lib import pipeline
+        self.assertTrue(pipeline.MARKER_ONLY_BODY.startswith("<!--"))
+        self.assertIn(pipeline.DRAFT_MARKER, pipeline.MARKER_ONLY_BODY)
+
+    def test_headline_asterisk_cannot_close_the_bold(self):
+        from sage_lib import pipeline
+        body = pipeline._comment_body({
+            "severity": "yellow", "headline": "the rule on client:* has nothing_to do",
+            "observation": "o", "snippet": "s", "consequence": "c", "suggestion": "x"})
+        self.assertIn(r"**the rule on client:\* has nothing\_to do**", body)
+
+    def test_code_spans_in_headline_stay_verbatim(self):
+        from sage_lib import pipeline
+        self.assertEqual(pipeline._md_emphasis_escape("use `client:*` not a*b"),
+                         r"use `client:*` not a\*b")
