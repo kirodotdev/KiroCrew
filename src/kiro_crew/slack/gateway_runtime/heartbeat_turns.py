@@ -214,6 +214,9 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=heartbeat_hooks,
                     on_tool_approval=self._heartbeat_approval,
+                    # Nobody watches a heartbeat task: a governance check that
+                    # cannot be evaluated refuses the call.
+                    unattended=True,
                     on_complete=_note_complete,
                     on_compaction=_note_compaction,
                     fallback_models=configured_fallback_chain(),

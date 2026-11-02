@@ -6213,7 +6213,7 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
   types live in `hook_types`, and a class keeps its owner's `__module__`: `compose`
   selects the classes whose methods it rebinds by it, and nothing else reads it. Their
   shapes are unchanged;
-- `uncounted_gate` and its ContextVar: a `contextmanager`'s generator is not a function
+- `uncounted_gate`, `unattended_turn` and their ContextVars: a `contextmanager`'s generator is not a function
   `compose` rebinds, so in an owner it would read the owner's globals (the one owner
   `contextmanager`, `ScriptHookStore._atomic_mutation`, is rebound onto this module's
   globals right after `compose`);

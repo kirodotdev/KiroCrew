@@ -247,6 +247,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         get_global_hook_store,
         hook_gate_kwargs,
         title_is_trusted_mcp_identity,
+        unattended_turn,
         untruncated_shell_title,
     )
     from kiro_crew.image_refs import (  # noqa: F401
