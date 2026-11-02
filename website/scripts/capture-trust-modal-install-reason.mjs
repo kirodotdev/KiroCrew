@@ -59,8 +59,8 @@ const REPO = 'https://git.example.test/apps/agent-dashboard.git'
 /** The install-time gate's own refusal — the sentence the modal renders beneath
  *  its plain-language copy. */
 const REFUSAL =
-  'Python apps that require a build step are not supported in the desktop app: ' +
-  'its bundled interpreter is inside the signed application bundle and cannot ' +
+  'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
+  'build: its bundled interpreter is inside the signed application bundle and cannot ' +
   'install packages'
 /** The code the gate returns beside it: a permanent condition for this gateway. */
 const REFUSAL_CODE = 'desktop_build_step_unsupported'
