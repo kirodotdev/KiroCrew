@@ -15,11 +15,10 @@ from aws_control_app_helpers import (  # noqa: F401 -- fixtures are used by name
 
 class TestShares:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in TestShares calls monkeypatch.undo()
-    def _isolated_store(self, tmp_path, monkeypatch):
+    def _isolated_store(self, tmp_path, _floor_monkeypatch):
         from kiro_crew.apps.builtins.aws_control.backend import shares
 
-        monkeypatch.setattr(shares, "_store_path", lambda: tmp_path / "shares.json")
+        _floor_monkeypatch.setattr(shares, "_store_path", lambda: tmp_path / "shares.json")
         yield
 
     def test_ledger_records_metadata_never_the_url(self, tmp_path):
