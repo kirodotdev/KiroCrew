@@ -5,7 +5,7 @@ import Clickable from '../../components/Clickable'
 import { EmptyState } from '../../components/ui'
 import { fileExplorerApi } from './api'
 import { basename } from './utils'
-import { useDebouncedValue } from './hooks'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import type { SearchResult } from './types'
 
 import { i18nT } from '../../i18n/t'

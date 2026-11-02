@@ -1062,7 +1062,12 @@ To add one:
 2. Export it as the module default.
 3. Add one entry to `BUILTIN_COMPONENT_REGISTRY` (a `BuiltinAppEntry`):
    `'/my-app': { component: lazy(() => import('./my-app/MyAppPage')), appId: '<app.json name>' }`.
-   `appId` must equal the `name` in the app's `app.json` manifest.
+   `appId` must equal the `name` in the app's `app.json` manifest. A page that
+   opens an absolute path handed to it in its URL also sets `opensPathParam` to
+   the query parameter it reads (`<route>?<param>=<path>`). The file viewer's ⋯
+   menu then offers "Open in <app>" for it through `src/apps/pathOpener.ts`,
+   which names no app: it takes the first such entry whose app is enabled and
+   routed natively.
 4. Declare `ui.pages` in the app's `app.json` manifest, and its `ui.icon` name.
 5. If the icon is not already in `src/apps/builtinIcons.tsx`, add it to
    `BUILTIN_ICON_REGISTRY` (Lucide element, `size={16}`).

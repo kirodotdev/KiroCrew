@@ -15,14 +15,14 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
-vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
+vi.mock('@radix-ui/react-context-menu', async () => await import('../../test/__mocks__/@radix-ui/react-context-menu'))
+vi.mock('@radix-ui/react-dropdown-menu', async () => await import('../../test/__mocks__/@radix-ui/react-dropdown-menu'))
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { createTestStore } from './helpers'
+import { createTestStore } from '../../test/helpers'
 
 globalThis.ResizeObserver = class {
   observe() {}
@@ -30,7 +30,7 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as unknown as typeof ResizeObserver
 
-vi.mock('../apps/file-explorer/api', () => ({
+vi.mock('./api', () => ({
   fileExplorerApi: {
     health: vi.fn(),
     tree: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock('../apps/file-explorer/api', () => ({
   },
 }))
 
-vi.mock('../components/MarkdownRenderer', async () => {
+vi.mock('../../components/MarkdownRenderer', async () => {
   const React = await import('react')
   return {
     default: ({ content }: { content: string }) =>
@@ -51,19 +51,19 @@ vi.mock('../components/MarkdownRenderer', async () => {
   }
 })
 
-vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
+vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
-vi.mock('../hooks/useBranding', () => ({
+vi.mock('../../hooks/useBranding', () => ({
   useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: true }),
 }))
 
-import { fileExplorerApi } from '../apps/file-explorer/api'
-import { ApiError } from '../api/apiError'
-import { i18nT } from '../i18n/t'
-import { STORAGE_KEY } from '../apps/file-explorer/constants'
-import { fileExplorerDeepLink } from '../apps/file-explorer/deepLink'
-import FileExplorerPage from '../apps/file-explorer/FileExplorerPage'
-import type { TreeEntry, FileMeta } from '../apps/file-explorer/types'
+import { fileExplorerApi } from './api'
+import { ApiError } from '../../api/apiError'
+import { i18nT } from '../../i18n/t'
+import { STORAGE_KEY } from './constants'
+import { fileExplorerDeepLink } from './deepLink'
+import FileExplorerPage from './FileExplorerPage'
+import type { TreeEntry, FileMeta } from './types'
 
 const ROOT = '/home/user'
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useDebouncedValue } from '../../apps/file-explorer/hooks'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Files, Diff, Search, X, RefreshCw, FileText, Folder } from 'lucide-react'

@@ -9,13 +9,13 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
+vi.mock('@radix-ui/react-context-menu', async () => await import('../../test/__mocks__/@radix-ui/react-context-menu'))
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { createTestStore, expectWheelToScrollRow } from './helpers'
+import { createTestStore, expectWheelToScrollRow } from '../../test/helpers'
 
 // Polyfill ResizeObserver for jsdom (TabStrip uses it for scroll fade detection)
 globalThis.ResizeObserver = class {
@@ -24,7 +24,7 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as unknown as typeof ResizeObserver
 
-vi.mock('../apps/file-explorer/api', () => ({
+vi.mock('./api', () => ({
   fileExplorerApi: {
     health: vi.fn(),
     tree: vi.fn(),
@@ -37,17 +37,17 @@ vi.mock('../apps/file-explorer/api', () => ({
 }))
 
 // Mock MarkdownRenderer to avoid heavy deps (highlight.js, mermaid)
-vi.mock('../components/MarkdownRenderer', () => ({
+vi.mock('../../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <pre data-testid="md-renderer">{content}</pre>,
 }))
 
-import { fileExplorerApi } from '../apps/file-explorer/api'
-import FileExplorerPage from '../apps/file-explorer/FileExplorerPage'
-import TreeNode from '../apps/file-explorer/TreeNode'
-import SearchPanel from '../apps/file-explorer/SearchPanel'
-import TabStrip from '../apps/file-explorer/TabStrip'
-import PathBar from '../apps/file-explorer/PathBar'
-import type { TreeEntry, FolderTab, FileTab, GitInfo } from '../apps/file-explorer/types'
+import { fileExplorerApi } from './api'
+import FileExplorerPage from './FileExplorerPage'
+import TreeNode from './TreeNode'
+import SearchPanel from './SearchPanel'
+import TabStrip from './TabStrip'
+import PathBar from './PathBar'
+import type { TreeEntry, FolderTab, FileTab, GitInfo } from './types'
 
 function renderPage(store = createTestStore()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })

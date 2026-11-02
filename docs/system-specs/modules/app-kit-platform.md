@@ -617,6 +617,33 @@ registry-metadata read on the detail page keeps the known id visible and reports
 the failure through an inline ErrorNotice, rather than silently losing review
 information.
 
+## A file opens in an app page through the page's registry row
+
+The file viewer's ⋯ menu ("Open in <app>") hands a file's absolute path to an app
+page without naming the app. A `BuiltinAppEntry` in
+`website/src/apps/builtinRegistry.ts` declares `opensPathParam`, the query
+parameter its page reads a path from. `website/src/apps/pathOpener.ts` takes the
+first such entry whose app `appNavTarget` routes to that entry's own route, which
+means enabled, not orphaned and not AppHost-routed, and builds
+`<route>?<param>=<encoded path>`. With no declaring entry the row is absent. The
+Files app's row is the one that declares it today (`path`).
+
+The Files app is held apart from the core on both sides.
+`test/test_core_file_explorer_decoupling.py` fails on any module under
+`src/kiro_crew` outside `apps/builtins/`, or any script under `scripts/`, that
+imports `kiro_crew.apps.builtins.file_explorer` or names `file_explorer` /
+`file-explorer` in a non-docstring string. `website/src/apps/file-explorer/fileExplorerBoundary.test.ts`
+fails on any dashboard module outside `src/apps/file-explorer/` except
+`builtinRegistry.ts` that imports from it. What the two share is core code the app
+imports (`hooks/useDebouncedValue.ts`, `utils/parentDir.ts`), and the app pins its
+copy of the core file-read endpoint's binary-extension set in its own `tests/`.
+
+Every backend app gate runs the same scanner, `test/core_app_independence.py`:
+`core_app_imports` finds a core import of the app's package in any spelling, and
+`core_name_strings` finds a core string naming it, minus the reasoned rows the gate
+allows. The aws-control and Files gates call it with their own package and names,
+and the next app to leave adds a gate that does the same, never another scanner.
+
 ## 0. Three-axis classification: origin, resources, lifecycle
 
 An installed app's `installed.json` carries three **independent** fields, each
@@ -4980,7 +5007,7 @@ answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no m
 under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
-"Repository boundary").
+"Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fileExplorerApi } from '../apps/file-explorer/api'
+import { fileExplorerApi } from './api'
 
 /**
  * The File Explorer HTTP seam. Every path a user can type travels through these

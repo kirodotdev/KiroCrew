@@ -1,18 +1,17 @@
 /**
  * Tests for the file-explorer builtin app frontend.
- * Covers utils, hooks, api, FileViewer sensitive path detection,
+ * Covers utils, api, FileViewer sensitive path detection,
  * and TreeNode rendering. Targets ≥60% new line coverage.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
 
 // ── Utils tests ──
 
 describe('file-explorer/utils', () => {
-  let utils: typeof import('../apps/file-explorer/utils')
+  let utils: typeof import('./utils')
 
   beforeEach(async () => {
-    utils = await import('../apps/file-explorer/utils')
+    utils = await import('./utils')
   })
 
   describe('extOf', () => {
@@ -166,31 +165,6 @@ describe('file-explorer/utils', () => {
   })
 })
 
-// ── Hooks tests ──
-
-describe('file-explorer/hooks', () => {
-  beforeEach(() => { vi.useFakeTimers() })
-  afterEach(() => { vi.useRealTimers() })
-
-  it('useDebouncedValue returns initial value immediately', async () => {
-    const { useDebouncedValue } = await import('../apps/file-explorer/hooks')
-    const { result } = renderHook(() => useDebouncedValue('hello', 200))
-    expect(result.current).toBe('hello')
-  })
-
-  it('useDebouncedValue debounces updates', async () => {
-    const { useDebouncedValue } = await import('../apps/file-explorer/hooks')
-    const { result, rerender } = renderHook(
-      ({ value }) => useDebouncedValue(value, 200),
-      { initialProps: { value: 'a' } }
-    )
-    rerender({ value: 'b' })
-    expect(result.current).toBe('a') // not yet updated
-    act(() => { vi.advanceTimersByTime(200) })
-    expect(result.current).toBe('b') // now updated
-  })
-})
-
 // ── API tests ──
 
 describe('file-explorer/api', () => {
@@ -205,7 +179,7 @@ describe('file-explorer/api', () => {
     const mockResponse = { ok: true, json: () => Promise.resolve({ allowedRoots: ['/home'] }) }
     vi.mocked(fetch).mockResolvedValue(mockResponse as unknown as Response)
 
-    const { fileExplorerApi } = await import('../apps/file-explorer/api')
+    const { fileExplorerApi } = await import('./api')
     const result = await fileExplorerApi.health()
     expect(fetch).toHaveBeenCalledWith('/apps/file-explorer/api/health', { credentials: 'same-origin' })
     expect(result.allowedRoots).toEqual(['/home'])
@@ -215,7 +189,7 @@ describe('file-explorer/api', () => {
     const mockResponse = { ok: false, status: 403, text: () => Promise.resolve('forbidden') }
     vi.mocked(fetch).mockResolvedValue(mockResponse as unknown as Response)
 
-    const { fileExplorerApi } = await import('../apps/file-explorer/api')
+    const { fileExplorerApi } = await import('./api')
     await expect(fileExplorerApi.health()).rejects.toThrow('forbidden')
   })
 
@@ -223,7 +197,7 @@ describe('file-explorer/api', () => {
     const mockResponse = { ok: true, json: () => Promise.resolve({ entries: [] }) }
     vi.mocked(fetch).mockResolvedValue(mockResponse as unknown as Response)
 
-    const { fileExplorerApi } = await import('../apps/file-explorer/api')
+    const { fileExplorerApi } = await import('./api')
     await fileExplorerApi.tree('/path with spaces', 2)
     expect(fetch).toHaveBeenCalledWith(
       '/apps/file-explorer/api/tree?path=%2Fpath%20with%20spaces&depth=2',
@@ -235,7 +209,7 @@ describe('file-explorer/api', () => {
     const mockResponse = { ok: true, json: () => Promise.resolve({ results: [], engine: 'rg' }) }
     vi.mocked(fetch).mockResolvedValue(mockResponse as unknown as Response)
 
-    const { fileExplorerApi } = await import('../apps/file-explorer/api')
+    const { fileExplorerApi } = await import('./api')
     await fileExplorerApi.search('/root', 'query', '*.ts')
     const url = vi.mocked(fetch).mock.calls[0][0] as string
     expect(url).toContain('q=query')
@@ -246,7 +220,7 @@ describe('file-explorer/api', () => {
     const mockResponse = { ok: true, json: () => Promise.resolve({ content: 'hi' }) }
     vi.mocked(fetch).mockResolvedValue(mockResponse as unknown as Response)
 
-    const { fileExplorerApi } = await import('../apps/file-explorer/api')
+    const { fileExplorerApi } = await import('./api')
     await fileExplorerApi.read('/file.txt', 1024)
     const url = vi.mocked(fetch).mock.calls[0][0] as string
     expect(url).toContain('max_bytes=1024')
@@ -257,7 +231,7 @@ describe('file-explorer/api', () => {
 
 describe('file-explorer/constants', () => {
   it('IMAGE_EXTS contains common formats', async () => {
-    const { IMAGE_EXTS } = await import('../apps/file-explorer/constants')
+    const { IMAGE_EXTS } = await import('./constants')
     expect(IMAGE_EXTS.has('.png')).toBe(true)
     expect(IMAGE_EXTS.has('.jpg')).toBe(true)
     expect(IMAGE_EXTS.has('.svg')).toBe(true)
@@ -265,7 +239,7 @@ describe('file-explorer/constants', () => {
   })
 
   it('LANG_BY_EXT maps typescript', async () => {
-    const { LANG_BY_EXT } = await import('../apps/file-explorer/constants')
+    const { LANG_BY_EXT } = await import('./constants')
     expect(LANG_BY_EXT['.ts']).toBe('typescript')
     expect(LANG_BY_EXT['.py']).toBe('python')
   })
@@ -275,7 +249,7 @@ describe('file-explorer/constants', () => {
 
 describe('file-explorer/FileViewer sensitive detection', () => {
   it('detects .ssh paths', async () => {
-    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    const { isSensitivePath } = await import('./utils')
     expect(isSensitivePath('/home/user/.ssh/id_rsa')).toBe(true)
     expect(isSensitivePath('/home/user/.aws/credentials')).toBe(true)
     expect(isSensitivePath('/home/user/.gnupg/private-keys')).toBe(true)
@@ -285,7 +259,7 @@ describe('file-explorer/FileViewer sensitive detection', () => {
   })
 
   it('does not flag regular files', async () => {
-    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    const { isSensitivePath } = await import('./utils')
     expect(isSensitivePath('/home/user/code.ts')).toBe(false)
     expect(isSensitivePath('/home/user/project/src/main.py')).toBe(false)
     expect(isSensitivePath('/tmp/test.txt')).toBe(false)
@@ -302,7 +276,7 @@ describe('file-explorer/FileViewer sensitive detection', () => {
   // never reaches `FileViewer` at all. `.env` and a project-level `credentials`
   // are in neither set, are served, and lost their banner on Windows.
   it('detects sensitive files the backend serves, in Windows-native paths', async () => {
-    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    const { isSensitivePath } = await import('./utils')
     expect(isSensitivePath('C:\\Users\\dev\\project\\.env')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.env.local')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\project\\credentials')).toBe(true)
@@ -314,7 +288,7 @@ describe('file-explorer/FileViewer sensitive detection', () => {
   // matched. Deliberately NOT presented as the motivating defect -- the server
   // refuses every one of these today.
   it('also matches the backend-denied families, which the gate makes unreachable', async () => {
-    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    const { isSensitivePath } = await import('./utils')
     expect(isSensitivePath('C:\\Users\\dev\\.ssh\\id_rsa')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.aws\\credentials')).toBe(true)
     expect(isSensitivePath('C:\\Users\\dev\\.gnupg\\private-keys')).toBe(true)
@@ -329,7 +303,7 @@ describe('file-explorer/FileViewer sensitive detection', () => {
   // future "just widen the patterns" rewrite cannot quietly over-match while the
   // positive cases above still pass.
   it('does not flag regular Windows-native paths', async () => {
-    const { isSensitivePath } = await import('../apps/file-explorer/utils')
+    const { isSensitivePath } = await import('./utils')
     expect(isSensitivePath('C:\\Users\\dev\\code.ts')).toBe(false)
     expect(isSensitivePath('C:\\Users\\dev\\project\\src\\main.py')).toBe(false)
     expect(isSensitivePath('C:\\Users\\dev\\envfile.txt')).toBe(false)

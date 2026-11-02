@@ -13,14 +13,14 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
-vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
+vi.mock('@radix-ui/react-context-menu', async () => await import('../../test/__mocks__/@radix-ui/react-context-menu'))
+vi.mock('@radix-ui/react-dropdown-menu', async () => await import('../../test/__mocks__/@radix-ui/react-dropdown-menu'))
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { createTestStore } from './helpers'
+import { createTestStore } from '../../test/helpers'
 
 // TabStrip observes its scroller for scroll-fade detection.
 globalThis.ResizeObserver = class {
@@ -29,7 +29,7 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as unknown as typeof ResizeObserver
 
-vi.mock('../apps/file-explorer/api', () => ({
+vi.mock('./api', () => ({
   fileExplorerApi: {
     health: vi.fn(),
     tree: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock('../apps/file-explorer/api', () => ({
 
 // MarkdownRenderer transitively loads highlight.js + mermaid; FileViewer also
 // consumes its BasePathCtx for markdown, so the stub must export both.
-vi.mock('../components/MarkdownRenderer', async () => {
+vi.mock('../../components/MarkdownRenderer', async () => {
   const React = await import('react')
   return {
     default: ({ content }: { content: string }) =>
@@ -52,24 +52,24 @@ vi.mock('../components/MarkdownRenderer', async () => {
   }
 })
 
-vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
+vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 // FileViewer's overflow gates Open/Reveal on the shared reveal gate (the browser
 // is on the gateway machine, and that machine has a launcher). Mock both true so
 // the reveal-menu tests can see those items; the hidden cases are covered in
 // FilePathMenu.test.tsx.
-vi.mock('../hooks/useBranding', () => ({
+vi.mock('../../hooks/useBranding', () => ({
   useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: true, desktopLauncher: true }),
 }))
 
-import { fileExplorerApi } from '../apps/file-explorer/api'
-import { api } from '../api/client'
-import { ApiError } from '../api/apiError'
-import { copyToClipboard } from '../utils/clipboard'
-import { i18nT } from '../i18n/t'
-import { STORAGE_KEY } from '../apps/file-explorer/constants'
-import FileExplorerPage from '../apps/file-explorer/FileExplorerPage'
-import type { TreeEntry, FileMeta, GitInfo } from '../apps/file-explorer/types'
+import { fileExplorerApi } from './api'
+import { api } from '../../api/client'
+import { ApiError } from '../../api/apiError'
+import { copyToClipboard } from '../../utils/clipboard'
+import { i18nT } from '../../i18n/t'
+import { STORAGE_KEY } from './constants'
+import FileExplorerPage from './FileExplorerPage'
+import type { TreeEntry, FileMeta, GitInfo } from './types'
 
 const ROOT = '/home/user'
 

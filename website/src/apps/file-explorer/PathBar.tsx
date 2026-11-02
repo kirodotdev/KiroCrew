@@ -4,7 +4,7 @@ import { FolderTree, Folder, File, GitBranch, RefreshCw } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import { fileExplorerApi } from './api'
 import { crumbLabel, parentChain } from './utils'
-import { useDebouncedValue } from './hooks'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import type { GitInfo, TreeEntry } from './types'
 
 import { i18nT } from '../../i18n/t'
