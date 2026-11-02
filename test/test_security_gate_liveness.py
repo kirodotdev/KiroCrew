@@ -643,7 +643,14 @@ def _url_payload_command(n: int) -> str:
 #: keep in ``text_redaction``'s stream ceiling discard (a sibling prefix regex and the
 #: pure-bearer keep) so a streamed Bearer value fails closed to the same output. No
 #: credential branch, match or pass moved; only the Bearer branch's redacted span.
-_PACKAGE_LINE_BUDGET = 33_759
+#: Raised by 36, from 33,759, for the AWS key-value branches keeping their label:
+#: ``redaction``'s pass 1 starts the redacted span after the ``_AWS_LABEL_RULES``
+#: label and leaves a value made of a credential tag's bytes alone, and
+#: ``text_redaction``'s stream ceiling discard keeps the same label for a sole AWS
+#: carrier (and leaves a closed value's closing quote buffered), so a streamed value
+#: fails closed to the batch output. No credential branch or pass moved; only the
+#: AWS branches' redacted span. Raised by 5 more, to 33,800, for that closing-quote keep.
+_PACKAGE_LINE_BUDGET = 33_800
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

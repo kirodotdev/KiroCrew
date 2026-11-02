@@ -914,9 +914,10 @@ def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[s
 
 
 #: Label forms of the key-value AWS branches: the key name, its separator and
-#: an optional opening quote. The redactor replaces the WHOLE match, label
-#: included, so a record keeps the label to let the reader see which field
-#: the removed value belonged to. A label is a fixed key name, never secret.
+#: an optional opening quote. A label is a fixed key name, never secret, so pass
+#: 1 keeps it in the text and replaces only the value after it: a JSON or
+#: config document still parses, and the record's label is ``""`` because the
+#: reader already sees the label in place.
 _AWS_LABEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?:SecretAccessKey|aws_secret_access_key)[\"']?\s*[:=]\s*[\"']?"),
@@ -954,7 +955,11 @@ _PASS1_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def _pass1_rule(matched: str) -> tuple[str, str]:
-    """``(rule_id, label)`` for one pass-1 match; ``label`` is ``""`` when none."""
+    """``(rule_id, label)`` for one pass-1 match; ``label`` is ``""`` when none.
+
+    ``label`` is the AWS key-value prefix pass 1 keeps in the text, so its
+    length is where the redacted value starts.
+    """
     for pattern, rule in _AWS_LABEL_RULES:
         head = pattern.match(matched)
         if head is not None:
@@ -963,6 +968,45 @@ def _pass1_rule(matched: str) -> tuple[str, str]:
         if pattern.fullmatch(matched):
             return rule, ""
     return "credential_pattern", ""
+
+
+#: Characters that end an AWS key-value value: the complement of the branch's
+#: ``[^\s"',}]`` value class.
+_AWS_VALUE_TERMINATORS = frozenset("\"',}")
+
+
+def _value_is_redaction_tag(text: str, start: int, end: int) -> bool:
+    """Whether the value ``text[start:end]`` is a fixed credential tag, whole or cut.
+
+    The value class stops at the space inside a tag, so a tag's own match is only
+    its head. The value counts as a tag in three shapes, each made only of the
+    bytes of a :data:`CREDENTIAL_REDACTION_TAGS` member:
+
+    * the text from *start* is a whole member, followed by the end of the text
+      or a character that ends the value;
+    * the text from *start* to the end of the text is a prefix of a member (a
+      delivery cut through a tag);
+    * the value is a member with its space removed, whole or, at the end of the
+      text, cut (a client that strips message edges joins the two halves of a
+      cut tag that way).
+
+    No byte of such a value can be secret, so
+    ``aws_secret_access_key=[REDACTED: credential]`` is a fixed point while a
+    value that only starts like a tag (``[REDACTED<secret>``) is still redacted.
+    """
+    value = text[start:end]
+    at_end = end == len(text)
+    for tag in CREDENTIAL_REDACTION_TAGS:
+        if text.startswith(tag, start):
+            after = start + len(tag)
+            if after == len(text) or text[after].isspace() or text[after] in _AWS_VALUE_TERMINATORS:
+                return True
+        if len(text) - start <= len(tag) and tag.startswith(text[start:]):
+            return True
+        joined = "".join(tag.split())
+        if value == joined or (at_end and joined.startswith(value)):
+            return True
+    return False
 
 
 class CredentialMatch(NamedTuple):
@@ -1073,13 +1117,19 @@ def _credential_redaction_plan(
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
         for m in _credential_matches(text):
-            # The HTTP/JSON bearer branch captures its non-secret prefix (the
+            # A branch's non-secret prefix is kept and only the value after it is
+            # redacted, so the key and quotes survive and a JSON/header document
+            # still parses: the HTTP/JSON bearer branch captures its prefix (the
             # header name, separator, optional quote and `Bearer` scheme) in the
-            # `bearer_prefix` group. Redact only the token AFTER it, so the key
-            # and quotes survive and a JSON/header document still parses; every
-            # other branch has no such group and is redacted whole.
+            # `bearer_prefix` group, and an AWS key-value branch's prefix is its
+            # `_AWS_LABEL_RULES` label. Every other branch is redacted whole.
+            rule, label = _pass1_rule(m.group())
             prefix_end = m.end("bearer_prefix")
-            start = prefix_end if prefix_end != -1 else m.start()
+            start = prefix_end if prefix_end != -1 else m.start() + len(label)
+            if label and _value_is_redaction_tag(text, start, m.end()):
+                # The label's value is already a placeholder this redactor wrote,
+                # so redacting it again would only garble the tag.
+                continue
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -1090,7 +1140,7 @@ def _credential_redaction_plan(
             # likewise log length only.
             warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
             taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[start] = _pass1_rule(m.group())
+            rules[start] = (rule, "")
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and

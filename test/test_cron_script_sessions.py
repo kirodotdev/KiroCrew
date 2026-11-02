@@ -343,22 +343,24 @@ class TestCrewLogAppend:
         assert _FAKE_KEY not in req.data.decode()
 
     def test_a_credential_spanning_a_key_and_its_value_still_sends_valid_json(self, ctx, gateway):
-        """Redacted string by string, never as one serialized blob: a pattern that
-        matches across ``"aws_secret_access_key": "..."`` would otherwise eat the
-        delimiter and leave text that is not JSON, and the script would crash with a
-        decode error instead of sending the record. The shape survives, nested strings
-        are still scrubbed, and non-string scalars pass through untouched."""
+        """Redacted string by string, never as one serialized blob: a value followed
+        by a quote serializes as ``"<secret>\\"..."``, the value class takes the
+        escaping backslash with the secret, and redacting the blob leaves the quote
+        unescaped and text that is not JSON, so the script would crash with a decode
+        error instead of sending the record. The shape survives, nested strings are
+        still scrubbed, and non-string scalars pass through untouched."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
         secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
+        value = secret + '" (rotated)'
         # The serialized blob of this record is what the redactor turns into non-JSON.
-        blob = json.dumps({"creds": {"aws_secret_access_key": secret}})
+        blob = json.dumps({"creds": {"aws_secret_access_key": value}})
         with pytest.raises(json.JSONDecodeError):
             json.loads(cron_script.redact(blob))
 
         ctx.crew_log_append(
             "stock_check",
             {
-                "creds": {"aws_secret_access_key": secret},
+                "creds": {"aws_secret_access_key": value},
                 "rows": [{"key": f"found {_FAKE_KEY}"}, 7],
                 "n": 1,
             },

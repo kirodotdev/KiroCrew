@@ -193,6 +193,16 @@ _BEARER_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Bytes a fail-closed drop may skip before an AWS key to keep its label: JSON
+#: punctuation that opens or separates a member, and whitespace. None of them
+#: can be part of a secret.
+_STRUCTURE_CHARS = frozenset("{[,\"'")
+
+
+def _only_structure(buf: str, start: int, end: int) -> bool:
+    """Whether ``buf[start:end]`` holds only JSON member punctuation or whitespace."""
+    return start <= end and all(c in _STRUCTURE_CHARS or c.isspace() for c in buf[start:end])
+
 
 def _complete_token_match_crossing(
     matches: tuple[re.Match[str], ...], cut: int
@@ -540,6 +550,27 @@ class StreamRedactor:
                     prefix = _BEARER_PREFIX_RE.match(self._buf, bearer_anchor.start())
                     if prefix is not None:
                         i = max(i, prefix.end())
+                if (
+                    aws_keyed_anchor is not None
+                    and armed in ([], ["aws-keyed"])
+                    and glued_label == len(self._buf)
+                    and stream_aws_anchor.has_separator(aws_keyed_anchor)
+                    and _only_structure(self._buf, i, aws_keyed_anchor.start())
+                ):
+                    # Keep the AWS label (key name, separator and opening quote) in
+                    # the commit and drop only the value, the way the batch pass
+                    # redacts only the value after the label. Only the sole-AWS
+                    # carrier whose drop starts at its own key (past nothing but
+                    # JSON punctuation or whitespace) does this: a drop that starts
+                    # earlier in a whitespace-free run, or a nested or glued
+                    # carrier, keeps the whole fail-closed drop, because a cut
+                    # inside that run could bisect a secret.
+                    i = max(i, aws_keyed_anchor.start("val"))
+                    if aws_closed and drop_end == aws_keyed_anchor.start("close") + 1:
+                        # The value's closing quote stays buffered, so the
+                        # kept label and opening quote are matched by it, as
+                        # in the batch output.
+                        drop_end -= 1
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
