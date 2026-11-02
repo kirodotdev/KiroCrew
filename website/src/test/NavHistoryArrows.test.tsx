@@ -8,7 +8,7 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { NavHistoryArrows, RouteHistoryTracker } from '../components/NavHistoryArrows'
 import {
@@ -180,7 +180,8 @@ describe('NavHistoryArrows — draft guard interplay', () => {
     await waitFor(() => expect(page()).toBe('drafty'))
     fireEvent.click(screen.getByRole('button', { name: 'go /other' }))
     await waitFor(() => expect(page()).toBe('other'))
-    window.history.back()
+    // back() dispatches popstate synchronously in this DOM, and the router sets state in it.
+    act(() => { window.history.back() })
     await waitFor(() => expect(page()).toBe('drafty'))
 
     fireEvent.click(backBtn())
