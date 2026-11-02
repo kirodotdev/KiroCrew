@@ -1018,9 +1018,8 @@ class TestRecordSlowCommandRotation:
     CAP = 400  # bytes — small enough to cross with a handful of records
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse size cap left as is; no test in this module calls monkeypatch.undo()
-    def small_cap(self, monkeypatch):
-        monkeypatch.setattr("kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP)
+    def small_cap(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP)
 
     def test_rotation_keeps_every_record(self, agent_root):
         """One rotation: older records land in ``.jsonl.1``, none are lost."""
