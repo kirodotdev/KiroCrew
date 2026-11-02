@@ -10486,6 +10486,25 @@
       "offer_open": "{{host}} を開く",
       "copy_failed": "コピーできませんでした。アプリ内のテキストを選択して自分でコピーしてください。",
       "more_actions": "その他の操作"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "アプリ",
+      "apps_hint": "選択したテキストをアプリに送る",
+      "menu_label": "選択したテキスト用のアプリ",
+      "close": "閉じる",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "open": "{{host}} を開く",
+      "no_response": "{{app}} が応答しませんでした。",
+      "failed": "{{app}} で問題が発生しました: {{message}}",
+      "too_short": "{{title}} には {{min}} 文字以上が必要です。選択したのは {{count}} 文字です。",
+      "copy_failed": "クリップボードにコピーできませんでした。",
+      "load_failed": "選択したテキスト用のアプリを読み込めませんでした。",
+      "loading": "アプリを読み込んでいます…",
+      "none": "このテキストに使えるアプリはありません。",
+      "retry": "再試行"
     }
   },
   "hooks": {
@@ -10890,7 +10909,8 @@
         "keeps_builtin": "ビルトインアプリのままです。",
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
-      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。"
+      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
+      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

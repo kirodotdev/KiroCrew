@@ -884,6 +884,14 @@ register_frame_point(
     _composer_action_frame.COMPOSER_ACTION_SCRIPT,
 )
 
+from kiro_crew.apps.selection_action_frame import (  # noqa: E402
+    SELECTION_ACTION_SCRIPT,
+    SELECTION_ACTIONS_POINT,
+    resolve_selection_action,
+)
+
+register_frame_point(SELECTION_ACTIONS_POINT, resolve_selection_action, SELECTION_ACTION_SCRIPT)
+
 
 __all__: list[str] = [
     "CAPABILITY_HEADER",

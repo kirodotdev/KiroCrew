@@ -1,7 +1,8 @@
 """The ``contributes`` block: rows an app adds to surfaces the host renders.
 
 Session controls in the composer, Command Bar commands and the one argument a command
-may collect, chat side-panel tabs, and file-menu rows, plus ``Contributes``, which holds
+may collect, chat side-panel tabs, file-menu rows, link previews, message actions,
+link opening, composer actions and selection actions, plus ``Contributes``, which holds
 them. Every contribution is declarative data the host interprets -- no app code crosses
 into a host surface -- and the dashboard reader mirrors the caps and grammars it relies on
 (``contributedCommands.ts``, ``panelTabRegistry.ts``, ``fileMenuContributions.tsx``), so
@@ -1146,6 +1147,174 @@ class ComposerActionConfig:
         return errors
 
 
+#: Selection actions per app. Each one is a row in the selection toolbar of every
+#: chat reply, so an app cannot crowd it.
+MAX_SELECTION_ACTIONS_PER_APP = 2
+#: The most selected text any item is handed, in UTF-16 units.
+MAX_SELECTION_TEXT = 8000
+_MAX_SELECTION_TITLE = 40
+#: Where a selection can come from. A source is a typed adapter in the dashboard
+#: (`website/src/selectionActions/selectionSources.ts`), never generic DOM selection,
+#: and a new one widens the grant.
+SELECTION_SOURCES = ("chat",)
+#: What a frame may offer for the host's own buttons (Copy, Open).
+SELECTION_EFFECTS = ("copy", "open")
+#: A name in the host glyph set (``website/src/components/AppIcon.tsx``, e.g. ``Star``);
+#: an unknown name draws the host's own glyph.
+_SELECTION_ICON_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
+_SELECTION_POPOVER_WIDTH = (200, 480, 360)
+_SELECTION_POPOVER_HEIGHT = (120, 600, 480)
+
+
+def _int_field(data: dict[str, Any], key: str, default: int, bad: list[str]) -> int:
+    """An integer field, or ``default`` when absent. A bool or a float is refused."""
+    if key not in data:
+        return default
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        bad.append(key)
+        return default
+    return value
+
+
+def _name_list(
+    data: dict[str, Any], key: str, default: tuple[str, ...], bad: list[str]
+) -> list[str]:
+    """A list of strings, or ``default`` when absent. Any other shape is refused."""
+    if key not in data:
+        return list(default)
+    value = data[key]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        bad.append(key)
+        return []
+    return list(value)
+
+
+@dataclass
+class SelectionActionConfig:
+    """An item an app adds to the toolbar over text the user selected in a chat reply.
+
+    The host owns the trigger: the user selects text in one message and picks the
+    item. Only then does the host create a sandboxed, opaque-origin frame
+    (``apps/link_preview_frame.py``, the frame every frame-backed point shares)
+    that imports ``entry`` and calls ``activate(ctx)``; the returned handler gets
+    ``invoke`` with the selected text and nothing else. The frame cannot write the
+    clipboard or open a window: it offers a value for the host's Copy or Open
+    button (``effects``).
+    """
+
+    id: str = ""
+    title: str = ""
+    #: A host glyph-set name (``AppIcon``); an unknown one draws the host glyph.
+    icon: str = ""
+    #: ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    sources: list[str] = field(default_factory=lambda: list(SELECTION_SOURCES))
+    #: The item shows only for a selection of at least ``minLength`` units, and is
+    #: handed at most ``maxLength`` (the rest is cut and ``truncated`` set).
+    minLength: int = 1  # noqa: N815
+    maxLength: int = MAX_SELECTION_TEXT  # noqa: N815
+    effects: list[str] = field(default_factory=list)
+    popoverWidth: int = _SELECTION_POPOVER_WIDTH[2]  # noqa: N815
+    popoverMaxHeight: int = _SELECTION_POPOVER_HEIGHT[2]  # noqa: N815
+    #: Fields present with the wrong JSON type. Not serialized.
+    bad_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        # Every field is written in its resolved form, so the signing payload and
+        # the grant read one shape whether a default was spelled out or not.
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.title:
+            d["title"] = self.title
+        if self.icon:
+            d["icon"] = self.icon
+        if self.entry:
+            d["entry"] = self.entry
+        d["sources"] = list(self.sources)
+        d["minLength"] = self.minLength
+        d["maxLength"] = self.maxLength
+        d["effects"] = list(self.effects)
+        d["popover"] = {"width": self.popoverWidth, "maxHeight": self.popoverMaxHeight}
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SelectionActionConfig:
+        bad: list[str] = []
+        for key in ("id", "title", "icon", "entry"):
+            if key in data and not isinstance(data[key], str):
+                bad.append(key)
+        raw_popover = data.get("popover", {})
+        if not isinstance(raw_popover, dict):
+            bad.append("popover")
+            raw_popover = {}
+        return cls(
+            id=data["id"] if isinstance(data.get("id"), str) else "",
+            title=data["title"] if isinstance(data.get("title"), str) else "",
+            icon=data["icon"] if isinstance(data.get("icon"), str) else "",
+            entry=data["entry"] if isinstance(data.get("entry"), str) else "",
+            sources=_name_list(data, "sources", SELECTION_SOURCES, bad),
+            minLength=_int_field(data, "minLength", 1, bad),
+            maxLength=_int_field(data, "maxLength", MAX_SELECTION_TEXT, bad),
+            effects=_name_list(data, "effects", (), bad),
+            popoverWidth=_int_field(raw_popover, "width", _SELECTION_POPOVER_WIDTH[2], bad),
+            popoverMaxHeight=_int_field(
+                raw_popover, "maxHeight", _SELECTION_POPOVER_HEIGHT[2], bad
+            ),
+            bad_fields=bad,
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.selectionActions[{self.id or '?'}]"
+        # Refused rather than coerced: a wrong-typed field would install as its
+        # default, which is a different item from the one the author wrote.
+        for key in self.bad_fields:
+            errors.append(f"{where}: {key} has the wrong type")
+        if not self.id:
+            errors.append("contributes.selectionActions: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.title:
+            errors.append(f"{where}: missing title")
+        elif _mirrored_len(self.title) > _MAX_SELECTION_TITLE:
+            errors.append(f"{where}: title exceeds {_MAX_SELECTION_TITLE} characters")
+        if self.icon and not _SELECTION_ICON_RE.fullmatch(self.icon):
+            errors.append(f"{where}: icon must be a host icon name ({self.icon!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        if not self.sources:
+            errors.append(f"{where}: sources must name at least one source")
+        for source in self.sources:
+            if source not in SELECTION_SOURCES:
+                errors.append(
+                    f"{where}: unknown source {source!r} (expected one of {list(SELECTION_SOURCES)})"
+                )
+        if len(set(self.sources)) != len(self.sources):
+            errors.append(f"{where}: sources repeats an entry")
+        for effect in self.effects:
+            if effect not in SELECTION_EFFECTS:
+                errors.append(
+                    f"{where}: unknown effect {effect!r} (expected some of {list(SELECTION_EFFECTS)})"
+                )
+        if len(set(self.effects)) != len(self.effects):
+            errors.append(f"{where}: effects repeats an entry")
+        for key, value in (("minLength", self.minLength), ("maxLength", self.maxLength)):
+            if not 1 <= value <= MAX_SELECTION_TEXT:
+                errors.append(f"{where}: {key} must be 1 to {MAX_SELECTION_TEXT}")
+        if self.minLength > self.maxLength:
+            errors.append(f"{where}: minLength exceeds maxLength")
+        lo, hi, _ = _SELECTION_POPOVER_WIDTH
+        if not lo <= self.popoverWidth <= hi:
+            errors.append(f"{where}: popover.width must be {lo} to {hi}")
+        lo, hi, _ = _SELECTION_POPOVER_HEIGHT
+        if not lo <= self.popoverMaxHeight <= hi:
+            errors.append(f"{where}: popover.maxHeight must be {lo} to {hi}")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -1369,6 +1538,11 @@ class Contributes:
     #: Same reasoning as the flags above. Not serialized.
     bad_message_actions: bool = False
     dropped_message_actions: int = 0
+    selectionActions: list[SelectionActionConfig] = field(default_factory=list)  # noqa: N815
+    #: ``selectionActions`` present but not a list / entries that were not objects.
+    #: Not serialized.
+    bad_selection_actions: bool = False
+    dropped_selection_actions: int = 0
     composerActions: list[ComposerActionConfig] = field(default_factory=list)  # noqa: N815
     #: ``composerActions`` present but not a list / entries that were not objects.
     #: Same reasoning as the flags above. Not serialized.
@@ -1405,6 +1579,8 @@ class Contributes:
             d["linkPreviews"] = kept_previews
         if self.messageActions:
             d["messageActions"] = [a.to_dict() for a in self.messageActions]
+        if self.selectionActions:
+            d["selectionActions"] = [a.to_dict() for a in self.selectionActions]
         if self.composerActions:
             # Serialized, so signed: an entry is an ESM module the frame imports.
             d["composerActions"] = [a.to_dict() for a in self.composerActions]
@@ -1447,6 +1623,8 @@ class Contributes:
         preview_entries = previews_raw if isinstance(previews_raw, list) else []
         actions_raw = data.get("messageActions", [])
         action_entries = actions_raw if isinstance(actions_raw, list) else []
+        selection_raw = data.get("selectionActions", [])
+        selection_entries = selection_raw if isinstance(selection_raw, list) else []
         composer_raw = data.get("composerActions", [])
         composer_entries = composer_raw if isinstance(composer_raw, list) else []
         opens_raw = data.get("linkOpen", [])
@@ -1457,6 +1635,12 @@ class Contributes:
             ],
             bad_message_actions="messageActions" in data and not isinstance(actions_raw, list),
             dropped_message_actions=sum(1 for a in action_entries if not isinstance(a, dict)),
+            selectionActions=[
+                SelectionActionConfig.from_dict(a) for a in selection_entries if isinstance(a, dict)
+            ],
+            bad_selection_actions="selectionActions" in data
+            and not isinstance(selection_raw, list),
+            dropped_selection_actions=sum(1 for a in selection_entries if not isinstance(a, dict)),
             composerActions=[
                 ComposerActionConfig.from_dict(a) for a in composer_entries if isinstance(a, dict)
             ],
@@ -1676,4 +1860,32 @@ class Contributes:
             )
         for link_open in self.linkOpen:
             errors.extend(link_open.validate())
+        errors.extend(self._validate_selection_actions())
+        return errors
+
+    def _validate_selection_actions(self) -> list[str]:
+        errors: list[str] = []
+        if self.bad_selection_actions:
+            errors.append(
+                "contributes.selectionActions must be an array -- a non-array value "
+                "passes as empty, so the app author sees neither an error nor any item"
+            )
+        if self.dropped_selection_actions:
+            errors.append(
+                f"contributes.selectionActions: {self.dropped_selection_actions} entr"
+                f"{'y' if self.dropped_selection_actions == 1 else 'ies'} must be an object"
+            )
+        if len(self.selectionActions) > MAX_SELECTION_ACTIONS_PER_APP:
+            errors.append(
+                f"contributes.selectionActions: {len(self.selectionActions)} items exceeds "
+                f"the limit of {MAX_SELECTION_ACTIONS_PER_APP}"
+            )
+        ids: set[str] = set()
+        for action in self.selectionActions:
+            errors.extend(action.validate())
+            if action.id:
+                if action.id in ids:
+                    # The id names the grant entry and the frame: two would share both.
+                    errors.append(f"contributes.selectionActions: duplicate id {action.id!r}")
+                ids.add(action.id)
         return errors

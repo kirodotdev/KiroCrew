@@ -430,6 +430,11 @@ interface SelectionToolbarProps {
    * with no `copy` action copies nothing.
    */
   copyOnSelect?: boolean
+  /**
+   * Items installed apps add (`contributes.selectionActions`), drawn in their own
+   * row under `actions`, so the host's row never grows. Plain rows only.
+   */
+  appActions?: SelectionAction[]
 }
 
 /** Gap between the docked row and whatever it sits on (composer or screen edge). */
@@ -468,7 +473,7 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false, copyOnSelect = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false, copyOnSelect = false, appActions }: SelectionToolbarProps) {
   // Behind a remote Crew the toolbar is hidden with its Crew (components/overlayRoot)
   // and suspends like a hidden tab, so a key aimed at the Crew in front cannot
   // reach it. The draft survives and returns with the Crew.
@@ -540,6 +545,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // double-click word selection carries its trailing space, and "copy" that
   // drops it is a copy the user has to repair.
   const rawSelectedTextRef = useRef('')
+  // What app items are handed: only the one range inside this container, so a
+  // Firefox ctrl+drag that also selects text elsewhere never reaches an app.
+  const appTextRef = useRef('')
   const toolbarRef = useRef<HTMLDivElement>(null)
   const sourceRef = useRef<'dom' | 'external' | null>(null)
 
@@ -678,6 +686,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // (above), but a copy that silently drops the other ranges of a Firefox
     // ctrl+drag selection is a copy the user has to redo.
     rawSelectedTextRef.current = sel.toString()
+    appTextRef.current = textFromRange(measureRange).trim()
 
     const rect = measureRange.getBoundingClientRect()
     selectionRectRef.current = rect
@@ -1011,6 +1020,15 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     }, 1500)
   }, [])
 
+  /** An app item: handed only the contained single-range text (`appTextRef`). */
+  const handleAppAction = useCallback((action: SelectionAction) => {
+    const text = appTextRef.current
+    if (!text) return
+    action.onClick(text, selectionRectRef.current || new DOMRect(0, 0, 0, 0))
+    setVisible(false)
+    window.getSelection()?.removeAllRanges()
+  }, [])
+
   const handleAction = useCallback((action: SelectionAction) => {
     const text = selectedTextRef.current
     if (!text) return
@@ -1097,6 +1115,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     if (visibleRef.current && composerRef.current && composerDraftRef.current) return
     selectedTextRef.current = externalSelection.text
     rawSelectedTextRef.current = externalSelection.text
+    // No DOM range to check against the container: app items get nothing.
+    appTextRef.current = ''
     // The point handed over is the selection's BOTTOM-left; its height is not
     // known, so the composer's above-the-selection placement (which measures
     // from the rect's top) would end exactly over the annotated line. With no
@@ -1372,6 +1392,29 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
                 {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
               </Fragment>
             ))}
+            {appActions && appActions.length > 0 && (
+              <div data-testid="selection-app-row" className="basis-full min-w-0 max-w-full flex flex-wrap items-center gap-0.5 border-t border-border pt-0.5">
+                {appActions.map(action => (
+                  <Fragment key={action.id}>
+                  <button
+                    // An app title can be long: the button never outgrows the row,
+                    // and the label truncates inside it (the full name stays in
+                    // aria-label and the tooltip).
+                    className={`flex min-w-0 max-w-full items-center gap-1.5 rounded-md font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap ${dock ? 'px-3.5 min-h-10 text-[13px]' : 'px-2.5 py-1.5 text-[12px]'}`}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => handleAppAction(action)}
+                    aria-label={action.label}
+                    aria-describedby={action.hint ? `${hintIdBase}-${action.id}` : undefined}
+                    title={action.hint ?? action.label}
+                  >
+                    <span className="shrink-0">{action.icon}</span>
+                    <span className="min-w-0 truncate">{action.label}</span>
+                  </button>
+                  {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
+                  </Fragment>
+                ))}
+              </div>
+            )}
             {/* No hand-off: this row floats over a chat whose composer may hold
                 an unsent draft; the hand-off navigates and would discard it. A
                 refused clipboard write is recoverable in place anyway. */}

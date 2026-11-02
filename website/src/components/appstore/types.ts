@@ -36,6 +36,13 @@ export interface LinkOpenGrantRow {
   stagedFullUrl?: boolean
 }
 
+/** An app row's `selectionActionGrant`: item ids the owner approved, and changed entries that wait. */
+export interface SelectionActionGrantRow {
+  approved?: string[]
+  /** Grant entries (`<id>:<sources>:<min>-<max>:<effects>`) an update added or changed. */
+  staged?: string[]
+}
+
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
  *
@@ -154,6 +161,8 @@ export type InstalledApp = {
   /** Approved link-open hosts, and the ones an update holds back. */
   linkOpenGrant?: LinkOpenGrantRow
   composerActionGrant?: ComposerActionGrantRow
+  /** Approved selection-action items, and the changed ones an update holds back. */
+  selectionActionGrant?: SelectionActionGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"

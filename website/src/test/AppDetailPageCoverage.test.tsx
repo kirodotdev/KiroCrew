@@ -722,6 +722,17 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(enableApp).not.toHaveBeenCalled()
   })
 
+  it('lists a held selection action alone and approves it on click', async () => {
+    const entry = 'save:chat:1-8000:copy'
+    // Only a selection action is held: the notice must still show and approve it.
+    getApp.mockResolvedValue(installedApp({ selectionActionGrant: { approved: [], staged: [entry] } }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByText(entry)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ selectionActions: [entry] })))
+  })
+
   it('lists held-back permissions and approves them on click', async () => {
     getApp.mockResolvedValue(installedApp({
       manifest: {
@@ -755,7 +766,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [],
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()

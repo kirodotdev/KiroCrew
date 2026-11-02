@@ -10680,6 +10680,25 @@
       "offer_open": "{{host}} öffnen",
       "copy_failed": "Kopieren fehlgeschlagen. Markiere den Text in der App und kopiere ihn selbst.",
       "more_actions": "Weitere Aktionen"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Ausgewählten Text an eine App senden",
+      "menu_label": "Apps für den ausgewählten Text",
+      "close": "Schließen",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "open": "{{host}} öffnen",
+      "no_response": "{{app}} hat nicht geantwortet.",
+      "failed": "{{app}} hatte ein Problem: {{message}}",
+      "too_short": "{{title}} braucht mindestens {{min}} Zeichen. Du hast {{count}} ausgewählt.",
+      "copy_failed": "Kopieren in die Zwischenablage fehlgeschlagen.",
+      "load_failed": "Die Apps für den ausgewählten Text konnten nicht geladen werden.",
+      "loading": "Apps werden geladen…",
+      "none": "Keine App hat eine Aktion für diesen Text.",
+      "retry": "Erneut versuchen"
     }
   },
   "hooks": {
@@ -11086,7 +11105,8 @@
         "keeps_builtin": "Sie bleibt eine integrierte App.",
         "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
       },
-      "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden."
+      "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden.",
+      "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten."
     },
     "appPage": {
       "loading_app": "App wird geladen…",

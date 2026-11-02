@@ -4545,6 +4545,71 @@ Writers: `apps/composer_action_frame.py`, `apps/composer_action_grants.py`,
 `apps/manifest_contributes.py`, `website/src/composerActions/*`,
 `website/src/components/chat-input/composerActions.tsx`.
 
+## 18f. `contributes.selectionActions`: app items on selected chat text
+
+A point on §18b's contract, beside message actions (§18c), link opening (§18d)
+and composer actions (§18e). The user selects text in one chat reply and picks an app's item; the app
+is handed that text and nothing else.
+
+- **Manifest** (`SelectionActionConfig` in `manifest_contributes.py`): at most 2
+  per app; `id`, `title` (1-40 UTF-16 units), optional `icon` (a host glyph-set name, `AppIcon`),
+  `entry`, `sources` (subset of `chat`, default `["chat"]`), `minLength` /
+  `maxLength` (1-8,000), `effects` (subset of `copy`, `open`), `popover.width`
+  (200-480) and `popover.maxHeight` (120-600). A wrong JSON type is refused, never
+  coerced; the block serializes resolved defaults and is in the signing payload;
+  `entry` gets the same path containment as a panel tab.
+- **Grant** (`apps/selection_action_grants.py`, registered in `point_grants.py`):
+  family `selectionActions`, one entry per item,
+  `<id>:<sources>:<min>-<max>:<effects>` (sorted). Any change is a new entry, so an
+  update that adds a source, raises a length or adds an effect is held back and the
+  item is not offered until approved; the App Detail page lists the held entries
+  and approves them with the other families. The app row carries
+  `selectionActionGrant: { approved: [ids], staged: [entries] }`.
+- **Frame point** (`apps/selection_action_frame.py`, registered in `app_frame.py`):
+  `resolve_selection_action` serves an item only for an enabled app whose current
+  entry is approved (`approved_selection_action`), so a revoked or changed item
+  stops its mint, frame and fetch. Its script answers `selection.invoke` by calling
+  the handler's `invoke(selection, invocationControls(invocationId))`, where
+  `selection` is `{ text, truncated, source }`; `ctx` is `{ appName, theme, fetch }`.
+- **Source.** The app never reads the document selection. A host surface offers
+  items only through a typed source adapter (`selectionActions/selectionSources.ts`);
+  the one source is `chat`, the text `SelectionToolbar` snapshotted inside one
+  `AssistantMessage`, trimmed and cut to `maxLength` without splitting a surrogate
+  pair. App items get only the selection's one range inside that reply
+  (`appTextRef`), never the other ranges of a multi-range selection, which host
+  Copy keeps. The layer is mounted in the dashboard, popped-out and embedded chat
+  shells. A new source is a new `sources` value, which widens every item's grant.
+- **Trigger and touch.** One **Apps** button sits in its own row under the host's
+  (`SelectionToolbar`'s `appActions`), so the host row never grows. It shows only
+  while the dashboard's shared `['apps']` list holds an enabled app with an approved
+  item; that list decides the button's presence and nothing else.
+- **The menu reads fresh (rule).** The Apps menu reads the app list itself every
+  time it opens and lists items only from that read. It never lists cached or stale
+  items, and no state carries over between opens. If the read fails, it shows the
+  "couldn't load apps" error row with **Retry**, and Retry runs a new read. There is
+  no retry state machine and no fallback list. The menu scrolls past the screen
+  height. On
+  touch the toolbar is the existing dock above the composer and the popover is a
+  bottom sheet; nothing intercepts a long-press, and the native selection, handles
+  and callout are untouched.
+- **Invocation** (`selectionActions/selectionInvocation.ts` on `HostInvocation`):
+  sent on `ready`, deadline 2 minutes. The item's `effects` are the invocation's
+  `allowedKinds` (`copy`, `open`; never `insert`), so any other kind is answered
+  `result.error { code: not_allowed }`; a frame `invocation.close` settles the
+  invocation (`settle()`, no cancel); a resize is clamped to 48 and `popover.maxHeight`, and the
+  host cancels with `closed` when the popover closes (Escape, Close, a click
+  outside, another pick, or the item no longer approved). Accepted offers fill the
+  host's **Copy** and **Open \<host\>** buttons only. Selection frames are not
+  registered with the link bridge, so a link clicked in one goes nowhere.
+- **Bounds.** No `ready` within 10 seconds, a message over `MAX_HOST_MESSAGE_BYTES`
+  or past the token bucket, or a second `load`: the frame is removed and the
+  popover says the app did not respond. An app error is shown through
+  `displaySafe`.
+
+Writers: `apps/selection_action_frame.py`, `apps/selection_action_grants.py`,
+`apps/manifest_contributes.py`, `website/src/selectionActions/*`,
+`pages/chat/AssistantMessage.tsx`, `pages/AppDetailPage.tsx`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns

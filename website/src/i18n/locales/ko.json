@@ -10486,6 +10486,25 @@
       "offer_open": "{{host}} 열기",
       "copy_failed": "복사하지 못했습니다. 앱에서 텍스트를 선택해 직접 복사하세요.",
       "more_actions": "작업 더 보기"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "앱",
+      "apps_hint": "선택한 텍스트를 앱으로 보내기",
+      "menu_label": "선택한 텍스트용 앱",
+      "close": "닫기",
+      "copy": "복사",
+      "copied": "복사됨",
+      "open": "{{host}} 열기",
+      "no_response": "{{app}}이(가) 응답하지 않았습니다.",
+      "failed": "{{app}}에 문제가 발생했습니다: {{message}}",
+      "too_short": "{{title}}에는 최소 {{min}}자가 필요합니다. {{count}}자를 선택했습니다.",
+      "copy_failed": "클립보드에 복사할 수 없습니다.",
+      "load_failed": "선택한 텍스트용 앱을 불러올 수 없습니다.",
+      "loading": "앱을 불러오는 중…",
+      "none": "이 텍스트에 쓸 수 있는 앱이 없습니다.",
+      "retry": "다시 시도"
     }
   },
   "hooks": {
@@ -10890,7 +10909,8 @@
         "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
-      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다."
+      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

@@ -103,6 +103,13 @@ from kiro_crew.apps.composer_action_grants import (  # noqa: E402
 
 register_point_grants(COMPOSER_ACTION_GRANT_FAMILIES, composer_action_grant_entries)
 
+from kiro_crew.apps.selection_action_grants import (  # noqa: E402
+    SELECTION_ACTION_GRANT_FAMILIES,
+    selection_action_grant_entries,
+)
+
+register_point_grants(SELECTION_ACTION_GRANT_FAMILIES, selection_action_grant_entries)
+
 
 __all__ = [
     "EntriesFn",

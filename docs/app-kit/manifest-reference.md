@@ -1222,6 +1222,114 @@ export function activate(ctx: {
   message over 64 KB as JSON, or past a burst of 120 messages refilled at 60 a
   second, closes the frame.
 
+### `contributes.selectionActions` — Items on Selected Chat Text
+
+A selection action adds an item to the toolbar that appears over text the user
+selects in a chat reply. When the user picks it, the app is handed the selected
+text and nothing else, in a sandboxed frame that opens in a popover. Selection
+elsewhere in the dashboard never reaches an app.
+
+```json
+{
+  "contributes": {
+    "selectionActions": [
+      {
+        "id": "save",
+        "title": "Save to notes",
+        "icon": "Star",
+        "entry": "dist/selection.mjs",
+        "maxLength": 4000,
+        "effects": ["copy", "open"],
+        "popover": { "width": 360, "maxHeight": 480 }
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `title` | string | 1-40 characters. The item's label |
+| `icon` | string | Optional. A name from the host icon set (`Star`, `Tag`, `Bot`, …, as for an app's own `icon`); an unknown name draws the host's glyph |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `sources` | string[] | Optional, default `["chat"]`. Where a selection may come from; `chat` (a chat reply) is the only source |
+| `minLength` | integer | Optional, default 1. A shorter selection shows a notice instead of opening the frame |
+| `maxLength` | integer | Optional, 1-8,000, default 8,000. The most text the app is handed, in UTF-16 units; longer selections are cut and `truncated` is set |
+| `effects` | string[] | Optional, default `[]`. Which host buttons the app may fill: `copy`, `open` |
+| `popover` | object | Optional. `width` 200-480 (default 360), `maxHeight` 120-600 (default 480) |
+
+At most **two** items per app. A field with the wrong JSON type is refused, never
+coerced. The block is signed.
+
+**Approval.** Each item is one entry the owner approves for the app, like
+`permissions.api`: `<id>:<sources>:<minLength>-<maxLength>:<effects>`. Installing
+approves what is declared. An update that changes any of those fields (a new
+source, more text, a new effect) waits on the app's page until the owner approves
+it, and until then that item is not offered: no frame is made, and a live frame's
+capability stops renewing and its fetches are refused. Removing an item needs
+nothing.
+
+**In the toolbar.** One **Apps** button sits in its own row under Quote, Ask and
+Copy, so the host's row never grows. It appears only while some enabled app has an
+approved item. It opens a menu of every item, read fresh from the app list each time
+it opens; if that read fails, the menu says so and offers **Retry**. The menu scrolls
+when it is taller than the screen. Each item
+names its app in its tooltip and in the popover's header. On a touch device the
+native selection, its handles and its Copy callout are left alone: nothing listens
+for a long-press. The items sit in the toolbar docked above the composer, and the
+popover is a sheet at the bottom of the screen.
+
+**Where the module runs.** On the shared app frame, like a link preview (see
+above), at `/app-frame/<app>/selectionActions/<id>/…`: an iframe that is `sandbox="allow-scripts"` with no `allow-same-origin`,
+`credentialless`, loading the gateway's frame document under its own CSP, made when
+the item is picked and removed when the popover closes. Its capability and its
+frame token are bound to that one item, so they reach nothing for another item or
+point. `ctx` is `{ appName, theme(), fetch }`; `ctx.fetch` reaches the app's own
+routes as for a link preview. The module exports `activate(ctx)` and returns a handler:
+
+```js
+export function activate(ctx) {
+  return {
+    async invoke(selection, call) {
+      // selection: { text, truncated, source: 'chat' }
+      const res = await ctx.fetch('notes', { method: 'POST', body: JSON.stringify({ text: selection.text }) })
+      const { url } = await res.json()
+      document.body.textContent = 'Saved'
+      call.resize({ height: 80 })
+      await call.offerOpen(url)          // the host draws "Open notes.example.com"
+      const { ok } = await call.offerCopy(url)   // the host draws "Copy"
+    },
+    cancel(invocationId, reason) {},     // reason: 'closed' or 'deadline'
+  }
+}
+```
+
+`call` belongs to one invocation:
+
+| Member | What it does |
+|--------|--------------|
+| `invocationId` | The host's id for this pick |
+| `offerCopy(text)` | Offers at most 32,000 UTF-16 units for the host's **Copy** button. Resolves `{ ok: true }` when the host accepted it, or `{ ok: false, code }` with `stale`, `too_large` or `not_allowed` |
+| `offerOpen(url)` | Offers an `https:` URL (at most 2,048 characters, no userinfo) for the host's **Open** button, which names the host and opens a new tab with `noopener,noreferrer`. Resolves like `offerCopy` |
+| `resize({ height })` | The frame height; clamped to 48 and `popover.maxHeight` |
+| `close()` | Ends the invocation and closes the popover |
+| `error(message)` | Ends the invocation and shows the message, as plain text, in host chrome |
+
+**The invocation.** Each pick is one invocation with a host-made `invocationId` the
+frame cannot make. It ends once: the frame closes it, reports an error, or the host
+cancels it (the popover closed, the app went away, or 2 minutes passed with no
+`resize` or offer). Every offer names its invocation and a rising `seq` and is
+answered with an acknowledgement or an error, so an offer for a closed invocation,
+a repeated one, or one of an undeclared kind does nothing. A later offer of the
+same kind replaces the earlier one. The frame never writes the clipboard or opens
+a window: an accepted offer only fills the host's button, which acts on the user's
+click. A link clicked inside the frame goes nowhere; use `offerOpen`.
+
+**Bounds.** A frame that does not activate within 10 seconds, sends a message over
+64 KB or past its burst allowance, or navigates itself away is removed, and the
+popover says the app did not respond.
+
 ### `backend` — App Backend Process
 
 ```json

@@ -4645,6 +4645,25 @@
     },
     "sendToInstanceSubmenu": {
       "default_badge": "default"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Send the selected text to an app",
+      "menu_label": "Apps for the selected text",
+      "close": "Close",
+      "copy": "Copy",
+      "copied": "Copied",
+      "open": "Open {{host}}",
+      "no_response": "{{app}} didn't respond.",
+      "failed": "{{app}} ran into a problem: {{message}}",
+      "too_short": "{{title}} needs at least {{min}} characters. You selected {{count}}.",
+      "copy_failed": "Couldn't copy to the clipboard.",
+      "load_failed": "Couldn't load the apps for selected text.",
+      "loading": "Loading apps…",
+      "none": "No app has an item for this text.",
+      "retry": "Retry"
     }
   },
   "hooks": {
@@ -4902,7 +4921,8 @@
         "keeps_builtin": "It stays a built-in app.",
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
-      "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it."
+      "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
+      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",
