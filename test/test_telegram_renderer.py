@@ -9,7 +9,6 @@ nonce that refuses a stale button.
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,6 +26,7 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
 )
 from kiro_crew.telegram import renderer as telegram_renderer
+from kiro_crew.telegram import renderer_live
 from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
@@ -37,6 +37,8 @@ from kiro_crew.telegram.renderer import (
     _strip_steering,
 )
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestRenderer:
@@ -355,10 +357,18 @@ class TestRenderer:
         assert cli.rich_sent, "rich send happened"
         assert cli.rich_silent == [True], "the replacement is silent"
 
-    def test_a_table_that_never_streamed_still_notifies(self) -> None:
+    def test_a_table_that_never_streamed_still_notifies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # No bubble streamed -> no earlier ping, so the rich send is the user's
         # ONLY notification. Suppressing it here would deliver the answer
         # silently and the reply would go unnoticed.
+        # The live frame throttles in renderer_live, which reads its own ``time``, so
+        # the frozen clock goes on that module (and on the facade the renderer reads
+        # through): "edited just now" then holds however slow the host is.
+        clock = ManualClock()
+        clock.install(monkeypatch, renderer_live)
+        clock.install(monkeypatch, telegram_renderer)
         cli = FakeClient()
         r = TelegramRenderer(cli, 72, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
 
@@ -366,8 +376,7 @@ class TestRenderer:
             await r.on_turn_start()
             # Throttle out the live frame -- the "segment never streamed"
             # case named in _seal_current's docstring.
-            # flake-ok: pre-existing real-clock stamp that throttles out the live frame, moved verbatim; tracked for a de-flake pass
-            r._last_edit = time.monotonic()
+            r._last_edit = clock.monotonic()
             await r.on_text_chunk("| a | b |\n| --- | --- |\n| 1 | 2 |")
             assert r._stream_mid is None, "precondition: nothing streamed"
             await r._seal_current()
@@ -1181,18 +1190,27 @@ class TestRenderer:
         assert asyncio.run(_go()) == 0
 
 
+async def _until_decider_waits(task: "asyncio.Future[bool]", key: str) -> None:
+    """Wait until the decider has claimed *key* and is parked on its future.
+
+    The decider adds the key to ``_AWAITED`` in the same step that suspends it on the
+    decision, so a press made after this returns lands on a wait that is running.
+    """
+    await async_wait_until(
+        lambda: key in TelegramApprovalDecider._AWAITED,
+        describe=lambda: f"{task!r}; awaited keys {sorted(TelegramApprovalDecider._AWAITED)}",
+    )
+
+
 class TestApprovalDecider:
     def test_resolve_pending(self) -> None:
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
             TelegramApprovalDecider.arm("telegram:1:0:rq7", "n1")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            await _until_decider_waits(task, "telegram:1:0:rq7")
             TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", True, nonce="n1")
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is True
 
@@ -1210,9 +1228,7 @@ class TestApprovalDecider:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
             TelegramApprovalDecider.arm("telegram:1:0:rq7", "fresh")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            await _until_decider_waits(task, "telegram:1:0:rq7")
             stale = TelegramApprovalDecider.resolve_global(
                 "telegram:1:0:rq7", True, nonce="from-a-previous-run"
             )
@@ -1220,8 +1236,7 @@ class TestApprovalDecider:
             # The prompt is still waiting: the stale press neither approved nor
             # consumed it.
             TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", False, nonce="fresh")
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False
 
@@ -1231,12 +1246,9 @@ class TestApprovalDecider:
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
-            # flake-ok: pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms yield barrier before the resolve, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+            await _until_decider_waits(task, "telegram:1:0:rq8")
             assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
             TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
-            # flake-ok: pre-existing unbounded await of the decider task, moved verbatim; tracked for a de-flake pass
-            return await task
+            return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False
