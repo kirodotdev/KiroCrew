@@ -137,7 +137,7 @@ _BASE_DEFINED = frozenset("""
     _TARGET_ID_RE _WATCH_WORK_LEDGER _WF_RUN_ID_RE _WM_LIFECYCLE_STATUSES _WM_LIST_CAP
     _WM_PROFILE_RE _WM_SLUG_RE _WM_URL_RE _WORK_ITEM_STATES _WORK_RECORD_ACTIONS _WORK_STATUSES
     _WORK_VERDICTS _bounded_pattern_search _coerce_number_to_string_for_string_field
-    _cu_coord_field _drop_hidden_except_marks _json_equal _json_type_ok
+    _cu_coord_field _drop_hidden_except_marks _integral_float_as_int _json_equal _json_type_ok
     _reject_malformed_keyword_shapes _reject_null_enabled _reject_unsupported_keywords
     _trim_edges _validate_artifact_save _validate_artifact_tags _validate_channel_routing
     _validate_chat_tag _validate_crew_record_couples_phase_to_an_event
