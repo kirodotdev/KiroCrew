@@ -55,6 +55,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omitted, it is filled as below |
 | `reasoning_effort` | no | Reasoning effort the session starts at, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Any other value is refused with `effort_rejected` before anything is created. Omitted, it is filled as below |
 | `autocompact_pct` | no | Context-usage percent (5 to 90) at which the NEW session auto-compacts, set as its own override as if the person set "Auto-compact at" in its context meter. Only the new session gets it; the global `session.autocompact_pct` and every other session are unchanged. The tool schema refuses an out-of-range value before any request reaches the dashboard. The reply is `Error: autocompact_pct: must be <= 90.0`, or `Error: autocompact_pct: must be >= 5.0` for a value below the range. Omit to follow the agent's own default, else the global value |
+| `message` | no | The new session's first message, delivered in the same call through `session_send`'s own path: same authorization, same size limit (`message_too_long`), same `[sent by session …]` line. A message `session_send` would refuse is refused before anything is created, and so is any message from an agent that auto-approves `session_create` but not `session_send` (`message_needs_send_approval`). If the session opens but delivery fails, the reply still names the key and the delivery error, and the session is kept |
 
 An omitted `model` or `reasoning_effort` is filled from you when you are a
 mate: your profile's worker pair (`worker_model` / `worker_reasoning_effort`)
@@ -72,8 +73,10 @@ child starts on the default model. A model you name yourself is still refused
 with `model_rejected`. The reply names what was copied from your profile, and
 says so when that model was dropped.
 
-No argument is formally required. The new session **starts empty** — nothing runs
-in it until the person types, or until you send it a message. The reply carries
+No argument is formally required. Without `message` the new session **starts
+empty** — nothing runs in it until the person types, or until you send it a
+message. With `message`, its first turn starts on that message in this same
+call, so you never send to a key you have not read back yet. The reply carries
 the new session's key:
 
 ```
@@ -83,7 +86,7 @@ waiting in the user's sidebar; watch it with session_read_message.
 
 Pass that key as `target` to every other session tool.
 
-`session_create` always starts empty. When the new session should already know
+`session_create` never copies a transcript. When the new session should already know
 what you know — you are splitting a long investigation into several sessions —
 use `session_fork` instead.
 

@@ -248,6 +248,120 @@ def _target(body: dict) -> str:
     return target.strip()
 
 
+def _first_message(body: dict) -> str | None:
+    """The optional first turn a create carries, refused BEFORE anything is created.
+
+    Absent means a create that starts empty, as it always did. Present, it is held
+    to the same bar the send route and ``send_to_target`` hold -- non-empty, and no
+    longer than ``MAX_SEND_MESSAGE_CHARS`` once stripped, with the same codes --
+    but checked here, ahead of the create, so a message session_send would refuse
+    never leaves an empty session behind. ``send_to_target`` repeats both checks.
+    """
+    message = body.get("message")
+    if message is None:
+        return None
+    if not isinstance(message, str):
+        raise sc.SessionControlError("message must be a string", code="invalid_field_type")
+    if not message.strip():
+        raise sc.SessionControlError("message is required", code="message_required")
+    if len(message.strip()) > sc.MAX_SEND_MESSAGE_CHARS:
+        raise sc.SessionControlError(
+            f"message exceeds {sc.MAX_SEND_MESSAGE_CHARS} characters",
+            code="message_too_long",
+            status=400,
+        )
+    return message
+
+
+def _caller_auto_approvals(
+    caller_key: str, agent: str, project: str, agent_kind: str = ""
+) -> set[str] | None:
+    """Every grant the user-level spec of the caller's runtime template carries, or
+    ``None`` when it cannot be read (a project-only template included)."""
+    from kiro_crew.agent_sdk.agent_specs import session_spec_grants
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.config.loader_agents import resolve_agent_bindings
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    try:
+        bindings = resolve_session_agent_bindings(
+            resolve_agent_bindings,
+            KiroCrewConfig.load(),
+            caller_key,
+            agent or None,
+            project or None,
+            agent_kind=agent_kind,
+        )
+    except Exception:
+        return None
+    return session_spec_grants(bindings.kiro_agent)
+
+
+async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> None:
+    """Refuse a first message that would skip the prompt ``session_send`` gets.
+
+    A conductor auto-approves ``session_create`` but not ``session_send``; an
+    unreadable spec cannot say which prompt applies, so it is refused too.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import entry_grants, entry_reaches
+
+    # The header is often the history key; the slot is then found by the walk.
+    slot = state.get_slot(caller_key) or state.get_slot(sc.caller_slot_key(state, caller_key))
+    granted = (
+        await asyncio.to_thread(
+            _caller_auto_approvals,
+            caller_key,
+            slot.agent or "",
+            slot.project or "",
+            getattr(slot, "agent_kind", "") or "",
+        )
+        if slot is not None
+        else None
+    )
+    tool = "@kirocrew-dashboard/session_"
+    entries = granted or ()
+    # Create over-matches (a wider read refuses more); send must be a grant
+    # kiro-cli itself honours, or the seed would skip a prompt it still shows.
+    create = any(entry_reaches(e.strip(), tool + "create") for e in entries)
+    send = any(entry_grants(e, tool + "send") for e in entries)
+    if granted is None or (create and not send):
+        raise sc.SessionControlError(
+            "a first message needs session_send's approval: create the session, "
+            "then session_send to it",
+            status=403,
+            code="message_needs_send_approval",
+        )
+
+
+async def _deliver_first_message(
+    request: web.Request, state: DashboardState, created: dict, message: str
+) -> dict:
+    """Seed the session a create just opened, through session_send's own path.
+
+    ``send_to_target`` is the whole delivery: the same authorization gate (a
+    caller that could not session_send to the new session cannot seed it here),
+    the same size limit, provenance line, sanitizing and audit trail. The create
+    has already committed, so a failed delivery is REPORTED next to the key and
+    never rolls the session back: the caller can still session_send to it.
+    """
+    target = str(created.get("target") or "")
+    try:
+        receipt = await sc.send_to_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            message=message,
+            caller_fenced=_carried_fence(request),
+            via="session_create",
+        )
+    except sc.SessionControlError as exc:
+        return {"delivery_error": {"error": exc.message, "code": exc.code}}
+    except Exception:  # noqa: BLE001 - the created key must still reach the caller
+        logger.warning("session_create: first message to %s failed", target, exc_info=True)
+        return {"delivery_error": {"error": "delivery failed", "code": "delivery_failed"}}
+    return {"delivery": receipt}
+
+
 _Route = Callable[[web.Request], Awaitable[web.Response]]
 
 
@@ -360,6 +474,9 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             raise sc.SessionControlError(
                 "reasoning_effort must be a string", code="invalid_field_type"
             )
+        first_message = _first_message(body)
+        if first_message is not None:
+            await _refuse_unprompted_seed(state, _read_session_key(request))
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -388,6 +505,11 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if first_message is not None and not dry_run and isinstance(result, dict):
+        result = {
+            **result,
+            **await _deliver_first_message(request, state, result, first_message),
+        }
     if not dry_run and isinstance(result, dict):
         # A create is a dispatch, and a dispatch needs a patrol reading what
         # comes back: the same default patrol a ledger bind arms, through the

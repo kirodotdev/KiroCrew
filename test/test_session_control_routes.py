@@ -142,6 +142,11 @@ class TestTheRoutesRequireTheInternalSecret:
         """A SessionControlError from create must come back as its own refusal."""
         req = self._request(tmp_path, internal=True, path="/api/session-control/create")
 
+        async def _json():
+            return {"title": "worker"}
+
+        req.json = _json
+
         async def _boom(*_a, **_kw):
             raise sc.SessionControlError("nope", status=429, code="slot_cap_reached")
 
