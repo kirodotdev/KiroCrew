@@ -1269,6 +1269,9 @@ async def read_context(
             "impact": impact,
             "label": await asyncio.to_thread(_crewmate_label, p["member"]),
             "gateway": sorted(await asyncio.to_thread(gateway_matches, p)),
+            # A crewmate on its own file: the edit reaches its worker only, never
+            # the conductor its chat runs on (``mate_worker``).
+            "worker_kit": result.get("mode") == "mate",
         }
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.config.loader import KiroCrewConfig
