@@ -23,6 +23,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+from kiro_crew.testing.wait import await_until
 from kiro_crew.webex import cards
 from kiro_crew.webex import transport_dispatch as webex_dispatch
 from kiro_crew.webex.client import WebexInbound
@@ -292,8 +293,7 @@ class TestApprovalCardPress:
 
         await d.handle_message(_approval_press("approve", nonce))
 
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is True
+        assert (await await_until(task, what="the approval decision resolving"))[0] is True
         assert "Approved" in client.sent[-1][1]
 
     @pytest.mark.asyncio
@@ -315,8 +315,7 @@ class TestApprovalCardPress:
         assert webex_dispatch._APPROVALS.has_pending(key)
         assert "no longer current" in client.sent[-1][1]
         assert webex_dispatch._APPROVALS.resolve(key, False) is True
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is False
+        assert (await await_until(task, what="the approval decision resolving"))[0] is False
 
     @pytest.mark.asyncio
     async def test_a_press_carrying_no_nonce_fails_closed(self) -> None:
@@ -333,8 +332,7 @@ class TestApprovalCardPress:
 
         assert webex_dispatch._APPROVALS.has_pending(key)
         webex_dispatch._APPROVALS.resolve(key, False)
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is False
+        assert (await await_until(task, what="the approval decision resolving"))[0] is False
 
     @pytest.mark.asyncio
     async def test_a_second_press_reports_neutrally_rather_than_denied(self) -> None:
@@ -350,8 +348,7 @@ class TestApprovalCardPress:
         nonce = webex_dispatch._APPROVALS.reserve(key, "1")
 
         await d.handle_message(_approval_press("approve", nonce))
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is True
+        assert (await await_until(task, what="the approval decision resolving"))[0] is True
         await d.handle_message(_approval_press("approve", nonce))
 
         assert "already answered or timed out" in client.sent[-1][1]
@@ -370,8 +367,7 @@ class TestApprovalCardPress:
             await d.handle_message(_approval_press("deny", "FORGED"))
             await d.handle_message(_approval_press("deny", nonce))
 
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is False
+        assert (await await_until(task, what="the approval decision resolving"))[0] is False
         operations = [
             c.kwargs["operation"] for c in fake_sel.return_value.log_api_access.mock_calls
         ]
@@ -398,8 +394,7 @@ class TestApprovalCardPress:
             assert webex_dispatch._APPROVALS.has_pending(key)
             await d.handle_message(_approval_press("approve", nonce))
 
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is True
+        assert (await await_until(task, what="the approval decision resolving"))[0] is True
         outcomes = [
             c.kwargs["outcome"]
             for c in fake_sel.return_value.log_api_access.mock_calls
@@ -425,8 +420,7 @@ class TestApprovalCardPress:
             assert webex_dispatch._APPROVALS.has_pending(key)
             await d.handle_message(_approval_press("deny", nonce))
 
-        # flake-ok: pre-existing await on a decision task the step above resolves, moved verbatim
-        assert (await task)[0] is False
+        assert (await await_until(task, what="the approval decision resolving"))[0] is False
 
 
 class TestGovernanceOnPresses:
