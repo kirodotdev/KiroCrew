@@ -322,6 +322,37 @@ describe('SecretsPanel', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
+  it('clears a failed delete error once a replacement is typed and saved', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    const acknowledge = installFetch().getMockImplementation()!
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'disk full' }),
+        } as Response)
+      }
+      return acknowledge(input, init)
+    })
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete secret')
+
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+    await user.type(screen.getByLabelText('Jira API token'), 'replacement-value')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved')
+    expect(screen.queryByText(/Could not delete secret/)).not.toBeInTheDocument()
+  })
+
   it('removes a configured managed credential only after confirmation', async () => {
     const user = userEvent.setup()
     listNames = ['JIRA_API_TOKEN']
