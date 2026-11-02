@@ -25,7 +25,7 @@ import {
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
 import { usePrActions, PR_ACTION, isMergeReady, canArmAutoMerge as rowCanArm } from '../lib/prActions'
-import { providerTerms, isGitlab } from '../lib/links'
+import { providerTerms, isGitlab, reviewVerdicts } from '../lib/links'
 import type { PrDetailData, PullRequest, RepoRef } from '../api'
 
 import { i18nT } from '../../../i18n/t'
@@ -124,6 +124,9 @@ export default function PrActionsBar({
   // rule this bar follows everywhere else. An MR armed on GitLab's own UI still
   // DISPLAYS as armed via the read-side detail field.
   const providerArms = !isGitlab(repoRef)
+  // The same rule for the two verdicts: GitLab records no "request changes" review
+  // and Azure DevOps records neither, so those buttons could only ever fail there.
+  const verdicts = reviewVerdicts(repoRef)
   // Offer ARMING only for a PR the provider will actually accept it on. GitHub
   // refuses `enablePullRequestAutoMerge` for a PR that is already mergeable ("clean
   // status"), already merged, a draft, or `dirty` (a conflict), and answers a cold
@@ -318,28 +321,32 @@ export default function PrActionsBar({
             until the detail read lands there is nothing to pin one to. */}
         {!closed && Boolean(reviewSha) && (
           <>
-            <Btn
-              onClick={() => openComposer('approve')}
-              disabled={Boolean(actions.busy)}
-              // The provider's own word for the item ("pull request" / "merge
-              // request") is interpolated, so a GitLab workspace never reads "PR".
-              title={i18nT('apps.issueRadar.components.prActionsBar.approve_hint', {
-                subject: terms.changeRequestTitle,
-              })}
-            >
-              <Check className="lucide-inline" />
-              {i18nT('apps.issueRadar.components.prActionsBar.approve')}
-            </Btn>
-            <Btn
-              onClick={() => openComposer(PR_ACTION.requestChanges)}
-              disabled={Boolean(actions.busy)}
-              title={i18nT('apps.issueRadar.components.prActionsBar.request_changes_hint', {
-                subject: terms.changeRequestTitle,
-              })}
-            >
-              <CircleSlash className="lucide-inline" />
-              {i18nT('apps.issueRadar.components.prActionsBar.request_changes')}
-            </Btn>
+            {verdicts.approve && (
+              <Btn
+                onClick={() => openComposer('approve')}
+                disabled={Boolean(actions.busy)}
+                // The provider's own word for the item ("pull request" / "merge
+                // request") is interpolated, so a GitLab workspace never reads "PR".
+                title={i18nT('apps.issueRadar.components.prActionsBar.approve_hint', {
+                  subject: terms.changeRequestTitle,
+                })}
+              >
+                <Check className="lucide-inline" />
+                {i18nT('apps.issueRadar.components.prActionsBar.approve')}
+              </Btn>
+            )}
+            {verdicts.requestChanges && (
+              <Btn
+                onClick={() => openComposer(PR_ACTION.requestChanges)}
+                disabled={Boolean(actions.busy)}
+                title={i18nT('apps.issueRadar.components.prActionsBar.request_changes_hint', {
+                  subject: terms.changeRequestTitle,
+                })}
+              >
+                <CircleSlash className="lucide-inline" />
+                {i18nT('apps.issueRadar.components.prActionsBar.request_changes')}
+              </Btn>
+            )}
           </>
         )}
   
