@@ -1218,9 +1218,7 @@ class TestTrustedIssueLinkChannel:
     """
 
     @pytest.fixture(autouse=True)
-    # flake-ok: pre-existing class autouse stub that keeps the kiro-cli version probe off a spawn; moved verbatim
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse stub moved verbatim; no test in this class calls monkeypatch.undo()
-    def _stub_host_probe(self, monkeypatch) -> None:
+    def _stub_host_probe(self, _floor_monkeypatch) -> None:
         """Keep the builder off the real `kiro-cli --version` subprocess.
 
         Every test here calls ``_issue_url`` or ``terminal_issue_url``, and both
@@ -1235,7 +1233,7 @@ class TestTrustedIssueLinkChannel:
         """
         from kiro_crew import diagnostics
 
-        monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
+        _floor_monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
 
     def _bundle(self) -> object:
         from kiro_crew import diagnostics
