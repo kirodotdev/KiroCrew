@@ -15014,6 +15014,7 @@
         "declared": "仅声明",
         "sign_in_required": "需要登录",
         "sign_in_required_help": "此服务器使用 OAuth，且尚无人登录。<chatLink>前往聊天</chatLink>，启动一个新会话并发送任意消息，聊天中会提示你批准登录。 然后进行探测以刷新此列表。",
+        "sign_in_kas_chat_note": "Kiro Agent 上的聊天不会使用在这里完成的登录。请在聊天中通过它的“授权”卡片登录。",
         "oauth_not_a_static_token": "此服务器通过 OAuth 登录，因此静态 Authorization 标头无法满足它。请移除此服务器，在不含该标头的情况下重新添加并启用它，然后启动新的聊天会话以登录。",
         "sign_in_required_next": "批准后，使用此表上方的“探测 MCP 服务器”按钮；该行随后会显示“已登录”。",
         "signed_in": "已登录",

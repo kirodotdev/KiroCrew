@@ -15582,6 +15582,7 @@
         "declared": "Declarado",
         "sign_in_required": "Inicio de sesión necesario",
         "sign_in_required_help": "Este servidor usa OAuth y todavía nadie ha iniciado sesión. <chatLink>Ve al chat</chatLink>, inicia una sesión nueva y envía cualquier mensaje: se te pedirá que apruebes el inicio de sesión en el chat. Después sondea para actualizar esta lista.",
+        "sign_in_kas_chat_note": "Los chats en Kiro Agent no usan un inicio de sesión hecho aquí. Inicia sesión desde el chat, con su tarjeta Autorizar.",
         "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
         "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
         "signed_in": "Sesión iniciada",

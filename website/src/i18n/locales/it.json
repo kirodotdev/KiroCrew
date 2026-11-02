@@ -15582,6 +15582,7 @@
         "declared": "Dichiarato",
         "sign_in_required": "Accesso richiesto",
         "sign_in_required_help": "Questo server usa OAuth e nessuno ha ancora effettuato l’accesso. <chatLink>Vai alla chat</chatLink>, avvia una nuova sessione e invia un messaggio qualsiasi: ti verrà chiesto di approvare l’accesso nella chat. Poi esegui un sondaggio per aggiornare l’elenco.",
+        "sign_in_kas_chat_note": "Le chat su Kiro Agent non usano un accesso fatto qui. Accedi dalla chat, con la sua scheda Autorizza.",
         "oauth_not_a_static_token": "Questo server accede tramite OAuth, quindi un header Authorization statico non è sufficiente. Rimuovi e aggiungi di nuovo il server senza l’header, attivalo, poi avvia una nuova sessione di chat per accedere.",
         "sign_in_required_next": "Dopo l’approvazione, usa il pulsante Sonda i server MCP sopra questa tabella; la riga mostrerà quindi Accesso effettuato.",
         "signed_in": "Accesso effettuato",

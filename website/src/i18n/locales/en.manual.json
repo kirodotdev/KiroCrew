@@ -7149,6 +7149,7 @@
         "servers_scope_tip": "MCP servers across {{productName}} and your interactive {{provider}}/Kiro globals. The {{productName}} badge shows if it'll load in {{productName}} sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.",
         "sign_in_required": "Sign-in required",
         "sign_in_required_help": "This server uses OAuth and nobody has signed in yet. <chatLink>Go to chat</chatLink>, start a new session, and send any message — you'll be asked to approve the sign-in in chat. Then probe to refresh this list.",
+        "sign_in_kas_chat_note": "Chats on Kiro Agent don't use a sign-in made here. Sign in from the chat, with its Authorize card.",
         "sign_in": "Sign in",
         "sign_in_retry": "Try again",
         "sign_in_again": "Sign in again",
