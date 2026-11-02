@@ -560,6 +560,6 @@ class TestStagingRootIsPinnedBeforeMkdtemp:
             pytest.skip("creating a symlink needs privilege on this host")
         monkeypatch.setattr(storage, "staging_root", lambda: link_root)
 
-        with pytest.raises(Exception):
+        with pytest.raises(OSError):
             with storage.pinned_staging("probe-"):
                 pass
