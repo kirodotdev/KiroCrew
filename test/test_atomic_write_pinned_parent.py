@@ -234,6 +234,42 @@ def test_a_pinned_write_stages_through_the_descriptor_not_mkstemp(tmp_path, monk
     assert target.read_text(encoding="utf-8") == "new body"
 
 
+def test_a_failed_pinned_rename_removes_its_temp_and_keeps_the_original(tmp_path, monkeypatch):
+    """The pinned publish has its own cleanup: a failing renameat leaves no temp.
+
+    Staging succeeded, so the temp is a complete copy beside the original; the
+    rename is what fails. Nothing else knows the temp name, so the rename's own
+    failure path must remove it relative to the pinned parent.
+    """
+    _needs_pinned_parent()
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    real_rename = os.rename
+    attempts: list[str] = []
+
+    def failing_pinned_rename(src, dst, *args, **kwargs):
+        if kwargs.get("src_dir_fd") is not None:
+            attempts.append(src)
+            raise OSError("injected renameat failure")
+        return real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", failing_pinned_rename)
+    # The capability probe checks os.rename by identity in supports_dir_fd.
+    monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {failing_pinned_rename})
+
+    dir_fd = _pin(tmp_path)
+    try:
+        with pytest.raises(OSError, match="injected renameat failure"):
+            atomic_write(target, "new body", parent_dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+    assert attempts, "the pinned rename was never attempted"
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    leftover = [p.name for p in tmp_path.iterdir() if p.name != "doc.md"]
+    assert leftover == [], f"orphaned staging residue: {leftover}"
+
+
 def test_pinned_publish_replaces_an_existing_regular_file(tmp_path):
     """renameat overwrites the destination, so an existing file is replaced, not doubled."""
     _needs_pinned_parent()
