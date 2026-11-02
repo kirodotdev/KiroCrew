@@ -188,10 +188,20 @@ def normalize_timeline_event(
     if event_type == "reviewed":
         return {
             "kind": "reviewed",
+            # The id a later ``review_dismissed`` event names, so a dismissed
+            # verdict can be matched and left out of the current verdicts.
+            "review_id": event.get("id"),
             "actor": (event.get("user") or {}).get("login"),
             "created_at": event.get("submitted_at") or created,
             "review_state": event.get("state"),
             "body": event.get("body") or "",
+        }
+    if event_type == "review_dismissed":
+        return {
+            "kind": "review_dismissed",
+            "actor": actor_reader(event),
+            "created_at": created,
+            "review_id": (event.get("dismissed_review") or {}).get("review_id"),
         }
     if event_type == "committed":
         author = event.get("author") or {}
