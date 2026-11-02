@@ -87,8 +87,9 @@ _RUN_DEADLINE_S = 1800
 # Two distinct flags, because they gate different things:
 #   _POD_IMPORTED  — the ``kiro_crew.pod`` modules are importable, so the
 #                    PLATFORM-NEUTRAL helpers (``prov.has_venv`` /
-#                    ``prov.has_dist``, both plain filesystem checks) may be
-#                    called. True on every platform unless the import failed.
+#                    ``prov.has_dist``, present-AND-built-from-current-inputs
+#                    checks) may be called. True on every platform unless the
+#                    import failed.
 #   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
 # Conflating the two reports every worktree as "not built" off Linux,
 # even though the build state is knowable everywhere.

@@ -64,8 +64,13 @@ _BUILD_ID_PATH = _DIST_DIR / "build-id.json"
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _read_dist_tree() -> tuple[str, str] | None:
-    """Return ``(website_tree, build_id)`` the served dist was built from, or None.
+def read_dist_tree(dist: Path | None = None) -> tuple[str, str] | None:
+    """Return ``(website_tree, build_id)`` a dist was built from, or None.
+
+    *dist* is the dist directory to read; None reads the served one. This is
+    the one reader of the build stamps: Dev Fleet's ``pod.provision.has_dist``
+    calls it with a worktree's own dist, so the startup guard and the Fleet view
+    cannot disagree about which stamp wins.
 
     ``build-id.json`` wins whenever it parses: every ``vite build`` rewrites
     it, while ``kirocrew-build-source.txt`` is written only by
@@ -75,8 +80,10 @@ def _read_dist_tree() -> tuple[str, str] | None:
     tree id (absent, unreadable, or a build of a dirty/git-less tree). Each of
     these is a "cannot verify" case, not a staleness signal.
     """
+    build_id_path = _BUILD_ID_PATH if dist is None else dist / _BUILD_ID_PATH.name
+    source_path = _BUILD_SOURCE_PATH if dist is None else dist / _BUILD_SOURCE_PATH.name
     try:
-        data = json.loads(_BUILD_ID_PATH.read_text(encoding="utf-8"))
+        data = json.loads(build_id_path.read_text(encoding="utf-8"))
     except OSError:
         data = None
     except (ValueError, TypeError):
@@ -87,7 +94,7 @@ def _read_dist_tree() -> tuple[str, str] | None:
         tree = str(data.get("websiteTree") or "").strip()
         return (tree, build_id) if tree else None
     try:
-        tree = _BUILD_SOURCE_PATH.read_text(encoding="utf-8").strip()
+        tree = source_path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     return (tree, "") if tree else None
@@ -134,7 +141,7 @@ def check_bundle_freshness() -> None:
     or a git-less packaging path never false-alarms.
     """
     try:
-        dist = _read_dist_tree()
+        dist = read_dist_tree()
         if dist is None:
             logger.debug("Bundle freshness: no website/ tree stamp in dist — skipping.")
             return
