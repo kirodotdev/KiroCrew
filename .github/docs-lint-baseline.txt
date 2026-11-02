@@ -250,10 +250,7 @@ line-ref	docs/request-for-change/rfc-s3-backup.md	session_storage.py:7-10
 line-ref	docs/request-for-change/rfc-s3-backup.md	setup.cfg:110
 line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	ToolCallLine.tsx:174
 line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	context.py:963
-line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	messaging/driver.py:373-386
 line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	preview_text.py:5
-line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	useBlockAssembler.ts:103
-line-ref	docs/request-for-change/rfc-tool-derived-diff-cards.md	voice_reply.py:159
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	ci.yml:1004-1005
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	ci.yml:1012-1014
 line-ref	docs/task-specs/2026/09/task-fleet-probe-coverage-investigation/analysis.md	ci.yml:1117
