@@ -365,6 +365,7 @@ async def _ensure_followup_folder(state: Any) -> str:
     folder and build a duplicate. Idempotent — an existing folder is adopted and
     nothing is written.
     """
+    from kiro_crew.dashboard.chat_folder_order import next_folder_order
     from kiro_crew.dashboard.mate_folders import home_owner_of
 
     def _create_or_adopt(folders: list[dict]) -> tuple[bool, str]:
@@ -384,7 +385,7 @@ async def _ensure_followup_folder(state: Any) -> str:
         folder = {
             "id": uuid.uuid4().hex[:12],
             "name": followup.FOLDER_NAME,
-            "order": len(folders),
+            "order": next_folder_order(folders),
             "collapsed": False,
             "hidden": False,
             "parent_id": "",
