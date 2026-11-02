@@ -143,7 +143,7 @@
       "label": "Code channels (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.code_channels",
-      "description": "On: adds 5 permissions to your Slack app so the agent can open a code channel per coding task. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+      "description": "On: adds 5 permissions to your Slack app so the agent can open a code channel per coding task, with a context bar, a diff tab and channel commands. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
       "configKey": "slack.code_channels"
     },
     {

@@ -193,8 +193,8 @@ describe('Code channels card', () => {
     // description, with no promise of a later release: the runtime is live.
     expect(section).toHaveTextContent(/On: adds 5 permissions to your Slack app/)
     expect(section).not.toHaveTextContent('later release')
-    // Only what this build turns on: the diff tab and context bar ship separately.
-    expect(section).not.toHaveTextContent(/context bar|diff tab/)
+    // What turning it on gives, the channel's context bar and diff tab included.
+    expect(section).toHaveTextContent('with a context bar, a diff tab and channel commands')
     expect(section).toHaveTextContent('Off: nothing changes, and you can remove the permissions in Slack later.')
     expect(section).toHaveTextContent('You can turn code channels off and remove their permissions later.')
     expect(section).not.toHaveTextContent("changes your Slack app's manifest")

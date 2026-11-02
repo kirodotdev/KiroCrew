@@ -244,7 +244,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Code channels (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
     "labelSuffix": "Slack",
-    "description": "On: adds 5 permissions to your Slack app so the agent can open a code channel per coding task. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "description": "On: adds 5 permissions to your Slack app so the agent can open a code channel per coding task, with a context bar, a diff tab and channel commands. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

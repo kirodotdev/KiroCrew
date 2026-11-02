@@ -649,13 +649,27 @@ async def _bind_channel(
         raise BindingUnavailable("no dashboard")
     cfg = live_config(orch)
     spec = await resolve_session_spec(state, cfg, origin_thread_ts=origin_thread_ts)
+    # The channel's own worktree and folder, before its session exists: the
+    # session (and every worker a conductor files under it) starts in the
+    # worktree. The spec comes back unchanged off git or with the feature off.
+    from kiro_crew.slack.code_channels.workspace.core import plan_session
+
+    spec = await plan_session(
+        state, spec, channel_id=channel, team_id=team_id, title=title, channel_name=channel_name
+    )
     anchor = await _post(orch, channel, _kickoff_text(title, state, spec.folder_id), None)
     if not anchor:
         raise BindingUnavailable("kickoff post failed")
     write = store().replace_binding if replace else store().put_binding
     stored: list[Binding] = []
-    # A replacement keeps the checkout the channel's worktree came from.
-    repo_root = existing.repo_root if existing else ""
+    from kiro_crew.slack.code_channels.workspace.core import planned_root
+
+    # The worktree was cut by plan_session above, before this binding exists:
+    # the checkout it was cut from is remembered here (a replacement keeps the
+    # one it had when nothing new was planned).
+    repo_root = await asyncio.to_thread(planned_root, team_id, channel) or (
+        existing.repo_root if existing else ""
+    )
 
     async def record_binding(slot: Any) -> None:
         # Runs before the session is published: a binding that cannot be
@@ -686,6 +700,11 @@ async def _bind_channel(
         anchor_ts=anchor,
         before_publish=record_binding,
     )
+    # The channel's own git worktree, before the first turn captures the
+    # session's project (no-op off git or with the feature off; never raises).
+    from kiro_crew.slack.code_channels.workspace.core import prepare as prepare_workspace
+
+    await prepare_workspace(stored[0])
     return stored[0]
 
 

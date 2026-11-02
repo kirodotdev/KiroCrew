@@ -739,20 +739,28 @@ async def test_closed_dashboard_session_is_reopened_on_the_next_message(env: Env
     assert env.routed == [("C0CODE", "continue", OWNER)]
 
 
-async def test_a_reopened_session_keeps_the_remembered_workspace_root(env: Env) -> None:
-    """The binding remembers the checkout the channel's worktree was cut from;
-    a replacement binding keeps it."""
-    _bind(env)
-    env.store.update_binding("C0CODE", repo_root="/repo/old")
-    assert env.state is not None
-    env.state.linked.clear()
-    env.info("C0CODE")
-    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "go"}
-    result = await _gate(env, event)
-    assert await routing.dispatch(
-        env.orch, result, event=event, clean_text="go", sender_id=OWNER, was_mention=False
-    )
-    assert env.store.get_binding("C0CODE").repo_root == "/repo/old"
+async def test_a_reopened_session_keeps_or_refreshes_the_remembered_workspace_root(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binding remembers the checkout the channel's worktree was cut from.
+    A replacement binding keeps it when nothing new was planned, and takes the
+    new plan's root when the reopen cut a worktree (planned_root)."""
+    from kiro_crew.slack.code_channels.workspace import core as ws_core
+
+    for planned, want in (("", "/repo/old"), ("/repo/new", "/repo/new")):
+        _bind(env)
+        env.store.update_binding("C0CODE", repo_root="/repo/old")
+        assert env.state is not None
+        env.state.linked.clear()
+        env.info("C0CODE")
+        monkeypatch.setattr(ws_core, "planned_root", lambda _t, _c, p=planned: p)
+        ts = "301.0" if not planned else "302.0"
+        event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": ts, "text": "go"}
+        result = await _gate(env, event)
+        assert await routing.dispatch(
+            env.orch, result, event=event, clean_text="go", sender_id=OWNER, was_mention=False
+        )
+        assert env.store.get_binding("C0CODE").repo_root == want
 
 
 async def test_dms_are_never_code_channels(env: Env) -> None:
