@@ -661,7 +661,10 @@ describe('ChatPage row callbacks — quote and ask', () => {
   it('re-binds the activity panel to a split pane\'s slot before opening its Side Chat', async () => {
     const { store } = await renderSplit()
     let verdict: boolean | void | Promise<boolean | void>
-    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    await act(async () => {
+      verdict = gridProps!.openSideChat!('chat-2')
+      await verdict
+    })
     // A re-bind is a request the server can reject, so the opener reports its
     // verdict only once the switch settled — the Side tab opens on the
     // re-bound panel and the seam seeds on `true`.
@@ -678,7 +681,10 @@ describe('ChatPage row callbacks — quote and ask', () => {
     // `switchSlot.rejected` falls back to the slot the page was on.
     apiSpy('chatSlotDetail').mockRejectedValueOnce(new ApiError(404, 'no such slot'))
     let verdict: boolean | void | Promise<boolean | void>
-    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    await act(async () => {
+      verdict = gridProps!.openSideChat!('chat-2')
+      await verdict
+    })
     await expect(verdict!).resolves.toBe(false)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1'))
     expect(store.getState().chat.activityTab).not.toBe('side')
