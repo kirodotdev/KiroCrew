@@ -661,6 +661,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",
+        # `git ls-remote` for a checkout on no branch, split out of _update: the
+        # same `git` the fetch runs, under the same env, after the same source-pin
+        # and exec-config checks. The argv is literals plus the three reviewed
+        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
+        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
+        "cli_server_update.py::_detached_upstream_branch",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —

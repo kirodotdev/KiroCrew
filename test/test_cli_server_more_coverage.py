@@ -62,16 +62,28 @@ class _GitStub:
         self.rev_list_out = "0\t5\n"
         self.show_out: bytes | None = None
         self.show_fails = False
+        # What `rev-parse --abbrev-ref HEAD` prints, and the branches origin
+        # lists to `ls-remote` for a checkout on no branch.
+        self.branch_out = "main\n"
+        self.remote_heads: tuple[str, ...] = ()
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        if argv[:2] == ["git", "ls-remote"]:
+            asked = [a for a in argv if a.startswith("refs/heads/")]
+            out = "".join(f"{_PIN}\t{ref}\n" for ref in asked if ref[11:] in self.remote_heads)
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("ls_remote", 0), out, "could not read from remote"
+            )
         if argv[:3] == ["git", "rev-parse", "--verify"]:
             # The upstream pin, taken right after the fetch.
             return subprocess.CompletedProcess(
                 argv, self.rc.get("rev_parse_verify", 0), _PIN + "\n", "unknown revision"
             )
         if argv[:2] == ["git", "rev-parse"]:
-            return subprocess.CompletedProcess(argv, self.rc.get("rev_parse", 0), "main\n", "")
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("rev_parse", 0), self.branch_out, ""
+            )
         if argv[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(argv, self.rc.get("fetch", 0), "", "no remote")
         if argv[:2] == ["git", "diff"]:
@@ -192,17 +204,13 @@ class TestUpdateGitPath:
         assert exc.value.code == 1
         assert "Could not determine current branch" in capsys.readouterr().out
 
-    def test_detached_head_is_treated_as_mainline_and_pin_is_checked_first(
+    def test_detached_head_checks_the_pin_before_asking_the_remote(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
         stub = _GitStub()
-
-        def _run(argv, **kw):
-            if argv[:2] == ["git", "rev-parse"]:
-                return subprocess.CompletedProcess(argv, 0, "HEAD\n", "")
-            return stub(argv, **kw)
-
-        monkeypatch.setattr(subprocess, "run", _run)
+        stub.branch_out = "HEAD\n"
+        stub.remote_heads = ("main",)
+        monkeypatch.setattr(subprocess, "run", stub)
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason",
             lambda url: "remote not on the fleet allowlist",
@@ -213,8 +221,100 @@ class TestUpdateGitPath:
         out = capsys.readouterr().out
         assert "blocked by security policy" in out
         assert "fleet allowlist" in out
-        # Blocked before any fetch touched the tree.
+        # Blocked before the remote was contacted or the tree touched.
+        assert not any(c[:2] in (["git", "fetch"], ["git", "ls-remote"]) for c in stub.calls)
+
+    @pytest.mark.parametrize("branch_out", ["HEAD\n", "\n"], ids=["detached", "empty"])
+    @pytest.mark.parametrize(
+        ("remote_heads", "expected"),
+        [
+            (("main",), "main"),
+            (("mainline",), "mainline"),
+            (("master",), "master"),  # wokeignore:rule=master
+            (("master", "mainline", "main"), "main"),  # wokeignore:rule=master
+            (("master", "mainline"), "mainline"),  # wokeignore:rule=master
+        ],
+    )
+    def test_a_checkout_on_no_branch_updates_from_the_primary_branch_origin_has(
+        self, monkeypatch, git_checkout, capsys, branch_out, remote_heads, expected
+    ) -> None:
+        """A checkout on no branch fetches a primary branch origin really has."""
+        stub = _GitStub()
+        stub.branch_out = branch_out
+        stub.remote_heads = remote_heads
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        fetches = [c for c in stub.calls if c[:2] == ["git", "fetch"]]
+        # A full refspec, so a clone whose fetch refspec maps no such branch (a
+        # tag or a `--single-branch` clone) still gets the tracking ref pinned below.
+        refspec = f"+refs/heads/{expected}:refs/remotes/origin/{expected}"
+        assert len(fetches) == 1 and fetches[0][-2:] == ["origin", refspec]
+        pin = next(c for c in stub.calls if c[:3] == ["git", "rev-parse", "--verify"])
+        assert pin[3] == f"refs/remotes/origin/{expected}^{{commit}}"
+        assert f"updating from origin/{expected}" in capsys.readouterr().out
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_checkout_on_no_branch_never_reads_the_local_origin_head(
+        self, monkeypatch, git_checkout
+    ) -> None:
+        stub = _GitStub()
+        stub.branch_out = "HEAD\n"
+        stub.remote_heads = ("main",)
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        assert not any("origin/HEAD" in arg for c in stub.calls for arg in c)
+        ls_remote = next(c for c in stub.calls if c[:2] == ["git", "ls-remote"])
+        assert ls_remote[2:] == [
+            "--upload-pack=git-upload-pack",
+            "origin",
+            "refs/heads/main",
+            "refs/heads/mainline",
+            "refs/heads/master",  # wokeignore:rule=master
+        ]
+
+    def test_a_checkout_on_no_branch_refuses_when_origin_has_no_primary_branch(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub()
+        stub.branch_out = "HEAD\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "on no branch" in out
+        assert "git checkout -B <branch> origin/<branch>" in out
         assert not any(c[:2] == ["git", "fetch"] for c in stub.calls)
+
+    def test_a_checkout_on_no_branch_refuses_when_origin_cannot_be_listed(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub(ls_remote=128)
+        stub.branch_out = "HEAD\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Could not list origin's branches" in out
+        assert "could not read from remote" in out
+        assert not any(c[:2] == ["git", "fetch"] for c in stub.calls)
+
+    def test_a_checkout_on_a_branch_never_asks_the_remote(self, monkeypatch, git_checkout) -> None:
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        assert not any(c[:2] == ["git", "ls-remote"] for c in stub.calls)
+        fetch = next(c for c in stub.calls if c[:2] == ["git", "fetch"])
+        assert fetch[-2:] == ["origin", "main"]
+
+    def test_the_detached_order_is_exactly_the_reviewed_primary_branches(self) -> None:
+        from kiro_crew import cli_server_update
+        from kiro_crew.platform.update_governance import PRIMARY_BRANCHES
+
+        order = cli_server_update._DETACHED_BRANCH_ORDER
+        assert order[0] == "main"
+        assert len(order) == len(set(order)) and set(order) == PRIMARY_BRANCHES
 
     def test_fetch_failure_exits(self, monkeypatch, git_checkout, capsys) -> None:
         monkeypatch.setattr(subprocess, "run", _GitStub(fetch=1))

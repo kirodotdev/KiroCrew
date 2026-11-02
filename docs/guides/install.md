@@ -302,10 +302,11 @@ when the clone is only behind. A clone that is both ahead and behind — local
 commits `origin/<branch>` lacks, plus new ones from it — is refused, because the
 reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
-checkout, such as a release tag, is on no branch, and `kirocrew update` cannot
-update it. To follow a release lane on a laptop or server, use the one-line
-install: it updates from the channel's signed release feed and has no git
-history to diverge.
+checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
+the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
+when `origin` has none of them. To follow a release lane on a laptop or server,
+use the one-line install: it updates from the channel's signed release feed and
+has no git history to diverge.
 
 On Windows the same targets run through `make.ps1`, because `make` is not part
 of a Windows install and the Makefile's recipes are POSIX-shaped

@@ -854,6 +854,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         desktop_app_supervisor,
     )
     from kiro_crew.cli_server_update import (  # noqa: F401
+        _DETACHED_BRANCH_ORDER,
+        _detached_upstream_branch,
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,

@@ -72,6 +72,56 @@ def _snapshot_memory_or_exit() -> None:
     print(f"  💾 Memory snapshot: {copied} store(s) copied{where}\n")
 
 
+#: Branches a detached checkout may update from, in the order they are tried.
+#: Exactly the reviewed primary lines (``update_governance.PRIMARY_BRANCHES``),
+#: so the choice is never read from ``refs/remotes/origin/HEAD``, which one
+#: ``git remote set-head`` can repoint (see ``is_primary_branch``).
+_DETACHED_BRANCH_ORDER = ("main", "mainline", "master")  # wokeignore:rule=master
+
+
+def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
+    """The first primary branch origin has, for a checkout on no branch.
+
+    Asks the remote itself with ``git ls-remote``, the same way the fetch reaches
+    it, and only about the names in :data:`_DETACHED_BRANCH_ORDER`. Exits 1 with
+    the fix when origin has none of them or cannot be read.
+    """
+    refs = [f"refs/heads/{name}" for name in _DETACHED_BRANCH_ORDER]
+    try:
+        result = subprocess.run(
+            # `--upload-pack` for the same reason as the fetch below.
+            ["git", "ls-remote", "--upload-pack=git-upload-pack", "origin", *refs],
+            cwd=proj,
+            env=fetch_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger("kiro_crew.cli_server").warning(
+            "git ls-remote timed out after %ss during update", exc.timeout
+        )
+        print(
+            f"  ❌ Could not list origin's branches (git ls-remote timed out after {exc.timeout}s)"
+        )
+        sys.exit(1)
+    if result.returncode != 0:
+        print(f"  ❌ Could not list origin's branches:\n{result.stderr.strip()}")
+        sys.exit(1)
+    found = {line.split("\t", 1)[1].strip() for line in result.stdout.splitlines() if "\t" in line}
+    for name, ref in zip(_DETACHED_BRANCH_ORDER, refs):
+        if ref in found:
+            print(f"  ℹ  This checkout is on no branch; updating from origin/{name}.")
+            return name
+    names = ", ".join(_DETACHED_BRANCH_ORDER)
+    print("  ❌ This checkout is on no branch, and origin has none of these branches:")
+    print(f"      {names}")
+    print("  Check out the branch to update from, then retry:")
+    print("      git checkout -B <branch> origin/<branch>")
+    sys.exit(1)
+
+
 def _update(force: bool = False) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
@@ -181,9 +231,12 @@ def _update(force: bool = False) -> None:
     if branch_result.returncode != 0:
         print("❌ Could not determine current branch")
         sys.exit(1)
-    branch = branch_result.stdout.strip() or "mainline"
+    # A detached HEAD (or no branch name at all) has no branch of its own to
+    # follow. Its upstream is picked from origin's own branches further down,
+    # once the remote has passed the source pin.
+    branch = branch_result.stdout.strip()
     if branch == "HEAD":
-        branch = "mainline"
+        branch = ""
 
     # Source pin, checked before the fetch so a blocked update never touches the
     # tree. A human at a terminal is not the authorization: the fleet decides
@@ -210,6 +263,14 @@ def _update(force: bool = False) -> None:
         print("      Remove it from the checkout's git config, then retry.")
         sys.exit(1)
 
+    fetch_ref = branch
+    if not branch:
+        branch = _detached_upstream_branch(proj, _fetch_env)
+        # Spelled as a full refspec: a detached clone (a tag, or `--single-branch`
+        # of another branch) may map no fetch refspec to this branch, and a bare
+        # name would then fill only FETCH_HEAD, leaving the pin below unresolved.
+        fetch_ref = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
     try:
@@ -217,7 +278,7 @@ def _update(force: bool = False) -> None:
             # `--upload-pack` beats every configured upload-pack (an env pin does
             # not: git takes the first value it reads, the repository's). The bare
             # name is what an ssh server accepts.
-            ["git", "fetch", "--upload-pack=git-upload-pack", "origin", branch],
+            ["git", "fetch", "--upload-pack=git-upload-pack", "origin", fetch_ref],
             cwd=proj,
             env=_fetch_env,
             stdin=subprocess.DEVNULL,
