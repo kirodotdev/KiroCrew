@@ -16,8 +16,8 @@ import {
 import { i18nT } from '../i18n/t'
 import { fmtUnit } from '../i18n/format'
 
-/** Relative time label from ISO date string. */
-function relativeTime(iso: string): string {
+/** Relative time label from ISO date string; the remote Git panel shares it. */
+export function relativeTime(iso: string): string {
   const now = Date.now()
   const then = new Date(iso).getTime()
   const secs = Math.round((now - then) / 1000)
@@ -32,8 +32,8 @@ function relativeTime(iso: string): string {
   return fmtUnit(months, 'month')
 }
 
-/** Status letter color class. */
-function statusColor(s: string): string {
+/** Status letter color class; the remote Git panel shares it. */
+export function statusColor(s: string): string {
   switch (s) {
     case 'M': return 'text-warn'
     case 'A': return 'text-ok'

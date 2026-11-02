@@ -56,21 +56,28 @@ export function askAgentHard(message: string): void {
 export function handoffErrorToAgent({
   report,
   message,
+  prompt,
   hard = false,
   leaveGranted = false,
   onHandoff,
 }: {
   report?: ErrorReport
   message?: string
+  /** A request staged verbatim, in place of an error report. */
+  prompt?: string
   hard?: boolean
   /** The caller's own leave gate already asked the page and it agreed — see `sendErrorToChat`. */
   leaveGranted?: boolean
   onHandoff?: () => void
 }): boolean {
-  const resolved: ErrorReport | { message: string } | null =
-    report ?? findReport(message) ?? (message ? { message } : null)
-  if (!resolved) return false
-  if (!sendErrorToChat(askAgentPrompt(resolved), { hard, leaveGranted })) return false
+  let staged = prompt
+  if (!staged) {
+    const resolved: ErrorReport | { message: string } | null =
+      report ?? findReport(message) ?? (message ? { message } : null)
+    if (!resolved) return false
+    staged = askAgentPrompt(resolved)
+  }
+  if (!sendErrorToChat(staged, { hard, leaveGranted })) return false
   try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
   return true
 }
@@ -78,16 +85,28 @@ export function handoffErrorToAgent({
 export default function AskAgentButton({
   report,
   message,
+  prompt,
+  title,
   variant = 'link',
   hard = false,
   onHandoff,
   label,
   gate,
+  onStage,
   className = '',
   tone = 'danger',
 }: {
   report?: ErrorReport
   message?: string
+  /**
+   * A request to stage as the composer draft, in place of an error report: for
+   * a surface that asks the agent for something rather than reporting a
+   * failure. Pass `label` and `title` with it, since both defaults describe an
+   * error.
+   */
+  prompt?: string
+  /** Overrides the hover title, which by default describes an error hand-off. */
+  title?: string
   /** `link` for inline use next to an error line; `solid` for a primary action in a fallback card. */
   variant?: 'link' | 'solid'
   /** Force a full page load (crash fallbacks, where the live tree is suspect). */
@@ -129,14 +148,26 @@ export default function AskAgentButton({
    * the first had already accepted.
    */
   gate?: (proceed: () => void) => void
+  /**
+   * Stages `prompt` in a composer the caller owns, in place of the hand-off.
+   *
+   * The hand-off always lands in a FRESH chat (`sendErrorToChat`), which is
+   * right for an error report but wrong for a request about the chat on screen:
+   * a surface bound to this chat's own workspace (the remote Git panel) needs the
+   * draft in THIS chat, where the agent can reach that workspace. Without a
+   * `prompt` it stages the error's own prompt (`askAgentPrompt`, the context
+   * the hand-off carries), resolved at click time; nothing navigates.
+   */
+  onStage?: (prompt: string) => void
   className?: string
   /**
    * Link tint. `danger` (default) for placement inside an error surface;
    * `warn` for a WARNING surface (the pre-approval findings box) — a
    * danger-red link inside an amber box dresses a not-yet-failed state in
-   * error color. Only affects the `link` variant.
+   * error color; `accent` for a request on a surface that is not an alert at
+   * all. Only affects the `link` variant.
    */
-  tone?: 'danger' | 'warn'
+  tone?: 'danger' | 'warn' | 'accent'
 }) {
   // Subscribed, not read once: the button must come BACK when the gateway
   // reconnects, and disappear when it drops, without the caller re-rendering.
@@ -149,7 +180,7 @@ export default function AskAgentButton({
   // during render would therefore capture the pre-journal state — a bare message
   // with no stack and no component context — and since componentDidCatch writes an
   // instance field rather than state, nothing re-renders to correct it.
-  if (!report && !message) return null
+  if (!report && !message && !prompt) return null
 
   // While the gateway is unreachable the hand-off is a dead end: it delivers
   // the error to a composer that cannot send ("gateway offline — message will
@@ -159,11 +190,17 @@ export default function AskAgentButton({
   if (!gatewayConnected) return null
 
   const onClick = () => {
+    if (onStage) {
+      const resolved = prompt ? null : report ?? findReport(message) ?? (message ? { message } : null)
+      const staged = prompt ?? (resolved ? askAgentPrompt(resolved) : '')
+      if (staged) onStage(staged)
+      return
+    }
     // The gate goes in FRONT of the whole hand-off, staging included: a vetoed
     // hand-off that had already queued its prompt would deliver it to the next
     // chat the user opens, long after the crash it describes.
-    if (gate) gate(() => { handoffErrorToAgent({ report, message, hard, leaveGranted: true, onHandoff }) })
-    else handoffErrorToAgent({ report, message, hard, onHandoff })
+    if (gate) gate(() => { handoffErrorToAgent({ report, message, prompt, hard, leaveGranted: true, onHandoff }) })
+    else handoffErrorToAgent({ report, message, prompt, hard, onHandoff })
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'
@@ -172,7 +209,10 @@ export default function AskAgentButton({
     // Surface-tinted, not muted grey: inside an alert a grey link reads as
     // unrelated chrome. Underline marks it as the action in the banner. The
     // tint follows the surface (danger in an error banner, warn in the
-    // pre-approval warning box) so the link never escalates its host.
+    // pre-approval warning box) so the link never escalates its host. Off an
+    // alert there is no tint to follow, so `accent` marks it as the action.
+    : tone === 'accent'
+      ? 'text-[12px] font-medium text-accent bg-transparent border-none p-0 hover:underline underline-offset-2'
     : tone === 'warn'
       ? 'text-[12px] font-medium text-warn/80 hover:text-warn bg-transparent border-none p-0 underline decoration-warn/30 hover:decoration-warn underline-offset-2'
       // `--danger-text`, not a faded `--danger`: the link sits on the error
@@ -184,7 +224,7 @@ export default function AskAgentButton({
     <button
       type="button"
       className={`${base} ${skin} ${className}`}
-      title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
+      title={title ?? i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
       onClick={onClick}
     >
       <Sparkles size={13} aria-hidden="true" />
