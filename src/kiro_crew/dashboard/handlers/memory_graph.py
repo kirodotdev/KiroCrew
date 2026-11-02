@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
 
 #: Most semantic rows one graph request reads, in key order with lessons excluded
@@ -57,10 +58,6 @@ def _build_memory_graph(
             nodes.append({"id": nid, "label": label[:60], "group": group, "title": title or label})
             node_ids[f"{prefix}:{label}"] = nid
         return nid
-
-    def _contains_cjk(text: str) -> bool:
-        # Check for CJK Unified Ideographs (common range)
-        return any('\u4e00' <= c <= '\u9fff' for c in text)
 
     # --- Preferences ---
     try:
@@ -153,9 +150,16 @@ def _build_memory_graph(
     # --- History (recent days only) ---
     try:
         hist = mem.read_recent_history(days=14) or ""
-        # Patterns for timestamp and date headers to skip
-        timestamp_re = re.compile(r'^#{1,4}\s+\d{1,2}:\d{2}(?:\s+[A-Z]{2,5})?$')
-        date_re = re.compile(r'^#{1,4}\s+\d{4}-\d{2}-\d{2}$')
+        # ``append_history`` writes a ``# YYYY-MM-DD`` file header and a
+        # ``#### HH:MM <%Z>`` header above each entry. They carry no content of
+        # their own, so drawing them only adds empty nodes. ``%Z`` is an
+        # abbreviation ("UTC", "CST"), a numeric offset ("+08") or, on Windows,
+        # a full name ("China Standard Time").
+        timestamp_re = re.compile(
+            r"^#{1,4}\s+\d{1,2}:\d{2}"
+            r"(?:\s+(?:[A-Z]{2,5}|[+-]\d{2}(?::?\d{2})?|(?:[A-Z][a-z]+\s+)+Time))?$"
+        )
+        date_re = re.compile(r"^#{1,4}\s+\d{4}-\d{2}-\d{2}$")
         for line in hist.splitlines():
             stripped = line.strip()
             m = re.match(r"^#{1,4}\s+(.+)", stripped)
@@ -222,12 +226,14 @@ def _build_memory_graph(
             for proj_id, short in project_matchers:
                 if n["id"] == proj_id:
                     continue
-                if _contains_cjk(short):
-                    # Match as substring, but require a word boundary before to avoid matching inside a word
-                    pattern = r"\b" + re.escape(short)
+                if any(map(is_cjk_char, short)):
+                    # CJK prose has no spaces, and Python's Unicode regex counts
+                    # ideographs and kana as ``\w``, so ``\b`` never splits two
+                    # of them ("查询账单服务接口"): match a plain substring.
+                    matched = short in title_lower
                 else:
-                    pattern = r"\b" + re.escape(short) + r"\b"
-                if re.search(pattern, title_lower):
+                    matched = re.search(r"\b" + re.escape(short) + r"\b", title_lower) is not None
+                if matched:
                     edges.append({"from": n["id"], "to": proj_id})
 
     return nodes, edges
