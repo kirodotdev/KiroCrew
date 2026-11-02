@@ -551,7 +551,7 @@ describe('ReconnectAction copy command', () => {
       expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copied')),
     )
 
-    vi.advanceTimersByTime(1600)
+    await act(async () => { vi.advanceTimersByTime(1600) })
     await waitFor(() =>
       expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copy')),
     )
