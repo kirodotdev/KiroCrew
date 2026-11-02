@@ -213,10 +213,14 @@ class TestBuildConfig:
         doc = loader.read_config_document()
         assert doc.loaded is False
         assert doc.base_unreadable is True
-        assert doc.data == {"skills": {"project_skills_enabled": False}}
+        assert doc.data == {
+            "skills": {"project_skills_enabled": False},
+            "agent": {"kas_persist_mcp_sign_in": False},
+        }
         cfg = loader.build_config(doc)
         assert cfg._base_unreadable is True
         assert cfg.skills.project_skills_enabled is False
+        assert cfg.agent.kas_persist_mcp_sign_in is False
 
     @pytest.mark.parametrize("base", [None, {"workspaces": {"default": "~/ws"}}])
     def test_an_unreadable_overlay_is_reported_by_the_load_that_read_it(self, config_home, base):
