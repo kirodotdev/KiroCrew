@@ -302,8 +302,8 @@ async def _notice_unread_steering(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message, one whose KAS drops its agent's prompt, and one whose goose is outside
-    its tested range: the chat runs, and each row names the installed version, the
+    message, one whose KAS drops its agent's prompt, and one whose goose or codex is
+    outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it."""
     for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice", "tested_version_notice"):
         notice = getattr(client, name, "")

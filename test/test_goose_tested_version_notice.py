@@ -45,7 +45,10 @@ def test_an_unreadable_version_is_silent_and_does_not_raise(version):
     assert untested_version_issue(GOOSE, version) == ""
 
 
-@pytest.mark.parametrize("backend", sorted(set(sdk_backends.ACP_BACKENDS_KNOWN) - {GOOSE}))
+@pytest.mark.parametrize(
+    "backend",
+    sorted(set(sdk_backends.ACP_BACKENDS_KNOWN) - {GOOSE, sdk_backends.ACP_BACKEND_CODEX}),
+)
 def test_other_harnesses_get_no_goose_notice(backend):
     assert untested_version_issue(backend, "0.0.1") == ""
 
