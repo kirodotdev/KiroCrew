@@ -2912,7 +2912,8 @@ and key-results compare-and-sets accept the scrubbed form the page was shown as
 keeps the stored text (`member_goals.keep_unscrubbed`), so saving one milestone
 never replaces another's real text with redaction placeholders. Deleting a mate removes its check-in schedules
 (`crew_removal._remove_goal_check_ins`) unless another live crew still derives
-the slug; the goal record stays, like the rules file.
+the slug; the goal record stays, like the rules file. Both deletes run it, the
+route and `kirocrew agent delete`, through `crew_removal._remove_member_leftovers`.
 
 Since such a mate has a goal and no description, the Profile card's About
 shows its first goal, marked **From the goal**, while the description is
@@ -4080,9 +4081,9 @@ things here and leaves every other git step to the worker's prompt
    repository's `aws.project_profiles` binding still applies in the worktree:
    the cwd is matched as the same path in the checkout, asked of git each time
    (`crewmate_worktree.source_path`; config.md, "Project AWS profiles").
-3. **It goes with the crewmate.** Deleting the crewmate
-   (`crew_removal.api_kirocrew_agent_delete`, `crewmate_worktree.remove_for_member`)
-   lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
+3. **It goes with the crewmate.** Deleting the crewmate, from the dashboard
+   or with `kirocrew agent delete` (`crew_removal._remove_member_leftovers`,
+   `crewmate_worktree.remove_for_member`) lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
    a worktree of its repository with `git worktree remove` (never `--force`).
    One with uncommitted changes, ignored files or a repository that configures a
    checkout filter is kept and logged; so is anything git does not register.
