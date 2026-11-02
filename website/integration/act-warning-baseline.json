@@ -32,7 +32,6 @@
   "src/test/ChatInput.projectBranch.test.tsx",
   "src/test/ChatInput.skillsPrefetchDeadline.test.tsx",
   "src/test/ChatInput.test.tsx",
-  "src/test/ChatInputCoverage.test.tsx",
   "src/test/ChatPage.chipUndo.test.tsx",
   "src/test/ChatPage.dirStaging.test.tsx",
   "src/test/ChatPage.embedded.test.tsx",
