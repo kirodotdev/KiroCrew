@@ -43,7 +43,12 @@ import {
   readChainedCrewNotice,
 } from '../lib/chainAnnounce'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
+import {
+  DEFAULT_CONNECTION_METHOD,
+  WARM_SET_CAP_AUTO_CEILING,
+  transportPresentation,
+  transportTarget,
+} from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type WarmConn } from '../store/instancesSlice'
@@ -1288,20 +1293,25 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // switcher shows the same shape the window's does. A pane cannot derive
       // this: it never sees the host's registry.
       const tabs = chainRows(visibleInstanceTabs(insts, warm), insts).map(
-        ({ inst: i, depth, parentName, reachable, brokenAt }) => ({
-          id: i.id,
-          name: i.name,
-          sshHost: i.ssh_host,
-          state: i.status?.state,
-          unread: unread[i.id] || 0,
-          depth,
-          reachable,
-          pathName: parentName
-            ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: i.name })
-            : '',
-          pathParent: parentName,
-          brokenAt,
-        }),
+        ({ inst: i, depth, parentName, reachable, brokenAt }) => {
+          // The same detail the host's own switcher row derives (InstanceTabBar):
+          // an unmapped method's name, never a blank SSH host.
+          const presentation = transportPresentation(i)
+          return {
+            id: i.id,
+            name: i.name,
+            sshHost: presentation.addressField !== null ? transportTarget(i) : presentation.method,
+            state: i.status?.state,
+            unread: unread[i.id] || 0,
+            depth,
+            reachable,
+            pathName: parentName
+              ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: i.name })
+              : '',
+            pathParent: parentName,
+            brokenAt,
+          }
+        },
       )
       const selfInst = insts.find(i => i.id === id)
       const self = selfInst
@@ -1436,7 +1446,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
-      transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      // Through the shared mapping, not an inline comparison: this line used to
+      // read `=== 'ssm' ? 'ssm' : 'ssh'`, which reported a fargate crew's
+      // failure as `transport: ssh` — and disagreed with the settings panel,
+      // which reported the same failure as `ssm`.
+      transport: inst ? transportPresentation(inst).method : DEFAULT_CONNECTION_METHOD,
       // With the panel down the pane is healthy, so pass no status: the recorder's
       // no-failure path is what clears its de-dup signature, and gating this call
       // on `showPanel` would make that branch unreachable — leaving the signature

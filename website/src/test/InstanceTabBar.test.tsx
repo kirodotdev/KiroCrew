@@ -134,6 +134,26 @@ describe('InstanceTabBar', () => {
     await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7778, token: 'fresh' }))
   })
 
+  it('names an unmapped method on its switcher row, never a blank SSH host', async () => {
+    // The row's subtitle is the method's own name, not the ssh_host an unmapped
+    // record may still carry, so the crew is never presented as an SSH crew.
+    const edge = conn({
+      id: 'edge',
+      name: 'Edge Crew',
+      ssh_host: 'leaked-host',
+      connection_method: 'outbound',
+      was_connected: true,
+      status: { instance_id: 'edge', state: 'disconnected', remote_port: 7777 },
+    })
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([edge]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    const row = await openSwitcher(u, /Edge Crew/i)
+    expect(row.textContent).toMatch(/outbound/)
+    expect(row.textContent).not.toMatch(/leaked-host/)
+  })
+
   it('does NOT reconnect a warm + connected tab on click (no needless re-mint)', async () => {
     // The healthy path: a live, warm tab just switches — clicking it must not
     // re-mint/reload an in-use pane.
