@@ -298,6 +298,13 @@ def _report_kas_backend(issues: list[str]) -> None:
     # probe rejected -- that is exactly the one worth seeing.
     if identity_line:
         print(f"  crew vault:  {identity_line}")
+    if host_auth and not (identity_line or "").endswith("-> usable"):
+        # A stored vault entry is the sign-in even when it cannot be used: the
+        # spawn never falls back to kiro-cli's, so say how to get out of it.
+        print(
+            "               Sign in again with `kirocrew kas login --provider idc ...`, or"
+            " remove it with `kirocrew kas logout` to use kiro-cli's sign-in."
+        )
     # Before the help probe, not after: the row reads ``--version``, which is a
     # different spawn from ``acp --help``, so a failed help probe establishes
     # nothing about it. The early ``return`` below is for the ENGINE rows alone;
