@@ -13,7 +13,7 @@ import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName 
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { crewModeEnabled } from '../lib/crewMode'
-import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
 export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
@@ -208,11 +208,6 @@ export interface DashboardState {
    *  `selectSlotListPending` stops waiting and the pane falls back to its empty
    *  state instead of a placeholder that never resolves. */
   slotsFetchFailed: boolean
-  /** True only once the LIVE socket has pushed a slot list since the last
-   *  (re)connect and no HTTP `fetchSlots` reply has replaced rows since:
-   *  that reply may have been requested before a disconnect. Only this
-   *  flag lets a read retire an uncovered shared unread watermark. */
-  slotsLive?: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
   // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
@@ -266,7 +261,6 @@ const initialState: DashboardState = {
   slotsHoldChannels: false,
   slotsLoaded: false,
   slotsFetchFailed: false,
-  slotsLive: false,
   updateProgress: null,
   desktopUpdateAvailable: false,
   sessionDefaultColor: (() => { try { return (JSON.parse(localStorage.getItem('mc-session-default-color') ?? 'null') as DefaultColorSetting) ?? null } catch { return null } })(),
@@ -277,6 +271,34 @@ const initialState: DashboardState = {
 }
 
 export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => api.chatSlots())
+
+/** After a local read, check whether the shared watermark that read could
+ *  not cover is an ORPHAN: newer than every saved row the gateway has for an
+ *  idle session. Builds before #15014 left such records (the watermark was a
+ *  turn's unsaved `done` row, which a gateway restart drops). No read can
+ *  ever cover one, so without this check the dot comes back on every relayed
+ *  read and every reload.
+ *
+ *  This window's own slot row cannot decide it: it may lag a sibling that
+ *  just watermarked a real reply. So the gateway is asked, AFTER the
+ *  watermark is read: a real reply is a saved row the gateway already holds,
+ *  so its fresh `last_ts` covers it. The fulfilled reducer then removes the
+ *  record only if it still holds that same watermark. Does nothing (and
+ *  sends nothing) when the read already cleared the record. */
+export const confirmOrphanUnread = createAsyncThunk(
+  'dashboard/confirmOrphanUnread',
+  async (slot: string): Promise<{ slot: string; watermark: string } | null> => {
+    const watermark = sharedUnreadWatermark(slot)
+    if (watermark === undefined) return null
+    let rows: ChatSlot[]
+    try { rows = await api.chatSlots() } catch { return null }
+    const row = Array.isArray(rows) ? rows.find(r => r.key === slot) : undefined
+    // Unknown or mid-turn: rows still being written may cover it soon.
+    if (!row || row.running) return null
+    if (readCovers(row.last_ts, watermark)) return null // last-ts: the gateway's fresh reply, not this window's row
+    return { slot, watermark }
+  },
+)
 
 /** Switch the approval mode, carrying a policy refusal back to the caller.
  *
@@ -1041,14 +1063,13 @@ const dashboardSlice = createSlice({
       const hadUnreadRelayHold = hasUnreadRelayHold(state)
       state.connected = true
       state.slotsLoaded = false
-      state.slotsLive = false
       state.unreadDrainHeld = true
       state.slotsListPartial = false
       state.slotsHeldKeys = []
       state.slotsHoldChannels = false
       relayUnreadIfHolding(state, hadUnreadRelayHold)
     },
-    sseDisconnected(state) { state.connected = false; state.slotsLive = false; state.unreadDrainHeld = true },
+    sseDisconnected(state) { state.connected = false; state.unreadDrainHeld = true },
     /** The `slotsPartial` label on a `slots` frame (see `unreadDrainHeld`).
      *  Dispatched for every frame, before its list: an absent field is an
      *  older gateway and reads as complete. */
@@ -1100,7 +1121,6 @@ const dashboardSlice = createSlice({
       applySlots(state, rows)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
-      state.slotsLive = true
       reconcileSlots(state, new Set(rows.map(s => s.key)))
     },
     // Sidebar → shortcut and close-landing order feed (see
@@ -1548,26 +1568,8 @@ const dashboardSlice = createSlice({
       // lagging window (reconnect gap) cannot prove it saw the message a
       // sibling watermarked, so the shared badge survives for siblings and
       // reboots instead of being silently erased.
-      const _slot = state.slots?.find(sl => sl.key === action.payload) // row-read: running flag; writes only unread state
       const _readTs = slotLastTsOf(state, action.payload)
-      const _survivor = clearSharedUnreadIfCovered(action.payload, _readTs)
-      // An uncovered survivor on an IDLE slot is an ORPHAN: the watermark
-      // names a row newer than anything the gateway shows this session, so
-      // no read — this one or any future one — can ever cover it. That is
-      // what a build before #15014 left behind (it watermarked a turn's
-      // `done` row that a gateway restart then dropped), and keeping it
-      // strands the badge forever: every relayed read re-lights it and every
-      // reload restores it. With nothing in flight the slot's last_ts is the
-      // newest row that exists, so the read is authoritative — retire the
-      // record. A running (or unknown) slot keeps the survivor: mid-turn its
-      // last_ts legitimately trails rows it has not been pushed yet. So does
-      // a disconnected window, or one reconnected but not yet pushed a slot
-      // list over the live socket (`slotsLive`; an HTTP `fetchSlots` reply
-      // does not count, it may predate the disconnect): its idle flag and
-      // last_ts may predate a sibling's newer watermark, so it keeps it too.
-      if (_survivor !== undefined && _slot !== undefined && !_slot.running && state.connected && state.slotsLive) {
-        persistSharedUnread({}, [action.payload])
-      }
+      clearSharedUnreadIfCovered(action.payload, _readTs)
       _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     /** A read relayed from ANOTHER window: honors the watermark. Clears only
@@ -1772,9 +1774,6 @@ const dashboardSlice = createSlice({
         applySlots(state, rows)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
-        // An HTTP reply may predate a disconnect and overwrite a newer live
-        // row, so after it only a fresh live list may retire a watermark.
-        state.slotsLive = false
         // A complete frame that arrived while this request was in flight is the
         // newer, labelled list; the reply is older and carries no label. The drain
         // then runs against the union: a key the frame lists is live however
@@ -1797,6 +1796,19 @@ const dashboardSlice = createSlice({
         settleUnlistedMembers(state, action.meta?.requestId, null)
         settleSlotFetch(state, action.meta?.requestId)
         if (!(state.slotFetchesInFlight ?? []).length) state.slotsFetchFailed = true
+      })
+      .addCase(confirmOrphanUnread.fulfilled, (state, action) => {
+        if (!action.payload) return
+        const { slot, watermark } = action.payload
+        if (!retireSharedUnreadIfUnchanged(slot, watermark)) return
+        // The relayed read's echo may already have re-lit this window's badge
+        // from the orphan. Clear only that badge: one guarded by any other
+        // watermark (a newer arrival, a manual reminder) stays.
+        if (state.unreadSince?.[slot] !== watermark) return
+        delete state.unreadSince[slot]
+        if (!state.unreadSlots.includes(slot)) return
+        state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
+        _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
       // The created slot joins the list on the SAME action that activates it

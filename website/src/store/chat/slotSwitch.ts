@@ -8,7 +8,7 @@ import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
 import { emitSlotRead } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
-import { armConfirmedCloseHold, markSlotRead, removeSlotOptimistic } from '../dashboardSlice'
+import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../../utils/thunkError'
@@ -204,6 +204,7 @@ export const switchSlot = createAsyncThunk<
     // any older page still in flight is superseded even when the key is unchanged.
     abortActiveOlderFetch()
     dispatch(markSlotRead(key))
+    void dispatch(confirmOrphanUnread(key))
     // Opening a session is the canonical read gesture: relay it so every
     // other open dashboard window retires this slot's unread bubble too —
     // but only AFTER the transcript fetch succeeds (see the emits by the
