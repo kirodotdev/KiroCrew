@@ -155,13 +155,18 @@ def _gateway_rss_bytes(pid: int) -> int | None:
     """Resident set size of *pid* in bytes, or None when no route can read it.
 
     ``platform_compat.proc_rss_bytes_for_pid`` serves Linux (``/proc``) and
-    Windows (``GetProcessMemoryInfo``) but has no ctypes-only path on macOS and
-    answers None there, so this falls through to ``ps -o rss=`` resolved via
-    ``trusted_system_bin`` (ps reports KiB). Without the fallback the doctor
-    line reads "RSS unreadable" on every Mac.
+    Windows (``GetProcessMemoryInfo``); macOS reads ``pti_resident_size``
+    through ``platform_compat.darwin_resident_bytes_for_pid`` (``proc_pidinfo``).
+    None of these spawns a subprocess. Only when they all answer None off
+    Windows does this fall back to ``ps -o rss=`` resolved via
+    ``trusted_system_bin`` (ps reports KiB). On macOS ``ps`` is setuid and
+    fails under a sandbox that strips the elevation, so it is the last resort.
     """
     rss = platform_compat.proc_rss_bytes_for_pid(pid)
     if rss is not None or platform_compat.IS_WINDOWS:
+        return rss
+    rss = platform_compat.darwin_resident_bytes_for_pid(pid)
+    if rss is not None:
         return rss
     ps_bin = platform_compat.trusted_system_bin("ps")
     if ps_bin is None:

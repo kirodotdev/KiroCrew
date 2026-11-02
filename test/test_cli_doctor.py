@@ -1854,6 +1854,9 @@ class TestGatewayMemoryLines:
         monkeypatch.setattr(cli_doctor.platform_compat, "proc_rss_bytes_for_pid", lambda pid: None)
         monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(
+            cli_doctor.platform_compat, "darwin_resident_bytes_for_pid", lambda pid: None
+        )
+        monkeypatch.setattr(
             cli_doctor.platform_compat, "trusted_system_bin", lambda name: "/bin/ps"
         )
         calls: list[list[str]] = []
