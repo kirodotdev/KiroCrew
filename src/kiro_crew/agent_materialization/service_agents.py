@@ -137,7 +137,9 @@ def _install_mate_conductor_agent() -> None:
     like ``kirocrew-research``. It excludes the sub-agent tools, ``task_run`` and
     ``workflow_run`` (``mate_worker.MATE_CONDUCTOR_EXCLUDED_TOOLS``), keeps only
     the platform servers (``mate_worker.conductor_mcp_servers``) with
-    ``includeMcpJson`` off, and never reads the crewmate's own file.
+    ``includeMcpJson`` off, mounts the work ledger (``kirocrew-work``, the
+    ledger conductor's grants, :func:`_mount_work_ledger`), and never reads the
+    crewmate's own file.
     """
     from kiro_crew.mate_worker import (
         MATE_CONDUCTOR_EXCLUDED_TOOLS,
@@ -170,7 +172,29 @@ def _install_mate_conductor_agent() -> None:
         listed = config.get(key)
         if isinstance(listed, list):
             config[key] = [t for t in listed if _kept(t)]
+    # After the filter: ``kirocrew-work`` is a platform server, but an opt-in one
+    # that ``build_agent_config`` never emits, so the filter has nothing to keep.
+    _mount_work_ledger(config, agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
     _exclude(config, MATE_CONDUCTOR_EXCLUDED_TOOLS)
+    # The patrol text (``crewmate_prompts.json`` ``conductor.patrol``) names the
+    # goal-conductor skill's ``patrol_budget.py``, and is rendered only where this
+    # spec mounts the work ledger (``member_mate_tools.binding_has_ledger_tools``).
+    # The mapping follows the text: a spec without the ledger names no skill, and a
+    # mapping there would only narrow the skills an unmapped spec inherits.
+    # Judged as the prompt check judges the written spec: after the governance
+    # ceiling has filtered ``allowedTools`` (on a copy, so the write's own pass
+    # still runs and audits once).
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    governed = {**config, "allowedTools": list(config.get("allowedTools") or [])}
+    auto_approve._apply_allowed_tools_ceiling(
+        governed, source="_install_mate_conductor_agent", audit=False
+    )
+    if spec_has_ledger_tools(governed):
+        # ``dashboard`` rides along because the crewmate prompt names that skill
+        # (``conductor.crew_log_section``); a mapping of goal-conductor alone would
+        # scope the chat's skills to it and leave the dashboard skill out of reach.
+        skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
     _write_mate_service_spec(
         _MATE_CONDUCTOR_AGENT_FILENAME, config, "_install_mate_conductor_agent"
     )
@@ -201,6 +225,10 @@ def _install_mate_worker_agent() -> None:
     principles = MATE_WORKER_PROMPT
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
     config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
+    # A worker bound to an item in its crewmate's ledger reports on it. The base's
+    # server wins over a crewmate file's entry of the same name
+    # (``mate_worker.merge_worker_spec``), so a crewmate's file cannot replace it.
+    _mount_work_ledger(config, agent_mod._WORKER_WORK_GRANTS)
     # Asking the user for a capability is the conductor's: a worker reports a
     # missing tool back to the chat that opened it.
     _exclude(config, MATE_WORKER_EXCLUDED_TOOLS)
@@ -484,6 +512,49 @@ def _mount_team_lead_dispatch(config: dict) -> None:
     allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
     grants = (*agent_mod._CONDUCTOR_DASHBOARD_GRANTS, *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
     config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
+
+
+def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
+    """Mount ``kirocrew-work`` on *config* in place, auto-approving *grants*.
+
+    The crewmate's conductor and worker take only the work ledger, not the
+    dashboard server :func:`_mount_team_lead_dispatch` adds: a crewmate's thread
+    gets ``kirocrew-dashboard`` per session from the member projection. The entry
+    is built through ``managed_mcp._managed_opt_in_entry`` for the same two
+    fields that fail silently (``"type": "registry"`` and the ``KIROCREW_HOME``
+    pin), and the installer's shared tail (``auto_approve.write_governed_spec``)
+    puts *grants* through the governance ceiling, so a withheld verb stays
+    mounted and prompts.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    entry = managed_mcp._managed_opt_in_entry("mcp-work")
+    inherited = servers.get("kirocrew-work")
+    off: list[str] = []
+    # The operator's restrictions on an inherited entry are kept on the managed
+    # transport: a whole-server switch-off, and per-tool limits, whose grants
+    # are not added.
+    if isinstance(inherited, dict):
+        if mcp_entry_is_muted(inherited):
+            entry["disabled"] = True
+        limits = inherited.get("disabledTools")
+        if isinstance(limits, list):
+            off = [t for t in limits if isinstance(t, str) and t.strip()]
+            if off:
+                entry["disabledTools"] = off
+    servers["kirocrew-work"] = entry
+    config["mcpServers"] = servers
+    tools = [t for t in config.get("tools") or [] if isinstance(t, str)]
+    if "*" not in tools and "@kirocrew-work" not in tools:
+        tools.append("@kirocrew-work")
+    config["tools"] = tools
+    allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
+    withheld = {f"@kirocrew-work/{t}" for t in off}
+    kept = (g for g in grants if g not in withheld)
+    config["allowedTools"] = list(dict.fromkeys((*allowed, *kept)))
 
 
 def _install_team_lead_agent() -> None:

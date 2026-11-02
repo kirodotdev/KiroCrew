@@ -122,13 +122,15 @@ def _spec_globs(
     ``None`` for an unmapped whole-catalog template.
 
     Its ``skill://`` entries, else the inherited trees for a spec that may inherit
-    them (kiro-cli's rule, so inherited trees count).
+    them (kiro-cli's rule, so inherited trees count); for the crewmate's conductor,
+    its entries plus those trees.
     """
     from kiro_crew.agent_discovery import (
         WHOLE_CATALOG_TEMPLATES,
         can_inherit_skills,
         expand_skill_uri,
         inherited_skill_globs,
+        mate_conductor_scope,
         skill_resource_uris,
     )
 
@@ -138,7 +140,9 @@ def _spec_globs(
         if (g := expand_skill_uri(uri, spec_path, project_dir=work_dir))
     ]
     if globs:
-        return globs
+        # The crewmate conductor's mapping adds to the inherited trees, by the one
+        # rule ``agent_skill_globs`` returns through.
+        return mate_conductor_scope(agent, spec, globs, work_dir)
     if agent in WHOLE_CATALOG_TEMPLATES:
         return None
     return inherited_skill_globs(work_dir) if can_inherit_skills(spec) else []

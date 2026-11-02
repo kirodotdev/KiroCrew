@@ -42,12 +42,26 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     def test_beyond_name_and_description_it_is_the_default_templates_shape(
         self, installed, monkeypatch, tmp_path
     ):
-        """Every other field matches ``build_agent_config()`` exactly."""
+        """Every other field matches ``build_agent_config()`` exactly, except the
+        work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
+        from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+
         template = agent.build_agent_config()
+        mounted = ("tools", "allowedTools", "mcpServers", "resources")
         for key, value in template.items():
-            if key in ("name", "description", "excludedTools"):
+            if key in ("name", "description", "excludedTools", *mounted):
                 continue
             assert installed.get(key) == value, key
+        # The mounted ledger maps the skills its prompt names onto the template's own.
+        mapped = {*prompt_skill_uris("goal-conductor"), *prompt_skill_uris("dashboard")}
+        assert [r for r in installed["resources"] if r not in mapped] == template.get("resources")
+        assert {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"} == (
+            template["mcpServers"]
+        )
+        assert [t for t in installed["tools"] if t != "@kirocrew-work"] == template["tools"]
+        assert [
+            t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
+        ] == template["allowedTools"]
 
     def test_it_keeps_the_default_templates_built_in_tools(self, installed):
         """Only sub-agent spawning is taken away: the shell, the file writer and
@@ -199,3 +213,239 @@ def test_the_operating_mode_block_dispatches_and_ends_instead_of_patrolling():
     text = member.operating_mode_block("Atlas")
     assert "end your turn" in text and "[Worker report]" in text
     assert "monitor_start" not in text
+
+
+# -- the work ledger: goal-conductor skill and the ledger wording follow the mount -- #
+
+_RECORD = "@kirocrew-work/work_ledger_record"
+_READ = "@kirocrew-work/work_ledger_read"
+
+
+def _install_with_work(
+    tmp_path, monkeypatch, *, withhold_record: bool = False, select: bool = True
+) -> dict:
+    """The installed conductor spec when only the template carries ``kirocrew-work``.
+
+    The installer's own mount is stubbed out, so *select* and *withhold_record* decide
+    what the spec holds and the mapping is read against exactly that."""
+    from kiro_crew.agent_materialization import auto_approve, managed_mcp
+
+    real = agent.build_agent_config
+
+    def with_work():
+        config = real()
+        config["mcpServers"] = {
+            **config.get("mcpServers", {}),
+            "kirocrew-work": managed_mcp._managed_opt_in_entry("mcp-work"),
+        }
+        if select:
+            config["tools"] = [*config["tools"], "@kirocrew-work"]
+        config["allowedTools"] = [*config.get("allowedTools", []), _READ, _RECORD]
+        return config
+
+    monkeypatch.setattr(agent, "build_agent_config", with_work)
+    monkeypatch.setattr(service_agents, "_mount_work_ledger", lambda config, grants: None)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    if withhold_record:
+        real_may = auto_approve._may_auto_approve
+        monkeypatch.setattr(
+            auto_approve,
+            "_may_auto_approve",
+            lambda ref: ref != _RECORD and real_may(ref),
+        )
+    service_agents._install_mate_conductor_agent()
+    return json.loads(
+        (paths_mod.mate_agents_dir() / MATE_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8")
+    )
+
+
+def _install_without_ledger(tmp_path, monkeypatch) -> dict:
+    """The installed conductor spec with the installer's ledger mount stubbed out."""
+    monkeypatch.setattr(service_agents, "_mount_work_ledger", lambda config, grants: None)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    service_agents._install_mate_conductor_agent()
+    return json.loads(
+        (paths_mod.mate_agents_dir() / MATE_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8")
+    )
+
+
+def _goal_conductor_uri() -> str:
+    from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+
+    return prompt_skill_uris("goal-conductor")[0]
+
+
+def test_without_the_ledger_the_conductor_maps_no_goal_conductor_skill(tmp_path, monkeypatch):
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    spec = _install_without_ledger(tmp_path, monkeypatch)
+    assert "kirocrew-work" not in spec["mcpServers"]
+    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+    assert not spec_has_ledger_tools(spec)
+
+
+def test_the_installed_conductor_mounts_the_ledger_and_maps_goal_conductor(installed):
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    assert "kirocrew-work" in installed["mcpServers"]
+    assert _goal_conductor_uri() in installed["resources"]
+    assert spec_has_ledger_tools(installed)
+
+
+def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    spec = _install_with_work(tmp_path, monkeypatch)
+    assert _goal_conductor_uri() in spec["resources"]
+    # The dashboard skill the crewmate prompt names stays in reach once mapping scopes.
+    from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+
+    assert prompt_skill_uris("dashboard")[0] in spec["resources"]
+    # The template's own resources keep their places.
+    template = agent.build_agent_config()
+    for entry in template.get("resources") or []:
+        assert entry in spec["resources"]
+    assert spec_has_ledger_tools(spec)
+
+
+def test_a_ceiling_that_withholds_the_record_verb_reads_as_no_ledger(tmp_path, monkeypatch):
+    from kiro_crew.member_mate_tools import spec_has_ledger_tools
+
+    spec = _install_with_work(tmp_path, monkeypatch, withhold_record=True)
+    assert "kirocrew-work" in spec["mcpServers"] and "@kirocrew-work" in spec["tools"]
+    assert _RECORD not in spec["allowedTools"]
+    assert not spec_has_ledger_tools(spec)
+    # No ledger text, so no mapping: the spec keeps the skills it inherits.
+    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+
+
+def test_a_server_entry_without_its_tools_selected_maps_no_skill(tmp_path, monkeypatch):
+    spec = _install_with_work(tmp_path, monkeypatch, select=False)
+    assert "kirocrew-work" in spec["mcpServers"]
+    assert _goal_conductor_uri() not in (spec.get("resources") or [])
+
+
+def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from kiro_crew import mate_worker, member_mate_tools
+
+    binding = SimpleNamespace(kiro_agent="cove", workspace="")
+    monkeypatch.setattr(
+        mate_worker, "member_chat_agent", lambda _k: mate_worker.MATE_CONDUCTOR_AGENT
+    )
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    service_agents._install_mate_conductor_agent()
+    assert member_mate_tools.binding_has_ledger_tools(binding) is True
+    _install_without_ledger(tmp_path, monkeypatch)
+    assert member_mate_tools.binding_has_ledger_tools(binding) is False
+    _install_with_work(tmp_path, monkeypatch)
+    assert member_mate_tools.binding_has_ledger_tools(binding) is True
+    _install_with_work(tmp_path, monkeypatch, withhold_record=True)
+    assert member_mate_tools.binding_has_ledger_tools(binding) is False
+
+
+# -- the mapping ADDS to the user's skills, for every caller of the scope -------- #
+
+
+@pytest.fixture
+def user_skills(tmp_path, monkeypatch):
+    """A ledger-mounted conductor beside a user ``~/.kiro/skills`` skill and a trusted
+    workspace ``.kiro/skills`` skill. Returns ``(spec, project, goal, user, workspace)``
+    where the last three are the globs each caller must keep."""
+    from kiro_crew import skill_trust
+    from kiro_crew.agent_discovery_parts.skill_scope import expand_skill_uri
+
+    home = tmp_path / "kiro-home"
+    (home / "skills" / "my-own").mkdir(parents=True)
+    (home / "skills" / "my-own" / "SKILL.md").write_text("---\nname: my-own\n---\n")
+    project = tmp_path / "project"
+    (project / ".kiro" / "skills" / "team-skill").mkdir(parents=True)
+    (project / ".kiro" / "skills" / "team-skill" / "SKILL.md").write_text(
+        "---\nname: team-skill\n---\n"
+    )
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_home", lambda: home)
+    monkeypatch.setattr(skill_trust, "project_skills_enabled", lambda: True)
+    monkeypatch.setattr(skill_trust, "is_project_trusted", lambda p: str(p) == str(project))
+    if not skill_trust.project_skill_traversal_supported():
+        pytest.skip("no-follow project traversal is unsupported on this platform")
+    spec = _install_with_work(tmp_path, monkeypatch)
+    path = paths_mod.mate_agents_dir() / MATE_CONDUCTOR_AGENT_FILENAME
+    goal = expand_skill_uri(_goal_conductor_uri(), path, project_dir=project)
+    user = str(home / "skills" / "*" / "SKILL.md")
+    workspace = str(project / ".kiro" / "skills" / "*" / "SKILL.md")
+    return spec, project, goal, user, workspace
+
+
+def _scope_via(caller: str, project) -> list[str]:
+    """The conductor's scope as each production caller asks for it."""
+    from kiro_crew import agent_discovery, context
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT as conductor
+
+    if caller == "turn_message_triggered_filter":
+        # context_assembly/turn_message.py: no inherit_defaults.
+        return context.agent_skill_globs(conductor, project_dir=project)
+    if caller == "agent_skill_globs_inheriting":
+        return agent_discovery.agent_skill_globs(
+            conductor, project_dir=project, strict=True, inherit_defaults=True
+        )
+    if caller in ("session_skill_globs_kiro_cli", "session_skill_globs_kas"):
+        provider = context.PROVIDER_ACP if caller.endswith("kiro_cli") else None
+        scope = agent_discovery.session_skill_globs(
+            "", conductor, project_dir=project, provider_type=provider
+        )
+        assert scope is not None
+        return scope
+    if caller in ("injection_plan_kiro_cli", "injection_plan_kas"):
+        provider = context.PROVIDER_ACP if caller.endswith("kiro_cli") else None
+        _ok, globs = context._skills_injection_plan(
+            conductor, is_cc=False, project_dir=project, provider_type=provider
+        )
+        return globs
+    raise AssertionError(caller)
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "turn_message_triggered_filter",
+        "agent_skill_globs_inheriting",
+        "session_skill_globs_kiro_cli",
+        "session_skill_globs_kas",
+        "injection_plan_kiro_cli",
+        "injection_plan_kas",
+    ],
+)
+def test_every_caller_keeps_the_users_skills_beside_goal_conductor(user_skills, caller):
+    _spec, project, goal, user, workspace = user_skills
+    scope = _scope_via(caller, project)
+    assert goal in scope
+    assert user in scope
+    assert workspace in scope
+
+
+def test_kas_deny_rule_keeps_the_users_skills_beside_goal_conductor(user_skills):
+    """KAS loads both trees itself; Crew's ``deny skill`` rule must exclude them."""
+    from kiro_crew.acp import kas_skill_scope
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    spec, project, goal, user, workspace = user_skills
+    globs = kas_skill_scope.scope_globs(
+        MATE_CONDUCTOR_AGENT, spec, agents_dir=paths_mod.mate_agents_dir(), work_dir=project
+    )
+    assert globs is not None and {goal, user, workspace} <= set(globs)
+    rules = kas_skill_scope.skill_scope_rules(globs, work_dir=project)
+    kept = {name for rule in rules for name in rule.get("exclude", [])}
+    assert {"my-own", "team-skill"} <= kept
+    assert not any(rule.get("match") for rule in rules)
+
+
+def test_the_worker_and_other_agents_keep_the_mapped_only_rule():
+    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_scope
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+
+    spec = {"tools": ["read"], "mcpServers": {"kirocrew-core": {}}}
+    assert mate_conductor_scope(MATE_WORKER_AGENT, spec, ["/a"], None) == ["/a"]
+    assert mate_conductor_scope("custom", spec, ["/a"], None) == ["/a"]
+    # Unmapped: the inheritance rule of its own caller decides, not this one.
+    assert mate_conductor_scope(MATE_CONDUCTOR_AGENT, spec, [], None) == []
