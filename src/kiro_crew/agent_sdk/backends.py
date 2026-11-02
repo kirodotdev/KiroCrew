@@ -160,7 +160,11 @@ with no row here.
      - driver-internal (which wire request switches the model)
    * - ``ACP_BACKENDS_MODEL_AT_LAUNCH``
      - driver-internal (whether the model is a launch argument, so the startup
-       apply sends nothing and a mid-session switch is refused)
+       apply sends nothing and a mid-session switch relaunches the process and
+       reloads the session)
+   * - ``ACP_BACKENDS_EFFORT_AT_LAUNCH``
+     - driver-internal (whether the reasoning effort is a launch argument, so a
+       change relaunches the process and reloads the session)
    * - ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``
      - semantic question (``SessionCapabilities.effort_via_config_option``)
    * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
@@ -1094,6 +1098,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
@@ -1106,9 +1111,11 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_IDS,
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
+    EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
     effort_config_option_id,
     effort_config_option_levels,
     effort_config_option_value,
+    launch_effort_supported,
     model_refusal_phrase,
     model_registry_namespace,
     resolve_cc_permission_mode,

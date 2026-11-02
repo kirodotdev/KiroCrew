@@ -11,6 +11,19 @@ and every primary restore re-applies the slot's reasoning effort to the newly
 selected model (`reapply_live_effort`); an effort re-apply that fails is logged as a
 warning and does not fail the model change.
 
+A harness that takes its model at launch (`ACP_BACKENDS_MODEL_AT_LAUNCH`, Strands)
+has the same seam: its `set_model` relaunches the process on the candidate and
+reloads the session (`acp/launch_tuning.py`). It advertises no model list, so no
+candidate is skipped as unadvertised; a chain entry another harness's catalog owns
+is refused by that `set_model` instead, and the walk skips it. `auto` relaunches on
+the model the harness's own settings name. The restore probe relaunches on the
+primary the same way.
+
+On such a harness only, an `auto` candidate is recorded as the model the session
+serves after the swap (the marker, the walk's active entry and the returned candidate),
+so the restore probe compares the marker against what the session runs. Every other
+harness records `auto` as before.
+
 ## Configuration
 
 `AgentConfig.fallback_model` is normalized by

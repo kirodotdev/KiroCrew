@@ -878,6 +878,30 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.record_effort_override.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_relaunch_refusal_keeps_the_old_level_and_does_not_reset(self):
+        """A relaunching harness put the prior level back; saving the refused one would
+        cold-start on it and fail the same way on every later message."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.switches_by_relaunch = True
+        provider.change_effort = AsyncMock(side_effect=RuntimeError("cannot run that effort"))
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "low"
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "effort_refused"
+        assert slot.reasoning_effort == "low"
+        state.sessions.reset.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_active_turn_defers_live_push(self):
         # A live effort change while a turn is streaming must NOT push live
         # (change_effort's response wait would race the in-flight prompt read

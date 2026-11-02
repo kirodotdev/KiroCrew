@@ -76,6 +76,7 @@ __all__ = [
     "resolve_pin_spelling_on",
     "resolve_usable_model",
     "run_kiro_native_commands",
+    "settings_default_model",
     "drain_skill_view_aliases",
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
@@ -1191,3 +1192,26 @@ def skill_view_sidecar_dirs() -> tuple[str, str]:
     )
 
     return (str(_projection_metadata_dir()), str(_projection_lease_dir()))
+
+
+def settings_default_model(agent_config: Any, backend: str) -> str:
+    """The model a launch-model harness's own settings name, or ``""`` for ``auto``.
+
+    Such a harness advertises no model list, so this is what its picker offers beside
+    ``auto``: for Strands, ``agent.strands_provider`` + ``agent.strands_model`` as the
+    ``provider/model`` id its launch would pass. A setting the launch would refuse
+    offers nothing here; the session start names it. Never a kiro-cli id.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS
+
+    if backend == ACP_BACKEND_STRANDS:
+        from kiro_crew.acp.harness.strands import strands_configured_model
+
+        try:
+            return strands_configured_model(
+                str(getattr(agent_config, "strands_provider", "") or ""),
+                str(getattr(agent_config, "strands_model", "") or ""),
+            )
+        except ValueError:
+            return ""
+    return ""

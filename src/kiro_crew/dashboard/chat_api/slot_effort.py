@@ -341,6 +341,20 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 else:
                     _updated_live = await provider.clear_effort()
             except Exception as exc:
+                if provider.switches_by_relaunch is True:
+                    # The relaunch refused the level and put the prior one back.
+                    # Committing it, or resetting to cold-start on it, would only
+                    # fail the same way on every later message.
+                    logger.warning(
+                        "change_effort(%s) refused for slot %s: %s: %s",
+                        effort,
+                        name,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return web.json_response(
+                        {"error": str(exc), "code": "effort_refused"}, status=400
+                    )
                 logger.warning(
                     "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
                     effort,

@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 
 
 def _model_is_a_launch_argument(provider: Any) -> bool:
-    """Whether *provider*'s harness fixes its model at launch and refuses a switch."""
+    """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
     backend = getattr(getattr(provider, "client", None), "backend", None)
     return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
 
@@ -866,9 +866,9 @@ async def _get_or_create_impl(
                                 pool_model,
                             )
                         elif _model_is_a_launch_argument(provider):
-                            # The harness takes its model only at launch and
-                            # refuses a live switch: this claim cannot honour
-                            # the pin, so the chat cold-starts on it instead.
+                            # The harness takes its model only at launch, so a
+                            # switch would relaunch the claimed process: the
+                            # chat cold-starts on the pin instead, which is cheaper.
                             launch_pin = True
                         else:
                             await cast(Any, provider).client.set_model(_send_model)

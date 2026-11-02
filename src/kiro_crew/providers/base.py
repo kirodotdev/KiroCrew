@@ -626,6 +626,16 @@ class LLMProvider(ABC):
     # ``getattr``/``hasattr`` guards remain where they additionally defend
     # against test doubles (AsyncMock) that are not LLMProvider instances.
 
+    @property
+    def switches_by_relaunch(self) -> bool:
+        """Whether a model or effort change relaunches this session's process.
+
+        True only where a switch either lands on the same chat or raises with the
+        prior values back in force, so a caller answers the raise as a refusal
+        rather than resetting onto the refused value. Default: ``False``.
+        """
+        return False
+
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight and not yet cancelled. Default False."""
         return False
