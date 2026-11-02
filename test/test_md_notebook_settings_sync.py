@@ -645,7 +645,9 @@ class _AsyncioWithClockedLoop:
         return getattr(asyncio, name)
 
 
-def _counted_ticks(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+def _counted_ticks(
+    server_mod, monkeypatch: pytest.MonkeyPatch, reads: Optional[list[dict[str, Any]]] = None
+) -> list[float]:
     """Record the loop clock at each tick of the running sync loop.
 
     ``_sync_loop`` re-reads ``server.read_settings()`` exactly once per tick, and it
@@ -653,12 +655,15 @@ def _counted_ticks(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[float]:
     test observes N entries, N decisions are complete: "nothing ran" is asserted over
     ticks that really happened, not over a stretch of wall time the loop may have spent
     starved. The real reader still runs, so the per-tick re-read stays exercised.
+    When *reads* is given, each tick's settings are appended to it as well.
     """
     real = server_mod.read_settings
     ticks: list[float] = []
 
     async def counting() -> dict[str, Any]:
         settings = await real()
+        if reads is not None:
+            reads.append(settings)
         ticks.append(asyncio.get_running_loop().time())
         return settings
 
@@ -713,7 +718,8 @@ async def test_the_loop_picks_up_a_changed_interval_without_a_restart(
         cycles.append(clock.monotonic())
 
     monkeypatch.setattr(loop_syncer, "_sync_once", _count)
-    ticks = _counted_ticks(server_mod, monkeypatch)
+    reads: list[dict[str, Any]] = []
+    ticks = _counted_ticks(server_mod, monkeypatch, reads)
     # The longest selectable interval: nothing is due for a compressed day.
     _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1440}))
     interval = 1440 * loop_syncer.SECONDS_PER_MINUTE
@@ -734,6 +740,15 @@ async def test_the_loop_picks_up_a_changed_interval_without_a_restart(
         # Shortened while the loop runs — no restart of the loop or the gateway.
         before = len(cycles)
         _write_raw_settings(server_mod, json.dumps({"autoSync": True, "autoSyncMins": 1}))
+        # The write is not atomic: a tick that reads the file mid-write sees the defaults
+        # (auto-sync off) and re-seeds the deadline, and the schedule's clock does not move
+        # by itself. Once a tick has read the new interval, two such intervals on that clock
+        # make a cycle due -- still well short of the day the old interval needed.
+        await _wait_for(
+            lambda: any(r.get("autoSyncMins") == 1 for r in reads),
+            "the loop never read the shortened interval",
+        )
+        clock.advance(2 * loop_syncer.SECONDS_PER_MINUTE)
         await _wait_for(lambda: len(cycles) > before, "a shortened interval never took effect")
 
 
