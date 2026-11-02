@@ -69,7 +69,6 @@ src/kiro_crew/apps/builtins/crew_companion/store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_break_not_postponed.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_fire_at_validation.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_manifest.py
-src/kiro_crew/apps/builtins/crew_companion/tests/test_reminders.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_routes.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
@@ -241,7 +240,6 @@ test/metrics/test_watchdog_metrics.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
-test/test_acp_true_provider_error.py
 test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py
 test/test_ai_agent_runner_coverage.py
@@ -419,7 +417,6 @@ test/test_deploy_round29_fixes.py
 test/test_deploy_round2_fixes.py
 test/test_deploy_round30_fixes.py
 test/test_deploy_round32_fixes.py
-test/test_deploy_round34_fixes.py
 test/test_deploy_round35_fixes.py
 test/test_deploy_round37_fixes.py
 test/test_deploy_round38_fixes.py

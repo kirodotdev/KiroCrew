@@ -24,6 +24,7 @@ import { Btn } from '../../components/ui'
 import SteerDecisionLine from './SteerDecisionLine'
 import QuoteCard from './QuoteCard'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
+import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../messageActions/MessageActionMenuItems'
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
@@ -440,6 +441,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     if (!retractedAction) lastBubbleBodyRef.current = carriedQuote ? stripQuoteBlock(content, carriedQuote) : content
   }, [retractedAction, content, carriedQuote])
 
+  // Read before any early return: a hook.
+  const userRoleActions = useMessageActionsFor('user')
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
     // The meta field is free text from the transcript; anything unknown reads as
@@ -604,7 +607,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const compactRow = !!onQuoteMessage
   // Copy is a row button, so a message with nothing else to offer (a bare
   // carried quote on a surface without link, pin or edit) shows no empty More.
-  const moreHasItems = quoteOffered || canCopyLink || canPin || (canEditResend && !standIn)
+  // App message actions the owner approved for the user's own messages (their
+  // own `user` role grant): rows at the end of More, on the rows that have one.
+  const appActions = compactRow && !standIn && quotableContent.trim().length > 0 ? userRoleActions : NO_ACTIONS
+  const moreHasItems = quoteOffered || canCopyLink || canPin || (canEditResend && !standIn) || appActions.length > 0
   const menuItems: MessageMenuItem[] = onQuoteMessage ? [
     ...(quoteOffered ? [{ id: 'quote', label: i18nT('pages.chat.userMessage.quote_message'), icon: <Quote size={14} />, onSelect: quoteShown }] : []),
     // "Copy text", the words the reply's menus use, so the same action reads
@@ -909,6 +915,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                   </span>
                 </DropdownMenuItem>
               )}
+              <MessageActionMenuItems actions={appActions} messageRole="user" markdown={quotableContent} anchor={() => userRef.current} />
             </DropdownMenuContent>
           </DropdownMenu>
         )}
