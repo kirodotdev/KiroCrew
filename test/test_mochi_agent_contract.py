@@ -98,8 +98,9 @@ class TestUpdatePlanSchemaMatchesTheImplementation:
         assert "full_replace" in spec["inputSchema"]["properties"]
 
     def test_planner_notes_is_typed_as_the_object_it_is(self):
+        """An object, never a string; null is the description's "clear it"."""
         props = _tool("update_plan")["inputSchema"]["properties"]
-        assert props["planner_notes"]["type"] == "object"
+        assert props["planner_notes"]["type"] == ["object", "null"]
 
 
 class TestUpdateWatchlistDeclaresWhatItAccepts:
