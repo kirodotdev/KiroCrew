@@ -39,6 +39,7 @@ from kiro_crew.skills_discovery import (
     _project_skills_dir,
     skills_dir,
 )
+from kiro_crew.skills_uninstalled import read_uninstalled
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
 logger = logging.getLogger("kiro_crew.skills")
@@ -469,11 +470,16 @@ def _ensure_builtin_skills(base: Path) -> None:
     """
     source_names: set[str] = set()
     supplied: set[str] = set()
+    # A shipped skill the user deleted stays deleted: without this, the copy
+    # below sees a missing destination and reinstalls it on every start.
+    uninstalled = read_uninstalled(base)
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
             continue
         for name, src_file in _iter_skill_files(src_root):
             source_names.add(name)
+            if name in uninstalled:
+                continue
             # First source root to ship a name owns it for this run. Without
             # this, the second root races the copy the first just made: the
             # destination is this run's own output rather than user data, and

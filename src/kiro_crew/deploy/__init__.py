@@ -17,6 +17,7 @@ from kiro_crew.platform_compat import (
     rmtree_force,
     unlink_link_or_junction,
 )
+from kiro_crew.skills_uninstalled import read_uninstalled
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,11 @@ _SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 _MANAGED_MARKER = ".kirocrew-managed"
 
 
-def _register_core_skills() -> None:
+def _register_core_skills(only: str | None = None) -> None:
     """Idempotently install deploy skills into <home>/skills/.
+
+    ``only`` limits the pass to that one skill, so restoring one deleted skill
+    does not replace every other managed copy under a live gateway.
 
     Always copies (never symlinks) so that _find_skills' realpath containment
     check sees the skill files as living inside the skill root. A symlink whose
@@ -41,9 +45,16 @@ def _register_core_skills() -> None:
     """
     target = config_dir() / "skills"
     target.mkdir(parents=True, exist_ok=True)
+    # Same contract as the builtin sync: a deploy skill the user deleted from
+    # the dashboard is not reinstalled behind their back.
+    uninstalled = read_uninstalled(target)
 
     for skill_dir in _SKILLS_DIR.iterdir():
         if not skill_dir.is_dir():
+            continue
+        if only is not None and skill_dir.name != only:
+            continue
+        if skill_dir.name in uninstalled:
             continue
         link = target / skill_dir.name
 

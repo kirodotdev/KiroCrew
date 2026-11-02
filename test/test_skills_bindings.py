@@ -171,6 +171,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "resolve_ledger_aliases": ("function", False, "skills"),
     "resolve_tool_read_keys": ("function", False, "skills"),
     "restore_auto_skill": ("function", False, "skills"),
+    "restore_builtin": ("function", False, "skills"),
     "run_skill_lifecycle": ("function", False, "skills"),
     "scoped_skills": ("function", False, "skills_selection"),
     "search_skills": ("function", False, "skills"),
@@ -183,6 +184,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "sync_builtins": ("function", False, "skills_builtin_sync"),
     "trigger_hint": ("function", False, "skills"),
     "update_auto_skill": ("function", False, "skills"),
+    "uninstalled_builtins": ("function", False, "skills"),
     "update_skill": ("function", False, "skills"),
 }
 

@@ -418,6 +418,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_skill_pending_detail,
     api_skill_pending_dismiss,
     api_skill_pin,
+    api_skill_restore_builtin,
     api_skill_tree,
     api_skills,
     api_skills_create,
@@ -426,6 +427,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_skills_trust,
     api_skills_trust_grant,
     api_skills_trust_revoke,
+    api_skills_uninstalled,
 )
 
 # ── Session work ledger (handlers/session_ledger.py) ──

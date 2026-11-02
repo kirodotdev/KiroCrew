@@ -110,6 +110,12 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
      *  `inject: false` reduces the skill to a one-line pointer on a match. */
     setSkillInjectOnTrigger: (name: string, inject: boolean) =>
       post('/api/skills/-/inject-on-trigger', { name, inject }).then(j),
+    /** Shipped skills the user deleted. They stay deleted across gateway
+     *  restarts and updates until restored. */
+    uninstalledBuiltinSkills: () =>
+      get('/api/skills/-/uninstalled').then(j) as Promise<{ uninstalled: string[] }>,
+    /** Reinstall a deleted shipped skill. Throws ApiError 404 `not_uninstalled`. */
+    restoreBuiltinSkill: (name: string) => post('/api/skills/-/restore-builtin', { name }).then(j),
     /** Context budget: cost data for the skill control plane. */
     skillsBudget: () => get('/api/skills/-/budget').then(j) as Promise<import('../../types').SkillBudgetResponse>,
     /** Multi-provider skill discovery (skills.sh, etc.) */
