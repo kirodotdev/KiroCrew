@@ -249,6 +249,7 @@ from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
     _project_tree_in_nested_repo,
     _project_tree_is_link,
     _project_tree_listing,
+    _project_tree_nested_ignored,
     _project_tree_nested_repos,
     _project_tree_pin,
     _project_tree_rebase,
