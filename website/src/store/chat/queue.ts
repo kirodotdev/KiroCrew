@@ -98,8 +98,8 @@ export function hydrateQueuedBubbles(
     const entry = listing.get(m.meta?.queueId as string)
     if (m.role !== 'queued' || !entry) return m
     const meta = { ...m.meta }
-    for (const key of ['durable', 'restored', 'held', 'written'] as const) delete meta[key]
-    return { ...m, meta: { ...meta, ...(entry.durable === false ? { durable: false } : {}), ...(entry.restored ? { restored: true } : {}), ...(entry.held ? { held: true } : {}), ...(entry.written ? { written: true } : {}) } }
+    for (const key of ['durable', 'restored', 'held', 'written', 'withdrawable'] as const) delete meta[key]
+    return { ...m, meta: { ...meta, ...(entry.durable === false ? { durable: false } : {}), ...(entry.restored ? { restored: true } : {}), ...(entry.held ? { held: true } : {}), ...(entry.written ? { written: true } : {}), ...(entry.withdrawable ? { withdrawable: true } : {}) } }
   })
   const liveIds = new Set([...live, ...base.filter(m => m.role === 'queued')].map(m => m.meta?.queueId))
   for (const { content, queueId, ts, kind, appLabel, quote, restored, held, written, ...attachments } of queue ?? []) {
@@ -330,7 +330,7 @@ export const queueReducers = {
       // `durable: false` too: the card's "won't survive a restart" label, and
       // `written`, so a requeued send whose row is written offers only Send now.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...(tags.withdrawable === true ? { withdrawable: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

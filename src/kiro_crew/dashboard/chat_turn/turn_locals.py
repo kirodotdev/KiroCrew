@@ -120,6 +120,8 @@ class _ChatTurn:
     _agent_cancel_owed: "bool"
     # The event that cancel was sent at; it answered the asks the client held open.
     _agent_cancel_event: "Any"
+    _queued_entries: "tuple[dict, ...]"
+    _message_is_typed: bool
 
     # State those functions write, or read after the turn rebinds it.
     _acquired: "bool"
@@ -428,6 +430,8 @@ class _ChatTurn:
         monitor_completion: "MonitorCompletionHook | None",
         _current_message: "dict | None",
         _agent_started: "bool" = False,
+        _queued_entries: "tuple[dict, ...]" = (),
+        _message_is_typed: bool = True,
     ) -> None:
         self.state = state
         self.slot = slot
@@ -487,6 +491,8 @@ class _ChatTurn:
         # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
         self._echo_held = []
         self._refused_segment = None
+        self._queued_entries = _queued_entries
+        self._message_is_typed = _message_is_typed
 
     @property
     def assistant_text(self) -> str:

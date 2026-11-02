@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.dashboard.responsive_chat import QUEUED_ROW_META_KEY
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import PUT_BACK_KEY, RESTORED_QUEUE_KEY
 
 
 @pytest.mark.asyncio
@@ -31,8 +31,10 @@ async def test_the_slot_detail_queue_marks_an_entry_whose_row_is_written(tmp_pat
     slot.messages.append(
         {"role": "user", "content": "sent words", "meta": {QUEUED_ROW_META_KEY: "w-1"}}
     )
+    held = slot.append("user", "held words", "msg msg-u")
     slot._queue.extend(
         [
+            {"id": "p-1", "content": "held words", PUT_BACK_KEY: "g1", "_responsive_row": held},
             {"id": "w-1", "content": "sent words", "meta": {}, RESTORED_QUEUE_KEY: True},
             {"id": "h-1", "content": "unwritten words", "meta": {}, RESTORED_QUEUE_KEY: True},
         ]
@@ -42,7 +44,8 @@ async def test_the_slot_detail_queue_marks_an_entry_whose_row_is_written(tmp_pat
         assert resp.status == 200
         queue = {q["id"]: q.get("meta") or {} for q in (await resp.json())["queue"]}
 
-    assert queue["w-1"].get("written") is True
+    assert queue["w-1"].get("written") is True and "withdrawable" not in queue["w-1"]
+    assert queue["p-1"] == {"written": True, "withdrawable": True}
     assert queue["w-1"].get("held") is True
     assert "written" not in queue["h-1"]
     assert queue["h-1"].get("held") is True

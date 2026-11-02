@@ -66,7 +66,7 @@ export interface QueuedMessageActions {
    *  the server accepted its cancel: several messages merged into one draft
    *  is not a draft anyone wrote, and with no draft to show at once there is
    *  no reason to hide a card the server may still run. Ids that are no longer
-   *  a visible card, whose user row is already written (`meta.written`, which
+   *  a visible card, whose row is written and not held (`meta.written`, which
    *  the server refuses to cancel), or whose action is already in flight, are
    *  skipped. Resolves once every request has answered, to each refused or
    *  lost one's id and reason (empty when all went through), so the stack can
@@ -321,7 +321,7 @@ export function useQueuedMessageActions({
     if (!slot) return Promise.resolve([])
     // Re-read now: the dialog stayed open after the ids were read (see the interface doc).
     const visible = new Set(visibleQueuedRef.current
-      .filter(m => m.meta?.written !== true)
+      .filter(m => m.meta?.written !== true || m.meta?.withdrawable === true)
       .map(queueIdOf)
       .filter((id): id is string => !!id))
     const pending = pendingIdsRef.current

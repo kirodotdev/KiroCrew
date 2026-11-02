@@ -91,16 +91,17 @@ describe('QueueStack Discard all', () => {
     expect(onCancelAll).toHaveBeenCalledWith(['q1', 'q2'])
   })
 
-  it('leaves out a card already in the conversation, which the server will not cancel', async () => {
+  it('leaves out a card already in the conversation, which the server will not cancel, but not a held one', async () => {
     const user = userEvent.setup()
     const onCancelAll = vi.fn(async () => [])
-    const mixed = [written('q1', 'run the tests'), THREE[1], written('q3', 'then tag'), queued('q4', 'then ship')]
+    const held = { ...queued('q5', 'held'), meta: { queueId: 'q5', written: true, withdrawable: true } } as ChatMessage
+    const mixed = [written('q1', 'run the tests'), THREE[1], written('q3', 'then tag'), queued('q4', 'then ship'), held]
     render(<QueueStack messages={mixed} onCancel={() => {}} onCancelAll={onCancelAll} />)
     await user.click(screen.getByTestId('queue-discard-all'))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Discard 2 queued messages?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Discard 3 queued messages?')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Discard all' }))
-    expect(onCancelAll).toHaveBeenCalledWith(['q2', 'q4'])
+    expect(onCancelAll).toHaveBeenCalledWith(['q2', 'q4', 'q5'])
   })
 
   it('is disabled when every card is already in the conversation', () => {

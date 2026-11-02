@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isAppMessageQueued, isServerWrittenQueued, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
+import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
 import { quoteBlock } from '../chat-core/composer/messageQuote'
 import type { KnowledgeBlock } from '../pages/chat/useKnowledgeFetch'
@@ -927,6 +928,16 @@ describe('QueueStack server-written entry (resource wake, MCP-App message)', () 
     expect(screen.queryByLabelText('Edit queued message')).toBeNull()
     expect(screen.getByLabelText('Cancel queued message')).toHaveAttribute('title', 'Cancel queued message')
     expect(screen.getByTestId('queue-card').textContent).toContain('demo')
+  })
+
+  it('a written entry offers no edit, and a cancel only when it is withdrawable', () => {
+    const card = (withdrawable: boolean) => hydrateQueuedBubbles([], normalizeQueueEntries([{ id: 'q1', content: 'held', meta: { written: true, withdrawable } }]))[0]
+    const { rerender } = render(<QueueStack messages={[card(false)]} onCancel={vi.fn()} onEdit={vi.fn()} />)
+    expect(screen.queryByLabelText('Cancel queued message')).toBeNull()
+    rerender(<QueueStack messages={[card(true), queued('next', 'q2')]} onCancel={vi.fn()} onEdit={vi.fn()} onReorder={vi.fn()} onInterrupt={vi.fn()} />)
+    fireEvent.click(document.querySelector('[aria-expanded]')!)
+    const held = screen.getAllByTestId('queue-card')[0]
+    expect([...held.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Send now', 'Cancel queued message'])
   })
 
   it('the person\'s own queued message keeps its pencil and its move-back-to-input cancel', () => {

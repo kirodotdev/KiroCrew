@@ -310,3 +310,14 @@ def test_the_row_reseat_keeps_one_row_per_repeated_id():
     ]
     _reorder_queued_rows(rows, ["qb", "qa", "qb"])
     assert [r["content"] for r in rows] == ["hi", "b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_a_neighbours_move_cannot_split_a_put_back_group():
+    """A put-back group drains under its one row only when whole, so it moves as one."""
+    slot = (state := _make_state()).get_or_create_slot("chat-1")
+    a, b, c = (slot.queue_append(text) for text in "abc")
+    slot._queue[0]["_signout_put_back"] = slot._queue[1]["_signout_put_back"] = "g1"
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.put("/api/chat/slots/chat-1/queue/order", json={"order": [a, c, b]})
+    assert resp.status == 200 and [q["id"] for q in slot._queue] == [a, b, c]

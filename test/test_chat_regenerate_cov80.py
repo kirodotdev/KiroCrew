@@ -1422,3 +1422,20 @@ async def test_switching_a_variant_is_not_held_by_a_crew_pause(state, monkeypatc
     async with _client(state) as client:
         resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
         assert (await resp.json()).get("code") != "crew_paused"
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_drops_the_sign_in_put_back_of_a_retired_row(state) -> None:
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    row, sent = slot.append("user", "redacted row", ts="t1"), slot.append("user", "B", ts="t2")
+    for text in ("token " + github_classic(), "B", "unrelated"):
+        slot.queue_append(text, directive_user_origin=True)
+    slot._queue[0].update({"_signout_put_back": "g1", "_responsive_row": row})
+    held, slot._queue[1]["_responsive_row"] = slot._queue[0]["id"], sent
+    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()):
+        async with _client(state) as client:
+            body = {"index": 0, "content": "edited"}
+            assert (await client.post("/api/chat/slots/s1/edit-resend", json=body)).status == 200
+    assert [q["content"] for q in slot._queue] == ["B", "unrelated"]
+    calls = [c.args for c in state.broadcast_ws.call_args_list]
+    assert ("queue_cancel", {"slot": "s1", "queue_id": held}) in calls
