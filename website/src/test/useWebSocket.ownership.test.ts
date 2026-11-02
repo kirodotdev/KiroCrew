@@ -217,7 +217,7 @@ describe('effect order', () => {
     // Exactly two of its own: the silence watchdog, then the mount effect.
     expect(effects).toHaveLength(2)
     expect(effects[0]).toBeGreaterThan(drain)
-    expect(src.slice(effects[0], effects[1])).toContain('silenceWindowMs')
+    expect(src.slice(effects[0], effects[1])).toContain('new SilenceWatchdog(')
     expect(src.slice(effects[1])).toContain('attachFocusRelay(')
   })
 })

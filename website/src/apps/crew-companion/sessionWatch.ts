@@ -37,6 +37,7 @@ import {
   confirmAssumedStart,
   type GateDecision,
 } from './completionGate'
+import { SilenceWatchdog } from '../../utils/socketSilenceWatchdog'
 
 /** What the caller needs in order to raise a bubble. */
 export interface SessionDone {
@@ -167,6 +168,36 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
   let stopped = false
   let retryMs = RECONNECT_MIN_MS
   let retryTimer: number | null = null
+
+  /**
+   * Replace a socket that stays OPEN but has stopped delivering frames -- a phone
+   * off-network, an OS-frozen tab. Same silence rule as the dashboard socket,
+   * through the one shared helper so the three cannot drift. `isOpen` reads this
+   * watcher's live socket; `onDead` runs the same disconnect bookkeeping the
+   * onclose path does (fail the in-flight turns, drop the approval dedupe) and
+   * reopens at once, so the fresh socket's `slots` frame re-derives the state the
+   * silent one was sitting on. Uses the injected clock so tests drive the window.
+   */
+  const silence = new SilenceWatchdog({
+    now: opts.now,
+    isOpen: () => socket?.readyState === WebSocket.OPEN,
+    onDead: () => {
+      const dead = socket
+      socket = null
+      if (dead) {
+        // Drop the handler so its onclose cannot schedule a backed-off reconnect
+        // that would race the immediate reopen below.
+        dead.onclose = null
+        try { dead.close() } catch { /* already closing */ }
+      }
+      surfacedApprovals.clear()
+      failInFlight()
+      if (retryTimer !== null) { window.clearTimeout(retryTimer); retryTimer = null }
+      retryMs = RECONNECT_MIN_MS
+      open()
+    },
+  })
+  let silenceStarted = false
 
   const markStart = (slot: string, wasAssumed: boolean) => {
     if (startedAt.has(slot)) return
@@ -375,8 +406,15 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       return
     }
     socket = ws
-    ws.onopen = () => { retryMs = RECONNECT_MIN_MS }
-    ws.onmessage = (ev) => handle(String(ev.data))
+    ws.onopen = () => {
+      retryMs = RECONNECT_MIN_MS
+      silence.markOpen()
+      if (!silenceStarted) {
+        silenceStarted = true
+        silence.start()
+      }
+    }
+    ws.onmessage = (ev) => { silence.markFrame(); handle(String(ev.data)) }
     // Both paths reconnect: a gateway restart closes cleanly, a network drop errors.
     ws.onclose = () => {
       socket = null
@@ -406,6 +444,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
 
   return () => {
     stopped = true
+    silence.stop()
     if (retryTimer !== null) window.clearTimeout(retryTimer)
     retryTimer = null
     if (socket) {
