@@ -10,20 +10,30 @@ What this module adds:
 
 * **Which views are ours.** Every tab this gateway opens is recorded on the
   channel's surface record (:attr:`~.surface_store.SurfaceRecord.views`): its
-  ``view_key``, ``view_id``, type and when it was last written. ``listViews``
-  carries no owner, so the record is the ONLY thing that may mark a view ours;
-  a view Slack lists that the record does not hold is never removed. (Slack also
-  refuses removing another agent's view with ``not_view_owner``; that is a
-  backstop, not the rule.)
-* **Making room.** On ``too_many_views`` (:func:`make_room`), the live list is
-  read and the least recently written view whose RECORDED id is listed is
-  removed -- one of the agent's own html / block_kit tabs, never the Plan tab
-  and never the Code tab's diff, which are the channel's own -- then the write
-  is retried once. With nothing of ours to remove, the caller gets
-  ``too_many_views`` back and says so.
-* **Rehydrating.** The same read drops record entries Slack no longer lists (a
-  view someone removed), so a later write reopens the tab instead of trusting a
-  dead id.
+  ``view_key``, ``view_id``, type and when it was last written (and, for a pull
+  request tab, the PR's URL). ``listViews`` carries no owner, so the record is the
+  ONLY thing that may mark a view ours; a view Slack lists that the record does
+  not hold is never removed. (Slack also refuses removing another agent's view
+  with ``not_view_owner``; that is a backstop, not the rule.)
+* **The budget.** Five tabs, in three tiers:
+
+  1. the channel's own tabs, never removed to make room: the Plan canvas
+     (``plan``), the Code tab's diff (kept by the workspace, never recorded here)
+     and the Workers tab (``workers``, :mod:`.tabs`);
+  2. the native pull-request tabs of the channel's newest open PRs
+     (``pr-<number>``, at most :data:`MAX_PR_TABS`, :mod:`.tabs`);
+  3. the agent's own html / block_kit tabs (``code_channel_set_view``).
+
+  On ``too_many_views`` (:func:`make_room`) the live list is read and ONE view of
+  ours is removed, then the write is retried once. A tier-3 view is removed first
+  (least recently written), for any write. A pull-request tab is removed (the
+  oldest PR first) only to fit a tier-1 tab: a PR tab never makes room for
+  another PR tab -- :mod:`.tabs` removes the unwanted ones first, so the rest
+  are wanted -- nor for an agent's view, which ranks below it. With nothing
+  of ours to remove, the caller gets ``too_many_views`` back and says so.
+* **Rehydrating.** The same read (:func:`reconcile`) drops record entries missing
+  from Slack's list (a view someone removed), so a later write reopens the tab
+  instead of trusting a dead id.
 
 .. _agents.conversations.setView: https://docs.slack.dev/reference/methods/agents.conversations.setView
 """
@@ -78,28 +88,85 @@ def _stopped(channel_id: str) -> bool:
 
 
 TOO_MANY_VIEWS = "too_many_views"
-#: The Plan tab's view key; its id is also kept as ``plan_view_id``.
+#: The Plan canvas tab's key; its id is also kept as ``plan_view_id``.
 PLAN_KEY = "plan"
-#: The views the channel keeps (the Plan tab); never removed to make room.
-PROTECTED_KEYS = frozenset({PLAN_KEY})
+#: The Workers tab's key (a ``block_kit`` view, :mod:`.tabs`).
+WORKERS_KEY = "workers"
+#: The channel's own tabs: never removed to make room (the diff is never recorded).
+PROTECTED_KEYS = frozenset({PLAN_KEY, WORKERS_KEY})
+#: The Code tab's diff, as ``make_room``'s *for_key* (it is a channel tab too).
+DIFF_KEY = "diff"
+#: Pull-request tab keys: ``pr-<number>``.
+PR_KEY_PREFIX = "pr-"
+PR_VIEW_TYPE = "pull_request"
+#: Pull-request tabs a channel keeps: five, less Plan, Code and Workers. With
+#: both held, an agent's own tabs may be displaced entirely (they give way first).
+MAX_PR_TABS = 2
 #: Most view entries remembered per channel (Slack holds five; a margin for churn).
 MAX_RECORDED = 16
 
 
+def pr_key(number: int) -> str:
+    return f"{PR_KEY_PREFIX}{int(number)}"
+
+
+def _is_pr_key(key: str) -> bool:
+    """``pr-`` followed by ASCII digits only, the shape :func:`pr_key` writes."""
+    number = key[len(PR_KEY_PREFIX) :]
+    return key.startswith(PR_KEY_PREFIX) and number.isascii() and number.isdigit()
+
+
+def is_pr_tab(view: dict[str, Any]) -> bool:
+    """A recorded pull-request tab: its key AND its recorded type say so.
+
+    The type is checked too, so a view an agent wrote under a ``pr-`` key before
+    those keys were reserved is never taken for one.
+    """
+    return view.get("type") == PR_VIEW_TYPE and _is_pr_key(str(view.get("key") or ""))
+
+
+def pr_number(view: dict[str, Any]) -> int:
+    return int(str(view.get("key"))[len(PR_KEY_PREFIX) :]) if is_pr_tab(view) else 0
+
+
+def reserved_key(key: str) -> bool:
+    """Keys the agent's own views may not take: the channel's tabs and the PR tabs."""
+    return key in PROTECTED_KEYS or key == DIFF_KEY or _is_pr_key(key)
+
+
 def _entry(view: dict[str, Any]) -> dict[str, str]:
-    return {
+    entry = {
         "key": str(view.get("key") or ""),
         "view_id": str(view.get("view_id") or ""),
         "type": str(view.get("type") or ""),
         "at": str(view.get("at") or "0"),
     }
+    if view.get("url"):
+        entry["url"] = str(view["url"])
+    return entry
 
 
-#: One per channel, held across every read-modify-write of the recorded views, so
-#: a tab write and an eviction meeting each other never drop the other's change.
-#: Separate from :data:`_locks`: :func:`make_room` holds that one while it calls
-#: :func:`forget_view`, and an asyncio lock is not reentrant.
+def recorded(record: Any, key: str) -> dict[str, str] | None:
+    """The view of ours recorded under *key* on a surface record, or ``None``."""
+    for view in getattr(record, "views", None) or ():
+        if view.get("key") == key and view.get("view_id"):
+            return dict(view)
+    return None
+
+
+#: One per channel: every read-modify-write of the recorded views holds it, so a
+#: tool write and a refresh recording views together never lose one.
 _record_locks: dict[str, asyncio.Lock] = {}
+
+
+def _record_lock(channel_id: str) -> asyncio.Lock:
+    lock = _record_locks.get(channel_id)
+    if lock is None:
+        if len(_record_locks) > 4096:
+            for key in [k for k, v in _record_locks.items() if not v.locked()]:
+                _record_locks.pop(key, None)
+        lock = _record_locks[channel_id] = asyncio.Lock()
+    return lock
 
 
 def _stamp(view: dict[str, Any]) -> float:
@@ -111,18 +178,23 @@ def _stamp(view: dict[str, Any]) -> float:
     return at if math.isfinite(at) else 0.0
 
 
-def _record_lock(channel_id: str) -> asyncio.Lock:
-    return _record_locks.setdefault(channel_id, asyncio.Lock())
+def _protected_first(entries: list[dict[str, str]]) -> list[dict[str, str]]:
+    """*entries* cut to :data:`MAX_RECORDED`, the agent's oldest dropped first."""
+    if len(entries) <= MAX_RECORDED:
+        return entries
+    spare = [v for v in entries if v.get("key") not in PROTECTED_KEYS and not is_pr_tab(v)]
+    drop = {id(v) for v in spare[: len(entries) - MAX_RECORDED]}
+    return [v for v in entries if id(v) not in drop][-MAX_RECORDED:]
 
 
-async def record_view(channel_id: str, *, key: str, view_id: str, type: str) -> None:
+async def record_view(channel_id: str, *, key: str, view_id: str, type: str, url: str = "") -> None:
     """Remember that this gateway wrote view *key* (made or updated) just now."""
+    entry = {"key": key, "view_id": view_id, "type": type, "at": f"{time.time():.6f}", "url": url}
     async with _record_lock(channel_id):
         record = await get_async(channel_id)
         kept = [dict(v) for v in (record.views if record else ()) if v.get("key") != key]
-        entry = {"key": key, "view_id": view_id, "type": type, "at": f"{time.time():.3f}"}
         kept.append(_entry(entry))
-        changes: dict[str, Any] = {"views": kept[-MAX_RECORDED:]}
+        changes: dict[str, Any] = {"views": _protected_first(kept)}
         if key == PLAN_KEY:
             # In the same write, so a reconcile never sees the entry without the id.
             changes["plan_view_id"] = view_id
@@ -139,7 +211,7 @@ async def forget_view(channel_id: str, key: str) -> None:
             await update_async(channel_id, views=kept)
 
 
-async def _reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
+async def reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
     """Our record pruned to the views Slack still lists, matched by view id.
 
     A recorded entry is ours only while its OWN recorded ``view_id`` is listed: a
@@ -148,25 +220,28 @@ async def _reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
     The listing is read before the record's lock is taken, so an entry recorded
     after the listing began (a write that landed meanwhile) is kept as it is: the
     listing is no evidence it is gone. Only listed entries are returned, the ones
-    this listing shows taking a slot.
+    this listing shows taking a slot. Raises :class:`CodeChannelApiError` when the
+    list cannot be read.
     """
-    # Recorded stamps have millisecond precision: the margin keeps one rounded
-    # down past the listing's start from reading as older than it.
-    listed_at = time.time() - 0.001
+    # Recorded times are kept to the microsecond: a hair of tolerance for rounding.
+    asked_at = time.time() - 1e-6
     listed = await client.list_views(channel_id)
     live_ids = {str(v.get("view_id") or "") for v in listed if v.get("view_id")}
     async with _record_lock(channel_id):
         record = await get_async(channel_id)
-        recorded = [dict(v) for v in (record.views if record else ())]
-        ours = [v for v in recorded if v.get("view_id") and v["view_id"] in live_ids]
+        recorded_views = [dict(v) for v in (record.views if record else ())]
         fresh_ids = {
             v["view_id"]
-            for v in recorded
-            if v.get("view_id") and v not in ours and _stamp(v) >= listed_at
+            for v in recorded_views
+            if v.get("view_id") and v["view_id"] not in live_ids and _stamp(v) >= asked_at
         }
-        kept = [v for v in recorded if v in ours or v.get("view_id") in fresh_ids]
+        kept = [
+            v
+            for v in recorded_views
+            if v.get("view_id") and (v["view_id"] in live_ids or v["view_id"] in fresh_ids)
+        ]
         changes: dict[str, Any] = {}
-        if len(kept) != len(recorded):
+        if len(kept) != len(recorded_views):
             changes["views"] = kept
         plan_id = record.plan_view_id if record is not None else ""
         if plan_id and plan_id not in live_ids and plan_id not in fresh_ids:
@@ -174,17 +249,37 @@ async def _reconcile(client: Any, channel_id: str) -> list[dict[str, str]]:
             changes["plan_view_id"] = ""
         if changes:
             await update_async(channel_id, **changes)
-    return ours
+    return [v for v in kept if v["view_id"] in live_ids]
+
+
+def _candidates(ours: list[dict[str, str]], for_key: str) -> list[dict[str, str]]:
+    """The views of ours *for_key* may displace, in the order they go (see the module)."""
+    agent = [
+        v
+        for v in ours
+        if v.get("key") not in PROTECTED_KEYS and not is_pr_tab(v) and v.get("key") != for_key
+    ]
+    agent.sort(key=_stamp)
+    if for_key not in PROTECTED_KEYS and for_key != DIFF_KEY:
+        return agent
+    prs = [v for v in ours if is_pr_tab(v) and v.get("key") != for_key]
+    prs.sort(key=pr_number)
+    return agent + prs
 
 
 async def make_room(
-    client: Any, channel_id: str, *, for_key: str, admits: Admits | None = None
+    client: Any,
+    channel_id: str,
+    *,
+    for_key: str,
+    admits: Admits | None = None,
 ) -> str:
-    """Remove the stalest view of ours to fit *for_key*; returns its key ("" = none).
+    """Remove one view of ours to fit *for_key*; returns its key ("" = none).
 
     Removes only by the view id this gateway recorded when it opened the view,
-    and only while *admits* (when given) still admits a write to the channel:
-    the listing before it can outlast the channel being set Off or Review.
+    and only while the write gate (*admits*, else the package's own) still
+    admits a write to the channel: the listing before it can outlast the channel
+    being set Off or Review, archived or stopped.
     One per channel at a time, so a tool write and the diff publish meeting the
     cap together each find what the other left. Raises nothing: a read or
     removal Slack refuses leaves the channel as it was and answers "".
@@ -198,26 +293,25 @@ _locks: dict[str, asyncio.Lock] = {}
 
 def _lock(channel_id: str) -> asyncio.Lock:
     """The channel's view lock: every view upsert by a tool, and every eviction."""
+    if len(_locks) > 4096:
+        for key in [k for k, v in _locks.items() if not v.locked()]:
+            _locks.pop(key, None)
     return _locks.setdefault(channel_id, asyncio.Lock())
 
 
 async def _make_room(
-    client: Any, channel_id: str, *, for_key: str, admits: Admits | None = None
+    client: Any,
+    channel_id: str,
+    *,
+    for_key: str,
+    admits: Admits | None = None,
 ) -> str:
     try:
-        ours = await _reconcile(client, channel_id)
+        ours = await reconcile(client, channel_id)
     except CodeChannelApiError as exc:
         logger.info("code channel %s: views not listed: %s", channel_id, exc.code)
         return ""
-    candidates = [
-        v
-        for v in ours
-        # The diff is never recorded here (the workspace keeps its id), so it is
-        # never a candidate.
-        if v.get("key") not in PROTECTED_KEYS and v.get("key") != for_key
-    ]
-    candidates.sort(key=_stamp)
-    for view in candidates:
+    for view in _candidates(ours, for_key):
         if await _refusal(channel_id, admits):
             return ""  # refused right before the removal: nothing is removed
         try:
@@ -256,6 +350,31 @@ async def _settle_lost_removal(client: Any, channel_id: str, view: dict[str, str
     return view["key"]
 
 
+async def remove_ours(
+    client: Any, channel_id: str, key: str, *, admits: Admits | None = None
+) -> bool:
+    """Remove the view of ours recorded under *key*, by its recorded id. True when gone.
+
+    A view Slack does not have (``view_not_found``) counts as gone too. Any other refusal,
+    or a write gate (*admits*, else the package's own) that no longer admits a write,
+    keeps the record, so the next pass tries again.
+    """
+    record = await get_async(channel_id)
+    view = recorded(record, key)
+    if view is None:
+        return True
+    if await _refusal(channel_id, admits):
+        return False
+    try:
+        await client.remove_view(channel_id, view["view_id"])
+    except CodeChannelApiError as exc:
+        if exc.code != "view_not_found":
+            logger.info("code channel %s: view %s not removed: %s", channel_id, key, exc.code)
+            return False
+    await forget_view(channel_id, key)
+    return True
+
+
 async def write_view(
     client: Any,
     channel_id: str,
@@ -264,6 +383,7 @@ async def write_view(
     type: str,
     write: Callable[[], Awaitable[str]],
     admits: Admits | None = None,
+    url: str = "",
 ) -> tuple[str, str]:
     """Run the ``setView`` *write* for view *key*, making room once at the cap.
 
@@ -280,7 +400,9 @@ async def write_view(
     until this one is recorded (and then sees it as the freshest).
     """
     async with _lock(channel_id):
-        return await _write_view(client, channel_id, key=key, type=type, write=write, admits=admits)
+        return await _write_view(
+            client, channel_id, key=key, type=type, write=write, admits=admits, url=url
+        )
 
 
 async def _write_view(
@@ -291,6 +413,7 @@ async def _write_view(
     type: str,
     write: Callable[[], Awaitable[str]],
     admits: Admits | None,
+    url: str = "",
 ) -> tuple[str, str]:
     removed = ""
     # Asked again once the lock is held: the wait for it can outlast an Off, a
@@ -314,5 +437,5 @@ async def _write_view(
         # The refusal wrote nothing, so this is the request's first landing,
         # not a retried write.
         view_id = await write()
-    await record_view(channel_id, key=key, view_id=view_id, type=type)
+    await record_view(channel_id, key=key, view_id=view_id, type=type, url=url)
     return view_id, removed
