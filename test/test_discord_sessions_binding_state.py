@@ -29,7 +29,7 @@ from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging import resume_expectation
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session_map import ConversationOwnershipConflict
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_sessions_helpers._isolated_home
@@ -542,8 +542,9 @@ class TestBindingLostUnderTheConversation:
             governance_calls += 1
             if governance_calls == 3:
                 third_in_governance.set()
-                # flake-ok: pre-existing unbounded wait in the stubbed governance check; the test sets release_third itself, moved verbatim, tracked for a de-flake pass
-                await release_third.wait()
+                await await_until(
+                    release_third, what="the test releasing the third sibling from governance"
+                )
             return True
 
         monkeypatch.setitem(
@@ -563,8 +564,13 @@ class TestBindingLostUnderTheConversation:
                     siblings.append(
                         asyncio.create_task(dispatcher.handle_message(_message("second")))
                     )
-                    # flake-ok: pre-existing zero yield that lets the second sibling queue on the routing lock before the count is read; moved verbatim, tracked for a de-flake pass
-                    await asyncio.sleep(0)
+                    await async_wait_until(
+                        lambda: len(dispatcher._routing_locks["c1"][1]) >= 2,
+                        describe=lambda: (
+                            f"{len(dispatcher._routing_locks['c1'][1])} decider(s) queued on "
+                            "c1's routing lock, want the first and the second sibling"
+                        ),
+                    )
                     assert len(dispatcher._routing_locks["c1"][1]) == 2
                     siblings.append(
                         asyncio.create_task(dispatcher.handle_message(_message("third")))
@@ -579,11 +585,9 @@ class TestBindingLostUnderTheConversation:
         client.send_message = _gate_waiters  # type: ignore[method-assign]
         await dispatcher.handle_message(_message("first"))
         assert len(siblings) == 2
-        # flake-ok: pre-existing unbounded await of the sibling task; moved verbatim, tracked for a de-flake pass
-        await siblings[0]
+        await await_until(siblings[0], what="the second sibling's message completing")
         release_third.set()
-        # flake-ok: pre-existing unbounded await of the sibling task once release_third is set; moved verbatim, tracked for a de-flake pass
-        await siblings[1]
+        await await_until(siblings[1], what="the third sibling's message completing")
         assert detached_sends == 3, "a pre-notice waiter was not refused"
         record = await store.get("c1")
         assert sessions.last_key == "", "a pre-notice waiter ran natively"
