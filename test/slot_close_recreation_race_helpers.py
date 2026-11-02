@@ -24,15 +24,14 @@ NAME = "chat-1-1785"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_slot_close_recreation_race*.py modules calls monkeypatch.undo()
-def _no_nudge_service(monkeypatch):
+def _no_nudge_service(_floor_monkeypatch):
     """No auto-nudge service: these tests isolate the teardown-race guard.
 
     The nudge-loop retirement and its rollbacks are pinned by
     test_slot_close_nudge_race.py; here the close path must find nothing to
     retire so the only variable is the post-pop identity re-check.
     """
-    monkeypatch.setattr(autonudge, "_INSTANCE", None)
+    _floor_monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
 
 class _Stream:
