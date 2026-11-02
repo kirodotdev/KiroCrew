@@ -33,6 +33,7 @@ import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
+import { isPendingCoordinatorApproval } from './chat/coordinatorApprovals'
 import {
   bumpRunEpoch,
   finalizeActiveTurn,
@@ -342,8 +343,9 @@ function applyNonActiveFrame(
       bumpRunEpoch(state, slot)
       if (run.state === 'idle') run.lastChunkSeq = undefined
       sa.toolLog = []
+      // A coordinator card is not this turn's: it waits on the registry.
       for (const m of msgs) {
-        if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+        if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
       }
     }
     // Reconcile the optimistic user bubble (appendSlotMessage) rather than
@@ -560,9 +562,10 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
       bumpRunEpoch(state, slot)
       if (state.slotState === 'idle') state.lastChunkSeq = undefined
       state.toolLog = []
-      // Auto-resolve any stale permissions from previous turn so they don't block the new turn
+      // Auto-resolve any stale permissions from previous turn so they don't block the new turn.
+      // A coordinator card is not this turn's: it waits on the registry.
       for (const m of state.messages) {
-        if (m.role === 'permission' && !m.meta?.resolved) {
+        if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) {
           if (m.meta) m.meta.resolved = 'rejected'
           else m.meta = { resolved: 'rejected' }
         }
