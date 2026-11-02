@@ -3679,6 +3679,7 @@
       "comment_unread_other": "{{count}} comments · unread"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Reasoning effort does not apply on Auto: the backend picks the model and takes no effort level until you pick a specific model above.",
       "configured_default_marker": "Default effort",
       "slider_locked_hint": "Locked to the default. Turn the switch off to pick a level.",
       "default_with_level": "Default · {{level}}",
@@ -8293,6 +8294,7 @@
         "role_model_auto": "Auto (provider picks)",
         "effort_needs_reasoning_model": "Applies only on reasoning-capable models, so it has no effect on the model selected above.",
         "effort_default_needs_reasoning_model": "How long models think before answering by default. Applies only on reasoning-capable models, so it has no effect on the model selected above.",
+        "effort_default_off_on_auto": "How long models think before answering by default. It does not apply while the default model is Auto, because the backend picks the model and takes no effort level until a specific model is selected.",
         "throttle_fallback": "Rate-limit fallback",
         "fallback_model": "Fallback model",
         "model_tried_when_your_current_model_stays_rate_li": "Model tried when your current model stays rate-limited past its retry budget.",

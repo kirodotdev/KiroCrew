@@ -8605,6 +8605,7 @@
       "title_md": "Largeur moyenne"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "L’effort de raisonnement ne s’applique pas en Auto : le backend choisit le modèle et n’accepte aucun niveau d’effort tant que tu ne choisis pas un modèle précis ci-dessus.",
       "default_with_level": "Par défaut · {{level}}",
       "effort": "Effort",
       "effort_help": "L’effort de raisonnement définit la durée de réflexion du modèle avant de répondre. Plus il est élevé, plus le modèle prend le temps de résoudre les problèmes difficiles (réponses plus lentes mais meilleures) ; plus il est faible, plus la réponse est rapide. Désactiver le remplacement par session revient à la valeur par défaut définie dans Paramètres → Chat, ou au choix du modèle lui-même si aucune valeur par défaut n’est définie. Seuls les modèles qui prennent en charge l’effort de raisonnement proposent ce réglage.",
@@ -17602,6 +17603,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Afficher les jetons utilisés et le total à côté de la barre de progression du contexte",
         "e_g_solutions_architect_sre_founder": "p. ex. architecte de solutions, SRE, fondateur",
         "effort_default_needs_reasoning_model": "Durée de réflexion des modèles avant de répondre, par défaut. Ne s’applique qu’aux modèles capables de raisonnement : sans effet sur le modèle sélectionné ci-dessus.",
+        "effort_default_off_on_auto": "Durée de réflexion des modèles avant de répondre, par défaut. Ne s’applique pas tant que le modèle par défaut est Auto, car le backend choisit le modèle et n’accepte aucun niveau d’effort tant qu’un modèle précis n’est pas sélectionné.",
         "effort_needs_reasoning_model": "Ne s’applique qu’aux modèles capables de raisonnement: sans effet sur le modèle sélectionné ci-dessus.",
         "enter_for_newline": "Enter pour un saut de ligne",
         "enter_sends": "Enter envoie",

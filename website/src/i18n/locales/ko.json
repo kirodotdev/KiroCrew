@@ -8311,6 +8311,7 @@
       "title_md": "중간 너비"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Auto에서는 추론 강도가 적용되지 않습니다. 백엔드가 모델을 고르며, 위에서 특정 모델을 고를 때까지 강도 수준을 받지 않습니다.",
       "default_with_level": "기본값 · {{level}}",
       "effort": "강도",
       "effort_help": "추론 강도는 모델이 답변하기 전에 생각하는 시간을 정합니다. 높을수록 어려운 문제를 더 오래 추론하므로 느리지만 답변 품질이 좋아지고, 낮을수록 빠릅니다. 세션별 재정의를 끄면 설정 → 채팅의 기본값으로 돌아가며, 기본값이 없으면 모델 자체의 선택을 사용합니다. 추론 강도를 지원하는 모델에서만 이 설정을 제공합니다.",
@@ -16938,6 +16939,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "컨텍스트 진행 표시줄 옆에 사용된 토큰과 전체 토큰을 표시합니다",
         "e_g_solutions_architect_sre_founder": "예: 솔루션 아키텍트, SRE, 창업자",
         "effort_default_needs_reasoning_model": "모델이 기본적으로 답변 전에 생각하는 시간입니다. 추론 가능한 모델에만 적용되므로 위에서 선택한 모델에는 영향이 없습니다.",
+        "effort_default_off_on_auto": "모델이 기본적으로 답변 전에 생각하는 시간입니다. 기본 모델이 Auto인 동안에는 적용되지 않습니다. 백엔드가 모델을 고르며, 특정 모델을 선택할 때까지 강도 수준을 받지 않기 때문입니다.",
         "effort_needs_reasoning_model": "추론 가능한 모델에만 적용되므로 위에서 선택한 모델에는 영향이 없습니다.",
         "enter_for_newline": "Enter로 줄바꿈",
         "enter_sends": "Enter로 전송",

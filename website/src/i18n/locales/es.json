@@ -8605,6 +8605,7 @@
       "title_md": "Ancho medio"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "El esfuerzo de razonamiento no se aplica en Auto: el backend elige el modelo y no acepta ningún nivel de esfuerzo hasta que elijas un modelo concreto arriba.",
       "default_with_level": "Predeterminado · {{level}}",
       "effort": "Esfuerzo",
       "effort_help": "El esfuerzo de razonamiento define cuánto tiempo piensa el modelo antes de responder. Más esfuerzo significa más tiempo razonando problemas difíciles (respuestas más lentas y mejores); menos esfuerzo es más rápido. Al desactivar la anulación por sesión, se vuelve al valor predeterminado de Ajustes → Chat o, si no hay ninguno definido, a la elección del propio modelo. Solo los modelos compatibles con el esfuerzo de razonamiento ofrecen este ajuste.",
@@ -17602,6 +17603,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Mostrar los tokens usados y totales junto a la barra de progreso del contexto",
         "e_g_solutions_architect_sre_founder": "p. ej. arquitecto de soluciones, SRE, fundador",
         "effort_default_needs_reasoning_model": "Cuánto piensan los modelos antes de responder por defecto. Solo se aplica en modelos con razonamiento, por lo que no afecta al modelo seleccionado arriba.",
+        "effort_default_off_on_auto": "Cuánto piensan los modelos antes de responder por defecto. No se aplica mientras el modelo predeterminado sea Auto, porque el backend elige el modelo y no acepta ningún nivel de esfuerzo hasta que se selecciona un modelo concreto.",
         "effort_needs_reasoning_model": "Solo se aplica en modelos con razonamiento, por lo que no afecta al modelo seleccionado arriba.",
         "enter_for_newline": "Enter para nueva línea",
         "enter_sends": "Enter envía",
