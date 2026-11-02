@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import reducer, { sseSideResult } from '../store/chatSlice'
 import { renderWithProviders, createTestStore } from './helpers'
 
@@ -34,7 +34,7 @@ describe('SideChat Thinking indicator', () => {
     expect(state.slotSide[SLOT].pending).toBe(false)
   })
 
-  it('renders Thinking indicator when pending=true', () => {
+  it('renders Thinking indicator when pending=true', async () => {
     const store = createTestStore({
       chat: {
         ...initial,
@@ -48,7 +48,7 @@ describe('SideChat Thinking indicator', () => {
         },
       },
     })
-    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await act(async () => { renderWithProviders(<SideChat slot={SLOT} />, { store }) })
     expect(screen.getByText('Thinking…')).toBeInTheDocument()
   })
 })
