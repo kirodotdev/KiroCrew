@@ -13205,6 +13205,7 @@
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
       "before_you_connect": "연결하기 전에",
+      "before_you_disconnect": "연결을 끊기 전에",
       "cancel": "취소",
       "complete_connection": "완료",
       "connect": "연결",
@@ -13254,6 +13255,7 @@
       "prerequisite_gitlab": "GitLab Duo를 베타 및 실험적 기능과 함께 활성화하고 최상위 그룹에 대해 MCP 서버 액세스를 허용하세요. 이 설정이 없으면 연결은 성공하지만 도구가 제공되지 않습니다.",
       "prerequisite_gitlab_steps": "GitLab Duo를 베타 및 실험적 기능과 함께 활성화하고 최상위 그룹에 대해 MCP 서버 액세스를 허용하세요.",
       "prerequisites_for_provider": "{{provider}} 사전 요구 사항",
+      "shared_signin_for_provider": "{{provider}} 공유 로그인",
       "reconnect": "다시 연결",
       "reconnecting": "다시 연결 중…",
       "relaying": "전송 중…",

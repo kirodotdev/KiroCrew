@@ -6317,6 +6317,7 @@
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
       "before_you_connect": "Before you connect",
+      "before_you_disconnect": "Before you disconnect",
       "cancel": "Cancel",
       "complete_connection": "Complete",
       "connect": "Connect",
@@ -6366,6 +6367,7 @@
       "prerequisite_gitlab": "Enable GitLab Duo with beta and experimental features, and allow MCP server access for your top-level group — without them, connecting succeeds but exposes no tools.",
       "prerequisite_gitlab_steps": "Enable GitLab Duo with beta and experimental features, and allow MCP server access for your top-level group.",
       "prerequisites_for_provider": "{{provider}} prerequisites",
+      "shared_signin_for_provider": "{{provider}} shared sign-in",
       "reconnect": "Reconnect",
       "reconnecting": "Reconnecting…",
       "relaying": "Sending…",

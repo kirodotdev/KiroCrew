@@ -13459,6 +13459,7 @@
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
       "before_you_connect": "সংযোগ করার আগে",
+      "before_you_disconnect": "সংযোগ বিচ্ছিন্ন করার আগে",
       "cancel": "বাতিল",
       "complete_connection": "সম্পন্ন করুন",
       "connect": "সংযুক্ত করুন",
@@ -13508,6 +13509,7 @@
       "prerequisite_gitlab": "GitLab Duo বিটা ও পরীক্ষামূলক বৈশিষ্ট্যসহ চালু করুন এবং আপনার শীর্ষ-স্তরের গ্রুপের জন্য MCP সার্ভার অ্যাক্সেসের অনুমতি দিন — এগুলি ছাড়া সংযোগ সফল হলেও কোনো টুল পাওয়া যায় না।",
       "prerequisite_gitlab_steps": "GitLab Duo বিটা ও পরীক্ষামূলক বৈশিষ্ট্যসহ চালু করুন এবং আপনার শীর্ষ-স্তরের গ্রুপের জন্য MCP সার্ভার অ্যাক্সেসের অনুমতি দিন।",
       "prerequisites_for_provider": "{{provider}} এর পূর্বশর্ত",
+      "shared_signin_for_provider": "{{provider}} এর ভাগ করা সাইন-ইন",
       "reconnect": "পুনরায় সংযুক্ত করুন",
       "reconnecting": "পুনরায় সংযুক্ত হচ্ছে…",
       "relaying": "পাঠানো হচ্ছে…",
