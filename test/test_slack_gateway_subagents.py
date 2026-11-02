@@ -8,7 +8,6 @@ batch arms, and the recovery retrigger for queued subagent failures.
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +18,8 @@ from slack_gateway_helpers import (
     _mock_dashboard_state,
     _mock_sessions,
 )
+
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 
 def _admit_drains(slot: MagicMock) -> None:
@@ -87,6 +88,15 @@ class TestInitSubagents:
                 orch._init_subagents()
                 return mock_sm.call_args.kwargs["on_event"]
 
+    @staticmethod
+    async def _await_patch_pushes(orch, pushes: int) -> None:
+        """Wait until the debounced flush has pushed *pushes* sub-agent patches."""
+        pushed = orch.dashboard_state.push_subagent_patch
+        await async_wait_until(
+            lambda: pushed.call_count >= pushes,
+            describe=lambda: f"push_subagent_patch was called {pushed.call_count} time(s)",
+        )
+
     @pytest.mark.asyncio
     async def test_subagent_spawn_and_done_push_slots_update_debounced(self):
         """subagents_running flips at spawn/done — the on_event handler schedules a
@@ -114,9 +124,7 @@ class TestInitSubagents:
         assert (
             orch.dashboard_state.push_subagent_patch.call_count == 0
         )  # debounced, not yet flushed
-        # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.3)
+        await self._await_patch_pushes(orch, 1)
         assert orch.dashboard_state.push_subagent_patch.call_count == 1
         # The sub-agent path sends a one-row patch, never the whole slot list.
         assert orch.dashboard_state.push_slots_update.call_count == 0
@@ -127,9 +135,7 @@ class TestInitSubagents:
             SubagentInfo(id="a2", task="t", parent_session_key="dashboard:s1"),
             {"elapsed": 1.0},
         )
-        # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.3)
+        await self._await_patch_pushes(orch, 2)
         assert orch.dashboard_state.push_subagent_patch.call_count == 2
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
@@ -151,9 +157,7 @@ class TestInitSubagents:
         await on_event("subagent_queued", info, {"queued": 1})
         await on_event("subagent_queued", info, {"queued": 0})
         assert orch.dashboard_state.push_subagent_patch.call_count == 0  # debounced
-        # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.3)
+        await self._await_patch_pushes(orch, 1)
         assert orch.dashboard_state.push_subagent_patch.call_count == 1
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
@@ -216,9 +220,11 @@ class TestInitSubagents:
 
         info = SubagentInfo(id="a1", task="t", parent_session_key="dashboard:s1")
         await on_event("subagent_tool", info, {"tool": "grep"})
-        # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.3)
+        # The absence is read only after the debounced flush has landed: a spawn
+        # arms the push a tool event must not, and a push the tool event had
+        # scheduled shares that flush.
+        await on_event("subagent_spawn", info, {})
+        await self._await_patch_pushes(orch, 1)
         assert orch.dashboard_state.push_slots_update.call_count == 0
 
 
@@ -323,6 +329,8 @@ class TestSubagentFinalSummaryDirective:
         *queued* is the parent's store count of children the spawn gate still
         holds; the arm must never read it (the fire gate does). *in_memory* is
         the manager's in-memory pending work for the parent."""
+        from chat_test_helpers import drain_background_tasks
+
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -353,8 +361,9 @@ class TestSubagentFinalSummaryDirective:
         info = SubagentInfo(id="a1", task="do X", parent_session_key="dashboard:s1")
         with patch("kiro_crew.slack.gateway._start_next_queued_turn", new=AsyncMock()):
             await on_done(info)
-            # flake-ok: pre-existing sleep barrier for the injection task, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)  # let the injection task settle
+            # Any injection task the delivery spawned is registered on the state:
+            # wait for those tasks to end, not for a guessed span.
+            await finished(drain_background_tasks(ds), "the injection tasks of the delivery")
         return slot
 
     @pytest.mark.asyncio
@@ -438,8 +447,10 @@ class TestSynthesisAfterAOneTurnBatch:
         info = SubagentInfo(
             id=agent_id, task=f"do {agent_id}", parent_session_key="dashboard:s1", **fields
         )
-        # flake-ok: pre-existing parked stand-in turn the finally cancels, moved verbatim; tracked for a de-flake pass
-        blocker = asyncio.create_task(asyncio.sleep(30)) if busy else None
+        # The stand-in for the running turn parks on an event the finally sets,
+        # not on a timer that a slow run could outlast.
+        release = asyncio.Event()
+        blocker = asyncio.create_task(release.wait()) if busy else None
         if blocker is not None:
             slot.task = blocker
         try:
@@ -459,16 +470,17 @@ class TestSynthesisAfterAOneTurnBatch:
                 await on_done(info)
                 turn = slot.task
                 if turn is not None and turn is not blocker:
-                    # flake-ok: pre-existing unbounded await of the stub completion turn, moved verbatim; tracked for a de-flake pass
-                    await turn  # the completion turn (a stub) runs
+                    await await_until(turn, what="the completion turn (a stub)")
         finally:
             if blocker is not None:
-                blocker.cancel()
+                release.set()
                 slot.task = None
 
     @staticmethod
     async def _turn_end(state, slot) -> bool:
         """End the turn that just ran; True when a synthesis turn was started."""
+        from chat_test_helpers import drain_background_tasks
+
         from kiro_crew.dashboard import chat_runner
 
         with (
@@ -478,8 +490,10 @@ class TestSynthesisAfterAOneTurnBatch:
             patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
         ):
             await chat_runner._finish_queue_cycle(state, slot)
-            # flake-ok: pre-existing event-loop yield after the queue cycle, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            # A cleared cycle starts the synthesis as a task registered on the
+            # state, so `synth` is called when that task runs: wait for the tasks
+            # the cycle started instead of yielding one loop turn.
+            await finished(drain_background_tasks(state), "the tasks the queue cycle started")
         return synth.called
 
     @staticmethod
@@ -711,13 +725,11 @@ class TestSubagentDone:
         on_done = mock_sm.call_args[1]["on_done"]
 
         slot = MagicMock()
-        slot.running = True
-        never_done = asyncio.get_event_loop().create_future()
-        never_done.set_result(None)
-        # flake-ok: pre-existing event-loop yield standing in for a finished turn, moved verbatim; tracked for a de-flake pass
-        slot.task = asyncio.ensure_future(asyncio.sleep(0))
-        # flake-ok: pre-existing unbounded await of the finished stand-in turn, moved verbatim; tracked for a de-flake pass
-        await slot.task  # let it complete
+        # The slot's last turn is already finished: a future resolved up front, so
+        # there is no loop turn to yield for and nothing to await.
+        finished_turn = asyncio.get_running_loop().create_future()
+        finished_turn.set_result(None)
+        slot.task = finished_turn
         # But slot.running stays True (simulating another claim)
         slot.running = True
         slot.key = "busy-slot"
@@ -844,8 +856,7 @@ class TestSubagentDone:
         info.agent = ""
         info.silent = False
         info.elapsed = 3.0
-        # flake-ok: pre-existing real-clock start stamp, moved verbatim; tracked for a de-flake pass
-        info.started = time.monotonic() - 3.0
+        info.started = 0.0
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
