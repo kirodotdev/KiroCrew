@@ -1076,6 +1076,29 @@ _RE_ADAPTER_INPUT_TOO_LONG = re.compile(
     re.IGNORECASE,
 )
 
+# The model service's byte cap on one request, relayed by kiro-cli:
+# ``Request exceeds the maximum allowed size (Request ID: ...): {errorType:
+# GenericValidationError, retryErrorType: CLIENT_ERROR}``. Like the two
+# overflows above, the oversized part is the conversation history (usually
+# accumulated full-resolution screenshots) that is re-sent on every turn, so a
+# retry, a Resume and a reload all send the same bytes and are refused the same
+# way: a CONTEXT OVERFLOW, tagged the same way at raise time. Which JSON-RPC field
+# carries the sentence is not captured, so both are read, each ANCHORED at its
+# start (after kiro-cli's stream envelope or the ``Internal error:`` prefix): the
+# provider's own sentence opens the field, while an echo further in (a tool's
+# stderr, a user's own text) does not.
+_RE_REQUEST_SIZE_EXCEEDED = re.compile(
+    r"^\s*(?:Encountered an error in the response stream:\s*)?(?:Internal error:\s*)?"
+    r"(?:API Error:\s*\d{3}\s+)?Request exceeds the maximum allowed size\b",
+    re.IGNORECASE,
+)
+
+
+def _is_request_size_exceeded(data: str, message: str) -> bool:
+    """Whether the ``data`` or ``message`` field opens with the size-cap refusal."""
+    return bool(_RE_REQUEST_SIZE_EXCEEDED.search(data) or _RE_REQUEST_SIZE_EXCEEDED.search(message))
+
+
 # A preserved-thinking signature rejection whose own provider text says the block
 # is bound to another conversation is recoverable by replacing the NATIVE
 # conversation. Both clauses must appear IN ONE FIELD: the shorter
@@ -1190,7 +1213,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     unentitled-model(terminal) → usage-limit(terminal) →
     malformed-request(terminal) → context-window-overflow(terminal) →
     unsupported-image(terminal) → oversized-request(terminal) →
-    adapter input-too-long(terminal) →
+    adapter input-too-long(terminal) → request-size-exceeded(terminal) →
     model-unavailable → throttle →
     credential-propagation(transient) → auth(terminal) →
     session-expiry(terminal) → connection failure(transient) → generic 5xx /
@@ -1263,6 +1286,11 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # every attempt and every model, so neither a retry nor the fallback
         # chain can make it fit. Stated explicitly so a 5xx token or retry hint
         # added to the same frame cannot rescue a size verdict.
+        return False
+    if _is_request_size_exceeded(data, message):
+        # Terminal: the model service's byte cap refuses the same re-sent
+        # history on every attempt. Stated explicitly for the same reason as the
+        # adapter's overflow above.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -1912,18 +1940,23 @@ def _raise_acp_error(
     )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Five
-    # answers carry the tag: context-window overflow, malformed request, image
-    # validation failure, the many-image pixel-dimension cap, and kiro-cli's own
-    # refusal of a request it could not shrink to fit -- each reproduced exactly
-    # by re-sending the same context.
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
+    # for the two anchored overflow sentences named below. The tag covers
+    # context overflow (kiro-cli's window, the claude adapter's input-too-long,
+    # the model service's request size cap), malformed request, image validation
+    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a
+    # request it could not shrink to fit -- each reproduced exactly by re-sending
+    # the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     # The claude adapter's overflow rides in ``message`` (anchored match, see
-    # _RE_ADAPTER_INPUT_TOO_LONG); every other tag below stays data-scoped.
+    # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
+    # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
+    # below stays data-scoped.
     _context_overflow = bool(
         _RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field)
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
+        or _is_request_size_exceeded(raw_data_field, raw_message_field)
     )
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
     _image_dimension_wedge = is_many_image_dimension(raw_data_field)

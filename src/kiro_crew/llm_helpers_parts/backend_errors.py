@@ -195,10 +195,12 @@ def is_prompt_busy(exc: BaseException) -> bool:
 
 # The provider's refusal of a request larger than the model's window, in the
 # spellings the ACP backends answer with: kiro's typed "context window
-# overflowed", the claude adapter's "Prompt is too long", and the OpenAI-style
+# overflowed", the claude adapter's "Prompt is too long", the model service's
+# "Request exceeds the maximum allowed size" byte cap, and the OpenAI-style
 # "maximum context length" a compatible endpoint returns through it.
 _RE_CONTEXT_OVERFLOW_TEXT = re.compile(
-    r"prompt is too long|context window overflowed|maximum context length",
+    r"prompt is too long|context window overflowed|maximum context length"
+    r"|request exceeds the maximum allowed size",
     re.IGNORECASE,
 )
 

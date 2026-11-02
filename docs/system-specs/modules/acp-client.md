@@ -2990,14 +2990,18 @@ whose transport behaviour this module owns.
   `structural_terminal=True`, and `context_overflow=True` together in the
   data-field-only structural tag block. The JSON-RPC `message` field cannot set
   those tags, and same-session transient retry never receives this failure.
-  One exception is anchored, not free text: the claude adapter's own refusal,
+  Two exceptions are anchored, not free text. The claude adapter's own refusal,
   `Internal error: API Error: 400 Input is too long.` (or `Prompt is too long`),
   arrives in `message` with only `{"errorKind": "unknown"}` in `data`, so
   `_RE_ADAPTER_INPUT_TOO_LONG` matches it at the START of `message` and sets the
-  same three tags. It is terminal in `_is_transient_raw_error` too, so neither
-  the retry ladder nor the throttle fallback chain re-sends a history every model
-  refuses, and the formatter words it with the cause and the fix (start a fresh
-  session).
+  same three tags; the formatter words it with the cause and the fix (start a
+  fresh session). The model service's byte cap, `Request exceeds the maximum
+  allowed size (Request ID: ...)` (a `GenericValidationError`), may ride in
+  either field, so `_RE_REQUEST_SIZE_EXCEEDED` matches it at the START of `data`
+  or `message` (after the stream envelope or `Internal error:`) and sets the
+  same tags; its provider sentence is shown as is. Both are terminal in
+  `_is_transient_raw_error` too, so neither the retry ladder nor the throttle
+  fallback chain re-sends a history every model refuses.
 - `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ### `AcpProcessDied` on a stalled stdin write
