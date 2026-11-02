@@ -3,8 +3,9 @@ import { useCallback, useEffect, useRef, type MutableRefObject, type Dispatch, t
 import { useQuery } from '@tanstack/react-query'
 import { store, type AppDispatch, type AppStore } from '../store'
 import type { ErrorReport } from '../utils/errorReport'
-import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, dismissFollowupItem, openActivityToTab, requestSlotFolderOpen } from '../store/chatSlice'
+import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, dismissFollowupItem, openActivityToTab, requestSlotFolderOpen, setAgentSwitchNotice } from '../store/chatSlice'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
@@ -108,6 +109,21 @@ interface SignedLinkAnchorOptions {
   getNoCarryCreateIdsRef: () => MutableRefObject<Set<string>>
 }
 
+/** The slack-link refusal for a channel served by another agent, read from
+ *  the raw response body: `{ agent }` (empty when the server could not name
+ *  it), or null for any other failure. */
+export function agentMismatchRefusal(body: string): { agent: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (!parsed || typeof parsed !== 'object') return null
+    const { code, agent } = parsed as { code?: unknown, agent?: unknown }
+    if (code !== 'channel_agent_mismatch') return null
+    return { agent: typeof agent === 'string' ? agent : '' }
+  } catch {
+    return null
+  }
+}
+
 /**
  * A signed chat link (`?t=<token>`, from a Slack thread or channel): consumes the token once, then
  * reconnects to the session it names, or creates one and links it back to its thread, with the
@@ -172,6 +188,7 @@ export function useSignedLinkAnchor({
     ;(async () => {
      try {
       let slotKey: string | null = null
+      let agentMismatch = false
       if (targetSlot) {
         // Case 1: reconnect to the existing linked session.
         try {
@@ -196,7 +213,21 @@ export function useSignedLinkAnchor({
         // responses flow into Slack. Best-effort; failure just leaves it
         // unlinked.
         if (slotKey && channel && threadTs) {
-          try { await api.slackLink(slotKey, channel, threadTs) } catch { /* non-fatal */ }
+          try {
+            await api.slackLink(slotKey, channel, threadTs)
+          } catch (err) {
+            // The channel is served by a different agent than this new
+            // session: the server refused the link. Do not run the prompt
+            // here on its own; leave it prefilled and say why, naming the
+            // channel's agent when the server did.
+            const refusal = err instanceof ApiError ? agentMismatchRefusal(err.body) : null
+            if (refusal) {
+              agentMismatch = true
+              dispatch(setAgentSwitchNotice(refusal.agent
+                ? i18nT('pages.chatPage.slack_link_agent_mismatch', { agent: refusal.agent })
+                : i18nT('pages.chatPage.slack_link_agent_mismatch_unknown')))
+            }
+          }
         }
       }
       // We have created/reconnected AND made the target slot active. Critically,
@@ -218,8 +249,10 @@ export function useSignedLinkAnchor({
       // already on the target (or there is no target to switch to).
       if (!slotKey || composerSlotRef.current === slotKey) setInput(prompt)
       raisePrefillHint()
-      autoSendRef.current = prompt
-      setAutoSendTick(t => t + 1)
+      if (!agentMismatch) {
+        autoSendRef.current = prompt
+        setAutoSendTick(t => t + 1)
+      }
      } finally {
       // Release the auto-select guard once the session is created/linked (or
       // failed), so normal slot selection resumes.

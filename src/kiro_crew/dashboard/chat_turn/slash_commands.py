@@ -70,6 +70,11 @@ if TYPE_CHECKING:
         _cleared_segment_text,
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.turn_admission import (
+        _channels_judging_turn,
+        _refuse_channel_turn,
+        _source_channel_mismatch,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import _restore_skills_context_after_compaction
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _drop_wire_tail
@@ -439,6 +444,18 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     state = turn.state
     turn_exit = turn.turn_exit
+    # A Slack channel's words run only on that channel's agent, and a local
+    # command acts before admission judges the turn: judge it here first.
+    # `/agent <the channel's agent>` stays reachable, the switch onto it.
+    if not _commands_off and message.lstrip().startswith("/"):
+        _source_channels = _channels_judging_turn(turn, slot)
+        if _source_channels:
+            _required = await _source_channel_mismatch(_source_channels, slot, session_key)
+            if _required is not None and (
+                _required == "<unknown>" or agent_switch_target(message.strip()) != _required
+            ):
+                _refuse_channel_turn(slot, "chat_runner.slash_gate")
+                return _Flow.END
     # Same call, same result, again and again: told once per call (repeat_loop).
     _repeat_loop = RepeatLoopTracker()
     turn._repeat_loop = _repeat_loop
@@ -564,6 +581,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
+                    _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":

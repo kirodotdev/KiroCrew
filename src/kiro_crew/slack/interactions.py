@@ -78,10 +78,14 @@ from kiro_crew.slack.format import (
 from kiro_crew.slack.handler import (
     APPROVAL_INTERACTIVE,
     add_trusted_session,
+    channel_agent_mismatch,
+    channel_pinned_agent,
     handle_interaction,
     handle_message,
     is_allowed_user,
     is_owner,
+    link_agent_mismatch,
+    read_link_record,
     set_allowed_users,
     set_tracking_channels,
 )
@@ -368,7 +372,20 @@ async def dispatch(payload: dict) -> None:
                 metadata={"user_id": user_id, "reason": "no_slack_client"},
             )
             return
-        slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
+        try:
+            slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
+        except ChannelAgentMismatchError:
+            sel().log_tool_invocation(
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+            )
+            await _orch.slack.post_message(channel, IMPORT_AGENT_MISMATCH_NOTICE, thread_ts)
+            return
         if not slot:
             sel().log_tool_invocation(
                 session_key="",
@@ -696,6 +713,50 @@ async def _handle_resume_choice(
         tab_closed = ds is not None and is_dash and not ds.slot_exists(slot)
         if mode == "thread":
             target_channel = src_channel
+            # A thread in a channel pinned to an agent is served only by that
+            # agent. A live dashboard slot is checked against it; any other
+            # session (a closed tab, a Slack-born one) has no agent that can be
+            # read here, and its replies would run on its own agent, so in a
+            # pinned channel it is refused. Before anything is posted.
+            _resume_slot = ds.get_slot(slot) if (ds is not None and is_dash) else None
+            # The session the slot's turns run on (a channel-born slot runs on
+            # its linked key), as effective_session_key resolves it.
+            _resume_key = (getattr(_resume_slot, "linked_session_key", "") or "") or session_key
+            # The record the slot's turns run on decides; read once, off the loop,
+            # and reused by the no-await check before the link is published.
+            _resume_record = (
+                await read_link_record(_resume_key)
+                if _resume_slot is not None and channel_pinned_agent(target_channel) is not None
+                else None
+            )
+            # The selection the record was judged with; a switch while the
+            # thread post awaits moves it.
+            _resume_selection = (
+                getattr(_resume_slot, "agent", "") or "",
+                getattr(_resume_slot, "agent_kind", "") or "",
+            )
+            if (
+                link_agent_mismatch(target_channel, _resume_slot, _resume_record)
+                if _resume_slot is not None
+                else channel_pinned_agent(target_channel)
+            ):
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent="kirocrew",
+                    source="slack",
+                    tool_name="session_resume",
+                    tool_kind="interaction",
+                    outcome="denied",
+                    metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+                )
+                await _tell_user(
+                    target_channel,
+                    user_id,
+                    "",
+                    "This channel is served by its own agent, so this session cannot be"
+                    " resumed in a thread here. Resume it in a DM instead.",
+                )
+                return
             thread_msg = f"\U0001f9f5 *{title}*\n" + (
                 _RESUME_TAB_CLOSED_MSG
                 if tab_closed
@@ -734,6 +795,45 @@ async def _handle_resume_choice(
             return
         if tab_closed:
             label = f"\u25b6\ufe0f *{title}*: {_RESUME_TAB_CLOSED_MSG}"
+
+        # Read the live slot again with no await before publishing the link:
+        # its agent may have changed while the thread post awaited.
+        if mode == "thread":
+            _late_slot = ds.get_slot(slot) if (ds is not None and is_dash) else None
+            # A slot replaced while the post awaited is not the one judged above.
+            if (
+                channel_pinned_agent(link_channel)
+                and (
+                    _late_slot is not _resume_slot
+                    or (
+                        getattr(_late_slot, "agent", "") or "",
+                        getattr(_late_slot, "agent_kind", "") or "",
+                    )
+                    != _resume_selection
+                )
+            ) or (
+                link_agent_mismatch(link_channel, _late_slot, _resume_record)
+                if _late_slot is not None
+                else channel_pinned_agent(link_channel)
+            ):
+                logger.info("slack session resume: agent changed before linking; not linked")
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent="kirocrew",
+                    source="slack",
+                    tool_name="session_resume",
+                    tool_kind="interaction",
+                    outcome="denied",
+                    metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+                )
+                await _tell_user(
+                    link_channel,
+                    user_id,
+                    "",
+                    "This session's agent changed before the thread could be linked, so it"
+                    " was not resumed here. Resume it in a DM instead.",
+                )
+                return
 
         _orch.sessions.set_slack_link(session_key, link_ts, link_channel)
         sel().log_api_access(
@@ -836,6 +936,8 @@ from kiro_crew.slack.interactions_options import _handle_options  # noqa: E402
 from kiro_crew.slack.interactions_options import _open_options_several  # noqa: E402
 from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
+from kiro_crew.slack.interactions_options import IMPORT_AGENT_MISMATCH_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_options import ChannelAgentMismatchError  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_inline_stop  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_end  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_new  # noqa: E402

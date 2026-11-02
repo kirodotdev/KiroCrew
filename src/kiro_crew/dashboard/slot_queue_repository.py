@@ -83,6 +83,43 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: consumer asks instead of trying to tell the two apart from the actor alone.
 RESTORED_QUEUE_KEY = "_restored_from_disk"
 
+#: The Slack channels a channel-origin entry's words were typed in. Turn
+#: admission checks the entry's turn against these channels' configured agents.
+#: Unlike the provenance flags above, it is a RESTRICTION, never authority: it
+#: can only refuse a turn, so it is persisted (under
+#: :data:`DURABLE_SOURCE_CHANNELS_KEY`) and a restored entry is still judged by
+#: the channel its words came from. A hand edit that adds one only narrows.
+SOURCE_CHANNELS_KEY = "_directive_source_channels"
+
+#: The durable spelling of :data:`SOURCE_CHANNELS_KEY` on a persisted entry.
+DURABLE_SOURCE_CHANNELS_KEY = "source_channels"
+
+#: Stands in for a persisted source channel that cannot be read back. Admission
+#: refuses a turn that carries it: the channel the words came from is unknown,
+#: so the agent it requires cannot be established.
+UNREADABLE_SOURCE_CHANNEL = "<unreadable>"
+
+
+def stamp_source_channels(owner: Any, queue_id: str, channels: tuple[str, ...]) -> None:
+    """Record *channels* on the queued entry *queue_id*. Called right after the
+    append that returned the id, with nothing suspending between the two."""
+    clean = tuple(ch for ch in channels if isinstance(ch, str) and ch)
+    if not clean:
+        return
+    for item in getattr(owner, "_queue", None) or ():
+        if isinstance(item, dict) and item.get("id") == queue_id:
+            item[SOURCE_CHANNELS_KEY] = clean
+            return
+
+
+def source_channels_of(item: Any) -> tuple[str, ...]:
+    """The source channels stamped on a queue entry; empty when none are."""
+    raw = item.get(SOURCE_CHANNELS_KEY) if isinstance(item, dict) else None
+    if not isinstance(raw, tuple):
+        return ()
+    return tuple(ch for ch in raw if isinstance(ch, str) and ch)
+
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -167,6 +204,10 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
             continue
+        # The source channel rides along as a restriction (SOURCE_CHANNELS_KEY).
+        channels = source_channels_of(item)
+        if channels:
+            entry[DURABLE_SOURCE_CHANNELS_KEY] = list(channels)
         cost = len(json.dumps(entry))
         if cost > budget:
             continue
@@ -277,6 +318,26 @@ def queue_persist_signature(entries: list[dict[str, Any]]) -> str:
 EMPTY_QUEUE_SIGNATURE = queue_persist_signature([])
 
 
+def _restored_source_channels(item: dict[str, Any]) -> tuple[str, ...]:
+    """The source-channel restriction of a persisted entry.
+
+    Restored because it can only refuse a turn. A value present but not a list
+    of channel ids fails closed to :data:`UNREADABLE_SOURCE_CHANNEL`, which
+    admission refuses; an absent key restores no restriction.
+    """
+    if DURABLE_SOURCE_CHANNELS_KEY not in item:
+        return ()
+    raw = item.get(DURABLE_SOURCE_CHANNELS_KEY)
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or len(raw) > 8
+        or not all(isinstance(ch, str) and ch and len(ch) <= 64 for ch in raw)
+    ):
+        return (UNREADABLE_SOURCE_CHANNEL,)
+    return tuple(raw)
+
+
 def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     """Validate a persisted ``queued_prompts`` value back into queue entries.
 
@@ -374,6 +435,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # what :data:`RESTORED_QUEUE_KEY` is read for.
             RESTORED_QUEUE_KEY: True,
         }
+        restriction = _restored_source_channels(item)
+        if restriction:
+            entry[SOURCE_CHANNELS_KEY] = restriction
         meta = item.get("meta")
         if isinstance(meta, dict):
             # The admission-time containment snapshot is stripped for the same
