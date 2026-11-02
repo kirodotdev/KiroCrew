@@ -28,8 +28,8 @@ const LOCAL_VALUE = '__local__'
 const HOVER_OPEN_MS = 250
 const HOVER_CLOSE_MS = 200
 
-function LockedRemoteChip({ slot, name, title, children }: {
-  slot: string; name: string; title: string; children: React.ReactNode
+function LockedRemoteChip({ slot, name, provider, title, children }: {
+  slot: string; name: string; provider?: string; title: string; children: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -80,7 +80,7 @@ function LockedRemoteChip({ slot, name, title, children }: {
           viaHover.current = false
         }}
       >
-        <EnvironmentHealthCard slot={slot} name={name} />
+        <EnvironmentHealthCard slot={slot} name={name} icon={<ProviderGlyph provider={provider} size={14} />} />
       </PopoverContent>
     </Popover>
   )
@@ -182,7 +182,9 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
   if (!data || !Array.isArray(data.profiles) || (data.profiles.length === 0 && data.profile == null)) return null
 
   const pending = choose.isPending ? choose.variables : undefined
-  const selected = pending !== undefined ? pending : data.profile
+  // Once locked, a pick still in flight is refused: the chip names the bound
+  // environment, never the target of a switch that will not happen.
+  const selected = pending !== undefined && !data.locked ? pending : data.profile
   const profile = data.profiles.find((p) => p.id === selected)
   // A removed profile still binds (fails closed at start): show its id.
   const name = profile?.name ?? selected ?? t('sessionEnvironments.picker.thisMachine')
@@ -252,7 +254,7 @@ function SlotEnvironmentChip({ slot, disabled, compact }: Props) {
     // state and machine metrics.
     return (
       <div className="flex items-center min-w-0 shrink-0 pr-2 border-r border-border">
-        <LockedRemoteChip slot={slot} name={name} title={title}>
+        <LockedRemoteChip slot={slot} name={name} provider={profile?.provider} title={title}>
           {content}
           <Lock size={11} className="shrink-0 opacity-70" aria-hidden />
           {!compact && <span aria-hidden className="text-[11px]">{t('sessionEnvironments.picker.fixedLabel')}</span>}
