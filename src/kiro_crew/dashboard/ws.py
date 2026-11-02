@@ -1737,7 +1737,6 @@ async def _serve_ws(
                                 id(ws),
                                 data.get("slot"),
                                 announce=data.get("announce") is True,
-                                hidden=data.get("hidden") is True,
                             )
                             note_foreground(state, id(ws), data.get("slot"))
                     elif msg_type == "slot_read":

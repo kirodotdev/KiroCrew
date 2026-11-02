@@ -26,6 +26,7 @@ import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import { useTheme } from '../hooks/useTheme'
 import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
+import { useFocusRouteRelay } from '../hooks/useFocusRouteRelay'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
@@ -388,6 +389,7 @@ export function useAppShell() {
   usePolicyGovernedNotification()
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
+  useFocusRouteRelay()
   // iPad/iPhone Safari: put the page back at scroll 0 after the on-screen
   // keyboard hides, so the header stays in view and no gap appears below.
   useKeyboardViewportReset()

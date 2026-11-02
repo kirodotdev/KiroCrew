@@ -72,7 +72,7 @@ def _crew_mode_chat(monkeypatch, *, user_ago: float | None, goal: bool = True):
 async def _hide_for(state, conn: int, slot_key: str, away: float) -> None:
     """Show *slot_key*, then hide the page and stay away *away* seconds."""
     slot_retention.note_foreground(state, conn, slot_key)
-    warm_task_brief.handle_focus_frame(state, conn, None, hidden=True)
+    warm_task_brief.handle_focus_frame(state, conn, None)
     slot_retention.note_foreground(state, conn, None)
     _seen(state, slot_key, away)
 
@@ -192,46 +192,53 @@ async def test_crewmate_return_keeps_the_crewmate_voice(monkeypatch):
     assert "which wait on the owner" not in prompts[0]
 
 
+async def _switch_for(state, conn: int, slot_key: str, other: str, away: float) -> None:
+    """Show *slot_key*, switch this view to *other*, and stay there *away* seconds."""
+    slot_retention.note_foreground(state, conn, slot_key)
+    await _focus(state, conn, other)
+    _seen(state, slot_key, away)
+
+
 @pytest.mark.asyncio
-async def test_crew_mode_pane_switch_while_still_visible_gives_no_brief(monkeypatch):
-    # Split view: focus moves to another pane; the Crew Mode pane stays on screen.
+@pytest.mark.parametrize("other", ["chat-sidebar-pick", "chat-split-pane"])
+async def test_crew_mode_focus_switch_for_45_minutes_briefs(monkeypatch, other):
+    # A switch to another chat, from the sidebar or to
+    # another split-view pane, means attention left, as for a crewmate thread.
     state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    slot_retention.note_foreground(state, 1, slot.key)
-    await _focus(state, 1, "chat-other")
-    _seen(state, slot.key, 45 * 60)
+    await _switch_for(state, 1, slot.key, other, 45 * 60)
+    await _focus(state, 1, slot.key)
+    assert _brief_kinds(slot) == _FULL_BRIEF
+
+
+@pytest.mark.asyncio
+async def test_crew_mode_short_focus_switch_gives_no_brief(monkeypatch):
+    state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
+    await _switch_for(state, 1, slot.key, "chat-other", 10 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == []
 
 
 @pytest.mark.asyncio
-async def test_crew_mode_socket_loss_then_return_gives_no_brief(monkeypatch):
+async def test_crew_mode_switch_while_another_window_shows_it_gives_no_brief(monkeypatch):
     state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    slot_retention.note_foreground(state, 1, slot.key)
-    warm_task_brief.note_view_closed(state, 1)
-    slot_retention.note_foreground(state, 1, None)
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 2, slot.key)
-    assert _brief_kinds(slot) == []
-
-
-@pytest.mark.asyncio
-async def test_crew_mode_return_after_restart_gives_no_brief(monkeypatch):
-    # No on-screen record and no hide this process saw: the durable times alone
-    # brief a crewmate, never a Crew Mode chat.
-    state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
+    slot_retention.note_foreground(state, 2, slot.key)  # window 2 keeps showing it
+    await _switch_for(state, 1, slot.key, "chat-other", 45 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == []
 
 
 @pytest.mark.asyncio
-async def test_crew_mode_hide_mark_is_spent_by_the_return(monkeypatch):
+async def test_crew_mode_reveal_on_settings_spends_nothing_until_the_chat_returns(monkeypatch):
+    # Off the chat routes the client reports a Crew Mode root as no chat, so a
+    # hide and a reveal on Settings are two null frames: no brief and no claim.
+    # The route change back to the chat names it, and that is the return.
     state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    await _hide_for(state, 1, slot.key, 10 * 60)
-    await _focus(state, 1, slot.key)  # a short return spends the hide
-    await _focus(state, 1, "chat-other")
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 1, slot.key)
+    await _hide_for(state, 1, slot.key, 45 * 60)
+    await _focus(state, 1, None)
     assert _brief_kinds(slot) == []
+    assert state._warm_task_brief_tasks == {}
+    await _focus(state, 1, slot.key)
+    assert _brief_kinds(slot) == _FULL_BRIEF
 
 
 @pytest.mark.asyncio
@@ -243,44 +250,3 @@ async def test_crewmate_pane_switch_still_briefs(monkeypatch):
     _seen(state, slot.key, 45 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == _FULL_BRIEF
-
-
-@pytest.mark.asyncio
-async def test_crew_mode_hide_mark_is_spent_by_a_reveal_naming_another_slot(monkeypatch):
-    # Split view: the hide left pane B, but the reveal names A. B's pane then
-    # stays visible for 45 minutes before the owner clicks it.
-    state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    await _hide_for(state, 1, slot.key, 0)
-    await _focus(state, 1, "chat-a")
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 1, slot.key)
-    assert _brief_kinds(slot) == []
-
-
-@pytest.mark.asyncio
-async def test_crew_mode_hide_in_one_window_while_another_shows_it_gives_no_brief(monkeypatch):
-    state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    slot_retention.note_foreground(state, 2, slot.key)  # window 2 shows it too
-    await _hide_for(state, 1, slot.key, 0)  # window 1 hides; A is still on screen
-    await _focus(state, 2, "chat-other")  # window 2 switches panes, A stays visible
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 1, slot.key)  # window 1 comes back to A
-    assert _brief_kinds(slot) == []
-
-
-@pytest.mark.asyncio
-async def test_crew_mode_another_window_opening_the_chat_spends_the_hide(monkeypatch):
-    state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=3 * 3600)
-    await _hide_for(state, 1, slot.key, 0)  # window 1 hides on A
-    await _focus(state, 2, slot.key)  # window 2 opens A
-    await _focus(state, 2, "chat-other")  # window 2 switches panes, A stays visible
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 1, slot.key)  # window 1 comes back to A
-    assert _brief_kinds(slot) == []
-
-
-def test_hidden_leave_marks_are_bounded():
-    state = SimpleNamespace(_warm_task_brief_hidden_left={})
-    for n in range(warm_task_brief._MAX_LAST_SEEN + 5):
-        warm_task_brief._mark_hidden_leave(state, n, f"chat-{n}")
-    assert len(state._warm_task_brief_hidden_left) == warm_task_brief._MAX_LAST_SEEN
