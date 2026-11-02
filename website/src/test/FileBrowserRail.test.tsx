@@ -754,6 +754,19 @@ describe('FileBrowserRail positionless hits', () => {
   })
 })
 
+describe('FileBrowserRail Windows hit labels (#27823)', () => {
+  it('shows a native Windows hit relative to the root, without a leading backslash', async () => {
+    H.fileGrep.mockResolvedValue({
+      ...GREP_PAYLOAD,
+      root: 'C:\\proj',
+      results: [{ file: 'C:\\proj\\src\\a.ts', line: 3, preview: 'the needle here', label: null }],
+    })
+    mount()
+    await searchContents('needle')
+    expect(await screen.findByText('src\\a.ts')).toBeInTheDocument()
+  })
+})
+
 describe('HighlightedPreview case folding', () => {
   it('marks the right characters when lowercasing changes length', async () => {
     // `İ`.toLowerCase() is TWO characters (`i` + U+0307), so an index into a

@@ -307,6 +307,18 @@ describe('SearchPanel', () => {
     expect(screen.getByText('src/main.ts')).toBeInTheDocument()
   })
 
+  it('labels a Windows hit relative to a root spelled differently (#27823)', async () => {
+    vi.mocked(fileExplorerApi.search).mockResolvedValue({
+      results: [{ file: 'c:\\proj\\src\\a.py', line: 1, col: 1, preview: 'win needle' }],
+      engine: 'rg',
+      truncated: false,
+    })
+    renderWithQuery(<SearchPanel rootPath="C:/proj" onClose={vi.fn()} onJump={vi.fn()} />)
+    await userEvent.type(screen.getByPlaceholderText(/Search in/), 'needle')
+    await waitFor(() => expect(screen.getByText('win needle')).toBeInTheDocument())
+    expect(screen.getByText('src\\a.py')).toBeInTheDocument()
+  })
+
   it('calls onJump when result clicked', async () => {
     vi.mocked(fileExplorerApi.search).mockResolvedValue({
       results: [{ file: '/home/user/test.py', line: 5, col: 1, preview: 'import os' }],
