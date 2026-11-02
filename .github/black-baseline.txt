@@ -167,7 +167,6 @@ src/kiro_crew/eval/bench/adapters/longmemeval.py
 src/kiro_crew/eval/bench/corpus.py
 src/kiro_crew/eval/bench/ingest.py
 src/kiro_crew/eval/bench/retrieval.py
-src/kiro_crew/eval/bench/run.py
 src/kiro_crew/eval/bench/scorers.py
 src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
