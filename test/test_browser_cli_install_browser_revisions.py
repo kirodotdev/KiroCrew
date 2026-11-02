@@ -10,6 +10,7 @@ and fakes in ``browser_cli_install_helpers.py``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -470,9 +471,11 @@ class TestCacheResolutionMatchesPlaywright:
     """``_browsers_cache_dir`` mirrors playwright-core's ``registryDirectory``."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_browser_cli_install*.py modules calls monkeypatch.undo()
-    def _real_resolver(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr(mod, "_browsers_cache_dir", _REAL_BROWSERS_CACHE_DIR)
+    def _real_resolver(
+        self, _floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Iterator[None]:
+        # The tests below set these variables on the shared monkeypatch, which unwinds before
+        # the floor one, so the floor is what restores them last.
         for name in (
             "PLAYWRIGHT_BROWSERS_PATH",
             "npm_config_playwright_browsers_path",
@@ -483,8 +486,14 @@ class TestCacheResolutionMatchesPlaywright:
             "npm_config_init_cwd",
             "npm_package_config_init_cwd",
         ):
-            monkeypatch.delenv(name, raising=False)
-        monkeypatch.setattr(mod.Path, "home", lambda: tmp_path / "home")
+            _floor_monkeypatch.delenv(name, raising=False)
+        _floor_monkeypatch.setattr(mod.Path, "home", lambda: tmp_path / "home")
+        # The module's isolated_browser_cache fixture swaps the resolver on the shared
+        # monkeypatch before this fixture runs, so the real resolver goes in through a patch
+        # context this fixture owns: it unwinds first and hands that fixture its stand-in back.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "_browsers_cache_dir", _REAL_BROWSERS_CACHE_DIR)
+            yield
 
     @staticmethod
     def _platform(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
