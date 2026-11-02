@@ -1196,14 +1196,17 @@ the finding: an unnamed site records `user`.
 | `openai_compat.chat_completions` | API request body | `user` |
 | `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run | `user` |
 | `chat_rewind` | the user's own message, rewound | `user` |
-| queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` | `cron`, `subagent`, else `user` |
+| queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind`, then its `meta.turnActor` stamp, then a requeued work-ledger wake's `automation_steer` mark | `cron`, `subagent`, `gateway` for a workflow completion, the stamped actor, `autonudge` for a wake, else `user` |
+| `server_runtime.workflow_startup._auto_turn` | the prompt that answers a finished workflow run | `gateway`, idle or queued |
+| `slack/gateway_runtime/result_egress` `prompt:dashboard:` | a heartbeat result sent as a prompt | `cron`, idle or queued |
+| `session_deliver._deliver_peer` | a peer session's `session_send` | `other` when queued, `user` when it starts the turn |
 | queue drain, a synthetic recovery | the original turn's actor, stamped at requeue (`meta.turnActor`) | whatever that turn's was |
 | `handlers/messaging` cron branch | a cron notification | `cron` |
 | `slack/gateway` cron branch | a cron notification | `cron` |
 | `slack/gateway._fire_dashboard_nudge` | a nudge/monitor wake (`_directive_self_wake`) | `autonudge` |
 | `slack/gateway` sub-agent injection | a sub-agent completion | `subagent` |
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
-| `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
+| `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew`, idle or queued |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
 
 One shared helper passes no actor on purpose: `spec_builder.runtime.enqueue_or_run_prompt`
@@ -1214,6 +1217,17 @@ well as a person and can tell them apart without asking its caller, because the 
 middleware has already stamped the token's app on the request -- so it names the actor
 itself. A site that holds the fact and stays silent does not record a missing detail; the
 fallback fills it in, and the log states a person typed a message no person touched.
+
+The crew-log actor is not what the person-scoped paths read. The refusal-fallback retry,
+the per-turn `model.route` decision and the WakaTime heartbeats read
+`_ChatTurn._person_paths_actor`, which is the `_person_paths_actor` argument of `_run_chat`
+and falls back to the crew-log actor when that argument is empty. A workflow completion, a
+heartbeat delivery, a queued crew wake, a queued peer send and a requeued work-ledger wake
+pass `user` there: the drain sets it from `_person_paths_actor_for_queue_items`, and the
+workflow and heartbeat partials set it for an idle slot. A recovery carries it from the
+turn it retries in `meta.personPathsActor`, and the restore strips that key with the
+other provenance keys. The milestone count (`milestones.record_user_turn`) and the metrics
+`trigger_source` read the crew-log actor.
 
 `approval/requested` and `approval/decided` ARE emitted, and no plumbing was needed for
 them -- see "Approvals were never a resolver problem" above. `ApprovalCoordinator` does
