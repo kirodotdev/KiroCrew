@@ -42,6 +42,7 @@ from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone
 from kiro_crew.mcp_gateway.pool import BackendPool, BackendUnavailable
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -250,26 +251,36 @@ class TestRespawnBackendForStub:
         old_inbox: asyncio.Queue[bytes] = asyncio.Queue()
         await old_inbox.put(b'{"id":9,"error":{}}\n')
         writer = _FakeWriter()
-        # flake-ok: pre-existing parked writer task that the respawn cancels, moved verbatim; tracked for a de-flake pass
-        old_task = asyncio.create_task(asyncio.Event().wait())
-        # flake-ok: pre-existing one-iteration yield that starts the parked writer task, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        parked = asyncio.Event()
+        release = asyncio.Event()
 
-        out = await gw._respawn_backend_for_stub(
-            pool,
-            _pool_key(),
-            lambda k: None,
-            "stub-r2",
-            cast(Any, writer),
-            None,
-            old,
-            old_inbox,
-            cast(Any, old_task),
-        )
+        async def _park_writer() -> None:
+            parked.set()
+            await release.wait()
 
-        assert out is None
-        assert old_task.done()
-        assert writer.writes == [b'{"id":9,"error":{}}\n']
+        old_task = asyncio.create_task(_park_writer())
+        await await_until(parked, what="the parked writer task has started")
+
+        try:
+            out = await gw._respawn_backend_for_stub(
+                pool,
+                _pool_key(),
+                lambda k: None,
+                "stub-r2",
+                cast(Any, writer),
+                None,
+                old,
+                old_inbox,
+                cast(Any, old_task),
+            )
+
+            assert out is None
+            assert old_task.done()
+            assert writer.writes == [b'{"id":9,"error":{}}\n']
+        finally:
+            # The respawn's cancel ends the park. `release` ends it at cleanup too, so the
+            # writer task never outlives the test if that cancel stops landing.
+            release.set()
 
     @pytest.mark.asyncio
     async def test_acquire_rejection_gives_up_without_churning_spawns(self, monkeypatch):
