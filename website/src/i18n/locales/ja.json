@@ -10999,7 +10999,13 @@
       "col_status": "ステータス",
       "col_est_cost": "推定コスト",
       "col_profile": "プロファイル",
-      "col_expiry": "期限"
+      "col_expiry": "期限",
+      "col_account": "アカウント",
+      "col_region": "リージョン",
+      "col_actions": "アクション",
+      "col_type": "タイプ",
+      "col_url": "リンク",
+      "col_cost": "コスト"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",

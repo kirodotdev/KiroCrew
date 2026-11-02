@@ -11174,7 +11174,13 @@
       "col_status": "Status",
       "col_est_cost": "Gesch. Kosten",
       "col_profile": "Profil",
-      "col_expiry": "Ablauf"
+      "col_expiry": "Ablauf",
+      "col_account": "Konto",
+      "col_region": "Region",
+      "col_actions": "Aktionen",
+      "col_type": "Typ",
+      "col_url": "URL",
+      "col_cost": "Kosten"
     },
     "artifactDetailPage": {
       "published_to_provider": "Veröffentlicht in {{provider}}",

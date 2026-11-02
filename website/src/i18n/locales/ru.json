@@ -11524,7 +11524,13 @@
       "col_status": "Статус",
       "col_est_cost": "Прибл. стоимость",
       "col_profile": "Профиль",
-      "col_expiry": "Срок"
+      "col_expiry": "Срок",
+      "col_account": "Аккаунт",
+      "col_region": "Регион",
+      "col_actions": "Действия",
+      "col_type": "Тип",
+      "col_url": "Ссылка",
+      "col_cost": "Стоимость"
     },
     "artifactDetailPage": {
       "published_to_provider": "Опубликовано в {{provider}}",

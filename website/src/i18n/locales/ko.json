@@ -10999,7 +10999,13 @@
       "col_status": "상태",
       "col_est_cost": "예상 비용",
       "col_profile": "프로필",
-      "col_expiry": "만료"
+      "col_expiry": "만료",
+      "col_account": "계정",
+      "col_region": "리전",
+      "col_actions": "작업",
+      "col_type": "유형",
+      "col_url": "링크",
+      "col_cost": "비용"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}에 게시됨",

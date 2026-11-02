@@ -11174,7 +11174,13 @@
       "col_status": "স্ট্যাটাস",
       "col_est_cost": "আনুমানিক খরচ",
       "col_profile": "প্রোফাইল",
-      "col_expiry": "মেয়াদ"
+      "col_expiry": "মেয়াদ",
+      "col_account": "অ্যাকাউন্ট",
+      "col_region": "অঞ্চল",
+      "col_actions": "অ্যাকশন",
+      "col_type": "ধরন",
+      "col_url": "লিংক",
+      "col_cost": "খরচ"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}-এ প্রকাশিত",

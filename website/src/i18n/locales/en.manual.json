@@ -4919,7 +4919,13 @@
       "col_status": "Status",
       "col_est_cost": "Est. Cost",
       "col_profile": "Profile",
-      "col_expiry": "Expiry"
+      "col_expiry": "Expiry",
+      "col_account": "Account",
+      "col_region": "Region",
+      "col_actions": "Actions",
+      "col_type": "Type",
+      "col_url": "URL",
+      "col_cost": "Cost"
     },
     "artifactDetailPage": {
       "published_to_provider": "Published to {{provider}}",
