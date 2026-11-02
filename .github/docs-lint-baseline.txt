@@ -154,9 +154,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/types.py:177
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/worker_pool.py:49
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	chat_runner.py:867
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	knowledge/llm_pool.py:325
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	messaging/driver.py:468
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/bootstrap.py:220-229
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/defaults.py:41-48
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/interfaces.py:66-90
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	security.py:50-58
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session.py:399-400
