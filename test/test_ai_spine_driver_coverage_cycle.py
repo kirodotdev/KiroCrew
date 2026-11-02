@@ -689,3 +689,48 @@ def test_run_dry_falls_back_to_an_ephemeral_data_dir(tmp_path, git, monkeypatch,
 
     assert drv._run_dry(args, drv.BudgetCaps(), LOG) == 0
     assert str(root / "data" / "results") in capsys.readouterr().out
+
+
+def _record_driver_kwargs(monkeypatch, root):
+    """Point the dry run's mkdtemp at ``root`` and capture what ``Driver`` is built with."""
+    seen: dict = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def run(self, **kwargs):
+            return drv.Stats()
+
+    monkeypatch.setattr(drv, "tempfile", types.SimpleNamespace(mkdtemp=lambda prefix="": str(root)))
+    monkeypatch.setattr(drv, "Driver", _Recorder)
+    return seen
+
+
+@pytest.mark.parametrize("argv", [["--dry-run"], ["--dry-run", "--max-cycles", "1"]])
+def test_a_bare_cli_dry_run_writes_its_data_under_the_ephemeral_root(
+    tmp_path, git, monkeypatch, argv
+):
+    root = tmp_path / "ephemeral3"
+    root.mkdir()
+    seen = _record_driver_kwargs(monkeypatch, root)
+
+    assert drv.main(argv) == 0
+
+    data = root / "data"
+    assert seen["archive_root"] == data / "results"
+    assert seen["ledger_path"] == data / "state" / "ledger.jsonl"
+    assert seen["pr_queue_dir"] == data / "pr_queue"
+
+
+def test_a_cli_dry_run_honors_an_explicit_data_dir(tmp_path, git, monkeypatch):
+    root = tmp_path / "ephemeral4"
+    root.mkdir()
+    seen = _record_driver_kwargs(monkeypatch, root)
+    chosen = tmp_path / "chosen"
+
+    assert drv.main(["--dry-run", "--data-dir", str(chosen)]) == 0
+
+    assert seen["archive_root"] == chosen / "results"
+    assert seen["ledger_path"] == chosen / "state" / "ledger.jsonl"
+    assert seen["pr_queue_dir"] == chosen / "pr_queue"
