@@ -78,6 +78,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backend_cards import LINE_MID_TURN_STEER, card_for
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
 )
@@ -163,8 +164,14 @@ def steer_version_issue(backend: str, agent_version: str) -> str:
 GOOSE_TESTED_VERSION = "1.50.1"
 GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 
+#: The codex-acp release the Real Adapter Contract lane runs: ``test/real_adapters/
+#: package.json`` pins it, and every live codex capture's ``agentInfo.version`` reports
+#: it. codex-acp numbers its releases by semver, so the tested range is its major.
+CODEX_ACP_TESTED_VERSION = "2.3.0"
+CODEX_ACP_TESTED_RANGE = ((2, 0, 0), (3, 0, 0))
+
 #: Per backend: the tested range and the command that installs the tested release.
-#: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`; goose is the only member.
+#: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
 _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
     ACP_BACKEND_GOOSE: (
         GOOSE_TESTED_RANGE,
@@ -172,7 +179,19 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
             "| bash", f"| GOOSE_VERSION={GOOSE_TESTED_VERSION} bash"
         ),
     ),
+    ACP_BACKEND_CODEX: (
+        CODEX_ACP_TESTED_RANGE,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}"
+        f"@{CODEX_ACP_TESTED_RANGE[0][0]}",
+    ),
 }
+
+
+def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -> str:
+    """``2.x`` for a whole major, else ``1.50.x`` for a minor line."""
+    if low[1:] == (0, 0) and high == (low[0] + 1, 0, 0):
+        return f"{low[0]}.x"
+    return f"{low[0]}.{low[1]}.x"
 
 
 def untested_version_issue(backend: str, agent_version: str) -> str:
@@ -190,7 +209,7 @@ def untested_version_issue(backend: str, agent_version: str) -> str:
         agent_version, high
     ):
         return ""
-    tested = ".".join(str(part) for part in low[:2]) + ".x"
+    tested = _tested_range_label(low, high)
     return (
         f"{backend} {agent_version} is outside the tested range {tested}, so parts of "
         f"it may behave in ways Crew has not checked. To install the tested release, "
