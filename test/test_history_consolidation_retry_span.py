@@ -35,6 +35,7 @@ from kiro_crew.history import (
     ConversationLog,
     HistoryConsolidator,
 )
+from kiro_crew.testing.wait import finished
 
 # A row big enough that five of them exceed the rotation byte budget whatever it
 # is set to. Rotation on a handful of huge rows is driven by the byte-shrink loop,
@@ -853,16 +854,20 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "x"})) as spy:
             c.consolidate_session(KEY)
-            # flake-ok: pre-existing unbounded gather of scheduled tasks, moved verbatim
-            await asyncio.gather(*list(c._tasks), return_exceptions=True)
+            await finished(
+                asyncio.gather(*list(c._tasks), return_exceptions=True),
+                "the scheduled consolidation tasks",
+            )
         assert spy.await_count == 0, "a capped span with no growth still fired a turn"
 
         await _off_loop(lambda: log.append(KEY, "user", "arrived after the cap"))
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "recovered"})):
             c.consolidate_session(KEY)
-            # flake-ok: pre-existing unbounded gather of scheduled tasks, moved verbatim
-            await asyncio.gather(*list(c._tasks), return_exceptions=True)
+            await finished(
+                asyncio.gather(*list(c._tasks), return_exceptions=True),
+                "the scheduled consolidation tasks",
+            )
 
         assert log.unconsolidated_count(KEY) == 0, (
             "one failed abandon write left the session permanently unable to "
