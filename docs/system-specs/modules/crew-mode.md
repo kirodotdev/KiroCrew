@@ -3052,7 +3052,8 @@ tool and its `GET /api/members/{slug}/panel` read; no surface on this page draws
 it. Files is the standard SidePanel browser scoped
 to the workspace rule above, labelled **Workspace** on this page's strip (the
 Profile card's word for the same directory; `SidePanel.viewTitles` changes the
-title only, the tab id stays `files`). Dashboard and Files are the only
+title only, the tab id stays `files`). The browser's own header carries the same
+`viewTitles` word, so tab and header agree (#28031). Dashboard and Files are the only
 STANDING tabs. Side Chat remains available dynamically through selection Ask
 and the plus menu; it is not a standing entry — and the plus menu offers
 Terminal, Browser and app-contributed tabs, bound to the member's slot
