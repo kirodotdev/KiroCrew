@@ -72,4 +72,3 @@ src/pages/settings/InstancesPanel.tsx 63.3   # 88/139
 src/pages/settings/OverviewPanel.tsx 0.0   # 0/2
 src/pages/settings/WeixinPanel.tsx 54.0   # 47/87
 src/providers/adapters/acp.ts 62.3   # 71/114
-src/utils/highlightClient.ts 25.0   # 10/40
