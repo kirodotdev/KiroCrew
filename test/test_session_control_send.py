@@ -1088,3 +1088,324 @@ async def test_a_send_names_its_peer_origin_to_the_session_entry_point(tmp_path,
     assert out["steered"] is False and out["started"] is False
     assert calls == [("peer", True, False), ("peer", False, True)]
     assert any("route me" in q.get("content", "") for q in target._queue)
+
+
+# ── The gateway-set structured sender (meta.relay) on the delivered row ──
+#
+# The receiver's transcript draws the incoming session-message card from this
+# structured field, NOT by parsing the ``[sent by session …]`` prefix (which a
+# peer could type into its own composer). So every delivery arm must stamp it.
+
+
+def test_idle_delivery_stamps_meta_relay_on_the_user_row(tmp_path, monkeypatch):
+    """The idle-target run arm stamps ``meta.relay`` on the user row it appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    async def _fake_run_chat(_state, _slot, _prompt):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        out = await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="do the thing"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return out
+
+    asyncio.run(_drive())
+
+    rows = [
+        m
+        for m in target.messages
+        if m.get("role") == "user" and m.get("content", "").endswith("do the thing")
+    ]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the run-arm user row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+    # The structured key names the SAME sender the provenance prefix does.
+    assert relay["senderKey"] in rows[0]["content"]
+
+
+def test_busy_target_carries_meta_relay_on_the_queue_entry(tmp_path):
+    """A busy target queues; the entry carries ``meta.relay`` so the drain unions
+    it onto the row it later appends."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="queued relay"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "queued relay" in q.get("content", ""))
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the queued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_stamps_meta_relay_on_the_consumed_row(tmp_path):
+    """A steer into a running target stamps ``meta.relay`` on the consumed-steer
+    row, so the steered bubble also draws the incoming card."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    rows = [m for m in target.messages if "steered relay" in m.get("content", "")]
+    assert len(rows) == 1
+    relay = (rows[0].get("meta") or {}).get("relay")
+    assert relay, "the consumed-steer row must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_steered_delivery_carries_meta_relay_on_the_live_steer_push(tmp_path):
+    """The live ``steer_push`` frame carries ``meta.relay``: an open tab draws the
+    steered row from that frame, so without it the row shows the raw provenance
+    prefix until a reload.
+
+    Mutation guard: drop the ``push_payload`` relay stamp and the frame has none.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+    frames: list[tuple[str, dict]] = []
+    real_broadcast = state.broadcast_ws
+
+    def _record(kind, payload, *args, **kwargs):
+        frames.append((kind, payload))
+        return real_broadcast(kind, payload, *args, **kwargs)
+
+    state.broadcast_ws = _record
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="live steered relay",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    pushes = [
+        payload
+        for kind, payload in frames
+        if kind == "steer_push" and "live steered relay" in payload["content"]
+    ]
+    assert len(pushes) == 1
+    relay = (pushes[0].get("meta") or {}).get("relay")
+    assert relay, "the live steer frame must carry meta.relay"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+@pytest.mark.asyncio
+async def test_a_requeued_peer_steer_keeps_meta_relay_on_its_queue_entry(tmp_path):
+    """A peer steer the turn never takes is requeued WITH ``meta.relay``, so the
+    row the drain later writes still draws the incoming card instead of a raw
+    ``[sent by session …]`` bubble.
+
+    Mutation guard: drop ``relay`` from the ``_steer_attachment_meta`` record and
+    the requeued entry has no sender.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="steered but never consumed",
+        steer=True,
+    )
+    assert out["steered"] is True
+    # The turn ends without the consumption echo: the teardown requeues the steer.
+    pending = [m for m in target._pending_steers if "steered but never consumed" in m]
+    assert len(pending) == 1, "an accepted steer stays pending until the turn consumes it"
+
+    cr._requeue_unconsumed_steers(state, target)
+
+    entry = next(q for q in target._queue if "steered but never consumed" in q["content"])
+    relay = (entry.get("meta") or {}).get("relay")
+    assert relay, "the requeued entry must carry meta.relay for the drain to union"
+    assert relay["via"] == "session_send"
+    assert relay["senderKey"]
+
+
+def test_editing_a_queued_peer_send_drops_its_sender(tmp_path):
+    """A queued peer send that someone edits loses ``meta.relay``: the new words
+    are the editor's, so the drained row must not draw as the peer's card.
+
+    Mutation guard: drop the ``relay`` pop in ``queue_edit_by_id`` and the edited
+    entry still names the peer.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="peer words"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "peer words" in q.get("content", ""))
+    assert (entry.get("meta") or {}).get("relay"), "precondition: the queued send names the peer"
+
+    assert target.queue_edit_by_id(entry["id"], "the recipient's own words") is True
+
+    edited = next(q for q in target._queue if q["id"] == entry["id"])
+    assert edited["content"] == "the recipient's own words"
+    assert "relay" not in (edited.get("meta") or {})
+
+
+def test_a_drained_peer_send_carries_meta_relay_on_its_queue_pop(tmp_path):
+    """A queued peer send reaches every open tab as the drain's ``queue_pop``:
+    the client rebuilds the user row from that frame alone, so the sender rides
+    it or the live row draws as a raw ``[sent by session …]`` bubble until a
+    reload.
+
+    Mutation guard: drop the ``relay`` copy into ``_pop_meta`` in
+    ``queue_drain`` and the pop names no sender.
+    """
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _drive():
+        return await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="drained relay"
+        )
+
+    out = asyncio.run(_drive())
+    assert out["started"] is False
+    entry = next(q for q in target._queue if "drained relay" in q.get("content", ""))
+    stored = (entry.get("meta") or {}).get("relay")
+    assert stored, "precondition: the queued send names the peer"
+
+    target.task = None
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+
+    pops = [
+        c.args[1]
+        for c in state.broadcast_ws.call_args_list
+        if c.args and c.args[0] == "queue_pop" and c.args[1].get("queue_id") == entry["id"]
+    ]
+    assert pops, "the drain must broadcast the entry's queue_pop"
+    assert pops[-1].get("meta", {}).get("relay") == {
+        "senderKey": stored["senderKey"],
+        "via": stored["via"],
+    }
+
+
+def _merged_drain_row(tmp_path, monkeypatch, sends):
+    """Queue *sends* ``(caller, via)`` on a busy ``chat-2``, drain them merged,
+    and return the one user row the drain writes."""
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    callers = {key: _slot(state, key) for key, _ in sends}
+    target = _busy(_peer_target(state, "chat-2", next(iter(callers.values()))))
+
+    async def _drive():
+        for n, (key, via) in enumerate(sends):
+            await sc.send_to_target(
+                state,
+                caller_session_key=_key(callers[key]),
+                target="chat-2",
+                message=f"merged part {n}",
+                via=via,
+            )
+
+    asyncio.run(_drive())
+    assert len([q for q in target._queue if "merged part" in q.get("content", "")]) == len(sends)
+
+    cfg = MagicMock()
+    cfg.load.return_value.dashboard.merge_queued_messages = True
+    monkeypatch.setattr(cr, "KiroCrewConfig", cfg)
+    target.task = None
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+    rows = [
+        m
+        for m in target.messages
+        if m.get("role") == "user" and "merged part" in m.get("content", "")
+    ]
+    assert rows and "queued messages merged" in rows[-1]["content"]
+    return rows[-1]
+
+
+def test_a_merged_drain_of_one_sender_keeps_its_sender_across_delivery_verbs(tmp_path, monkeypatch):
+    """One session's ``session_send`` and its ``session_broadcast`` merge into one
+    row: the sender is the same, so the row keeps ``relay`` although the two
+    records differ in their verb.
+
+    Mutation guard: compare the whole ``relay`` record in the drain's address
+    loop and the merged row loses its sender.
+    """
+    from kiro_crew.dashboard.session_control_parts.session_messaging import BROADCAST_VIA
+
+    row = _merged_drain_row(
+        tmp_path, monkeypatch, [("chat-1", "session_send"), ("chat-1", BROADCAST_VIA)]
+    )
+    relay = (row.get("meta") or {}).get("relay")
+    assert relay and relay["senderKey"] == "chat-1"
+
+
+def test_a_merged_drain_of_two_senders_drops_the_sender(tmp_path, monkeypatch):
+    """Two sessions' queued sends merge into one row of both their words: no one
+    sender is true of it, so the row carries no ``relay``."""
+    row = _merged_drain_row(
+        tmp_path, monkeypatch, [("chat-1", "session_send"), ("chat-3", "session_send")]
+    )
+    assert "relay" not in (row.get("meta") or {})
+
+
+def test_a_queue_pop_carries_no_relay_for_an_entry_without_a_sender(tmp_path):
+    """Only a well-formed gateway stamp rides the pop: an entry with none, or one
+    whose stored value is not a sender record, pops without ``relay``."""
+    from test_queue_drain_preserve_attachments import _drain_once
+
+    state = _make_state(tmp_path)
+    target = _slot(state, "chat-2")
+    target.queue_append("plain words", meta={})
+    target.queue_append("odd words", meta={"relay": "not-a-record"})
+    state.subagents = None
+    state.broadcast_ws = MagicMock()
+    asyncio.run(_drain_once(state, target))
+
+    pops = [
+        c.args[1] for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "queue_pop"
+    ]
+    assert pops
+    assert all("relay" not in (p.get("meta") or {}) for p in pops)

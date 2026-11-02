@@ -5,6 +5,7 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage, ToolActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
+import { isGatewaySessionSendMeta, sessionSendDeliveredTo } from '../../pages/chat/sessionRelay'
 import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { ASK_QUESTION_SERVER, isAskQuestionToolName, MAX_TOOL_RESULT_CHARS } from '../../utils/askQuestionTool'
 import { entryActivityOpen, persistActivityOpen, restoreSavedActivityOpen, type ChatState } from './state'
@@ -58,7 +59,7 @@ function applyToolOutputToMessages(
   slot: string,
   tid: string,
   output: string,
-  askAnswerOnly = false,
+  only: 'ask_answer' | 'session_send' | null = null,
 ): void {
   if (isUnsafeKey(slot)) return
   const patch = (msgs: ChatMessage[] | undefined): void => {
@@ -67,11 +68,12 @@ function applyToolOutputToMessages(
       if (m.role !== 'tool') continue
       const meta = m.meta as Record<string, unknown> | undefined
       if (!meta || meta.tool_call_id !== tid) continue
-      if (askAnswerOnly && (
+      if (only === 'ask_answer' && (
         output.length > MAX_TOOL_RESULT_CHARS
         || meta.mcp_server !== ASK_QUESTION_SERVER
         || !isAskQuestionToolName(typeof meta.tool_name === 'string' ? meta.tool_name : '')
       )) continue
+      if (only === 'session_send' && (output.length > MAX_TOOL_RESULT_CHARS || !isGatewaySessionSendMeta(meta))) continue
       m.meta = { ...meta, output }
     }
   }
@@ -241,7 +243,12 @@ export const activityReducers = {
     if (tid && out.includes(SPAWN_LAUNCH_MARKER)) {
       applyToolOutputToMessages(state, action.payload.slot, tid, out)
     } else if (tid && isAskAnsweredOutput(out)) {
-      applyToolOutputToMessages(state, action.payload.slot, tid, out, true)
+      applyToolOutputToMessages(state, action.payload.slot, tid, out, 'ask_answer')
+    } else if (tid && sessionSendDeliveredTo(out)) {
+      // A delivered `session_send` draws as the outgoing card from its own
+      // success result, so the live row needs it too; copied only onto the
+      // gateway's own, bounded `session_send` row.
+      applyToolOutputToMessages(state, action.payload.slot, tid, out, 'session_send')
     }
     // The live status line (`slotStatusDetail`) names the call that is
     // running. Once that call RETURNS, the model is reading its result, so the

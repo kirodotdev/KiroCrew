@@ -381,6 +381,15 @@ async def send_to_target(
         caller=caller_key or "unknown", via=via or "session_send"
     ) + _neutralize_send_provenance(sanitize_outbound(body))
 
+    # The structured cross-session sender, stamped by the gateway onto the row the
+    # delivery appends (``meta.relay``). The receiver's transcript draws the
+    # incoming session-message card from THIS, not by parsing the ``[sent by
+    # session …]`` prefix — a peer cannot forge it the way it could type the
+    # envelope into its own composer, because only this path writes it. Carries the
+    # sender's key and the verb; the sender's display title is resolved client-side
+    # from the live roster, so no name is pinned here.
+    relay_meta = {"senderKey": caller_key or "unknown", "via": via or "session_send"}
+
     steered = False
     requeued = False
     # Containment names that newly held when a successful steer's turn was stopped;
@@ -438,7 +447,12 @@ async def send_to_target(
         # peer must not inherit the composer's exemption from the LINKED drop.
         async def _steer_delivery() -> str:
             return await session_deliver.deliver(
-                state, slot, prompt, session_deliver.peer(steer=True), admission=admission
+                state,
+                slot,
+                prompt,
+                session_deliver.peer(steer=True),
+                admission=admission,
+                relay_meta=relay_meta,
             )
 
         delivery_progress.steer_await_entered = True
@@ -502,6 +516,7 @@ async def send_to_target(
                 prompt,
                 session_deliver.peer(steer=False),
                 queue_meta=send_origin_meta(state, caller_key),
+                relay_meta=relay_meta,
             )
             logger.info(
                 "session_send: orphaned steer to %s came back unavailable and was "
@@ -693,6 +708,7 @@ async def send_to_target(
                 # stamp is what lets that drop be reported back to us instead of
                 # ending at the target's own transcript.
                 queue_meta=send_origin_meta(state, caller_key),
+                relay_meta=relay_meta,
             )
             == session_deliver.DELIVERED_TURN
         )
