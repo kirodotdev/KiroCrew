@@ -206,6 +206,24 @@ class TestTables:
         out = to_whatsapp_text("| a |\n|---|\n| one | two |")
         assert "one" in out and "two" in out
 
+    def test_a_pipe_inside_inline_code_stays_in_its_cell(self):
+        """Splitting on that pipe tears the code span across a label and shifts
+        every later cell under the wrong column.
+        """
+        out = to_whatsapp_text("| op | meaning |\n|---|---|\n| `a|b` | or |")
+        assert out == "• *op:* `a|b` | *meaning:* or"
+
+    def test_backticks_in_separate_cells_keep_their_columns(self):
+        """A lone backtick per cell must not pair across the cell boundary."""
+        out = to_whatsapp_text("| a | b | c |\n|---|---|---|\n| ` | ` | x |")
+        assert out.startswith("• *a:* ` | ")
+        assert out.endswith(" | *c:* x")
+
+    def test_an_escaped_pipe_is_cell_text(self):
+        r"""``\|`` is how GFM writes a literal pipe in a cell."""
+        out = to_whatsapp_text("| op | meaning |\n|---|---|\n| a \\| b | or |")
+        assert out == "• *op:* a | b | *meaning:* or"
+
 
 class TestMermaid:
     """A ```mermaid fence is diagram SOURCE. WhatsApp renders no image from text,

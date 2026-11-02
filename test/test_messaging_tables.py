@@ -468,6 +468,19 @@ class TestEscapedPipesAndInlineCode:
         table = "| Expr | Meaning |\n| --- | --- |\n| `a | either |"
         assert render_tables(table, policy=TABLE_POLICY_CARDS) == "**`a**\n- Meaning: either"
 
+    def test_backticks_in_separate_body_cells_keep_their_columns(self) -> None:
+        # Pairing the two lone backticks across the boundary would fuse the
+        # first two cells and shift "x" under the wrong header.
+        table = "| A | B | C |\n| --- | --- | --- |\n| ` | ` | x |"
+        assert render_tables(table, policy=TABLE_POLICY_CARDS) == "**`**\n- B: `\n- C: x"
+        # A short row keeps the same reading: padding fills the missing cell.
+        short = "| A | B | C | D |\n| --- | --- | --- | --- |\n| ` | ` | x |"
+        assert render_tables(short, policy=TABLE_POLICY_CARDS) == "**`**\n- B: `\n- C: x"
+
+    def test_a_short_row_keeps_a_pipe_inside_its_code_span(self) -> None:
+        table = "| A | B | C |\n| --- | --- | --- |\n| `a|b` | c |"
+        assert render_tables(table, policy=TABLE_POLICY_CARDS) == "**`a|b`**\n- B: c"
+
 
 class TestWhitespaceOutsideRunsIsPreserved:
     def test_indentation_and_blank_lines_around_a_run_survive(self) -> None:
