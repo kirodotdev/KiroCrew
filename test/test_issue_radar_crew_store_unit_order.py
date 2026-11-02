@@ -19,6 +19,7 @@ import signal
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     OWNER,
     REPO,
@@ -263,7 +264,7 @@ def test_an_append_that_landed_after_the_flush_budget_publishes_its_unit_precede
     # unit, which is the case with no self-correction: the old unit is retired and has
     # no next write of its own to claim precedence.
     monkeypatch.setattr(crew_log_emit, "flush", real_flush)
-    assert real_flush(timeout=10.0)
+    assert_drained()
     crew_log_projection.forget_slot_folds()
     successor = _unit(cid)
     assert successor != sid
