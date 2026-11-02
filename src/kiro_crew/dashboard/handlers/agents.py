@@ -228,9 +228,11 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
 from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
     _member_slug_is_claimed,
     _prune_private_copy_of_deleted_crew,
+    _prune_private_copy_outcome,
     _reclaim_deleted_member_crew_log,
     _reclaim_deleted_member_dashboard_lock,
     _remove_goal_check_ins,
+    _remove_member_leftovers,
     api_kirocrew_agent_delete,
 )
 from kiro_crew.dashboard.agent_admin.crew_update import (  # noqa: F401
@@ -1976,9 +1978,8 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
 
 
 # Every function the owners define runs on this module's globals, so a patch of
-# ``kiro_crew.dashboard.handlers.agents.<name>`` reaches it wherever it lives;
-# see ``kiro_crew.dashboard.agent_admin``. Run once, after this body has bound every
-# name.
+# ``kiro_crew.dashboard.handlers.agents.<name>`` reaches it wherever it lives; see
+# ``kiro_crew.dashboard.agent_admin``. Run once, after this body has bound every name.
 _facade_compose(
     globals(),
     (

@@ -4,7 +4,8 @@
 ``--memory-store`` (``_memory_store_or_exit``) against a config snapshot. ``create`` and
 ``update`` persist through ``memory_stores.persist_member_config``; ``delete`` writes
 through ``cli_commands_workspace._locked_config_write`` and re-checks its precondition
-inside the lock. ``_agent_reset_model`` serves ``agent reset-model``.
+inside the lock, then runs the dashboard delete's teardown
+(``_remove_deleted_agent_leftovers``). ``_agent_reset_model`` serves ``agent reset-model``.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -407,7 +408,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
+        bound_template = ""
+
         def _mutate_agent_delete(doc: dict) -> dict:
+            nonlocal bound_template
             agents = coerce_dict_section(doc, "agents")
             if args.name not in agents:
                 raise _CliConflict(f"agent '{args.name}' not found")
@@ -419,6 +423,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 isinstance(agent_section, dict) and agent_section.get("default_agent") == args.name
             ):
                 raise _CliConflict(f"cannot delete default agent '{args.name}'")
+            # The PERSISTED binding, read in the same lock as the delete: the
+            # private-copy cleanup needs it to prove the copy was this crew's.
+            entry = agents[args.name]
+            bound = entry.get("kiro_agent") if isinstance(entry, dict) else ""
+            bound_template = bound if isinstance(bound, str) else ""
             del agents[args.name]
             return doc
 
@@ -434,15 +443,63 @@ def _handle_agent(args: argparse.Namespace) -> None:
         def _drop_from_team() -> None:
             crew_teams.drop_member(args.name)
 
+        # The teardown runs under the same namespace hold as the delete: a
+        # same-name create in another process needs that hold too, so it cannot
+        # land a new avatar or private copy that the teardown would then remove.
         with memory_store_namespace_lock():
             _locked_config_write(_mutate_agent_delete, after_write=_drop_from_team)
-        print(f"Deleted agent: {args.name}")
+            print(f"Deleted agent: {args.name}")
+            cleaned = _remove_deleted_agent_leftovers(args.name, cfg, bound_template)
+        if not cleaned:
+            sys.exit(1)
 
     elif action == "reset-model":
         _agent_reset_model(args)
 
     else:
         print("Usage: kirocrew agent {list|create|update|delete|reset-model}")
+
+
+#: How a failed teardown step names what it could not remove.
+_LEFTOVER_FAILED = {
+    "avatar": "the avatar",
+    "goal check-in": "the goal check-ins",
+    "worktree": "the worktrees",
+    "private template copy": "the private template copy",
+}
+
+
+def _remove_deleted_agent_leftovers(name: str, cfg: KiroCrewConfig, bound_template: str) -> bool:
+    """Run the dashboard delete's teardown for a crew the CLI just deleted.
+
+    The same ``_remove_member_leftovers`` the ``DELETE /api/agents/{name}`` route
+    runs, so both deletes take the avatar, goal check-ins, worktrees and private
+    template copy. Prints one line per thing removed or kept and one stderr line
+    per step that failed; every step runs either way. Returns False when any
+    step failed, so the caller exits non-zero over a delete that has committed.
+    """
+    import asyncio
+
+    from kiro_crew.config import config_dir
+    from kiro_crew.cron import CronService
+    from kiro_crew.dashboard.handlers.agents import _remove_member_leftovers
+
+    report: list[tuple[str, str, str]] = []
+    crons = None
+    try:
+        crons = CronService(base_dir=config_dir())
+    except Exception:  # noqa: BLE001 - the other steps still run
+        report.append(("failed", "goal check-in", ""))
+    report += asyncio.run(_remove_member_leftovers(name, cfg, bound_template, crons, "cli"))
+    ok = True
+    for outcome, kind, detail in report:
+        shown = f": {safe_terminal_line(detail)}" if detail else ""
+        if outcome == "failed":
+            print(f"Error: could not remove {_LEFTOVER_FAILED[kind]} of '{name}'", file=sys.stderr)
+            ok = False
+        else:
+            print(f"{outcome.capitalize()} {kind}{shown}")
+    return ok
 
 
 def _agent_reset_model(args: argparse.Namespace) -> None:

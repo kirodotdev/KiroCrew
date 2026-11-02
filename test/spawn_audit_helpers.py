@@ -535,6 +535,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # created; the sole input is the operator-typed app name.
         "cli_commands_app.py::_register_app_crons_to_scheduler",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving the shared ``_remove_member_leftovers``
+        # teardown from the loop-less ``kirocrew agent delete``. No child process is
+        # created here; the only input is the operator-typed agent name. The
+        # worktree step's git calls run inside ``crewmate_worktree``'s own runner.
+        "cli_commands_agent.py::_remove_deleted_agent_leftovers",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
         # login`` / ``kas logout`` verbs. No child process is created: the
