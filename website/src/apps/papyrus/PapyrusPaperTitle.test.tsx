@@ -8,13 +8,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import ProjectList from '../apps/papyrus/ProjectList'
-import { renderWithProviders } from './helpers'
-import { PROJECTS_QUERY_KEY } from '../apps/papyrus/lib'
-import { papyrusApi, PapyrusApiError, type Project } from '../apps/papyrus/api'
+import ProjectList from './ProjectList'
+import { renderWithProviders } from '../../test/helpers'
+import { PROJECTS_QUERY_KEY } from './lib'
+import { papyrusApi, PapyrusApiError, type Project } from './api'
 
-vi.mock('../apps/papyrus/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   papyrusApi: {
     health: vi.fn(),
     listProjects: vi.fn(),

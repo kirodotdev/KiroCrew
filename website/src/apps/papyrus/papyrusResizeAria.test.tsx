@@ -21,16 +21,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import PapyrusPage from '../apps/papyrus/PapyrusPage'
-import { createTestStore, renderWithProviders } from './helpers'
-import { papyrusApi } from '../apps/papyrus/api'
+import PapyrusPage from './PapyrusPage'
+import { createTestStore, renderWithProviders } from '../../test/helpers'
+import { papyrusApi } from './api'
 import {
   CHAT_OPEN_KEY, CHAT_WIDTH_KEY, DEFAULT_PDF_WIDTH, DEFAULT_TREE_WIDTH,
   LAST_PROJECT_KEY, MIN_CHAT_WIDTH, MIN_EDITOR_WIDTH,
-} from '../apps/papyrus/lib'
+} from './lib'
 
-vi.mock('../apps/papyrus/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/papyrus/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   papyrusApi: {
     health: vi.fn(),
     listProjects: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock('../apps/papyrus/api', async (importOriginal) => ({
   },
 }))
 
-vi.mock('../apps/papyrus/PapyrusEditor', async () => {
+vi.mock('./PapyrusEditor', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
   return {
     default: forwardRef<{ jumpToLine: (line: number) => void; focus: () => void }, {
@@ -56,8 +56,8 @@ vi.mock('../apps/papyrus/PapyrusEditor', async () => {
   }
 })
 
-vi.mock('../apps/papyrus/PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
-vi.mock('../apps/papyrus/CoAuthorPanel', () => ({
+vi.mock('./PdfPreview', () => ({ default: () => <div data-testid="pdf" /> }))
+vi.mock('./CoAuthorPanel', () => ({
   default: () => <div data-testid="co-author-panel" />,
 }))
 

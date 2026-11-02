@@ -6,10 +6,10 @@ import {
   saveLastProject, saveSlot, SLOT_KEY_PREFIX, sourceFiles, texFiles,
   DEFAULT_CHAT_WIDTH, MAX_CHAT_WIDTH, maxChatWidth, MIN_CHAT_WIDTH,
   DEFAULT_TREE_WIDTH, MIN_EDITOR_WIDTH,
-} from '../apps/papyrus/lib'
-import { PapyrusApiError, type Diagnostic } from '../apps/papyrus/api'
-import { i18next } from '../i18n'
-import '../i18n/all'
+} from './lib'
+import { PapyrusApiError, type Diagnostic } from './api'
+import { i18next } from '../../i18n'
+import '../../i18n/all'
 
 // Papyrus's pure helpers. These carry the behaviour that is otherwise only
 // observable by staring at the rendered tree — the file-tree shape, the

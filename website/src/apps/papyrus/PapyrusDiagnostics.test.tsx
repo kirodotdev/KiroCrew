@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import DiagnosticsList from '../apps/papyrus/DiagnosticsList'
-import type { Diagnostic } from '../apps/papyrus/api'
+import DiagnosticsList from './DiagnosticsList'
+import type { Diagnostic } from './api'
 
 // The whole point of parsing the compiler log server-side is that a row is
 // CLICKABLE and moves the editor's cursor to the offending line. That is the

@@ -20,7 +20,7 @@ const hoisted = vi.hoisted(() => ({
   emit: { current: null as ((v: string) => void) | null },
 }))
 
-vi.mock('../pierre', async importOriginal => {
+vi.mock('../../pierre', async importOriginal => {
   const { forwardRef, useImperativeHandle } = await import('react')
   return {
     ...(await importOriginal<Record<string, unknown>>()),
@@ -43,7 +43,7 @@ vi.mock('../pierre', async importOriginal => {
   }
 })
 
-import PapyrusEditor from '../apps/papyrus/PapyrusEditor'
+import PapyrusEditor from './PapyrusEditor'
 
 const TEX = '\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}\n'
 

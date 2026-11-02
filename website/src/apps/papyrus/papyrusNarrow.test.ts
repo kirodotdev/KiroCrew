@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const src = () => readFile(join(__dirname, '..', 'apps', 'papyrus', 'PapyrusPage.tsx'), 'utf8')
+const src = () => readFile(join(__dirname, 'PapyrusPage.tsx'), 'utf8')
 
 describe('papyrus at short heights', () => {
   it('keeps the editor floor and lower controls reachable', async () => {
     const [page, app, routes] = await Promise.all([
       src(),
-      readFile(join(__dirname, '..', 'App.tsx'), 'utf8'),
-      readFile(join(__dirname, '..', 'shell', 'nav', 'routeActive.ts'), 'utf8'),
+      readFile(join(__dirname, '..', '..', 'App.tsx'), 'utf8'),
+      readFile(join(__dirname, '..', '..', 'shell', 'nav', 'routeActive.ts'), 'utf8'),
     ])
     const workspace = page.slice(page.indexOf('Source column:'), page.indexOf('{/* PDF column.'))
     const floor = "flex flex-1 ${isMobile ? 'min-h-0 flex-col' : 'min-h-[180px] [contain:size]'}"
@@ -114,7 +114,7 @@ describe('papyrus at phone widths', () => {
 
   it('keeps the viewport-anchored sessions opener out of an embedded host', async () => {
     // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pin reads the page and those owners.
-    const pages = join(__dirname, '..', 'pages')
+    const pages = join(__dirname, '..', '..', 'pages')
     const ownerDir = join(pages, 'chat', 'page')
     const files = [
       join(pages, 'ChatPage.tsx'),
@@ -151,7 +151,7 @@ describe('papyrus at phone widths', () => {
   })
 
   it('does not repeat the Files heading directly under the disclosure bar', async () => {
-    const s = await readFile(join(__dirname, '..', 'apps', 'papyrus', 'FileTree.tsx'), 'utf8')
+    const s = await readFile(join(__dirname, 'FileTree.tsx'), 'utf8')
     expect(s, 'expected the viewport hook').toContain('useIsMobile')
     // Hidden from sight but kept for assistive tech, and the spacer keeps the
     // new-file button in place.
