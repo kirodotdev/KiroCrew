@@ -10854,6 +10854,7 @@
       "all_apps": "すべてのアプリ",
       "app_other": "{{count}} アプリ",
       "available": "利用可能",
+      "backend_refused_notice": "{{name}} のバックエンドは起動しませんでした: {{reason}}",
       "built_in_kirocrew": "ビルトイン · kirocrew",
       "cancel": "キャンセル",
       "category": "カテゴリー",

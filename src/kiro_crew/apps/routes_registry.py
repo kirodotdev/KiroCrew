@@ -239,7 +239,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             # start_enabled_app_backends), leaving the app's UI with "no reachable
             # backend" until then. No-op for apps that declare no backend. Run in a
             # thread because start_app_backend blocks on a health-check poll.
-            await _start_backend_after_install(result["name"])
+            backend_refused = await _start_backend_after_install(result["name"])
+            if backend_refused:
+                result["backend_refused"] = backend_refused
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
@@ -369,8 +371,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.
-                    await _start_backend_after_install(r["name"])
+                    backend_refused = await _start_backend_after_install(r["name"])
                     r["registration"] = reg.to_dict()
+                    if backend_refused:
+                        r["backend_refused"] = backend_refused
             return r
 
     install_task = asyncio.create_task(_locked_install())

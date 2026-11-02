@@ -11025,6 +11025,7 @@
       "app_one": "{{count}} ऐप",
       "app_other": "{{count}} ऐप",
       "available": "उपलब्ध",
+      "backend_refused_notice": "{{name}} का बैकएंड शुरू नहीं हुआ: {{reason}}",
       "built_in_kirocrew": "अंतर्निहित · kirocrew",
       "cancel": "रद्द करें",
       "category": "श्रेणी",

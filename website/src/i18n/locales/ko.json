@@ -10854,6 +10854,7 @@
       "all_apps": "모든 앱",
       "app_other": "앱 {{count}}개",
       "available": "사용 가능",
+      "backend_refused_notice": "{{name}}의 백엔드가 시작되지 않았습니다: {{reason}}",
       "built_in_kirocrew": "기본 제공 · kirocrew",
       "cancel": "취소",
       "category": "카테고리",

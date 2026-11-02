@@ -11196,6 +11196,7 @@
       "app_one": "{{count}} app",
       "app_other": "{{count}} app",
       "available": "disponibile",
+      "backend_refused_notice": "Il backend di {{name}} non è stato avviato: {{reason}}",
       "built_in_kirocrew": "Integrata · kirocrew",
       "cancel": "Annulla",
       "category": "Categoria",
