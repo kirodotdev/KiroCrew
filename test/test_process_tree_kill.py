@@ -292,7 +292,7 @@ class TestSigkillSessionProcessTree:
             # The group is alive: on macOS the EPERM is settled by the kernel's group
             # listing, so list a running member rather than read the host's real table.
             patch(
-                "kiro_crew.platform_compat_kill.darwin_pgroup_members",
+                "kiro_crew.platform_compat.darwin_pgroup_members",
                 return_value=[DarwinKinfoProc(pid=54321, zombie=False, start_id=_START_ID)],
             ),
         ):
