@@ -92,6 +92,7 @@ def _run_shared_cron_deaths(*, limit: int, deaths: int):
     gateway._owner_id = "U000"
     gateway.subagent_mgr = None
     gateway._cron_injecting = {}
+    gateway._cron_runs_holding = set()
     gateway._no_crons = False
     gateway._interactive_approval = MagicMock(return_value="interactive_cb")
 

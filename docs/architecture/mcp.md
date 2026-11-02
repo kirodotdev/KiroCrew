@@ -5293,9 +5293,22 @@ blocking tool at return is written for a deferred one by the DRIVER, through
 `DeferredTool.on_settled`, after the dispatch thread has ruled out a cancel --
 never inside the settling `step()`, which runs on a pool thread and could
 otherwise write `completed` beside the `cancelled` row a concurrent cancel
-produces. Settlement installs the call's caller identity and tenant nonce;
-`spawn_sub_agents` marks finished children collected only in that accepted-result
-commit, never in its collect step or an abandonment reply. A directive tool's
+produces. Settlement installs the call's caller identity and tenant nonce. Once
+the answer is written the driver runs `DeferredTool.on_answered(written)`, with
+the same identity installed: `written` is True only when `respond()` reports the
+whole frame written to the client's own pipe, and never for a pooled backend,
+whose frame lands in the broker. `spawn_sub_agents` marks the children its reply
+carries collected only there, on True -- never in its collect step, in
+`on_settled`, or for an abandonment reply. For every parent that is not
+dashboard-born that mark is held only under the attempt that spawned the child,
+the token `(key, task, epoch)` opened at the parent tool's spawn, done read or
+landing note and ended by `settle_turn` or `release`, and only an attempt that
+landed confirms it (`kiro_crew.parent_turns`). The spawn names the attempt that
+held the parent's session, with its prompt in flight, when its request arrived,
+and every member of one call names its first member's attempt (`call_id`). A
+done read under any other attempt, or after the spawning attempt ended, holds
+nothing, so the completion takes normal delivery: a duplicate at worst, and a
+loss only in the two windows the sub-agent spec's Residual names. A directive tool's
 `refuse_if_markerless` tag is applied to the
 settling text the same way, so neither path can tell the two shapes apart. The
 pool is `mcp_shared._StepPool`, not `ThreadPoolExecutor`: its threads are

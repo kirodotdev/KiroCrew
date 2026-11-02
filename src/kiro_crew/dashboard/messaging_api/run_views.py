@@ -9,7 +9,7 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -194,6 +194,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
+    # Read in the same step as ``done``, before this handler awaits anything.
+    seen_under = _parent_turn_holding(request, state, info) if info.done else None
     data["started"] = info.started
     if info.done:
         data["elapsed"] = info.elapsed
@@ -243,7 +245,56 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+    if (
+        seen_under is not None
+        and seen_under == getattr(info, "_spawned_under", None)
+        and getattr(info, "_seen_done_under", None) is None
+    ):
+        # Stamped only under the attempt that spawned the run, and only when that
+        # attempt answered from the read to here: a read under any other attempt,
+        # or one that ended while this read awaited, sends its reply to no turn
+        # that will carry it, so it holds nothing and the completion is delivered.
+        if _parent_turn_holding(request, state, info) == seen_under:
+            info._seen_done_under = seen_under
     return web.json_response(data)
+
+
+def _parent_turn_holding(request: web.Request, state: DashboardState, info: Any) -> Any:
+    """The attempt holding the parent's turn permit, when the parent's own tool asks.
+
+    ``None`` unless an internal caller presents the run's own parent session
+    (``X-Session-Key``) and a turn holds that session's permit now. A
+    ``spawn_sub_agents`` call reads its children through this route under the
+    turn whose reply will carry them, so a done read under the attempt that
+    spawned the child (``SubagentInfo._spawned_under``) names it
+    (``SubagentInfo._seen_done_under``), the one a mark is held under.
+    """
+    return _session_turn_holding(request, state, getattr(info, "parent_session_key", None))
+
+
+def _session_turn_holding(
+    request: web.Request, state: DashboardState, parent_session: str | None
+) -> Any:
+    """The attempt holding ``parent_session``'s turn permit, when that session asks.
+
+    ``None`` unless an internal caller presents ``parent_session`` itself
+    (``X-Session-Key``), a turn holds its permit now, and that turn's prompt is in
+    flight (``SessionManager.turn_prompt_in_flight``): a holder that has claimed
+    but not yet sent its prompt issued no tool call, so a call that reaches here
+    then belongs to a turn that ended. ``POST /api/spawn`` records it on the child
+    it creates (``SubagentInfo._spawned_under``) and ``GET /api/spawn/{id}``
+    compares a done read against it.
+    """
+    if request.get("internal_auth") is not True:
+        return None
+    caller = request.headers.get("X-Session-Key", "")
+    if not caller or caller != parent_session:
+        return None
+    in_flight = getattr(state.sessions, "turn_prompt_in_flight", None)
+    token_of = getattr(state.sessions, "turn_token", None)
+    if not callable(in_flight) or not callable(token_of) or in_flight(caller) is not True:
+        return None
+    return token_of(caller)
 
 
 def _awaiting_spawn_approval(info: object) -> bool:

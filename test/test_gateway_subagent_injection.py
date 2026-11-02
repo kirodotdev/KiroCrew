@@ -49,6 +49,12 @@ def _owner_calls(done: _Done) -> list[Any]:
     return [c for c in done.calls if c[0] in ("acquire", "reset", "cancel", "release", "sleep")]
 
 
+def _known(done: _Done, *infos: Any) -> None:
+    """Make the manager answer *infos* as its live records, as ``get`` does."""
+    records = {info.id: info for info in infos}
+    done.mgr.get = MagicMock(side_effect=records.get)
+
+
 # ── the tab: blocking-tool collection ────────────────────────────────────────
 
 
@@ -62,6 +68,8 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
     slot._synthesis_armers = {"a1"}
     slot._subagents_inline_collected = {"a1"}
     info = make_info()
+    info._collected_inline = True
+    _known(done, info)
 
     # Skipped before the tab's running turn is waited on, and never counted in flight.
     delivery = asyncio.ensure_future(done.on_done(info))
@@ -77,12 +85,35 @@ async def test_a_result_collected_inline_is_not_injected_again(done: _Done) -> N
 
 
 @pytest.mark.asyncio
+async def test_a_returned_completion_never_arms_the_synthesis_turn(done: _Done) -> None:
+    """The model already synthesized a returned result inline: a dedicated
+    synthesis turn for it would be one more redundant turn. Another returned
+    member still on the slot keeps the skip from disarming it, so only the arm
+    guard prevents it."""
+    slot = done.tab("main")
+    slot._pending_synthesis = False
+    slot._subagents_inline_collected = {"a1", "a2"}
+    info = make_info()
+    info._collected_inline = True
+    _known(done, info)
+
+    await done.done(info)
+
+    assert slot._pending_synthesis is False
+    assert slot._subagents_inline_collected == {"a2"}
+    assert done.chats == []
+
+
+@pytest.mark.asyncio
 async def test_a_partial_inline_collection_keeps_synthesis_armed(done: _Done) -> None:
     slot = done.tab("main")
     slot._pending_synthesis = True
     slot._subagents_inline_collected = {"a1", "a2"}
+    info = make_info()
+    info._collected_inline = True
+    _known(done, info)
 
-    await done.done(make_info())
+    await done.done(info)
 
     assert slot._subagents_inline_collected == {"a2"}
     assert slot._pending_synthesis is True
@@ -94,8 +125,11 @@ async def test_an_inline_skip_keeps_a_synthesis_another_child_armed(done: _Done)
     slot._pending_synthesis = True
     slot._synthesis_armers = {"b1"}
     slot._subagents_inline_collected = {"a1"}
+    info = make_info()
+    info._collected_inline = True
+    _known(done, info)
 
-    await done.done(make_info())
+    await done.done(info)
 
     assert slot._subagents_inline_collected == set()
     assert slot._pending_synthesis is True
@@ -114,6 +148,7 @@ async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     infos = {child: make_info(child) for child in order}
+    _known(done, *infos.values())
 
     # Both arm at entry and wait behind the running turn, in either order; the
     # blocking tool's collection of a1 lands during that wait.
@@ -125,6 +160,7 @@ async def test_a_background_completion_keeps_its_arm_when_an_inline_sibling_also
             f"{child} waiting behind the turn",
         )
     assert slot._synthesis_armers == {"a1", "b1"}
+    infos["a1"]._collected_inline = True
     slot._subagents_inline_collected.add("a1")
     current.set_result(None)
     await asyncio.wait_for(asyncio.gather(*deliveries), _LOST_RUN_SECS)
@@ -142,10 +178,12 @@ async def test_a_result_collected_inline_while_waiting_is_not_queued(done: _Done
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     info = make_info()
+    _known(done, info)
 
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
+    info._collected_inline = True
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
 
@@ -164,10 +202,12 @@ async def test_a_result_collected_inline_during_the_wait_is_skipped_on_an_idle_t
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
     info = make_info()
+    _known(done, info)
 
     delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
     slot._subagents_inline_collected.add("a1")
+    info._collected_inline = True
     slot.running = False
     current.set_result(None)
     await asyncio.wait_for(delivery, _LOST_RUN_SECS)
@@ -386,8 +426,11 @@ async def test_a_delivery_that_starts_no_turn_drains_what_it_held(
     current: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     slot.task = current
 
-    delivery = asyncio.ensure_future(done.on_done(make_info()))
+    info = make_info()
+    _known(done, info)
+    delivery = asyncio.ensure_future(done.on_done(info))
     await _until(lambda: slot._subagent_deliveries_inflight == 1, "the wait behind the turn")
+    info._collected_inline = True
     slot._subagents_inline_collected.add("a1")
     slot.running = False
     current.set_result(None)
@@ -563,7 +606,7 @@ async def test_a_cron_parent_gets_the_redacted_reply_and_its_session_reset(
         ("release", key),
         ("reset", key),
     ]
-    done.orch.cron_svc.clear_active_session_key.assert_called_once_with("j1", key)
+    done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", key)
     assert done.orch._cron_injecting == {}
     assert info._report_delivered is True
 
@@ -589,7 +632,7 @@ async def test_a_queued_sibling_keeps_the_cron_session(
     await done.done(make_info(parent="cron:j1:r1"))
 
     assert not any(c[0] == "reset" for c in done.calls)
-    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -598,7 +641,7 @@ async def test_a_failed_reset_keeps_the_cron_key_registered(done: _Done) -> None
 
     await done.done(make_info(parent="cron:j1:r1"))
 
-    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
 
 
 @pytest.mark.asyncio

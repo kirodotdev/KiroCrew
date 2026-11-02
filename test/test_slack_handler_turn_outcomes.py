@@ -363,6 +363,24 @@ class TestTransientCompactionRetry:
         assert sessions.replay_gaps == [("open", "thread1"), ("close", "thread1")]
 
     @pytest.mark.asyncio
+    async def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self):
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessionManager):
+            def settle_turn(self, key):
+                self.removed.append(f"settle:{key}")
+
+        provider = _SequencedProvider([_abandoned(), _answered()], transient=True)
+        sessions = _Settling(provider)
+
+        await handle_message(MockSlackClient(), sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert provider.turns == 2, "the message was replayed"
+        assert sessions.removed.count("settle:thread1") == 1
+        assert sessions.removed.index("settle:thread1") < sessions.removed.index("reset:thread1")
+
+    @pytest.mark.asyncio
     async def test_a_compaction_the_abandoned_attempt_reported_is_not_armed_after_it(self):
         """The reset popped the session that compacted and the replay cold-starts a
         new one, so arming the flag would make the next turn inject it twice."""
