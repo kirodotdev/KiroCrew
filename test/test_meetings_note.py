@@ -29,6 +29,7 @@ from meetings_helpers import (  # noqa: F401 — fixtures are used by name
     root_fixture,
 )
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 
@@ -92,7 +93,7 @@ class TestTheNoteIsOutsideTheAgentWritableTree:
         outputs = store.read_agent_outputs("m1", config.get("meeting_agents", []), root)
         assert "my private note" not in "".join(outputs.values())
 
-    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs a privilege on Windows")
+    @requires_symlinks
     def test_a_linked_note_directory_is_refused_not_followed(self, root: Path):
         """The same link-free invariant the edits tree carries.
 

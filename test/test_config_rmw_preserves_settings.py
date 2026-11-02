@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError, read_config_for_update
 
@@ -687,10 +688,7 @@ class TestWriteConfigAtomically:
         assert offloaded is False, "asyncio.to_thread's worker has no loop of its own"
         assert on_event_loop() is False, "a plain synchronous caller has no loop either"
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="symlink creation needs elevation on Windows",
-    )
+    @requires_symlinks
     def test_follows_a_symlinked_config_instead_of_replacing_it(self, tmp_path):
         """os.replace would rename over the link, orphaning its target.
 

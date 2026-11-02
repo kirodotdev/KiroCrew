@@ -21,6 +21,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import sandbox
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.deploy import engine
@@ -1484,7 +1485,7 @@ class TestGetObjectHeadBytes:
         # that could be renamed out from under a transfer.
         assert "/" not in storage.STAGING_DIR_LEAF
 
-    @pytest.mark.skipif(os.name != "posix", reason="symlinks need a privilege on Windows")
+    @requires_symlinks
     def test_a_link_planted_at_the_staging_root_is_refused(self, tmp_path, monkeypatch):
         # A linked root puts every staged file outside the fence, which no
         # per-file check can see -- so the root itself is checked first.

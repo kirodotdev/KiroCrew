@@ -16,12 +16,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
-import sys
 import types
 from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import image_artifacts
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
@@ -686,9 +686,7 @@ class TestAssetReadHardening:
         assert mime == "image/png"
         assert seen["lock_free"] is True
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs elevation on Windows"
-    )
+    @requires_symlinks
     def test_swapped_sidecar_symlink_cannot_redirect_the_read(
         self, store: ArtifactStore, tmp_path: Path
     ) -> None:

@@ -37,6 +37,7 @@ from governance_distribution_helpers import (
     _write_policy,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import security
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.platform import governance
@@ -834,14 +835,7 @@ class TestTheCachePairIsWrittenUnderOneLock:
         assert refreshed is not None
         assert refreshed.age_secs() < 60, "an unchanged document's age must restart"
 
-    @pytest.mark.skipif(
-        not hasattr(os, "symlink") or os.name == "nt",
-        reason=(
-            "planting the link needs SeCreateSymbolicLinkPrivilege, which the Windows CI "
-            "account does not hold. The guard's Windows arm is "
-            "platform_compat.is_link_or_junction, which has its own coverage."
-        ),
-    )
+    @requires_symlinks
     def test_the_lock_file_is_neither_leaf_nor_a_followed_link(self, tmp_path):
         """It carries no content, so it must not be readable as a policy — and a planted
         link must not get its target truncated by the next write."""

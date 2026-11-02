@@ -10,7 +10,6 @@ names the other route modules; the shared helpers live in
 
 from __future__ import annotations
 
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -413,7 +412,7 @@ class TestBlobProxy:
         routes_mod._touch_served_blob(blob)
         assert blob.stat().st_mtime > old + 86400
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_touch_without_nofollow_utime_leaves_a_link_target_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

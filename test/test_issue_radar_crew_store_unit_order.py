@@ -30,7 +30,7 @@ from issue_radar_crew_store_helpers import (  # noqa: F401 -- the autouse fixtur
     _unit,
 )
 
-from conftest import make_dir_link
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
@@ -91,17 +91,7 @@ def test_the_app_root_strips_only_the_provider_subtree_it_appended(tmp_path):
     assert cs._app_root(subtree) == operator_base
 
 
-@pytest.mark.skipif(
-    os.name != "posix",
-    reason=(
-        "plants a REAL file symlink, which needs a privilege an unelevated Windows shell "
-        "does not have. Windows is not left without the boundary: the NAME screen this "
-        "exercises is pinned there by "
-        "test_the_name_screen_refuses_a_linked_order_file_on_every_platform, and the "
-        "DIRECTORY screen by test_the_unit_order_write_refuses_a_linked_directory, which "
-        "plants a junction."
-    ),
-)
+@requires_symlinks
 def test_the_unit_order_write_never_follows_a_planted_link(tmp_path):
     """The unit-order file is written under the gateway's data home, where a sandboxed
     agent may be able to plant a link. A link at the file's NAME is replaced, not

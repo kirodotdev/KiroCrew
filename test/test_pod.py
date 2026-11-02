@@ -29,6 +29,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
     requires_posix_pod_lifecycle,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import unit as unit_mod
@@ -276,9 +277,7 @@ class TestPathOverridesAreAnchoredNotCwdRelative:
         assert ntpath.isabs(anchored)
         assert anchored.endswith(r"\tmp\pods"), f"not normalised under Windows rules: {anchored!r}"
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX, reason="symlink creation needs elevation on Windows"
-    )
+    @requires_symlinks
     def test_dot_segments_are_normalised_but_symlinks_are_not_rewritten(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
