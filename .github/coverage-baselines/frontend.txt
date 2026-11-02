@@ -30,7 +30,6 @@ src/apps/papyrus/ProjectList.tsx 48.6   # 36/74
 src/apps/personal-shopper/HistoryTab.tsx 0.0   # 0/45
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
-src/components/CommentThreadPopover.tsx 59.0   # 46/78
 src/components/Strands.tsx 52.2   # 71/136
 src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
 src/hooks/useCronActions.ts 31.0   # 9/29
