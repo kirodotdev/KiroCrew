@@ -27,6 +27,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import name_grant
 from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_STRANDS,
@@ -1085,13 +1086,21 @@ async def _thread_turn_body(
         )
         acquired_key = session_key
         threads = await asyncio.to_thread(log.read_threads, history_key)
+        # A shell read runs only when its program name can be vouched for. While
+        # the environment refuses every name (a PowerShell profile, an inherited
+        # BASH_ENV, an ambiguous PATH) each one is declined and a thread has no
+        # card to fall back to, so the boundary names no shell. The check stats
+        # files, so it runs off the loop.
+        shell_available = not (claude_thread or goose_thread or strands_thread)
+        if tools_available and shell_available:
+            shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_thread_message(
             parent,
             context_before,
             threads.get(mid, []),
             text,
             tools_available=tools_available,
-            shell_available=not (claude_thread or goose_thread or strands_thread),
+            shell_available=shell_available,
             file_reads_available=not goose_thread,
             searches_available=not strands_thread,
         )
