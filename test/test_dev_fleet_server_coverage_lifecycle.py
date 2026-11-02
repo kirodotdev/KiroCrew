@@ -31,6 +31,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 
@@ -199,8 +200,7 @@ async def test_cleanup_kills_runs_and_cancels_workers(monkeypatch):
 
     proc = MagicMock()
     proc.returncode = None
-    # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing mock pid, moved verbatim; the process double is never signalled
-    proc.pid = 4242
+    proc.pid = UNALLOCATABLE_PID
     kill_tree = AsyncMock()
     monkeypatch.setattr(runtime, "_kill_tree", kill_tree)
     monkeypatch.setattr(runtime, "_ACTIVE_RUNS", {"r1": (run_task, proc)})
@@ -210,7 +210,7 @@ async def test_cleanup_kills_runs_and_cancels_workers(monkeypatch):
 
     await mod.dev_fleet_cleanup(MagicMock())
 
-    kill_tree.assert_awaited_once_with(4242)
+    kill_tree.assert_awaited_once_with(UNALLOCATABLE_PID)
     proc.kill.assert_called_once()
     assert runtime._ACTIVE_RUNS == {}
     assert run_task.cancelled() or run_task.done()
@@ -232,8 +232,7 @@ async def test_cleanup_tolerates_already_dead_process(monkeypatch):
 
     proc = MagicMock()
     proc.returncode = None
-    # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing mock pid, moved verbatim; the process double is never signalled
-    proc.pid = 77
+    proc.pid = UNALLOCATABLE_PID
     proc.kill.side_effect = ProcessLookupError
     monkeypatch.setattr(runtime, "_kill_tree", AsyncMock())
     monkeypatch.setattr(runtime, "_ACTIVE_RUNS", {"r1": (run_task, proc)})
