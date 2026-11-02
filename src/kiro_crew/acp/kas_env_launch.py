@@ -121,26 +121,38 @@ def launch_through_shim(
 
     args = projected.get("args")
     launch: dict[str, Any] = {
-        SNAPSHOT_MARKER: SNAPSHOT_FORMAT,
-        "session": session_key,
-        "agent": agent_id,
-        "server": server,
         "command": projected["command"],
         "args": [a for a in args if isinstance(a, str)] if isinstance(args, list) else [],
         "env": dict(_expand_env_map(dict(env), server=server)),
     }
+    version = _write_snapshot(launch, session_key=session_key, agent_id=agent_id, server=server)
+    return _shim_entry(projected, session_key, agent_id, server, version)
+
+
+def _write_snapshot(
+    launch: Mapping[str, Any], *, session_key: str, agent_id: str, server: str
+) -> str:
+    """Write one owner-only snapshot holding *launch* and its reference; its version."""
     directory = snapshot_dir()
     platform_compat.make_owner_only_dir(directory)
     version = secrets.token_hex(16)
     name = snapshot_name(session_key, agent_id, server, version)
+    doc = {
+        **launch,
+        SNAPSHOT_MARKER: SNAPSHOT_FORMAT,
+        "session": session_key,
+        "agent": agent_id,
+        "server": server,
+        "version": version,
+    }
     # Owner-only before any byte is written, and it raises if that lockdown fails.
     atomic_write(
         directory / name,
-        json.dumps({**launch, "version": version}, sort_keys=True).encode("utf-8"),
+        json.dumps(doc, sort_keys=True).encode("utf-8"),
         fsync=True,
         restrict_to_owner=True,
     )
-    return _shim_entry(projected, session_key, agent_id, server, version)
+    return version
 
 
 #: The version a refused launch carries. ``secrets.token_hex`` only yields hex, so
@@ -212,6 +224,71 @@ def relay_withheld_env(
             False,
         )
     return entry, True, every <= set(env)
+
+
+def bridgeable(entry: Mapping[str, Any]) -> bool:
+    """Whether a projected entry is a remote server the launcher can bridge to.
+
+    Streamable HTTP only: an ``sse`` entry speaks the older two-endpoint transport,
+    which the bridge (:mod:`kiro_crew.kas_http_bridge`) does not, so its headers
+    stay withheld.
+    """
+    url = entry.get("url")
+    return (
+        isinstance(url, str)
+        and url.lower().startswith(("https://", "http://"))
+        and not entry.get("command")
+        and entry.get("type") != "sse"
+    )
+
+
+def relay_withheld_headers(
+    projected: dict[str, Any],
+    original_headers: Any,
+    *,
+    session_key: str,
+    agent_id: str,
+    server: str,
+) -> tuple[dict[str, Any], bool]:
+    """``(entry, relayed)``: a remote *projected* entry with withheld headers,
+    rewritten to start the launcher as a local stdio bridge, else unchanged.
+
+    The snapshot holds the url and the header values; the engine gets the same
+    launcher reference a stdio server does, so the values never cross the wire.
+    *relayed* says the headers went into the snapshot. When it cannot be written
+    the entry still points at the launcher with a reference no snapshot answers,
+    so the server reports why it did not start instead of connecting without its
+    headers and falling into a sign-in it never needs.
+    """
+    if not session_key or not isinstance(original_headers, dict) or not bridgeable(projected):
+        return projected, False
+    headers = {
+        k: str(v)
+        for k, v in original_headers.items()
+        if isinstance(k, str) and k and isinstance(v, (str, int, float))
+    }
+    if not headers:
+        return projected, False
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
+
+    stdio = {k: v for k, v in projected.items() if k not in ("url", "type", "headers", "env")}
+    try:
+        version = _write_snapshot(
+            {"url": projected["url"], "headers": dict(_expand_env_map(headers, server=server))},
+            session_key=session_key,
+            agent_id=agent_id,
+            server=server,
+        )
+    except OSError:
+        logger.warning(
+            "agent %r: could not write the local bridge for MCP server %r; it will "
+            "refuse to start rather than connect without its headers",
+            agent_id,
+            server,
+            exc_info=True,
+        )
+        return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION), False
+    return _shim_entry(stdio, session_key, agent_id, server, version), True
 
 
 def _remove(paths: list[Path]) -> None:
