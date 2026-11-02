@@ -326,6 +326,16 @@ describe('task dashboard input routing', () => {
     expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=child')
   })
 
+  it('drops the decision help with the buttons once an approval is gone', async () => {
+    vi.spyOn(api, 'approveChatSlot').mockRejectedValue(new ApiError(404, 'expired'))
+    renderWithProviders(<AttentionCard item={approval} title="Worker" />)
+    expect(screen.getByText('Reject once refuses this request. Permission mode stays the same.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
+    await screen.findByTestId('attention-approval-gone')
+    expect(screen.queryByText('Reject once refuses this request. Permission mode stays the same.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Responding here resolves this request. Other views show the result when refreshed.')).not.toBeInTheDocument()
+  })
+
   it.each([false, true])('preserves the selected answer after an uncertain direct delivery (snapshot running=%s)', async running => {
     const initial = createTestStore().getState()
     const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'child', messages: 0, running }] } })

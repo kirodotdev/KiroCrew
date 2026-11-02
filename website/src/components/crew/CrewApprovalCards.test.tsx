@@ -143,7 +143,7 @@ describe('CrewApprovalCards (owner decision B)', () => {
     api.crewWorkerApprove.mockRejectedValue(new ApiError(404, 'no pending approval'))
     await renderCards([waiting('w1')])
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    expect(await screen.findByTestId('crew-approval-failure')).toHaveTextContent('This approval has expired or was already decided')
+    expect(await screen.findByTestId('crew-approval-failure')).toHaveTextContent('This approval expired, was decided elsewhere, or was replaced')
     for (const name of ['Approve', 'Reject', 'Trust this crew member']) {
       expect(screen.getByRole('button', { name })).toBeDisabled()
     }

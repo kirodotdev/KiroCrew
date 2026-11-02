@@ -385,17 +385,46 @@ describe('ActivityViewer — subagent card controls', () => {
       expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    expect(screen.getByRole('status')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     // This card sent the refused request, so it keeps reporting it once the
     // store carries the verdict too: the one surface that owns the sentence.
     await waitFor(() => expect(store.getState().chat.subagents.p1?.approvalGone).toBe('ap-1'))
     rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
-    expect(screen.getAllByRole('alert')).toHaveLength(1)
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+  })
+
+  it('a failed Cancel after a gone press is an error, not the gone status (#18203)', async () => {
+    // A gone press sets the gone marker; the spawn frame then flips the card to
+    // running while keeping approval_id. A failed Cancel must render through
+    // ErrorNotice (role=alert), not be mis-read as the gone STATUS row, because
+    // nothing about the gone approval makes a failed Cancel a non-failure.
+    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    vi.mocked(api.spawnDelete).mockRejectedValue(new Error('cancel boom'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store, rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending')))
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.approvalGone).toBe('ap-1'))
+
+    // The card is now running with approval_id intact; the gone marker lingers.
+    const running = { ...store.getState().chat.subagents.p1!, status: 'running' as const, approvalGone: undefined }
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: running }} />)
+    fireEvent.click(screen.getByTestId('subagent-cancel-btn'))
+
+    // The failed Cancel is an ErrorNotice, never the gone status row.
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('pages.chat.activityViewer.cancel_failed')))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
   it('a terminal refusal here withdraws the composer banner copy of the same approval', async () => {
@@ -726,9 +755,10 @@ describe('ActivityViewer — spawn approval entries', () => {
       expect(screen.queryByRole('button', { name: /Approve/ })).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: /Reject/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    expect(screen.getByRole('status')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('offers only Approve / Reject and never reports a trust grant (#5400)', async () => {

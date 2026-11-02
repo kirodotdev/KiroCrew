@@ -18,7 +18,8 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { ApiError, apiErrorCode, isTerminalApprovalRefusal } from '../../../api/apiError'
+import { ApiError, apiErrorCode, approvalRefusalEndState } from '../../../api/apiError'
+import { isExpectedEndState } from '../../../components/expectedEndStates'
 import { useCrewRoot } from '../../../components/crew/useCrewRoot'
 import { reopenCrewSession } from './CrewWorkerList'
 
@@ -233,7 +234,8 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
       void queryClient.invalidateQueries({ queryKey: ['command-center', 'questions'] })
     },
   })
-  const expired = !!item.approval && isTerminalApprovalRefusal(mutation.error)
+  const endState = item.approval ? approvalRefusalEndState(mutation.error) : null
+  const expired = endState !== null
   // A refused answer body carries a code; its prose is the server's, not the catalog's.
   const answerRefused = !!item.question?.ask_id && apiErrorCode(mutation.error) === 'answers_too_long'
   const approvalHeading = item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed') : ''
@@ -271,7 +273,11 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     {/* A rejected submission is an error surface (errors-use-error-notice), even
         though its answer is safe in that session's composer. A retirement with no
         failed submission is RestoredQuestionNotice's warn-tone status instead. */}
-    <ErrorNotice message={restored ? restoredNotice : expired ? t('components.approvalCard.approval_no_longer_pending') : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />
+    {/* A gone approval (expired, decided elsewhere, replaced) is status, not a
+        failure, so it reads as a muted status row rather than a red error. */}
+    {!restored && isExpectedEndState(endState)
+      ? <StatusNotice variant="inline" message={t('components.approvalCard.approval_no_longer_pending')} testId="attention-approval-gone" />
+      : <ErrorNotice message={restored ? restoredNotice : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />}
     {restored ? null
       : delivered ? <p role="status" className="text-sm text-ok flex items-center gap-2"><Check size={15} />{t('commandCenter.recorded')}</p>
       : item.question ? <QuestionCard questions={followUpQuestions || item.question.questions} askId={item.question.ask_id} submitLabel={t('commandCenter.send_answer')} busy={mutation.isPending} onDraftChange={onDraftChange} onSubmit={answers => submit({ answers })} />
@@ -279,8 +285,11 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
         <p className="text-sm break-words">{item.approval.tool_purpose?.trim() || t('commandCenter.purpose_missing')}</p>
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the exact command without splitting its tokens. */}
         <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono">{typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''}</pre>
-        <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
-        <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
+        {/* Decision help describes the buttons, so it goes with them. */}
+        {!expired && <>
+          <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>
+          <p className="text-[12px] text-muted">{t('commandCenter.shared_request_help')}</p>
+        </>}
         {!expired && <div className="flex gap-2">
           <Btn primary className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'approve' })}>{t('commandCenter.approve')}</Btn>
           <Btn className="min-h-11" disabled={mutation.isPending} onClick={() => submit({ approval: 'reject_once' })}>{t('commandCenter.reject')}</Btn>
