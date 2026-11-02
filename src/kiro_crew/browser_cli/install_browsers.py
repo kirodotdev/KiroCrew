@@ -325,7 +325,7 @@ _HEADLESS_SHELL_MANIFEST_NAME = "chromium-headless-shell"
 _HEADLESS_SHELL_DIR_ENGINE = "chromium_headless_shell"
 
 
-def browser_status() -> dict[str, str]:
+def browser_status(full: dict[str, str] | None = None) -> dict[str, str]:
     """Per-engine download state, counting the headless shell a headless launch needs.
 
     The same reading as :func:`_full_browser_status`, except that ``chromium``
@@ -341,14 +341,10 @@ def browser_status() -> dict[str, str]:
     shell) the full-build reading stands, the same presence-only degradation the
     full build uses. ``browser_ok`` and :func:`browsers_present` keep reading
     the full build alone, because ``attach``/``--extension`` drives the full
-    build and never the shell.
+    build and never the shell. *full* reuses a :func:`_full_browser_status`
+    reading the caller already took for those.
     """
-    return _with_headless_shell(_full_browser_status())
-
-
-def _with_headless_shell(full: dict[str, str]) -> dict[str, str]:
-    """*full* (a :func:`_full_browser_status` reading) with the headless shell folded into ``chromium``."""
-    result = dict(full)
+    result = dict(full if full is not None else _full_browser_status())
     if result.get("chromium") != STATUS_DOWNLOADED:
         return result
     shell = _headless_shell_status()
@@ -369,20 +365,9 @@ def _headless_shell_status() -> str | None:
         return STATUS_UNKNOWN
     overrides = _revision_overrides().get(_HEADLESS_SHELL_MANIFEST_NAME, {})
     host = _playwright_host_platform() if overrides else ""
-    host_revision = overrides.get(host)
-    if host_revision is not None:
-        wanted = f"{_HEADLESS_SHELL_DIR_ENGINE}_{host}_special-{host_revision}"
-    else:
-        wanted = f"{_HEADLESS_SHELL_DIR_ENGINE}-{revision}"
-    status = _status_of([_download_complete(cache / wanted)] if wanted in names else [])
-    if status == STATUS_MISSING and _has_complete_special_build(
-        cache, names, _HEADLESS_SHELL_DIR_ENGINE
-    ):
-        # The same reasoning as the full build: a complete special directory this
-        # host key did not predict says the host-platform port may be stale, so
-        # the honest answer is `unknown`, not `missing`.
-        status = STATUS_UNKNOWN
-    return status
+    return _required_build_status(
+        cache, names, _HEADLESS_SHELL_DIR_ENGINE, revision, overrides.get(host), host
+    )
 
 
 def _full_browser_status() -> dict[str, str]:
@@ -426,33 +411,51 @@ def _full_browser_status() -> dict[str, str]:
             )
             result[engine] = _status_of([_download_complete(cache / n) for n in candidates])
             continue
-        # Exactly one directory satisfies the engine on this host, the one the
-        # installer writes: the special override directory when the override
-        # names this host's exact platform key, the plain one otherwise.
         host_revision = overrides.get(engine, {}).get(host)
-        if host_revision is not None:
-            wanted = f"{engine}_{host}_special-{host_revision}"
-        else:
-            wanted = _cache_dir_name_for(engine, revision)
-        status = _status_of([_download_complete(cache / wanted)] if wanted in names else [])
-        if status == STATUS_MISSING and _has_complete_special_build(cache, names, engine):
-            # A special directory exists only because playwright-core's own
-            # `calculatePlatform` chose it, so a complete one this host key did
-            # not predict is evidence that the port in `_playwright_host_platform`
-            # is stale relative to the installed playwright-core (the CLI pins
-            # `@playwright/cli@latest`), not that the cache is empty. Read that as
-            # `unknown` rather than a confident `missing`.
-            status = STATUS_UNKNOWN
-        elif status == STATUS_MISSING and host_revision is not None:
-            # The converse: the port says this host takes the special build, but
-            # the installer wrote (and completed) the plain required-revision
-            # directory instead. Same rule: the port may be wrong about this host,
-            # so the plain build is evidence for `unknown`, not `missing`.
-            plain = _cache_dir_name_for(engine, revision)
-            if plain in names and _download_complete(cache / plain) is True:
-                status = STATUS_UNKNOWN
-        result[engine] = status
+        result[engine] = _required_build_status(cache, names, engine, revision, host_revision, host)
     return result
+
+
+def _required_build_status(
+    cache: Path,
+    names: set[str],
+    engine: str,
+    revision: str,
+    host_revision: str | None,
+    host: str,
+) -> str:
+    """The state of *engine*'s build at the required *revision*, on this host.
+
+    *engine* is the cache-directory engine name (``chromium``,
+    ``chromium_headless_shell``); *host_revision* is the ``revisionOverrides``
+    revision for this host's platform key *host*, or ``None`` when no override
+    names it.
+    """
+    # Exactly one directory satisfies the engine on this host, the one the
+    # installer writes: the special override directory when the override
+    # names this host's exact platform key, the plain one otherwise.
+    if host_revision is not None:
+        wanted = f"{engine}_{host}_special-{host_revision}"
+    else:
+        wanted = _cache_dir_name_for(engine, revision)
+    status = _status_of([_download_complete(cache / wanted)] if wanted in names else [])
+    if status == STATUS_MISSING and _has_complete_special_build(cache, names, engine):
+        # A special directory exists only because playwright-core's own
+        # `calculatePlatform` chose it, so a complete one this host key did
+        # not predict is evidence that the port in `_playwright_host_platform`
+        # is stale relative to the installed playwright-core (the CLI pins
+        # `@playwright/cli@latest`), not that the cache is empty. Read that as
+        # `unknown` rather than a confident `missing`.
+        return STATUS_UNKNOWN
+    if status == STATUS_MISSING and host_revision is not None:
+        # The converse: the port says this host takes the special build, but
+        # the installer wrote (and completed) the plain required-revision
+        # directory instead. Same rule: the port may be wrong about this host,
+        # so the plain build is evidence for `unknown`, not `missing`.
+        plain = _cache_dir_name_for(engine, revision)
+        if plain in names and _download_complete(cache / plain) is True:
+            return STATUS_UNKNOWN
+    return status
 
 
 def _is_special_build_name(name: str, engine: str) -> bool:

@@ -49,7 +49,7 @@ from kiro_crew.browser_cli.install_browsers import (
     BROWSER_ENGINES,
     _browser_present,
     _full_browser_status,
-    _with_headless_shell,
+    browser_status,
     browsers_present,
 )
 from kiro_crew.browser_cli.install_launcher import (
@@ -230,7 +230,7 @@ def detect() -> dict[str, Any]:
     # headless shell a headless launch runs, so the panel offers the download
     # when only that shell is missing.
     full = _full_browser_status()
-    status = _with_headless_shell(full)
+    status = browser_status(full)
     return {
         "installed": command is not None,
         "cli_path": path if command is not None else None,
@@ -706,10 +706,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _playwright_arch,
         _playwright_env,
         _playwright_host_platform,
+        _required_build_status,
         _required_revisions,
         _revision_overrides,
         _status_of,
-        browser_status,
     )
     from kiro_crew.browser_cli.install_launcher import (  # noqa: F401
         _BROWSERS_MANIFEST,

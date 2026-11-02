@@ -914,9 +914,14 @@ class TestHeadlessShellReadiness:
         )
         monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "mac14")
         _complete(isolated_browser_cache / "chromium-1232")
-        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
-        # The plain directory is not the one the override sends this host to.
+        (isolated_browser_cache / "chromium_headless_shell-1232").mkdir()
+        # Neither the special directory the override sends this host to nor a
+        # complete plain one: missing.
         assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+        # A complete plain shell where the port predicted the special one says the
+        # port may be wrong about this host, the same rule as the full build.
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
+        assert mod.browser_status()["chromium"] == mod.STATUS_UNKNOWN
         _complete(isolated_browser_cache / "chromium_headless_shell_mac14_special-1200")
         assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
 
