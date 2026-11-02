@@ -24,6 +24,10 @@ export interface ConnectionMintState {
    *  the backend could reduce the URL to a string the oauth_endpoints.json
    *  loader would accept (query, fragment, port and userinfo are never sent). */
   rejected_endpoint?: string
+  /** Where a completed grant is kept. `kas`: the owner's KAS grant vault, which
+   *  the MCP table's grant probe does not read, so a `granted` row is not
+   *  reflected in that probe's badge. */
+  store?: 'kas'
   /** Opaque id of the backend row, unique across gateway restarts as well as
    *  within one process. Reported so a row can be told apart from its
    *  successor for the same provider. */
@@ -103,8 +107,10 @@ export interface ConnectionTestResult {
 export function createConnectionsEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const accounts = {
     // Connections approval-URL mint. POST starts one; GET is the card's feed for it.
-    connectionsMint: (slug: string) =>
-      post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
+    // `surface: 'settings'` is the Settings MCP table: on KAS its sign-in is kept
+    // in the KAS vault. A Connections card sends none and keeps the kiro-cli mint.
+    connectionsMint: (slug: string, surface?: 'settings') =>
+      post('/api/connections/mint', surface ? { slug, surface } : { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
     connectionsMintState: (slug: string) =>
       fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
     // The same mint for a remote server the owner added outside the registry,

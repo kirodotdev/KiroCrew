@@ -15299,6 +15299,7 @@
         "disabled_count_other": "{{count}}টি নিষ্ক্রিয়",
         "sign_in": "সাইন ইন করুন",
         "sign_in_authorize": "{{name}} অনুমোদন করুন",
+        "sign_in_kept_for_kas": "সাইন ইন করা হয়েছে। নতুন Kiro Agent চ্যাট এই সাইন-ইন ব্যবহার করবে।",
         "sign_in_mint_failed": "সাইন-ইন শুরু করা যায়নি। আবার চেষ্টা করুন।",
         "sign_in_preparing": "সাইন-ইন প্রস্তুত করা হচ্ছে…",
         "sign_in_retry": "আবার চেষ্টা করুন",

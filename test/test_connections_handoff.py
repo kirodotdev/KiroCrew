@@ -44,7 +44,7 @@ from test_connections_warm import (  # noqa: F401 -- autouse fixtures
     _clean_warm_runtime,
 )
 
-from kiro_crew.connections import mint, status, warm
+from kiro_crew.connections import mint, mint_kas, status, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
 from kiro_crew.dashboard.handlers import connections
@@ -119,6 +119,9 @@ async def _idle_watcher(slug: str, mcp_url: str, token: str) -> None:
 def _no_real_watcher(monkeypatch: pytest.MonkeyPatch):
     """Adoption ARMS a watcher, so every test here would otherwise start a real one."""
     monkeypatch.setattr(warm, "_mint_watcher", _idle_watcher)
+    # The kiro-cli handoff is what this suite pins. A data home with no backend
+    # choice runs KAS, whose Connect skips the premint (test_connections_mint_kas.py).
+    monkeypatch.setattr(mint_kas, "kas_mint_applies", lambda: False)
 
 
 # ── part 1: an unclaimed premint is not user consent ──

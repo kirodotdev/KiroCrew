@@ -15014,6 +15014,7 @@
         "disabled_count_other": "{{count}}개 비활성화됨",
         "sign_in": "로그인",
         "sign_in_authorize": "{{name}} 승인",
+        "sign_in_kept_for_kas": "로그인되었습니다. 새 Kiro Agent 채팅은 이 로그인을 사용합니다.",
         "sign_in_mint_failed": "로그인을 시작할 수 없습니다. 다시 시도하세요.",
         "sign_in_preparing": "로그인 준비 중…",
         "sign_in_retry": "다시 시도",

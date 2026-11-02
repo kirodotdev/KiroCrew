@@ -467,6 +467,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const [customOpen, setCustomOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  // Rows whose sign-in this page just kept in the owner's KAS grant vault. The
+  // probe reads only kiro-cli's cache, so without this the badge would keep
+  // saying "Sign-in required" beside the row's own "Signed in". Page-local: a
+  // reload falls back to the probe's reading.
+  const [keptForKas, setKeptForKas] = useState<ReadonlySet<string>>(() => new Set())
+  const markKeptForKas = (name: string) => setKeptForKas(prev => new Set(prev).add(name))
+  const rowAuthState = (s: McpServer): McpAuthState =>
+    keptForKas.has(s.name) ? 'signed_in' : mcpAuthState(s)
   const [pending, setPending] = useState<Record<string, PendingChange>>({})
   // Per-server per-tool pending overrides.  Key = server name, value = map
   // from tool name to desired enabled state.  Staged via the same Apply
@@ -960,7 +968,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                            config offers no action here. A row off because of an INVALID
                            value is the exception -- a config error to repair, so it wears
                            the error tone rather than the off-switch grey. */
-                        variant={disabledInConfigVariant(s) ?? mcpStatusVariant(s.status, mcpAuthState(s))}
+                        variant={disabledInConfigVariant(s) ?? mcpStatusVariant(s.status, rowAuthState(s))}
                       >
                         {/* The label tells the two off states apart in words: a
                             deliberate disable reads "Disabled", a non-boolean value
@@ -974,10 +982,13 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           ? i18nT('pages.overview.mcpTab.status_invalid_value')
                           : notProbedReason
                             ? i18nT('pages.overview.mcpTab.not_probed')
-                            : mcpStatusLabel(s.status, mcpAuthState(s))}
+                            : mcpStatusLabel(s.status, rowAuthState(s))}
                       </Badge>
                       {(() => {
-                        const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
+                        // A KAS-kept sign-in is not the Kiro CLI grant the signed-in hint names.
+                        const hint = keptForKas.has(s.name)
+                          ? i18nT('pages.overview.mcpTab.sign_in_kept_for_kas')
+                          : mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
                         return hint ? <InfoTip text={hint} placement="top" /> : null
                       })()}
                     </span>
@@ -1085,7 +1096,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           scopes). Signing in again is the remedy the row can offer. */}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
-                          <McpRowSignIn target={signInTarget} serverName={s.name} again />
+                          <McpRowSignIn target={signInTarget} serverName={s.name} again onKept={() => markKeptForKas(s.name)} />
                           <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_hint')}</span>
                         </span>
                       )}
@@ -1106,7 +1117,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
                     signInTarget ? (
-                      <McpRowSignIn target={signInTarget} serverName={s.name} />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} onKept={() => markKeptForKas(s.name)} />
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans

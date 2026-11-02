@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import mcp_grant
-from kiro_crew.connections import mint
+from kiro_crew.connections import mint, mint_kas
 
 _URL = "https://mcp.example.com/mcp"
 _AUTHORIZE = (
@@ -141,6 +141,9 @@ def _isolated_mint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         },
     }
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FakeClient)
+    # These suites pin the kiro-cli mint. A data home with no backend choice runs
+    # KAS, whose sign-in path is test_connections_mint_kas.py's.
+    monkeypatch.setattr(mint_kas, "kas_mint_applies", lambda: False)
     return agents_dir
 
 

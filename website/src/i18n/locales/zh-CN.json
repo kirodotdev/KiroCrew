@@ -15014,6 +15014,7 @@
         "disabled_count_other": "{{count}} 个已禁用",
         "sign_in": "登录",
         "sign_in_authorize": "授权 {{name}}",
+        "sign_in_kept_for_kas": "已登录。新的 Kiro Agent 聊天会使用此登录。",
         "sign_in_mint_failed": "无法启动登录。请重试。",
         "sign_in_preparing": "正在准备登录…",
         "sign_in_retry": "重试",
