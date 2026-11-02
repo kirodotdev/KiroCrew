@@ -26,7 +26,7 @@
 // the approval tab) is in ConnectionsPage.coverage.connect.test.tsx; the
 // fixtures both files read are in ConnectionsPage.coverageTestUtils.tsx.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import type { McpServer } from '../types'
 
@@ -773,7 +773,7 @@ describe('a connected provider', () => {
     const testing = within(card('notion')).getByRole('button', { name: 'Testing…' })
     expect(testing).not.toHaveAttribute('title')
 
-    pending.resolve({ verdict: 'usable' })
+    await act(async () => { pending.resolve({ verdict: 'usable' }) })
   })
 
   it('renders a 409 test_in_flight refusal as a named warning, never an opaque error', async () => {
