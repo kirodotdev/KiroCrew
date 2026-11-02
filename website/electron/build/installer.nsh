@@ -129,6 +129,219 @@ LangString KiroCliPrerequisiteLink 1055 "Kiro CLI kurulum kılavuzunu aç"
 LangString KiroCliPrerequisiteLink 1054 "เปิดคู่มือการตั้งค่า Kiro CLI"
 LangString KiroCliPrerequisiteLink 1066 "Mở hướng dẫn thiết lập Kiro CLI"
 
+; THE RUNNING-APP CHECK IS COMPILED INTO BOTH BUILDS. electron-builder compiles
+; this header twice: once for the uninstaller (BUILD_UNINSTALLER defined) and once
+; for the installer. The uninstaller's un.checkAppRunning (uninstaller.nsh) runs
+; CHECK_APP_RUNNING from un.onInit under /S -- which is how an update runs the old
+; uninstaller -- so if customCheckAppRunning were defined for the installer only,
+; the uninstaller would fall back to upstream's bare-prefix check and the false
+; "cannot be closed" prompt could still fire on uninstall or update. Everything
+; from here to the !ifndef BUILD_UNINSTALLER guard below therefore sits OUTSIDE
+; that guard.
+;
+; Defining customCheckAppRunning (below) makes allowOnlyOneInstallerInstance.nsh
+; take its !ifmacrondef branch and SKIP its own `!include "getProcessInfo.nsh"`
+; and `Var pid`, in both builds. This custom installer.nsh is assembled into the
+; header ahead of the template that includes allowOnlyOneInstallerInstance.nsh,
+; so the macro is already defined when that file's compile-time guard runs. Pull
+; both in here so ${GetProcessInfo} and $pid are in scope where
+; customCheckAppRunning expands. getProcessInfo.nsh carries its own include
+; guard, so this is safe even if the template ever includes it too, and it
+; defines _GetProcessInfo or un._GetProcessInfo to match the build, which is the
+; function ${GetProcessInfo} calls in each.
+!include "getProcessInfo.nsh"
+Var pid
+
+; Running-app detection that cannot false-positive on an unrelated process.
+;
+; THE BUG. electron-builder's own _CHECK_APP_RUNNING (allowOnlyOneInstallerInstance.nsh,
+; pinned 26.15.3) decides "is the app running?" with a PowerShell prefix test:
+;
+;   Get-CimInstance Win32_Process | ? { $_.Path.StartsWith('$INSTDIR', 'CurrentCultureIgnoreCase') }
+;
+; $INSTDIR is interpolated WITHOUT a trailing separator, so the match is a bare
+; string prefix. A per-user stable install at %LOCALAPPDATA%\Programs\KiroCrew
+; therefore matches a running %LOCALAPPDATA%\Programs\KiroCrew Nightly\KiroCrew.exe
+; -- the documented side-by-side nightly channel -- because that path StartsWith
+; "...\KiroCrew". The installer then tries to kill a process it must not touch,
+; fails, retries, and shows its $(appCannotBeClosed) prompt ("<product> cannot be
+; closed") even though no Kiro Crew owned by THIS install is running. When $INSTDIR
+; or the registry InstallLocation is wider still (seen on a reporting machine whose
+; uninstall key had it absent so the default widened), the same prefix reaches
+; an unrelated %LOCALAPPDATA%\Kiro-Cli\kiro-cli.exe. The prompt appears only
+; after a force-kill fails, which is why it is the processes the installer may
+; not stop -- a sibling channel, another product -- that surface it.
+;
+; THE FIX. CHECK_APP_RUNNING prefers a customCheckAppRunning macro when one is
+; defined (!ifmacrodef) and only falls back to the upstream _CHECK_APP_RUNNING
+; otherwise, so this is the sanctioned override point and the dependency pin is
+; untouched. The logic mirrors upstream's retry/kill/prompt flow EXACTLY. Only
+; the PowerShell predicate changes: a process belongs to THIS install iff its
+; path IS "$INSTDIR\${APP_EXECUTABLE_FILENAME}" or starts with
+; "$INSTDIR\resources\" (case-insensitive). Those are the app's own paths, and
+; they hold at ANY install root -- a product-leaf default, a registered older
+; root, or a /D root such as D:\Tools\Kiro -- so a genuine Kiro Crew is still
+; detected wherever it was installed. A sibling with the same prefix
+; ("...\KiroCrew Nightly\KiroCrew.exe") and an unrelated product under a widened
+; root ("%LOCALAPPDATA%\Kiro-Cli\kiro-cli.exe") are neither path, so neither
+; matches. Win32_Process enumerates EVERY user's processes, so another user's or
+; another session's Kiro Crew from this install is matched too, covering both
+; the app window and the bundled backend under $INSTDIR\resources\backend-dist\.
+; $INSTDIR is interpolated into a single-quoted PowerShell literal, so its
+; apostrophes are doubled first (KiroPsSingleQuote): an install under
+; C:\Users\O'Brien\... must not break PowerShell parsing, which would exit 1 and
+; read as "not running".
+;
+; Without PowerShell the match falls back to upstream's exact tasklist probe on
+; ${APP_EXECUTABLE_FILENAME} (KiroCrew.exe). tasklist filters by image name and
+; has no path filter, so this upstream fallback cannot tell a sibling channel's
+; KiroCrew.exe apart; it is unchanged in behavior and runs only when PowerShell
+; is unavailable. It never matches the standalone kiro-cli.exe.
+;
+; A stale PID or a stale lock file pointing at a dead or reused PID cannot
+; trip this: the detection enumerates LIVE processes (Get-CimInstance / tasklist)
+; and under the installer-selected default never matches by stored PID or on the
+; installer's own process ($pid is excluded from the kill), so a process that
+; has exited is simply absent from the enumeration.
+!macro customCheckAppRunning
+  !insertmacro IS_POWERSHELL_AVAILABLE
+  ${GetProcessInfo} 0 $pid $1 $2 $3 $4
+  ${if} $3 != "${APP_EXECUTABLE_FILENAME}"
+    ${if} ${isUpdated}
+      Sleep 300
+    ${endIf}
+
+    !insertmacro KiroFindAppProcess $R0
+    ${if} $R0 == 0
+      ${if} ${isUpdated}
+        Sleep 1000
+        Goto kiroDoStopProcess
+      ${endIf}
+      MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK kiroDoStopProcess
+      Quit
+
+      kiroDoStopProcess:
+      DetailPrint "$(appClosing)"
+      !insertmacro KiroKillAppProcess 0
+      Sleep 300
+
+      StrCpy $R1 0
+      kiroCheckLoop:
+        IntOp $R1 $R1 + 1
+        !insertmacro KiroFindAppProcess $R0
+        ${if} $R0 == 0
+          Sleep 1000
+          !insertmacro KiroKillAppProcess 1
+          !insertmacro KiroFindAppProcess $R0
+          ${if} $R0 == 0
+            DetailPrint `Waiting for "${PRODUCT_NAME}" to close.`
+            Sleep 2000
+          ${else}
+            Goto kiroNotRunning
+          ${endIf}
+        ${else}
+          Goto kiroNotRunning
+        ${endIf}
+
+        ; App likely running elevated or owned by another user. Ask the user to
+        ; close it manually, exactly as upstream does.
+        ${if} $R1 > 1
+          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY kiroCheckLoop
+          Quit
+        ${else}
+          Goto kiroCheckLoop
+        ${endIf}
+      kiroNotRunning:
+    ${endIf}
+  ${endIf}
+!macroend
+
+; Copy _IN to _OUT with every ' doubled to '', the escape for a PowerShell
+; single-quoted literal. Neither LogicLib nor FileFunc provides a replace, so
+; this walks the string a character at a time. $R2-$R5 are saved and restored,
+; and the result is handed back through the stack, so _OUT may be any register.
+!macro KiroPsSingleQuote _IN _OUT
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  StrCpy $R2 "${_IN}"
+  StrCpy $R3 ""
+  StrCpy $R4 0
+  ${Do}
+    StrCpy $R5 $R2 1 $R4
+    ${If} $R5 == ""
+      ${Break}
+    ${EndIf}
+    ${If} $R5 == "'"
+      StrCpy $R3 "$R3''"
+    ${Else}
+      StrCpy $R3 "$R3$R5"
+    ${EndIf}
+    IntOp $R4 $R4 + 1
+  ${Loop}
+  Pop $R5
+  Pop $R4
+  Exch $R3
+  Exch
+  Pop $R2
+  Pop ${_OUT}
+!macroend
+
+; Find a running process that belongs to THIS install: its path is the app
+; executable "$INSTDIR\${APP_EXECUTABLE_FILENAME}" or lies under
+; "$INSTDIR\resources\". Those paths hold at any install root, so a genuine app
+; at a non-product-leaf root is still found, while a prefix sibling or another
+; product under a widened root is not. Without PowerShell, keep upstream's exact
+; tasklist probe on the app executable name.
+!macro KiroFindAppProcess _RETURN
+  Push $0
+  ${if} $IsPowerShellAvailable == 0
+    !insertmacro KiroPsSingleQuote "$INSTDIR" $0
+    nsExec::Exec `"$PowerShellPath" -C "if ((Get-CimInstance -ClassName Win32_Process | ? {$$_.Path -and ($$_.Path -ieq '$0\${APP_EXECUTABLE_FILENAME}' -or $$_.Path.StartsWith('$0\resources\', 'CurrentCultureIgnoreCase'))}).Count -gt 0) { exit 0 } else { exit 1 }"`
+    Pop ${_RETURN}
+  ${else}
+    !ifdef INSTALL_MODE_PER_ALL_USERS
+      nsExec::Exec `"$CmdPath" /C tasklist /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
+      Pop ${_RETURN}
+    !else
+      nsExec::Exec `"$CmdPath" /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
+      Pop ${_RETURN}
+    !endif
+  ${endIf}
+  Pop $0
+!macroend
+
+; Kill only the processes KiroFindAppProcess reports as this install's own,
+; using the same app-own-path predicate. Without PowerShell, keep upstream's
+; taskkill fallback on the app executable name.
+!macro KiroKillAppProcess _FORCE
+  Push $0
+  Push $1
+  ${if} ${_FORCE} == 1
+    ${if} $IsPowerShellAvailable == 0
+      StrCpy $0 "-Force"
+    ${else}
+      StrCpy $0 "/F"
+    ${endIf}
+  ${else}
+    StrCpy $0 ""
+  ${endIf}
+
+  ${if} $IsPowerShellAvailable == 0
+    !insertmacro KiroPsSingleQuote "$INSTDIR" $1
+    nsExec::Exec `"$PowerShellPath" -C "Get-CimInstance -ClassName Win32_Process | ? {$$_.Path -and ($$_.Path -ieq '$1\${APP_EXECUTABLE_FILENAME}' -or $$_.Path.StartsWith('$1\resources\', 'CurrentCultureIgnoreCase'))} | % { Stop-Process -Id $$_.ProcessId $0 }"`
+  ${else}
+    !ifdef INSTALL_MODE_PER_ALL_USERS
+      nsExec::Exec `taskkill /IM "${APP_EXECUTABLE_FILENAME}" /FI "PID ne $pid"`
+    !else
+      nsExec::Exec `"$CmdPath" /C taskkill $0 /IM "${APP_EXECUTABLE_FILENAME}" /FI "PID ne $pid" /FI "USERNAME eq %USERNAME%"`
+    !endif
+  ${endIf}
+  Pop $1
+  Pop $0
+!macroend
+
 !ifndef BUILD_UNINSTALLER
 
 Var KiroInstallDir
