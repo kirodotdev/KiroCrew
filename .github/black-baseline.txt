@@ -644,7 +644,6 @@ test/test_resource_health_endpoint.py
 test/test_resource_pressure_notify.py
 test/test_reveal_in_file_manager.py
 test/test_reveal_path.py
-test/test_review_driver_loopback.py
 test/test_route_registry.py
 test/test_run_config_write.py
 test/test_safety_override.py

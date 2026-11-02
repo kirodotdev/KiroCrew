@@ -190,6 +190,24 @@ jobs:
             exit 1
           }
 
+      # The Code Review Sage backend runs under the standard Seatbelt profile and
+      # proves its gateway peer before every secret-bearing send. This case runs
+      # that real proof inside `sandbox-exec` and asserts MATCH, so it is the only
+      # evidence the profile leaves the gateway pidfile, its `.start` sidecar and
+      # the dashboard socket readable. Asserted by node id for the same reason as
+      # the canary above: the sharded `-q` run cannot show it passed, not skipped.
+      - name: Assert the Sage peer proof reaches MATCH under Seatbelt (not skipped)
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_sage_sender_proves_peer_in_sandbox.py::test_sage_peer_proof_reaches_match_inside_seatbelt" \
+            | tee seatbelt-peer.log
+          grep -qE '(^|[^0-9])1 passed' seatbelt-peer.log || {
+            echo "::error::Sage Seatbelt peer proof did not PASS (skipped or not collected)"
+            exit 1
+          }
+
       - name: Terminal handler suite (verbose, so a darwin PTY hang names its test)
         # test/macos-collect-ignore.txt keeps these files (test_terminal_handler.py
         # and its topic parts) out of the shards and this step runs them instead:

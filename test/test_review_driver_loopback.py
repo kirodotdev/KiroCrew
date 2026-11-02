@@ -63,8 +63,8 @@ def _make_handler(sink):
             self.end_headers()
             self.wfile.write(body)
 
-        do_GET = _record_and_reply    # noqa: N815 - stdlib naming
-        do_POST = _record_and_reply   # noqa: N815 - stdlib naming
+        do_GET = _record_and_reply  # noqa: N815 - stdlib naming
+        do_POST = _record_and_reply  # noqa: N815 - stdlib naming
 
         def log_message(self, fmt, *args):
             pass  # keep pytest output clean
@@ -110,6 +110,17 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
     def test_api_request_does_not_proxy_the_secret(self, monkeypatch, listeners):
         monkeypatch.setattr(review_driver, "_gateway_base", lambda: listeners["gateway_base"])
         monkeypatch.setattr(review_driver, "_local_secret", lambda *_a: CANARY)
+        # The peer proof wraps the send; here the stand-in gateway answers no
+        # challenge and is not a resolvable recorded peer, so stub the proof to
+        # delegate to the same no-proxy loopback opener. The proxy-bypass assertion
+        # below is unchanged: the real send still happens and must reach the
+        # gateway, not the proxy.
+        monkeypatch.setattr(
+            review_driver,
+            "_verified_urlopen",
+            lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
+            raising=False,
+        )
 
         # A real parse of the gateway's body proves the request landed there and
         # was not merely swallowed by _api_request's blanket except.
@@ -118,36 +129,42 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
         }
         _assert_reached_gateway_only(listeners)
 
-    def test_probe_does_not_proxy_the_secret(self, listeners):
+    def test_probe_does_not_proxy_the_secret(self, monkeypatch, listeners):
         """The multiplied site: one miss per candidate port, each a full send."""
+        monkeypatch.setattr(
+            review_driver,
+            "_verified_urlopen",
+            lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
+            raising=False,
+        )
         assert review_driver._probe(listeners["gateway_base"], CANARY) is True
         _assert_reached_gateway_only(listeners)
 
     def test_guarded_import_fallback_does_not_proxy_the_secret(self, listeners):
         """The standalone path must not degrade to a bare, proxy-honouring urlopen.
 
-        Runs the module's real import guard from disk with
+        Runs the real import guard from disk (``sage_lib/loopback.py``, which
+        ``review_driver`` re-exports ``loopback_urlopen`` from) with
         ``kiro_crew.loopback_http`` poisoned to ImportError, so the ``except``
-        branch defines the fallback and a weakened fallback fails here. The
-        source is sliced at the ``_APP_ROOT`` assignment because everything below
-        it is the ``sage_lib`` import block, which is irrelevant to the guard and
-        costly to re-execute.
+        branch defines the fallback and a weakened fallback fails here.
         """
-        src = Path(review_driver.__file__).read_text(encoding="utf-8")
-        head, sep, _ = src.partition("_APP_ROOT = ")
-        assert sep, "the _APP_ROOT anchor moved; re-slice this test"
+        guard = Path(review_driver.__file__).with_name("loopback.py")
+        src = guard.read_text(encoding="utf-8")
+        assert (
+            review_driver.loopback_urlopen is sys.modules["sage_lib.loopback"].loopback_urlopen
+        ), "review_driver no longer takes loopback_urlopen from sage_lib/loopback.py"
         ns: dict = {"__name__": "review_driver_guard_probe"}
         with mock.patch.dict(sys.modules, {"kiro_crew.loopback_http": None}):
-            # Compiles a slice of THIS repo's own source, read from
+            # Compiles THIS repo's own source, read from the module beside
             # review_driver.__file__; no external input reaches it. Running the real
             # guard is the point -- asserting on the source text instead would pass
             # against a weakened fallback.
             # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-            exec(compile(head, review_driver.__file__, "exec"), ns)  # noqa: S102
+            exec(compile(src, str(guard), "exec"), ns)  # noqa: S102
         fallback = ns["loopback_urlopen"]
-        assert fallback.__module__ == "review_driver_guard_probe", (
-            "the real helper was imported, so the fallback branch was never exercised"
-        )
+        assert (
+            fallback.__module__ == "review_driver_guard_probe"
+        ), "the real helper was imported, so the fallback branch was never exercised"
 
         req = urllib.request.Request(
             listeners["gateway_base"] + "/api/spawn", headers={SECRET_HEADER: CANARY}
