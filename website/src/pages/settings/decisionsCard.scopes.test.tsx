@@ -25,12 +25,27 @@ import {
   toolArgsSwitch,
   stubGateway,
 } from '../../test/decisionsCardTestUtils'
+import { namedCeiling } from '../../test/namedCeiling'
 // DecisionsCard loads these two panes with React.lazy. decisionsCard.test.tsx's main-switch
 // cases load them before any case there opens a scope panel; importing them here gives the
 // cases below the same warm start, instead of a first case that loads a cold chunk inside
 // a 1000 ms waitFor.
 import './DecisionsPointPanel'
 import './DecisionsProviderPicker'
+
+/**
+ * Ceiling for a point's panel to draw. DecisionsCard renders it through the React.lazy
+ * DecisionsPointPanel boundary, so its content appears once that chunk has resolved and
+ * the Suspense fallback has been replaced.
+ */
+const POINT_PANEL_DRAWS = namedCeiling('POINT_PANEL_DRAWS', 5000)
+
+/**
+ * Ceiling for the main switch to leave its loading hold. The card holds it until the
+ * config read and the consent read have both landed, and a point's panel needs only the
+ * consent read, so an open panel does not show that the config read is done.
+ */
+const MAIN_SWITCH_FREE = namedCeiling('MAIN_SWITCH_FREE', 5000)
 
 /** The point that carries each scope, for a test that needs to reach its switch. */
 const SCOPE_POINT: Record<string, string> = {
@@ -55,8 +70,10 @@ async function openScope(scope: ScopeName) {
     expect(pointRow(SCOPE_POINT[scope])).toBeInTheDocument()
   })
   openPoint(SCOPE_POINT[scope])
-  // flake-ok: waits behind DecisionsCard's React.lazy DecisionsPointPanel, which this file imports up front so the chunk is warm; pre-existing wait, moved verbatim
-  return await waitFor(() => screen.getByRole('switch', { name: SCOPE_SWITCH[scope] }))
+  return await waitFor(
+    () => screen.getByRole('switch', { name: SCOPE_SWITCH[scope] }),
+    POINT_PANEL_DRAWS,
+  )
 }
 
 /**
@@ -73,10 +90,12 @@ async function scopeSwitchOnPanel(scope: ScopeName) {
     expect(pointRow(SCOPE_POINT[scope])).toBeInTheDocument()
   })
   openPoint(SCOPE_POINT[scope])
-  // flake-ok: waits behind DecisionsCard's React.lazy DecisionsPointPanel, which this file imports up front so the chunk is warm; pre-existing wait, moved verbatim
-  await waitFor(() => {
-    expect(screen.getByText(/logged as/i)).toBeInTheDocument()
-  })
+  await waitFor(
+    () => {
+      expect(screen.getByText(/logged as/i)).toBeInTheDocument()
+    },
+    POINT_PANEL_DRAWS,
+  )
   return screen.queryByRole('switch', { name: SCOPE_SWITCH[scope] })
 }
 
@@ -228,8 +247,12 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
     const sw = await openScope('compaction')
-    // flake-ok: the main switch's gate reads only stubbed reads that resolve at once, and openScope has already waited on the later panel render; pre-existing read, moved verbatim
-    expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    await waitFor(
+      () => {
+        expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      },
+      MAIN_SWITCH_FREE,
+    )
     sw.click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
@@ -248,8 +271,12 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
     const sw = await openScope('tool_args')
-    // flake-ok: the main switch's gate reads only stubbed reads that resolve at once, and openScope has already waited on the later panel render; pre-existing read, moved verbatim
-    expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    await waitFor(
+      () => {
+        expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      },
+      MAIN_SWITCH_FREE,
+    )
     sw.click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
