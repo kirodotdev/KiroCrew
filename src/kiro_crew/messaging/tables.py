@@ -542,6 +542,26 @@ def _code_spans(row: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _in_cell_code_spans(row: str) -> list[tuple[int, int]]:
+    """The :func:`_code_spans` of *row* that sit inside one cell.
+
+    A lone backtick in each of two cells (``| ` | ` | x |``) pairs into a
+    "span" whose content is only blanks around cell pipes. That is two cells,
+    not code, so such a span is dropped. ``| `a|b` |`` has text next to its
+    pipe and stays one code span.
+    """
+    kept: list[tuple[int, int]] = []
+    for start, end in _code_spans(row):
+        span = row[start:end]
+        ticks = len(span) - len(span.lstrip("`"))
+        inner = span[ticks:-ticks]
+        pipes = [i for i, ch in enumerate(inner) if ch == "|" and (i == 0 or inner[i - 1] != "\\")]
+        if pipes and not inner[: pipes[0]].strip() and not inner[pipes[-1] + 1 :].strip():
+            continue
+        kept.append((start, end))
+    return kept
+
+
 def _row_cells(row: str, *, gfm_boundaries: bool = False) -> list[str]:
     """Split a table row on its cell boundaries.
 
@@ -565,7 +585,7 @@ def _row_cells(row: str, *, gfm_boundaries: bool = False) -> list[str]:
     markup can pass the header/separator width check and lose authored cells
     during conversion.
     """
-    spans = [] if gfm_boundaries else _code_spans(row)
+    spans = [] if gfm_boundaries else _in_cell_code_spans(row)
     cells: list[str] = []
     buf: list[str] = []
     escaped = False
