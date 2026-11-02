@@ -163,8 +163,12 @@ GENERIC_BASENAMES = {
 
 
 def run(args):
+    """Run a command; return (returncode, stdout, stderr). argv[0] is vetted by ``_tool_argv``."""
+    argv, refused = _tool_argv().resolve(args)
+    if refused:
+        return refused
     try:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -307,21 +311,31 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-_CONTRACT: dict = {}
+_SIBLINGS: dict = {}
 
 
-def _review_contract():
-    """The shared contract module beside this script (the one fence reader), loaded once."""
-    if "module" not in _CONTRACT:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-        loader = _NoBytecodeSourceLoader("_prepare_pr_diff_signals_contract", path)
+def _sibling(filename, name):
+    """A module beside this script, loaded once without bytecode writes."""
+    if filename not in _SIBLINGS:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        loader = _NoBytecodeSourceLoader(name, path)
         spec = importlib.util.spec_from_loader(loader.name, loader)
         if spec is None:  # pragma: no cover - defensive
             raise RuntimeError("cannot import kirocrew-prepare-pr sibling: " + path)
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
-        _CONTRACT["module"] = module
-    return _CONTRACT["module"]
+        _SIBLINGS[filename] = module
+    return _SIBLINGS[filename]
+
+
+def _review_contract():
+    """The shared contract module beside this script (the one fence reader), loaded once."""
+    return _sibling("_review_contract.py", "_prepare_pr_diff_signals_contract")
+
+
+def _tool_argv():
+    """The shared argv[0] resolver and batch-launcher guard, loaded once."""
+    return _sibling("_tool_argv.py", "_prepare_pr_diff_signals_tool_argv")
 
 
 def _what_changed_unfenced(body):

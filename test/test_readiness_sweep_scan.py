@@ -556,6 +556,7 @@ def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_pushes.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_rounds.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_tool_argv.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_issue_links.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_verdict.py",
     }

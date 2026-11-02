@@ -40,6 +40,7 @@ Exit:   0 resolved (JSON on stdout) - 2 env / parse error
 
 import fnmatch
 import importlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -47,6 +48,26 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILES_DIR = os.path.join(os.path.dirname(HERE), "profiles")
+
+
+def _load_tool_argv():
+    """``_tool_argv.py`` beside this script, by path and without writing bytecode."""
+    path = os.path.join(HERE, "_tool_argv.py")
+    spec = importlib.util.spec_from_file_location("_prepare_pr_profile_tool_argv", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise RuntimeError("cannot import kirocrew-prepare-pr sibling: " + path)
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _load_tool_argv()
 
 # Files whose combined presence identifies the Kiro Crew repo (or a faithful
 # fork) with a very low false-positive rate. All must be present to match.
@@ -62,9 +83,12 @@ def err(msg):
 
 
 def run(args, cwd=None):
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
         p = subprocess.run(
-            args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError:
