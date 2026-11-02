@@ -255,9 +255,16 @@ def test_the_local_import_check_sees_a_dead_one() -> None:
 
 
 def _imported_from_the_runner(sources: list[str]) -> set[str]:
-    """The names *sources* import from ``kiro_crew.dashboard.chat_runner`` by name."""
+    """The names *sources* import from ``kiro_crew.dashboard.chat_runner`` by name.
+
+    Such an import spells the identifier ``chat_runner`` whole in its source text, so a
+    source without that substring imports nothing from the runner and is not parsed.
+    """
+    stem = cr.__name__.rsplit(".", 1)[-1]
     found = set()
     for source in sources:
+        if stem not in source:
+            continue
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.ImportFrom) and node.module == cr.__name__:
                 found |= {alias.name for alias in node.names}
@@ -268,8 +275,11 @@ def test_the_runner_importer_scan_sees_a_by_name_import() -> None:
     sources = [
         "from kiro_crew.dashboard.chat_runner import a, b as c\n",
         "from kiro_crew.dashboard import chat_runner\nimport kiro_crew.dashboard.chat_runner\n",
+        "from kiro_crew.dashboard.chat_runner import (\n    d,\n)\n",
     ]
-    assert _imported_from_the_runner(sources) == {"a", "b"}
+    assert _imported_from_the_runner(sources) == {"a", "b", "d"}
+    # A source that never spells the runner's name is skipped unparsed.
+    assert _imported_from_the_runner(["def broken(:\n"]) == set()
 
 
 def test_every_name_the_runner_imports_is_read() -> None:
@@ -280,12 +290,17 @@ def test_every_name_the_runner_imports_is_read() -> None:
         )
         if path.name != "chat_runner.py" and "chat_turn" not in path.parts
     ]
-    keep = set(_BASE_NAMES) | _facade_patched_names() | _imported_from_the_runner(importers)
+    keep = set(_BASE_NAMES) | _imported_from_the_runner(importers)
     runner = Path(cr.__file__).read_text(encoding="utf-8")
     owners = [
         Path(owner.__file__).read_text(encoding="utf-8") for owner in chat_turn.owner_modules()
     ]
-    assert _unread_imports(runner, owners, keep) == []
+    unread = _unread_imports(runner, owners, keep)
+    # A test's patch only ever exempts a name, and scanning every test file is the
+    # slow part, so it runs only when an import is still unread.
+    if unread:
+        unread = sorted(set(unread) - _facade_patched_names())
+    assert unread == []
     assert _unread_local_imports(runner) == []
 
 
