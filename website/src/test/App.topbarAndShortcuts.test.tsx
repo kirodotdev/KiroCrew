@@ -12,6 +12,8 @@ import { renderWithProviders } from './helpers'
 import { namedCeiling } from './namedCeiling'
 import App from '../App'
 import { ApiError } from '../api/client'
+import { i18nT } from '../i18n/t'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
@@ -1032,5 +1034,58 @@ describe('import outcome notice', () => {
     const dashboard = src.indexOf('<ImportSessionOutcomeNotice navigateToChat />', src.indexOf('<LocalOverlayRoot hidden='))
     expect(dashboard).toBeGreaterThan(-1)
     expect(dashboard).toBeLessThan(src.indexOf('</LocalOverlayRoot>'))
+  })
+})
+
+// The desktop window lays a `-webkit-app-region: drag` band over the whole top
+// bar (website/electron/window-lifecycle.js), and a native `title` tooltip never
+// paints inside a drag region. So every hint in the bar has to be an in-page
+// bubble: no `title` on the control, and a `role="tooltip"` that hover and
+// keyboard focus both open. jsdom has no drag region, so what is pinned is the
+// shape that survives one.
+describe('top-bar hints render in the page, not as a native title', () => {
+  const expectInPageHint = async (control: HTMLElement, hint: string) => {
+    expect(control).not.toHaveAttribute('title')
+    expect(control.closest('[title]')).toBeNull()
+    fireEvent.focus(control)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(hint)
+    fireEvent.blur(control)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  }
+
+  it('shows the focus-mode chord on hover, outside the accessible name', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    expect(toggle).toHaveAccessibleName(i18nT('app.focus_mode'))
+    expect(toggle).not.toHaveAttribute('title')
+    fireEvent.mouseEnter(toggle)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title'))
+    fireEvent.mouseLeave(toggle)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+  })
+
+  it('gives the search trigger, the connection dot and the bell an in-page hint', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    await expectInPageHint(await screen.findByRole('button', { name: i18nT('app.search_sessions_files_and_commands') }), i18nT('app.search_everywhere_k'))
+    const dot = await screen.findByRole('button', { name: new RegExp(i18nT('app.click_to_collapse_readouts')) })
+    await expectInPageHint(dot, i18nT('app.click_to_collapse_readouts'))
+    await expectInPageHint(screen.getByRole('button', { name: i18nT('app.notifications') }), i18nT('app.notifications'))
+  })
+
+  it('gives the Kiro credits pill an in-page hint', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
+    renderWithProviders(<App />, { route: '/chat' })
+    await expectInPageHint(await screen.findByRole('button', { name: i18nT('app.kiro_account_credits') }), i18nT('app.kiro_account_credits'))
+  })
+
+  it('names the click-to-hide action on the open metrics toggle before its first frame', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.system).mockReturnValueOnce(new Promise(() => {}))
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByText(/CPU —/)
+    await expectInPageHint(screen.getByRole('button', { name: /System metrics/ }), `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`)
+    localStorage.removeItem('mc-topbar-metrics')
   })
 })
