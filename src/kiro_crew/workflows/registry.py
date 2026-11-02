@@ -874,6 +874,8 @@ async def start_background_run(
     workflow_id: str = "",
     workflow_slug: str = "",
     workflow_revision: int = 0,
+    derived_from_workflow_id: str = "",
+    derived_from_revision: int = 0,
     fallback_title: str = "",
     fallback_folder_id: str = "",
     admission_closed: Optional[Callable[[], bool]] = None,
@@ -901,6 +903,8 @@ async def start_background_run(
         workflow_id=workflow_id,
         workflow_slug=workflow_slug,
         workflow_revision=workflow_revision,
+        derived_from_workflow_id=derived_from_workflow_id,
+        derived_from_revision=derived_from_revision,
         fallback_title=fallback_title,
         fallback_folder_id=fallback_folder_id,
     )

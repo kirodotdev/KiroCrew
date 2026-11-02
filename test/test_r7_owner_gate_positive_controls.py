@@ -329,6 +329,8 @@ class _FakeWorkflowService:
         self.saved: tuple | None = None
         self.updated: tuple | None = None
         self.promoted: tuple | None = None
+        self.run_updated: tuple | None = None
+        self.previewed: tuple | None = None
         self.started_definition: tuple | None = None
         self.rerun: tuple | None = None
 
@@ -362,6 +364,14 @@ class _FakeWorkflowService:
         self.promoted = (run_id, kwargs)
         return {"ok": True, "definition": {"id": "wfd_2", "slug": "promoted"}}
 
+    async def update_run_definition(self, run_id: str, workflow_ref: str, **kwargs):
+        self.run_updated = (run_id, workflow_ref, kwargs)
+        return {"ok": True, "definition": {"id": "wfd_1", "revision": 3}}
+
+    async def preview_run_definition_update(self, run_id: str, workflow_ref: str = ""):
+        self.previewed = (run_id, workflow_ref)
+        return {"ok": True, "run_source": "source", "run_format": "python", "target": None}
+
     async def rerun_subtree(self, run_id: str, from_index: int = 0, **kwargs):
         self.rerun = (run_id, from_index, kwargs)
         return {"run_id": "wf_4"}
@@ -377,6 +387,8 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
         api_workflow_run_intent,
         api_workflow_run_promote,
         api_workflow_run_rerun,
+        api_workflow_run_update_definition,
+        api_workflow_run_update_preview,
     )
 
     service = _FakeWorkflowService()
@@ -393,6 +405,12 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
         "/api/workflows/definitions/{workflow_ref}/run", api_workflow_definition_run
     )
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
     return app, service
 
@@ -521,6 +539,25 @@ async def test_owner_can_promote_a_run() -> None:
 
     _assert_not_owner_refused(status, body, "POST /api/workflows/runs/{id}/promote")
     assert service.promoted is not None, "owner's promote never landed"
+
+
+async def test_owner_can_update_a_workflow_from_a_run() -> None:
+    app, service = _workflow_app()
+    async with _client(app, _owner_claims()) as client:
+        previewed = await client.get("/api/workflows/runs/wf_1/update-definition")
+        preview_status, preview_body = previewed.status, await _body(previewed)
+        response = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": "wfd_1", "expected_revision": 2},
+        )
+        status, body = response.status, await _body(response)
+
+    _assert_not_owner_refused(
+        preview_status, preview_body, "GET /api/workflows/runs/{id}/update-definition"
+    )
+    _assert_not_owner_refused(status, body, "POST /api/workflows/runs/{id}/update-definition")
+    assert service.previewed is not None, "owner's update preview never ran"
+    assert service.run_updated is not None, "owner's update from a run never landed"
 
 
 # ── reads stay open ──

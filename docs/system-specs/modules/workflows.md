@@ -1125,7 +1125,14 @@ YAML sources are validated by their owning parser before persistence.
 Every explicit save creates a separate definition identity, including when its
 source is byte-identical to a parent it adapted. Updates require `expected_revision`
 and append a revision; a stale writer receives a conflict instead of overwriting
-newer content. The dashboard snapshots the submitted editor state: a successful
+newer content. A finished ad-hoc run can be appended to a definition the owner picks
+(`WorkflowService.update_run_definition`): the run passes promotion's checks, must
+have the definition's format, and a source identical to the pinned revision is
+refused rather than written as an empty revision. The route's preview suggests the
+target from the run's `derived_from`, the script's `META["adapted_from"]`, then the
+slugs of the script's `META` name and of the run's name. Its diff is
+`workflow_source_diff`, the change card's diff without `WORKFLOW_DIFF_MAX`, because
+it is never stored in a card. The dashboard snapshots the submitted editor state: a successful
 save advances its revision but preserves any further edits made while the request
 was pending. An omitted or blank slug on update preserves the existing slash
 command. Writes are atomic. Metadata is redacted before slug normalization
@@ -1226,9 +1233,11 @@ errors if invalid) and the replay cache is **not** reused (`replay_before=0`,
 `replay_results={}`), because editing the script can change what its calls mean, and
 a cached result could then replay into a call it no longer answers. An unedited
 rerun of a saved definition retains its definition id, slug, and revision so it
-remains an exact saved invocation and cannot be promoted into a duplicate. An
+remains an exact saved invocation and cannot be promoted into a duplicate or
+appended as a revision. An
 edited rerun clears that saved-definition identity because its submitted source
-is no longer the exact saved revision.
+is no longer the exact saved revision, and keeps the former id and revision only
+as `derived_from` ancestry; any later rerun carries that ancestry forward.
 
 TaskRunner applies the same rule to saved task plans. A user edit or automatic
 replan clears the run's exact definition id, slug, and revision before publishing
@@ -1485,7 +1494,8 @@ caller class:
   loopback caller (the chat `workflow_*` MCP tools) and a manifest-scoped app token
   keep the controls that already govern them. `POST /api/spawn` and
   `POST /api/crons` gate the dashboard-user class the same way.
-- **Definition create, update and run promotion** are owner-only for every caller.
+- **Definition create and update, run promotion, and update from a run** (its
+  preview included) are owner-only for every caller.
 - **Run list, detail, cancel and rerun** go through `workflow_memory.authorize_run`
   (the list keeps only the runs it admits); rerun does so after the owner check above.
 
@@ -1509,6 +1519,8 @@ launch a script under a trusted chat's identity.
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
 | `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
+| `GET /api/workflows/runs/{run_id}/update-definition` | `?workflow=` id or slug, optional | `{target, diff, unchanged, format_mismatch}`: the definition an update would revise (`id`, `slug`, `name`, `revision`, `format` only) and the uncapped diff from its current source to the run's; without `workflow` the target is suggested and may be `null`; refused as the POST is |
+| `POST /api/workflows/runs/{run_id}/update-definition` | `{workflow, expected_revision}` | append the run's exact source as the definition's next revision; 404 `workflow_run_not_found` / `workflow_definition_not_found`, 409 for a saved invocation, an unfinished run, a restored redacted source, a stale revision or an unchanged source, 400 on a format mismatch or an invalid script |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
 | `GET /api/workflows/definitions?q=` | optional local match query | `{definitions: [...]}` |

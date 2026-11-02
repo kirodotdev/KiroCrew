@@ -451,7 +451,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/cron_board.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/workflows.py: workflow bodies carry a script source or a
-    # free-form intent/input, so only promote (fixed metadata) takes the cap.
+    # free-form intent/input, so only promote (fixed metadata) and update from a
+    # run (a definition ref and a revision) take the cap.
     "handlers/workflows.py::api_workflow_definitions_create": (
         "None",
         _UNBOUNDED_USER_CONTENT,
@@ -465,6 +466,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/workflows.py::api_workflow_run": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run_intent": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run_promote": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/workflows.py::api_workflow_run_update_definition": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "handlers/workflows.py::api_workflow_run_rerun": ("None", _UNBOUNDED_USER_CONTENT),
     # handlers/files.py and its file_api owners: bodies name paths and routing
     # fields -- the file bytes travel in api_file_write's body, which is the one
