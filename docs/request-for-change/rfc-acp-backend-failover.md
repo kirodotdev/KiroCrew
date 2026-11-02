@@ -5,7 +5,7 @@ author: severity1
 created: 2026-11-02
 last-audited: 2026-11-02
 audited-at: f2c0d926cf
-doc-pr: TBD
+doc-pr: 27581
 implementation-prs: [26123]
 tracking-issues: [13892]
 supersedes: []
@@ -171,7 +171,8 @@ residual a probe cannot observe.
   `["codex", "claude"]` with codex not installed starts on claude and the
   receipt says `failover_from: "codex"`; an exhausted chain is refused with the
   chain named; a duplicate id or a transient or Phase 2 trigger fails at config
-  load; a chain member later denied by a ceiling still loads and is skipped; a
+  load; a chain member later denied by a ceiling still loads, and at spawn time
+  is never probed or tried; a
   continuation after a hop stays on the backend that ran; config containing the
   block round-trips through `to_dict` and JSON.
 - **Phase 2: runtime failover.** Blocked on Phase 1 landing. Exit criteria: a
