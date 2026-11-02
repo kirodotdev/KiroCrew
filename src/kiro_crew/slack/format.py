@@ -34,6 +34,7 @@ from kiro_crew.messaging.tables import (
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.slack.break_point import last_break
 
 logger = logging.getLogger(__name__)
 
@@ -1203,7 +1204,9 @@ def strip_thinking_tags(text: str, *, strip_whitespace: bool = True) -> tuple[st
 def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
     """Split text into chunks that fit within Slack's message limit.
 
-    Splits on newline boundaries when possible to avoid breaking mid-line.
+    Splits at the line break :func:`~kiro_crew.slack.break_point.last_break`
+    picks (at least a quarter into the chunk, or one before a line that fits one
+    post whole); with none that counts, it cuts where the limit falls.
     """
     if len(text) <= limit:
         return [text]
@@ -1219,10 +1222,13 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
         # loop would spin forever. Keep at least one character of progress per
         # iteration so the function always terminates regardless of `limit`.
         chunk_limit = max(1, limit - len(CONTINUATION))
-        # Try to split at last newline within limit
-        cut = text.rfind("\n", 0, chunk_limit)
+        cut = last_break(text, chunk_limit, ("\n",))
         if cut <= 0:
-            cut = chunk_limit
+            # The last post carries no CONTINUATION, so a remainder up to
+            # ``limit`` still goes out whole after an early line break.
+            early = text.rfind("\n", 0, chunk_limit)
+            fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
+            cut = early if fits else chunk_limit
         remainder = text[cut:].lstrip("\n")
         if remainder:
             parts.append(text[:cut] + CONTINUATION)
