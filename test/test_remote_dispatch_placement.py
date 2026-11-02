@@ -418,3 +418,65 @@ def test_an_explicit_create_in_flight_counts_against_its_crew(recorded, crews):
         assert placement._INFLIGHT[state] == {}
 
     _run(crews, 1, body)
+
+
+# ── wave 8: a retired crew is never placed on again ──────────────────────────
+
+
+def test_placement_skips_a_crew_the_item_was_retired_from(recorded, crews):
+    crews.add("lab-a", mem=500.0, disk=2000.0)  # the roomiest, but the item died there
+    crews.add("lab-b")
+
+    async def body(state: Any, items: list[str]) -> None:
+        (item_id,) = items
+        work_ledger.apply_remote_bind(
+            CONDUCTOR,
+            item_id,
+            worker_session_key="chat-old",
+            worker_instance_id="lab-a",
+        )
+        work_ledger.apply_remote_report(
+            CONDUCTOR,
+            item_id,
+            status="progress",
+            summary="pushed",
+            artifacts={"branch": "wave8-try1"},
+            reported_at="2026-10-29T10:00:00+00:00",
+        )
+        work_ledger.apply_remote_retire(
+            CONDUCTOR,
+            item_id,
+            worker_session_key="chat-old",
+            worker_instance_id="lab-a",
+            reason="crew_unreachable",
+        )
+        result, name = await placement.place(
+            state,
+            state.instances_manager,
+            CONDUCTOR,
+            {"work_item": item_id},
+            board=CONDUCTOR,
+        )
+        assert name == "lab-b" and crews.creates == ["lab-b"]
+        assert result["previous_branch"] == "wave8-try1"
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item.worker_instance_id == "lab-b"
+        assert item.retired_bindings[0]["worker_instance_id"] == "lab-a"
+
+    _run(crews, 1, body)
+
+
+def test_placement_of_a_never_retired_item_carries_no_previous_branch(recorded, crews):
+    crews.add("lab-a")
+
+    async def body(state: Any, items: list[str]) -> None:
+        result, _name = await placement.place(
+            state,
+            state.instances_manager,
+            CONDUCTOR,
+            {"work_item": items[0]},
+            board=CONDUCTOR,
+        )
+        assert "previous_branch" not in result
+
+    _run(crews, 1, body)

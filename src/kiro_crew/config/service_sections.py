@@ -396,6 +396,16 @@ class WorkLedgerConfig:
             "uses the default.",
         ),
     )
+    remote_dispatch_retire_minutes: float = field(
+        default=30.0,
+        metadata=_meta(
+            "Remote dispatch retire timeout (minutes)",
+            "How long a crew a work item is bound to may stay unreachable before the "
+            "conductor's next ledger read retires that binding and leaves the item "
+            "unbound for redispatch on another crew. Used only with remote_dispatch "
+            "on; a value that is not a positive number uses the default.",
+        ),
+    )
 
 
 #: ``power.on_battery`` values. ``normal`` ignores the power source.

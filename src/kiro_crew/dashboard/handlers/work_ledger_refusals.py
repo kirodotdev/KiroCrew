@@ -31,6 +31,8 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_CREW_LOG_INCOMPLETE: 409,
     work_ledger.CODE_CACHE_DIRTY: 409,
+    # A remote retire while every kept binding still waits to be closed (wave 8).
+    work_ledger.CODE_RETIRED_HISTORY_FULL: 409,
     work_ledger.CODE_NO_LEDGER: 404,
     work_ledger.CODE_UNKNOWN_ITEM: 404,
     work_ledger.CODE_ALREADY_BOUND: 409,

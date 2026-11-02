@@ -54,7 +54,8 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_seven():
+def test_event_kinds_are_exactly_eight():
+    # ``retire`` is the hub's own remote-dispatch write (wave 8).
     assert wl.EVENT_KINDS == {
         "create",
         "bind",
@@ -63,6 +64,7 @@ def test_event_kinds_are_exactly_seven():
         "verdict",
         "close",
         "steer",
+        "retire",
     }
 
 
