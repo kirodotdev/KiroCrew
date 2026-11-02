@@ -14,7 +14,6 @@
 #
 # Format: <path> <rate-when-recorded>   # <covered>/<statements>
 src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
-src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py 49.3   # 112/227
 src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551
 src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
 src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
