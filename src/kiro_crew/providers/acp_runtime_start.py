@@ -9,8 +9,9 @@ Each function here whose first parameter is ``self`` is an ``AcpProvider`` metho
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
-``_history_replay_needed``, ``_shared_scratch``, ``startup_notice``.
+Instance fields written: ``_client``, ``_cloud_governance_scope``,
+``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_shared_scratch``,
+``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_on_gate_acquired``, ``_on_gate_queued``, ``_tool_search``, ``member_context``,
@@ -978,15 +979,22 @@ async def _start_kiro_runtime_impl(
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
+        # The cloud session id this chat's row held before this start, when this
+        # start replaced it with a new one (a new sandbox, without its files).
+        replaced_cloud_session = ""
         if isinstance(remote, PreparedCloudSession) and session_key:
             # Kiro's cloud now holds this session, so its environment is
             # fixed from here on (the dashboard's choice lock reads this).
             from kiro_crew.coder.session_launch import record_cloud_session
 
             try:
-                await record_cloud_session(
+                previous = await record_cloud_session(
                     session_key, handle.session_id, profile_id=remote.profile_id
                 )
+                if previous and previous != handle.session_id:
+                    # Edit & Resend, a reset and compaction drop the resume id,
+                    # and a failed reopen falls back: each starts a new sandbox.
+                    replaced_cloud_session = previous
             except BaseException:
                 if not resumed:
                     # A sandbox this start created and could not record would be
@@ -1119,6 +1127,13 @@ async def _start_kiro_runtime_impl(
         if self._accepts_elicitation:
             provider.accepts_elicitation = True
         self._client = provider  # type: ignore[assignment]
+        # What each later turn re-checks Kiro Cloud governance against (acp_turns.
+        # _readmit_cloud_session): the same session, agent and app as this start.
+        self._cloud_governance_scope = (
+            (session_key, governed_agent, getattr(self, "owning_app", "") or "")
+            if isinstance(remote, PreparedCloudSession) and session_key
+            else None
+        )
         if (
             isinstance(remote, PreparedCloudSession)
             and meta.get("resume_outcome") == "fallback_replay"
@@ -1127,8 +1142,18 @@ async def _start_kiro_runtime_impl(
                 "cloud_session_replayed",
                 "Couldn't reopen the cloud session, so a new cloud session started "
                 "with this conversation carried over. Files and changes from the "
-                "earlier session aren't in it. The earlier session is still listed "
-                "in Kiro Web (app.kiro.dev).",
+                "earlier session aren't in it. The earlier session wasn't deleted "
+                "and is still listed in Kiro Web (app.kiro.dev).",
+            )
+            logger.warning(self.startup_notice[1])
+        elif replaced_cloud_session:
+            # No reopen was attempted (the resume id was dropped), but the chat
+            # still had a sandbox: say it moved, and that nothing was deleted.
+            self.startup_notice = (
+                "cloud_session_replaced",
+                "This chat now runs on a new Kiro Cloud Sessions sandbox. Files and changes "
+                "from the earlier sandbox aren't in it. The earlier sandbox wasn't "
+                "deleted and is still listed in Kiro Web (app.kiro.dev).",
             )
             logger.warning(self.startup_notice[1])
         # The tree this session ACTUALLY has, read off the live process:

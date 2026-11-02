@@ -67,7 +67,7 @@ class CloudSandboxOnly(SessionEnvironmentUnavailable):
 
 
 _CLOUD_SANDBOX_ONLY = (
-    "this session runs in a Kiro cloud sandbox; its files and shell are reached "
+    "this session runs in a Kiro Cloud Sessions sandbox; its files and shell are reached "
     "only by its own agent, not from Kiro Crew"
 )
 
