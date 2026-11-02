@@ -32,8 +32,14 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .extractor import EntityExtractor
+from .extractor import EntityExtractor, extraction_failed
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
+from .ingestion_extraction_failures import (
+    _count_failed_extractions,
+    _redact_extraction,
+    extraction_incomplete_message,
+    reextract_failed_items,
+)
 from .readers import FileReader
 from .store import AUTO_ADDED_PROP, KnowledgeStore
 
@@ -626,6 +632,7 @@ class IngestionPipeline:
         on_committed_in_txn: bool = False,
         include_paths: frozenset[str] | None = None,
         included: set[str] | None = None,
+        on_extraction_failed: Callable[[int, int], None] | None = None,
     ) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
@@ -676,6 +683,13 @@ class IngestionPipeline:
         deletion and the location claim durable and the caller's write never
         reached.
 
+        ``on_extraction_failed(failed, total)`` runs in the same finalize hop,
+        immediately BEFORE ``on_committed`` and only when the group committed with
+        some chunks whose extraction call failed. Those chunks are stored and
+        searchable with no entities or summary; the callback lets a caller that
+        keys state by document mark it for another attempt, since the job row
+        alone is never re-read.
+
         ``count_toward_import_budget`` gates and records this call against the
         cross-file explicit-import chunk budget (``knowledge.import_chunk_budget``).
         Explicit callers leave it True; the folder-watcher path passes False
@@ -714,6 +728,7 @@ class IngestionPipeline:
                     on_committed=on_committed, on_duplicate=on_duplicate,
                     embed_priority=embed_priority, on_committed_in_txn=on_committed_in_txn,
                     include_paths=include_paths, included=included,
+                    on_extraction_failed=on_extraction_failed,
                 )
             finally:
                 # Reclaim the reservation on EVERY exit that did not settle it: an
@@ -740,6 +755,7 @@ class IngestionPipeline:
         on_committed_in_txn: bool = False,
         include_paths: frozenset[str] | None = None,
         included: set[str] | None = None,
+        on_extraction_failed: Callable[[int, int], None] | None = None,
     ) -> str | None:
         p = Path(path)
         display_name = original_name or p.name
@@ -909,6 +925,7 @@ class IngestionPipeline:
                 embed_priority=embed_priority, on_committed=on_committed,
                 budget_token=budget_token,
                 on_committed_in_txn=on_committed_in_txn,
+                on_extraction_failed=on_extraction_failed,
             )
         except Exception:
             try:
@@ -936,7 +953,7 @@ class IngestionPipeline:
                                 old_item_ids, _old_item_ids, path,
                                 on_progress, embed_priority,
                                 on_committed=None, budget_token=None,
-                                on_committed_in_txn=False) -> str | None:
+                                on_committed_in_txn=False, on_extraction_failed=None) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -965,6 +982,7 @@ class IngestionPipeline:
         # 5. Extract all chunks in batch via pool
         chunk_contents = [chunk['content'] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
+        unextracted = _count_failed_extractions(extractions, total, path)
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source. `import_bundle`
@@ -976,10 +994,7 @@ class IngestionPipeline:
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
-                extraction['summary'] = _redact(extraction.get('summary'))
-                for ent in extraction.get('entities', []):
-                    ent['name'] = _redact(ent.get('name')) or ''
-                    ent['description'] = _redact(ent.get('description'))
+                _redact_extraction(extraction)
                 item_title = (
                     _redact(extraction.get('title'))
                     or _first_line_title(chunk['content'])
@@ -1018,6 +1033,7 @@ class IngestionPipeline:
                         namespace=namespace,
                         tags=item_tags,
                         content_hash=content_hash,
+                        extraction_failed=extraction_failed(extraction),
                     )
                     created_item_ids.append(new_id)
                     self.store.add_source_location(
@@ -1064,6 +1080,8 @@ class IngestionPipeline:
             # (isolation_level=None), so no enclosing transaction spans this,
             # and WAL + busy_timeout=10000 rides out write-lock contention.
             if processed == total:
+                if unextracted and on_extraction_failed is not None:
+                    on_extraction_failed(unextracted, total)
                 if on_committed is not None and on_committed_in_txn:
                     # ONE transaction for the old group's delete and the
                     # caller's ownership write (see ingest_file). Two commits
@@ -1113,8 +1131,10 @@ class IngestionPipeline:
                 self.store.delete_items_batch(list(created_item_ids))
                 self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
             self.store.db.execute(
-                "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-                (_job_status(processed, total), processed, now, job_id))
+                "UPDATE ingestion_jobs SET status = ?, items_processed = ?, error = ?, "
+                "updated_at = ? WHERE id = ?",
+                (_job_status(processed, total), processed,
+                 extraction_incomplete_message(unextracted, total), now, job_id))
             self.store.db.commit()
 
         await run_to_completion(_finalize)
@@ -1251,6 +1271,7 @@ class IngestionPipeline:
 
         chunk_contents = [chunk['content'] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
+        unextracted = _count_failed_extractions(extractions, total, f"source {source_id}")
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source -- a snapshot
@@ -1263,10 +1284,7 @@ class IngestionPipeline:
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
-                extraction['summary'] = _redact(extraction.get('summary'))
-                for ent in extraction.get('entities', []):
-                    ent['name'] = _redact(ent.get('name')) or ''
-                    ent['description'] = _redact(ent.get('description'))
+                _redact_extraction(extraction)
 
                 # ONE uncancellable unit, for both reasons spelled out in
                 # _ingest_file_body: a cancellation must not be able to land
@@ -1282,6 +1300,7 @@ class IngestionPipeline:
                         chunk_index=chunk.get('chunk_index', i),
                         summary=extraction.get('summary'),
                         content_hash=content_hash,
+                        extraction_failed=extraction_failed(extraction),
                     )
                     created_item_ids.append(new_id)
                     self.store.add_source_location(
@@ -1335,8 +1354,10 @@ class IngestionPipeline:
                 self.store.delete_items_batch(list(created_item_ids))
                 self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
             self.store.db.execute(
-                "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-                (_job_status(processed, total), total, processed, now, job_id))
+                "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, "
+                "error = ?, updated_at = ? WHERE id = ?",
+                (_job_status(processed, total), total, processed,
+                 extraction_incomplete_message(unextracted, total), now, job_id))
             self.store.db.commit()
 
         await run_to_completion(_finalize)
@@ -1367,6 +1388,8 @@ class IngestionPipeline:
     def get_job_status(self, job_id: str) -> dict | None:
         row = self.store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+    reextract_failed_items = reextract_failed_items  # owner: ingestion_extraction_failures
 
     def _store_entities(self, extraction: dict, item_id: str):
         """Deduplicate and store entities, mentions, and relations."""
@@ -1527,6 +1550,7 @@ class IngestionPipeline:
 _OWNERS = (
     "kiro_crew.knowledge.ingestion_budget",
     "kiro_crew.knowledge.ingestion_rebuild",
+    "kiro_crew.knowledge.ingestion_extraction_failures",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1541,6 +1565,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.knowledge.ingestion_budget import (  # noqa: F401
         _IMPORT_CHUNK_BUDGET_WINDOW_SECS,
         ImportChunkBudgetError,
+    )
+    from kiro_crew.knowledge.ingestion_extraction_failures import (  # noqa: F401
+        EXTRACTION_INCOMPLETE_PREFIX,
+        _facade,
     )
     from kiro_crew.knowledge.ingestion_rebuild import (  # noqa: F401
         _REBUILD_BATCH_SIZE,

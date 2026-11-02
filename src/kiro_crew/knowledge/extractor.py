@@ -1,6 +1,7 @@
 """Entity extraction using the LLM pool."""
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING
 
@@ -8,6 +9,8 @@ from kiro_crew.llm_helpers import _extract_json_of_type
 
 if TYPE_CHECKING:
     from kiro_crew.knowledge.llm_pool import LLMPool
+
+logger = logging.getLogger(__name__)
 
 _PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
 
@@ -55,9 +58,31 @@ def _empty_result() -> dict:
     return {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
 
 
+# Marks a result whose extraction call failed (pool error, timeout, unparseable
+# reply), as opposed to a chunk that was never sent (blank, no pool) or a reply
+# that parsed and found nothing. Both look like the empty result to a reader of
+# the payload fields, and treating a failure as "found nothing" stores the chunk
+# as fully extracted with no retry, so the difference has to travel with it.
+EXTRACTION_FAILED_KEY = "extraction_failed"
+
+
+def _failed_result() -> dict:
+    return {**_empty_result(), EXTRACTION_FAILED_KEY: True}
+
+
+def extraction_failed(result: dict) -> bool:
+    """True when *result* stands for a failed extraction call, not an empty one."""
+    return bool(result.get(EXTRACTION_FAILED_KEY))
+
+
 class EntityExtractor:
     def __init__(self, pool: "LLMPool | None" = None):
         self._pool = pool
+
+    @property
+    def can_extract(self) -> bool:
+        """False without a pool, where every chunk comes back empty, never sent."""
+        return self._pool is not None
 
     async def extract(self, chunk: str) -> dict:
         if not self._pool or not chunk.strip():
@@ -71,8 +96,9 @@ class EntityExtractor:
             )
             response = await self._pool.send(prompt, timeout=EXTRACTION_TIMEOUT)
             return self._parse_response(response)
-        except Exception:
-            return _empty_result()
+        except Exception as exc:
+            logger.warning("EntityExtractor: extraction call failed: %s", exc)
+            return _failed_result()
 
     async def extract_batch(self, chunks: list[str]) -> list[dict]:
         """Extract from multiple chunks in parallel using the pool."""
@@ -95,8 +121,13 @@ class EntityExtractor:
             for idx, response in zip(non_empty_indices, responses):
                 results[idx] = self._parse_response(response)
             return results
-        except Exception:
-            return [_empty_result() for _ in chunks]
+        except Exception as exc:
+            logger.warning(
+                "EntityExtractor: extraction batch of %d chunks failed: %s",
+                len(non_empty_indices), exc,
+            )
+            failed = set(non_empty_indices)
+            return [_failed_result() if i in failed else _empty_result() for i in range(len(chunks))]
 
     def _parse_response(self, response: str) -> dict:
         """Pull the extraction payload dict out of an LLM reply.
@@ -104,14 +135,24 @@ class EntityExtractor:
         Delegates to the shared ``llm_helpers._extract_json_of_type`` scanner
         (a bare JSON reply, a fenced block, and JSON wrapped in prose are all
         the same to it), so a stray brace in surrounding prose does not
-        corrupt the span. Returns the empty result on any parse failure, on a
-        non-dict reply, or when two DIFFERENT payload-shaped dicts make the
-        choice ambiguous (the shared contract refuses to guess).
+        corrupt the span. Returns the failed result on an empty reply (the
+        pool's batch path turns a failed call into ``""``, and has logged
+        why), on any parse failure, on a non-dict reply, when two DIFFERENT
+        payload-shaped dicts make the choice ambiguous (the shared contract
+        refuses to guess), or when the only dict carries no payload field. The
+        scanner falls back to the first dict it finds, so a reply such as ``{}``
+        or ``{"error": ...}`` would otherwise read as "found nothing" and a
+        re-extraction would clear the chunk's links and its failure mark.
         """
+        if not response or not response.strip():
+            return _failed_result()
         data = _extract_json_of_type(response, dict, prefer=_extraction_shaped)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and _extraction_shaped(data):
             return self._validate(data)
-        return _empty_result()
+        logger.warning(
+            "EntityExtractor: reply carried no extraction payload (%d chars)", len(response)
+        )
+        return _failed_result()
 
     @staticmethod
     def _validate(data: dict) -> dict:
