@@ -59,7 +59,6 @@
   "src/test/ChatPageDrafts.test.tsx",
   "src/test/ChatPageMoreCoverage.test.tsx",
   "src/test/ChatPageW3Coverage.test.tsx",
-  "src/test/ChatPane.dirSend.test.tsx",
   "src/test/ChatPane.stopEscalation.test.tsx",
   "src/test/ChatSidebar.boardStateLanes.test.tsx",
   "src/test/ChatSidebar.bulkModelRosterError.test.tsx",
