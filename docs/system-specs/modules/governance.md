@@ -303,7 +303,10 @@ A **present-but-unreadable / invalid** policy raises `PlatformCompositionError`
 (fail-closed to strictest), mirroring `admission.load_admission_policy`. Parsing
 is **pure-Python and structural** (it does not depend on `jsonschema`, which is
 an optional, possibly-absent dependency) so a malformed policy never silently
-degrades to ungoverned.
+degrades to ungoverned. One leading UTF-8 byte-order mark (what Windows editors
+and PowerShell 5.1 `Set-Content -Encoding UTF8` write) is not content: the env and
+home readers parse through `user_json.loads_user_json`, so such a file loads at its
+tier. Any other encoding (UTF-16, a second mark) or invalid JSON still refuses.
 
 ## Update pins (`updates`) — policy-only
 
