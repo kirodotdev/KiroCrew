@@ -35,6 +35,7 @@ from kiro_crew.apps.manager_records import (
     holds_app_record_locks,
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
+from kiro_crew.apps.message_action_grants import message_action_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -396,6 +397,7 @@ def list_apps() -> list[dict[str, Any]]:
             **meta.to_dict(),
             **_approved_grants_row(entry.name),
             **link_preview_grant_row(entry.name, manifest_data),
+            **message_action_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -432,6 +434,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         **meta.to_dict(),
         **_approved_grants_row(name),
         **link_preview_grant_row(name, manifest_data),
+        **message_action_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
 
