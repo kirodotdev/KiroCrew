@@ -250,20 +250,23 @@ class TestLegacyCustomPackContinuity:
         src = _legacy_pack(tmp_path / "src" / "pack", _LEGACY_A)
 
         result: dict[str, object] = {}
+        done = threading.Event()
 
         def _install() -> None:
-            result["out"] = th_mod._do_install("local", {"path": str(src)})
+            try:
+                result["out"] = th_mod._do_install("local", {"path": str(src)})
+            finally:
+                done.set()
 
         lock = th_mod._theme_install_lock("custom")
-        # flake-ok: pre-existing unbounded acquire of the module-global per-slug install lock, moved verbatim; tracked for a de-flake pass
-        lock.acquire()
+        assert lock.acquire(timeout=30.0), "the legacy install lock was not free within 30 s"
         worker = threading.Thread(target=_install, daemon=True)
         worker.start()
         try:
-            # Cannot reach its decision while the lock is held.
-            # flake-ok: pre-existing 2 s join that expires while the lock is held, before the still-blocked check, moved verbatim; tracked for a de-flake pass
-            worker.join(timeout=2.0)
-            assert worker.is_alive() and "out" not in result
+            # Cannot reach its decision while the lock is held: the install
+            # stays blocked for the whole 2 s window and reports nothing.
+            assert not done.wait(timeout=2.0), "install finished while the legacy lock was held"
+            assert "out" not in result
             # Stand in for a concurrent install that promoted a DIFFERENT pack.
             shutil.rmtree(legacy)
             _legacy_pack(tv_mod._installed_theme_dir("custom"), _LEGACY_B)
