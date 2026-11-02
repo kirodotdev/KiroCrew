@@ -246,13 +246,38 @@ describe('Ultra Mode Crew tab', () => {
     expect(store.getState().chat.activeSlot).toBe('w-sup')
   })
 
-  it('Status: blocked work with no approval says where it is, and its row says what blocks it', async () => {
+  it('Status: a worker blocked on the conductor waits on the main chat, and is not counted as needing you', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'b2', title: 'Supplies list', status: 'blocked', summary: 'The file save was declined. Retry next.' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
-    expect(await screen.findByTestId('ultra-milestone')).toHaveTextContent('The file save was declined.')
-    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Blocked work is under Milestones.')
-    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+    const row = await screen.findByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('waiting')
+    expect(row).toHaveTextContent('Waiting on the main chat')
+    expect(row).toHaveTextContent('The file save was declined.')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Nothing needs you right now.')
+    expect(screen.getByTestId('ultra-recap')).not.toHaveTextContent(/wait on you|waits on you/)
+  })
+
+  it('Status: a report whose reason names a person needs you, and the Needs your input line points at it', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'h1', title: 'Supplies list', status: 'blocked', reason: 'needs_human', summary: 'Sign in to the shop. Then retry.' })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const row = await screen.findByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('needs_you')
+    expect(row).toHaveTextContent('Sign in to the shop.')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Work that needs you is under Milestones.')
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list waits on you')
+  })
+
+  it('Status: a worker whose session closed on an open report reads Stalled, not needs you', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 's1', title: 'Supplies list', status: 'progress', alive: 'closed', summary: 'Half the list. More soon.' })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const row = await screen.findByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('stalled')
+    expect(row).toHaveTextContent('Stalled')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Stalled work is under Milestones.')
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list has stalled')
   })
 
   it('Status: an unstarted milestone says Not started, never a made-up order', async () => {

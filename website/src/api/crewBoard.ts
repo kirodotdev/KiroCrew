@@ -34,7 +34,7 @@ export interface WorkBoardEvent {
   id: string
   ts: string
   item_id: string
-  kind: 'create' | 'bind' | 'report' | 'decision' | 'verdict' | 'close'
+  kind: 'create' | 'bind' | 'report' | 'decision' | 'steer' | 'verdict' | 'close'
   /** Present on a `report` line: the status the worker reported. */
   status: WorkReportStatus
   /** Blanked by the server on a `bind` line, whose text is a session key. */
@@ -54,6 +54,8 @@ export interface WorkBoardItem {
   round: number
   fails: number
   status: WorkReportStatus
+  /** Who a blocked / question report waits on: `approval` / `needs_human` name a person. */
+  reason?: string | null
   /** The worker's own account of where the work is. Rendered as the row's
    *  last line, standing in for the session ledger's `next`, which this store
    *  has no equivalent of. */
