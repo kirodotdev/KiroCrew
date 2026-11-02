@@ -473,6 +473,34 @@ class TestToSlackMrkdwnTruncation:
         assert to_slack_mrkdwn("hello world") == "hello world"
 
 
+class TestToSlackMrkdwnInlineCode:
+    """Slack shows inline code as written, so its markers are never rewritten."""
+
+    def test_bold_and_strike_markers_inside_inline_code_are_kept(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("call `f(**kwargs)` now") == "call `f(**kwargs)` now"
+        assert to_slack_mrkdwn("`a~~b~~c` and ~~gone~~") == "`a~~b~~c` and ~gone~"
+
+    def test_emphasis_around_a_code_span_still_converts(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("**a `b` c**") == "*a `b` c*"
+        assert to_slack_mrkdwn("~~a `x` b~~") == "~a `x` b~"
+
+    def test_a_backslash_inside_code_does_not_reach_past_the_span(self):
+        """A backslash is literal inside code, so `C:\\` closes on its own."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("Use `C:\\` then **bold** and `x`.")
+        assert out == "Use `C:\\` then *bold* and `x`."
+
+    def test_an_escaped_backtick_outside_code_opens_nothing(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("\\`a **b** `c`") == "\\`a *b* `c`"
+
+
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
 
