@@ -1105,13 +1105,14 @@ def _is_thinking_binding_mismatch(error: object) -> bool:
     return False
 
 
-# kiro-cli's wording for a concurrent in-flight prompt on the session, read by
-# the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
-# classification. One pattern, but two haystacks: the formatter scopes to the
-# provider `data` field while the classifier also searches the JSON-RPC
+# A concurrent in-flight prompt on the session, in kiro-cli's words and in goose's
+# (-32602 "session already has active run `<id>`" for a prompt sent while its run is
+# live). Read by the user-facing formatter below and by `_raise_acp_error`'s
+# AcpPromptBusy classification. One pattern, but two haystacks: the formatter scopes
+# to the provider `data` field while the classifier also searches the JSON-RPC
 # `message`, so an echo carried only by `message` raises AcpPromptBusy under the
 # unrecognised-shape text.
-_PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
+_PROMPT_BUSY_RE = re.compile(r"already in progress|session already has active run", re.IGNORECASE)
 
 # kiro-cli's envelope for a failure that happened mid-stream. The text after the
 # colon is the provider's own message — the same words the CLI prints in a
