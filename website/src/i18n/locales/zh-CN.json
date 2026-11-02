@@ -10871,7 +10871,21 @@
       "link_open_remembered": "记住的链接选择",
       "link_open_choice_app": "在 {{name}} 中打开",
       "link_open_choice_browser": "在浏览器中打开",
-      "link_open_forget": "忘记"
+      "link_open_forget": "忘记",
+      "adoption": {
+        "network": "{{name}} 暂时无法下载其 App Store 版本。{{productName}} 会自动重试；请检查这台电脑的网络连接。",
+        "local": "{{name}} 无法在这台电脑上准备其 App Store 版本：磁盘已满，或无法读取某个设置文件。{{productName}} 会自动重试。",
+        "policy": "{{name}} 切换到其 App Store 版本已暂停：你的应用准入策略不允许该版本。在准入策略中允许它即可完成切换。",
+        "trust": "{{name}} 切换到其 App Store 版本已暂停：它的信任设置指向另一个来源，或在 config.local.json 中设置，因此 {{productName}} 未更改它。检查信任设置即可完成切换。",
+        "permissions": "{{name}} 切换到其 App Store 版本已暂停：该版本请求的访问权限多于当前版本。没有做任何更改。",
+        "platform": "{{name}} 无法切换到其 App Store 版本：该版本不支持此平台。",
+        "host": "{{name}} 切换到其 App Store 版本已暂停：该版本需要更新的 {{productName}}。更新 {{productName}} 即可完成切换。",
+        "verification": "{{name}} 不会切换到其 App Store 版本：该版本未通过验证，此版本的 {{productName}} 不会重试。没有做任何更改。",
+        "staged": "{{name}} 的 App Store 版本已下载并验证。下次 {{productName}} 重启时，{{name}} 会切换到该版本。",
+        "keeps_builtin_until": "在此之前，它仍是内置应用。",
+        "keeps_builtin": "它仍是内置应用。",
+        "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
+      }
     },
     "appPage": {
       "loading_app": "加载应用…",

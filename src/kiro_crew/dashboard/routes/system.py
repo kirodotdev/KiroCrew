@@ -25,6 +25,12 @@ from kiro_crew.edition_locks import local_enable_locked
 
 _log = logging.getLogger(__name__)
 
+#: The ``BUILTIN_NAMES`` packages whose wheel copy is released on this boot
+#: (``builtin_adoption.released_builtin_packages``). ``start_dashboard`` sets it
+#: off the event loop, after APPLY and before ``register_all``; absent, every
+#: package registers as before.
+RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
+
 
 def register(app: web.Application) -> None:
     """Register the system routes on *app*."""
@@ -234,8 +240,14 @@ def register(app: web.Application) -> None:
     # App Platform
     register_app_routes(app)
 
-    # Built-in app routes — register at startup (handlers check enabled state)
+    # Built-in app routes — register at startup (handlers check enabled state).
+    # A released package (its app adopted from its own repository, or uninstalled
+    # after that) registers nothing: its routes, and its on_startup/on_cleanup
+    # callbacks, would otherwise serve beside the app that owns the name.
+    _released = app.get(RELEASED_BUILTIN_PACKAGES, frozenset())
     for _builtin_name in BUILTIN_NAMES:
+        if _builtin_name in _released:
+            continue
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
             # A package may serve ``register_routes`` through a lazy module

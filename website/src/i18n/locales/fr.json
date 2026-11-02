@@ -11263,7 +11263,21 @@
       "link_open_remembered": "Choix de liens mémorisés",
       "link_open_choice_app": "S'ouvre dans {{name}}",
       "link_open_choice_browser": "S'ouvre dans ton navigateur",
-      "link_open_forget": "Oublier"
+      "link_open_forget": "Oublier",
+      "adoption": {
+        "network": "{{name}} n’a pas encore pu télécharger sa version de l’App Store. {{productName}} réessaie automatiquement ; vérifie la connexion réseau de cet ordinateur.",
+        "local": "{{name}} n’a pas pu préparer sa version de l’App Store sur cet ordinateur : le disque est plein ou un fichier de réglages est illisible. {{productName}} réessaie automatiquement.",
+        "policy": "Le passage de {{name}} à sa version de l’App Store est en attente : ta politique d’admission des apps n’admet pas cette version. Autorise-la dans la politique d’admission pour terminer le passage.",
+        "trust": "Le passage de {{name}} à sa version de l’App Store est en attente : son réglage de confiance désigne une autre source, ou il est défini dans config.local.json, donc {{productName}} ne l’a pas modifié. Vérifie le réglage de confiance pour terminer le passage.",
+        "permissions": "Le passage de {{name}} à sa version de l’App Store est en attente : cette version demande plus d’accès que celle que tu as maintenant. Rien n’a été modifié.",
+        "platform": "{{name}} ne peut pas passer à sa version de l’App Store : cette version ne prend pas en charge cette plateforme.",
+        "host": "Le passage de {{name}} à sa version de l’App Store est en attente : cette version nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} pour terminer le passage.",
+        "verification": "{{name}} ne passe pas à sa version de l’App Store : cette version n’a pas passé la vérification, et cette version de {{productName}} ne réessaie pas. Rien n’a été modifié.",
+        "staged": "La version de l’App Store de {{name}} est téléchargée et vérifiée. {{name}} y passe au prochain redémarrage de {{productName}}.",
+        "keeps_builtin_until": "D’ici là, elle reste une app intégrée.",
+        "keeps_builtin": "Elle reste une app intégrée.",
+        "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
+      }
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

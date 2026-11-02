@@ -388,6 +388,11 @@ _LAZY_IMPORTS = {
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
+    "kiro_crew.apps.builtin_adoption": (
+        "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
+    ),
+    "kiro_crew.apps.builtins": "BUILTIN_NAMES",
+    "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
     "kiro_crew.apps.event_bus": "build_broadcast_fn",
@@ -433,6 +438,7 @@ _LAZY_IMPORTS = {
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
+    "kiro_crew.dashboard.routes.system": "RELEASED_BUILTIN_PACKAGES",
     "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
@@ -480,7 +486,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 117
+    assert len(expected) == 123
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

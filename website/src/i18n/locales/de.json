@@ -11067,7 +11067,21 @@
       "link_open_remembered": "Gespeicherte Link-Entscheidungen",
       "link_open_choice_app": "Öffnet in {{name}}",
       "link_open_choice_browser": "Öffnet in deinem Browser",
-      "link_open_forget": "Vergessen"
+      "link_open_forget": "Vergessen",
+      "adoption": {
+        "network": "{{name}} konnte seine App-Store-Version noch nicht herunterladen. {{productName}} versucht es automatisch erneut; prüfe die Netzwerkverbindung dieses Computers.",
+        "local": "{{name}} konnte seine App-Store-Version auf diesem Computer nicht vorbereiten: Der Datenträger ist voll oder eine Einstellungsdatei war nicht lesbar. {{productName}} versucht es automatisch erneut.",
+        "policy": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Deine App-Zulassungsrichtlinie lässt diese Version nicht zu. Erlaube sie in der Zulassungsrichtlinie, um den Wechsel abzuschließen.",
+        "trust": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Seine Vertrauenseinstellung nennt eine andere Quelle oder ist in config.local.json festgelegt, daher hat {{productName}} sie nicht geändert. Prüfe die Vertrauenseinstellung, um den Wechsel abzuschließen.",
+        "permissions": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Diese Version verlangt mehr Zugriff als die, die du jetzt hast. Es wurde nichts geändert.",
+        "platform": "{{name}} kann nicht zu seiner App-Store-Version wechseln: Diese Version unterstützt diese Plattform nicht.",
+        "host": "Der Wechsel von {{name}} zu seiner App-Store-Version ist angehalten: Diese Version braucht ein neueres {{productName}}. Aktualisiere {{productName}}, um den Wechsel abzuschließen.",
+        "verification": "{{name}} wechselt nicht zu seiner App-Store-Version: Diese Version hat die Prüfung nicht bestanden, und dieses Release von {{productName}} versucht es nicht erneut. Es wurde nichts geändert.",
+        "staged": "Die App-Store-Version von {{name}} ist heruntergeladen und geprüft. {{name}} wechselt beim nächsten Neustart von {{productName}} zu ihr.",
+        "keeps_builtin_until": "Bis dahin bleibt sie eine integrierte App.",
+        "keeps_builtin": "Sie bleibt eine integrierte App.",
+        "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
+      }
     },
     "appPage": {
       "loading_app": "App wird geladen…",
