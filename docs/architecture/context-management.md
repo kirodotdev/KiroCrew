@@ -515,21 +515,25 @@ ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scra
 
 One function decides, for both session start and post-compaction re-injection:
 `context.py` → `_skills_injection_plan`. It returns `(inject?, globs)` from two
-facts — whether the agent's JSON maps skills, and whether the agent is the
-built-in `kirocrew` or the `kirocrew-worker` derived from it
-(`WHOLE_CATALOG_TEMPLATES`). The harness matters for one row of the table: an
+facts — whether the agent's JSON maps skills, and whether the agent is a default
+agent or the `kirocrew-worker` derived from one (`WHOLE_CATALOG_TEMPLATES`, built
+from `KIROCREW_DEFAULT_AGENT_NAMES` plus `kirocrew-worker`, so it names `kirocrew`
+and the crewmate's conductor and worker too). The harness matters for one row of the table: an
 unmapped custom agent on kiro-cli gets the skill trees kiro-cli lets it inherit,
 and nothing on any other harness (`src/kiro_crew/docs/agent-spec-fields.md` has
 the per-harness table). `is_cc` is accepted and ignored (steering, below, is the
-one block the backend does gate). A crewmate's conductor and worker are not
-custom either (`is_kirocrew_default_agent`), but they read their mapping from the
-crewmate folder (`mate_worker.mate_service_scope_spec`), so the table does not
-cover them.
+one block the backend does gate). `skill_search` (`session_skill_globs`) and KAS's
+skill rule (`kas_skill_scope`) read the same set, so an unmapped template in it
+searches the whole catalog its startup directory lists. A crewmate's conductor and
+worker read their mapping from the crewmate folder
+(`mate_worker.mate_service_scope_spec`) rather than the roster; on kiro-cli an
+unmapped one there takes the inherited trees, and on every other harness it takes
+the `kirocrew` rows of the table.
 
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|
-| `kirocrew`, `kirocrew-worker` | none | the whole catalog (bounded discovery) | the default path |
-| `kirocrew`, `kirocrew-worker` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
+| `kirocrew`, `kirocrew-worker`, crewmate conductor and worker | none | the whole catalog (bounded discovery) | the default path |
+| `kirocrew`, `kirocrew-worker`, crewmate conductor and worker | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 | custom | none | **nothing**, or on kiro-cli the inherited trees | the agent is expected to bring its own |
 | custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 
