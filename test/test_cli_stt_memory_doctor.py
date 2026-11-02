@@ -26,10 +26,9 @@ class TestDoctorStaleProjectDir:
     """Tests for doctor stale project_dir detection."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _hermetic_config(self, monkeypatch):
+    def _hermetic_config(self, _floor_monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
-        _pin_default_config(monkeypatch)
+        _pin_default_config(_floor_monkeypatch)
 
     def test_doctor_detects_stale_project_dir(self, tmp_path, capsys):
         proj_file = tmp_path / "project_dir"
@@ -79,8 +78,7 @@ class TestDoctorStt:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _hermetic_doctor(self, monkeypatch):
+    def _hermetic_doctor(self, _floor_monkeypatch):
         """Pin every section EXCEPT Speech-to-Text.
 
         Same reasoning as ``TestDoctor``'s fixtures: the vendored embedding runtime
@@ -90,15 +88,17 @@ class TestDoctorStt:
         """
         import kiro_crew.cli_doctor as _doc
 
-        _pin_default_config(monkeypatch)
-        monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
-        monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
-        monkeypatch.setattr(_doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace")
+        _pin_default_config(_floor_monkeypatch)
+        _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
+        _floor_monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
+        _floor_monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
         # POSIX severity: a missing prerequisite is a hard issue. The Windows note
         # arm is pinned in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
-        monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
         # Left real, this prepends to the process PATH for every later test.
-        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
+        _floor_monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
     @staticmethod
     def _stt(monkeypatch, **fields):
@@ -540,14 +540,13 @@ class TestDoctorEmbeddings:
     """Tests for the doctor Vector Memory (in-process embeddings) section."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _hermetic_config(self, monkeypatch):
+    def _hermetic_config(self, _floor_monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
-        _pin_default_config(monkeypatch)
+        _pin_default_config(_floor_monkeypatch)
         # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses:
         # the bundled tree or an operator override. Each test owns whether the
         # live environment or the startup-removal record supplies that value.
-        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+        _floor_monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
 
     @staticmethod
     def _run_doctor(
