@@ -1101,15 +1101,16 @@ class TestRound36Hardening:
 
         from kiro_crew.apps.builtins.aws_control.backend import backup
 
-        # flake-ok: pre-existing UTC wall-clock read, moved verbatim; the product reads the same clock and the due window is about a day
-        recent = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None).isoformat()
+        # A pinned instant, so the stamp sits one hour before it on every host.
+        now = _dt.datetime(2026, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        recent = (now - _dt.timedelta(hours=1)).replace(tzinfo=None).isoformat()
         with (
             mock.patch.object(backup, "nightly_enabled", return_value=True),
             mock.patch.object(
                 backup, "last_runs", return_value={backup.KIND_SNAPSHOT: {"at": recent}}
             ),
         ):
-            assert backup.due_for_nightly(ACCOUNT) is False
+            assert backup.due_for_nightly(ACCOUNT, now=now) is False
 
     def test_a_non_string_last_run_reads_as_due(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup
