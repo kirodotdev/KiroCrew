@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_persistence import (
+        TRANSCRIPT_REPLACE_BUDGET_SECONDS,
         DashboardState,
         _ChatSlot,
         _display_verdicts,
@@ -482,7 +483,17 @@ def _save_slot_to_history(
                     _preserve_mtime = None
 
             try:
-                atomic_write(path, payload, fsync=True)
+                # The rename carries the transcript budget so a Windows reader
+                # holding the file open does not fail the save inside the
+                # count-based retry's short window. Off the event loop (the slot
+                # save offloads) the budget is spent; on the loop the retry
+                # re-raises at once and never sleeps.
+                atomic_write(
+                    path,
+                    payload,
+                    fsync=True,
+                    replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+                )
             except BaseException:
                 # A failed save keeps nothing staged: its rows stay unjudged and
                 # the next save offers them again.

@@ -30,7 +30,11 @@ from kiro_crew import owner_only_files, platform_compat
 
 # ``replace_with_retry`` is facade surface with no reader here: its inventory,
 # test/campaign_facade_inventories/kiro_crew.history_projection.json, pins it.
-from kiro_crew.atomic_write import atomic_write, replace_with_retry  # noqa: F401
+from kiro_crew.atomic_write import (  # noqa: F401
+    TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+    atomic_write,
+    replace_with_retry,
+)
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
     restore_staged_attachments,
@@ -499,8 +503,17 @@ class SessionMetadataProjection:
         if content is None:
             return False
         if not durable:
-            # Unsynced, owner-only on every root (see the docstring).
-            atomic_write(path, content, mode=owner_only_files.OWNER_ONLY_FILE_MODE)
+            # Unsynced, owner-only on every root (see the docstring). The rename
+            # carries the transcript budget so a held Windows reader does not
+            # defeat it inside the count-based retry's short window; off the event
+            # loop (the consolidation lease claim) the budget is spent, on the
+            # loop replace_with_retry re-raises at once and never sleeps.
+            atomic_write(
+                path,
+                content,
+                mode=owner_only_files.OWNER_ONLY_FILE_MODE,
+                replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+            )
             _history_facade()._restore_mtime(path, previous_mtime)
             self._log._invalidate_cache(key)
             return True

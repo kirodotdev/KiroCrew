@@ -344,7 +344,7 @@ BASE_SURFACE: dict[str, str] = {
     "redact_log": "callable redact_log_via_context(text: 'str') -> 'str'",
     "rederive_worker_agent": "callable rederive_worker_agent(reason: 'str') -> 'bool'",
     "repair_agent_configs": "callable repair_agent_configs() -> 'None'",
-    "replace_with_retry": "callable replace_with_retry(src: 'Path | str', dst: 'Path | str') -> 'None'",
+    "replace_with_retry": "callable replace_with_retry(src: 'Path | str', dst: 'Path | str', *, budget_s: 'float | None' = None) -> 'None'",
     "reproject_for_ceiling_change": "callable reproject_for_ceiling_change() -> 'None'",
     "require_fork_governance": "callable require_fork_governance(agent: 'str | None', project_dir: 'str | Path | None' = None) -> 'None'",
     "require_fresh_derived_spec": "callable require_fresh_derived_spec(agent: 'str | None', work_dir: 'str | Path | None') -> \"'DerivedSpecSnapshot | None'\"",

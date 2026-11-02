@@ -232,6 +232,25 @@ _default_mode: int | None = None
 _REPLACE_MAX_ATTEMPTS = 10
 _REPLACE_BACKOFF_SECONDS = 0.05
 
+# Elapsed-time retry for a caller that passes ``budget_s`` to ``replace_with_retry``.
+# The count-based loop above sizes for a scanner's touch (sub-half-second); a
+# transcript rewrite instead loses the rename to a READER that holds the file for
+# as long as it takes to parse, which the attempt count cannot cover. A caller
+# that can afford to wait passes an elapsed-time budget: the sleep doubles from
+# this floor to this ceiling and the loop runs until the budget is spent, then
+# makes one final attempt. Only a budget-passing caller takes this arm; a caller
+# that passes nothing keeps the heuristic above byte-for-byte.
+_REPLACE_BUDGET_MIN_BACKOFF_SECONDS = 0.05
+_REPLACE_BUDGET_MAX_BACKOFF_SECONDS = 0.40
+
+#: The retry budget a transcript rewrite gives a reader before the rename gives
+#: up. The live holder and its hold time are unmeasured; a harness held a real
+#: transcript for 2.0 s and reproduced the fault, so this sits above that with
+#: margin while bounding how long the session lock is held when a reader never
+#: closes. The rewrite call sites pass it; every other ``replace_with_retry``
+#: caller leaves ``budget_s`` unset and keeps the count-based loop.
+TRANSCRIPT_REPLACE_BUDGET_SECONDS = 3.0
+
 
 def _get_default_mode() -> int:
     """Return umask-based default file mode, cached after first call (thread-safe)."""
@@ -402,7 +421,7 @@ def on_event_loop() -> bool:
     return True
 
 
-def replace_with_retry(src: Path | str, dst: Path | str) -> None:
+def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | None = None) -> None:
     """``os.replace(src, dst)``, retrying the Windows sharing-violation window.
 
     Atomic replacement is the last step of every tmp-file-plus-rename writer. On
@@ -431,7 +450,27 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
     a budget of 0 would skip the body entirely and return having renamed
     nothing, which every caller reads as success: a silently lost write. Out
     here, any budget of 1 or less simply degrades to a plain ``os.replace``.
+
+    *budget_s* changes what "bounded" means WITHOUT changing anything else. Left
+    unset (the default, every caller but the transcript rewrites), the loop is
+    the count-based heuristic above: ``_REPLACE_MAX_ATTEMPTS - 1`` sleeps of
+    ``_REPLACE_BACKOFF_SECONDS`` each, then the final attempt. Set, the sleep
+    doubles from ``_REPLACE_BUDGET_MIN_BACKOFF_SECONDS`` up to
+    ``_REPLACE_BUDGET_MAX_BACKOFF_SECONDS`` and the loop runs until
+    ``time.monotonic`` shows *budget_s* elapsed, then makes the final attempt.
+    This arm exists because a transcript rewrite loses the rename to a READER
+    that holds the file for as long as it parses, not to a scanner's momentary
+    touch, so an elapsed-time bound covers it where an attempt count cannot. On
+    exhaustion the budget arm logs one WARNING with the path, the attempts made
+    and the elapsed time (the count arm stays silent, as before, since its
+    callers' comments already own that trade-off). The POSIX and on-loop
+    re-raises are unchanged: both arms re-raise at once there, so neither waits
+    for a budget on a path where a ``PermissionError`` is genuine or the single
+    loop must not sleep.
     """
+    if budget_s is not None:
+        _replace_with_budget(src, dst, budget_s)
+        return
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
             os.replace(str(src), str(dst))
@@ -454,6 +493,61 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
     os.replace(str(src), str(dst))
+
+
+def _replace_with_budget(src: Path | str, dst: Path | str, budget_s: float) -> None:
+    """The elapsed-time arm of :func:`replace_with_retry`.
+
+    Retries ``os.replace`` while a reader holds the destination, doubling the
+    sleep from ``_REPLACE_BUDGET_MIN_BACKOFF_SECONDS`` to
+    ``_REPLACE_BUDGET_MAX_BACKOFF_SECONDS`` until *budget_s* has elapsed, then
+    makes one final un-slept attempt so a budget of 0 or less degrades to a
+    plain ``os.replace`` rather than renaming nothing. POSIX and the event loop
+    re-raise on the first fault exactly as the count arm does.
+    """
+    started = time.monotonic()
+    backoff = _REPLACE_BUDGET_MIN_BACKOFF_SECONDS
+    attempts = 0
+    while True:
+        try:
+            os.replace(str(src), str(dst))
+            return
+        except PermissionError:
+            attempts += 1
+            if not platform_compat.IS_WINDOWS:
+                raise
+            if on_event_loop():
+                logger.debug(
+                    "atomic rename contended at %s on the event loop; "
+                    "re-raising instead of sleeping (offload the write to retry)",
+                    dst,
+                )
+                raise
+            elapsed = time.monotonic() - started
+            if elapsed >= budget_s:
+                break
+            logger.debug(
+                "atomic rename contended at %s; retrying within budget "
+                "(attempt %d, %.2fs/%.2fs elapsed)",
+                dst,
+                attempts,
+                elapsed,
+                budget_s,
+            )
+            # Never sleep past the budget: trim the last backoff so the loop
+            # stops at the bound rather than one whole ceiling-sleep beyond it.
+            time.sleep(min(backoff, max(0.0, budget_s - elapsed)))
+            backoff = min(backoff * 2, _REPLACE_BUDGET_MAX_BACKOFF_SECONDS)
+    try:
+        os.replace(str(src), str(dst))
+    except PermissionError:
+        logger.warning(
+            "atomic rename at %s still contended after %.2fs and %d attempts; giving up",
+            dst,
+            time.monotonic() - started,
+            attempts + 1,
+        )
+        raise
 
 
 #: ``fsync`` on a directory that the platform or filesystem simply cannot express.
@@ -1096,6 +1190,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    replace_budget_s: float | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1195,6 +1290,16 @@ def atomic_write(
     from *path*; only the directory it is resolved through is pinned. It is also
     REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
     file by name and so cannot address a descriptor-relative temp.
+
+    *replace_budget_s* is forwarded to the publishing rename
+    (:func:`publish_replacement` -> :func:`replace_with_retry`) on the by-name
+    route. ``None`` (default) keeps the count-based Windows retry every caller
+    had before; a value gives the rename an elapsed-time budget to survive a
+    held reader, which the transcript rewrites pass. It applies only to the
+    by-name route: a pinned-parent publish is ``renameat`` and does not go
+    through ``replace_with_retry``, and no transcript caller pins a parent, so
+    a budget alongside *parent_dir_fd* would silently do nothing -- it is
+    REFUSED there rather than ignored.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1220,6 +1325,16 @@ def atomic_write(
         raise ValueError(
             "restrict_to_owner cannot be combined with parent_dir_fd: the "
             "owner-only lockdown is applied to the staged file by name"
+        )
+    if replace_budget_s is not None and parent_dir_fd is not None:
+        # Refused rather than ignored. The budget rides the ``replace_with_retry``
+        # rename on the by-name route; a pinned-parent publish renames with
+        # ``renameat`` and never touches that helper, so honouring the budget
+        # there is impossible and silently dropping it would leave a caller
+        # believing the held-reader wait applies when it does not.
+        raise ValueError(
+            "replace_budget_s cannot be combined with parent_dir_fd: the retry "
+            "budget applies only to the by-name publishing rename"
         )
     if parent_dir_fd is not None and not pinned_parent_replace_supported():
         # Refused rather than degraded. The caller pinned a parent chain
@@ -1280,7 +1395,7 @@ def atomic_write(
         # removes the temp file. Unlinking a name publish_replacement already
         # removed is a no-op.
         try:
-            publish_replacement(tmp, path)
+            publish_replacement(tmp, path, budget_s=replace_budget_s)
         except BaseException:
             _unlink_temp(tmp, None)
             raise
@@ -1441,14 +1556,17 @@ def stage_replacement(path: Path | str, content: str | bytes, *, mode: int | Non
     )
 
 
-def publish_replacement(staged: str, path: Path | str) -> None:
+def publish_replacement(staged: str, path: Path | str, *, budget_s: float | None = None) -> None:
     """Rename a staged file over *path* (the retrying rename).
 
     ``atomic_write``'s by-name route publishes through here too. A failed rename
-    removes the staged file before raising.
+    removes the staged file before raising. *budget_s* is forwarded to
+    :func:`replace_with_retry`: unset keeps the count-based Windows retry, set
+    gives the rename the elapsed-time budget a transcript rewrite needs against a
+    held reader.
     """
     try:
-        replace_with_retry(staged, path)
+        replace_with_retry(staged, path, budget_s=budget_s)
     except BaseException:
         _unlink_temp(staged, None)
         raise

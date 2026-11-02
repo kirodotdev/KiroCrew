@@ -242,9 +242,9 @@ class TestReducedLockHold:
             )
             return staged
 
-        def recording_publish(staged, target):
+        def recording_publish(staged, target, *, budget_s=None):
             published.append(staged)
-            real_publish(staged, target)
+            real_publish(staged, target, budget_s=budget_s)
 
         monkeypatch.setattr(history_rewrite, "stage_replacement", stage_then_edit_in_place)
         monkeypatch.setattr(history_rewrite, "publish_replacement", recording_publish)
@@ -348,7 +348,7 @@ class TestReducedLockHold:
         before = path.read_bytes()
         handed: list[str] = []
 
-        def interrupted_publish(staged, target):
+        def interrupted_publish(staged, target, *, budget_s=None):
             handed.append(staged)
             raise KeyboardInterrupt
 
@@ -378,9 +378,9 @@ class TestReducedLockHold:
         real_publish = history_rewrite.publish_replacement
         handed: list[str] = []
 
-        def publish_then_interrupt(staged, target):
+        def publish_then_interrupt(staged, target, *, budget_s=None):
             handed.append(staged)
-            real_publish(staged, target)
+            real_publish(staged, target, budget_s=budget_s)
             raise KeyboardInterrupt
 
         monkeypatch.setattr(history_rewrite, "publish_replacement", publish_then_interrupt)
