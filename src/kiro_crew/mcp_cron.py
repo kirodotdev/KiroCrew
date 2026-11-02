@@ -41,6 +41,7 @@ from kiro_crew.cron import (
     get_local_tz,
     is_valid_skip_date,
     is_valid_timezone,
+    never_fires_warning,
     parse_time_string,
 )
 from kiro_crew.cron_script import (
@@ -82,6 +83,12 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger("kiro_crew.mcp_cron")
+
+
+def _never_fires_note(job: CronJob) -> str:
+    """A ` Warning: ...` suffix for a saved job whose cron matches no date, else ``""``."""
+    warning = never_fires_warning(job.schedule)
+    return f" Warning: {warning}." if warning else ""
 
 
 def _sub_floor_timeout_note(timeout_secs_val: object) -> str:
@@ -1056,6 +1063,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"Added job: {job.id} ({job.name}) [{sched_str}]. "
             f"Tell the user: scheduled for {sched_str}.{caveats}"
             + _sub_floor_timeout_note(timeout_secs_val)
+            + _never_fires_note(job)
         )
 
     if name == "cron_update":
@@ -1196,6 +1204,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
         if was_auto:
             note += _AUTO_APPROVAL_RESET_NOTE
+        note += _never_fires_note(updated)
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"
 
     if name == "cron_remove":

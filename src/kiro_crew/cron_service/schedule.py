@@ -28,7 +28,7 @@ try:
 except ImportError:
     Options = None  # type: ignore[assignment,misc]
     get_description = None  # type: ignore[assignment]
-from croniter import croniter  # type: ignore[import-untyped]
+from croniter import CroniterBadDateError, croniter  # type: ignore[import-untyped]
 
 from kiro_crew import platform_compat
 
@@ -92,6 +92,31 @@ def validate_cron_expr(expr: str) -> bool:
     # field; every other width croniter accepts either does (six fields) or
     # never fires once a minute at all.
     return len(parts) == 1 and expr.startswith("@")
+
+
+def never_fires_warning(schedule: CronSchedule) -> str:
+    """A one-line caveat for a cron schedule that matches no date, else ``""``.
+
+    :func:`validate_cron_expr` checks syntax only, so ``0 0 31 2 *`` (February
+    31st) saves: it is a valid expression whose next run croniter cannot find.
+    Such a job keeps saving -- a stored job with this schedule must still load,
+    edit and save -- and the add and update surfaces show this caveat beside
+    their success answer, so the caller learns the job never runs.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if schedule.kind != "cron" or not schedule.cron_expr:
+        return ""
+    try:
+        croniter(schedule.cron_expr, seams.datetime.now(timezone.utc)).get_next(float)
+    except CroniterBadDateError:
+        return (
+            f"cron expression {schedule.cron_expr!r} matches no calendar date, "
+            "so this job never runs; it is saved as given"
+        )
+    except Exception:
+        return ""
+    return ""
 
 
 def _humanize_cron(expr: str, tz_name: str = "") -> str:
@@ -595,6 +620,15 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
                 job.id,
             )
             return None
+    except CroniterBadDateError:
+        # An expression that matches no date (``0 0 31 2 *``): one plain line,
+        # since the traceback names croniter's internals and not the job's fault.
+        logger.warning(
+            "No next run for job %s: cron %r matches no calendar date",
+            job.id,
+            job.schedule.cron_expr,
+        )
+        return None
     except Exception:
         logger.warning("Failed to compute next run for job %s", job.id, exc_info=True)
         return None

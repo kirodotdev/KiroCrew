@@ -462,6 +462,12 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             "cron add success audit emit failed", exc_info=True
         )
     print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
+    # Read from its home, not bound here: ``cli_commands`` serves this module's
+    # names through a frozen import inventory.
+    from kiro_crew.cron_service.schedule import never_fires_warning
+
+    if never_fires := never_fires_warning(job.schedule):
+        print(f"Warning: {never_fires}", file=sys.stderr)
 
 
 def _cron(args: argparse.Namespace) -> None:
@@ -701,6 +707,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 resources=audit_resources,
             )
             print(f"Updated job: {updated.id} ({updated.name})")
+            from kiro_crew.cron_service.schedule import never_fires_warning
+
+            if never_fires := never_fires_warning(updated.schedule):
+                print(f"Warning: {never_fires}", file=sys.stderr)
         else:
 
             sel().log_api_access(
