@@ -75,8 +75,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     if remote_on:
         # Remote dispatch (preview): pull each open remote item's peer copy and file
         # what is new BEFORE the snapshot below, outside its lock (the pull is network).
-        from kiro_crew.dashboard.handlers import remote_ingest
+        from kiro_crew.dashboard.handlers import remote_ingest, remote_puller
 
+        remote_puller.ensure_running(request.app["state"])
         await remote_ingest.ingest_board(request.app["state"], key)
     # Under the board lock for the same reason the brief read is: a write's
     # cache commit and its record append are two steps, and a read between them

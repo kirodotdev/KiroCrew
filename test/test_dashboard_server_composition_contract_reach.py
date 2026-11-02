@@ -726,6 +726,7 @@ _DASHBOARD_HOOKS = {
         "_local_decision_model_shutdown",
         "_decision_http_shutdown",
         "_config_watch_shutdown",
+        "_stop_remote_puller",
         "_instances_shutdown",
         "_crew_log_drain",
         "_browser_install_shutdown",
@@ -823,10 +824,11 @@ _DASHBOARD_BOOT = tuple("""
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context _release_sleep_block
+    _stop_remote_puller
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
-    S:_prune_browser_snapshots_loop S:_stt_idle_sweep
+    S:_prune_browser_snapshots_loop S:_start_remote_puller S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant

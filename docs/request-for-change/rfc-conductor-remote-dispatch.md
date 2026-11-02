@@ -29,6 +29,10 @@ Non-goals, Failure, Migration and Open questions sections are revised. The
 [#17662](https://github.com/kirodotdev/KiroCrew/pull/17662) deleted; those
 references now point at what main serves today.
 
+**Revision 2026-11-01.** Owner decision: open question 1 is resolved as a hub
+background puller (§2 "Background pull"), shipped in the same PR as this
+amendment.
+
 ## Summary
 
 A conductor on this gateway can only dispatch workers onto this gateway. This
@@ -206,7 +210,7 @@ peer. The question is how the hub learns them.
 |---|---|---|
 | Tunnel direction | hub → peer, as today | needs peer → hub: a new transport |
 | Peer reach into hub | none | the peer holds a hub credential and a hub route |
-| Wakes | on the conductor's read (patrol cadence) | immediate |
+| Wakes | on the hub's next pull (background puller, 30 s; OQ 1) | immediate |
 | Hub down | nothing lost; the peer copy waits | reports fail or queue on the peer |
 
 **Recommend (a).** (b) breaks both the tunnel shape and §4's "no reach back".
@@ -231,6 +235,11 @@ How (a) works:
   nothing. From there `accept`, wakes from the crew log, and
   `work_ledger_rebuild` work as they do for a local report. A failed fetch keeps
   the last ingested state.
+- **Background pull.** The same pull also runs on the hub with no model turn,
+  every 30 s, for each ledger holding an open crew-bound item, so a remote report
+  wakes the conductor within one interval instead of at its next patrol (open
+  question 1). Runs never overlap; each board is cut off at 10 s and one
+  unreachable crew never stalls another.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
@@ -537,12 +546,19 @@ nothing that passes today.
 
 ## Open questions
 
-1. **Remote wakes.** Ingest-on-read means a remote report, `reply` included,
-   wakes nobody until the conductor's next patrol. The `reply` status (§3b)
-   closes the local half: a follow-up answer now wakes a local conductor. Is
-   patrol cadence enough for the remote half, or does a remote item need a
-   hub-side poller? Proposed: patrol cadence; add a poller only if a measured
-   gap shows up.
+1. **Remote wakes.** Resolved (owner decision, 2026-11-01): a hub background
+   puller. Ingest-on-read alone meant a remote report, `reply` included, woke
+   nobody until the conductor's next patrol turn, and the work-ledger probe,
+   which reads only the local ledger, could not see it. With
+   `work_ledger.remote_dispatch` on, the hub now runs the same pull with no model
+   turn every 30 s (`REMOTE_PULL_INTERVAL_SECS`) for each ledger holding an open
+   crew-bound item (`dashboard/handlers/remote_puller.py`). A pulled `done`,
+   `question`, `blocked` or `reply` is filed as an ordinary recorded report, so
+   it wakes the conductor through `conductor_wake` and the probe as a local one
+   does. The hub still pulls and the peer never connects back. The person-wait
+   hold applies to a remote item only while its last pull is fresh (connected,
+   slot list read, no error, under 90 s old); otherwise the patrol runs, as
+   before.
 2. **Folder on the peer.** Should `session_create(crew=)` accept `folder` and file
    the worker into a peer folder? Proposed: no in wave 1; the crew group already
    says where it is.

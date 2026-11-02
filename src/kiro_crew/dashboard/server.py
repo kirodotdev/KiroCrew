@@ -379,6 +379,8 @@ from kiro_crew.dashboard.server_runtime.security_middleware import (  # noqa: F4
 )
 from kiro_crew.dashboard.server_runtime.service_hooks import (  # noqa: F401
     _register_kiro_service_shutdown,
+    _start_remote_puller,
+    _stop_remote_puller,
     _wire_status_delta_sink,
 )
 from kiro_crew.dashboard.server_runtime.session_restore import (  # noqa: F401
@@ -1196,6 +1198,10 @@ async def start_dashboard(
         # Register the opt-in instances startup/cleanup hooks HERE, before
         # ``runner.setup()`` freezes the app's signal lists. See
         # ``_register_instances_hooks`` for why ordering matters.
+        # Remote dispatch (preview): stop the hub's background report puller on
+        # cleanup, before the instance tunnels and the crew-log drain it uses.
+        # Imports nothing here; the puller is started after bind, below.
+        app.on_cleanup.append(_stop_remote_puller)
         _register_instances_hooks(app, state, port)
         # Install cleanup stays first, before browser relay/session shutdown.
         _register_browser_install_cleanup(app, state)
@@ -1443,6 +1449,12 @@ async def start_dashboard(
     _stamp_task = asyncio.create_task(_refresh_meta_stamp())
     state._background_tasks.add(_stamp_task)
     _stamp_task.add_done_callback(state._background_tasks.discard)
+
+    # Remote dispatch (preview): the hub's background report puller. Post-bind and
+    # fire-and-forget; with work_ledger.remote_dispatch off it starts nothing.
+    _puller_task = asyncio.create_task(_start_remote_puller(state))
+    state._background_tasks.add(_puller_task)
+    _puller_task.add_done_callback(state._background_tasks.discard)
 
     # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
