@@ -474,6 +474,53 @@ describe('SessionAutomationPopover', () => {
     expect(await screen.findByText('Enter a supported pull request URL.')).toBeInTheDocument()
   })
 
+  it('edits a contributed-kind target without the built-in client parser', async () => {
+    // A monitor of a kind an edition registered at boot has no client-side
+    // target parser; its edited target must be sent trimmed for the backend's
+    // own validation, not refused client-side as an unsupported URL.
+    ;(api.monitorUpdate as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, monitor: {} })
+    const contributed: StructuredMonitor = {
+      ...activeMonitor,
+      monitorKind: 'salesforce_pull_request',
+      target: 'https://review.example.test/reviews/1',
+    }
+    renderPopover(contributed)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {
+      target: { value: '  https://review.example.test/reviews/2  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalledWith(
+      'monitor-1',
+      expect.objectContaining({ target: 'https://review.example.test/reviews/2' }),
+    ))
+    // The built-in "unsupported URL" refusal never fired for the contributed kind.
+    expect(screen.queryByText('Enter a supported pull request URL.')).not.toBeInTheDocument()
+  })
+
+  it('surfaces a backend refusal of a contributed-kind target through the error path', async () => {
+    ;(api.monitorUpdate as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(
+      400,
+      'Bad Request',
+      JSON.stringify({ code: 'invalid_pull_request_url', error: 'target is not allowed' }),
+    ))
+    const contributed: StructuredMonitor = {
+      ...activeMonitor,
+      monitorKind: 'salesforce_pull_request',
+      target: 'https://review.example.test/reviews/1',
+    }
+    renderPopover(contributed)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {
+      target: { value: 'https://review.example.test/not-a-review' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(api.monitorUpdate).toHaveBeenCalled())
+    expect(await screen.findByText('Enter a supported pull request URL.')).toBeInTheDocument()
+  })
+
   it.each(['', '0', '-1', '1.5', 'NaN'])('rejects %j as an unbounded cadence', async value => {
     renderPopover(null)
     fireEvent.change(screen.getByRole('textbox', { name: 'Pull request URL' }), {

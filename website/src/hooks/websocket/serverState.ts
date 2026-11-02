@@ -259,6 +259,12 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // another tab, which is how the update switches learn of it) was never
   // delivered either. Only observed readers refetch.
   queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // The runtime monitor contract is fetched once with no staleTime, so a
+  // gateway restart that registered a contributed monitor kind while the
+  // socket was down would otherwise never refresh: its monitors would read as
+  // blocked until the page reloads. Re-fetch it so the new vocabulary installs
+  // and the existing re-seed re-normalizes the affected records.
+  queryClient.invalidateQueries({ queryKey: ['monitor-contract'] })
   // `credential_redaction_changed` is pushed to CONNECTED owner sockets
   // with no replay, so a flip made from another window while this socket
   // was down never reached this document. Re-read the switch and, ONLY if

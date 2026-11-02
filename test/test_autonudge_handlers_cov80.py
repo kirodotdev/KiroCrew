@@ -1871,3 +1871,53 @@ async def test_session_monitor_read_structured_monitor_carries_null_autonudge(
     assert payload["monitor_id"] == loop.id
     assert payload["monitor"]["target"] == "https://github.com/acme/widgets/pull/7"
     assert payload["autonudge_loop"] is None
+
+
+# --- /api/monitor-contract --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_contract_returns_the_frontend_contract() -> None:
+    """The route hands back the backend's runtime contract verbatim."""
+    from kiro_crew.monitoring.models import monitor_frontend_contract
+
+    payload = _body(await h.api_monitor_contract(_mk("GET", "/api/monitor-contract")))
+
+    assert payload == monitor_frontend_contract()
+    # The built-in review kinds are always present.
+    assert "github_pull_request" in payload["pullRequestMonitorKinds"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_contract_names_a_contributed_kind() -> None:
+    """A kind an edition registered at boot appears in the served kind list."""
+    from kiro_crew.monitoring import plugins as plugins_module
+    from kiro_crew.monitoring import registry
+    from kiro_crew.monitoring.plugins import MonitorKindPlugin, register_monitor_kind
+    from kiro_crew.monitoring.registry import REVIEW_READY, MonitorKind
+
+    name = "example_runtime_kind"
+    plugins_before = dict(plugins_module._PLUGINS)
+    kinds_before = dict(registry._PLUGIN_KINDS)
+    try:
+        register_monitor_kind(
+            MonitorKindPlugin(
+                kind=MonitorKind(
+                    name=name,
+                    objectives=frozenset({REVIEW_READY}),
+                    publicly_armable=True,
+                    supports_shadow=False,
+                    subject_noun="code review",
+                    wake_fields=("state",),
+                ),
+                provider_factory=lambda: MagicMock(),
+                parse_target=lambda raw: raw,
+            )
+        )
+        payload = _body(await h.api_monitor_contract(_mk("GET", "/api/monitor-contract")))
+        assert name in payload["pullRequestMonitorKinds"]
+    finally:
+        plugins_module._PLUGINS.clear()
+        plugins_module._PLUGINS.update(plugins_before)
+        registry._PLUGIN_KINDS.clear()
+        registry._PLUGIN_KINDS.update(kinds_before)
