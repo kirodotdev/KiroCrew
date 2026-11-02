@@ -7,6 +7,7 @@ come from ``pod_helpers.py``.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -14,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from pod_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     NODE_BIN,
     _fake_node_toolchain,
@@ -785,3 +787,455 @@ class TestProvisionDependencyInstall:
         assert any("--group" in c for c in calls)  # attempted --group dev
         pip = str(prov.venv_bin_dir(co) / ("pip.exe" if platform_compat.IS_WINDOWS else "pip"))
         assert [pip, "install", "--editable", str(co)] in calls  # then fell back
+
+
+@pytest.mark.skipif(
+    prov.platform_compat.trusted_git_bin() is None,
+    reason="provenance checks need a trusted git",
+)
+class TestProvisionProvenance:
+    """Presence checks mean "present AND built from the artifact's current build
+    INPUT", not merely present and not keyed on HEAD.
+
+    Each build step captures its input's git oid (``pyproject.toml`` for the
+    venv, the ``website`` tree for node_modules and dist) before building and
+    stamps it on success; ``has_venv`` / ``has_dist`` / ``_has_node_modules``
+    compare that stamp to the input's current oid. A rebase/sync that changes an
+    input then reports its artifact stale; a commit that changes no input (a doc
+    edit) leaves every artifact current, so ``pod up`` is not forced into a
+    needless rebuild.
+    """
+
+    @staticmethod
+    def _git(repo: Path, *args: str) -> str:
+        """Run git in *repo* (never inheriting pytest's cwd) with a pinned
+        identity, so a commit works on a host with no global git config."""
+        git = prov.platform_compat.trusted_git_bin() or "git"
+        env = dict(os.environ)
+        env.update(
+            GIT_AUTHOR_NAME="t",
+            GIT_AUTHOR_EMAIL="t@e",
+            GIT_COMMITTER_NAME="t",
+            GIT_COMMITTER_EMAIL="t@e",
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_CONFIG_SYSTEM=os.devnull,
+        )
+        env.update(git_maintenance_off_entries(env))
+        out = prov.subprocess.run(
+            [git, "-C", str(repo), *args],
+            cwd=str(repo),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        return out.stdout.strip()
+
+    def _repo(self, tmp_path: Path) -> Path:
+        """A git checkout with a pyproject.toml and a website/ tree, so every
+        artifact has a real build input to resolve."""
+        co = tmp_path / "wt"
+        co.mkdir()
+        self._git(co, "init", "-q", "-b", "main")
+        (co / "pyproject.toml").write_text("[project]\nname='x'\n")
+        (co / "setup.cfg").write_text("[options]\ninstall_requires =\n")
+        (co / "website").mkdir()
+        (co / "website" / "package.json").write_text("{}")
+        (co / "website" / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (co / "docs").mkdir()
+        (co / "docs" / "readme.md").write_text("one")
+        self._git(co, "add", "-A")
+        self._git(co, "commit", "-qm", "one")
+        return co
+
+    def _commit(self, co: Path, rel: str, text: str) -> None:
+        (co / rel).parent.mkdir(parents=True, exist_ok=True)
+        (co / rel).write_text(text)
+        self._git(co, "add", "-A")
+        self._git(co, "commit", "-qm", f"touch {rel}")
+
+    @staticmethod
+    def _mk_venv(co: Path) -> None:
+        b = prov.venv_bin(co)
+        b.parent.mkdir(parents=True, exist_ok=True)
+        b.write_text("#!/bin/sh\n")
+        b.chmod(0o755)
+
+    @staticmethod
+    def _venv_input(co: Path) -> str | None:
+        """The composite venv stamp (pyproject.toml + setup.cfg oids), as
+        ensure_venv computes it — the venv's deps are dynamic and live in both."""
+        return prov._resolve_inputs(co, prov._ART_INPUTS[prov._ART_VENV])
+
+    @staticmethod
+    def _node_input(co: Path) -> str | None:
+        """The composite node_modules stamp (package-lock.json + package.json),
+        as ensure_node_modules computes it."""
+        return prov._resolve_inputs(co, prov._ART_INPUTS[prov._ART_NODE_MODULES])
+
+    def _stage_dist(self, co: Path, website_tree: str | None = None) -> None:
+        """Stage a dist carrying the build-id.json the vite build writes, so
+        has_dist reads the SAME fingerprint the real build produces. Defaults to
+        the checkout's current HEAD:website tree (a fresh build)."""
+        dist = prov.dist_dir(co)
+        dist.mkdir(parents=True, exist_ok=True)
+        if website_tree is None:
+            website_tree = prov._resolve_oid(co, "website") or ""
+        (dist / "build-id.json").write_text(
+            json.dumps({"buildId": "test", "websiteTree": website_tree})
+        )
+
+    # ---- the manifest lives in the git dir, never the working tree -----
+
+    def test_manifest_lives_in_git_dir_not_working_tree(self, tmp_path: Path) -> None:
+        co = self._repo(tmp_path)
+        prov._stamp_artifact(co, prov._ART_VENV, self._venv_input(co))
+        mpath = prov._manifest_path(co)
+        assert mpath is not None and mpath.exists()
+        # It is inside the git dir, so git status never reports it and a clean
+        # checkout stays clean after a provision (closes the pre-existing-worktree
+        # dirtying — no .gitignore rule needed).
+        git_dir = Path(self._git(co, "rev-parse", "--absolute-git-dir"))
+        assert git_dir in mpath.parents
+        assert self._git(co, "status", "--porcelain") == ""
+
+    # ---- keyed on the INPUT, not HEAD: a doc commit does not invalidate --
+
+    def test_doc_commit_does_not_invalidate_artifacts(self, tmp_path: Path) -> None:
+        """The First-Principles blocker: a commit touching neither pyproject.toml
+        nor website/ must leave venv and dist current — no needless rebuild."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        prov._stamp_artifact(co, prov._ART_VENV, self._venv_input(co))
+        self._stage_dist(co)
+        assert prov.has_venv(co) and prov.has_dist(co)
+
+        self._commit(co, "docs/readme.md", "two")  # HEAD moves, inputs do not
+        assert prov.has_venv(co) is True, "doc commit must not restale the venv"
+        assert prov.has_dist(co) is True, "doc commit must not restale the dist"
+
+    def test_venv_restales_on_pyproject_or_setup_cfg_change(self, tmp_path: Path) -> None:
+        """The venv's deps are dynamic: pyproject.toml declares them dynamic and
+        the real install_requires lives in setup.cfg, so BOTH are inputs and a
+        dependency bump in setup.cfg must restale the venv."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        prov._stamp_artifact(co, prov._ART_VENV, self._venv_input(co))
+        assert prov.has_venv(co) is True
+        # A website change does not touch the venv's input.
+        self._commit(co, "website/package.json", '{"v":1}')
+        assert prov.has_venv(co) is True
+        # A setup.cfg dependency bump restales it (the GPT finding).
+        self._commit(co, "setup.cfg", "[options]\ninstall_requires =\n    requests\n")
+        assert prov.has_venv(co) is False
+        # Re-stamp, then a pyproject change also restales it.
+        prov._stamp_artifact(co, prov._ART_VENV, self._venv_input(co))
+        assert prov.has_venv(co) is True
+        self._commit(co, "pyproject.toml", "[project]\nname='x'\nversion='2'\n")
+        assert prov.has_venv(co) is False
+
+    def test_dist_reads_the_vite_build_id_fingerprint(self, tmp_path: Path) -> None:
+        """has_dist compares the staged dist's build-id.json websiteTree (the
+        record every vite build — provision's AND the Dev Fleet sync's — writes)
+        to HEAD:website, not a second manifest key. No build-id → presence-only."""
+        co = self._repo(tmp_path)
+        prov.dist_dir(co).mkdir(parents=True)
+        assert prov.has_dist(co) is True, "no build-id → cannot verify → presence-only"
+        # A build-id for the current website tree reads current.
+        self._stage_dist(co)
+        assert prov.has_dist(co) is True
+        # A website change moves HEAD:website, so the staged build-id is now stale.
+        self._commit(co, "website/src.ts", "export const x = 1")
+        assert prov.has_dist(co) is False
+        # A dist freshly built for the NEW tree reads current again — the sync
+        # path's build-id.json is recognised with no manifest to update.
+        self._stage_dist(co)
+        assert prov.has_dist(co) is True
+
+    def test_dist_reads_its_stamp_through_the_bundle_guard_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """has_dist asks stale_bundle_guard.read_dist_tree for the worktree's own
+        dist, so the Fleet view and the startup guard share one stamp order."""
+        from kiro_crew.dashboard import stale_bundle_guard as guard
+
+        co = self._repo(tmp_path)
+        prov.dist_dir(co).mkdir(parents=True)
+        seen: list[Path | None] = []
+
+        def fake_reader(dist: Path | None = None) -> tuple[str, str] | None:
+            seen.append(dist)
+            return ("not-the-website-tree", "")
+
+        monkeypatch.setattr(guard, "read_dist_tree", fake_reader)
+        assert prov.has_dist(co) is False, "the guard reader's tree id decides staleness"
+        assert seen == [prov.dist_dir(co)]
+
+    def test_dist_falls_back_to_build_source_fingerprint(self, tmp_path: Path) -> None:
+        """A dist with no build-id.json (predates the vite plugin) is read from
+        kirocrew-build-source.txt, matching dashboard/stale_bundle_guard."""
+        co = self._repo(tmp_path)
+        dist = prov.dist_dir(co)
+        dist.mkdir(parents=True)
+        (dist / "kirocrew-build-source.txt").write_text(prov._resolve_oid(co, "website") or "")
+        assert prov.has_dist(co) is True
+        self._commit(co, "website/src.ts", "export const y = 2")
+        assert prov.has_dist(co) is False
+
+    def test_dist_pyproject_change_leaves_it_current(self, tmp_path: Path) -> None:
+        co = self._repo(tmp_path)
+        prov.dist_dir(co).mkdir(parents=True)
+        self._stage_dist(co)
+        self._commit(co, "pyproject.toml", "[project]\nname='x'\nversion='3'\n")
+        assert prov.has_dist(co) is True, "a pyproject change does not restale the dist"
+
+    # ---- the stamped oid is the PRE-build input, not completion-time HEAD -
+
+    def test_stamp_records_the_passed_input_not_current_head(self, tmp_path: Path) -> None:
+        """A rebase landing during the build must not certify the artifact: the
+        stamp is the input captured before the build, so a later input oid still
+        reads stale."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        before = self._venv_input(co)
+        # Simulate a concurrent rebase changing the input mid-build, then stamp
+        # with the pre-build oid (what ensure_venv passes).
+        self._commit(co, "pyproject.toml", "[project]\nname='x'\nversion='9'\n")
+        prov._stamp_artifact(co, prov._ART_VENV, before)
+        assert prov.has_venv(co) is False, "stamped the old input → correctly stale now"
+
+    # ---- build steps capture and stamp the input end to end -------------
+
+    def test_ensure_venv_stamps_pyproject_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = self._repo(tmp_path)
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            if cmd[1:3] == ["-m", "venv"]:
+                self._mk_venv(co)
+            return 0
+
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: None)
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_venv(co) is True
+        assert prov._read_provenance(co)[prov._ART_VENV] == self._venv_input(co)
+        assert prov.has_venv(co) is True
+
+    def test_ensure_venv_uv_path_does_not_fall_through_to_pip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F2: _ensure_venv_uv returns presence, not provenance, so a successful
+        uv build on a git checkout is NOT repeated through pip."""
+        co = self._repo(tmp_path)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            calls.append(cmd)
+            if cmd[:2] == ["/opt/bin/uv", "venv"]:
+                self._mk_venv(co)
+            return 0
+
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: "/opt/bin/uv")
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_venv(co) is True
+        assert not any(Path(c[0]).name in ("python3.12", "pip") for c in calls), (
+            "the pip path must not run after a successful uv build",
+            calls,
+        )
+        assert prov._read_provenance(co)[prov._ART_VENV] == self._venv_input(co)
+
+    def test_ensure_venv_revalidates_after_a_concurrent_input_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If a rebase changes setup.cfg DURING the build, ensure_venv must report
+        False (has_venv), not a bare True — otherwise the caller boots a pod on a
+        venv already known stale. The fake build commits a setup.cfg change to
+        simulate the concurrent rebase."""
+        co = self._repo(tmp_path)
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            if cmd[:2] == ["/opt/bin/uv", "venv"]:
+                self._mk_venv(co)
+                # A concurrent rebase lands mid-build, moving the venv input.
+                self._commit(co, "setup.cfg", "[options]\ninstall_requires =\n    flask\n")
+            return 0
+
+        monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
+        monkeypatch.setattr(prov, "_find_uv", lambda: "/opt/bin/uv")
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.ensure_venv(co) is False, "a mid-build input change must report stale"
+
+    def test_build_dist_leaves_dist_current_via_build_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """build_dist does not write a manifest dist key — the vite build writes
+        dist/build-id.json, which has_dist reads. The fake build emits one, and
+        copytree stages it, so has_dist is True afterward."""
+        co = self._repo(tmp_path)
+        (co / "website" / "node_modules" / ".bin").mkdir(parents=True)
+        (co / "website" / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+        prov._stamp_artifact(
+            co, prov._ART_NODE_MODULES, prov._resolve_oid(co, "website/package-lock.json")
+        )
+        tree = prov._resolve_oid(co, "website")
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            d = co / "website" / "dist"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "index.html").write_text("<html>")
+            (d / "build-id.json").write_text(json.dumps({"buildId": "t", "websiteTree": tree}))
+            return 0
+
+        monkeypatch.setattr(prov, "_run", fake_run)
+        assert prov.build_dist(co) is True
+        # No manifest dist key exists; has_dist is satisfied by the staged build-id.
+        assert "dist" not in prov._read_provenance(co)
+        assert prov.has_dist(co) is True
+
+    def test_node_modules_rebase_gap_closes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rebase pulling a lockfile bump changes package-lock.json while
+        leaving node_modules in place; the install must re-run rather than skip.
+        A website source edit that leaves the manifests alone must NOT reinstall."""
+        co = self._repo(tmp_path)
+        website = co / "website"
+        (website / "node_modules" / ".bin").mkdir(parents=True)
+        (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+        prov._stamp_artifact(co, prov._ART_NODE_MODULES, self._node_input(co))
+        assert prov._has_node_modules(website) is True
+
+        # A source-only edit leaves both manifests' oids unchanged → deps current.
+        self._commit(co, "website/src.ts", "export const z = 3")
+        assert prov._has_node_modules(website) is True
+
+        # A lockfile bump invalidates them.
+        self._commit(co, "website/package-lock.json", '{"lockfileVersion": 3, "x": 1}')
+        assert prov._has_node_modules(website) is False
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd, env=None: calls.append(cmd) or 0)
+        assert prov.ensure_node_modules(website) is True
+        assert _npm("ci") in calls, "stale node_modules must trigger a reinstall"
+        assert prov._read_provenance(co)[prov._ART_NODE_MODULES] == self._node_input(co)
+
+    def test_node_modules_restales_on_package_json_without_lockfile(self, tmp_path: Path) -> None:
+        """F2: the npm install --no-package-lock fallback resolves package.json
+        directly, so a dependency added to package.json WITHOUT a lockfile bump
+        must restale the deps — package.json is in the input set."""
+        co = self._repo(tmp_path)
+        website = co / "website"
+        (website / "node_modules" / ".bin").mkdir(parents=True)
+        (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+        prov._stamp_artifact(co, prov._ART_NODE_MODULES, self._node_input(co))
+        assert prov._has_node_modules(website) is True
+        self._commit(co, "website/package.json", '{"dependencies": {"left-pad": "1.0.0"}}')
+        assert prov._has_node_modules(website) is False
+
+    def test_interrupted_rebuild_clears_the_stamp_before_mutating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F4: an install interrupted after the first mutating step must not leave
+        the prior stamp certifying the half-overwritten tree. ensure_node_modules
+        clears the stamp BEFORE npm runs, so a run that raises mid-install leaves
+        no stamp — a retry sees not-provisioned and repairs rather than skipping."""
+        co = self._repo(tmp_path)
+        website = co / "website"
+        (website / "node_modules" / ".bin").mkdir(parents=True)
+        (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+        # Stamp as if a PRIOR provision at an earlier input succeeded.
+        self._commit(co, "website/package-lock.json", '{"lockfileVersion": 3, "old": 1}')
+        prov._stamp_artifact(co, prov._ART_NODE_MODULES, self._node_input(co))
+        # Move to a new lockfile (the interrupted B build's input).
+        self._commit(co, "website/package-lock.json", '{"lockfileVersion": 3, "new": 1}')
+
+        def interrupt(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            raise KeyboardInterrupt("install interrupted after tsc present")
+
+        monkeypatch.setattr(prov, "_run", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            prov.ensure_node_modules(website)
+        # The old stamp was cleared before npm ran, so nothing certifies the tree.
+        assert prov._read_provenance(co).get(prov._ART_NODE_MODULES) is None
+        assert prov._has_node_modules(website) is False
+
+    # ---- fallbacks that must not regress --------------------------------
+
+    def test_non_git_checkout_falls_back_to_presence_only(self, tmp_path: Path) -> None:
+        """A tarball install / test fixture has no input oid to compare, so the
+        probe reports exactly what is on disk rather than reading as unbuilt."""
+        co = _ready_worktree(tmp_path, "nogit", venv=True, dist=True)
+        assert prov._resolve_oid(co, "pyproject.toml") is None
+        assert prov.has_venv(co) is True
+        assert prov.has_dist(co) is True
+
+    def test_untrusted_git_makes_input_unresolvable_presence_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F1: git is resolved through the trusted-bin seam, never the inherited
+        PATH. With no trusted git, the input is unresolvable and the probe never
+        spawns a (possibly planted) git — it defers to presence-only."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        monkeypatch.setattr(prov.platform_compat, "trusted_git_bin", lambda: None)
+        assert prov._git_exe() == ""
+        assert prov._resolve_oid(co, "pyproject.toml") is None
+        assert prov._manifest_path(co) is None
+        assert prov.has_venv(co) is True  # present, provenance unknowable → presence-only
+
+    def test_absent_stamp_in_a_git_tree_reads_as_not_provisioned(self, tmp_path: Path) -> None:
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        assert prov._read_provenance(co) == {}
+        assert prov.has_venv(co) is False
+
+    def test_corrupt_manifest_reads_as_absent_not_raise(self, tmp_path: Path) -> None:
+        co = self._repo(tmp_path)
+        mpath = prov._manifest_path(co)
+        assert mpath is not None
+        mpath.parent.mkdir(parents=True, exist_ok=True)
+        mpath.write_text("{not json")
+        assert prov._read_provenance(co) == {}
+        self._mk_venv(co)
+        assert prov.has_venv(co) is False
+
+    def test_unreadable_manifest_is_not_rewritten_by_a_stamp_or_clear(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read error other than a missing file abandons the rewrite, so a
+        transient EACCES/EIO cannot publish an empty manifest over the other
+        artifacts' stamps."""
+        co = self._repo(tmp_path)
+        mpath = prov._manifest_path(co)
+        assert mpath is not None
+        mpath.parent.mkdir(parents=True, exist_ok=True)
+        before = json.dumps({prov._ART_VENV: "a", prov._ART_NODE_MODULES: "b"}, sort_keys=True)
+        mpath.write_text(before, encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def flaky_read_text(self: Path, *args, **kwargs) -> str:
+            if self == mpath:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+        prov._stamp_artifact(co, prov._ART_VENV, "c")
+        prov._clear_artifact(co, prov._ART_NODE_MODULES)
+        monkeypatch.setattr(Path, "read_text", real_read_text)
+        assert mpath.read_text(encoding="utf-8") == before
+
+    def test_one_artifact_stamp_does_not_vouch_for_another(self, tmp_path: Path) -> None:
+        """Per-artifact keys in the manifest: a venv stamped at its input does not
+        make node_modules (unstamped) read as current."""
+        co = self._repo(tmp_path)
+        self._mk_venv(co)
+        website = co / "website"
+        (website / "node_modules" / ".bin").mkdir(parents=True)
+        (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
+        prov._stamp_artifact(co, prov._ART_VENV, self._venv_input(co))
+        assert prov.has_venv(co) is True
+        assert prov._has_node_modules(website) is False, "node_modules has no stamp of its own"
