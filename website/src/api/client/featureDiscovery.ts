@@ -135,7 +135,8 @@ export interface MilestoneFeatureItem {
   id: string
   state: 'done' | 'open' | 'skipped' | 'unavailable'
   done_at: number | null
-  source: 'event' | 'backfill' | 'manual' | null
+  /** `arrived`: a Try today "Try it" reached the row's page. */
+  source: 'event' | 'backfill' | 'manual' | 'arrived' | null
   video: FeatureVideo | null
   starter: MilestoneStarter | null
   doc?: string
@@ -163,7 +164,9 @@ export interface Milestones {
   notices?: string[]
 }
 
-export type MilestoneEventAction = 'starter_clicked' | 'notice_shown' | 'panel_opened'
+/** `starter_arrived`: a Try today "Try it" landed on its page. The server
+ *  counts it only after that row's own `starter_clicked`. */
+export type MilestoneEventAction = 'starter_clicked' | 'starter_arrived' | 'notice_shown' | 'panel_opened'
 
 /** Where an event happened, as the server's metric labels it. */
 export type MilestoneSurface = 'empty_state' | 'panel'
