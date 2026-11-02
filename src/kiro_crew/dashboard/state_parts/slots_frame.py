@@ -896,6 +896,8 @@ def serialize_slots(
     # After the parents, which the worker walk reads: every row says whether it is a
     # Crew Mode root, and each session a root dispatched names that root, so the
     # person's own list can leave workers out and the side panel can list them.
+    # The same pass stamps ``mate_root`` / ``mate_dispatched_by`` on each session a
+    # mate thread dispatched (inert: no list or client reads them yet).
     from kiro_crew import crew_mode
 
     try:
