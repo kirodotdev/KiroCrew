@@ -11,19 +11,13 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.slack.code_channels import settings as cc_settings
+from kiro_crew.slack import features
 from kiro_crew.slack.code_channels.client import CodeChannelsClient, parse_channel_info
 from kiro_crew.slack.code_channels.models import (
-    CANVAS_ALREADY_EXISTS,
-    MAX_VIEW_CONTENT_BYTES,
-    AgentCommand,
+    MAX_TITLE_CHARS,
     CodeChannelApiError,
     CodeChannelRequestError,
-    ContextBarItem,
     CreateRequest,
-    SetCommandsRequest,
-    SetPropertiesRequest,
-    SetViewRequest,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -33,7 +27,7 @@ pytestmark = pytest.mark.asyncio
 def _fresh_capability():
     # A recorded feature_disabled below reaches the process-wide latch.
     yield
-    cc_settings.reset_capability()
+    features.reset_capabilities()
 
 
 class SlackApiErrorLike(Exception):
@@ -67,64 +61,27 @@ def _client(responses: dict[str, Any] | None = None) -> tuple[CodeChannelsClient
 # ── Request validation (nothing is sent) ─────────────────────────────────────
 
 
-def _bar(n: int) -> tuple[ContextBarItem, ...]:
-    return tuple(ContextBarItem(key=f"k{i}", label=f"L{i}") for i in range(n))
-
-
 @pytest.mark.parametrize(
     "request_obj",
     [
-        SetPropertiesRequest("C1", context_bar_items=_bar(6)),
-        SetPropertiesRequest(
-            "C1", context_bar_items=(ContextBarItem("k", "a"), ContextBarItem("k", "b"))
-        ),
-        SetPropertiesRequest(
-            "C1", context_bar_items=(ContextBarItem("k", "a", url="https://x", item_type="action"),)
-        ),
-        SetPropertiesRequest("C1", context_bar_items=(ContextBarItem("k", "a", url="http://x"),)),
-        SetPropertiesRequest("C1", context_bar_items=(ContextBarItem("k", "a", icon="rocket"),)),
-        SetPropertiesRequest("C1"),
-        SetCommandsRequest("C1", tuple(AgentCommand(f"c{i}", "d") for i in range(11))),
-        SetCommandsRequest("C1", (AgentCommand("/run", "d"),)),
-        SetCommandsRequest("C1", (AgentCommand("a", "d"), AgentCommand("a", "e"))),
-        SetViewRequest("C1", type="html", view_key="v", content="x" * (MAX_VIEW_CONTENT_BYTES + 1)),
-        SetViewRequest("C1", type="html", content="<p>"),
-        SetViewRequest("C1", type="diff"),
-        SetViewRequest("C1", type="canvas", view_key="v"),
-        SetViewRequest("C1", type="pull_request", pr_url="http://github.com/x"),
         CreateRequest(name="t", session_id=""),
         CreateRequest(name="t", session_id="s", origin_channel_id="C1"),
+        CreateRequest(name="", session_id="s"),
+        CreateRequest(name="x" * (MAX_TITLE_CHARS + 1), session_id="s"),
     ],
 )
 async def test_invalid_requests_are_refused_before_sending(request_obj: Any) -> None:
     client, api = _client()
-    method = {
-        SetPropertiesRequest: client.set_properties,
-        SetCommandsRequest: client.set_commands,
-        SetViewRequest: client.set_view,
-        CreateRequest: client.create,
-    }[type(request_obj)]
     with pytest.raises(CodeChannelRequestError):
-        await method(request_obj)
+        await client.create(request_obj)
     assert api.calls == []
 
 
-async def test_view_content_limit_counts_bytes_not_characters() -> None:
-    client, api = _client({"agents.conversations.setView": {"ok": True, "view_id": "V1"}})
-    # 500,001 two-byte characters: under 1M characters, over 1M bytes.
+async def test_a_blank_channel_id_is_refused_before_sending() -> None:
+    client, api = _client()
     with pytest.raises(CodeChannelRequestError):
-        await client.set_view(SetViewRequest("C1", type="diff", content="é" * 500_001))
+        await client.channel_info("")
     assert api.calls == []
-
-
-async def test_five_context_bar_items_and_ten_commands_are_accepted() -> None:
-    client, api = _client({"agents.conversations.setCommands": {"ok": True, "command_count": 10}})
-    await client.set_properties(SetPropertiesRequest("C1", context_bar_items=_bar(5)))
-    count = await client.set_commands(
-        SetCommandsRequest("C1", tuple(AgentCommand(f"c{i}", "d") for i in range(10)))
-    )
-    assert count == 10
-    assert len(api.calls[0][1]["code_channel"]["context_bar_items"]) == 5
 
 
 async def test_create_body_inherits_privacy_by_omitting_is_private() -> None:
@@ -151,37 +108,6 @@ async def test_create_body_inherits_privacy_by_omitting_is_private() -> None:
     assert "is_private" not in body
 
 
-async def test_diff_view_never_sends_a_view_key() -> None:
-    client, api = _client(
-        {"agents.conversations.setView": {"ok": True, "view_id": "V1", "content_version": 2}}
-    )
-    view = await client.set_view(
-        SetViewRequest("C1", type="diff", view_key="ignored", content="--- a")
-    )
-    assert view.view_id == "V1" and view.content_version == 2
-    assert "view_key" not in api.calls[0][1]
-
-
-async def test_channel_status_has_no_thread_ts() -> None:
-    client, api = _client()
-    await client.set_channel_status("C1", "processing")
-    assert api.calls == [
-        ("agents.sessions.setStatus", {"channel_id": "C1", "status": "processing"})
-    ]
-    with pytest.raises(CodeChannelRequestError):
-        await client.set_channel_status("C1", "busy")
-
-
-async def test_remove_view_needs_exactly_one_selector() -> None:
-    client, api = _client()
-    with pytest.raises(CodeChannelRequestError):
-        await client.remove_view("C1")
-    with pytest.raises(CodeChannelRequestError):
-        await client.remove_view("C1", view_key="a", view_id="b")
-    await client.remove_view("C1", view_id="V1")
-    assert api.calls == [("agents.conversations.removeView", {"channel_id": "C1", "view_id": "V1"})]
-
-
 # ── Responses and errors ─────────────────────────────────────────────────────
 
 
@@ -198,27 +124,11 @@ async def test_unavailable_codes_are_typed(code: str) -> None:
 
 
 async def test_ok_false_without_an_exception_still_raises() -> None:
-    client, _ = _client(
-        {"agents.conversations.archive": {"ok": False, "error": "not_agent_channel"}}
-    )
+    client, _ = _client({"conversations.info": {"ok": False, "error": "channel_not_found"}})
     with pytest.raises(CodeChannelApiError) as info:
-        await client.archive("C1")
-    assert info.value.code == "not_agent_channel"
+        await client.channel_info("C1")
+    assert info.value.code == "channel_not_found"
     assert info.value.unavailable is False
-
-
-async def test_canvas_already_exists_is_final_and_sent_once() -> None:
-    client, api = _client(
-        {
-            "conversations.canvases.create": SlackApiErrorLike(
-                {"ok": False, "error": CANVAS_ALREADY_EXISTS}
-            )
-        }
-    )
-    with pytest.raises(CodeChannelApiError) as info:
-        await client.create_canvas("C1", "# Plan")
-    assert info.value.code == CANVAS_ALREADY_EXISTS
-    assert len(api.calls) == 1
 
 
 async def test_transport_failure_on_a_write_may_have_applied() -> None:
@@ -231,42 +141,21 @@ async def test_transport_failure_on_a_write_may_have_applied() -> None:
 
 
 async def test_transport_failure_on_a_read_wrote_nothing() -> None:
-    client, _ = _client({"agents.conversations.listViews": TimeoutError()})
+    client, _ = _client({"conversations.info": TimeoutError()})
     with pytest.raises(CodeChannelApiError) as info:
-        await client.list_views("C1")
+        await client.channel_info("C1")
     assert info.value.maybe_applied is False
 
 
 async def test_tokens_in_errors_are_redacted_from_logs(caplog: pytest.LogCaptureFixture) -> None:
     # Assembled at runtime so no committed line is token-shaped.
     token = "-".join(("xox" + "b", "1" * 12, "2" * 12, "abcdefghijklmnopqrstuvwx"))
-    client, _ = _client({"agents.conversations.setView": RuntimeError(f"bad auth {token}")})
+    client, _ = _client({"agents.conversations.create": RuntimeError(f"bad auth {token}")})
     with caplog.at_level(logging.DEBUG, logger="kiro_crew.slack.code_channels.client"):
         with pytest.raises(CodeChannelApiError):
-            await client.set_view(SetViewRequest("C1", type="diff", content="x"))
+            await client.create(CreateRequest(name="t", session_id="s"))
     assert token not in caplog.text
     assert "did not complete" in caplog.text
-
-
-async def test_list_views_parses_recorded_payload() -> None:
-    recorded = {
-        "ok": True,
-        "views": [
-            {
-                "view_id": "V1",
-                "view_key": "plan.html",
-                "file_id": "F1",
-                "label": "Plan",
-                "content_version": 3,
-            },
-            {"view_id": "V2", "type": "diff"},
-            "junk",
-        ],
-    }
-    client, _ = _client({"agents.conversations.listViews": recorded})
-    views = await client.list_views("C1")
-    assert [v.view_id for v in views] == ["V1", "V2"]
-    assert views[0].label == "Plan" and views[0].content_version == 3
 
 
 # ── conversations.info recognition payloads ──────────────────────────────────

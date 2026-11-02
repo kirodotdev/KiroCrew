@@ -16,7 +16,7 @@ import pytest
 from slack_code_channels_helpers import OWNER, SELF_USER, Env, make_env, mention
 
 from kiro_crew.config.loader import KiroCrewConfig, MessagingConfig
-from kiro_crew.slack.code_channels import settings as cc_settings
+from kiro_crew.slack import features
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.events import SeenCache, _route_message
@@ -102,9 +102,9 @@ async def test_toggle_off_mention_takes_the_normal_path(env: Env) -> None:
 @pytest.mark.parametrize("why", ["scope_missing", "latched"])
 async def test_toggle_on_but_unavailable_is_identical_to_main(env: Env, why: str) -> None:
     if why == "scope_missing":
-        cc_settings.note_granted_scopes(["chat:write"])
+        features.record_granted_scopes(["chat:write"])
     else:
-        cc_settings.report_slack_refusal("feature_disabled", method="agents.conversations.create")
+        features.latch_unavailable(features.CODE_CHANNELS, "feature_disabled")
     _bind(env)
     handle = await _route(env, _plain("C0CODE"), is_mention=False)
     handle.assert_not_called()  # mention-mode channel, no mention: ignored as on main
@@ -143,3 +143,85 @@ async def test_one_line_question_is_answered_in_place(env: Env) -> None:
     )
     handle.assert_called_once()
     assert env.routed == []
+
+
+# ── An unmentioned follow-up in a thread the bot already answers ─────────────
+#
+# Build 9: "how you doing" (a mention) was answered in place, then "grab an
+# issue from the backlog" in the same thread, with no mention, ran in place in
+# the thread session instead of reaching the classifier.
+
+ROOT_TS = "1700000000.000100"
+FOLLOW_UP = "grab an issue from the backlog and fix it"
+
+
+def _follow_up(ts: str = "1700000000.000200", text: str = FOLLOW_UP) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "user": OWNER,
+        "channel": "C0ORIGIN",
+        "ts": ts,
+        "thread_ts": ROOT_TS,
+        "text": text,
+        "team": "T1",
+    }
+
+
+async def _route_in_bot_thread(env: Env, event: dict[str, Any]) -> MagicMock:
+    """Route *event* with the bot holding a session for the ROOT_TS thread."""
+    orch = _orch(env)
+    orch.sessions.has_session = MagicMock(side_effect=lambda ts: ts == ROOT_TS)
+    orch.sessions.get_session_for_thread = MagicMock(return_value=None)
+    with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as handle:
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            await _route_message(orch, event, SeenCache(), is_mention=False)
+            await asyncio.sleep(0)
+            await asyncio.gather(*list(orch._handler_tasks), return_exceptions=True)
+    return handle
+
+
+async def test_unmentioned_follow_up_in_a_bot_thread_is_classified(env: Env) -> None:
+    env.decision = RouteDecision("stay")
+    handle = await _route_in_bot_thread(env, _follow_up())
+    assert env.classified == [FOLLOW_UP]
+    # A stay decision answers it in place in the thread session, as before.
+    handle.assert_called_once()
+    assert env.routed == []
+    assert "agents.conversations.create" not in env.api.methods()
+
+
+async def test_follow_up_that_opens_a_code_channel_is_not_answered_in_the_thread(
+    env: Env,
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    event = _follow_up()
+    handle = await _route_in_bot_thread(env, event)
+    handle.assert_not_called()  # the old thread session stays silent
+    [(channel, seed, sender)] = env.routed
+    assert channel == "C0NEW" and seed.startswith(FOLLOW_UP) and sender == OWNER
+    [body] = [b for m, b in env.api.calls if m == "agents.conversations.create"]
+    assert body["origin_message_ts"] == event["ts"]  # session id from the follow-up's ts
+    assert ("C0ORIGIN", "Opened <#C0NEW> for this. I'll work there.", ROOT_TS) in env.slack.posts
+    binding = env.store.get_binding("C0NEW")
+    assert binding is not None and binding.origin_thread_ts == ROOT_TS
+
+
+async def test_a_thread_that_opened_a_channel_is_not_classified_again(env: Env) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    await _route_in_bot_thread(env, _follow_up())
+    assert len(env.classified) == 1
+    handle = await _route_in_bot_thread(env, _follow_up(ts="1700000000.000300", text="and v2"))
+    assert len(env.classified) == 1  # no second model call for this thread
+    handle.assert_called_once()  # answered in the thread as before
+    assert len([m for m, _ in env.api.calls if m == "agents.conversations.create"]) == 1
+
+
+async def test_the_opening_follow_up_redelivered_after_a_restart_is_not_answered_in_place(
+    env: Env,
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    await _route_in_bot_thread(env, _follow_up())
+    # A fresh dedup cache: Slack re-delivers the same event after a restart.
+    handle = await _route_in_bot_thread(env, _follow_up())
+    handle.assert_not_called()
+    assert len(env.classified) == 1 and len(env.routed) == 1

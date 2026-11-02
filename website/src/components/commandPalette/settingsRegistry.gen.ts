@@ -240,6 +240,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.code-channels-slack",
+    "label": "Code channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
+    "labelSuffix": "Slack",
+    "description": "On: adds 5 permissions to your Slack app so the agent can open a code channel per coding task. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channels"
+  },
+  {
     "id": "channels.connect-new-sessions-to-slack-automatically-slack",
     "label": "Connect new sessions to Slack automatically (Slack)",
     "labelKey": "pages.settings.slackPanel.auto_link_sessions",

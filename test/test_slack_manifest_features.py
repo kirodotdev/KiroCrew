@@ -23,16 +23,17 @@ from kiro_crew.security import scan_exfiltration_urls
 from kiro_crew.slack.features import manifest_features
 
 COMBOS = slack_manifest.feature_sets()
+_CC = frozenset({slack_manifest.CODE_CHANNELS})
 _AS = frozenset({slack_manifest.AGENT_SESSIONS})
 #: A switch registered only for the test, the way a later PR registers one: an
 #: entry in ``FEATURE_SCOPES`` plus its ``#@<name>`` lines in the template.
 _FAKE = "fake_switch"
 _FAKE_LINES = {
-    "      - assistant:write  #@agent_sessions\n": (
-        "      - assistant:write  #@agent_sessions\n" "      - fake:write  #@fake_switch\n"
+    "      - code_channels:manage  #@code_channels\n": (
+        "      - code_channels:manage  #@code_channels\n" "      - fake:write  #@fake_switch\n"
     ),
-    "      - agent_session_title_changed  #@agent_sessions\n": (
-        "      - agent_session_title_changed  #@agent_sessions\n"
+    "      - agent_session_stopped  #@agent_sessions|code_channels\n": (
+        "      - agent_session_stopped  #@agent_sessions|code_channels|fake_switch\n"
         "      - fake_event  #@fake_switch\n"
     ),
 }
@@ -67,9 +68,12 @@ class TestRendering:
 
     def test_features_are_the_registry(self) -> None:
         assert slack_manifest.FEATURES == tuple(slack_manifest.FEATURE_SCOPES)
-        assert slack_manifest.FEATURES == (slack_manifest.AGENT_SESSIONS,)
+        assert slack_manifest.FEATURES == (
+            slack_manifest.AGENT_SESSIONS,
+            slack_manifest.CODE_CHANNELS,
+        )
         # agent_view is one-way, so only the Agent sessions switch declares it.
-        assert "agent_view" not in slack_manifest.render("x")
+        assert "agent_view" not in slack_manifest.render("x", features=_CC)
         assert "agent_view" in slack_manifest.render("x", features=_AS)
 
     @pytest.mark.parametrize("combo", COMBOS)
@@ -83,7 +87,7 @@ class TestRendering:
         # The stripped payload with no switch must not carry any Slack Code line:
         # an existing install's deep link stays the manifest it was created from.
         text = slack_manifest.stripped_template()
-        for marker in ("agent_view", "assistant:write", "agent_session"):
+        for marker in ("agent_view", "code_channels", "assistant:write", "agent_session"):
             assert marker not in text
         # Byte-pinned: the digest of the payload before the manifest became
         # toggle-aware. A change here changes every default install's deep link.
@@ -93,6 +97,28 @@ class TestRendering:
     def test_unknown_feature_names_are_ignored(self) -> None:
         assert slack_manifest.render("x", features={"bogus"}) == slack_manifest.render("x")
 
+    def test_requirements_and_diff(self) -> None:
+        change = slack_manifest.diff_requirements(
+            slack_manifest.requirements(frozenset()), slack_manifest.requirements(_CC)
+        )
+        assert change.added_features == ("code_channels",)
+        assert change.added_scopes == (
+            "canvases:write",
+            "channels:write.invites",
+            "chat:write.customize",
+            "code_channels:manage",
+            "groups:write.invites",
+        )
+        assert change.added_events == ("agent_session_stopped",)
+        assert change.removed_scopes == () and not change.empty
+        back = slack_manifest.diff_requirements(
+            slack_manifest.requirements(_CC), slack_manifest.requirements(frozenset())
+        )
+        assert back.removed_features == ("code_channels",)
+        assert slack_manifest.diff_requirements(
+            slack_manifest.requirements(_CC), slack_manifest.requirements(_CC)
+        ).empty
+
     def test_agent_sessions_requirements(self) -> None:
         """The agent view, its one scope and the two session events, nothing more."""
         change = slack_manifest.diff_requirements(
@@ -101,16 +127,12 @@ class TestRendering:
         assert change.added_features == ("agent_view",)
         assert change.added_scopes == ("assistant:write",)
         assert change.added_events == ("agent_session_stopped", "agent_session_title_changed")
-        assert change.removed_scopes == () and not change.empty
-        assert "app_context_changed" not in slack_manifest.render("x", features=_AS)
-        back = slack_manifest.diff_requirements(
-            slack_manifest.requirements(_AS), slack_manifest.requirements(frozenset())
+        both = slack_manifest.diff_requirements(
+            slack_manifest.requirements(_CC), slack_manifest.requirements(_CC | _AS)
         )
-        assert back.removed_features == ("agent_view",)
-        assert back.removed_scopes == ("assistant:write",)
-        assert slack_manifest.diff_requirements(
-            slack_manifest.requirements(_AS), slack_manifest.requirements(_AS)
-        ).empty
+        # Code channels already subscribe the Stop event; the title event is new.
+        assert both.added_events == ("agent_session_title_changed",)
+        assert "app_context_changed" not in slack_manifest.render("x", features=_AS)
 
     @pytest.mark.parametrize(
         "app_id,ok", [("A0123ABCD", True), ("a0123abcd", False), ("A1/../x", False), ("", False)]
@@ -127,14 +149,14 @@ class TestEmittersAgree:
         "slack,expected",
         [
             ({}, frozenset()),
-            ({"agent_sessions": True}, _AS),
-            ({"agent_sessions": "true"}, frozenset()),
+            ({"code_channels": True}, _CC),
+            ({"code_channels": "true"}, frozenset()),
         ],
     )
     def test_config_to_features(self, slack: dict, expected: frozenset[str]) -> None:
         assert manifest_features(_cfg(**slack)) == expected
 
-    @pytest.mark.parametrize("slack", [{}, {"agent_sessions": True}])
+    @pytest.mark.parametrize("slack", [{}, {"code_channels": True}])
     def test_cli_and_endpoint_render_the_same_bytes(
         self, slack: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -169,25 +191,25 @@ class TestExfilExemption:
 
         real = slack_manifest.stripped_template
 
-        def broken_for_agent_sessions(features: frozenset[str] = frozenset()) -> str:
-            if slack_manifest.AGENT_SESSIONS in features:
+        def broken_for_code_channels(features: frozenset[str] = frozenset()) -> str:
+            if slack_manifest.CODE_CHANNELS in features:
                 raise OSError("variant unreadable")
             return real(features)
 
         monkeypatch.setattr(exfil, "_slack_manifest_re_slot", [])
-        monkeypatch.setattr(slack_manifest, "stripped_template", broken_for_agent_sessions)
+        monkeypatch.setattr(slack_manifest, "stripped_template", broken_for_code_channels)
         # The stock link keeps its exemption; the one variant that did not
         # build is refused rather than accepted by a looser pattern.
         assert scan_exfiltration_urls(slack_manifest.deep_link("someone", frozenset())) == []
         monkeypatch.setattr(slack_manifest, "stripped_template", real)
-        assert scan_exfiltration_urls(slack_manifest.deep_link("someone", _AS)) != []
+        assert scan_exfiltration_urls(slack_manifest.deep_link("someone", _CC)) != []
 
     def test_a_mixed_combination_is_redacted(self) -> None:
-        # The agent-view feature block WITHOUT its scope: no emitter renders
+        # The code-channels feature block WITHOUT its scope: no emitter renders
         # this, so the validator must not accept it even though every line is
         # legitimate.
-        on = slack_manifest.stripped_template(_AS).splitlines()
-        tampered = "\n".join(ln for ln in on if "assistant:write" not in ln) + "\n"
+        on = slack_manifest.stripped_template(_CC).splitlines()
+        tampered = "\n".join(ln for ln in on if "code_channels:manage" not in ln) + "\n"
         payload = tampered.replace(slack_manifest.ALIAS_PLACEHOLDER, "someone").replace(
             slack_manifest.COMMAND_PLACEHOLDER, slack_manifest.slash_command("someone")
         )
@@ -195,8 +217,8 @@ class TestExfilExemption:
         assert scan_exfiltration_urls(url) != []
 
     def test_a_gate_marker_smuggled_into_the_payload_is_redacted(self) -> None:
-        payload = slack_manifest.render("someone", strip_comments=True, features=_AS).replace(
-            "assistant:write", "assistant:write  #@agent_sessions"
+        payload = slack_manifest.render("someone", strip_comments=True, features=_CC).replace(
+            "code_channels:manage", "code_channels:manage  #@code_channels"
         )
         url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
         assert scan_exfiltration_urls(url) != []
@@ -231,7 +253,7 @@ class TestExistingAppKeepsItsCommand:
     ) -> None:
         import kiro_crew.dashboard.handlers.messaging as mod
 
-        cfg = _cfg(command=saved, agent_sessions=True)
+        cfg = _cfg(command=saved, code_channels=True)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
         resp = asyncio.run(
             mod.api_slack_manifest(make_mocked_request("GET", "/api/slack/manifest"))
@@ -241,7 +263,7 @@ class TestExistingAppKeepsItsCommand:
         assert parsed["display_information"]["name"] == name
         assert parsed["features"]["slash_commands"][0]["command"] == slash
         assert body["command"] == slash.lstrip("/")
-        assert "agent_view" in parsed["features"]
+        assert "code_channels" in parsed["features"]
         # The create-app deep link stays one the exfil validator exempts.
         assert scan_exfiltration_urls(body["create_url"]) == []
 
@@ -252,10 +274,19 @@ class TestRegisteringASwitch:
 
     def test_render_and_combinations_follow(self, fake_switch: str) -> None:
         on = frozenset({fake_switch})
-        assert slack_manifest.feature_sets() == (frozenset(), _AS, on, _AS | on)
+        assert slack_manifest.feature_sets() == (
+            frozenset(),
+            _AS,
+            _CC,
+            on,
+            _AS | _CC,
+            _AS | on,
+            _CC | on,
+            _AS | _CC | on,
+        )
         text = slack_manifest.render("x", features=on)
         assert "fake:write" in text and "fake_event" in text and "#@" not in text
-        assert "fake:write" not in slack_manifest.render("x", features=_AS)
+        assert "fake:write" not in slack_manifest.render("x", features=_CC)
 
     def test_requirements_follow(self, fake_switch: str) -> None:
         change = slack_manifest.diff_requirements(
@@ -263,7 +294,7 @@ class TestRegisteringASwitch:
             slack_manifest.requirements(frozenset({fake_switch})),
         )
         assert change.added_scopes == ("fake:write",)
-        assert change.added_events == ("fake_event",)
+        assert change.added_events == ("agent_session_stopped", "fake_event")
 
     def test_the_exfil_exemption_follows(self, fake_switch: str) -> None:
         for combo in slack_manifest.feature_sets():
@@ -274,11 +305,13 @@ class TestRegisteringASwitch:
 
         from kiro_crew.dashboard import slack_code_settings as scs
 
-        cfg = SimpleNamespace(slack=SimpleNamespace(agent_sessions=False, fake_switch=True))
+        cfg = SimpleNamespace(
+            slack=SimpleNamespace(agent_sessions=False, code_channels=False, fake_switch=True)
+        )
         assert manifest_features(cfg) == {fake_switch}
         changes = scs.feature_changes()
-        assert set(changes) == {"agent_sessions", fake_switch}
+        assert set(changes) == {"agent_sessions", "code_channels", fake_switch}
         assert changes[fake_switch]["added_scopes"] == ["fake:write"]
-        view = scs.code_settings_view(cfg)
-        assert view[fake_switch] is True and view["agent_sessions"] is False
+        view = asyncio.run(scs.code_settings_view(cfg, None))
+        assert view[fake_switch] is True and view["code_channels"] is False
         assert view[f"{fake_switch}_capability"]["scope"] == "fake:write"

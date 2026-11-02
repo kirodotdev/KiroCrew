@@ -194,8 +194,16 @@ class AgentSessionStatus:
         notify: Callable[[], Callable[..., Any] | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        own_latch: bool = False,
     ) -> None:
         self._client = client
+        #: Whether a capability refusal latches only THIS driver (its status
+        #: writes stop; no feature changes) instead of thread agent sessions.
+        #: Code channels set it: their status is decoration on a turn that runs
+        #: either way, so a refusal must neither turn thread sessions off nor
+        #: turn the code-channel feature off.
+        self._own_latch = own_latch
+        self._latched_code = ""
         #: Whether the Slack setting is on (and the install can run it), read on
         #: every call so a toggle applied live takes effect on the next status.
         self._gate = gate
@@ -215,7 +223,10 @@ class AgentSessionStatus:
         try:
             from kiro_crew.slack import features
 
-            if features.AGENT_SESSIONS in features.latched():
+            if self._own_latch:
+                if self._latched_code:
+                    return False
+            elif features.AGENT_SESSIONS in features.latched():
                 return False
             return self._gate() is True
         except Exception:
@@ -244,8 +255,8 @@ class AgentSessionStatus:
     async def set_status(self, channel: str, thread_ts: str | None, status: str) -> bool:
         """Move one session to *status*; False when the old path should run instead.
 
-        *thread_ts* ``None`` addresses a whole-channel session (none is opened
-        yet), where Slack refuses a ``thread_ts``. Never raises.
+        *thread_ts* ``None`` addresses a whole-channel session (a code channel),
+        where Slack refuses a ``thread_ts``. Never raises.
         """
         if not channel or status not in SESSION_STATUSES:
             return False
@@ -458,7 +469,7 @@ class AgentSessionStatus:
 
     def _arm_keepalive(self, key: tuple[str, str | None], record: _Record) -> None:
         if record.turn is None:
-            # Not inside a Slack turn (a mirror, say): nothing tells
+            # Not inside a Slack turn (a code-channel status, a mirror): nothing tells
             # the keepalive when the work ends, so Slack's own timeout bounds it.
             return
         if record.keepalive is not None and not record.keepalive.done():
@@ -582,14 +593,20 @@ class AgentSessionStatus:
         return True
 
     def _latch(self, code: str) -> bool:
-        """Latch agent sessions off on a capability refusal; False for any other code.
+        """Latch agent sessions (or only this driver) off on a capability refusal; False otherwise.
 
         The shared latch (``features.latch_unavailable``) logs one line, pushes the
         one dashboard notification and shows on the settings page.
         """
         from kiro_crew.slack import features
 
-        if not features.latch_unavailable(features.AGENT_SESSIONS, code):
+        if self._own_latch:
+            if code not in features.LATCH_ERRORS:
+                return False
+            if not self._latched_code:
+                logger.warning("code channel status writes stopped: Slack answered %s", code)
+            self._latched_code = code
+        elif not features.latch_unavailable(features.AGENT_SESSIONS, code):
             return False
         # The latch blocks only NEW native working and title writes (``active``
         # reads False). Every record stays: a thread this process left working or
@@ -659,7 +676,8 @@ def driver_of(slack: Any) -> AgentSessionStatus | None:
 async def set_session_status(slack: Any, channel: str, thread_ts: str | None, status: str) -> bool:
     """Move a session to *status* when agent sessions are live; never raises.
 
-    The renderer's helper for the approval pause. False when the
+    The helper the code-channel runtime uses for a whole-channel session
+    (``thread_ts=None``), and the renderer for the approval pause. False when the
     feature is off, disabled for the process, or Slack refused the call.
     """
     driver = driver_of(slack)

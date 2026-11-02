@@ -21,6 +21,7 @@ from kiro_crew.slack.code_channels.classifier import (
     clean_title,
     parse_answer,
 )
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.mark.parametrize(
@@ -41,6 +42,9 @@ from kiro_crew.slack.code_channels.classifier import (
         ('["code_channel"]', "stay", ""),
         ("", "stay", ""),
         ('{"route":"code_channel","title":"' + "x" * 600 + '"}', "stay", ""),  # too long
+        ('{"route":"code_channel","title":true}', "stay", ""),  # non-string title
+        ('{"route":"code_channel","title":42}', "stay", ""),
+        ('{"route":"code_channel","title":["Fix it"]}', "stay", ""),
     ],
 )
 def test_parse_answer_is_strict(answer: str, route: str, title: str) -> None:
@@ -96,6 +100,9 @@ async def test_classify_routes_on_a_clean_answer(monkeypatch: pytest.MonkeyPatch
     assert calls[0]["sel_source"] == "slack_code_channel_router"
     assert calls[0]["max_output_bytes"] is not None
     assert calls[0]["start_priority"].value == "fg"
+    # The latency ceiling on an in-place mention: 12 s, then STAY.
+    assert classifier.CLASSIFY_TIMEOUT_SECS == 12.0
+    assert calls[0]["timeout"] == classifier.CLASSIFY_TIMEOUT_SECS
 
 
 @pytest.mark.asyncio
@@ -113,11 +120,11 @@ async def test_classify_timeout_stays_and_does_not_cancel_the_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = asyncio.Event()
-    finished: list[bool] = []
+    finished = asyncio.Event()
 
     async def slow(*_a: Any, **_k: Any) -> str:
         await release.wait()
-        finished.append(True)
+        finished.set()
         return '{"route":"code_channel","title":"late"}'
 
     monkeypatch.setattr(classifier, "run_bg_oneliner", slow)
@@ -125,11 +132,7 @@ async def test_classify_timeout_stays_and_does_not_cancel_the_call(
     assert decision.route == "stay" and decision.reason == "timeout"
     # The background acquisition is left to finish, never cancelled.
     release.set()
-    for _ in range(20):
-        if finished:
-            break
-        await asyncio.sleep(0.01)
-    assert finished == [True]
+    await await_until(finished, what="the background classifier call")
 
 
 @pytest.mark.asyncio
