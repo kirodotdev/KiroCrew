@@ -209,9 +209,10 @@ intersection of the two rulesets, a leaf or member only the subordinate sets is 
 (absent posture permits, so adding one restricts), and a leaf only the authority sets
 is kept. Over a profile this is a no-op, because a profile cannot carry posture.
 Everything outside `controls` stays the
-**authority's** — identity, signature state, tier and the `updates` *commands* — so a
-subordinate document cannot relabel whose ceiling this is or supply a command the
-gateway would run unsandboxed. The `updates` pins that are themselves restrictions
+**authority's** — identity, signature state, tier, the `updates` *commands* and
+`updates.manual_check_uses_operator_git_config` — so a subordinate document cannot
+relabel whose ceiling this is, supply a command the gateway would run unsandboxed,
+or widen what a person's update check reads. The `updates` pins that are themselves restrictions
 fold instead (`_intersect_update_pins`): `updates.source` is an allowlist,
 `updates.min_version` a floor and `updates.unattended_apply` a switch whose `false`
 restricts, so a subordinate that sets one the authority left empty narrows the ceiling
@@ -412,6 +413,16 @@ every wheel apply checks the pin again under the update lock before downloading
   installed while the update waited still decides. A build below `min_version`
   still takes its mandatory update, because the floor is the stronger pin. A
   string such as `"false"` fails the load rather than reading as on.
+- **`manual_check_uses_operator_git_config`** — a JSON boolean; absent or `null`
+  reads `false`. `true` lets the owner's **Check for updates** click on this
+  governed install fetch with the operator's own global git config (credential
+  helper, ssh command, proxy), as their Update already does, so a private remote
+  that signs in through a helper can be checked. `false` keeps that click on the
+  isolated `git_command_env()`. A standalone install needs no opt-in, and the
+  background check is isolated on every install (see [cli](cli.md), *Dashboard
+  Self-Update*). The `source` pin still holds for that fetch: a remote it does
+  not permit gets the isolated fetch instead. It widens, so it is authority-only
+  when tiers compose. Any other value fails the load.
 
 The bullets above name every key `updates` accepts (`UpdatePins.from_dict`). Any
 other key, or a value of the wrong type, **fails closed** (`_reject_unknown_keys`); what
@@ -4231,7 +4242,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `require_policy_signature` / `trust_keys` / `trust_public_keys`, and
   `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
-  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`) called by
+  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`,
+  `manual_check_operator_transport`) called by
   the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
   `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).

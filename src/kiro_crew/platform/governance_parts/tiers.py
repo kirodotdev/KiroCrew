@@ -223,9 +223,11 @@ def _intersect_ceilings(
       chose, so a lower tier supplying one redirects nothing; ``compose_tier_ladder``
       lets the first declared value through.
     * **Absence means the fail-closed floor** -- ``fallback_profile``, ``tier``,
-      identity, signature state, and the update *commands* (``check_command``,
+      identity, signature state, the update *commands* (``check_command``,
       ``apply_command``, ``platform_commands``: a command runs unsandboxed as the
-      gateway, so a lower tier supplying one is an escalation, not a restriction).
+      gateway, so a lower tier supplying one is an escalation, not a restriction),
+      and ``updates.manual_check_uses_operator_git_config`` (an opt-in that widens
+      what a person's update check may read).
       Authority-only, never ``authority.x or subordinate.x``.  For
       ``fallback_profile`` specifically: an authority that declared none means an
       unusable profile file denies its whole surface, and a subordinate supplying a
@@ -286,6 +288,8 @@ def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> Up
     none (:meth:`UpdatePins.meets_min_version`), so it yields to a parseable one.
     ``unattended_apply`` is a restriction too: ``true`` is the permissive value an
     absent key also reads as, so either tier's ``false`` stands.
+    ``manual_check_uses_operator_git_config`` widens, so ``replace(authority, ...)``
+    keeps the authority's value and a subordinate cannot supply it.
     """
     source = authority.source or subordinate.source
     # A channel is a value, not an allowlist: the authority's stands, and a

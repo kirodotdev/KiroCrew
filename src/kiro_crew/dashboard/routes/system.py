@@ -60,6 +60,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/notifications/push/subscribe", handlers.api_push_subscribe)
     app.router.add_post("/api/notifications/push/unsubscribe", handlers.api_push_unsubscribe)
     app.router.add_get("/api/update/check", handlers.api_update_check)
+    # The owner's "Check for updates" click: may sign in with their own git
+    # config, which the GET's isolated check never reads.
+    app.router.add_post("/api/update/check", handlers.api_update_check_now)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)

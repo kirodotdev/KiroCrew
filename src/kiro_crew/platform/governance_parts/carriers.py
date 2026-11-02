@@ -156,6 +156,14 @@ class UpdatePins:
     # A build below ``min_version`` still takes its mandatory update. True (the
     # default, and what an absent key means) keeps today's behaviour.
     unattended_apply: bool = True
+    # True lets a person's "Check for updates" on a governed install fetch with
+    # the operator's own git config (credential helper, ssh command, proxy), as
+    # their Update already does. False (the default, and what an absent key
+    # means) keeps that check on the isolated git env. A standalone install needs
+    # no opt-in; the background check stays isolated everywhere. Widening, so it
+    # is authority-only when tiers compose. Read through
+    # ``update_governance.manual_check_operator_transport``.
+    manual_check_uses_operator_git_config: bool = False
 
     def permits_source(self, url: str) -> bool:
         """Does *url* satisfy the source pin? An empty pin permits anything.
@@ -209,6 +217,7 @@ class UpdatePins:
                 "apply_command",
                 "platform_commands",
                 "unattended_apply",
+                "manual_check_uses_operator_git_config",
             },
             "updates",
         )
@@ -222,6 +231,13 @@ class UpdatePins:
         # policy that plainly meant to turn them off. Fail closed instead.
         if unattended is not None and not isinstance(unattended, bool):
             raise PlatformCompositionError("updates.unattended_apply must be true or false")
+        operator_git = d.get("manual_check_uses_operator_git_config")
+        # Only a JSON boolean is an admin's opt-in; a string or number fails the
+        # load rather than guessing which way the ceiling should read.
+        if operator_git is not None and not isinstance(operator_git, bool):
+            raise PlatformCompositionError(
+                "updates.manual_check_uses_operator_git_config must be true or false"
+            )
         raw_platform = d.get("platform_commands")
         platform_commands: dict[str, dict[str, str]] = {}
         if raw_platform is not None:
@@ -267,6 +283,7 @@ class UpdatePins:
             apply_command=str(d.get("apply_command") or "").strip(),
             platform_commands=platform_commands,
             unattended_apply=unattended is not False,
+            manual_check_uses_operator_git_config=operator_git is True,
         )
 
 

@@ -88,6 +88,11 @@ def _prepare_isolated_fetch(
     """
     from kiro_crew import agent_scratch
 
+    # Resolved under the isolated env even when the caller's fetch reads the
+    # operator's global config: git rewrites the URL it is handed by that
+    # config's `url.<base>.insteadOf` once more, so a URL already rewritten
+    # under the same config would be rewritten twice. The repository's own
+    # rewrites are refused before any fetch (`repo_exec_config_reason`).
     url = resolve_remote_url(proj, fetch_env=git_command_env(), remote=remote)
     if not url:
         logger.warning("Update fetch: no usable URL for remote %s", remote)

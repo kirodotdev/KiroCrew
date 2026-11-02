@@ -10,7 +10,14 @@ import type { ClientTransport } from './transport'
 export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTransport) {
   const lifecycle = {
     // Update
-    checkUpdate: () => fetch('/api/update/check').then(j) as Promise<UpdateCheckResult>,
+    /**
+     * Run the update check. `manual` is a person's "Check for updates" click: it
+     * POSTs, and the gateway may then fetch a git checkout's upstream with the
+     * owner's own git config (their credential helper). Every other caller GETs
+     * the isolated check.
+     */
+    checkUpdate: (opts?: { manual?: boolean }) =>
+      (opts?.manual ? post('/api/update/check') : fetch('/api/update/check')).then(j) as Promise<UpdateCheckResult>,
     changelog: () => fetch('/api/changelog').then(j),
     releases: () => fetch('/api/releases').then(j),
     applyUpdate: () => post('/api/update').then(j),
