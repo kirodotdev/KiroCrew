@@ -3,7 +3,7 @@
 Three callers need the same bytes and MUST not disagree about them:
 
 * ``cli_setup`` (``kirocrew manifest``) prints the manifest or the deep link,
-* the dashboard's ``GET /api/slack/manifest`` serves both to Settings → Slack,
+* the dashboard's ``GET /api/slack/manifest`` serves both to Settings → Messaging Channels → Slack,
 * ``security._kirocrew_slack_app_link_alias`` decides whether a deep link is
   ours by rebuilding the expected payload and comparing.
 
