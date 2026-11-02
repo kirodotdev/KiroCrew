@@ -36,6 +36,7 @@ from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
     AcpRuntimeDead,
@@ -256,7 +257,7 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     """Validate and deduplicate one MCP OAuth notification."""
     params = msg.params if isinstance(msg.params, dict) else {}
     server_name = str(params.get("serverName") or params.get("name") or "")
-    oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+    oauth_url = with_google_offline_access(str(params.get("oauthUrl") or params.get("url") or ""))
     if not _is_safe_oauth_url(oauth_url):
         if oauth_url:
             logger.warning(

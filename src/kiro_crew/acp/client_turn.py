@@ -54,6 +54,7 @@ from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_o
 from kiro_crew.acp.client_turn_control import format_command_result
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.transport_errors import (
     AcpError,
@@ -1336,7 +1337,9 @@ async def _dispatch_events(
         elif action == "mcp_oauth_request":
             params = msg.params or {}
             server_name = str(params.get("serverName") or params.get("name") or "")
-            oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+            oauth_url = with_google_offline_access(
+                str(params.get("oauthUrl") or params.get("url") or "")
+            )
             # Reject unsafe-scheme URLs *before* recording dedupe so a later
             # safe retry for the same server still gets through.
             if not _is_safe_oauth_url(oauth_url):
