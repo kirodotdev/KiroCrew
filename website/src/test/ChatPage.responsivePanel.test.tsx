@@ -274,6 +274,22 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(screen.getByRole('tooltip')).toHaveTextContent('Open activity panel')
   })
 
+  it('the toggle\'s tip does not come back stale after a click opens the panel and the panel closes again', async () => {
+    const { store } = renderWithSlot()
+    const btn = await screen.findByLabelText('Open activity panel')
+    fireEvent.mouseEnter(btn)
+    await screen.findByRole('tooltip')
+    // The click opens the panel, which takes the toggle away under the
+    // pointer: no mouseleave ever reaches it.
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    await waitFor(() => expect(screen.queryByLabelText('Open activity panel')).toBeNull())
+    // The side-panel chord closes it; the toggle returns with no tip up.
+    act(() => { window.dispatchEvent(new CustomEvent('toggle-activity-panel')) })
+    await screen.findByLabelText('Open activity panel')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   it('stays live in the 768-880 band that used to disable it, and opens beside the chat', async () => {
     const { store } = renderWithSlot()
     await screen.findByLabelText('Open activity panel')
