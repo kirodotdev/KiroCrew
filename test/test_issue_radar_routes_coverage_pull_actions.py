@@ -657,6 +657,37 @@ class TestPullsBulk(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["number"] for r in body["failed"]], [8])
         self.assertIn("head branch moved", body["failed"][0]["error"])
 
+    async def test_a_head_read_that_fails_keeps_its_own_reason(self):
+        # The check could not READ #8's head, which is a different answer from "the
+        # head moved": a refresh fixes neither a timeout nor a refused read, so the row
+        # must carry the provider's reason instead of telling the user to re-review.
+        for exc in (
+            gh.GhCliError("timed out reading the pull request"),
+            gh.GhPermissionError("this token cannot read the pull request"),
+        ):
+            with self.subTest(type(exc).__name__):
+
+                def _detail(owner, repo, number, *, _exc=exc, **kwargs):
+                    if number == 8:
+                        raise _exc
+                    return {"head_sha": SHA}
+
+                with (
+                    _connected(),
+                    _writable(),
+                    mock.patch.object(gh, "get_pr_detail", side_effect=_detail),
+                    mock.patch.object(gh, "submit_pr_review", return_value={"id": 1}) as review,
+                    mock.patch.object(store, "drop_pr_detail_cache"),
+                ):
+                    body = _body(
+                        await self._call(
+                            self._base(action="approve", head_shas={"7": SHA, "8": SHA})
+                        )
+                    )
+                self.assertEqual([r["number"] for r in body["applied"]], [7])
+                self.assertEqual(body["failed"], [{"number": 8, "error": str(exc)}])
+                self.assertEqual(review.call_count, 1)
+
     async def test_a_permission_refusal_is_a_per_row_failure_not_a_dead_batch(self):
         def _state(owner, repo, number, state, **kwargs):
             if number == 7:
