@@ -8,7 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity, remember_tool_input
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
     open_construct_at_end,
@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.wakatime.heartbeats import is_coding_event
 
@@ -413,6 +414,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             turn._pending_tool_ids.pop(event.tool_call_id, None)
         else:
             turn._pending_tool_ids[event.tool_call_id] = _post_identity
+        remember_tool_input(turn._pending_tool_inputs, event, scrub=redact_via_context)
         # The claim key binds the TOOL to its arguments, so only a call
         # that resolves to a directive tool records one: trusted
         # _meta.kiro identity first, else kiro-agent's own
@@ -554,6 +556,8 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    # A backend whose call frame streams empty arguments sends them here.
+    remember_tool_input(turn._pending_tool_inputs, event, scrub=redact_via_context)
     if event.is_shell and event.tool_call_id and len(_shell_tool_calls) < _MAX_TCID_SOURCES:
         _shell_tool_calls.add(event.tool_call_id)
     # claude-agent-acp emits an initial `tool_call` with empty

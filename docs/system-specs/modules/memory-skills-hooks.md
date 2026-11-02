@@ -6337,6 +6337,11 @@ a hook is therefore **not portable across platforms**. `ScriptHookStore.fire` al
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+A dashboard or subagent `PostToolUse` carries the call's `tool_input`: the
+arguments its `PreToolUse` parsed or, for a file edit whose `tool_input` is the
+approval card's diff, its arguments with credentials redacted
+(`spec_hooks.remember_tool_input`). A call that carried no arguments gets none.
+
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
 `assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller

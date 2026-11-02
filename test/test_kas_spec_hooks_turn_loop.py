@@ -38,12 +38,15 @@ from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.hooks import ScriptHookResult, ScriptHookStore
-from kiro_crew.providers.base import LLMEvent
+from kiro_crew.platform.context import redact_via_context
+from kiro_crew.providers.base import EVENT_TOOL_CALL_UPDATE, LLMEvent
 
 _AGENT = "kas-hooked"
 
 #: The ``tool_response.output`` each spec hook was handed, in run order.
 _OUTPUTS: list = []
+#: The ``tool_input`` each spec hook was handed (``None`` when absent), in run order.
+_INPUTS: list = []
 
 
 @pytest.fixture(autouse=True)
@@ -59,11 +62,13 @@ def fired(tmp_path, monkeypatch) -> list[tuple[str, str]]:
     monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
     seen: list[tuple[str, str]] = []
     _OUTPUTS.clear()
+    _INPUTS.clear()
 
     async def run(hook, context="", hook_event=None, **_kwargs):
         if hook.id.startswith("spec:"):
             seen.append((hook.event, hook.command))
             _OUTPUTS.append(((hook_event or {}).get("tool_response") or {}).get("output"))
+            _INPUTS.append((hook_event or {}).get("tool_input"))
         return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event)
 
     monkeypatch.setattr(hooks_mod, "run_script_hook", run)
@@ -309,3 +314,142 @@ async def test_a_post_tool_use_matcher_meets_an_auto_approved_shell_call(tmp_pat
     _set_stream(client, _shell_call(with_request=False))
     await _drive(state, slot)
     assert [cmd for _, cmd in fired] == ["post"]
+
+
+@pytest.mark.asyncio
+async def test_post_tool_use_gets_the_tool_input_its_request_carried(tmp_path, fired):
+    """A hook that acts on the file a call touched needs the call's arguments:
+    PostToolUse is handed the ``tool_input`` its PreToolUse sibling got."""
+    _write_spec(
+        tmp_path,
+        {
+            "preToolUse": [{"matcher": "fs_write", "command": "pre"}],
+            "postToolUse": [{"matcher": "fs_write", "command": "post"}],
+        },
+    )
+    state, client, slot = _kas_turn(tmp_path, is_new=False)
+    _set_stream(
+        client,
+        [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="Write notes", tool_call_id="tc-1"),
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="Write notes",
+                tool_input=json.dumps({"command": "create", "path": "notes.md"}),
+                request_id="req-cov-1",
+                tool_call_id="tc-1",
+                harness_tool_id="fs_write",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", tool_output="ok", tool_final=True
+            ),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+            _complete(),
+        ],
+    )
+    state.push_slots_update.side_effect = lambda: _answer_card(slot, "approved")
+    await _drive(state, slot)
+    assert [cmd for _, cmd in fired] == ["pre", "post"]
+    assert _INPUTS == [{"command": "create", "path": "notes.md"}] * 2
+
+
+@pytest.mark.asyncio
+async def test_post_tool_use_gets_the_tool_input_of_an_auto_approved_call(tmp_path, fired):
+    """No permission request: the arguments come from the call's own frame."""
+    _write_spec(tmp_path, {"postToolUse": [{"matcher": "execute_bash", "command": "post"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False)
+    events = _shell_call(with_request=False)
+    events[0] = LLMEvent(
+        kind=EVENT_TOOL_CALL,
+        title="List the files",
+        tool_call_id="tc-1",
+        tool_kind="execute",
+        is_shell=True,
+        tool_input=json.dumps({"command": "ls"}),
+    )
+    _set_stream(client, events)
+    await _drive(state, slot)
+    assert [cmd for _, cmd in fired] == ["post"]
+    assert _INPUTS == [{"command": "ls"}]
+
+
+@pytest.mark.asyncio
+async def test_post_tool_use_gets_the_tool_input_a_call_update_supplied(tmp_path, fired):
+    """A backend whose call frame streams empty arguments sends them on a
+    later ``tool_call_update``; PostToolUse still gets them."""
+    _write_spec(tmp_path, {"postToolUse": [{"matcher": "execute_bash", "command": "post"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False)
+    events = _shell_call(with_request=False)
+    events.insert(
+        1,
+        LLMEvent(
+            kind=EVENT_TOOL_CALL_UPDATE,
+            title="List the files",
+            tool_call_id="tc-1",
+            tool_kind="execute",
+            is_shell=True,
+            tool_input=json.dumps({"command": "ls -la"}),
+        ),
+    )
+    _set_stream(client, events)
+    await _drive(state, slot)
+    assert [cmd for _, cmd in fired] == ["post"]
+    assert _INPUTS == [{"command": "ls -la"}]
+
+
+@pytest.mark.asyncio
+async def test_post_tool_use_has_no_tool_input_when_the_call_carried_none(tmp_path, fired):
+    _write_spec(tmp_path, {"postToolUse": [{"matcher": "execute_bash", "command": "post"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False)
+    _set_stream(client, _shell_call(with_request=False))
+    await _drive(state, slot)
+    assert _INPUTS == [None]
+
+
+@pytest.mark.parametrize(
+    ("raw", "parsed"),
+    [
+        ('{"path": "a.md"}', {"path": "a.md"}),
+        ("", None),
+        ("not json", None),
+        ('["a.md"]', None),
+        (None, None),
+    ],
+)
+def test_hook_tool_input_parses_only_a_json_object(raw, parsed):
+    assert spec_hooks.hook_tool_input(raw) == parsed
+
+
+def test_an_edits_tool_input_comes_from_its_redacted_arguments():
+    """An edit's ``tool_input`` is the diff drawn for its approval card, so the
+    hook gets the arguments it was drawn from, with credentials redacted."""
+    from types import SimpleNamespace
+
+    secret = "AKIA" + "IOSFODNN7EXAMPLE"
+    store: dict = {}
+    spec_hooks.remember_tool_input(
+        store,
+        SimpleNamespace(
+            tool_call_id="tc-1",
+            tool_input="--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1 @@\n+hi\n",
+            raw_tool_params={"command": "create", "path": "notes.md", "file_text": secret},
+        ),
+        scrub=redact_via_context,
+    )
+    assert store["tc-1"]["path"] == "notes.md"
+    assert secret not in json.dumps(store["tc-1"])
+
+
+def test_a_frame_without_arguments_keeps_what_the_other_frame_recorded():
+    from types import SimpleNamespace
+
+    store: dict = {}
+    spec_hooks.remember_tool_input(
+        store,
+        SimpleNamespace(tool_call_id="tc-1", tool_input='{"path": "a.md"}'),
+        scrub=redact_via_context,
+    )
+    spec_hooks.remember_tool_input(
+        store, SimpleNamespace(tool_call_id="tc-1", tool_input=""), scrub=redact_via_context
+    )
+    assert store == {"tc-1": {"path": "a.md"}}

@@ -317,6 +317,61 @@ def post_tool_identity(
     )
 
 
+def hook_tool_input(raw: object) -> dict[str, Any] | None:
+    """A call's arguments as its tool hooks get them in ``tool_input``, or ``None``.
+
+    *raw* is the event's ``tool_input`` JSON text. PreToolUse parses it the same
+    way, so a PostToolUse hook sees the object its PreToolUse sibling saw. Text
+    that is empty, not JSON, or not an object gives ``None`` (no ``tool_input``).
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def remember_tool_input(
+    store: dict[str, dict[str, Any]], event: object, *, scrub: Callable[[str], str]
+) -> None:
+    """Keep *event*'s parsed arguments in *store* for its call's PostToolUse hooks.
+
+    *event* is the call's ``tool_call`` frame or its permission request; either
+    may be the one that carries the arguments, so a frame without them keeps
+    what the other recorded. The entry is popped when the call's PostToolUse
+    fires, so a later call reusing the id starts empty. *scrub* is the caller's
+    egress credential redactor, applied to every string of unredacted arguments.
+    """
+    call_id = getattr(event, "tool_call_id", "") or ""
+    if not call_id:
+        return
+    parsed = hook_tool_input(getattr(event, "tool_input", ""))
+    if parsed is None:
+        # A file edit's ``tool_input`` is the diff rendered for the approval
+        # card, not its arguments; the arguments it was rendered from ride
+        # ``raw_tool_params`` unredacted, so they are redacted here first.
+        raw = getattr(event, "raw_tool_params", None)
+        if isinstance(raw, dict) and raw:
+            parsed = _scrubbed_params(raw, scrub)
+    if parsed is not None:
+        store[call_id] = parsed
+
+
+def _scrubbed_params(value: Any, scrub: Callable[[str], str], depth: int = 0) -> Any:
+    """*value* with every string passed through *scrub*; nesting past 8 levels is dropped."""
+    if isinstance(value, str):
+        return scrub(value)
+    if depth >= 8:
+        return None
+    if isinstance(value, dict):
+        return {str(k): _scrubbed_params(v, scrub, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrubbed_params(v, scrub, depth + 1) for v in value]
+    return value
+
+
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     """Warn about, and SEL-audit, a spec hook that will not run.
 

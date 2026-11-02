@@ -178,6 +178,7 @@ class _ChatTurn:
     _pending_dir_tool: "dict[str, str]"
     _pending_input_digest: "dict[str, str]"
     _pending_tool_ids: "dict[str, PostToolIdentity]"
+    _pending_tool_inputs: "dict[str, dict[str, Any]]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"

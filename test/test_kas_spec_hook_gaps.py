@@ -597,6 +597,8 @@ def _subagent_run(
     store: ScriptHookStore | None = None,
     switch_to: str = "",
     stale: bool = False,
+    tool_input: str = "",
+    update_input: str = "",
 ):
     """One subagent run on *backend*; every PreToolUse fire it makes denies.
 
@@ -607,6 +609,7 @@ def _subagent_run(
         EVENT_AGENT_SWITCHED,
         EVENT_PERMISSION_REQUEST,
         EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
         EVENT_TOOL_RESULT,
         LLMEvent,
     )
@@ -632,6 +635,13 @@ def _subagent_run(
             mcp_server_name=mcp[0],
             tool_name=mcp[1],
         )
+        if update_input:
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title=title,
+                tool_call_id="t-1",
+                tool_input=update_input,
+            )
         yield LLMEvent(
             kind=EVENT_PERMISSION_REQUEST,
             title=title,
@@ -640,6 +650,7 @@ def _subagent_run(
             harness_tool_id=harness_tool_id,
             mcp_server_name=mcp[0],
             tool_name=mcp[1],
+            tool_input=tool_input,
         )
         yield LLMEvent(
             kind=EVENT_TOOL_RESULT, tool_call_id="t-1", tool_output="ok", tool_final=True
@@ -784,6 +795,32 @@ def test_a_kas_subagent_post_tool_use_meets_the_id_its_request_stated(monkeypatc
     fire, _provider = _subagent_run(ACP_BACKEND_KAS, monkeypatch, harness_tool_id="run_command")
     (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
     assert "execute_bash" in post.kwargs["extra_hooks_tool_names"]
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+def test_a_kas_subagent_post_tool_use_gets_the_calls_tool_input(monkeypatch):
+    """A hook acting on the file a call touched reads the call's arguments,
+    which its PreToolUse sibling got from the same permission request."""
+    fire, _provider = _subagent_run(
+        ACP_BACKEND_KAS,
+        monkeypatch,
+        harness_tool_id="fs_write",
+        tool_input=json.dumps({"path": "notes.md", "command": "create"}),
+    )
+    (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
+    assert post.kwargs["tool_input"] == {"path": "notes.md", "command": "create"}
+
+
+@pytest.mark.usefixtures("healthy_host_memory")
+def test_a_subagent_post_tool_use_gets_arguments_a_call_update_supplied(monkeypatch):
+    fire, _provider = _subagent_run(
+        ACP_BACKEND_KAS,
+        monkeypatch,
+        harness_tool_id="fs_write",
+        update_input=json.dumps({"path": "late.md"}),
+    )
+    (post,) = [c for c in fire.await_args_list if c.args[0] == HOOK_EVENT_POST_TOOL_USE]
+    assert post.kwargs["tool_input"] == {"path": "late.md"}
 
 
 @pytest.mark.usefixtures("healthy_host_memory")

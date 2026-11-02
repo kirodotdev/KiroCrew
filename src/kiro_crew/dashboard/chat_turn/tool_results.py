@@ -915,12 +915,16 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # The spec's own hooks match a tool in kiro-cli's names, which KAS's
         # call title is not; the id the turn learned for the call names it.
         _post_identity = turn._pending_tool_ids.pop(event.tool_call_id, None)
+        # The arguments its PreToolUse got, so a hook can tell which file the
+        # call touched.
+        _post_input = turn._pending_tool_inputs.pop(event.tool_call_id, None)
         try:
             _redacted_out_bounded = _redacted_out[:2000]
             await _fire(
                 turn,
                 HOOK_EVENT_POST_TOOL_USE,
                 tool_name=_tool_name,
+                tool_input=_post_input,
                 tool_response={"output": _redacted_out_bounded},
                 tool_id=(_post_identity.tool_id or None) if _post_identity else None,
                 tool_identity=_post_identity.tool_identity if _post_identity else "",

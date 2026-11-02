@@ -1,7 +1,7 @@
 """The ACP driver's vocabulary: names application code reads by VALUE.
 
-Stop classes and the stop-reason classifier, the tool-call and tool-result
-event kinds, the stop reasons of a turn the backend did not finish, the
+Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
+tool-result event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts and the
 native-child marker are backend vocabulary a consumer compares against or
 raises on. The in-flight tool-call tracker is here too: a sub-agent's run
@@ -53,7 +53,7 @@ from kiro_crew.acp.types import (
     StructuredStatus,
     classify_stop_reason,
 )
-from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
+from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE, EVENT_TOOL_RESULT
 
 __all__ = [
     "is_runtime_death",
@@ -61,6 +61,7 @@ __all__ = [
     "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
     "EVENT_TOOL_CALL",
+    "EVENT_TOOL_CALL_UPDATE",
     "EVENT_TOOL_RESULT",
     "NATIVE_CHILD_NOT_RESUMABLE",
     "STATUS_EXTENSION_VERSION",
