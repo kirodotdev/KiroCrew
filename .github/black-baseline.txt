@@ -199,7 +199,6 @@ src/kiro_crew/mcp_gateway/manager.py
 src/kiro_crew/mcp_gateway/prewarm.py
 src/kiro_crew/mcp_gateway/rewriter.py
 src/kiro_crew/mcp_gateway/seed.py
-src/kiro_crew/mcp_gateway/shareability.py
 src/kiro_crew/mcp_gateway/socketsec.py
 src/kiro_crew/mcp_gateway/spill.py
 src/kiro_crew/mcp_gateway/stub.py
