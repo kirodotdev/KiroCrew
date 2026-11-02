@@ -3675,6 +3675,11 @@ binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
 
+This describes today's code. The enterprise edition RFC
+([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md),
+D6, 2026-11-02) makes KAS the floor and the baseline minimal set in an
+enterprise build; that code change is pending. The `oss` floor stays kiro-cli.
+
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.
 `agent_backend_governance.narrow_selectable_backends()` iterates the BASELINE
