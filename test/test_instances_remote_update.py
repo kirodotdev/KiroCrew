@@ -675,6 +675,64 @@ def _dict(jobs, iid):
     return job.to_dict() if job is not None else None
 
 
+_STOPPED_UNIT_REFUSAL = (
+    "❌ The kirocrew service is installed (/etc/systemd/system/kirocrew.service) but "
+    "not running. No gateway was started outside it.\n"
+    "   Start the service with:  sudo systemctl start kirocrew\n"
+)
+
+
+def _fake_ssh(monkeypatch, *answers):
+    """Fake only the ssh child, so the real runner builds the failure message."""
+    from kiro_crew.instances import token_mint as tm
+
+    queue = list(answers)
+
+    class _Proc:
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self._out = out
+
+        async def communicate(self):
+            return (self._out.encode(), b"")
+
+    async def _spawn(*_a, **_k):
+        return _Proc(*queue.pop(0))
+
+    monkeypatch.setattr(tm.asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setattr(tm, "ssh_spawn_argv_env", lambda argv: (argv, {}))
+
+
+@pytest.mark.asyncio
+class TestRestartRefusalReachesTheCrewPage:
+    """A remote whose unit is stopped refuses `kirocrew restart` on STDOUT; the
+    crew page must show that start command, not a bare exit code."""
+
+    async def test_restart_remote_carries_the_start_command(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        _fake_ssh(monkeypatch, (1, _STOPPED_UNIT_REFUSAL))
+
+        result = await mgr.restart_remote("box")
+
+        assert result["ok"] is False
+        assert "Start the service with" in result["message"]
+        assert "sudo systemctl start kirocrew" in result["message"]
+        await mgr.shutdown()
+
+    async def test_update_then_restart_carries_the_start_command(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        _fake_ssh(monkeypatch, (0, ""), (1, _STOPPED_UNIT_REFUSAL))
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "failed" and job["phase"] == "restarting"
+        assert "Start the service with" in job["error"]
+        await mgr.shutdown()
+
+
 class TestRunnerStdoutTail:
     def test_the_ssh_runner_appends_a_redacted_stdout_tail_only_when_asked(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm

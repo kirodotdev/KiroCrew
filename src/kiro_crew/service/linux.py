@@ -107,6 +107,12 @@ def user_unit_installed() -> bool:
     return state.installed and state.ours
 
 
+def system_unit_is_ours() -> bool:
+    """Our system unit is loaded and its canonical ``Id`` is ours (fail-closed)."""
+    state = _unit_state(user=False)
+    return state.load == "loaded" and state.ours
+
+
 def user_unit_active() -> bool:
     """Whether the per-user unit is running right now — active, or crash-looping
     through ``activating (auto-restart)``, which is the unit whose journal holds

@@ -791,6 +791,7 @@ def _restart(cli_port: int | None = None) -> None:
        An attempted restart never falls through to the listener path, which
        cannot see a service gateway bound to a unix socket, would misreport the
        outcome, and would spawn an unmanaged gateway beside an installed unit.
+       An installed service that is stopped, with no gateway running, is refused.
     2. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
@@ -903,6 +904,33 @@ def _restart(cli_port: int | None = None) -> None:
         # foreground path below, which would SIGTERM the alias target's managed
         # process on the port and spawn a detached replacement beside it.
         if _refuse_service_alias("gateway_restart", port):
+            sys.exit(1)
+
+        # Our unit is stopped and no gateway runs: never start one outside it.
+        unit = service_controller.installed_unit_path()
+        running = True
+        if (
+            unit is not None
+            and service_controller.unit_is_ours(unit)
+            and not platform_compat.find_listening_pids(port)
+        ):
+            try:
+                running = lock_holder(config_dir()).pid is not None
+            except LockProbeError:
+                pass
+        if unit is not None and not running:
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_restart",
+                outcome="denied",
+                source="cli",
+                resources=f"port={port} reason=service_installed_not_running",
+            )
+            print(
+                f"❌ The kirocrew service is installed ({unit}) but not running. "
+                "No gateway was started outside it.\n"
+                f"   Start the service with:  {service_controller.start_command(unit)}"
+            )
             sys.exit(1)
 
     # The desktop app is another manager: it starts its gateway again when the
