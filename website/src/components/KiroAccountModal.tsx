@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, AlertTriangle, Coins, ExternalLink, Eye, EyeOff, Gift, Info, Loader2, RefreshCw, UserRound } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { AlertCircle, AlertTriangle, ArrowRight, Coins, ExternalLink, Eye, EyeOff, Gift, Info, Loader2, RefreshCw, UserRound } from 'lucide-react'
 
 import { api } from '../api/client'
-import type { KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
+import type { KasLoginStatus, KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
 import { isAccountOnly, parseKiroUsagePayload, type KiroAccountOnly } from '../api/kiroUsage'
 import { providerLabelFromWire } from './kasProviderLabel'
 import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { configuredAcpBackend, type AcpBackendConfig } from '../api/acpBackend'
+import { failedWithNoData } from '../api/queryState'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
+import { useGuardedLeave } from './NavigationLeaveGuard'
 import Modal from './Modal'
 
 // The usage view model is owned by `api/client.ts` next to the wire payload it
@@ -707,6 +712,78 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   )
 }
 
+/**
+ * The way from this popup to Sign out and Switch account. This popup is where
+ * people look for account actions, but the actions live on the Kiro sign-in
+ * card in Settings > Agent Harness, so this links there instead of carrying a
+ * second copy of the sign-in flow. The link opens the card's KAS row and rings
+ * it, the same deep link the chat's "Sign in to Kiro" row uses. The label names
+ * Settings and the icon is an arrow: pressing it moves, it signs nothing out.
+ *
+ * Shown only on a LOADED config whose selected harness is KAS. That card signs
+ * out Crew's own Kiro sign-in, which is the account this popup names only on
+ * KAS; on kiro-cli the popup names the kiro-cli login, which the card cannot
+ * touch, so a link there would promise a sign-out that does not happen. On
+ * KAS with Crew's sign-in empty the same holds for sign-out, so the label then
+ * offers only the switch, which that card's sign-in does perform. A
+ * failed config read says so here rather than dropping the link silently.
+ */
+function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: KiroAccountUsage }) {
+  const navigate = useNavigate()
+  const leave = useGuardedLeave()
+  // The same read the credits pill already holds: opening the popup reuses its
+  // answer rather than refetching it under the pill.
+  const cfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    refetchOnMount: false,
+  })
+  const onKas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === KIRO_SIGN_IN_BACKEND
+  // Crew's own sign-in, under the key the card's flow polls (`KasLoginGate`).
+  // Signed in: the card can sign that account out or switch it. Not signed in
+  // (or not yet known): the popup names kiro-cli's login, which the card cannot
+  // sign out, but signing in there DOES switch the account agents run as -- so
+  // the label promises only the switch.
+  const signInQuery = useQuery<KasLoginStatus>({
+    queryKey: ['kas-login'],
+    queryFn: api.kasLoginStatus,
+    enabled: onKas,
+    refetchOnMount: false,
+  })
+  if (cfgQuery.data === undefined) {
+    // `config-unreadable` already carries this failure in the usage box above.
+    if (!failedWithNoData(cfgQuery) || usage === 'config-unreadable') return null
+    return (
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        onHandoff={onClose}
+        message={i18nT('components.kiroAccountModal.sign_out_link_config_unreadable')}
+        testId="kiro-account-sign-in-settings-error"
+      />
+    )
+  }
+  if (!onKas) return null
+  const vaultSignedIn = signInQuery.data?.authenticated === true
+  return (
+    <button
+      type="button"
+      // Through the page's leave guard: a refused leave (an unsaved draft the
+      // user keeps) leaves both the popup and the route as they are.
+      onClick={() => leave(() => {
+        onClose()
+        navigate(KIRO_SIGN_IN_PATH)
+      }, KIRO_SIGN_IN_PATH)}
+      className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline focus-ring-accent"
+      data-testid="kiro-account-sign-in-settings"
+    >
+      {i18nT(vaultSignedIn
+        ? 'components.kiroAccountModal.sign_out_or_switch'
+        : 'components.kiroAccountModal.switch_in_settings')} <ArrowRight className="lucide-inline" aria-hidden="true" />
+    </button>
+  )
+}
+
 export default function KiroAccountModal({ open, onClose, usage }: KiroAccountModalProps) {
   return (
     <Modal
@@ -718,14 +795,17 @@ export default function KiroAccountModal({ open, onClose, usage }: KiroAccountMo
       <div className="flex flex-col gap-4">
         <AccountIdentity usage={usage} />
         <CreditUsage usage={usage} onClose={onClose} />
-        <a
-          href={KIRO_ACCOUNT_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 self-start text-[12px] text-accent hover:underline"
-        >
-          {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
-        </a>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <SignInSettingsLink onClose={onClose} usage={usage} />
+          <a
+            href={KIRO_ACCOUNT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline"
+          >
+            {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
+          </a>
+        </div>
       </div>
     </Modal>
   )

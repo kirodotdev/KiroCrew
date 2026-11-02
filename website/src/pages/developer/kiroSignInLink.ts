@@ -22,6 +22,7 @@ export const AGENT_HARNESS_SETTINGS_TAB = 'agent'
  *  it sits below a long switch card, so a reader sent here mid-error must land
  *  ON it rather than hunt. Exported so the chat error row that links here and
  *  the page cannot drift apart on the spelling. */
+export { KIRO_SIGN_IN_SETTING_ID } from '../../components/commandPalette/kiroSignInSettingId'
 export const KIRO_SIGN_IN_PATH = settingsPath({
   tab: AGENT_HARNESS_SETTINGS_TAB,
   highlight: `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`,

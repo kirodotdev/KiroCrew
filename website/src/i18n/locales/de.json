@@ -5943,7 +5943,10 @@
       "remaining_credit_balance": "Verbleibendes Credit-Guthaben: {{count}}",
       "show_email": "E-Mail-Adresse anzeigen",
       "usage_scope": "Monatliche Kiro-Credit-Nutzung laut kiro-cli /usage in Chats, Agenten, MCP und Subagenten.",
-      "used_credits": "Verwendet: {{used}} / {{total}}"
+      "used_credits": "Verwendet: {{used}} / {{total}}",
+      "sign_out_or_switch": "In den Einstellungen abmelden oder Konto wechseln",
+      "sign_out_link_config_unreadable": "Einstellungen konnten nicht geladen werden, daher kann der Abmelde-Link nicht angezeigt werden.",
+      "switch_in_settings": "In den Einstellungen Konto wechseln"
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
@@ -14199,7 +14202,9 @@
         "takes_effect_next_process": "Gilt für ab jetzt gestartete Agentenprozesse; laufende Sitzungen übernehmen es beim nächsten Zug.",
         "could_not_sign_out": "Abmelden nicht möglich",
         "keep_current_sign_in": "Aktuelle Anmeldung behalten",
-        "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an."
+        "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an.",
+        "search_label": "Abmelden oder Kiro-Konto wechseln",
+        "search_description": "Melde dich von der Kiro-Anmeldung ab, die deine Agenten nutzen, oder melde dich mit einem anderen Konto an."
       },
       "strandsSetup": {
         "cancel": "Abbrechen",

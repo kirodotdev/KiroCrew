@@ -6140,7 +6140,10 @@
       "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
       "show_email": "이메일 표시",
       "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
-      "used_credits": "사용: {{used}} / {{total}}"
+      "used_credits": "사용: {{used}} / {{total}}",
+      "sign_out_or_switch": "설정에서 로그아웃 또는 계정 전환",
+      "sign_out_link_config_unreadable": "설정을 불러오지 못해 로그아웃 링크를 표시할 수 없습니다.",
+      "switch_in_settings": "설정에서 계정 전환"
     },
     "artifactChatPanel": {
       "agent_chat": "에이전트 채팅",
@@ -13934,7 +13937,9 @@
         "takes_effect_next_process": "지금부터 시작되는 에이전트 프로세스에 적용됩니다. 실행 중인 세션은 다음 턴에서 적용됩니다.",
         "could_not_sign_out": "로그아웃할 수 없음",
         "keep_current_sign_in": "현재 로그인 유지",
-        "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요."
+        "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요.",
+        "search_label": "로그아웃 또는 Kiro 계정 전환",
+        "search_description": "에이전트가 사용하는 Kiro 로그인에서 로그아웃하거나 다른 계정으로 로그인합니다."
       },
       "strandsSetup": {
         "cancel": "취소",

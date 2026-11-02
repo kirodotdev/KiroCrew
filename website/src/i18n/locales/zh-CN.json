@@ -5833,7 +5833,10 @@
       "remaining_credit_balance": "剩余额度：{{count}}",
       "show_email": "显示邮箱",
       "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
-      "used_credits": "已使用：{{used}} / {{total}}"
+      "used_credits": "已使用：{{used}} / {{total}}",
+      "sign_out_or_switch": "在设置中登出或切换账号",
+      "sign_out_link_config_unreadable": "无法加载设置，因此无法显示登出链接。",
+      "switch_in_settings": "在设置中切换账号"
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
@@ -13934,7 +13937,9 @@
         "takes_effect_next_process": "对此后启动的 agent 进程生效；正在运行的会话会在下一轮对话时切换。",
         "could_not_sign_out": "无法登出",
         "keep_current_sign_in": "保留当前登录",
-        "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。"
+        "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。",
+        "search_label": "登出或切换 Kiro 账号",
+        "search_description": "登出 agent 使用的 Kiro 登录，或换一个账号登录。"
       },
       "strandsSetup": {
         "cancel": "取消",
