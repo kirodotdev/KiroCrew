@@ -94,18 +94,37 @@ personal account.
 
 ### 2. Have the administrator allow-list the servers
 
-Kiro Crew needs three servers, and they must appear in the registry file under
+Kiro Crew ships eleven servers (`_MANAGED_MCP_SERVERS` in `src/kiro_crew/agent.py`
+is the authoritative map), and the registry filter applies to every one of them.
+Five are emitted on every install; the other six are assignable sets an agent
+carries only when granted them — but any agent that IS granted one loses it the
+same way if the registry omits it. They must appear in the registry file under
 **exactly** these names:
+
+Always emitted, on every install:
 
 | Server | What is lost without it |
 |---|---|
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
 | `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-guide` | the platform guide set: where-is answers (`find_ui`), the packaged docs (`search_docs`), dashboard guides and change cards |
+| `kirocrew-mate` | a crewmate's tools over its own record (name, description, face; goal and tools asked through a change card) |
+
+Assignable — emitted only for agents granted the set, and filtered the same way:
+
+| Server | What is lost without it |
+|---|---|
+| `kirocrew-work` | the work ledger every conductor records its dispatches to — without it a conductor still runs, but the Dashboard's Workstreams board has nothing to show for its fleet |
+| `kirocrew-dashboard` | the dashboard control surface mounted on every conductor |
+| `kirocrew-panel` | the member panel tools of member-scoped agents |
+| `kirocrew-crew-log` | the crew log set of agents granted it |
+| `kirocrew-debug` | the debug views (the wide ones answer only on the owner's own dashboard tab) |
+| `kirocrew-secrets` | mediated secret requests (`call_api_with_secret`): API writes that use a Custom secret the agent never sees |
 
 The registry file format is a subset of the MCP registry standard's server
 schema. Each entry needs a `packages` entry describing how to launch the server,
-and — because all three Kiro Crew servers live behind one package — a
+and — because every Kiro Crew server lives behind one package — a
 `packageArguments` entry naming the subcommand. For a `pypi` package the client
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
@@ -152,6 +171,110 @@ that `uvx` uses:
           "registryType": "pypi",
           "identifier": "kirocrew",
           "packageArguments": [{ "type": "positional", "value": "mcp-computer" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-work",
+      "description": "Kiro Crew work ledger (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-work" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-dashboard",
+      "description": "Kiro Crew dashboard control surface (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-dashboard" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-panel",
+      "description": "Kiro Crew member panel (member-scoped agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-panel" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-guide",
+      "description": "Kiro Crew platform guide: find_ui, search_docs, guides, change cards",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-guide" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-mate",
+      "description": "Kiro Crew crewmate self-record tools",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-mate" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-crew-log",
+      "description": "Kiro Crew crew log (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-crew-log" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-debug",
+      "description": "Kiro Crew debug views (assignable, owner-tab only)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-debug" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-secrets",
+      "description": "Kiro Crew mediated secret requests (assignable)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-secrets" }],
           "transport": { "type": "stdio" }
         }
       ]
