@@ -11,13 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.tips import (
     TipsState,
     _is_eligible,
@@ -428,7 +428,9 @@ class TestDocLinkSplit:
     """
 
     @pytest.mark.asyncio
-    async def test_doc_link_does_not_suppress_other_tips(self, tmp_path: Path) -> None:
+    async def test_doc_link_does_not_suppress_other_tips(
+        self, tmp_path: Path, manual_clock: ManualClock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Dismissing a tip with doc="" and a non-empty doc_link — through the
         REAL feedback handler — must not suppress any other tip sharing that
         doc_link value."""
@@ -438,7 +440,11 @@ class TestDocLinkSplit:
         from aiohttp import streams
         from aiohttp.test_utils import make_mocked_request
 
+        from kiro_crew import tips as tips_mod
         from kiro_crew.tips import TipsCache, api_tips_feedback
+
+        # The feedback handler and the eligibility checks below read one frozen clock.
+        manual_clock.install(monkeypatch, tips_mod)
 
         curated = {
             "id": "curated-a",
@@ -471,8 +477,7 @@ class TestDocLinkSplit:
             # The rendering-only doc_link must not become a dismissal identity.
             assert st.dismissed_docs == []
             # Another tip sharing the doc_link stays eligible…
-            # flake-ok: a dismiss writes no snooze stamp, so neither _is_eligible call compares this instant; moved verbatim, tracked for a de-flake pass
-            now = time.time()
+            now = manual_clock.time()
             sibling = {"id": "catalog-b", "doc": "skills.md", "doc_link": "skills.md"}
             assert _is_eligible(sibling, st, now, 48.0)
             # …and so does a tip whose ONLY overlap is the doc_link value.
