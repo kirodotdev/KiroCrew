@@ -42,12 +42,21 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     def test_beyond_name_and_description_it_is_the_default_templates_shape(
         self, installed, monkeypatch, tmp_path
     ):
-        """Every other field matches ``build_agent_config()`` exactly."""
+        """Every other field matches ``build_agent_config()`` exactly, except the
+        work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
         template = agent.build_agent_config()
+        mounted = ("tools", "allowedTools", "mcpServers")
         for key, value in template.items():
-            if key in ("name", "description", "excludedTools"):
+            if key in ("name", "description", "excludedTools", *mounted):
                 continue
             assert installed.get(key) == value, key
+        assert {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"} == (
+            template["mcpServers"]
+        )
+        assert [t for t in installed["tools"] if t != "@kirocrew-work"] == template["tools"]
+        assert [
+            t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
+        ] == template["allowedTools"]
 
     def test_it_keeps_the_default_templates_built_in_tools(self, installed):
         """Only sub-agent spawning is taken away: the shell, the file writer and

@@ -286,10 +286,18 @@ class TestTheWorkerSpecIsSourceDefined:
         from kiro_crew.mate_worker import MATE_WORKER_PROMPT
 
         template = agent.build_agent_config()
+        # The work-ledger mount only adds (``test_mate_work_ledger_mount.py``).
+        mounted = ("tools", "allowedTools", "mcpServers")
         for key, value in template.items():
-            if key in ("name", "description", "prompt"):
+            if key in ("name", "description", "prompt", *mounted):
                 continue
             assert installed.get(key) == value, key
+        servers = {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"}
+        assert servers == template["mcpServers"]
+        assert [t for t in installed["tools"] if t != "@kirocrew-work"] == template["tools"]
+        assert [
+            t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
+        ] == template["allowedTools"]
         # The default prompt, then the worker's own principles after it.
         assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{MATE_WORKER_PROMPT}"
 
