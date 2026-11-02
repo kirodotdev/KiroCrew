@@ -137,7 +137,7 @@ const RECONCILED = {
   meta: { ...OPTIMISTIC.meta },
 }
 
-const renderChatPage = (initial: unknown[]) => {
+const renderChatPage = async (initial: unknown[]) => {
   const slot = { key: 'chat-1', title: 'chat-1', messages: 1, running: false, mode: '', created: '', last_ts: '' }
   apiMocks.chatSlots = vi.fn().mockResolvedValue([slot])
   apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({ messages: initial, has_more: false, total: initial.length })
@@ -160,7 +160,11 @@ const renderChatPage = (initial: unknown[]) => {
     } as never,
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const { container } = render(
+  let container!: HTMLElement
+  // Async act: the ChatPage and ThemeProvider boot queries resolve on microtasks
+  // after the first render, so they must land inside this barrier.
+  await act(async () => {
+  container = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -172,7 +176,8 @@ const renderChatPage = (initial: unknown[]) => {
         </ThemeProvider>
       </Provider>
     </QueryClientProvider>,
-  )
+  ).container
+  })
   act(() => { store.dispatch({ type: 'chat/replaceMessages', payload: initial }) })
   return { store, container }
 }
@@ -186,8 +191,8 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     delete (globalThis as Record<string, unknown>).__vcOpts
   })
 
-  it('keeps the SAME row DOM node when the server ts replaces the optimistic one', () => {
-    const { store, container } = renderChatPage([OPTIMISTIC])
+  it('keeps the SAME row DOM node when the server ts replaces the optimistic one', async () => {
+    const { store, container } = await renderChatPage([OPTIMISTIC])
     const before = rowNode(container)
     expect(before).toBeTruthy()
     // Tag the live node: a remount would create a fresh element without this.
@@ -202,11 +207,11 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((after as HTMLElement & { __probe?: string }).__probe).toBe('kept')
   })
 
-  it('a genuinely different message DOES get its own row node (control)', () => {
+  it('a genuinely different message DOES get its own row node (control)', async () => {
     // Guards against the test passing for a trivial reason — e.g. if row lookup
     // always returned the same node regardless of key, the assertion above would
     // be meaningless.
-    const { store, container } = renderChatPage([OPTIMISTIC])
+    const { store, container } = await renderChatPage([OPTIMISTIC])
     const before = rowNode(container)
     ;(before as HTMLElement & { __probe?: string }).__probe = 'kept'
     act(() => {
@@ -220,7 +225,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((after as HTMLElement & { __probe?: string }).__probe).toBeUndefined()
   })
 
-  it('derives DISTINCT virtualizer keys for two rows stamped in the same tick', () => {
+  it('derives DISTINCT virtualizer keys for two rows stamped in the same tick', async () => {
     // A coarse OS clock can stamp two rows appended in one tick with the same
     // `ts`; a `single` keys on `msgKey` alone, so without the list-level
     // dedupe (uniqueRowKeys) both rows reach React AND the HeightCache under
@@ -228,7 +233,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     // through the REAL getKey ChatPage hands the virtualizer (captured by the
     // mock above), so it pins the WIRING, not just the helper.
     const SAME_TS = '2026-06-23T20:00:00.000Z'
-    renderChatPage([
+    await renderChatPage([
       { role: 'user', content: 'first', cls: '', ts: SAME_TS },
       { role: 'assistant', content: 'second', cls: '', ts: SAME_TS },
     ])
@@ -241,7 +246,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect(new Set(keys).size).toBe(keys.length)
   })
 
-  it('keeps an MCP App iframe mounted when reasoning becomes the running turn lead', () => {
+  it('keeps an MCP App iframe mounted when reasoning becomes the running turn lead', async () => {
     const appTool = {
       role: 'tool', content: '🔧 Running: create_view', cls: '',
       ts: '2026-09-15T17:56:47.149560+00:00',
@@ -252,7 +257,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       { role: 'assistant', content: 'The app is ready while I keep working.', cls: '', ts: '2026-09-15T17:56:48.000000+00:00' },
       { role: 'streaming', content: 'Continuing the turn.', cls: '', meta: { clientTs: 'stream-1' } },
     ]
-    const { store, container } = renderChatPage(before)
+    const { store, container } = await renderChatPage(before)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       store.dispatch({
@@ -289,7 +294,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept')
   })
 
-  it('keeps an MCP App iframe mounted when prepended history collides with its former row key', () => {
+  it('keeps an MCP App iframe mounted when prepended history collides with its former row key', async () => {
     const sameTs = '2026-09-15T17:58:00.000000+00:00'
     const appTool = {
       role: 'tool', content: '🔧 Running: create_view', cls: '', ts: sameTs,
@@ -299,7 +304,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       appTool,
       { role: 'streaming', content: 'The app turn is still running.', cls: '', meta: { clientTs: 'stream-collision-app' } },
     ]
-    const { store, container } = renderChatPage(liveTurn)
+    const { store, container } = await renderChatPage(liveTurn)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       store.dispatch({
@@ -335,7 +340,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-collision')
   })
 
-  it('keeps an MCP App iframe mounted when a loose app row becomes a TurnBlock', () => {
+  it('keeps an MCP App iframe mounted when a loose app row becomes a TurnBlock', async () => {
     const appTool = {
       role: 'tool', content: '🔧 Running: create_view', cls: '',
       ts: '2026-09-15T18:00:00.000000+00:00',
@@ -345,7 +350,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       appTool,
       { role: 'streaming', content: 'The short turn is still running.', cls: '', meta: { clientTs: 'stream-loose-app' } },
     ]
-    const { store, container } = renderChatPage(before)
+    const { store, container } = await renderChatPage(before)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       store.dispatch({
@@ -384,7 +389,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-loose')
   })
 
-  it('keeps parallel loose MCP App iframes mounted when they coalesce into one turn', () => {
+  it('keeps parallel loose MCP App iframes mounted when they coalesce into one turn', async () => {
     const appA = {
       role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '2026-09-15T18:01:00.000000+00:00',
       meta: { tool_call_id: 'tc-loose-a' },
@@ -394,7 +399,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       meta: { tool_call_id: 'tc-loose-b' },
     }
     const loose = [appA, appB]
-    const { store, container } = renderChatPage(loose)
+    const { store, container } = await renderChatPage(loose)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       for (const [toolCallId, tool] of [['tc-loose-a', 'app_a'], ['tc-loose-b', 'app_b']] as const) {
@@ -437,7 +442,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((afterFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-b')
   })
 
-  it('keeps the first rendered app as the anchor when an earlier app payload arrives later', () => {
+  it('keeps the first rendered app as the anchor when an earlier app payload arrives later', async () => {
     const appA = {
       role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '1',
       meta: { tool_call_id: 'tc-a' },
@@ -451,7 +456,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       appB,
       { role: 'streaming', content: 'Both calls are still settling.', cls: '', meta: { clientTs: 'stream-parallel' } },
     ]
-    const { store, container } = renderChatPage(messages)
+    const { store, container } = await renderChatPage(messages)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       store.dispatch({
@@ -488,7 +493,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     expect((afterFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-b')
   })
 
-  it('keeps the surviving app iframe mounted when retention evicts the turn anchor payload', () => {
+  it('keeps the surviving app iframe mounted when retention evicts the turn anchor payload', async () => {
     const appA = {
       role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '1',
       meta: { tool_call_id: 'tc-a' },
@@ -502,7 +507,7 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
       appB,
       { role: 'streaming', content: 'Both apps remain in this turn.', cls: '', meta: { clientTs: 'stream-retention' } },
     ]
-    const { store, container } = renderChatPage(messages)
+    const { store, container } = await renderChatPage(messages)
     act(() => {
       store.dispatch({ type: 'chat/setSlotRunning', payload: true })
       for (const [toolCallId, tool] of [['tc-a', 'app_a'], ['tc-b', 'app_b']]) {
