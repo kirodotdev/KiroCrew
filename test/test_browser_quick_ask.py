@@ -1073,7 +1073,7 @@ async def test_a_screenshot_is_refused_while_an_asked_field_holds_its_value(
             return 0
         calls.append(name)
         if name in ("js", "js_isolated"):
-            if ".passwordBoxes(" in kw["expression"]:
+            if ".passwordBoxes(" in kw["expression"] or ".secretValues(" in kw["expression"]:
                 return 0
             if any(
                 f".{m}(" in kw["expression"]

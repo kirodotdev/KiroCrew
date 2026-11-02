@@ -500,7 +500,7 @@ def test_the_saved_hooks_are_read_once_under_the_writers_lock(tmp_path, monkeypa
     monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
     _save_page_hook(tmp_path, "web_fetch")
     events: list = []
-    real_read = Path.read_text
+    real_read = Path.read_bytes
 
     @contextmanager
     def locked(path):
@@ -508,13 +508,13 @@ def test_the_saved_hooks_are_read_once_under_the_writers_lock(tmp_path, monkeypa
         yield
         events.append(("unlock", path.name))
 
-    def read_text(self, *a, **k):
+    def read_bytes(self, *a, **k):
         if self.name == "hooks.json":
             events.append(("read", self.name))
         return real_read(self, *a, **k)
 
     monkeypatch.setattr(webhooks, "locked", locked)
-    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
     store = hooks_mod.persisted_hook_store()
     assert [h.matcher for h in store.list_all()] == ["web_fetch"]
     assert events == [("lock", "hooks.json"), ("read", "hooks.json"), ("unlock", "hooks.json")]

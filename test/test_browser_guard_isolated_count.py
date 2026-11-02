@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.browser_harness import decide, helper_worker, ops
+from kiro_crew.browser_harness import decide, dom_census, helper_worker, ops
 
 
 class _Frames:
@@ -231,8 +231,9 @@ async def test_a_page_that_stays_clean_keeps_its_image(tmp_path: Path) -> None:
     ctx, calls = _ctx(tmp_path, main=0, isolated=0, unreadable=0, frames=None)
     out = await ops.run_op("screenshot", {}, ctx)
     assert out.get("ok") is True and Path(out["path"]).exists()
-    # Counted before and after the capture (by the frame check and the guard count).
-    assert calls.count("unreadableFrames") == 4
+    # Counted before and after the capture (by the frame check and the two guard
+    # counts: quick-ask values and filled secret fields).
+    assert calls.count("unreadableFrames") == 6
 
 
 def test_the_walker_counts_unreadable_frames() -> None:
@@ -574,6 +575,36 @@ def test_the_census_counts_only_secret_fields_inside_closed_roots() -> None:
     assert helper_worker._SECRET_AUTOCOMPLETE == dom_census.SECRET_AUTOCOMPLETE
     walker_re = ops.WALKER_SOURCE.split("var SECRET_NAME_RE = /", 1)[1].split("/i;", 1)[0]
     assert walker_re == dom_census.SECRET_NAME_RE.pattern
+    walker_auto = ops.WALKER_SOURCE.split("var SECRET_AUTOCOMPLETE = [", 1)[1].split("];", 1)[0]
+    assert tuple(w.strip().strip('"') for w in walker_auto.split(",")) == (
+        dom_census.SECRET_AUTOCOMPLETE
+    )
+
+
+@pytest.mark.parametrize(
+    ("attrs", "secret"),
+    [
+        (["name", "otpCode"], True),
+        (["id", "cardCvv"], True),
+        (["name", "MFAToken"], True),
+        (["name", "apiKey"], True),
+        (["name", "APIKey"], True),
+        (["name", "code", "autocomplete", "One-Time-Code"], True),
+        (["name", "code", "autocomplete", "one-time-code"], True),
+        (["name", "x", "autocomplete", "cc-csc"], True),
+        (["name", "topCount"], False),
+        (["name", "tokenizer"], False),
+        (["name", "email"], False),
+    ],
+)
+def test_the_census_names_camel_case_and_autocomplete_secrets(
+    attrs: list[str], secret: bool
+) -> None:
+    node = {"nodeName": "INPUT", "attributes": attrs}
+    assert dom_census.is_secret_field(node) is secret
+    assert helper_worker._secret_attrs(node) is secret
+    for text in ("otpCode", "OTPCode", "cardCvv", "plain", "a1B"):
+        assert helper_worker._split_camel(text) == dom_census.split_camel(text)
 
 
 @pytest.mark.asyncio
@@ -650,6 +681,8 @@ def test_the_replay_mask_names_secret_fields_by_the_walkers_rule() -> None:
 
     mask_re = screencast._MASK_JS.split("const NAMED=/", 1)[1].split("/i;", 1)[0]
     assert mask_re == dom_census.SECRET_NAME_RE.pattern
+    mask_auto = screencast._MASK_JS.split("const AUTO=[", 1)[1].split("];", 1)[0]
+    assert tuple(w.strip("'") for w in mask_auto.split(",")) == dom_census.SECRET_AUTOCOMPLETE
     assert "input,textarea" in screencast._MASK_JS
 
 
@@ -713,3 +746,105 @@ def test_the_worker_reports_an_isolated_failure_as_an_error_reply() -> None:
         {"id": 1, "helper": "js_isolated", "kwargs": {"expression": "1"}},
     )
     assert reply["ok"] is False and "js_isolated" in reply["error"]
+
+
+def _secret_ctx(tmp_path: Path, before: Any, after: Any = None) -> tuple[ops.OpContext, list[str]]:
+    """A clean page whose isolated walker answers *before* to ``secretValues`` until
+    the image is taken and *after* (default: the same) once it is."""
+    calls: list[str] = []
+    state = {"shot": False}
+
+    async def helper(name: str, **kw: Any) -> Any:
+        calls.append(name)
+        if name in ("closed_secret_count", "frame_owner_count"):
+            return 0
+        if name == "current_tab":
+            return {"url": "https://example.com/"}
+        if name == "js_isolated":
+            if ".secretValues(" in kw["expression"]:
+                answer = after if state["shot"] and after is not None else before
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+            return 0
+        if name == "screenshot":
+            Path(kw["path"]).write_bytes(b"png")
+            state["shot"] = True
+        return None
+
+    return ops.OpContext(helper=helper, screenshot_dir=tmp_path, frames=lambda: None), calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("secret", "code"),
+    [
+        (1, "secret_value_on_page"),
+        (None, "secret_check_failed"),
+        (True, "secret_check_failed"),
+        (RuntimeError("gone"), "secret_check_failed"),
+        (0, None),
+    ],
+)
+async def test_a_secret_field_filled_during_takeover_refuses_the_screenshot(
+    tmp_path: Path, secret: Any, code: Any
+) -> None:
+    # A person types a code into <input type=text name=otp> during a takeover and
+    # hands back: no quick-ask marker, no closed root, but its digits are in the
+    # pixels. The walker's secret rule counts it, and the screenshot refuses.
+    ctx, calls = _secret_ctx(tmp_path, secret)
+    out = await ops.run_op("screenshot", {}, ctx)
+    if code is None:
+        assert out.get("ok") is True, out
+    else:
+        assert out.get("code") == code, out
+        assert "screenshot" not in calls
+        assert not list(tmp_path.glob("shot-*.png"))
+
+
+@pytest.mark.asyncio
+async def test_a_secret_field_filled_during_the_capture_discards_the_image(
+    tmp_path: Path,
+) -> None:
+    ctx, calls = _secret_ctx(tmp_path, 0, after=1)
+    out = await ops.run_op("screenshot", {}, ctx)
+    assert out.get("code") == "secret_value_on_page", out
+    assert "screenshot" in calls
+    assert not list(tmp_path.glob("shot-*.png"))
+
+
+@pytest.mark.asyncio
+async def test_the_decision_capture_never_writes_to_the_agent_directory(
+    tmp_path: Path,
+) -> None:
+    # The decision frame is judged again after it is taken. Until then it must sit
+    # in the hidden staging leaf, not where an agent-spawned process can read it.
+    staging = tmp_path / "hidden"
+    shots = tmp_path / "shots"
+    written: list[Path] = []
+    seen_in_shots: list[list[Path]] = []
+
+    async def helper(name: str, **kw: Any) -> Any:
+        if name in ("closed_secret_count", "frame_owner_count"):
+            return 0
+        if name == "current_tab":
+            return {"url": "https://example.com/"}
+        if name == "js_isolated":
+            return 0
+        if name == "screenshot":
+            p = Path(kw["path"])
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 8)
+            written.append(p)
+            seen_in_shots.append(list(shots.glob("*")) if shots.exists() else [])
+        return None
+
+    ctx = ops.OpContext(
+        helper=helper, screenshot_dir=shots, staging_dir=staging, frames=lambda: None
+    )
+    data = await decide._capture(ctx)
+    assert data is not None and data.startswith(b"\x89PNG")
+    assert written and written[0].parent == staging
+    assert seen_in_shots == [[]]
+    assert not written[0].exists()
+    assert not (shots.exists() and list(shots.glob("*")))

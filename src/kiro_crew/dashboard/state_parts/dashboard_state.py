@@ -496,7 +496,6 @@ class DashboardState:
         self.unrestored_slot_keys: set[str] = set()
         self.deferred_member_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
-        self._unread_count: int = 0
         self._notification_coordinator = _new_notification_coordinator(
             web_push_fanout=lambda note: self._fan_out_web_push(note)
         )

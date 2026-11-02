@@ -37,6 +37,7 @@ class FakeBrowser:
         self.page: dict[str, Any] = {
             "askedValues": 0,
             "passwordBoxes": 0,
+            "secretValues": 0,
             "unreadableFrames": 0,
             "framesSeen": 0,
             "objectsSeen": 0,

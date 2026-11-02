@@ -228,7 +228,16 @@ provides) and **Added to** (what the crewmate's own file adds beyond that base).
 Both list tools, MCP servers and skills, partitioned by each capability row's
 `state` (`inherited` → Comes with, `local` → Added to). An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
-op; approvals are configured in the **Approvals** section, never here. The mate's
+op. A name in the file's own `skills` list counts as stored: an add copies that
+list as written, so an entry can outlive the agent that listed it, and a
+`skills` remove drops the named entry from the list along with any catalog skill
+of that key, leaving every other entry (`mate_capabilities._drop_listed_skills`).
+The view flags every `skills` row the list names `listed`, and lists a name
+with no catalog row as a row of its own, so a capabilities card can name it.
+The card's snapshot keeps the flag, and a removal of a `listed` row has no Undo
+(`listed_skill_entry`), because a `set` writes catalog skills only and would not
+put the list entry back. Approvals are configured in the
+**Approvals** section, never here. The mate's
 **behavior directions** appear with **Remove**, which clears its single directions
 slot. **Add abilities** sits on the same page, under the bands
 (see "Adding abilities to a crewmate" below). General shows the section's name

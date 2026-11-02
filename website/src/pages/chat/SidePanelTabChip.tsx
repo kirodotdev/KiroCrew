@@ -31,8 +31,8 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   /** The close-menu's "Close" item: shares the batch path with the other menu
    *  items so a last-copy/unsaved file is still confirmed. */
   onClose: () => void
-  /** The chip's × (and middle-click): closes this one tab directly, exactly as
-   *  on main — the single-× control's behaviour is unchanged by this feature. */
+  /** The chip's × (and middle-click): closes this one tab, asking first
+   *  through the tab's own panel guard when it has one (`closeTabFromChip`). */
   onCloseDirect: () => void
   closeOthersDisabled: boolean
   closeRightDisabled: boolean

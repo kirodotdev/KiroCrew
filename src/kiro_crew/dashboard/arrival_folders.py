@@ -55,6 +55,7 @@ import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders import MAX_CHAT_FOLDERS, folder_ids_filed_into
 from kiro_crew.dashboard.mate_folders import home_owner_of
 from kiro_crew.sel import sel
@@ -340,7 +341,7 @@ async def arrival_folder_id(
                 # — the same reason ``create_folder_record`` tests the ceiling
                 # inside ``mutate_folders`` rather than before it.
                 return False, ""
-            group = _new_folder(group_name, "", len(folders))
+            group = _new_folder(group_name, "", next_folder_order(folders))
             folders.append(group)
             created.append((str(group["id"]), group_name, ""))
             changed = True
@@ -372,7 +373,7 @@ async def arrival_folder_id(
                 # the pair. File under the group, which is a real destination —
                 # refusing here would discard a placement that costs no new row.
                 return changed, group_id
-            child = _new_folder(child_name, group_id, len(folders))
+            child = _new_folder(child_name, group_id, next_folder_order(folders))
             folders.append(child)
             created.append((str(child["id"]), child_name, group_id))
             changed = True

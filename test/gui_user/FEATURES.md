@@ -241,7 +241,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 |---|---|---|---|---|---|---|
 | P0 | `apps-discover` | As a user, I want to browse the App Store storefront, open an app's detail page and enable it, so that the app appears in my sidebar and I can extend the dashboard. | `/apps` | apps-installed | smoke | 4 |
 | P1 | `app-command-bar-launch` | As a keyboard user, I want to press Cmd/Ctrl+K, type a command, and jump to an app or setting, so that I navigate without leaving the keyboard. | `/chat` | rich | smoke | 3 |
-| P1 | `apps-library` | As a user, I want installed apps as launchpad tiles with rail pinning and a 'Show N disabled' toggle, so that I can launch and organise apps. | `/apps/library` | apps-installed | smoke | 3 |
+| P1 | `apps-library` | As a user, I want installed apps as launchpad tiles with rail pinning and disabled apps in their own section below, so that I can launch and organise apps. | `/apps/library` | apps-installed | smoke | 3 |
 | P2 | `app-auto-research-campaign` | As a researcher, I want to enter a broad question, expand it into sub-questions, and start a campaign, so that agents investigate while I am away and stream findings back. | `/auto-research` | apps-installed | nightly | 6 |
 | P2 | `app-design-critique-screenshot` | As a designer, I want to drop in a screenshot and receive heuristic-backed findings, so that I get a critique before asking a colleague. | `/design-critique` | apps-installed | nightly | 5 |
 | P2 | `app-design-tweak-annotate` | As a frontend developer, I want to preview my local web app, right-click elements in Edit mode, and send a batch of visual comments, so that the agent makes source-mapped edits. | `/design-tweak` | rich | nightly | 7 |

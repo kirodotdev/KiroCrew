@@ -50,6 +50,7 @@ from kiro_crew.config.loader import (
     _coerce_session_folder,
 )
 from kiro_crew.config.schema import requires_restart
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -333,7 +334,7 @@ async def ensure_channel_folder(
         folder = {
             "id": uuid.uuid4().hex[:12],
             "name": name,
-            "order": len(folders),
+            "order": next_folder_order(folders),
             "collapsed": False,
             "hidden": False,
             "parent_id": "",

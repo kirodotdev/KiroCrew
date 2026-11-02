@@ -20,7 +20,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.session import SessionManager
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 
 class TestStopTurn:
@@ -154,9 +154,11 @@ class TestStopTurn:
 
         with patch.object(mgr, "_eager_respawn", new_callable=AsyncMock) as mock_respawn:
             await mgr.stop_turn("key1")
-            # Allow the created task to run
-            # flake-ok: one yield runs the respawn task stop_turn creates; the patched AsyncMock finishes in that step so FIFO order makes the check exact; moved verbatim
-            await asyncio.sleep(0)
+            # The respawn runs as a task stop_turn creates; wait until it has awaited the mock.
+            await async_wait_until(
+                lambda: mock_respawn.await_count,
+                describe=lambda: f"_eager_respawn await_count={mock_respawn.await_count}",
+            )
             mock_respawn.assert_awaited_once_with("key1")
 
         await mgr.close_all()
@@ -493,9 +495,11 @@ class TestRelease:
         provider.session_id = "sid-123"
         provider.cleanup_session = AsyncMock()
         mgr.release("subagent:abc", cleanup=True)
-        # Allow the ensure_future to run
-        # flake-ok: one yield runs the cleanup future release schedules; its AsyncMock cleanup finishes without suspending so one step is exact; moved verbatim
-        await asyncio.sleep(0)
+        # The cleanup runs as a future release schedules; wait until it has awaited the mock.
+        await async_wait_until(
+            lambda: provider.cleanup_session.await_count,
+            describe=lambda: f"cleanup_session await_count={provider.cleanup_session.await_count}",
+        )
         provider.cleanup_session.assert_awaited_once_with("sid-123")
         await mgr.close_all()
 
@@ -543,12 +547,10 @@ class TestRelease:
         # A single extra permit must not have been minted: only one acquire can
         # succeed at a time, not two run concurrently.
         first = asyncio.ensure_future(session_2.semaphore.acquire())
-        # flake-ok: one yield runs the first acquire task; a free permit returns without suspending so it is done after exactly that step; moved verbatim
-        await asyncio.sleep(0)
+        await await_until(first, what="the first acquire of the free permit")
         assert first.done()
         second = asyncio.ensure_future(session_2.semaphore.acquire())
-        # flake-ok: one yield runs the second acquire task; a surplus permit would finish it in that step so the not-done check is exact; moved verbatim
-        await asyncio.sleep(0)
+        await until_parked(session_2.semaphore)  # the second acquire reached the semaphore
         assert not second.done()  # blocked -- no surplus permit to grant it
         second.cancel()
         session_2.semaphore.release()
@@ -703,8 +705,7 @@ class TestLoadRecoveryHistoryReplay:
 
         async def concrete_shutdown():
             shutdown_started.set()
-            # flake-ok: shutdown double parks until the test sets release_shutdown; close_all caps shutdown at 5 s and the set event frees the later close; moved verbatim
-            await release_shutdown.wait()
+            await await_until(release_shutdown, what="the test to release the shutdown double")
 
         def factory(session_key=None, agent=None, channel_id=None, **kwargs):
             provider = object.__new__(AcpProvider)
@@ -755,12 +756,13 @@ class TestLoadRecoveryHistoryReplay:
         # close_all flushes SessionMap before provider shutdown. Hold it at that
         # boundary and create a new manager, exactly as an update restart can.
         close_task = asyncio.create_task(mgr.close_all())
-        await await_until(shutdown_started, what="close_all at the flush boundary")
-        resumed_mgr = SessionManager(cfg, provider_factory=factory)
-        assert resumed_mgr._session_map.get("thread1") == "old-full-history-sid"
-        release_shutdown.set()
-        # flake-ok: awaits close_all once release_shutdown is set; close_all caps provider shutdown with its own 5 s wait_for so this stays bounded; moved verbatim
-        await close_task
+        try:
+            await await_until(shutdown_started, what="close_all at the flush boundary")
+            resumed_mgr = SessionManager(cfg, provider_factory=factory)
+            assert resumed_mgr._session_map.get("thread1") == "old-full-history-sid"
+        finally:
+            release_shutdown.set()
+        await await_until(close_task, what="close_all once the shutdown double is released")
 
         await resumed_mgr.get_or_create("thread1")
         assert resumed_mgr.provider_switch_replay_pending("thread1") is True

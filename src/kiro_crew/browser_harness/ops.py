@@ -327,8 +327,9 @@ async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
 
 
 #: The walker counts the screenshot guards read: fields the person filled through a
-#: quick ask that still hold a value, and password or secret-looking boxes.
-GUARD_COUNTS = ("askedValues", "passwordBoxes")
+#: quick ask that still hold a value, password or secret-looking boxes, and filled
+#: fields the walker's secret rule names (a takeover OTP in a text field).
+GUARD_COUNTS = ("askedValues", "passwordBoxes", "secretValues")
 
 
 async def _guard_count(ctx: OpContext, method: str) -> int | None:
@@ -1084,6 +1085,20 @@ async def _screenshot_blocked(ctx: OpContext, *, after: bool = False) -> dict[st
             "asked_value_on_page",
             lead + "a field the user filled through `ask` still holds its value; use "
             "snapshot instead, or take the screenshot after the page moves on",
+        )
+    # A code typed into a text field named otp/token/cvv during a takeover carries
+    # no quick-ask marker, and its digits would be in the pixels.
+    filled = await _guard_count(ctx, "secretValues")
+    if filled is None:
+        return refusal(
+            "secret_check_failed",
+            lead + "could not check the page for filled secret fields; use snapshot instead",
+        )
+    if filled:
+        return refusal(
+            "secret_value_on_page",
+            lead + "a one-time-code, token or other secret field still holds a value; "
+            "use snapshot instead, or take the screenshot after the field is cleared",
         )
     return None
 

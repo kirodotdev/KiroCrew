@@ -13,12 +13,19 @@ from collections.abc import Iterator
 from typing import Any
 
 #: ``autocomplete`` tokens that name a secret (the replay mask's rule).
-SECRET_AUTOCOMPLETE = ("current-password", "new-password", "one-time-code")
+SECRET_AUTOCOMPLETE = ("current-password", "new-password", "one-time-code", "cc-csc")
 #: The walker's ``SECRET_NAME_RE`` (snapshot_walker.js), kept equal by a test.
 SECRET_NAME_RE = re.compile(
     r"(^|[^a-z])(password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey)([^a-z]|$)",
     re.IGNORECASE,
 )
+
+
+def split_camel(text: str) -> str:
+    """*text* with camelCase words split (``otpCode`` -> ``otp Code``), as the
+    walker's ``splitCamel`` splits them before the name rule is tested."""
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
 
 
 class MalformedDocument(ValueError):
@@ -64,7 +71,8 @@ def is_secret_field(node: dict[str, Any]) -> bool:
     if any(word in auto.split() for word in SECRET_AUTOCOMPLETE):
         return True
     named = " ".join((attrs.get("name", ""), attrs.get("id", ""), attrs.get("autocomplete", "")))
-    return bool(SECRET_NAME_RE.search(named))
+    # Both spellings: ``apiKey`` matches as written, ``otpCode`` only once split.
+    return bool(SECRET_NAME_RE.search(named) or SECRET_NAME_RE.search(split_camel(named)))
 
 
 def closed_secret_count(root: Any) -> int:

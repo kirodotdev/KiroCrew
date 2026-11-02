@@ -367,18 +367,23 @@ describe('workspace tab close menu', () => {
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
 
-  it('the single × closes a dirty tab directly, without a confirmation', async () => {
-    // The frozen Goal says the single × is unchanged: it closes one tab the way
-    // it did on main, so even a dirty file goes straight through handleCloseTab.
-    // Only the close MENU items run through the batch path that confirms.
+  it('the single × asks before it discards a dirty tab', async () => {
+    // The editor is stubbed out here, so no tab guard is mounted and the ×
+    // takes the batch preflight; `sidePanelTabChipCloseGuard.test.tsx` covers
+    // the × asking through a mounted editor's own guard.
     renderPanel()
     act(() => {
       panelController.openFile('/tmp/draft.md', 'saved')
       panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
     })
     fireEvent.click(screen.getByRole('button', { name: 'Close tab' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('draft.md')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close tab' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
-    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('asks before a bulk close discards a clean file whose disk copy is gone', async () => {

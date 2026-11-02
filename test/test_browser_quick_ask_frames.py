@@ -688,14 +688,26 @@ async def test_typing_into_a_cross_origin_frame_is_judged_by_that_frame(
 async def test_frame_secrets_count_toward_the_screenshot_guard(tmp_path: Path) -> None:
     ctx = _ctx(
         FakeFrames(counts=1),
-        {"askedValues": 0, "passwordBoxes": 0, "unreadableFrames": 0, "framesSeen": 0},
+        {
+            "askedValues": 0,
+            "passwordBoxes": 0,
+            "secretValues": 0,
+            "unreadableFrames": 0,
+            "framesSeen": 0,
+        },
         [],
         tmp_path,
     )
     assert (await ops.run_op("screenshot", {}, ctx))["code"] == "asked_value_on_page"
     ctx = _ctx(
         FakeFrames(counts=0),
-        {"askedValues": 0, "passwordBoxes": 0, "unreadableFrames": 0, "framesSeen": 0},
+        {
+            "askedValues": 0,
+            "passwordBoxes": 0,
+            "secretValues": 0,
+            "unreadableFrames": 0,
+            "framesSeen": 0,
+        },
         [],
         tmp_path,
     )
@@ -707,7 +719,13 @@ async def test_an_object_document_refuses_the_screenshot_with_the_live_view_open
 ) -> None:
     # The live view counts cross-origin frames inside, but nothing walks an
     # object's document, so a same-origin HTML object holding an OTP still refuses.
-    page = {"askedValues": 0, "passwordBoxes": 0, "unreadableFrames": 1, "framesSeen": 1}
+    page = {
+        "askedValues": 0,
+        "passwordBoxes": 0,
+        "secretValues": 0,
+        "unreadableFrames": 1,
+        "framesSeen": 1,
+    }
     ctx = _ctx(FakeFrames(counts=0), page, [], tmp_path)
     out = await ops.run_op("screenshot", {}, ctx)
     assert out["code"] == "unreadable_frame_on_page"

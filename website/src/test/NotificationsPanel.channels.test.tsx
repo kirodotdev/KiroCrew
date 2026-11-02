@@ -20,6 +20,7 @@ const CHANNELS: NotificationChannel[] = [
   { channel: 'system.heartbeat', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: { muted: true } },
   { channel: 'system.member', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: {} },
   { channel: 'system.apps', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+  { channel: 'system.turn', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
   { channel: 'oncall-radar.ticket-update', source: 'oncall-radar', registered: true, default_priority: 'default', protected: false, settings: { priority: 'critical' } },
   { channel: 'oncall-radar.sync-status', source: 'oncall-radar', registered: false, default_priority: null, protected: false, settings: { muted: true } },
 ]
@@ -70,6 +71,14 @@ describe('NotificationsPanel channels section', () => {
     renderPanel()
     expect(await screen.findByText('App updates')).toBeTruthy()
     expect(screen.queryByText('apps')).toBeNull()
+  })
+
+  it('names the dead-turn channel in words, not by its "turn" id', async () => {
+    // The bare id "turn" reads as the "turn" sound category (conversation
+    // handoffs); the label says failure so a user knows what muting costs.
+    renderPanel()
+    expect(await screen.findByText('Chat errors')).toBeTruthy()
+    expect(screen.queryByText('turn')).toBeNull()
   })
 
   it('renders protected channels locked without controls', async () => {

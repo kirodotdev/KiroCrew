@@ -175,6 +175,29 @@ describe('a quick-ask field the person filled inside an open shadow root', () =>
   })
 })
 
+describe('the replay mask names filled secret fields by the shared rule', () => {
+  it('names an autocomplete-only one-time-code textarea, any case, and a camelCase key', () => {
+    withBoxes()
+    setHtmlFields([
+      ['textarea', { name: 'code', autocomplete: 'one-time-code' }],
+      ['input', { name: 'pin', autocomplete: 'One-Time-Code' }],
+      ['input', { name: 'apiKey' }],
+      ['input', { name: 'otpCode' }],
+      ['input', { name: 'email' }],
+    ])
+    expect(evalMaskReply().named).toHaveLength(4)
+  })
+})
+
+function setHtmlFields(fields: Array<[string, Record<string, string>]>): void {
+  for (const [tag, attrs] of fields) {
+    const el = document.createElement(tag) as HTMLInputElement
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
+    document.body.appendChild(el)
+    el.value = 'x'
+  }
+}
+
 describe('the top-document case still works the same', () => {
   it('a plain focused password input is reported and masked', () => {
     withBoxes()

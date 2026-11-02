@@ -367,6 +367,7 @@ def test_keep_awake_starts_while_a_collaborator_is_here_and_stops_when_idle(
 
     class Proc:
         pid = 4321
+        returncode = None
 
         def poll(self) -> None:
             return None
@@ -376,7 +377,13 @@ def test_keep_awake_starts_while_a_collaborator_is_here_and_stops_when_idle(
         return Proc()
 
     monkeypatch.setattr(power.subprocess, "Popen", popen)
-    monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid: killed.append(pid))
+    # The release signals the helper's process group; the fake pid must never
+    # reach a real one.
+    monkeypatch.setattr(
+        platform_compat,
+        "kill_process_group",
+        lambda pgid, sig=platform_compat.SIGTERM: killed.append(pgid),
+    )
     monkeypatch.setattr(
         power, "_set_windows_execution_state", lambda keep_awake: windows.append(keep_awake) or True
     )

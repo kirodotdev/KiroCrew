@@ -237,6 +237,15 @@ properties matter beyond the classification:
 A malformed regex in the config is reported as malformed config with the
 offending pattern, never a crash mid-cycle.
 
+The handled-set state file is read two ways. The patrol reads it tolerantly: a
+missing, unreadable or corrupt file reads as an empty set, so the worst case is a
+handled signal firing again, never a crashed cycle. `--mark-handled` writes the
+set back, so it reads strictly: a present file that cannot be read, or is not
+UTF-8 JSON, is refused with exit 4 and left byte-for-byte unchanged, since
+writing past it would replace every recorded disposition with the one being
+marked. A missing file starts an empty set, and JSON of the wrong shape, which
+holds no handled set to lose, is rewritten as a valid one.
+
 The banned-process scan's contract:
 
 - **Built-in rules.** The pytest rule reports a run whose explicit worker count

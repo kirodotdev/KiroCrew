@@ -667,11 +667,16 @@
           "write": "Write"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Could not check for an existing review session — retrying on refresh",
           "open_ai_code_review_session_for_this": "Open an AI code-review chat session for this {{label}}",
           "resume_ai_code_review_session_for_this": "Resume the AI code-review chat session for this {{label}}"
         },
         "readOnlyTag": {
           "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access"
+        },
+        "settingsSection": {
+          "account": "Account",
+          "repositories": "Repositories"
         }
       },
       "connectPanel": {
@@ -690,6 +695,9 @@
         "try_again": "Try again"
       },
       "connectRepoModal": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting": "Connecting {{done}} of {{total}}…"
       },
       "views": {
@@ -1028,12 +1036,23 @@
           "crew_sort_created": "Created"
         },
         "links": {
+          "merge_request": "merge request",
+          "merge_request_title": "Merge Request",
+          "merge_requests": "merge requests",
+          "merge_requests_title": "Merge Requests",
+          "pull_request": "pull request",
+          "pull_request_title": "Pull Request",
+          "pull_requests": "pull requests",
+          "pull_requests_title": "Pull Requests",
           "read_only_here_apply_in_provider": "Read-only here — {{provider}} repositories can't be changed from {{productName}}; apply the change in {{provider}}",
           "tracked_items_work_items": "Work Items",
           "tracked_items_issues": "Issues"
         }
       },
       "welcomeCarousel": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting_n_of_total": "Connecting {{n}} of {{total}}…",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar reads what your bots already found instead of starting over.",
         "slide_bots_title": "Reads What Your Bots Already Told You",
@@ -1634,6 +1653,7 @@
     "voicePlaybackNotice": {
       "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
       "consent_required": "{{speak}} needs Amazon Polly confirmed for this AWS profile and region. Confirm it in the Text-to-speech settings, then try again.",
+      "polly_rejected": "Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.",
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
       "settings": "{{speak}} settings (Text-to-speech)"
     },
@@ -4564,6 +4584,13 @@
       "read_failed_title": "Could not check your remote crews' versions after this update",
       "unread": "No version from {{names}} yet, so they may be behind too."
     },
+    "kasEngineNotice": {
+      "downloading": "Downloading {{productName}}'s KAS engine. Your chat starts when it finishes.",
+      "downloading_progress": "Downloading {{productName}}'s KAS engine ({{percent}}). Your chat starts when it finishes.",
+      "failed_title": "Could not install {{productName}}'s KAS engine",
+      "retry": "Retry",
+      "retry_failed": "The retry did not start ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro sign-in expired",
       "open_sign_in": "Open sign-in settings",
@@ -4864,9 +4891,6 @@
       "no_enabled_apps": "No enabled apps",
       "removing": "Removing…",
       "search_library": "Search library",
-      "show_disabled_one": "Show {{count}} disabled app",
-      "show_disabled_other": "Show {{count}} disabled apps",
-      "show_enabled_only": "Show enabled only",
       "try_a_different_search_term": "Try a different search term",
       "update_all": "Update All",
       "the_app_itself_is_managed_externally": "The app itself is managed externally.",
@@ -4928,7 +4952,13 @@
       "col_status": "Status",
       "col_est_cost": "Est. Cost",
       "col_profile": "Profile",
-      "col_expiry": "Expiry"
+      "col_expiry": "Expiry",
+      "col_account": "Account",
+      "col_region": "Region",
+      "col_actions": "Actions",
+      "col_type": "Type",
+      "col_url": "URL",
+      "col_cost": "Cost"
     },
     "artifactDetailPage": {
       "published_to_provider": "Published to {{provider}}",
@@ -5305,6 +5335,7 @@
         "restore_retry": "Retry",
         "send_blocked_not_loaded": "this side conversation hasn't loaded yet",
         "steer_demoted_to_queue": "The turn ended — queued instead",
+        "closed_in_another_tab": "Refreshing the context in another tab cleared this side chat",
         "stop_failed": "Could not stop the side turn — try again"
       },
       "sidePanel": {
@@ -6934,11 +6965,12 @@
       "pin_to_sidebar": "Pin {{name}} to the sidebar",
       "tile_actions": "Actions for {{name}}",
       "tile_details": "Details",
-      "tile_disabled": "Disabled",
       "tile_more_actions": "More actions for {{name}}",
       "tile_no_sidebar_page": "No sidebar page",
       "tile_pinned": "In sidebar",
       "tile_unpinned": "Not in sidebar",
+      "section_enabled": "Enabled",
+      "section_disabled": "Disabled",
       "unpin": "Unpin",
       "unpin_from_sidebar": "Unpin {{name}} from the sidebar",
       "installed_apps": "Installed apps"
@@ -9515,7 +9547,9 @@
         "installing_progress": "Installing KAS {{version}}: {{percent}} ({{done}} of {{total}})",
         "install_failed": "Could not start the KAS engine install.",
         "save_failed": "Could not save the KAS engine setting.",
-        "status_unavailable": "Could not read the KAS engine status."
+        "status_unavailable": "Could not read the KAS engine status.",
+        "route_auto_no_kiro_cli": "Kiro CLI is not installed, so KAS runs on {{productName}}'s own engine.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI is not signed in, so KAS runs on {{productName}}'s own engine."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

@@ -353,6 +353,11 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} पुनः आरंभ नहीं हो पा रहा है",
+      "restart_exhausted_message_one": "{{app}} लगातार {{count}} बार पुनः आरंभ होने में विफल रहा है और हर कुछ मिनट में प्रयास करता रहेगा। अभी पुनः प्रयास करने के लिए, {{app}} को अक्षम करके फिर से सक्षम करो।",
+      "restart_exhausted_message_other": "{{app}} लगातार {{count}} बार पुनः आरंभ होने में विफल रहा है और हर कुछ मिनट में प्रयास करता रहेगा। अभी पुनः प्रयास करने के लिए, {{app}} को अक्षम करके फिर से सक्षम करो।"
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "इस प्रति को तैयार करने वाले के लिए विवरण",
       "refused_page_handoff_note": "एजेंट से पूछने पर एक चैट खुलती है जिसमें ये विवरण पहले से संलग्न होते हैं।",
@@ -1605,16 +1610,22 @@
       },
       "composer": {
         "add_screens": "स्क्रीन जोड़ें",
+        "add_screenshots_or_paste_a_link_first": "पहले स्क्रीनशॉट जोड़ो या लिंक चिपकाओ",
         "clear_all": "सभी हटाएँ",
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "स्क्रीनशॉट यहाँ छोड़ें — या ब्राउज़ करने के लिए क्लिक करें",
+        "fix_my_access": "मेरी पहुँच ठीक करो",
         "fix_the_link": "लिंक ठीक करें",
+        "hide_access_steps": "पहुँच के चरण छिपाओ",
         "move_earlier": "पहले ले जाएँ",
         "move_later": "बाद में ले जाएँ",
         "one_screen_or_several_in_order_for_a_flow_png_jp": "एक स्क्रीन, या फ़्लो के लिए क्रम में कई · PNG, JPG, WebP",
         "remove": "हटाएँ",
+        "remove_name": "{{name}} हटाओ",
         "send_screenshots": "स्क्रीनशॉट भेजें",
+        "start_the_critique": "समीक्षा शुरू करो",
+        "step_n": "चरण {{n}}",
         "try_again": "फिर से कोशिश करें",
         "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "इसके बजाय लोकल फ़ोल्डर इस्तेमाल करें"
@@ -1664,28 +1675,36 @@
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "एक समीक्षा अभी चल रही है — देखने के लिए क्लिक करें",
         "across_the_flow": "पूरे फ़्लो में",
+        "click_to_enlarge": "बड़ा करने के लिए क्लिक करो",
         "close_esc": "बंद करें (Esc)",
         "couldn_t_see": "देख नहीं सके",
         "couldn_t_tell_what_that_is_give_me_a_figma_link": "समझ नहीं आया कि यह क्या है। मुझे Figma लिंक, GitHub/GitLab/Bitbucket रेपो, कोई absolute लोकल पाथ, या पहले से चल रहा URL दो।",
         "critique_ready": "समीक्षा तैयार",
+        "critique_untitled": "समीक्षा",
         "design_critique": "Design Critique",
         "enlarge": "बड़ा करें",
         "full_size": "पूरा आकार",
         "full_size_view": "पूरे आकार में देखें",
+        "history_count": "इतिहास ({{n}})",
         "i_got_in_but_there_s_nothing_in_there_i_can": "मैं अंदर पहुँच गया, पर वहाँ रेंडर करने लायक कुछ नहीं है। बेहतर होगा स्क्रीनशॉट भेज दें।",
         "new": "नया",
         "no_screens_to_show_the_critic_couldn_t_get_pixel": "दिखाने के लिए कोई स्क्रीन नहीं — समीक्षक इसके पिक्सेल नहीं ले सका। पैनल में \"देख नहीं सके\" देखें।",
         "nothing_major": "कुछ बड़ा नहीं",
+        "numbered_pins_mark_issues_on_this_screen": "नंबर वाले पिन इस स्क्रीन की समस्याएँ दिखाते हैं",
         "on_screen": "● स्क्रीन पर",
         "only_added_the_first_room_the_limit_is_max_screens": "सिर्फ़ पहली {{room}} जोड़ी गईं — सीमा {{max}} स्क्रीन है।",
+        "pick_a_step_above": "ऊपर कोई चरण चुनो",
         "point_me_at_a_running_url": "मुझे कोई चालू URL बताएँ",
         "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "मुझे कोई स्क्रीन — या पूरा फ़्लो — दिखाएँ, और मैं उसे एक डिज़ाइनर दोस्त की तरह पढ़ूँगा: क्या अच्छा चल रहा है, क्या कसना है, और क्यों।",
         "running": "चल रही है",
+        "screen_heading": "स्क्रीन",
+        "screens_in_order": "क्रम से स्क्रीन",
         "see_an_example": "एक उदाहरण देखें",
         "send_screenshots": "स्क्रीनशॉट भेजें",
         "show_this_screen": "यह स्क्रीन दिखाएँ",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "नई समीक्षा शुरू करें — जो पहले से चल रहा है वह चलता रहेगा",
+        "step_n": "चरण {{n}}",
         "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
         "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
         "switch_critique": "समीक्षा बदलें",
@@ -1702,6 +1721,9 @@
       },
       "findingRow": {
         "based_on": "किस आधार पर",
+        "finding": "निष्कर्ष",
+        "fix": "सुधार",
+        "suggestion": "सुझाव",
         "what_i_saw": "मैंने क्या देखा",
         "where": "कहाँ"
       },
@@ -2390,13 +2412,16 @@
           "repositories": "रिपॉज़िटरी"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "मौजूदा रिव्यू सेशन की जाँच नहीं हो सकी — रिफ़्रेश पर फिर कोशिश होगी",
           "open_ai_code_review_session_for_this": "इस {{label}} के लिए AI कोड-समीक्षा चैट सेशन खोलो",
           "resume_ai_code_review_session_for_this": "इस {{label}} के लिए AI कोड-समीक्षा चैट सेशन फिर शुरू करो",
           "review": "समीक्षा करें"
         },
         "settingsSection": {
+          "account": "खाता",
           "connect_repo": "रिपो कनेक्ट करें",
           "general": "सामान्य",
+          "repositories": "रिपॉज़िटरी",
           "repository_settings": "रिपॉज़िटरी सेटिंग",
           "gitlab_groups": "GitLab समूह"
         },
@@ -2498,7 +2523,10 @@
       "connectRepoModal": {
         "close": "बंद करें",
         "close_connect_dialog": "कनेक्ट डायलॉग बंद करें",
+        "connect": "कनेक्ट करो",
         "connect_a_repo": "रिपो कनेक्ट करें",
+        "connect_count_one": "{{count}} कनेक्ट करो",
+        "connect_count_other": "{{count}} कनेक्ट करो",
         "connecting": "{{total}} में से {{done}} कनेक्ट हो रहे हैं…"
       },
       "issueRadarPage": {
@@ -2513,6 +2541,14 @@
           "crew_sort_created": "बनाया गया"
         },
         "links": {
+          "merge_request": "मर्ज रिक्वेस्ट",
+          "merge_request_title": "मर्ज रिक्वेस्ट",
+          "merge_requests": "मर्ज रिक्वेस्ट",
+          "merge_requests_title": "मर्ज रिक्वेस्ट",
+          "pull_request": "पुल रिक्वेस्ट",
+          "pull_request_title": "पुल रिक्वेस्ट",
+          "pull_requests": "पुल रिक्वेस्ट",
+          "pull_requests_title": "पुल रिक्वेस्ट",
           "read_only_here_apply_in_provider": "यहाँ केवल-पढ़ने योग्य — {{provider}} रिपॉज़िटरी को {{productName}} से नहीं बदला जा सकता; परिवर्तन {{provider}} में करो",
           "tracked_items_work_items": "वर्क आइटम",
           "tracked_items_issues": "इश्यू"
@@ -3048,6 +3084,9 @@
       "welcomeCarousel": {
         "back": "पीछे",
         "carl_sagan": "— Carl Sagan",
+        "connect": "कनेक्ट करो",
+        "connect_count_one": "{{count}} कनेक्ट करो",
+        "connect_count_other": "{{count}} कनेक्ट करो",
         "connecting_n_of_total": "{{total}} में से {{n}} कनेक्ट हो रहे हैं…",
         "next": "आगे",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar शुरू से शुरू करने के बजाय वही पढ़ता है जो तुम्हारे बॉट पहले ही खोज चुके हैं।",
@@ -5743,6 +5782,7 @@
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचो और फिर कोशिश करो।",
       "consent_required": "“{{speak}}” के लिए इस AWS प्रोफ़ाइल और क्षेत्र में Amazon Polly के उपयोग की पुष्टि करनी होगी। टेक्स्ट-टू-स्पीच सेटिंग में इसकी पुष्टि करो, फिर दोबारा कोशिश करो।",
+      "polly_rejected": "Amazon Polly चुने गए AWS क्षेत्र में चुनी गई आवाज़ या इंजन नहीं देता। टेक्स्ट-टू-स्पीच सेटिंग में कोई दूसरी “आवाज़”, “इंजन” या “क्षेत्र” चुनो।",
       "blocked": "ब्राउज़र ने ऑडियो का स्वतः चलना रोक दिया। पूरे हो चुके जवाब के नीचे “{{moreActions}}” खोलो और “{{speak}}” चुनो।",
       "settings": "“{{speak}}” की सेटिंग (टेक्स्ट-टू-स्पीच)"
     },
@@ -6180,7 +6220,6 @@
         "dismiss": "खारिज करें",
         "enable": "सक्षम करें",
         "enabled": "सक्षम",
-        "open": "खोलें",
         "remote_environment_detected": "रिमोट परिवेश पाया गया",
         "run_this_on_your_local_machine": "इसे अपनी स्थानीय मशीन पर चलाएँ:",
         "uninstall": "अनइंस्टॉल करें",
@@ -10476,6 +10515,13 @@
       "read_failed_title": "इस अपडेट के बाद तुम्हारे रिमोट क्रू के संस्करण जाँचे नहीं जा सके",
       "unread": "{{names}} से अभी तक कोई संस्करण नहीं मिला, इसलिए ये भी पीछे हो सकते हैं।"
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}} का KAS इंजन डाउनलोड हो रहा है। पूरा होने पर तुम्हारी चैट शुरू होगी।",
+      "downloading_progress": "{{productName}} का KAS इंजन डाउनलोड हो रहा है ({{percent}})। पूरा होने पर तुम्हारी चैट शुरू होगी।",
+      "failed_title": "{{productName}} का KAS इंजन इंस्टॉल नहीं हो सका",
+      "retry": "फिर से कोशिश करो",
+      "retry_failed": "दोबारा कोशिश शुरू नहीं हुई ({{reason}})।"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro साइन-इन समाप्त हो गया",
       "open_sign_in": "साइन-इन सेटिंग्स खोलो",
@@ -10996,9 +11042,6 @@
       "no_apps_available": "कोई ऐप उपलब्ध नहीं",
       "no_apps_installed_yet": "अभी कोई ऐप इंस्टॉल नहीं है",
       "no_enabled_apps": "कोई सक्षम ऐप नहीं",
-      "show_disabled_one": "{{count}} अक्षम ऐप दिखाओ",
-      "show_disabled_other": "{{count}} अक्षम ऐप दिखाओ",
-      "show_enabled_only": "केवल सक्षम दिखाओ",
       "no_matching_apps": "कोई मेल खाता ऐप नहीं",
       "not_installed_from_apps_your_local_source_code_w": "ऐप्स से इंस्टॉल नहीं किया गया — आपके लोकल सोर्स कोड पर कोई असर नहीं पड़ेगा।",
       "removing": "हटाया जा रहा है…",
@@ -11201,7 +11244,13 @@
       "col_status": "स्थिति",
       "col_est_cost": "अनु. लागत",
       "col_profile": "प्रोफ़ाइल",
-      "col_expiry": "समय-सीमा"
+      "col_expiry": "समय-सीमा",
+      "col_account": "खाता",
+      "col_region": "क्षेत्र",
+      "col_actions": "कार्रवाइयाँ",
+      "col_type": "प्रकार",
+      "col_url": "लिंक",
+      "col_cost": "लागत"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} पर प्रकाशित",
@@ -12028,6 +12077,7 @@
         "restore_retry": "फिर से कोशिश करो",
         "send_blocked_not_loaded": "यह साइड बातचीत अभी लोड नहीं हुई है",
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
+        "closed_in_another_tab": "दूसरे टैब में संदर्भ ताज़ा करने से यह साइड चैट साफ़ हो गई",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
         "turn_other": "{{count}} टर्न",
@@ -14397,7 +14447,9 @@
         "installing_progress": "KAS {{version}} इंस्टॉल हो रहा है: {{percent}} ({{total}} में से {{done}})",
         "install_failed": "KAS इंजन का इंस्टॉलेशन शुरू नहीं हो सका।",
         "save_failed": "KAS इंजन की सेटिंग सेव नहीं हो सकी।",
-        "status_unavailable": "KAS इंजन की स्थिति पढ़ी नहीं जा सकी।"
+        "status_unavailable": "KAS इंजन की स्थिति पढ़ी नहीं जा सकी।",
+        "route_auto_no_kiro_cli": "Kiro CLI इंस्टॉल नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI में साइन इन नहीं है, इसलिए KAS {{productName}} के अपने इंजन पर चलता है।"
       },
       "kiroSignInCard": {
         "title": "Kiro साइन-इन",
@@ -15026,11 +15078,12 @@
       "pin_to_sidebar": "{{name}} को साइडबार में पिन करें",
       "tile_actions": "{{name}} के लिए एक्शन",
       "tile_details": "विवरण",
-      "tile_disabled": "अक्षम",
       "tile_more_actions": "{{name}} के लिए और एक्शन",
       "tile_no_sidebar_page": "कोई साइडबार पेज नहीं",
       "tile_pinned": "साइडबार में",
       "tile_unpinned": "साइडबार में नहीं",
+      "section_enabled": "सक्रिय",
+      "section_disabled": "अक्षम",
       "unpin": "अनपिन करें",
       "unpin_from_sidebar": "{{name}} को साइडबार से अनपिन करें",
       "installed_apps": "इंस्टॉल किए गए ऐप"
@@ -18112,6 +18165,7 @@
         "custom_sound_error_file_gone": "इस ध्वनि की फ़ाइल अब इस ब्राउज़र में सहेजी नहीं है, इसलिए इसे वापस नहीं लाया जा सकता।",
         "channel_member": "साथियों के संदेश",
         "channel_apps": "ऐप अपडेट",
+        "channel_turn": "चैट त्रुटियाँ",
         "push_section": "पुश सूचनाएं",
         "push_toggle_label": "{{productName}} बंद होने पर भी मुझे सूचित करो",
         "push_toggle_description": "{{productName}} बंद करने के बाद भी इस डिवाइस पर अलर्ट भेजता है। इसे बंद करते ही सिस्टम सूचनाएँ रुक जाती हैं।",

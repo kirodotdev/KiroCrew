@@ -38,15 +38,14 @@ def _pin_spec_permissions_cli(monkeypatch, which):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_agent_capabilities*.py modules calls monkeypatch.undo()
-def _accepting_kiro_cli(monkeypatch):
+def _accepting_kiro_cli(_floor_monkeypatch):
     """Every other test in the ``test_agent_capabilities*.py`` modules predates the gate
     and assumes it passes.
 
     The two tests that exercise the gate itself re-pin a refusing and an unknown
     release over this default.
     """
-    _pin_spec_permissions_cli(monkeypatch, "accepts")
+    _pin_spec_permissions_cli(_floor_monkeypatch, "accepts")
 
 
 @pytest.fixture(name="editor")

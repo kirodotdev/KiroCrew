@@ -337,6 +337,10 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}}이(가) 계속 다시 시작하지 못하고 있습니다",
+      "restart_exhausted_message_other": "{{app}}이(가) 연속 {{count}}회 다시 시작에 실패했으며 몇 분마다 계속 재시도합니다. 지금 다시 시도하려면 {{app}}을(를) 비활성화했다가 다시 활성화하세요."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "이 사본을 구성한 담당자를 위한 세부 정보",
       "refused_page_handoff_note": "에이전트에게 질문하면 이 세부 정보가 첨부된 채로 채팅이 열립니다.",
@@ -1644,16 +1648,22 @@
       },
       "composer": {
         "add_screens": "화면 추가",
+        "add_screenshots_or_paste_a_link_first": "먼저 스크린샷을 추가하거나 링크를 붙여넣으세요",
         "clear_all": "모두 지우기",
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "스크린샷을 끌어다 놓거나 클릭해서 찾아보세요",
+        "fix_my_access": "내 액세스 수정",
         "fix_the_link": "링크 수정",
+        "hide_access_steps": "액세스 단계 숨기기",
         "move_earlier": "앞으로 이동",
         "move_later": "뒤로 이동",
         "one_screen_or_several_in_order_for_a_flow_png_jp": "화면 하나, 또는 플로 순서대로 여러 개 · PNG, JPG, WebP",
         "remove": "삭제",
+        "remove_name": "{{name}} 삭제",
         "send_screenshots": "스크린샷 보내기",
+        "start_the_critique": "비평 시작",
+        "step_n": "{{n}}단계",
         "try_again": "다시 시도",
         "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "대신 로컬 폴더 사용"
@@ -1703,28 +1713,36 @@
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "비평이 아직 실행 중입니다 — 클릭해서 지켜보세요",
         "across_the_flow": "플로 전반",
+        "click_to_enlarge": "클릭하여 확대",
         "close_esc": "닫기 (Esc)",
         "couldn_t_see": "볼 수 없었던 것",
         "couldn_t_tell_what_that_is_give_me_a_figma_link": "이것이 무엇인지 알 수 없습니다. Figma 링크, GitHub/GitLab/Bitbucket 저장소, 절대 로컬 경로 또는 이미 서비스 중인 URL을 알려주세요.",
         "critique_ready": "비평 완료",
+        "critique_untitled": "비평",
         "design_critique": "Design Critique",
         "enlarge": "확대",
         "full_size": "실제 크기",
         "full_size_view": "실제 크기로 보기",
+        "history_count": "기록 ({{n}})",
         "i_got_in_but_there_s_nothing_in_there_i_can": "들어가긴 했는데, 그 안에 제가 렌더링할 수 있는 게 없네요. 대신 스크린샷을 드롭해 주세요.",
         "new": "새로 만들기",
         "no_screens_to_show_the_critic_couldn_t_get_pixel": "표시할 화면이 없습니다 — 이 항목의 픽셀을 가져오지 못했습니다. 패널의 ‘볼 수 없었던 것’을 확인하세요.",
         "nothing_major": "큰 문제 없음",
+        "numbered_pins_mark_issues_on_this_screen": "번호 핀은 이 화면의 문제를 표시합니다",
         "on_screen": "● 화면 내",
         "only_added_the_first_room_the_limit_is_max_screens": "처음 {{room}}장만 추가했습니다 — 상한은 {{max}}장입니다.",
+        "pick_a_step_above": "위에서 단계를 선택하세요",
         "point_me_at_a_running_url": "실행 중인 URL 알려 주기",
         "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "화면 하나, 또는 플로 전체를 알려 주세요 — 디자이너 친구처럼 읽어 드립니다. 잘 되고 있는 점, 다듬을 점, 그리고 그 이유까지.",
         "running": "실행 중",
+        "screen_heading": "화면",
+        "screens_in_order": "순서대로 본 화면",
         "see_an_example": "예시 보기",
         "send_screenshots": "스크린샷 보내기",
         "show_this_screen": "이 화면 표시",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "새 비평 시작 — 이미 실행 중인 작업은 계속됩니다",
+        "step_n": "{{n}}단계",
         "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
         "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
         "switch_critique": "비평 전환",
@@ -1741,6 +1759,9 @@
       },
       "findingRow": {
         "based_on": "근거",
+        "finding": "발견 사항",
+        "fix": "수정 방법",
+        "suggestion": "제안",
         "what_i_saw": "본 내용",
         "where": "위치"
       },
@@ -2416,13 +2437,16 @@
           "repositories": "저장소"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "기존 리뷰 세션을 확인하지 못했습니다 — 새로 고칠 때 다시 시도합니다",
           "open_ai_code_review_session_for_this": "이 {{label}}에 대한 AI 코드 리뷰 채팅 세션 열기",
           "resume_ai_code_review_session_for_this": "이 {{label}}에 대한 AI 코드 리뷰 채팅 세션 재개",
           "review": "리뷰"
         },
         "settingsSection": {
+          "account": "계정",
           "connect_repo": "저장소 연결",
           "general": "일반",
+          "repositories": "저장소",
           "repository_settings": "저장소 설정",
           "gitlab_groups": "GitLab 그룹"
         },
@@ -2523,7 +2547,9 @@
       "connectRepoModal": {
         "close": "닫기",
         "close_connect_dialog": "연결 대화 상자 닫기",
+        "connect": "연결",
         "connect_a_repo": "저장소 연결",
+        "connect_count_other": "{{count}}개 연결",
         "connecting": "{{total}}개 중 {{done}}개 연결 중…"
       },
       "issueRadarPage": {
@@ -2538,6 +2564,14 @@
           "crew_sort_created": "생성됨"
         },
         "links": {
+          "merge_request": "머지 리퀘스트",
+          "merge_request_title": "머지 리퀘스트",
+          "merge_requests": "머지 리퀘스트",
+          "merge_requests_title": "머지 리퀘스트",
+          "pull_request": "풀 리퀘스트",
+          "pull_request_title": "풀 리퀘스트",
+          "pull_requests": "풀 리퀘스트",
+          "pull_requests_title": "풀 리퀘스트",
           "read_only_here_apply_in_provider": "여기서는 읽기 전용입니다 — {{provider}} 저장소는 {{productName}}에서 변경할 수 없습니다. {{provider}}에서 변경하세요",
           "tracked_items_work_items": "작업 항목",
           "tracked_items_issues": "이슈"
@@ -3063,6 +3097,8 @@
       "welcomeCarousel": {
         "back": "뒤로",
         "carl_sagan": "— Carl Sagan",
+        "connect": "연결",
+        "connect_count_other": "{{count}}개 연결",
         "connecting_n_of_total": "{{total}}개 중 {{n}}개 연결 중…",
         "next": "다음",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar는 처음부터 다시 시작하지 않고 봇이 이미 찾아낸 내용을 읽습니다.",
@@ -5633,6 +5669,7 @@
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",
       "consent_required": "‘{{speak}}’에서 이 AWS 프로필과 리전의 Amazon Polly 사용을 확인해야 합니다. 텍스트 음성 변환 설정에서 확인한 다음 다시 시도하세요.",
+      "polly_rejected": "Amazon Polly가 선택한 AWS 리전에서 선택한 음성이나 엔진을 제공하지 않습니다. 텍스트 음성 변환 설정에서 다른 ‘음성’, ‘엔진’ 또는 ‘리전’을 선택하세요.",
       "blocked": "브라우저가 자동 재생을 차단했습니다. 완료된 답변 아래에서 ‘{{moreActions}}’을 열고 ‘{{speak}}’를 선택하세요.",
       "settings": "‘{{speak}}’ 설정 (텍스트 음성 변환)"
     },
@@ -6035,7 +6072,6 @@
         "dismiss": "닫기",
         "enable": "활성화",
         "enabled": "활성화됨",
-        "open": "열기",
         "remote_environment_detected": "원격 환경이 감지되었습니다",
         "run_this_on_your_local_machine": "로컬 머신에서 다음을 실행하세요:",
         "uninstall": "제거",
@@ -10312,6 +10348,13 @@
       "read_failed_title": "이번 업데이트 후 원격 크루의 버전을 확인할 수 없습니다",
       "unread": "{{names}}에서 아직 버전 정보가 없으므로 이들도 뒤처져 있을 수 있습니다."
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}}의 KAS 엔진을 다운로드하는 중입니다. 완료되면 채팅이 시작됩니다.",
+      "downloading_progress": "{{productName}}의 KAS 엔진을 다운로드하는 중입니다({{percent}}). 완료되면 채팅이 시작됩니다.",
+      "failed_title": "{{productName}}의 KAS 엔진을 설치할 수 없습니다",
+      "retry": "다시 시도",
+      "retry_failed": "다시 시도를 시작하지 못했습니다({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro 로그인이 만료됨",
       "open_sign_in": "로그인 설정 열기",
@@ -10827,8 +10870,6 @@
       "no_apps_available": "사용 가능한 앱이 없습니다",
       "no_apps_installed_yet": "아직 설치된 앱이 없습니다",
       "no_enabled_apps": "활성화된 앱이 없습니다",
-      "show_disabled_other": "비활성화된 앱 {{count}}개 표시",
-      "show_enabled_only": "활성화된 앱만 표시",
       "no_matching_apps": "일치하는 앱이 없습니다",
       "not_installed_from_apps_your_local_source_code_w": "앱에서 설치되지 않았습니다 — 로컬 소스 코드는 영향을 받지 않습니다.",
       "removing": "제거 중…",
@@ -11025,7 +11066,13 @@
       "col_status": "상태",
       "col_est_cost": "예상 비용",
       "col_profile": "프로필",
-      "col_expiry": "만료"
+      "col_expiry": "만료",
+      "col_account": "계정",
+      "col_region": "리전",
+      "col_actions": "작업",
+      "col_type": "유형",
+      "col_url": "링크",
+      "col_cost": "비용"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}에 게시됨",
@@ -11841,6 +11888,7 @@
         "restore_retry": "다시 시도",
         "send_blocked_not_loaded": "이 사이드 대화를 아직 불러오지 못했습니다",
         "steer_demoted_to_queue": "턴이 끝나 대기열에 추가했습니다",
+        "closed_in_another_tab": "다른 탭에서 컨텍스트를 새로 고쳐 이 사이드 채팅이 지워졌습니다",
         "thinking": "생각 중…",
         "turn_other": "{{count}}턴",
         "stop_failed": "사이드 턴을 중지하지 못했습니다 — 다시 시도하세요",
@@ -14126,7 +14174,9 @@
         "installing_progress": "KAS {{version}} 설치 중: {{percent}} ({{done}} / {{total}})",
         "install_failed": "KAS 엔진 설치를 시작할 수 없습니다.",
         "save_failed": "KAS 엔진 설정을 저장할 수 없습니다.",
-        "status_unavailable": "KAS 엔진 상태를 읽을 수 없습니다."
+        "status_unavailable": "KAS 엔진 상태를 읽을 수 없습니다.",
+        "route_auto_no_kiro_cli": "Kiro CLI가 설치되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI에 로그인되어 있지 않아 KAS가 {{productName}} 자체 엔진에서 실행됩니다."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",
@@ -14748,11 +14798,12 @@
       "pin_to_sidebar": "{{name}}을(를) 사이드바에 고정",
       "tile_actions": "{{name}}의 작업",
       "tile_details": "세부 정보",
-      "tile_disabled": "비활성화됨",
       "tile_more_actions": "{{name}}의 추가 작업",
       "tile_no_sidebar_page": "사이드바 페이지 없음",
       "tile_pinned": "사이드바에 있음",
       "tile_unpinned": "사이드바에 없음",
+      "section_enabled": "활성화됨",
+      "section_disabled": "비활성화됨",
       "unpin": "고정 해제",
       "unpin_from_sidebar": "사이드바에서 {{name}} 고정 해제",
       "installed_apps": "설치된 앱"
@@ -17787,6 +17838,7 @@
         "custom_sound_error_file_gone": "이 소리의 파일이 이 브라우저에 더 이상 저장되어 있지 않아 되돌릴 수 없습니다.",
         "channel_member": "크루메이트 메시지",
         "channel_apps": "앱 업데이트",
+        "channel_turn": "채팅 오류",
         "push_section": "푸시 알림",
         "push_toggle_label": "{{productName}}이(가) 닫혀 있어도 알림 받기",
         "push_toggle_description": "{{productName}}을(를) 닫은 뒤에도 이 기기로 알림을 보냅니다. 시스템 알림은 닫으면 멈춥니다.",

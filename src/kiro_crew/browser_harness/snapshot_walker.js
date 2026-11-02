@@ -36,6 +36,16 @@
     "switch": 1, combobox: 1, textbox: 1
   };
   var SECRET_NAME_RE = /(^|[^a-z])(password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey)([^a-z]|$)/i;
+  // `autocomplete` tokens that name a secret field whatever it is called.
+  // Kept equal to `dom_census.SECRET_AUTOCOMPLETE` by a test.
+  var SECRET_AUTOCOMPLETE = ["current-password", "new-password", "one-time-code", "cc-csc"];
+
+  // A camelCase name split into words (`otpCode` -> `otp Code`, `OTPCode` ->
+  // `OTP Code`), so the name rule's word boundaries see `otp` as a word. The rule
+  // is tested on the name as written too: `apiKey` splits to `api Key`.
+  function splitCamel(s) {
+    return s.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  }
 
   if (window.__kcRefDocObj !== document || !(window.__kcRefs instanceof Map)) {
     window.__kcRefs = new Map();
@@ -226,10 +236,14 @@
     // A field the person filled through a quick ask (quick_ask.py marks it before the
     // write): whatever it holds now is theirs, whatever its type or name says.
     if (asked(el)) return true;
-    return SECRET_NAME_RE.test(
-      (el.getAttribute("name") || "") + " " + (el.getAttribute("id") || "") + " " +
-      (el.getAttribute("autocomplete") || "")
-    );
+    var auto = String(el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+    for (var i = 0; i < SECRET_AUTOCOMPLETE.length; i++) {
+      if (auto.indexOf(SECRET_AUTOCOMPLETE[i]) !== -1) return true;
+    }
+    var named = (el.getAttribute("name") || "") + " " + (el.getAttribute("id") || "") + " " +
+      (el.getAttribute("autocomplete") || "");
+    // Both spellings: `apiKey` matches as written, `otpCode` only once split.
+    return SECRET_NAME_RE.test(named) || SECRET_NAME_RE.test(splitCamel(named));
   }
 
   // A same-origin frame's document, or null (a cross-origin frame, or not a frame).
@@ -810,6 +824,35 @@
           var inner = frameDoc(all[j]);
           if (!all[j].shadowRoot && !inner) continue;
           // Too deep to look: count it, so the screenshot is refused, not let through.
+          if (d >= 8) { n++; return; }
+          if (all[j].shadowRoot) walkRoot(all[j].shadowRoot, d + 1);
+          if (inner) walkRoot(inner, d + 1);
+        }
+      }
+      walkRoot(document, 0);
+      return n;
+    },
+
+    // How many filled fields `secretish` names hold a value the pixels would show:
+    // an OTP, card code or token typed into a text field during a takeover, which
+    // carries no quick-ask marker. A password input is left out (it renders as
+    // dots) and so is `type=hidden` (it never renders). Open shadow roots and
+    // same-origin frames are walked as `askedValues` walks them, and too deep to
+    // look counts as one. The agent's `screenshot` is refused while this is not 0.
+    secretValues: function () {
+      var n = 0;
+      function walkRoot(root, d) {
+        var found = root.querySelectorAll("input, textarea");
+        for (var i = 0; i < found.length; i++) {
+          var el = found[i];
+          var type = inputType(el);
+          if (type === "password" || type === "hidden") continue;
+          if (secretish(el) && !!el.value) n++;
+        }
+        var all = root.querySelectorAll("*");
+        for (var j = 0; j < all.length; j++) {
+          var inner = frameDoc(all[j]);
+          if (!all[j].shadowRoot && !inner) continue;
           if (d >= 8) { n++; return; }
           if (all[j].shadowRoot) walkRoot(all[j].shadowRoot, d + 1);
           if (inner) walkRoot(inner, d + 1);

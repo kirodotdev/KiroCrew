@@ -265,18 +265,24 @@ def _secret_attrs(node: dict[str, Any]) -> bool:
     if any(word in auto.split() for word in _SECRET_AUTOCOMPLETE):
         return True
     named = " ".join((attrs.get("name", ""), attrs.get("id", ""), attrs.get("autocomplete", "")))
-    return bool(_SECRET_NAME_RE.search(named))
+    return bool(_SECRET_NAME_RE.search(named) or _SECRET_NAME_RE.search(_split_camel(named)))
 
 
 #: The elements that can hold a document of their own.
 _FRAME_OWNERS = frozenset({"IFRAME", "FRAME", "OBJECT", "EMBED"})
 #: ``autocomplete`` tokens that name a secret (the replay mask's rule).
-_SECRET_AUTOCOMPLETE = ("current-password", "new-password", "one-time-code")
+_SECRET_AUTOCOMPLETE = ("current-password", "new-password", "one-time-code", "cc-csc")
 #: The walker's ``SECRET_NAME_RE`` (snapshot_walker.js), kept equal by a test.
 _SECRET_NAME_RE = re.compile(
     r"(^|[^a-z])(password|passwd|pwd|otp|totp|mfa|cvv|cvc|secret|token|apikey)([^a-z]|$)",
     re.IGNORECASE,
 )
+
+
+def _split_camel(text: str) -> str:
+    """``dom_census.split_camel``, kept equal by a test."""
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
 
 
 _LOCAL: dict[str, Callable[..., Any]] = {

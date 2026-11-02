@@ -148,10 +148,13 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
     setShowSaveForm(false)
     // Only take back focus the unmount dropped: a save can resolve after the
     // user has already moved on to another control, and that control keeps it.
-    requestAnimationFrame(() => {
+    // setTimeout (macrotask) lets React commit the state update and remount the
+    // trigger button before the focus check runs; requestAnimationFrame can fire
+    // before the commit when closeSaveForm is called from an async callback.
+    setTimeout(() => {
       const at = document.activeElement
       if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
-    })
+    }, 0)
   }, [])
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 

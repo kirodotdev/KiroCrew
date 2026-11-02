@@ -1660,7 +1660,8 @@ def capability_inverse(
     """Operations that restore each row *draft* touches to its state in *rows*.
 
     ``None`` when a row cannot be restored exactly: an MCP server definition the
-    mate set locally is shown redacted, so writing it back would not restore it.
+    mate set locally is shown redacted, so writing it back would not restore it,
+    and a crewmate's ``listed`` skill row has no ``set`` that writes it back.
     *severed* is a crewmate's own file (view ``mode="mate"``): with no parent, a
     row that was absent or off (``present``) is restored with ``remove``, and an
     on approval or switch with ``set True``.
@@ -1671,6 +1672,10 @@ def capability_inverse(
         section, rid = op.get("section"), op.get("id")
         row = by_key.get((section, rid)) or {}
         state = row.get("state") or "inherited"
+        if severed and row.get("listed"):
+            # A name from the file's own ``skills`` list: a ``set`` writes catalog
+            # skills only, so no operation puts the entry back as it was.
+            return None
         if severed and not row.get("present"):
             ops.append({"section": section, "id": rid, "action": "remove"})
         elif severed and section in ("tools", "allowedTools", "autoApprove", "skills"):

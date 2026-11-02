@@ -385,6 +385,13 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} не удаётся перезапустить",
+      "restart_exhausted_message_one": "{{app}} не смогло перезапуститься {{count}} раз подряд и будет продолжать попытки каждые несколько минут. Чтобы повторить сейчас, отключи {{app}} и снова включи.",
+      "restart_exhausted_message_few": "{{app}} не смогло перезапуститься {{count}} раза подряд и будет продолжать попытки каждые несколько минут. Чтобы повторить сейчас, отключи {{app}} и снова включи.",
+      "restart_exhausted_message_many": "{{app}} не смогло перезапуститься {{count}} раз подряд и будет продолжать попытки каждые несколько минут. Чтобы повторить сейчас, отключи {{app}} и снова включи.",
+      "restart_exhausted_message_other": "{{app}} не смогло перезапуститься {{count}} раза подряд и будет продолжать попытки каждые несколько минут. Чтобы повторить сейчас, отключи {{app}} и снова включи."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Подробности для того, кто собирал эту копию",
       "refused_page_handoff_note": "Если обратиться к агенту, откроется чат, к которому эти подробности уже приложены.",
@@ -1703,16 +1710,22 @@
       },
       "composer": {
         "add_screens": "Добавить экраны",
+        "add_screenshots_or_paste_a_link_first": "Сначала добавь скриншоты или вставь ссылку",
         "clear_all": "Очистить всё",
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Перетащите скриншоты — или нажмите для выбора",
+        "fix_my_access": "Исправить доступ",
         "fix_the_link": "Исправить ссылку",
+        "hide_access_steps": "Скрыть шаги доступа",
         "move_earlier": "Переместить раньше",
         "move_later": "Переместить позже",
         "one_screen_or_several_in_order_for_a_flow_png_jp": "один экран или несколько по порядку для сценария · PNG, JPG, WebP",
         "remove": "Удалить",
+        "remove_name": "Удалить {{name}}",
         "send_screenshots": "Отправить скриншоты",
+        "start_the_critique": "Начать разбор",
+        "step_n": "Шаг {{n}}",
         "try_again": "Повторить",
         "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Использовать локальную папку"
@@ -1762,28 +1775,36 @@
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "Разбор ещё выполняется — нажмите, чтобы посмотреть",
         "across_the_flow": "По всему сценарию",
+        "click_to_enlarge": "Нажми, чтобы увеличить",
         "close_esc": "Закрыть (Esc)",
         "couldn_t_see": "Не удалось увидеть",
         "couldn_t_tell_what_that_is_give_me_a_figma_link": "Не удалось понять, что это. Дайте ссылку на Figma, репозиторий GitHub/GitLab/Bitbucket, абсолютный локальный путь или уже работающий URL.",
         "critique_ready": "разбор готов",
+        "critique_untitled": "Разбор",
         "design_critique": "Design Critique",
         "enlarge": "Увеличить",
         "full_size": "полный размер",
         "full_size_view": "Просмотр в полном размере",
+        "history_count": "История ({{n}})",
         "i_got_in_but_there_s_nothing_in_there_i_can": "Я зашёл, но там нет ничего, что я мог бы отрисовать. Лучше закинь скриншоты.",
         "new": "Новый",
         "no_screens_to_show_the_critic_couldn_t_get_pixel": "Нет экранов для показа — критик не получил пиксели для этого. См. «Не удалось увидеть» на панели.",
         "nothing_major": "ничего серьёзного",
+        "numbered_pins_mark_issues_on_this_screen": "пронумерованные метки отмечают проблемы на этом экране",
         "on_screen": "● на экране",
         "only_added_the_first_room_the_limit_is_max_screens": "Добавлены только первые {{room}} — предел {{max}} экранов.",
+        "pick_a_step_above": "выбери шаг выше",
         "point_me_at_a_running_url": "Укажите работающий URL",
         "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Укажите экран — или целый сценарий — и я разберу его как друг-дизайнер: что работает, что стоит доработать и почему.",
         "running": "выполняется",
+        "screen_heading": "Экран",
+        "screens_in_order": "Экраны по порядку",
         "see_an_example": "Посмотреть пример",
         "send_screenshots": "Отправить скриншоты",
         "show_this_screen": "Показать этот экран",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "Начать новый разбор — уже запущенные продолжат работу",
+        "step_n": "Шаг {{n}}",
         "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
         "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
         "switch_critique": "Переключить разбор",
@@ -1800,6 +1821,9 @@
       },
       "findingRow": {
         "based_on": "На основе",
+        "finding": "Замечание",
+        "fix": "Исправление",
+        "suggestion": "Предложение",
         "what_i_saw": "Что я увидел",
         "where": "Где"
       },
@@ -2514,13 +2538,16 @@
           "repositories": "Репозитории"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Не удалось проверить наличие сессии код-ревью — повтор при обновлении",
           "open_ai_code_review_session_for_this": "Открыть чат с ИИ-проверкой кода для {{label}}",
           "resume_ai_code_review_session_for_this": "Продолжить чат с ИИ-проверкой кода для {{label}}",
           "review": "Проверить"
         },
         "settingsSection": {
+          "account": "Аккаунт",
           "connect_repo": "Подключить репозиторий",
           "general": "Общие",
+          "repositories": "Репозитории",
           "repository_settings": "Настройки репозитория",
           "gitlab_groups": "Группы GitLab"
         },
@@ -2624,7 +2651,12 @@
       "connectRepoModal": {
         "close": "Закрыть",
         "close_connect_dialog": "Закрыть диалог подключения",
+        "connect": "Подключить",
         "connect_a_repo": "Подключить репозиторий",
+        "connect_count_few": "Подключить {{count}}",
+        "connect_count_many": "Подключить {{count}}",
+        "connect_count_one": "Подключить {{count}}",
+        "connect_count_other": "Подключить {{count}}",
         "connecting": "Подключение {{done}} из {{total}}..."
       },
       "issueRadarPage": {
@@ -2639,6 +2671,14 @@
           "crew_sort_created": "Создано"
         },
         "links": {
+          "merge_request": "мерж-реквест",
+          "merge_request_title": "Мерж-реквест",
+          "merge_requests": "мерж-реквесты",
+          "merge_requests_title": "Мерж-реквесты",
+          "pull_request": "пул-реквест",
+          "pull_request_title": "Пул-реквест",
+          "pull_requests": "пул-реквесты",
+          "pull_requests_title": "Пул-реквесты",
           "read_only_here_apply_in_provider": "Только чтение — репозитории {{provider}} нельзя изменить из {{productName}}; внесите изменение в {{provider}}",
           "tracked_items_work_items": "Рабочие элементы",
           "tracked_items_issues": "Задачи"
@@ -3194,6 +3234,11 @@
       "welcomeCarousel": {
         "back": "Назад",
         "carl_sagan": "— Карл Саган",
+        "connect": "Подключить",
+        "connect_count_few": "Подключить {{count}}",
+        "connect_count_many": "Подключить {{count}}",
+        "connect_count_one": "Подключить {{count}}",
+        "connect_count_other": "Подключить {{count}}",
         "connecting_n_of_total": "Подключение {{n}} из {{total}}...",
         "next": "Далее",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar читает то, что уже нашли твои боты, вместо того чтобы начинать заново.",
@@ -5963,6 +6008,7 @@
     "voicePlaybackNotice": {
       "failed": "Не удалось выполнить «{{speak}}». Проверь настройки преобразования текста в речь и попробуй снова.",
       "consent_required": "Для «{{speak}}» нужно подтвердить использование Amazon Polly для этого профиля AWS и региона. Подтверди его в настройках преобразования текста в речь и попробуй снова.",
+      "polly_rejected": "Amazon Polly не предлагает выбранный голос или движок в выбранном регионе AWS. В настройках преобразования текста в речь выбери другой «Голос», «Движок» или «Регион».",
       "blocked": "Браузер заблокировал автоматическое воспроизведение. Открой «{{moreActions}}» под завершённым ответом и выбери «{{speak}}».",
       "settings": "Настройки «{{speak}}» (преобразование текста в речь)"
     },
@@ -6404,7 +6450,6 @@
         "dismiss": "Скрыть",
         "enable": "Включить",
         "enabled": "Включено",
-        "open": "Открыть",
         "remote_environment_detected": "Обнаружена удалённая среда",
         "run_this_on_your_local_machine": "Выполните это на своей локальной машине:",
         "uninstall": "Удалить",
@@ -10804,6 +10849,13 @@
       "read_failed_title": "После этого обновления не удалось проверить версии удалённых команд",
       "unread": "От {{names}} пока нет версии, поэтому они тоже могут отставать."
     },
+    "kasEngineNotice": {
+      "downloading": "Загружается движок KAS {{productName}}. Чат начнётся, когда загрузка завершится.",
+      "downloading_progress": "Загружается движок KAS {{productName}} ({{percent}}). Чат начнётся, когда загрузка завершится.",
+      "failed_title": "Не удалось установить движок KAS {{productName}}",
+      "retry": "Повторить",
+      "retry_failed": "Повторная попытка не началась ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Вход в Kiro истёк",
       "open_sign_in": "Открыть настройки входа",
@@ -11334,11 +11386,6 @@
       "no_apps_available": "Нет доступных приложений",
       "no_apps_installed_yet": "Приложения ещё не установлены",
       "no_enabled_apps": "Нет включённых приложений",
-      "show_disabled_one": "Показать {{count}} отключённое приложение",
-      "show_disabled_few": "Показать {{count}} отключённых приложения",
-      "show_disabled_many": "Показать {{count}} отключённых приложений",
-      "show_disabled_other": "Показать {{count}} отключённого приложения",
-      "show_enabled_only": "Показать только включённые",
       "no_matching_apps": "Нет подходящих приложений",
       "not_installed_from_apps_your_local_source_code_w": "Установлено не из раздела «Приложения» — ваш локальный исходный код не будет затронут.",
       "removing": "Удаление…",
@@ -11553,7 +11600,13 @@
       "col_status": "Статус",
       "col_est_cost": "Прибл. стоимость",
       "col_profile": "Профиль",
-      "col_expiry": "Срок"
+      "col_expiry": "Срок",
+      "col_account": "Аккаунт",
+      "col_region": "Регион",
+      "col_actions": "Действия",
+      "col_type": "Тип",
+      "col_url": "Ссылка",
+      "col_cost": "Стоимость"
     },
     "artifactDetailPage": {
       "published_to_provider": "Опубликовано в {{provider}}",
@@ -12402,6 +12455,7 @@
         "restore_retry": "Повторить",
         "send_blocked_not_loaded": "эта дополнительная беседа ещё не загружена",
         "steer_demoted_to_queue": "Ход завершился — вместо этого добавлено в очередь",
+        "closed_in_another_tab": "Обновление контекста в другой вкладке очистило этот боковой чат",
         "thinking": "Размышление…",
         "turn_few": "{{count}} хода",
         "turn_many": "{{count}} ходов",
@@ -14939,7 +14993,9 @@
         "installing_progress": "Установка KAS {{version}}: {{percent}} ({{done}} из {{total}})",
         "install_failed": "Не удалось начать установку движка KAS.",
         "save_failed": "Не удалось сохранить настройку движка KAS.",
-        "status_unavailable": "Не удалось получить состояние движка KAS."
+        "status_unavailable": "Не удалось получить состояние движка KAS.",
+        "route_auto_no_kiro_cli": "Kiro CLI не установлен, поэтому KAS работает на собственном движке {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "В Kiro CLI не выполнен вход, поэтому KAS работает на собственном движке {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Вход в Kiro",
@@ -15582,11 +15638,12 @@
       "pin_to_sidebar": "Закрепить {{name}} на боковой панели",
       "tile_actions": "Действия для {{name}}",
       "tile_details": "Подробности",
-      "tile_disabled": "Отключено",
       "tile_more_actions": "Другие действия для {{name}}",
       "tile_no_sidebar_page": "Нет страницы в боковой панели",
       "tile_pinned": "В боковой панели",
       "tile_unpinned": "Не в боковой панели",
+      "section_enabled": "Включённые",
+      "section_disabled": "Отключённые",
       "unpin": "Открепить",
       "unpin_from_sidebar": "Открепить {{name}} от боковой панели",
       "installed_apps": "Установленные приложения"
@@ -18794,6 +18851,7 @@
         "custom_sound_error_file_gone": "Файл этого звука больше не хранится в этом браузере, поэтому его нельзя вернуть.",
         "channel_member": "Сообщения напарников",
         "channel_apps": "Обновления приложений",
+        "channel_turn": "Ошибки чата",
         "push_section": "Push-уведомления",
         "push_toggle_label": "Уведомлять, даже когда {{productName}} закрыт",
         "push_toggle_description": "Отправляет уведомления на это устройство, даже когда {{productName}} закрыт. Системные уведомления прекращаются, как только ты его закроешь.",

@@ -37,10 +37,16 @@ const STATUS_LABEL_KEY = {
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
+import { useRovingTabs } from '../../components/Tablist'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
 type Tab = typeof TABS[number]
+const ROVING_TABS = TABS.map(key => ({ key }))
+/** The one panel every tab controls: the body below the rail is a single
+ *  subtree parameterised by `tab`, not a panel per tab. */
+const TAB_PANEL_ID = 'knowledge-tabpanel'
+const tabId = (t: Tab) => `knowledge-tab-${t}`
 
 // Backend list_items() hard-caps page size at 100 (dashboard/handlers/knowledge.py).
 // The unfiltered list must request exactly that so totalPages math and Prev/Next stay correct.
@@ -227,6 +233,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const [uploadNamespace, setUploadNamespace] = useState('default')
   const [showAutocomplete, setShowAutocomplete] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  const selectTab = (t: Tab) => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }
+  const rovingTab = useRovingTabs(ROVING_TABS, tab, selectTab)
   // Items currently rendered by each expanded SourceGroup. Selection-wide
   // actions read this instead of the react-query cache, so they can never reach
   // an item that is not on screen (a retained cache from a previously expanded
@@ -449,9 +457,13 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         else if (selectedItems.size > 0) { setSelectedItems(new Set()); e.preventDefault() }
       } else if (e.key === 'ArrowRight' && !e.altKey && !e.ctrlKey) {
         // Arrow paging drives the flat search pager only; in source-first mode
-        // each group owns its own pager and `page` is unread.
+        // each group owns its own pager and `page` is unread. A focused tab
+        // claims the arrows for itself (preventDefault before this window
+        // listener sees the event), so the same press never also turns a page.
+        if (e.defaultPrevented) return
         if (!sourceFirst && !selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); e.preventDefault() }
       } else if (e.key === 'ArrowLeft' && !e.altKey && !e.ctrlKey) {
+        if (e.defaultPrevented) return
         if (!sourceFirst && !selectedId && page > 1) { setPage(p => p - 1); e.preventDefault() }
       } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && tab === 'list' && !selectedId) {
         if (listContainerRef.current?.contains(document.activeElement || target)) {
@@ -605,14 +617,22 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
       )}
 
       {/* Tabs — horizontally scrollable on narrow viewports so the active
-          underline never spills past the container. */}
+          underline never spills past the container. A WAI-ARIA tablist on
+          the shared roving-tab keyboard model, so the selected tab is
+          announced and the arrow keys move between tabs; the Help button
+          sits outside it because a tablist may only own tabs. */}
       <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
-            {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
-          </button>
-        ))}
+        <div role="tablist" aria-label={i18nT('pages.knowledge.index.knowledge_library')} className="flex gap-1">
+          {TABS.map((t, i) => (
+            <button key={t} type="button" role="tab" id={tabId(t)}
+              aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
+              {...rovingTab(i)}
+              onClick={() => selectTab(t)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
+              {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
+            </button>
+          ))}
+        </div>
         {embedded && (
           <span className="ml-auto self-center shrink-0 pb-0.5">
             <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> {i18nT('pages.knowledge.index.help')}</Btn>
@@ -620,7 +640,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         )}
       </div>
 
-      <div className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
+      <div id={TAB_PANEL_ID} role="tabpanel" aria-labelledby={tabId(tab)}
+        className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
         {isEmpty && tab === 'list' ? (
           <>

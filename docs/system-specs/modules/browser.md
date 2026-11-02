@@ -853,10 +853,19 @@ be taken, every modified key is refused, since focus inside a closed root reads
 as its host. The replay also paints over filled fields the walker's secret rule
 names (`named` in the mask query), which the owner's live card leaves visible. A
 follow-up is to restore live-view screenshots behind a check that every frame
-was inspected. `screenshot` writes the image into the hidden IPC leaf first, judges the
+was inspected. A filled field the walker's secret rule names (`secretValues`: an
+OTP, card code or token typed into a text field during a takeover, which carries
+no quick-ask marker; a password input and `type=hidden` are left out) refuses the
+screenshot too (`secret_value_on_page`). The secret rule (`secretish`, the closed-root
+census and the replay mask share it) names a field by its type, a quick-ask mark,
+an `autocomplete` token (`current-password`, `new-password`, `one-time-code`,
+`cc-csc`), or a secret word in its name, id or autocomplete, with camelCase split
+into words first (`otpCode` reads as `otp Code`). `screenshot` writes the image into the hidden IPC leaf first, judges the
 page again after the capture (URL gate, frames, filled fields), and only then
 moves the image into the screenshot directory; a rejected image is deleted, and
-a delete that fails is named in the refusal. A page can still edit its own DOM (remove
+a delete that fails is named in the refusal. The decision hooks' capture is taken
+into the same hidden leaf, read there and deleted, so it never sits in the
+screenshot directory. A page can still edit its own DOM (remove
 `data-kc-asked`, change an input's type), which no isolated world prevents.
 The walker installs `window.__kcWalker`
 per document; it mints `eN` refs into `window.__kcRefs` (dropped when the element
@@ -950,8 +959,8 @@ runs under the op lock, so these caps are also the longest it holds the lock.
 What leaves: the `target`, the page title and the walker's outline (no field
 values of password or secret-named fields, no cookies, no URL), scrubbed by the
 gate. A screenshot under the `browser_images` scope -- on by default once consent
-stands, off for an explicit no -- and only to a provider that declares images: taken with `max_dim` 1568, read and deleted at once from the
-screenshot directory, never sent while the walker's `passwordBoxes` is not 0 --
+stands, off for an explicit no -- and only to a provider that declares images: taken with `max_dim` 1568 into the hidden IPC leaf (the screenshot directory when
+no leaf is configured), read and deleted at once, never sent while the walker's `passwordBoxes` is not 0 --
 the live view's mask rule (any `input[type=password]` with a box, open shadow roots
 included) plus same-origin frame documents and any filled field the walker treats
 as secret -- or while the person holds the browser (`ctx.in_control`). Both are

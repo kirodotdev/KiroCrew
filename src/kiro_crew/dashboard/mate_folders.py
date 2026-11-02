@@ -23,6 +23,7 @@ import time
 import uuid
 from typing import Any
 
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_records import MAX_CHAT_FOLDERS
 
 logger = logging.getLogger(__name__)
@@ -308,7 +309,7 @@ async def ensure_mate_home(state: Any, principal: str, display_name: str) -> str
             {
                 "id": folder_id,
                 "name": name,
-                "order": len(folders),
+                "order": next_folder_order(folders),
                 "collapsed": False,
                 "hidden": False,
                 "parent_id": "",

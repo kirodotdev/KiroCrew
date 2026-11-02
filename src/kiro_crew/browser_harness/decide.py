@@ -421,7 +421,10 @@ async def _capture(ctx: _ops.OpContext) -> bytes | None:
         return None
     path = None
     try:
-        path = await asyncio.to_thread(_ops._screenshot_path, ctx)
+        # Taken into the hidden staging leaf: the frame is judged again only after
+        # the capture, so it must never sit where an agent process could read it.
+        final = await asyncio.to_thread(_ops._screenshot_path, ctx)
+        path = await asyncio.to_thread(_ops._staged_path, ctx, final)
         await ctx.helper("screenshot", path=str(path), max_dim=IMAGE_MAX_DIM)
         data = await asyncio.to_thread(_read_png, path)
     except Exception:  # noqa: BLE001 - no frame is the text path, never a failed op

@@ -16,6 +16,51 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import transcribe
+from kiro_crew.testing.wait import await_until
+
+#: The timeout a hung-child test hands the product: a backstop that is never waited out.
+#: The fake child fires the product's own ``asyncio.wait_for`` bound as it parks
+#: (``expire_the_bound``), so the timeout arm runs with the child hung inside the call and
+#: no clock decides when.
+_BOUND_BACKSTOP_SECS = 600
+
+
+@pytest.fixture
+def expire_the_bound(monkeypatch):
+    """Return ``expire()``, which fires the bound the product armed with the backstop.
+
+    The product's ``wait_for`` enters an ``asyncio.Timeout``; this keeps the one armed
+    with ``_BOUND_BACKSTOP_SECS`` and ``expire()`` reschedules it to now, so the real
+    timeout path runs unchanged and only the moment it fires is chosen by the test.
+    """
+    armed: list[asyncio.Timeout] = []
+    real_timeout = asyncio.timeouts.timeout
+
+    def _recording_timeout(delay):
+        bound = real_timeout(delay)
+        if delay == _BOUND_BACKSTOP_SECS:
+            armed.append(bound)
+        return bound
+
+    monkeypatch.setattr(asyncio.timeouts, "timeout", _recording_timeout)
+
+    def expire() -> None:
+        # Each bound fires once: a second reader parking under the same bound finds it spent.
+        if armed:
+            armed.pop().reschedule(asyncio.get_running_loop().time())
+
+    return expire
+
+
+async def _park_until_killed(released: asyncio.Event, on_hang, what: str) -> None:
+    """Hold a hung fake child until ``kill()`` releases it, bounded as a lost run.
+
+    ``on_hang`` is called first, as the child parks, so a test can fire the product's
+    timeout from inside the hang.
+    """
+    if on_hang is not None:
+        on_hang()
+    await await_until(released, what=what)
 
 
 class TestBatchDurationCap:
@@ -116,17 +161,19 @@ class _FakeFfmpegProc:
     hang mode that blocks until kill() so the timeout arm and _kill_and_reap
     can both be exercised without a real process (or a real platform)."""
 
-    def __init__(self, stdout: bytes = b"", returncode: int = 0, hang: bool = False) -> None:
+    def __init__(
+        self, stdout: bytes = b"", returncode: int = 0, hang: bool = False, on_hang=None
+    ) -> None:
         self._stdout = stdout
         self.returncode = returncode
         self._hang = hang
+        self._on_hang = on_hang
         self._released = asyncio.Event()
         self.killed = False
 
     async def communicate(self):
         if self._hang and not self.killed:
-            # flake-ok: pre-existing unbounded Event wait in the fake probe child's communicate that blocks the hang-mode test until kill sets the release event, moved verbatim; tracked for a de-flake pass
-            await self._released.wait()
+            await _park_until_killed(self._released, self._on_hang, "the hung probe child's kill")
         return self._stdout, b""
 
     def kill(self) -> None:
@@ -222,14 +269,14 @@ class TestAudioExceedsSecsProbe:
 
     @pytest.mark.asyncio
     async def test_a_hung_probe_times_out_reaps_the_child_and_answers_none(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, expire_the_bound
     ):
         p = tmp_path / "hang.webm"
         p.write_bytes(b"x")
-        proc = _FakeFfmpegProc(hang=True)
+        proc = _FakeFfmpegProc(hang=True, on_hang=expire_the_bound)
         self._arm(monkeypatch, proc)
-        # flake-ok: pre-existing zero-second probe timeout that the hung fake child must outlast so the timeout arm kills and reaps it, moved verbatim; tracked for a de-flake pass
-        assert await transcribe.audio_exceeds_secs(str(p), 10, timeout_secs=0) is None
+        result = await transcribe.audio_exceeds_secs(str(p), 10, timeout_secs=_BOUND_BACKSTOP_SECS)
+        assert result is None
         assert proc.killed, "the timed-out child must be killed, not leaked"
 
     @pytest.mark.asyncio
@@ -503,11 +550,18 @@ class _FakeLineReader:
     """A StreamReader stand-in: hands back scripted bytes one line at a time,
     then b"" at EOF. In hang mode it blocks until released (kill)."""
 
-    def __init__(self, data: bytes, released: "asyncio.Event | None" = None, hang: bool = False):
+    def __init__(
+        self,
+        data: bytes,
+        released: "asyncio.Event | None" = None,
+        hang: bool = False,
+        on_hang=None,
+    ):
         self._lines = data.splitlines(keepends=True) if data else []
         self._i = 0
         self._released = released
         self._hang = hang
+        self._on_hang = on_hang
 
     async def readline(self) -> bytes:
         if self._i < len(self._lines):
@@ -515,8 +569,7 @@ class _FakeLineReader:
             self._i += 1
             return line
         if self._hang and self._released is not None and not self._released.is_set():
-            # flake-ok: pre-existing unbounded Event wait in the fake line reader's readline that parks the hang-mode scan at EOF until kill sets the release event, moved verbatim; tracked for a de-flake pass
-            await self._released.wait()
+            await _park_until_killed(self._released, self._on_hang, "the hung reader's kill")
         return b""
 
     async def read(self, _n: int = -1) -> bytes:
@@ -527,8 +580,7 @@ class _FakeLineReader:
             self._i = len(self._lines)
             return rest
         if self._hang and self._released is not None and not self._released.is_set():
-            # flake-ok: pre-existing unbounded Event wait in the fake line reader's read that parks the hang-mode drain at EOF until kill sets the release event, moved verbatim; tracked for a de-flake pass
-            await self._released.wait()
+            await _park_until_killed(self._released, self._on_hang, "the hung reader's kill")
         return b""
 
 
@@ -538,21 +590,26 @@ class _FakeFfmpegProcWithStderr:
     readers + ``wait()`` (the silence scan's incremental drain)."""
 
     def __init__(
-        self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0, hang: bool = False
+        self,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int = 0,
+        hang: bool = False,
+        on_hang=None,
     ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self.returncode = returncode
         self._hang = hang
+        self._on_hang = on_hang
         self._released = asyncio.Event()
         self.killed = False
-        self.stdout = _FakeLineReader(stdout, self._released, hang)
-        self.stderr = _FakeLineReader(stderr, self._released, hang)
+        self.stdout = _FakeLineReader(stdout, self._released, hang, on_hang)
+        self.stderr = _FakeLineReader(stderr, self._released, hang, on_hang)
 
     async def communicate(self):
         if self._hang and not self.killed:
-            # flake-ok: pre-existing unbounded Event wait in the stderr-carrying fake child's communicate that blocks the hang-mode extract until kill sets the release event, moved verbatim; tracked for a de-flake pass
-            await self._released.wait()
+            await _park_until_killed(self._released, self._on_hang, "the hung child's kill")
         return self._stdout, self._stderr
 
     async def wait(self):
@@ -671,13 +728,15 @@ class TestDetectSilenceEnds:
         assert await transcribe._detect_silence_ends(str(p), timeout_secs=300) is None
 
     @pytest.mark.asyncio
-    async def test_a_timeout_kills_the_child_and_is_unanswerable(self, tmp_path, monkeypatch):
+    async def test_a_timeout_kills_the_child_and_is_unanswerable(
+        self, tmp_path, monkeypatch, expire_the_bound
+    ):
         p = tmp_path / "slow.webm"
         p.write_bytes(b"x")
-        proc = _FakeFfmpegProcWithStderr(hang=True)
+        proc = _FakeFfmpegProcWithStderr(hang=True, on_hang=expire_the_bound)
         _arm_ffmpeg(monkeypatch, proc)
-        # flake-ok: pre-existing zero-second scan timeout that the hung fake child must outlast so the silence scan kills and reaps it, moved verbatim; tracked for a de-flake pass
-        assert await transcribe._detect_silence_ends(str(p), timeout_secs=0) is None
+        result = await transcribe._detect_silence_ends(str(p), timeout_secs=_BOUND_BACKSTOP_SECS)
+        assert result is None
         assert proc.killed, "the timed-out child must be killed, not leaked"
 
     @pytest.mark.asyncio
@@ -787,14 +846,17 @@ class TestExtractSegment:
         assert ok is False
 
     @pytest.mark.asyncio
-    async def test_a_timeout_kills_the_child_and_returns_false(self, tmp_path, monkeypatch):
+    async def test_a_timeout_kills_the_child_and_returns_false(
+        self, tmp_path, monkeypatch, expire_the_bound
+    ):
         inp = tmp_path / "in.webm"
         inp.write_bytes(b"x")
         out = tmp_path / "segment-000.wav"
-        proc = _FakeFfmpegProcWithStderr(hang=True)
+        proc = _FakeFfmpegProcWithStderr(hang=True, on_hang=expire_the_bound)
         _arm_ffmpeg(monkeypatch, proc)
-        # flake-ok: pre-existing zero-second extract timeout that the hung fake child must outlast so the segment extract kills and reaps it, moved verbatim; tracked for a de-flake pass
-        ok = await transcribe._extract_segment(str(inp), 0.0, 58.0, str(out), timeout_secs=0)
+        ok = await transcribe._extract_segment(
+            str(inp), 0.0, 58.0, str(out), timeout_secs=_BOUND_BACKSTOP_SECS
+        )
         assert ok is False
         assert proc.killed, "the timed-out child must be killed, not leaked"
 
