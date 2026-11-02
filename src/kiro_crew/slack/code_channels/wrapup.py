@@ -145,6 +145,28 @@ def _gather_facts_sync(binding: Binding) -> Facts:
     )
 
 
+def _sendable_now(binding: Binding) -> bool:
+    """The channel fences asked synchronously right before a wrap-up post: Slack's
+    Stop, the archive fence and the channel's activation (Off or Review refuse).
+    Fails closed."""
+    channel = binding.channel_id
+    try:
+        if surface.channel_stopped(channel) or channel in surface._archived_here:
+            return False
+        return bool(surface.channel_admits(live_config(), binding))
+    except Exception:
+        return False
+
+
+async def _drop_if_stopped(channel_id: str, settles: str | None) -> None:
+    """A wrap-up fenced by Slack's Stop is dropped, as :func:`on_turn_end` drops one
+    whose turn was stopped: only the request it answers (*settles*), so a newer
+    /wrap-up stays live. One fenced by the policy or Off / Review stays pending,
+    like the denials at the top of :func:`post_wrap_up`."""
+    if surface.channel_stopped(channel_id):
+        await cancel_wrap_up(channel_id, settles)
+
+
 def _workers_still_admitted(binding: Binding) -> bool:
     """The board's scope check, asked again just before the wrap-up is posted (fails closed)."""
     try:
@@ -227,6 +249,17 @@ def _tab_block(facts: Facts, channel_id: str) -> dict[str, Any] | None:
     }
 
 
+def _in_scope(facts: Facts, binding: Binding) -> Facts:
+    """*facts* without what the conductor's ledger supplied, unless the board's scope
+    still admits the channel: the workers' outcomes and their PR tabs go, the
+    channel's own PR tab (from its workspace record) stays. Synchronous: asked
+    right before the wrap-up is built and again right before it is posted."""
+    if _workers_still_admitted(binding):
+        return facts
+    own = facts.pr_number if facts.pr_state in ("open", "draft") else 0
+    return replace(facts, workers=(), pr_tabs=tuple(t for t in facts.pr_tabs if t[0] == own))
+
+
 async def gather_facts(binding: Binding) -> Facts:
     try:
         facts = await asyncio.to_thread(_gather_facts_sync, binding)
@@ -239,7 +272,7 @@ async def gather_facts(binding: Binding) -> Facts:
     except Exception:
         logger.debug("code channel %s: worker outcomes unavailable", binding.channel_id)
         lines = []
-    return replace(facts, workers=tuple(lines)) if lines else facts
+    return _in_scope(replace(facts, workers=tuple(lines)) if lines else facts, binding)
 
 
 _PR_WORDS = {"open": "open", "draft": "draft", "merged": "merged", "closed": "closed"}
@@ -426,6 +459,15 @@ def _forget_request(channel_id: str, tag: str | None = None) -> bool:
     return _requests.pop(channel_id, None) is not None
 
 
+def _still_live(channel_id: str, settles: str | None, only_if_live: bool) -> bool:
+    """Whether a post that must answer a live request (*only_if_live*) still does.
+
+    Asked after each await before a send: the request it answers can be
+    replaced by a newer /wrap-up, or settled, meanwhile.
+    """
+    return not only_if_live or (settles is not None and _requests.get(channel_id) == settles)
+
+
 async def cancel_wrap_up(channel_id: str, tag: str | None = None) -> None:
     """The ``/wrap-up`` prompt never reached the session: nothing to fall back for.
 
@@ -517,18 +559,26 @@ async def post_wrap_up(
                 caller, "slack.code_channel.wrap_up", "denied", f"channel={channel}", "archived"
             )
             return ""
-        if only_if_live and (settles is None or _requests.get(channel) != settles):
+        # The fact reads and the archive check awaited: the channels policy (off
+        # the loop) is asked again, then the synchronous fences, right before it.
+        if not await surface.outbound_permitted() or not _sendable_now(binding):
+            surface.audit(
+                caller, "slack.code_channel.wrap_up", "denied", f"channel={channel}", "fenced"
+            )
+            await _drop_if_stopped(channel, settles)
+            return ""
+        if not _still_live(channel, settles, only_if_live):
             return ""  # replaced or settled while the facts were read: not ours to post
         if surface.channel_policy_refusal(
             channel, operation="slack.code_channel.wrap_up", caller=caller
         ):
             return ""  # again at the commit point, after the facts and the lock
-        if facts.workers and not _workers_still_admitted(binding):
-            # The lock wait and the archive check can outlast a change of the
-            # channel's sharing or activation: the outcomes the board read
-            # admitted earlier are left out, and the rest is posted as before.
-            facts = replace(facts, workers=())
-            blocks = wrap_up_blocks(summary, facts, channel)
+        # After the last await, synchronously: the scope may have changed (a
+        # channel found shared) while the facts or the policy were read; then
+        # rebuilt without what the conductor's ledger supplied.
+        scoped = _in_scope(facts, binding)
+        if scoped != facts:
+            facts, blocks = scoped, wrap_up_blocks(summary, scoped, channel)
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
         except Exception as exc:
@@ -543,6 +593,32 @@ async def post_wrap_up(
                 # button go out without them rather than not at all.
                 logger.info("code channel %s: wrap-up tab links refused (%s)", channel, refused)
                 try:
+                    # Asked again: the failed post awaited. The channels policy
+                    # (off the loop) first, then the synchronous fences last.
+                    if not await surface.outbound_permitted() or not _sendable_now(binding):
+                        surface.audit(
+                            caller,
+                            "slack.code_channel.wrap_up",
+                            "denied",
+                            f"channel={channel}",
+                            "fenced before the retry",
+                        )
+                        await _drop_if_stopped(channel, settles)
+                        return ""
+                    if not _still_live(channel, settles, only_if_live):
+                        return ""  # replaced or settled while the first post was refused
+                    if surface.channel_policy_refusal(
+                        channel, operation="slack.code_channel.wrap_up", caller=caller
+                    ):
+                        return ""  # the channel ceiling, again before the retry
+                    scoped = _in_scope(facts, binding)
+                    if scoped != facts:
+                        facts = scoped
+                        plain = [
+                            b
+                            for b in wrap_up_blocks(summary, scoped, channel)
+                            if b.get("type") != "rich_text"
+                        ]
                     blocks = plain
                     ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
                 except Exception:

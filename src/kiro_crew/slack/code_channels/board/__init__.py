@@ -196,6 +196,19 @@ def note_ledger_write(conductor_key: str) -> None:
         logger.debug("code channel board: ledger trigger failed", exc_info=True)
 
 
+def note_tab_removed(channel_id: str) -> None:
+    """A tab the board links (a PR tab) was removed from *channel_id*: refresh its board.
+
+    The board message and the Workers tab already sent may link the removed tab;
+    the refresh renders both from the record, which no longer holds it. Must be
+    called on the event loop; never raises.
+    """
+    try:
+        _schedule(channel_id)
+    except Exception:
+        logger.debug("code channel board: tab-removal trigger failed", exc_info=True)
+
+
 #: How long a ledger key no code channel is bound to is not looked up again.
 _UNBOUND_TTL_SECS = 30.0
 #: ``ledger key -> monotonic time`` it was last found bound to no channel.
@@ -445,11 +458,19 @@ async def publish(binding: Any, snapshot: Any) -> str:
 
         # A Stop from the Workers tab shows within seconds: both edit gaps are
         # skipped once for the publish that first carries it.
+        # Only a stop still showing (its worker not yet on a newer turn) may
+        # spend the mark; a stale overlay is dropped here and again at each render.
+        snapshot = stops.reconcile(snapshot, state)
         urgent = stops.take_urgent(
             r.session_key for r in getattr(snapshot, "rows", ()) if getattr(r, "stopped", False)
         )
         await tabs.publish_workers(binding, snapshot, link_for=link_for, code=code, urgent=urgent)
         linked = tabs.tabs_for(await get_async(channel), channel, code=code)
+        if snapshot is not None and not source.scope_admits(state, binding):
+            # Asked again after the Workers tab's awaits: the scope may have
+            # changed since the check above.
+            _publish_aggregate(state, binding, None)
+            return "out_of_scope"
         done = await publisher.publish(
             binding,
             snapshot,
