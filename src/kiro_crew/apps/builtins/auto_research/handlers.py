@@ -924,7 +924,12 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
     # Add source and trigger ingestion
     row = await asyncio.to_thread(publication._read_question_row, cid)
     name = publication._knowledge_source_name(row, cid)
-    sid = await asyncio.to_thread(publication._add_source_marked_syncing, store, name, uri)
+    sid, created = await asyncio.to_thread(
+        publication._add_source_marked_syncing, store, name, uri
+    )
+    if not created:
+        # A concurrent export won the insert and is ingesting; do not ingest twice.
+        return web.json_response({"error": "Already in Knowledge Library", "id": sid}, status=409)
     task = asyncio.create_task(publication._ingest_findings(pipeline, store, uri, sid, cid))
     # Seeded by register_routes; the create branch serves an Application that
     # skipped registration and is still mutable (a directly driven handler).

@@ -505,8 +505,11 @@ def _knowledge_source_name(row: sqlite3.Row | None, cid: str) -> str:
     )
 
 
-def _add_source_marked_syncing(store: Any, name: str, uri: str) -> str:
+def _add_source_marked_syncing(store: Any, name: str, uri: str) -> tuple[str, bool]:
     """Register the findings as a Knowledge Library source, marked syncing.
+
+    Returns ``(source_id, created)``; ``created`` is False when a concurrent
+    export inserted the same URI first, and that export's source id is returned.
 
     The store hands out one connection per thread, so all statement work for
     the request runs off-loop in a single worker: a lock wait on the store's
@@ -514,10 +517,21 @@ def _add_source_marked_syncing(store: Any, name: str, uri: str) -> str:
     in the same call because the status UPDATE needs its ``sid`` on the same
     per-thread connection. Blocking; call off-loop.
     """
-    new_sid = store.add_source(name=name, source_type="local_file", uri=uri, properties={})
+    try:
+        new_sid = store.add_source(name=name, source_type="local_file", uri=uri, properties={})
+    except sqlite3.IntegrityError as exc:
+        # Two exports can both pass the handler's dedup check before either
+        # inserts; the loser hits UNIQUE(uri). Re-read the winner, as
+        # ``ensure_agent_source`` does, so the caller can answer 409.
+        if "sources.uri" not in str(exc):
+            raise
+        existing = store.get_source_by_uri(uri)
+        if not existing:
+            raise
+        return existing["id"], False
     store.db.execute("UPDATE sources SET sync_status = 'syncing' WHERE id = ?", (new_sid,))
     store.db.commit()
-    return new_sid
+    return new_sid, True
 
 
 async def _ingest_findings(pipeline: Any, store: Any, uri: str, sid: str, cid: str) -> None:
