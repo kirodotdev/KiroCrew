@@ -1,4 +1,5 @@
 import { i18nT } from '../../i18n/t'
+import type { BackendStatus } from '../../utils/backendStatus'
 
 /** An app row's `linkPreviewGrant`: approved hosts and text patterns, and the ones held back. */
 export interface LinkPreviewGrantRow {
@@ -9,6 +10,14 @@ export interface LinkPreviewGrantRow {
   /** Whole URLs (query and fragment) approved, and asked for but waiting. */
   fullUrl?: boolean
   stagedFullUrl?: boolean
+}
+
+/** An app row's `messageActionGrant` (`apps/message_action_grants.py`): each action
+ *  at its approved reach, and the `<id>:role:<role>` / `<id>:format:markdown`
+ *  entries an update holds back. */
+export interface MessageActionGrantRow {
+  actions?: { id: string; title: string; roles: string[]; format: string; maxChars: number; popover?: { width?: number; maxHeight?: number } }[]
+  staged?: string[]
 }
 
 /**
@@ -94,6 +103,8 @@ export type InstalledApp = {
   approvedGrants?: { api?: string[]; events?: string[] }
   /** Approved link-preview hosts and text patterns, and the ones an update holds back. */
   linkPreviewGrant?: LinkPreviewGrantRow
+  /** Approved message actions, and the entries an update holds back. */
+  messageActionGrant?: MessageActionGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -112,6 +123,13 @@ export type InstalledApp = {
   migratedTo?: string
   orphaned?: boolean
   updateAvailable?: boolean
+  /**
+   * Live backend process status, present on a `GET /api/apps` row when the app
+   * runs a tracked backend. `restart_exhausted` is set when that backend is
+   * repeatedly failing to restart (see `backendStatus.ts`); the rest mirror the
+   * tracking record.
+   */
+  backend_status?: BackendStatus
   manifest: {
     name: string
     version: string
@@ -146,6 +164,7 @@ export type InstalledApp = {
     contributes?: {
       commands?: unknown
       panelTabs?: unknown
+      messageActions?: unknown
     }
     permissions?: {
       api?: string[]
@@ -179,6 +198,8 @@ export type InstalledApp = {
     iconPathDark?: string
     openCommand?: string
     hidden?: boolean
+    /** The app's own listing copy per locale (`l10n` in app.json); see `appL10nText`. */
+    l10n?: unknown
   }
 }
 

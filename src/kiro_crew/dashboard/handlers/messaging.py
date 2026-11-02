@@ -299,6 +299,7 @@ from kiro_crew.dashboard.messaging_api.wecom_settings import (  # noqa: F401
     api_wecom_config_get,
     api_wecom_config_save,
 )
+from kiro_crew.dashboard.notification_coordinator import unread_count  # noqa: F401
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request  # noqa: F401
 from kiro_crew.dashboard.state import (  # noqa: F401
     CRON_NOTIFY_END,

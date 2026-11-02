@@ -341,6 +341,10 @@ from kiro_crew.git_config_hooks import (  # noqa: F401
     ConfigHookScanError,
     config_hook_disable_args_sandboxed,
 )
+from kiro_crew.git_no_index_diff import (  # noqa: F401 - owner: editor
+    no_index_diff,
+    patch_hunks,
+)
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope  # noqa: F401
 from kiro_crew.github_runner import validate_provider_executable  # noqa: F401
 from kiro_crew.hooks import (  # noqa: F401
@@ -864,9 +868,8 @@ _CRED_RUN_REVERSED_RE = re.compile("[" + "".join(re.escape(c) for c in sorted(_C
 
 
 #: How much of a file the binary sniff reads before deciding, in BYTES. 8 KiB is
-#: the window the Files app already uses (``_is_binary_file`` in
-#: ``apps/builtins/file_explorer/server.py``); the two surfaces disagreeing about
-#: what "binary" means is a worse outcome than either window being wrong.
+#: the window the Files app's own backend uses too; the two surfaces disagreeing
+#: about what "binary" means is a worse outcome than either window being wrong.
 _FILE_READ_SNIFF_BYTES = 8192
 
 #: Extensions that are binary by format, answered BEFORE the NUL sniff.
@@ -877,10 +880,9 @@ _FILE_READ_SNIFF_BYTES = 8192
 #: hold no NUL at all. The sniff still runs after this check and remains what
 #: catches an extension-LESS binary, which is why neither half is redundant.
 #:
-#: Kept byte-identical to ``BINARY_EXTS`` in
-#: ``src/kiro_crew/apps/builtins/file_explorer/server.py`` -- the Files app and
-#: this endpoint must answer "is this binary" the same way, and
-#: ``test_dashboard_file_io.py`` fails if the two sets ever diverge.
+#: The Files app's backend keeps its own copy of this set: it and this endpoint
+#: must answer "is this binary" the same way, and that app's own tests fail if
+#: its copy ever diverges from this one. This module reads nothing from the app.
 _FILE_READ_BINARY_EXTS = frozenset(
     {
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".pdf",
@@ -1004,11 +1006,10 @@ _PATH_COMPLETE_MAX_SCAN = 5000
 #
 # The side-panel Files rail's Content mode: "which files CONTAIN this text".
 # ``POST``, because the query travels in the body -- see ``api_file_grep``.
-# Filename search is ``api_file_search``. The Files app's own search
-# (``apps/builtins/file_explorer/server.py``) answers the same question in a
-# separate process with its own allow-root model; the row shape is shared with
-# it (``file``/``line``/``preview``; see `_grep_hit` for why there is no column)
-# but nothing is shared at runtime -- gating here goes through this module's
+# Filename search is ``api_file_search``. The Files app's own search answers the
+# same question in a separate process with its own allow-root model; the row
+# shape is shared with it (``file``/``line``/``preview``; see `_grep_hit` for why
+# there is no column) but nothing is shared at runtime -- gating here goes through this module's
 # ``_validate_dashboard_path`` / ``is_sensitive_path`` chokepoint.
 
 #: Wall-clock budget for ONE request, shared by the text and document passes.

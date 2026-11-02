@@ -500,7 +500,7 @@ def test_the_saved_hooks_are_read_once_under_the_writers_lock(tmp_path, monkeypa
     monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
     _save_page_hook(tmp_path, "web_fetch")
     events: list = []
-    real_read = Path.read_text
+    real_read = Path.read_bytes
 
     @contextmanager
     def locked(path):
@@ -508,13 +508,13 @@ def test_the_saved_hooks_are_read_once_under_the_writers_lock(tmp_path, monkeypa
         yield
         events.append(("unlock", path.name))
 
-    def read_text(self, *a, **k):
+    def read_bytes(self, *a, **k):
         if self.name == "hooks.json":
             events.append(("read", self.name))
         return real_read(self, *a, **k)
 
     monkeypatch.setattr(webhooks, "locked", locked)
-    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
     store = hooks_mod.persisted_hook_store()
     assert [h.matcher for h in store.list_all()] == ["web_fetch"]
     assert events == [("lock", "hooks.json"), ("read", "hooks.json"), ("unlock", "hooks.json")]
@@ -1220,6 +1220,73 @@ def test_staleness_is_false_off_kas_or_without_a_projection(agents_dir, hooks_pa
 def test_an_unreadable_spec_re_projects(agents_dir, hooks_page):
     (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
     live = _live(ACP_BACKEND_KAS, frozenset({"web_fetch"}))
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is True
+
+
+def _point_user_hooks_dir(monkeypatch, tmp_path: Path) -> Path:
+    """Point ~/.kiro/hooks at a temp dir via the resolver's seam, return it."""
+    import kiro_crew.agent as agent_mod
+
+    hooks_dir = tmp_path / "userhome" / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(agent_mod, "_DEFAULT_KIRO_HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(agent_mod, "_mc_config_path", lambda: tmp_path / "no-config.json")
+    spec_hooks._user_file_cache.clear()
+    return hooks_dir
+
+
+def _write_user_file(hooks_dir: Path, name: str, matcher: str) -> None:
+    (hooks_dir / name).write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "hooks": [
+                    {
+                        "name": "guard",
+                        "trigger": "PreToolUse",
+                        "action": {"type": "command", "command": "guard.sh"},
+                        "matcher": matcher,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_the_projection_withholds_what_a_user_file_pre_tool_hook_covers(
+    tmp_path, monkeypatch, hooks_page
+):
+    """A user ~/.kiro/hooks PreToolUse hook on web_fetch keeps web_fetch out of
+    auto-approve, so the call reaches the gate and exit 2 can block it."""
+    hooks_dir = _point_user_hooks_dir(monkeypatch, tmp_path)
+    _write_user_file(hooks_dir, "guard.json", "web_fetch")
+    matchers = kas_agents.pre_tool_hook_matchers("a1", {"allowedTools": ["web_fetch"]})
+    assert "web_fetch" in matchers
+    gated = kas_agents.to_client_custom_agent(
+        "a1", {"allowedTools": ["web_fetch", "web_search"]}, "p", pre_tool_hook_matchers=matchers
+    )
+    assert ("web_fetch", "ask") in _rules(gated["permissions"])
+    assert ("web_search", "ask") not in _rules(gated["permissions"])
+
+
+def test_editing_a_user_file_hook_makes_an_auto_approved_session_stale(
+    tmp_path, monkeypatch, agents_dir, hooks_page
+):
+    """Adding/editing a ~/.kiro/hooks file so it matches an already-auto-approved
+    capability marks the KAS session stale, so the next turn re-projects."""
+    hooks_dir = _point_user_hooks_dir(monkeypatch, tmp_path)
+    _write_spec(agents_dir, "a1", allowedTools=["web_fetch"])
+    live = _live(ACP_BACKEND_KAS, frozenset({"web_fetch"}))
+    # No user file yet: not stale.
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is False
+    # A user file on a DIFFERENT capability: still not stale.
+    _write_user_file(hooks_dir, "guard.json", "web_search")
+    spec_hooks._user_file_cache.clear()
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is False
+    # Edit it to match the auto-approved web_fetch: now stale.
+    _write_user_file(hooks_dir, "guard.json", "web_fetch")
+    spec_hooks._user_file_cache.clear()
     assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is True
 
 

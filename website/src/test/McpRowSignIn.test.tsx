@@ -364,3 +364,51 @@ describe('McpRowSignIn', () => {
     })
   })
 })
+
+describe('McpRowSignIn on Kiro Agent (KAS) chats (#24693)', () => {
+  const NOTE = "Chats on Kiro Agent don't use a sign-in made here. Sign in from the chat, with its Authorize card."
+
+  it('says the chat signs in itself, and keeps the control and its flow', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'minting' })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" again kasChatNote />)
+
+    expect(screen.getByTestId('mcp-sign-in-kas-chat-note')).toHaveTextContent(NOTE)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in again/ }))
+    await flush()
+    expect(mockApi.connectionsMintServer).toHaveBeenCalledWith('docsServer')
+    // The line stays through the flow, not only beside the idle button.
+    expect(screen.getByTestId('mcp-sign-in-kas-chat-note')).toBeInTheDocument()
+  })
+
+  it('shows no line by default', () => {
+    render(<McpRowSignIn target={{ slug: 'linear' }} serverName="linear" />)
+
+    expect(screen.getByRole('button', { name: /Sign in/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-sign-in-kas-chat-note')).toBeNull()
+  })
+
+  it('keeps an in-flight sign-in when the line flips', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({
+      slug: 'docsServer',
+      state: 'waiting',
+      oauth_url: 'https://docs.example.com/authorize',
+    })
+
+    const { rerender } = render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" kasChatNote />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await flush()
+    await tickPolls(1)
+    expect(screen.getByRole('link', { name: /Authorize docsServer/ })).toBeInTheDocument()
+
+    // The harness changes and the tab's config read repaints the row.
+    rerender(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" kasChatNote={false} />)
+    await flush()
+
+    expect(screen.queryByTestId('mcp-sign-in-kas-chat-note')).toBeNull()
+    expect(screen.getByRole('link', { name: /Authorize docsServer/ })).toBeInTheDocument()
+    expect(mockApi.connectionsMintServer).toHaveBeenCalledTimes(1)
+  })
+})

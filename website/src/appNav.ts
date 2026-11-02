@@ -51,6 +51,8 @@ export interface AppNavRecord {
     iconPathDark?: string
     /** The repo a manifest declares for its own art paths, when it declares one. */
     repo?: string
+    /** The app's own listing copy per locale; read by the label helper. */
+    l10n?: unknown
     ui?: {
       entry?: string
       pages?: AppNavPage[]
@@ -176,7 +178,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     name: app.name,
     route,
     id: appHostRouted ? `app-${app.name}` : app.name,
-    label: appPageLabel(app.name, page.label, app.displayName, app.origin),
+    label: appPageLabel(app.name, page.label, app.displayName, app.origin, app.manifest?.l10n),
     orphaned,
     builtin: isBuiltin,
     // Routed through the shared resolver rather than taken raw: an installed

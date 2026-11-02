@@ -617,6 +617,33 @@ registry-metadata read on the detail page keeps the known id visible and reports
 the failure through an inline ErrorNotice, rather than silently losing review
 information.
 
+## A file opens in an app page through the page's registry row
+
+The file viewer's ⋯ menu ("Open in <app>") hands a file's absolute path to an app
+page without naming the app. A `BuiltinAppEntry` in
+`website/src/apps/builtinRegistry.ts` declares `opensPathParam`, the query
+parameter its page reads a path from. `website/src/apps/pathOpener.ts` takes the
+first such entry whose app `appNavTarget` routes to that entry's own route, which
+means enabled, not orphaned and not AppHost-routed, and builds
+`<route>?<param>=<encoded path>`. With no declaring entry the row is absent. The
+Files app's row is the one that declares it today (`path`).
+
+The Files app is held apart from the core on both sides.
+`test/test_core_file_explorer_decoupling.py` fails on any module under
+`src/kiro_crew` outside `apps/builtins/`, or any script under `scripts/`, that
+imports `kiro_crew.apps.builtins.file_explorer` or names `file_explorer` /
+`file-explorer` in a non-docstring string. `website/src/apps/file-explorer/fileExplorerBoundary.test.ts`
+fails on any dashboard module outside `src/apps/file-explorer/` except
+`builtinRegistry.ts` that imports from it. What the two share is core code the app
+imports (`hooks/useDebouncedValue.ts`, `utils/parentDir.ts`), and the app pins its
+copy of the core file-read endpoint's binary-extension set in its own `tests/`.
+
+Every backend app gate runs the same scanner, `test/core_app_independence.py`:
+`core_app_imports` finds a core import of the app's package in any spelling, and
+`core_name_strings` finds a core string naming it, minus the reasoned rows the gate
+allows. The aws-control and Files gates call it with their own package and names,
+and the next app to leave adds a gate that does the same, never another scanner.
+
 ## 0. Three-axis classification: origin, resources, lifecycle
 
 An installed app's `installed.json` carries three **independent** fields, each
@@ -4205,7 +4232,11 @@ owner each:
   `apps/app_frame.py`). `resolve(app_name, id) -> (entry, process_backed, app) |
   None` says whether that entry is enabled and granted; the mint, the frame
   document and every fetch call it, off the event loop, so revoking an entry stops
-  its frame, its renewal and its next fetch. An unregistered point is a 404.
+  its frame, its renewal and its next fetch. An unregistered point is a 404. An
+  optional fourth argument, `admit(app_name, id, query) -> bool`, checks the one
+  act a mint is for (its query parameters other than `frame`) against the live
+  grant; a refusal is a 403 `not_granted`, audited. A point without one admits
+  every mint its resolver serves.
   `clean_entry` and `process_backed` are the helpers a resolver uses. The points
   this package ships register at the bottom of the module.
 - **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
@@ -4261,13 +4292,109 @@ owner each:
   must refuse userinfo or a port checks those itself),
   `claimsHost` and `withoutQuery`.
 - **Dashboard side** (`website/src/appFrame/`): `createSandboxedFrame` (the
-  attributes), `mintAppFrame(app, point, id, frameId?)` (accepts only an
+  attributes), `mintAppFrame(app, point, id, frameId?, request?)` (`request` goes
+  on the query for `admit`, never overriding `frame`; accepts only an
   `/app-frame/` URL), `loadMintedFrame` (`init` on the first load, teardown on a
   second), `postToFrame`, `renewIntervalMs`, `currentTheme`, and the tag and
   per-frame token bucket in `frameProtocol.ts`.
 
 Writers: `apps/app_frame.py`, `apps/app_hosts.py`, `apps/point_grants.py`,
 `website/src/appFrame/*`.
+
+## 18c. A message action gets one message, on one click
+
+`contributes.messageActions` is the second point on the §18b contract, and the
+first that hands an app conversation content. Its rule: the app gets the text of
+the ONE message the user clicked its row on, and nothing else. It registers
+`messageActions` with `register_frame_point` (resolver `_message_action_entry`:
+the app enabled, the action declared with a servable `entry`, and at least one
+role approved; admission `_admit_message_action`: every mint, renewals included,
+names the click's `role` and `format`, and is refused unless that role is in the
+live approved row and `markdown` is asked only where it is approved, so a tab
+holding an older grant sends nothing) and its `messageActions` grant family with
+`register_point_grants`.
+
+- **Trigger.** A row at the end of a finished message's More menu
+  (`messageActions/MessageActionMenuItems.tsx`), named with the action's title and
+  its app, for each approved action whose roles include the message's role. Never a
+  row button, so the footer's two-control limit holds; where app actions are what
+  opens More on a reply (no Quote, Speak or thread row), Raw view moves into More,
+  so the row stays Copy + More. Not on a streaming reply; on
+  a user message only where the row has a More menu (the surfaces that offer
+  Quote). The click is the consent for that one value; there is no further prompt.
+  While the app list has failed to load and none is held, a reply's More menu
+  shows an `ErrorNotice` in place of the rows, with a "Load app actions again"
+  retry and the agent hand-off, so a failure never reads as "no app declares one".
+- **What the frame gets.** `message.invoke { invocationId, deadlineMs, text,
+  format, truncated, role }`, sent by `HostInvocation.start`. With the default
+  `plain` format, `text` is the message's own text as the chat renders it, read
+  from the page at the click (`messageText.ts` `readMessageText`, over
+  `utils/visibleText.ts`). **The rule: plain text is the message's own text,
+  minus what the renderer hides; styling the author applied counts as content.**
+  So text a message's own markup or classes make faint, transparent, tiny or
+  zero-opacity is still the message's text and is sent, just as the `markdown`
+  format sends it; the plain format's promise is no link addresses and nothing
+  the renderer itself withholds, not a pixel-level reading of the screen:
+  - a link gives its label; an image, an SVG diagram, a canvas, an iframe or a
+    host button gives nothing; what the renderer hides (`hidden`, `aria-hidden`,
+    `sr-only`, `display: none`, `visibility: hidden`) gives nothing;
+  - a KaTeX formula gives its TeX annotation once (never the MathML copy and the
+    drawn glyphs both);
+  - a code block gives exactly its code (`CodeBlock` registers it with
+    `holdVisibleCodeText`, since the highlighter draws in a shadow root): no
+    language label, line numbers or button text. An open diff reads as its patch
+    the same way; a folded one shows only its chip, a button, so it gives nothing;
+  - a closed `<details>` gives its summary only; text clipped by a scroll box or
+    max-height is still the message and is read in full; a Raw-view toggle shows
+    source, so the source is what is read;
+  - only the message's own content roots are read: the elements the renderers
+    mark `data-message-body` (the `MarkdownRenderer` root and its Raw-view
+    `<pre>`, and a user message's plain-text and inline-mention segments). A
+    formula, like anything else, is read only when the renderer does not hide
+    it. The seed label, a quoted message's card, a knowledge
+    chip, attachment cards, paste chips and steer chips sit outside them and give
+    nothing. The sanitizer drops a content-minted `data-message-*` attribute, so
+    a message cannot mark a second root.
+  - every character of the content passes through unchanged: the walk emits
+    tokens, never in-band marker characters.
+  A bubble that is no longer on the page (scrolled out of a virtualized list),
+  has no content root (a host-drawn body) or shows no text gives `null`, and the popover refuses up front ("Couldn't read
+  this message…") without minting a frame or sending anything. With the approved
+  `markdown` format, `text` is the markdown source. Either is cut to `maxChars`
+  UTF-16 units without splitting a surrogate pair. Never another message, the
+  session key, title, folder, agent, model or project, attachments, tool calls,
+  the message id or position, or any DOM node: the app gets a string, and the
+  popover's anchor element stays on the dashboard side.
+- **Invocation.** The shared contract (§18b) with a 2-minute deadline. It also
+  ends when the popover closes (`invoke.cancel { reason: "closed" }`), when another
+  action opens (`other`), and when the action's grant, revision or role no longer
+  covers it (`revoked`). Copy and Open are drawn under the frame in host chrome;
+  Open shows the parsed host name. The popover's header names the app and the
+  action (`displaySafe`).
+- **Grant.** One staged family, `messageActions`, with entries
+  `<id>:role:assistant`, `<id>:role:user` and `<id>:format:markdown`
+  (`apps/message_action_grants.py`). Installing approves what is declared; an
+  update that adds a role, markdown or an action holds those entries back until
+  the owner approves them on the App Detail page, and the action meanwhile works
+  at its approved reach (no approved role: not offered; markdown waiting: plain
+  text). `maxChars` and `popover` are not grants. The app row's
+  `messageActionGrant { actions, staged }` is what the dashboard offers from
+  (`messageActionRegistry.ts` re-checks shape and caps and requires the action to
+  be both approved and still declared).
+- **Bounds.** At most 2 actions per app (`MAX_MESSAGE_ACTIONS_PER_APP`, mirrored);
+  `title` 1 to 40 UTF-16 units; `maxChars` 1 to 32,000; popover width 200 to 480
+  and max height 120 to 600. A wrong JSON type or an unknown key is refused at
+  install. No `ready` within 10 seconds shows "didn't open".
+- **No feature preview.** Nothing renders until an installed, admitted app
+  declares an action and its install is approved; no app shipped in this
+  repository declares one.
+
+Writers: `apps/app_frame.py` (the point), `apps/message_action_grants.py`,
+`apps/point_grants.py` (its family), `apps/manifest_contributes.py`
+(`MessageActionConfig`), `apps/manifest.py` (entry containment, signing),
+`apps/manager_lookup.py` (the row), `website/src/messageActions/*`,
+`website/src/pages/chat/{AssistantMessage,UserMessage}.tsx` (the rows),
+`website/src/pages/AppDetailPage.tsx` (the held-back entries).
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
@@ -4980,7 +5107,7 @@ answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no m
 under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
-"Repository boundary").
+"Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
@@ -5037,6 +5164,76 @@ malformed `market:` source resolves to nothing and cannot be granted.
 Writers: `apps/marketplace_install.py`, `apps/market_source.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
+
+## 32. App Kit seam level 1: what a former built-in needs, offered to every app
+
+An installed app reaches the host only through its context and the dashboard SDK,
+never through a `kiro_crew` import or a dashboard source path: such an import pins the
+app to one wheel's private layout and breaks silently on the next upgrade. Level 1 is
+the set of seams a built-in's code needed from core, published generically. Nothing in
+any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
+(`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
+`test/test_app_sdk_level_mirror.py`. An app reads `ctx.sdk_level` or the SDK export to
+detect an older host and degrade, instead of failing on a missing attribute.
+
+**Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
+`_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,
+PUT, DELETE or PATCH (any case), whose `path` is a str of at most 512 characters, and
+whose `handler` is callable. Anything else is skipped with the existing warning and is
+never registered. Dispatch, prefixing and teardown are unchanged.
+
+**Owner gate.** `AppContext.require_owner(request, operation)` is
+`require_owner_dashboard_request` with the audit operation `<ctx.name>.<operation>`.
+It returns `None` for the owner and the host's own refusal (403 `owner_only`, or the
+stale-session 401) for everyone else, app tokens included. The app chooses where to
+call it. A non-identifier `operation` is audited as `<app>.unnamed`, and the request is
+still denied, so an app cannot write free text into the audit log or attribute a row
+to another app. It needs no permission because it only removes access. The import is
+lazy, so `apps/context.py` keeps its aiohttp-free import.
+
+**Shared embedder.** `AppContext.embed` is an `EmbedSDK` (`apps/embed_sdk.py`),
+always populated like `scrub`. It adds no reach, since the app's in-gateway Python
+could import the embedder anyway, and it keeps one model resident instead of one per
+app. `embed_sync` asks `embeddings_shared.get_shared_embedder()` for a vector, so an
+app's vectors match the host memory's model id and width. It returns `None` when the
+backend is neither ready nor loadable on demand, when the embed raises (logged once per
+process and message), and when called on a running event loop. `run(func, *args,
+**kwargs)` binds the call with `functools.partial` before handing it to
+`executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
+parameters. No method raises into the app.
+
+**Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
+`apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
+discovery conversion. A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
+locale past the 32nd, an unknown entry key or an over-cap value drops that locale. The
+drops are kept in `L10nConfig.warnings`, logged by the install validation
+(`manager_tree._validate_source_path`) and never refuse an install. The block is not in
+`signing_payload`: it is content, not authority. The dashboard
+(`components/appstore/appManifest.ts`) reads it only when no catalog key covers the
+app, so a catalog-keyed built-in keeps its own copy. It looks up the exact locale,
+then the base language, then the English field, with own-property lookups and the
+parser's length caps.
+
+**Dashboard SDK.** `openChat` gains `memoryMode` (`'persistent'`, `'incognito'`,
+`'temporary'`; anything else is dropped) and `sessionFolder: false`. Both apply only
+without `slotKey`, and either one makes the launch a new draft (`chatLaunchOpensDraft`
+in `app-sdk/chatLaunch.ts`). The routed chat's `?new=1` intake claims that intent and
+passes `memory_mode` and `sessionFolder` into `createSlot`. The send intake leaves it
+alone, so the message is staged and never auto-sent. `fmtCurrency` and `APP_SDK_LEVEL`
+join `@kirocrew/app-sdk`. `Select` (a narrowed wrapper over the host's own select) and
+`guideCaution` join `@kirocrew/app-sdk/ui`. Each vendor stub names exactly its
+barrel's runtime exports, pinned by `src/test/appSharedModuleBoundary.test.ts`, because
+a name a stub omits fails the importing bundle at link time.
+
+Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
+`apps/embed_sdk.py`, `apps/manifest_sections.py`, `apps/manifest.py`,
+`apps/discovery.py`, `apps/manager_tree.py`, `website/src/app-sdk/index.ts`,
+`website/src/app-sdk/chatLaunch.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`website/src/kirocrew-ui/index.ts`, `website/src/kirocrew-ui/Select.tsx`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/public/vendor/kirocrew-ui.mjs`,
+`website/src/pages/chat/useChatPageSessionController.ts`,
+`website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
+`website/src/components/appstore/appManifest.ts`.
 
 ## Windows stale-backend cleanup capacity
 

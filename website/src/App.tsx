@@ -40,6 +40,9 @@ const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 // App-contributed link previews (`contributes.linkPreviews`): hover detection only;
 // an app's module loads on the first hover of one of its links.
 const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
+// App-contributed message actions (`contributes.messageActions`): a More-menu row per
+// approved action; an app's module loads only when its row is clicked.
+const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
@@ -102,6 +105,7 @@ const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
 // lapsed stored sign-in), so it is always mounted and its chunk is fetched once
 // at boot; it renders nothing in the common case.
 const KiroSignInNotice = lazy(() => import('./components/KiroSignInNotice'))
+const KasEngineNotice = lazy(() => import('./components/KasEngineNotice'))
 
 // Route-level code splitting for the App Store split (PR1): Discover and
 // Library are independent surfaces, and neither belongs in the app-core
@@ -817,6 +821,17 @@ export default function App() {
               <KiroSignInNotice />
             </Suspense>
           </ErrorBoundary>
+          {/* Route-independent too: the first KAS chat on a host without a
+              working kiro-cli waits on the gateway downloading Kiro Crew's own
+              engine, whatever page is open. */}
+          <ErrorBoundary
+            scope="kas-engine-notice"
+            fallback={error => <KiroSignInNoticeFallback error={error} />}
+          >
+            <Suspense fallback={null}>
+              <KasEngineNotice />
+            </Suspense>
+          </ErrorBoundary>
           {/* The rail renderer reaches the chat page through context rather than
               a prop: the route element is shared with the popout/embed frames. */}
           <MobileNavRailContext.Provider value={mobileNavRail}>
@@ -827,6 +842,7 @@ export default function App() {
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
+          <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

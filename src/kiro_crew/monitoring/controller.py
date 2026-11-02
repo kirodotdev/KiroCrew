@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -23,6 +23,7 @@ from kiro_crew.monitoring.models import (
     MonitorDispatchResult,
     MonitorObservation,
     MonitorObservationStatus,
+    MonitorProbeProvider,
     MonitorProbeResult,
     MonitorState,
     MonitorVerdict,
@@ -30,6 +31,7 @@ from kiro_crew.monitoring.models import (
     resolve_probe_result,
     transient_probe_failure,
 )
+from kiro_crew.monitoring.plugins import registered_monitor_kinds
 from kiro_crew.monitoring.pull_request import provider_error_result
 from kiro_crew.monitoring.registry import monitor_kind
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -106,16 +108,6 @@ class _Service(Protocol):
     ) -> bool: ...
 
 
-class _Provider(Protocol):
-    def probe(
-        self,
-        subjects: Sequence[str],
-        *,
-        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
-        use_owner_credentials: bool = True,
-    ) -> Mapping[str, MonitorProbeResult]: ...
-
-
 MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
 OwnerCredentialsAuthorizer = Callable[[_Loop, MonitorState], bool]
 #: Names the crew log unit a loop's OWNER session is writing -- its live ACP session
@@ -134,7 +126,7 @@ class MonitorController:
         service: _Service,
         dispatch: MonitorDispatcher,
         *,
-        providers: Mapping[str, _Provider] | None = None,
+        providers: Mapping[str, MonitorProbeProvider] | None = None,
         clock: Callable[[], float] = time.time,
         owner_credentials_authorized: OwnerCredentialsAuthorizer | None = None,
         owner_session_id: OwnerSessionResolver | None = None,
@@ -155,6 +147,18 @@ class MonitorController:
                 "azure_devops_pull_request": AzureDevOpsPullRequestProvider(),
                 "bitbucket_pull_request": BitbucketPullRequestProvider(),
             }
+            # Kinds an edition contributed at boot. Read once, here: registration
+            # after the controller exists is not picked up (see monitoring.plugins).
+            # A factory that raises fails only its own kind: its monitors take the
+            # provider_unsupported path below instead of aborting gateway boot.
+            for plugin in registered_monitor_kinds():
+                try:
+                    self._providers[plugin.kind.name] = plugin.provider_factory()
+                except Exception:
+                    logger.exception(
+                        "monitor kind %s: provider factory failed; its monitors will not probe",
+                        plugin.kind.name,
+                    )
 
     @staticmethod
     def _protected_owner_credentials_authorized(loop: _Loop, state: MonitorState) -> bool:

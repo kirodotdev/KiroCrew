@@ -47,7 +47,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # isolation boundary and the gateway sandbox is unavailable.
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
-        "remote_session/workspace_tools.py::_git_status",
+        "remote_session/workspace_tools.py::_run_grouped",
+        # Windows only: taskkill /T from the system directory on a read the
+        # guest itself started, so a deadline leaves no orphaned git.exe.
+        "remote_session/workspace_tools.py::_stop_tree",
         # Gateway credential reads: the callers supply fixed CLI verbs and a
         # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
         # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
@@ -675,6 +678,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server_restart.py::_spawn_detached_gateway",
         "cli_server_update.py::_update",
+        # `git ls-remote` for a checkout on no branch, split out of _update: the
+        # same `git` the fetch runs, under the same env, after the same source-pin
+        # and exec-config checks. The argv is literals plus the three reviewed
+        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
+        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
+        "cli_server_update.py::_detached_upstream_branch",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —
@@ -794,11 +803,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
         "dashboard/file_api/editor.py::_run",
-        # The file panel diff: fixed list-argv `git diff --no-index -- a b`
-        # (no shell) with the same textconv/attributes/fsmonitor hardening as
-        # `_run`, over two files the gateway itself wrote into a fresh private
-        # temp dir. No argument, path or cwd comes from the request.
-        "dashboard/file_api/editor.py::_diff_redacted_bodies",
+        # The file panel's and the remote Git panel's diff: fixed list-argv
+        # `git diff --no-index -- a b` (no shell) with the same textconv/
+        # attributes/fsmonitor hardening as the editor's `_run`, over two files
+        # the gateway itself wrote into a fresh private temp dir. No argument,
+        # path or cwd comes from the request.
+        "git_no_index_diff.py::no_index_diff",
         "dashboard/file_api/desktop.py::api_screenshot",
         "dashboard/file_api/desktop.py::api_upload",
         "dashboard/handlers/knowledge_sources.py::_run_folder_dialog",

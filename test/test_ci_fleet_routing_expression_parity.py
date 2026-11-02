@@ -40,20 +40,9 @@ _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.
 # event tests; this one decides only which non-fleet destination is reachable,
 # so neither can be derived from the other.
 #
-# One ROUTING constant below does not carry this tail:
-# _CANONICAL_DISPATCH_MERGE_GROUP_EXPR, whose workflow is
-# `main-ratchet-audit.yml`. Its literal hosted fallback is the current contract,
-# not an oversight: that site's hosted tail is pinned by a dedicated assertion,
-# `test_the_ratchet_audit_route_stays_off_the_larger_runner_group`, rather than
-# derived from the expression, so moving it means deleting that assertion on
-# purpose and belongs in its own change. The merge queue polling that workflow
-# is NOT what sets it apart -- the queue polls `ci.yml`, `fast-gate.yml` and
-# `build.yml` too, and their merge-group leg already reaches the group whenever
-# the queuing actor is not on the allowlist.
-#
-# The resolver-consumer constants do not carry the tail either, for an unrelated
-# reason: an EMPTY resolver output means the resolver did not run, and hosted is
-# the only safe answer there.
+# Every ROUTING constant carries this tail. The resolver-consumer constants do
+# not, for an unrelated reason: an EMPTY resolver output means the resolver did
+# not run, and hosted is the only safe answer there.
 _GROUP_THEN_HOSTED_TAIL = (
     "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
     "|| 'ubuntu-latest' }}"
@@ -123,7 +112,7 @@ _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
     + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || "
     "github.event_name == 'merge_group') && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 
 # These lanes take no fleet route: untrusted-content model execution,
@@ -190,6 +179,18 @@ _PERMANENT_EXCEPTIONS = {
     # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
     # route one to the fleet through the same actor predicate.
     ("test-durations.yml", "refresh"),
+    # Release and publish carve off the shared standard pool for latency, not
+    # for an isolation contract: they are human-blocking and low-volume, and a
+    # release cannot wait on a pool nobody here can expedite. Every one is
+    # workflow_call, a v* tag push, workflow_dispatch, or (publish-installer) a
+    # path-filtered push to main, so none adds pull-request volume to the group.
+    ("publish-cli.yml", "publish-cli"),
+    ("publish-docker.yml", "publish-docker"),
+    ("publish-installer.yml", "publish-installer"),
+    ("publish-linux.yml", "publish-linux"),
+    ("publish-windows.yml", "publish-windows"),
+    ("release.yml", "release-candidate-tests"),
+    ("release.yml", "record-stable-promotion"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
@@ -230,6 +231,15 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
     ("scheduled-failure-watch.yml", "surface"): _GROUP_LABEL_EXPR,
+    # The two nightly publish callees a fork can start take the LABEL spelling,
+    # for the fork-fallback reason given above; the rest are repository-only.
+    ("publish-cli.yml", "publish-cli"): _GROUP_LABEL_EXPR,
+    ("publish-docker.yml", "publish-docker"): _GROUP_LABEL_EXPR,
+    ("publish-installer.yml", "publish-installer"): {"group": "kirocrew-runners"},
+    ("publish-linux.yml", "publish-linux"): {"group": "kirocrew-runners"},
+    ("publish-windows.yml", "publish-windows"): {"group": "kirocrew-runners"},
+    ("release.yml", "release-candidate-tests"): {"group": "kirocrew-runners"},
+    ("release.yml", "record-stable-promotion"): {"group": "kirocrew-runners"},
     # These dispatchable jobs use the group label upstream, but a personal
     # fork cannot reach the org group and must retain the hosted fallback.
     ("memory-benchmark.yml", "accept"): (
@@ -276,6 +286,22 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
+    # The same-repo scope lane's three non-matrix jobs. They keep their place in
+    # _PERMANENT_EXCEPTIONS because none of them takes a fleet route, and a group
+    # label is not a fleet route. `generate` has its own documented reason to
+    # stay off the fleet, which its comment in the workflow states; the other two
+    # are simply not argued onto it. The label form rather than `group:` is
+    # required because the workflow fires on `pull_request`, so a contributor's
+    # own fork runs it where an organization group is unreachable.
+    ("security-scope-review.yml", "generate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "validate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "publish"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 
@@ -311,6 +337,9 @@ _EXPECTED_ROUTED_JOBS = {
     ("dependency-vulnerability.yml", "audit-production-dependencies"),
     ("sensitive-change-review.yml", "sensitive-change-review"),
     ("pr-readiness.yml", "readiness"),
+    # The reusable OIDC content scan. Its caller carries no `runs-on` of its
+    # own, so this route is the whole lane's destination.
+    ("internal-content-scan.yml", "scan"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -324,12 +353,21 @@ _READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
-# merge_group-triggered workflows with no fleet route: the queue's required
-# check (a poll), the OIDC content scan (a reusable-workflow call) and the Python
-# client suite. "No fleet route" is what this list means, and it is the only
-# thing it means: the poll and the client suite both carry the
+# Fleet-routed `workflow_call` callees that take the SAME expression without
+# declaring any trigger of their own. A callee's `github.event_name` is the
+# caller's, so its event set is the caller's: internal-content-scan-gate.yml
+# fires on merge_group, pull_request and push, which is exactly the merge-group
+# routing policy. Kept apart from the set above because the trigger-parity check
+# reads declared triggers, and a callee declares none.
+_MERGE_GROUP_CALLEE_WORKFLOWS = {"internal-content-scan.yml"}
+# merge_group-triggered workflows with no fleet route of their own: the queue's
+# required check (a poll), the OIDC content scan's caller and the Python client
+# suite. "No fleet route IN THIS FILE" is what this list means, and it is the
+# only thing it means. The poll and the client suite both carry the
 # `kirocrew-runners` group's label in this repository, so a group label does not
-# remove an entry from this list.
+# remove an entry. The content scan's caller is a bare `uses:` job with no
+# `runs-on` at all; the route for that lane lives in the callee it names, which
+# _MERGE_GROUP_CALLEE_WORKFLOWS pins.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",
@@ -367,6 +405,8 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "frontend-lint"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "lockfile-engines-floor"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "cfn-lint"): _CANONICAL_CONSUMER_EXPR,
+    # Needs the Rust toolchain step it carries: the fleet image has no `cargo`.
+    ("ci.yml", "native-redaction-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
@@ -397,7 +437,7 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_DISPATCH_EXPR
     if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:
         return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
-    if workflow_name in _MERGE_GROUP_WORKFLOWS:
+    if workflow_name in _MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_CALLEE_WORKFLOWS:
         return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
     return _CANONICAL_ROUTING_EXPR
 

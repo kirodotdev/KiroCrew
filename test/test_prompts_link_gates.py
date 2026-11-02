@@ -411,14 +411,13 @@ class TestCreateAndDeletePinTheDirectory:
                 kiro.symlink_to(elsewhere)
             return fd
 
-        monkeypatch.setattr(os, "open", _swap_between_components)
-        resp = asyncio.run(
-            api_prompts_create(
-                _create_request({"name": "pinned", "content": "BODY\n", "scope": "global"})
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "open", _swap_between_components)
+            resp = asyncio.run(
+                api_prompts_create(
+                    _create_request({"name": "pinned", "content": "BODY\n", "scope": "global"})
+                )
             )
-        )
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo of the os.open swap before the asserts, moved verbatim; tracked for a de-flake pass
-        monkeypatch.undo()
         assert resp.status == 201
         assert swapped["done"], "the swap never ran — the test would be vacuous"
         assert (tmp_path / "kiro-real" / "prompts" / "pinned.md").read_text() == "BODY\n"
@@ -931,9 +930,8 @@ class TestByNameFallbackStillWorks:
     check only), but it must still create, delete, and answer the same codes."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's own fallback switch, moved verbatim; no test in the class calls monkeypatch.undo()
-    def _force_fallback(self, monkeypatch):
-        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+    def _force_fallback(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
 
     def test_create_then_delete_round_trips(self, tmp_path, mock_sel):
         resp = asyncio.run(

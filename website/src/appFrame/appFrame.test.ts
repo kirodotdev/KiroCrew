@@ -40,6 +40,15 @@ describe('mintAppFrame', () => {
     await expect(mintAppFrame('a', 'link-previews', 'c')).rejects.toThrow()
     await expect(mintAppFrame('a', 'linkPreviews', '../x')).rejects.toThrow()
   })
+
+  it('sends a point\'s request on the query, beside a frame id it cannot override', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ frame: '/app-frame/a/messageActions/save/f/t' })))
+    vi.stubGlobal('fetch', fetch)
+    await mintAppFrame('a', 'messageActions', 'save', 'fid', { role: 'user', format: 'plain', frame: 'other' })
+    const url = new URL(String(fetch.mock.calls[0][0]), 'http://h')
+    expect(url.pathname).toBe('/api/apps/a/frames/messageActions/save')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ role: 'user', format: 'plain', frame: 'fid' })
+  })
 })
 
 describe('invocation messages', () => {

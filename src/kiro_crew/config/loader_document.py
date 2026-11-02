@@ -25,6 +25,7 @@ from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.aws_project_profiles import PROJECT_PROFILES_KEY, project_profile_refusals
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
+from kiro_crew.config import write_provenance
 from kiro_crew.config.loader_locations import config_local_path, config_path, read_config_text
 from kiro_crew.config.migration import CONNECTIONS_UI_MIGRATION_MARKER
 from kiro_crew.config.paths import config_dir
@@ -527,6 +528,9 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     """
     _refuse_unpublishable(data, path)
     _refuse_aws_project_profiles(data, path)
+    # The name the caller asked for, before a symlinked config is resolved below: the
+    # sandbox seals the NAME, so that is what the publication record is keyed by.
+    name_as_given = path
     # Resolve BEFORE stat/write so a symlinked config keeps pointing at its
     # target (and the mode preserved is the target's, not the link's).
     try:
@@ -591,7 +595,17 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, indent=2) + "\n"
     if platform_compat.IS_POSIX:
-        atomic_write(path, payload, fsync=fsync, mode=mode)
+        # Vouch for the staged inode before it is published, so a Linux sandbox whose
+        # pre-spawn pass recorded the previous one does not refuse the gateway's own
+        # save. Only the POSIX branch: no other platform runs the namespace launcher
+        # that reads the record.
+        atomic_write(
+            path,
+            payload,
+            fsync=fsync,
+            mode=mode,
+            on_staged=write_provenance.staging_hook(name_as_given),
+        )
     elif lock_down:
         # Windows: the mode bits above are inert (fchmod_safe is a documented
         # no-op), so there is nothing to preserve and no conflict with

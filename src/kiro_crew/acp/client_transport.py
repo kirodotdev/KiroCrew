@@ -40,6 +40,7 @@ from kiro_crew.acp.client_timeouts import (
     _READ_TIMEOUT,
     _WAIT_RESPONSE_MAX_TIMEOUT,
 )
+from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.runtime_models import (
     _extract_advisory_detail,
     _is_model_substitution_advisory,
@@ -963,7 +964,9 @@ async def _drain_notifications(
             return
         params = msg.params if isinstance(msg.params, dict) else {}
         server_name = str(params.get("serverName") or params.get("name") or "")
-        oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+        oauth_url = with_google_offline_access(
+            str(params.get("oauthUrl") or params.get("url") or "")
+        )
         # Drop unsafe-scheme URLs *before* recording dedupe so a later safe
         # retry for the same server still gets through.
         if not _is_safe_oauth_url(oauth_url):

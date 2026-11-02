@@ -406,7 +406,14 @@ raise SystemExit(m['main']())
 
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
         job = jobs["e2e"]
-        self.assertEqual(job["timeout-minutes"], 25)
+        # 25 on CodeBuild; 40 on a non-fleet runner, where the slowest observed
+        # fork run took 23.9 of the 25 and a green run was one slow dependency
+        # install from a cancellation with no failing test.
+        self.assertEqual(
+            job["timeout-minutes"],
+            "${{ startsWith(needs.changes.outputs.linux_runner_large, "
+            "'codebuild-') && 25 || 40 }}",
+        )
         steps = job["steps"]
         parallel = next(
             s for s in steps if s.get("run") == "exec python scripts/ci_e2e_parallel.py"

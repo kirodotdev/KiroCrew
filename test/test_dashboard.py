@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import (
     DashboardState,
     _fmt_duration,
@@ -370,7 +371,7 @@ class TestNotificationPersistence:
 
         asyncio.run(scenario())
         assert state._notification_log == []
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
         state.broadcast_ws.assert_called_once_with("notifications_clear", {})
         assert order == ["broadcast", "rewrite"]
 

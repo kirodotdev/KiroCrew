@@ -39,6 +39,7 @@ from kiro_crew.config.superseded_defaults import (
     record_acks,
     superseded_default_drift,
 )
+from kiro_crew.config.write_provenance import record_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
 
@@ -54,7 +55,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json`` or ``config.local.json``.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -62,7 +63,9 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    # The config writer records each save in the publication record first, and that
+    # record is sealed the same way, so a sandboxed save is refused there.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
             if os.path.realpath(os.fsdecode(name)) in sealed:

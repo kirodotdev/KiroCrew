@@ -203,23 +203,46 @@ def chunk_plaintext(text: str, limit: int) -> list[str]:
     return chunks
 
 
+#: Each break tier and the divisor of ``limit`` its cut must reach. These
+#: follow ``messaging.split.split_markdown_safe``'s ladder (a paragraph break
+#: at least halfway in, a line break at least a quarter in), and a space takes
+#: the line tier's floor. A break nearer the start would strand most of the
+#: budget: ``"Hi\n\n"`` plus one long answer becomes three messages, not two.
+_BREAK_TIERS: tuple[tuple[str, int], ...] = (("\n\n", 2), ("\n", 4), (" ", 4))
+
+
 def _preferred_cut(text: str, limit: int) -> int:
     """Best split index within ``limit``: paragraph, then line, then space.
 
-    Each candidate is pulled back to a grapheme boundary. A candidate that
-    collapses to zero after that is discarded, so the search degrades to the
-    next-weaker boundary instead of producing an empty chunk and looping.
+    A break counts only when its cut reaches its tier's share of ``limit``;
+    an earlier one falls through to the next-weaker tier. With no tier left,
+    the last break in reach is still taken when the word after it fits one
+    chunk, so a long URL behind a short lead-in moves whole; a word too long
+    for any chunk is cut anyway, so the budget is filled instead. A hard cut is
+    pulled back to a grapheme boundary; one that collapses to zero emits the
+    first grapheme whole instead of producing an empty chunk and looping.
     """
     window = text[: limit + 1]
-    for separator in ("\n\n", "\n", " "):
+    for separator, divisor in _BREAK_TIERS:
         index = window.rfind(separator)
-        if index > 0:
+        if index > 0 and index + len(separator) >= limit // divisor:
             return index + len(separator)
+    last_break = max(window.rfind("\n"), window.rfind(" "))
+    if last_break > 0:
+        start = last_break + 1
+        if _word_end(text, start, start + limit + 1) - start <= limit:
+            return start
     cut = _grapheme_boundary(text, limit)
     # A single grapheme longer than the whole limit (a long emoji ZWJ
     # sequence with a tiny limit) has no safe boundary below it; emit it whole
     # rather than splitting it or spinning forever on a zero-width cut.
     return cut if cut > 0 else _grapheme_end(text, limit)
+
+
+def _word_end(text: str, start: int, reach: int) -> int:
+    """First space or newline in ``text[start:reach]``, else ``reach`` capped at the end."""
+    ends = [i for i in (text.find(" ", start, reach), text.find("\n", start, reach)) if i >= 0]
+    return min(ends) if ends else min(reach, len(text))
 
 
 def _grapheme_boundary(text: str, index: int) -> int:

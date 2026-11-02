@@ -349,11 +349,11 @@ def _edition_builtin_apps() -> list[dict[str, Any]]:
 def _edition_bundled_app_names() -> list[str]:
     """Names the active edition declares it bundles (PlatformContext).
 
-    The Default ``AppsLoader`` returns the OSS builtins (``auto_research`` /
-    ``file_explorer``) which are already covered by the package's ``builtins/``
-    discovery, so this is a no-op for standalone.  The internal companion declares
-    its feature-app names; used by orphan detection so a declared app is never
-    mis-orphaned even if its manifest dir is momentarily unavailable.
+    The Default ``AppsLoader`` returns none: the OSS builtins are covered by the
+    package's ``builtins/`` discovery, so this is a no-op for standalone.  The
+    internal companion declares its feature-app names; used by orphan detection so
+    a declared app is never mis-orphaned even if its manifest dir is momentarily
+    unavailable.
     """
     # Fail-closed via safe_context_call (see _edition_builtin_apps above).
     _no_names: list[str] = []

@@ -1074,7 +1074,7 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 Some `runs-on` sites draw on the `kirocrew-runners` larger-runner group by
 `group:` rather than `ubuntu-latest`, and others reach it conditionally by label
 (the label-route sections below name them, along with the matrix legs in
-`denial-differential.yml` and `fork-security-scope-review.yml` covered with
+`denial-differential.yml` and both scope lanes covered with
 them). Every one of them can land on the group's cap, which is what
 **Capacity** below is about. `ci.yml`'s `changes` resolver reaches the same group
 a third way, conditionally and by label, and is treated separately throughout
@@ -1220,9 +1220,10 @@ Windows definition to `kirocrew-runners` would make every one of these jobs
 eligible to land on Windows. A Windows definition belongs in its own group,
 which is where `kirocrew-runners-windows` holds the one below.
 
-**Two cross-platform matrix jobs reach these runners by LABEL instead.**
-`denial-differential.yml`'s `denial-differential` and
-`fork-security-scope-review.yml`'s `adjudicate` each run one Linux, one macOS
+**Three cross-platform matrix jobs reach these runners by LABEL instead.**
+`denial-differential.yml`'s `denial-differential` and the `adjudicate` job of
+both scope lanes -- `fork-security-scope-review.yml`'s and
+`security-scope-review.yml`'s -- each run one Linux, one macOS
 and one Windows leg off `os: [ubuntu-latest, macos-latest, windows-latest]`.
 Their Linux and Windows legs now resolve to `kirocrew-linux-4-core` and
 `kirocrew-windows-4-core`, dispatched on `matrix.os` in a single `runs-on`
@@ -1239,19 +1240,20 @@ and Windows definitions are: it is a 3-core arm64 runner capped at
 `maximum_runners: 8`, so whether a macOS leg runs unchanged on it has to be
 measured rather than assumed. Moving one is a separate decision.
 
-These two are the exception to the group-targeting rule above, and the reason is
-fork reachability. A runner group belongs to the kirodotdev organization, so a
-fork running either workflow **in its own repository** cannot reach one, and a
+These three are the exception to the group-targeting rule above, and the reason
+is fork reachability. A runner group belongs to the kirodotdev organization, so a
+fork running any of these workflows **in its own repository** cannot reach one, and a
 job dispatched to a group that does not admit the repository queues until the
 24-hour auto-cancel. A label inside a
 `github.repository == 'kirodotdev/KiroCrew'` conditional degrades to the hosted
 image there; a group reference cannot. Note this is about a fork running its own
 copy, not about a fork pull request against this repository: a `pull_request`
 run on a fork PR executes in the base repository, where the group is reachable.
-`adjudicate`'s own `if` already skips the commonest fork-internal case -- a pull
-request whose head repository is the fork itself -- so the conditional is what
-covers the paths that remain. The rename exposure the group form protects
-against is real and accepted here; these two sites are the ones that break if
+`fork-security-scope-review.yml`'s `adjudicate` carries an `if` that already
+skips the commonest fork-internal case -- a pull request whose head repository
+is the fork itself -- so on that site the conditional covers only the paths that
+remain. The other two carry no such clause. The rename exposure the group form protects
+against is real and accepted here; these three sites also break if
 either definition is renamed.
 
 A larger runner does not change `adjudicate`'s posture. It is still a
@@ -1266,13 +1268,13 @@ have far less headroom to spend. Nothing gets faster on either: both definitions
 are 4 vCPU and 16 GB, so the **Nothing gets faster** paragraph above applies
 unchanged -- only queue position moves, and the minutes become billed ones.
 
-Neither job fires on every pull request, which is what bounds the added load:
-`denial-differential` is behind a `paths` filter covering the security
-surface and `scripts/deny_diff.py`, and `adjudicate` runs only when `validate`
-emits `adjudicate=true`, which needs the model to have written candidates the
-committed corpus does not already cover. **Measure both rates from the jobs API
-filtered on `runner_group_name` before adding a third matrix site**, rather than
-reading one leg per pull request off the matrix. A stuck leg rolls back the same
+None of the three fires on every pull request, which is what bounds the added
+load: `denial-differential` is behind a `paths` filter covering the security
+surface and `scripts/deny_diff.py`, and each scope lane's `adjudicate` runs only
+when its own `validate` emits `adjudicate=true`, which needs the model to have
+written candidates the committed corpus does not already cover. **Measure these
+rates from the jobs API filtered on `runner_group_name` before adding another
+matrix site**, rather than reading one leg per pull request off the matrix. A stuck leg rolls back the same
 way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
@@ -1411,49 +1413,65 @@ expression, so the revert has to edit the expectation on purpose.
 
 **The PR-time sites reach the group by LABEL instead, because they can execute
 somewhere the group does not exist.** `client-py.yml`'s `test`,
-`crew-image-build.yml`'s `build`, `fork-pr-label.yml`'s `label` and
-`internal-content-scan.yml`'s `scan` use
+`crew-image-build.yml`'s `build` and `fork-pr-label.yml`'s `label` use
 `runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
 rather than `group:`. A fork running its own copy of one of these files on
-`push`, `schedule` or `workflow_dispatch`, and for `internal-content-scan.yml`
-any repository that onboards the shared gate by copying
-`internal-content-scan-gate.yml`, cannot reach an organization runner group; a
-job asking for a label no runner it can see carries waits out GitHub's pending
+`push`, `schedule` or `workflow_dispatch` cannot reach an organization runner
+group; a job asking for a label no runner it can see carries waits out
+GitHub's pending
 limit before being cancelled, which is strictly worse than the shared pool, so
 the `ubuntu-latest` branch is load-bearing rather than defensive. The rename
-exposure that group targeting avoids therefore applies to these four lines:
+exposure that group targeting avoids therefore applies to these three lines:
 rename the definition and they must move with it.
 
-**Two of the four can hold merges.** `internal-content-scan.yml`'s `scan` is the
-reusable job behind `internal-content-scan-gate.yml`, whose `Internal Content
-Scan` check sits in `pr-readiness.yml`'s same-repo `workflow_specs` and in
-`merge-queue-readiness.yml`'s polled set, so a run waiting for a runner keeps
-the required `PR Readiness` status pending exactly as a review lane does -- it is
-the highest-queue-sensitivity site of the four. `client-py.yml` is polled by
+`internal-content-scan.yml`'s `scan` took this form too and now takes the
+merge-group fleet routing expression, reaching this group's label on its
+actor-miss leg instead. Its rollback is therefore the fleet-preserving one: drop
+the fleet leg and keep the label-then-hosted tail, rather than the plain
+whole-line replacement the three above take. It adds no fork-pull-request
+occupancy either way, because `internal-content-scan-gate.yml`'s job-level `if`
+skips its `uses:` call when the head is a fork, GitHub issuing a fork head no
+OIDC token, and `fork-internal-content-scan.yml` covers those PRs instead.
+
+**One of the three can hold merges.** `client-py.yml` is polled by
 `merge-queue-readiness.yml` but not by `pr-readiness.yml`, so it holds a merge
 group and not a pull request. `crew-image-build.yml` and `fork-pr-label.yml` are
-polled by neither and hold nothing. All four fire at pull-request time (three on
+polled by neither and hold nothing. All three fire at pull-request time (two on
 `pull_request`, `fork-pr-label.yml` on `pull_request_target`), so unlike a
 scheduled or tag-triggered site they add occupancy exactly when the review lanes
-are competing for the cap **Capacity** below describes. Size that occupancy for a
-FORK pull request at three sites, not four: `internal-content-scan-gate.yml`'s
-job-level `if` skips its `uses:` call when the head is a fork, because GitHub
-issues a fork head no OIDC token, so the `scan` job never asks for the label and
-`fork-internal-content-scan.yml` covers those PRs instead. Rollback is the plain
-whole-line replacement, since
-these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
-the affected line.
+are competing for the cap **Capacity** below describes. Rollback is the plain
+whole-line replacement, since these three carry no fleet route to preserve:
+restore `runs-on: ubuntu-latest` on the affected line.
+
+**The same-repo scope lane reaches the group by LABEL too.**
+`security-scope-review.yml`'s `generate`, `validate` and `publish` take the same
+expression; its `adjudicate` is covered with the cross-platform matrix jobs
+above. The reason is the same one, reached by a different trigger: this workflow
+fires on `pull_request`, so a contributor running its own copy inside a fork is
+in a repository no organization group admits. The rename exposure therefore
+applies to these three lines as well. One of them can hold merges: `publish`
+carries the protected `Security Scope Review` check name, so its own conclusion
+is the lane's verdict, and that name sits in `pr-readiness.yml`'s same-repo
+`workflow_specs` -- a `publish` run waiting for a runner keeps the required
+`PR Readiness` status pending. `generate` and `publish` carry no `paths:`
+filter, so every pull-request event that is not superseded draws them from this
+definition's cap, which the review lanes draw on too. Rollback is the plain
+whole-line replacement, since none of the three carries a fleet route to
+preserve: restore `runs-on: ubuntu-latest` on the affected line.
 
 **The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
 in `ci.yml` that were pinned to a default hosted runner now reach the
 group through its `kirocrew-linux-4-core` label instead of through group
-targeting: `native-redaction-gate`, `backend-test-kernel-lock-owner`,
+targeting: `backend-test-kernel-lock-owner`, `backend-test-sandbox`,
 `e2e-private-namespace`, and the Linux leg of each of the two matrix lanes
-`backend-test-ipv6` and `new-test-stability`. `wheel-closure` was here too and
-has moved to the fleet: it now reads the `changes` resolver, which reaches this
-same group on its own non-admitted branch, so the destination a rejected run
-takes is unchanged and only the admitted one moved. Its rollback is therefore
-the fleet-preserving one, not the whole-line replacement the lanes below take.
+`backend-test-ipv6` and `new-test-stability`. `wheel-closure` and
+`native-redaction-gate` were here too and have moved to the fleet: each now
+reads the `changes` resolver, which reaches this same group on its own
+non-admitted branch, so the destination a rejected run takes is unchanged and
+only the admitted one moved. Their rollback is therefore the fleet-preserving
+one, not the whole-line replacement the lanes below take.
+`native-redaction-gate` installs Rust with a SHA-pinned
+`dtolnay/rust-toolchain` step, because the fleet image has no `cargo`.
 
 What puts `ci.yml` in this group is that it also runs **in a contributor's own
 repository** -- a push to the fork's `main`, or a pull request opened inside the
@@ -1480,11 +1498,11 @@ sees no new or missing context. The destination is resolved per leg in
 `runs-on`, the shape `e2e-boot-matrix` already uses:
 
 ```yaml
-runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
+runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
 ```
 
-The Windows leg falls through to `matrix.os` and is untouched; a Windows group
-is a separate change.
+The Windows leg reaches `kirocrew-windows-4-core` the same way, and any other
+`matrix.os` value falls through to itself.
 
 **These five can hold merges.** They are `ci.yml` jobs on the `pull_request`
 path, `pr-readiness.yml` carries `ci.yml|CI` in its `workflow_specs` and
@@ -1498,24 +1516,21 @@ back differently.** The three single-OS lanes return to
 `runs-on: ${{ matrix.os }}`, the recipe `e2e-boot-matrix` and
 `denial-differential` already use above. Writing `ubuntu-latest` on a matrix
 line instead drops the `|| matrix.os` fall-through and runs that lane's Windows
-leg on Linux. On `backend-test-ipv6` that reds `test_ci_ipv6_routing.py`, which
-pins the whole expression. On `new-test-stability` nothing reads that line, so
-`New-test stability (windows-latest)` would report green from a Linux VM and no
-check would say otherwise.
+leg on Linux. On either lane that reds
+`test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group` in
+`test_ci_fleet_routing_expression_parity.py`, which pins both lines, and on
+`backend-test-ipv6` it reds `test_ci_ipv6_routing.py` too.
 
-**Three of the five are pinned by a routing test, and two are not.**
-`test_ci_ipv6_routing.py`, `test_ci_kernel_owner_routing.py` and
-`test_ci_nonroot_boundary.py` assert the whole expression for
-`backend-test-ipv6`, `backend-test-kernel-lock-owner` and
-`e2e-private-namespace`, fork branch included, so dropping the
-`|| 'ubuntu-latest'` on one of those three lines reds that test rather than
-stranding fork runs on a label no runner a fork can see carries. No test reads
-the `runs-on` of `native-redaction-gate` or `new-test-stability`, so the same
-edit on those two lines is silent. Removing the fallback from each line in turn
-reds exactly one test for the first three and nothing for the last two.
-`wheel-closure` used to be in that unpinned set and no longer is: its move to
-the resolver put it in `test_ci_fleet_routing_expression_parity.py`'s consumer
-map, which pins its complete expression including its hosted fallback.
+**All five are pinned by a routing test.**
+`test_ci_kernel_owner_routing.py` and `test_ci_nonroot_boundary.py` assert the
+whole expression for `backend-test-kernel-lock-owner`, `backend-test-sandbox`
+and `e2e-private-namespace`, and the parity test named above asserts it for
+both matrix lanes (`test_ci_ipv6_routing.py` pins `backend-test-ipv6` as
+well), fork branch included. Dropping the `|| 'ubuntu-latest'` on one of those
+five lines reds a test rather than stranding fork runs on a label no runner a
+fork can see carries. `wheel-closure` and `native-redaction-gate` left that set
+when they moved to the resolver: `test_ci_fleet_routing_expression_parity.py`'s
+consumer map pins each one's complete expression, hosted fallback included.
 
 **One site cannot use the group, and uses the label instead:** `ci.yml`'s
 `changes` resolver, whose `linux_runner` and `linux_runner_large` outputs carry
@@ -1550,15 +1565,18 @@ empty resolver output means the `changes` job failed, which is not the same
 condition as a run being found ineligible, and a paid runner is the wrong answer
 to a broken resolver.
 
-**What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
-is itself on that lane's own scope surface, so a diff touching it sets
-`in_scope=true` while giving the model no shell, flow or cron surface to propose
-candidates for, and `scope_candidates.py validate` refuses the resulting empty
-`candidates.json` as `CandidateError`, exit 2, by design -- which reds a lane
-`PR Readiness` watches, so moving it needs its own pull request and a
-`/ai-review override scope <head-sha>: <reason>`. And
-`ai-review-human-override.yml` is the mechanism that clears such a red, so it
-does not move in a change that could need it.
+**What is deliberately still on `ubuntu-latest`.**
+`ai-review-human-override.yml` is the mechanism that clears a red scope lane, so
+it does not move in a change that could need it.
+
+**Any diff touching `security-scope-review.yml` reds that lane.** The file is on
+the lane's own scope surface, so a diff touching it sets `in_scope=true` while
+giving the model no shell, flow or cron surface to propose candidates for, and
+`scope_candidates.py validate` refuses the resulting empty `candidates.json` as
+`CandidateError`, exit 2, by design -- which reds a lane `PR Readiness` watches.
+Clearing it needs `/ai-review override scope <head-sha> <class>: <reason>` on
+every head, since the record is keyed to one commit. A rollback of that
+workflow's own `runs-on` lines pays the same cost.
 
 **The same-repo lanes are provisional, not permanent.** `codex-review`,
 `claude-review`, `first-principles-review`, `design-review` and `ux-review` are
@@ -1585,9 +1603,10 @@ shared pool, and because these lanes feed `PR Readiness` the cost of being
 wrong shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
-`runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
-matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
-so the rollback does not send the Windows leg to Linux. The twenty
+`runs-on: ubuntu-latest` on the affected line -- except on a matrix site, meaning
+any `runs-on` that ends in `|| matrix.os`, where the line goes back to
+`runs-on: ${{ matrix.os }}` instead, so the rollback does not send a Windows or
+macOS leg to Linux. The twenty
 fleet-fallback sites, plus `readiness`, are the exception twice over.
 It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
@@ -1604,9 +1623,10 @@ than waiting out the timeout.
 **Moving one of these lanes again means updating a ratchet.**
 `test/test_ci_fleet_routing_expression_parity.py` keeps `_PERMANENT_EXCEPTIONS`,
 the set of jobs that must stay off the CodeBuild fleet, and pins each one's
-expected `runs-on` so a silent re-route fails review. Twelve of the lanes moved
+expected `runs-on` so a silent re-route fails review. Fifteen of the lanes moved
 here are in that set -- `first-principles-review`, `ux-review`,
-`design-review`, the five `release.yml` jobs and the four fork helpers -- so
+`design-review`, the five `release.yml` jobs, the four fork helpers and
+`security-scope-review.yml`'s `generate`, `validate` and `publish` -- so
 their expected value lives in
 `_HOSTED_EXCEPTION_RUNNERS` rather than the `ubuntu-latest` default. Staying off
 the fleet is what that set guarantees; a larger runner is still GitHub-hosted,
@@ -1620,7 +1640,7 @@ Three `runs-on` sites take `kirocrew-runners-windows`, a second group holding on
 Windows definition (`kirocrew-windows-4-core`), through `group:`: `ci.yml`'s
 `pod-boot-windows`, `build.yml`'s `build-windows-installer` and
 `build-ffmpeg-decoder.yml`'s `verify-windows`. Two more reach the same
-definition through its LABEL, the way the two cross-platform matrix jobs above
+definition through its LABEL, the way the three cross-platform matrix jobs above
 do: `build-windows.yml`'s `build-windows` (Build Windows Desktop) and
 `smoke-install-windows` (Smoke-install Windows installer (x64)).
 
@@ -1653,7 +1673,7 @@ runner, not because a merge gate needed it.
 the form a rename of the definition survives. `build-windows.yml` is
 `workflow_call` and `workflow_dispatch`, and a fork can fire both on its own
 copy, where an organization-scoped runner group does not exist -- the same fork
-reachability that puts the two cross-platform matrix jobs above on a label. A
+reachability that puts the three cross-platform matrix jobs above on a label. A
 `group:` reference there leaves the run queued against a group no runner can
 ever claim, until the 24-hour queue timeout. So each site reads
 
@@ -5094,18 +5114,23 @@ waive a new defect or authorize a green verdict.
 
 After the ledger, the same step appends a PUSH BUDGET section
 (`.github/review-prompts/gpt-push-budget.md`) once the PR has had three blocked
-pushes. A blocked push is a distinct earlier head that failed a review-lane
-workflow (`codex-review`, `claude-review`, `design-review`, `ux-review`,
-`first-principles-review`, `security-scope-review`) or received a
-`CHANGES_REQUESTED` review; the current head is never counted. A lane run that
-failed for an infrastructure reason or a timeout also counts, so the number is a
+pushes. The count is the one `pr_findings.py --rounds` and `sweep_check.py`
+print: `blocked_push_count` in the prepare-pr skill's `_review_pushes.py`, run
+as a script staged from the base commit. A push counts when the head it
+replaced was blocked: the newest check run of a review lane (GPT, Opus, Design,
+UX, First Principles or Security Scope Review) ended as `failure` on it, or a
+`CHANGES_REQUESTED` review names it that the same reviewer has not since
+approved and nobody dismissed. A green re-run of the lane or an approval clears
+the head, and the current head is never counted. A lane run that failed for an
+infrastructure reason also counts until it is re-run green, so the number is a
 hint, not a measure of review findings. The section asks the reviewer to add one
 `Sites:` line per BLOCKING item and, for a root cause a ruling already fixed
 twice, a `Remedy: narrow or remove the mechanism` line. It never changes an
 item's `Anchor:` line: the security fence in the adjudication step reads that
-line, so re-anchoring a recurring security finding would un-fence it. It is staged from the base commit with no checkout fallback, so it is off
-until the file is on the base. The count is read with GET calls only (the
-workflow holds `actions: read` for it); a count that cannot be read leaves the
+line, so re-anchoring a recurring security finding would un-fence it. The text and the counting scripts are staged from the base commit with no
+checkout fallback, so the section is off until both are on the base. The count
+is read with GET calls only (the workflow holds `issues: read` for the PR
+timeline and `checks: read` for the check runs); a count that cannot be read leaves the
 prompt unchanged and prints a notice, and a first-time review is exactly as
 long as before. The Opus lane and `gpt-review-core.md` are unchanged.
 

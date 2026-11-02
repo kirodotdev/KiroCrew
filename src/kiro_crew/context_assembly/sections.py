@@ -1,7 +1,8 @@
 """Stable conduct sections: text derived from config and the trusted runtime.
 
 These renderers produce the deterministic blocks every session carries whatever its
-memory holds -- the critical-rules contract, the runtime identity, the user profile,
+memory holds -- the critical-rules contract, the runtime identity, the served-model
+line a harness that names no model needs, the user profile,
 the reply-style preferences, the workspace identity, the runtime refresh a follow-up
 turn needs, the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to,
 the section its ``{{COMPUTER_USE_BLOCK}}`` resolves to and what its marked Browser
@@ -387,6 +388,38 @@ def runtime_identity_block(agent_label: str, runtime: str) -> str:
         f"Prefer solutions native to this runtime. "
         f"Only suggest switching interfaces if the user asks "
         f"or the task requires it.\n\n"
+    )
+
+
+#: Longest served-model id the ``[ACTIVE MODEL]`` line carries. Real ids are far
+#: shorter; the cap bounds what one harness-reported value adds to every turn.
+_ACTIVE_MODEL_ID_MAX = 200
+
+
+def active_model_block(model_id: str) -> str:
+    """The ``[ACTIVE MODEL]`` block: the model the session reports serving.
+
+    ``""`` when there is no id. A harness whose own system prompt names no model
+    (goose) leaves a model asked "what model are you?" to answer from training
+    priors; this line is the grounded fact it answers from instead.
+
+    The id is the harness's own report, so it is held to one line before it lands
+    beside trusted markers: control, format and separator characters become
+    spaces, whitespace runs collapse, forgeable boundary markers are scrubbed, and
+    the result is cut to :data:`_ACTIVE_MODEL_ID_MAX`.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    folded = "".join(" " if unicodedata.category(ch)[0] in "CZ" else ch for ch in model_id or "")
+    safe = ctx._neutralize_structural_markers(" ".join(folded.split()))
+    safe = safe[:_ACTIVE_MODEL_ID_MAX].strip()
+    if not safe:
+        return ""
+    return (
+        f"[ACTIVE MODEL] {safe}\n"
+        "This is the model serving this session, as the harness reports it. When "
+        "asked which model you are, answer with this id, and do not name a model, "
+        "provider, size or runtime this line does not state.\n\n"
     )
 
 

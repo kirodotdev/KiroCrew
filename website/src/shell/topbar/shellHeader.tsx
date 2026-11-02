@@ -96,7 +96,7 @@ function NotificationsBellButton() {
   const { items, open, containerRef, bellRef } = sheet
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
-  // _unread_count semantics.
+  // unread_count semantics.
   const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.

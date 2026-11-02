@@ -369,6 +369,12 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} no consigue reiniciarse",
+      "restart_exhausted_message_one": "{{app}} no ha conseguido reiniciarse {{count}} vez seguida y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla.",
+      "restart_exhausted_message_many": "{{app}} no ha conseguido reiniciarse {{count}} veces seguidas y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla.",
+      "restart_exhausted_message_other": "{{app}} no ha conseguido reiniciarse {{count}} veces seguidas y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Detalles para quien haya montado esta copia",
       "refused_page_handoff_note": "Al preguntar al agente se abre un chat con estos detalles ya adjuntos.",
@@ -1654,16 +1660,22 @@
       },
       "composer": {
         "add_screens": "Añadir pantallas",
+        "add_screenshots_or_paste_a_link_first": "Primero añade capturas o pega un enlace",
         "clear_all": "Borrar todo",
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Suelta capturas — o haz clic para explorar",
+        "fix_my_access": "Arreglar mi acceso",
         "fix_the_link": "Corregir el enlace",
+        "hide_access_steps": "Ocultar los pasos de acceso",
         "move_earlier": "Mover antes",
         "move_later": "Mover después",
         "one_screen_or_several_in_order_for_a_flow_png_jp": "una pantalla, o varias en orden para un flujo · PNG, JPG, WebP",
         "remove": "Eliminar",
+        "remove_name": "Eliminar {{name}}",
         "send_screenshots": "Enviar capturas",
+        "start_the_critique": "Empezar la crítica",
+        "step_n": "Paso {{n}}",
         "try_again": "Reintentar",
         "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Usar una carpeta local en su lugar"
@@ -1713,28 +1725,36 @@
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "Una crítica sigue en marcha — haz clic para verla",
         "across_the_flow": "En todo el flujo",
+        "click_to_enlarge": "Haz clic para ampliar",
         "close_esc": "Cerrar (Esc)",
         "couldn_t_see": "No se pudo ver",
         "couldn_t_tell_what_that_is_give_me_a_figma_link": "No pude reconocer qué es eso. Dame un enlace de Figma, un repositorio de GitHub/GitLab/Bitbucket, una ruta local absoluta o una URL que ya esté sirviendo.",
         "critique_ready": "crítica lista",
+        "critique_untitled": "Crítica",
         "design_critique": "Design Critique",
         "enlarge": "Ampliar",
         "full_size": "tamaño completo",
         "full_size_view": "Vista a tamaño completo",
+        "history_count": "Historial ({{n}})",
         "i_got_in_but_there_s_nothing_in_there_i_can": "Entré, pero ahí dentro no hay nada que pueda renderizar. Mejor suéltame capturas de pantalla.",
         "new": "Nueva",
         "no_screens_to_show_the_critic_couldn_t_get_pixel": "No hay pantallas que mostrar — el crítico no pudo obtener los píxeles de esta. Consulta \"No se pudo ver\" en el panel.",
         "nothing_major": "nada grave",
+        "numbered_pins_mark_issues_on_this_screen": "los pines numerados marcan problemas en esta pantalla",
         "on_screen": "● en pantalla",
         "only_added_the_first_room_the_limit_is_max_screens": "Solo se añadieron las primeras {{room}} — el límite es de {{max}} pantallas.",
+        "pick_a_step_above": "elige un paso arriba",
         "point_me_at_a_running_url": "Indícame una URL en ejecución",
         "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Muéstrame una pantalla — o un flujo completo — y lo leeré como lo haría un colega diseñador: qué funciona, qué conviene ajustar y por qué.",
         "running": "en ejecución",
+        "screen_heading": "Pantalla",
+        "screens_in_order": "Pantallas en orden",
         "see_an_example": "Ver un ejemplo",
         "send_screenshots": "Enviar capturas",
         "show_this_screen": "Mostrar esta pantalla",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "Inicia una nueva crítica — lo que ya esté en marcha continúa",
+        "step_n": "Paso {{n}}",
         "still_working_on_this_one_it_s_kept_running_come": "Sigo trabajando en esto. Continúa en ejecución — vuelve en un minuto.",
         "still_working_on_this_one_it_s_kept_running_come_2": "Sigo trabajando en esto. Continúa en ejecución — vuelve a esta página en un minuto y retomará donde lo dejó.",
         "switch_critique": "Cambiar de crítica",
@@ -1751,6 +1771,9 @@
       },
       "findingRow": {
         "based_on": "Basado en",
+        "finding": "Hallazgo",
+        "fix": "Corrección",
+        "suggestion": "Sugerencia",
         "what_i_saw": "Qué vi",
         "where": "Dónde"
       },
@@ -2452,13 +2475,16 @@
           "repositories": "Repositorios"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "No se pudo comprobar si ya existe una sesión de revisión — se reintentará al actualizar",
           "open_ai_code_review_session_for_this": "Abrir una sesión de chat de revisión de código con IA para {{label}}",
           "resume_ai_code_review_session_for_this": "Retomar la sesión de chat de revisión de código con IA para {{label}}",
           "review": "Revisar"
         },
         "settingsSection": {
+          "account": "Cuenta",
           "connect_repo": "Conectar repositorio",
           "general": "General",
+          "repositories": "Repositorios",
           "repository_settings": "Ajustes del repositorio",
           "gitlab_groups": "Grupos de GitLab"
         },
@@ -2561,7 +2587,11 @@
       "connectRepoModal": {
         "close": "Cerrar",
         "close_connect_dialog": "Cerrar el diálogo de conexión",
+        "connect": "Conectar",
         "connect_a_repo": "Conectar un repositorio",
+        "connect_count_many": "Conectar {{count}}",
+        "connect_count_one": "Conectar {{count}}",
+        "connect_count_other": "Conectar {{count}}",
         "connecting": "Conectando {{done}} de {{total}}…"
       },
       "issueRadarPage": {
@@ -2576,6 +2606,14 @@
           "crew_sort_created": "Creada"
         },
         "links": {
+          "merge_request": "merge request",
+          "merge_request_title": "Merge request",
+          "merge_requests": "merge requests",
+          "merge_requests_title": "Merge requests",
+          "pull_request": "pull request",
+          "pull_request_title": "Pull request",
+          "pull_requests": "pull requests",
+          "pull_requests_title": "Pull requests",
           "read_only_here_apply_in_provider": "Solo lectura aquí: los repositorios de {{provider}} no se pueden modificar desde {{productName}}; aplica el cambio en {{provider}}",
           "tracked_items_work_items": "Elementos de trabajo",
           "tracked_items_issues": "Incidencias"
@@ -3121,6 +3159,10 @@
       "welcomeCarousel": {
         "back": "Atrás",
         "carl_sagan": "— Carl Sagan",
+        "connect": "Conectar",
+        "connect_count_many": "Conectar {{count}}",
+        "connect_count_one": "Conectar {{count}}",
+        "connect_count_other": "Conectar {{count}}",
         "connecting_n_of_total": "Conectando {{n}} de {{total}}…",
         "next": "Siguiente",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar lee lo que tus bots ya encontraron en lugar de empezar de cero.",
@@ -5853,6 +5895,7 @@
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
       "consent_required": "«{{speak}}» necesita que confirmes Amazon Polly para este perfil de AWS y esta región. Confírmalo en los ajustes de texto a voz y vuelve a intentarlo.",
+      "polly_rejected": "Amazon Polly no ofrece la voz o el motor seleccionados en la región de AWS seleccionada. En los ajustes de texto a voz, elige otra «Voz», «Motor» o «Región».",
       "blocked": "El navegador bloqueó la reproducción automática. Abre «{{moreActions}}» debajo de la respuesta completada y selecciona «{{speak}}».",
       "settings": "Ajustes de «{{speak}}» (texto a voz)"
     },
@@ -6292,7 +6335,6 @@
         "dismiss": "Descartar",
         "enable": "Activar",
         "enabled": "Activada",
-        "open": "Abrir",
         "remote_environment_detected": "Entorno remoto detectado",
         "run_this_on_your_local_machine": "Ejecuta esto en tu máquina local:",
         "uninstall": "Desinstalar",
@@ -10655,6 +10697,13 @@
       "read_failed_title": "No se pudieron comprobar las versiones de tus tripulaciones remotas tras esta actualización",
       "unread": "Aún no hay versión de {{names}}, así que también podrían estar desactualizadas."
     },
+    "kasEngineNotice": {
+      "downloading": "Descargando el motor KAS de {{productName}}. El chat empezará cuando termine.",
+      "downloading_progress": "Descargando el motor KAS de {{productName}} ({{percent}}). El chat empezará cuando termine.",
+      "failed_title": "No se pudo instalar el motor KAS de {{productName}}",
+      "retry": "Reintentar",
+      "retry_failed": "El reintento no se inició ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Inicio de sesión en Kiro caducado",
       "open_sign_in": "Abrir la configuración de inicio de sesión",
@@ -10715,6 +10764,25 @@
       "reason": "Yo no puedo ejecutar esto, pero tú sí.",
       "run_unanswered": "El terminal no respondió, así que cópialo en la aplicación Terminal de tu ordenador.",
       "title": "Ejecútalo tú"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, de {{app}}",
+      "item_from": "De {{app}}",
+      "text_unreadable": "No se pudo leer este mensaje, así que no se envió nada a {{app}}. Vuelve a desplazarte hasta él e inténtalo de nuevo.",
+      "menu_load_failed": "No se pudieron cargar las acciones de apps, así que puede que falten algunas en este menú.",
+      "menu_load_retry": "Volver a cargar las acciones de apps",
+      "close": "Cerrar",
+      "loading": "Abriendo {{app}}…",
+      "load_failed": "{{app}} no se abrió. Inténtalo de nuevo en un momento.",
+      "app_error": "{{app}} no pudo terminar esto.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "copy_failed": "No se pudo copiar",
+      "open_host": "Abrir {{host}}",
+      "grant_role_user": "{{title}}: también tus propios mensajes, no solo las respuestas",
+      "grant_role_assistant": "{{title}}: respuestas del asistente",
+      "grant_format_markdown": "{{title}}: el Markdown del mensaje, con las direcciones de los enlaces"
     }
   },
   "hooks": {
@@ -11100,6 +11168,7 @@
       "grants_reconsent_link_hosts": "Hosts de enlaces: permite que las tarjetas de la app vean enlaces a estos sitios en los mensajes del chat.",
       "grants_reconsent_link_patterns": "Patrones de texto: permite que las tarjetas de la app vean el texto del chat que coincide con estos patrones.",
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",
+      "grants_reconsent_message_actions": "Acciones de mensaje: lo que pueden leer las opciones de menú de la app en los mensajes del chat.",
       "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
     },
     "appPage": {
@@ -11155,10 +11224,6 @@
       "no_apps_available": "No hay apps disponibles",
       "no_apps_installed_yet": "Aún no hay apps instaladas",
       "no_enabled_apps": "No hay apps activadas",
-      "show_disabled_one": "Mostrar {{count}} app desactivada",
-      "show_disabled_many": "Mostrar {{count}} apps desactivadas",
-      "show_disabled_other": "Mostrar {{count}} apps desactivadas",
-      "show_enabled_only": "Mostrar solo activadas",
       "no_matching_apps": "No hay apps que coincidan",
       "not_installed_from_apps_your_local_source_code_w": "No se instaló desde Apps — tu código fuente local no se verá afectado.",
       "removing": "Eliminando…",
@@ -11367,7 +11432,13 @@
       "col_status": "Estado",
       "col_est_cost": "Coste est.",
       "col_profile": "Perfil",
-      "col_expiry": "Caducidad"
+      "col_expiry": "Caducidad",
+      "col_account": "Cuenta",
+      "col_region": "Región",
+      "col_actions": "Acciones",
+      "col_type": "Tipo",
+      "col_url": "URL",
+      "col_cost": "Coste"
     },
     "artifactDetailPage": {
       "published_to_provider": "Publicado en {{provider}}",
@@ -12157,6 +12228,7 @@
         "restore_retry": "Reintentar",
         "send_blocked_not_loaded": "esta conversación lateral aún no se ha cargado",
         "steer_demoted_to_queue": "El turno terminó: se puso en cola en su lugar",
+        "closed_in_another_tab": "Actualizar el contexto en otra pestaña borró este chat lateral",
         "thinking": "Pensando…",
         "turn_many": "{{count}} turnos",
         "turn_one": "{{count}} turno",
@@ -14458,7 +14530,9 @@
         "installing_progress": "Instalando KAS {{version}}: {{percent}} ({{done}} de {{total}})",
         "install_failed": "No se pudo iniciar la instalación del motor KAS.",
         "save_failed": "No se pudo guardar la configuración del motor KAS.",
-        "status_unavailable": "No se pudo leer el estado del motor KAS."
+        "status_unavailable": "No se pudo leer el estado del motor KAS.",
+        "route_auto_no_kiro_cli": "Kiro CLI no está instalado, así que KAS usa el motor propio de {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI no tiene la sesión iniciada, así que KAS usa el motor propio de {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",
@@ -15094,11 +15168,12 @@
       "pin_to_sidebar": "Fijar {{name}} en la barra lateral",
       "tile_actions": "Acciones para {{name}}",
       "tile_details": "Detalles",
-      "tile_disabled": "Desactivada",
       "tile_more_actions": "Más acciones para {{name}}",
       "tile_no_sidebar_page": "Sin página en la barra lateral",
       "tile_pinned": "En la barra lateral",
       "tile_unpinned": "No está en la barra lateral",
+      "section_enabled": "Activadas",
+      "section_disabled": "Desactivadas",
       "unpin": "Dejar de fijar",
       "unpin_from_sidebar": "Dejar de fijar {{name}} en la barra lateral",
       "installed_apps": "Apps instaladas"
@@ -15582,6 +15657,7 @@
         "declared": "Declarado",
         "sign_in_required": "Inicio de sesión necesario",
         "sign_in_required_help": "Este servidor usa OAuth y todavía nadie ha iniciado sesión. <chatLink>Ve al chat</chatLink>, inicia una sesión nueva y envía cualquier mensaje: se te pedirá que apruebes el inicio de sesión en el chat. Después sondea para actualizar esta lista.",
+        "sign_in_kas_chat_note": "Los chats en Kiro Agent no usan un inicio de sesión hecho aquí. Inicia sesión desde el chat, con su tarjeta Autorizar.",
         "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
         "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
         "signed_in": "Sesión iniciada",
@@ -18241,6 +18317,7 @@
         "custom_sound_error_file_gone": "El archivo de este sonido ya no está guardado en este navegador, así que no se puede recuperar.",
         "channel_member": "Mensajes de compañeros",
         "channel_apps": "Actualizaciones de apps",
+        "channel_turn": "Errores de chat",
         "push_section": "Notificaciones push",
         "push_toggle_label": "Avísame aunque {{productName}} esté cerrado",
         "push_toggle_description": "Envía alertas a este dispositivo incluso después de cerrar {{productName}}. Las notificaciones del sistema se detienen en cuanto lo cierras.",
@@ -21118,6 +21195,47 @@
       "uptime": "Tiempo activo",
       "notCreatedHint": "El espacio de trabajo se crea con tu próximo mensaje.",
       "stoppedHint": "El espacio de trabajo se inicia con tu próximo mensaje. Se detiene solo tras una hora inactivo."
+    },
+    "remoteGit": {
+      "title": "Git en {{name}}",
+      "notRepo": "El directorio de trabajo no es un repositorio Git.",
+      "changes": "Cambios",
+      "clean": "No hay cambios desde el último commit.",
+      "noDiff": "No hay cambios en este archivo.",
+      "history": "Historial",
+      "branchTitle": "Rama actual (solo lectura)",
+      "notPushed_one": "{{count}} commit sin enviar",
+      "notPushed_many": "{{count}} commits sin enviar",
+      "notPushed_other": "{{count}} commits sin enviar",
+      "notPulled_one": "{{count}} commit sin recibir",
+      "notPulled_many": "{{count}} commits sin recibir",
+      "notPulled_other": "{{count}} commits sin recibir",
+      "statusModified": "Modificado",
+      "statusAdded": "Añadido",
+      "statusRenamed": "Renombrado",
+      "statusCopied": "Copiado",
+      "statusDeleted": "Eliminado",
+      "statusUntracked": "Sin seguimiento",
+      "statusOther": "Otro cambio",
+      "truncatedDiff": "Este diff es demasiado grande para mostrarlo. Solo aparecen sus líneas de modo o de cambio de nombre, si las hay.",
+      "statusFailed": "No se pudieron leer los cambios.",
+      "logFailed": "No se pudo leer el historial.",
+      "diffFailed": "No se pudo leer el diff de este archivo.",
+      "emptyDiffListed": "Git lo marcó como cambiado, pero ahora no hay ninguna diferencia con el último commit. Puede que haya vuelto a su estado anterior después de leerse la lista. Actualiza para ver el estado actual.",
+      "statusTruncated": "Algunos cambios no se muestran.",
+      "askFullDiff": "Preparar un borrador para pedir al agente el diff completo",
+      "fullDiffPrompt": "Muéstrame el diff completo de {{path}} respecto al último commit en el espacio de trabajo {{name}}. Era demasiado grande para mostrarlo en el panel de Git.",
+      "changesCountCapped": "{{count}} o más",
+      "askFullStatus": "Preparar un borrador para pedir al agente la lista completa",
+      "fullStatusPrompt": "Muéstrame la lista completa de cambios en el espacio de trabajo {{name}}. El panel de Git solo pudo leer una parte.",
+      "askSetUpRepo": "Preparar un borrador para pedir al agente que clone o cree un repositorio",
+      "setUpRepoPrompt": "El directorio de trabajo del espacio de trabajo {{name}} no es un repositorio Git. Ayúdame a clonar un repositorio en él o a crear uno nuevo.",
+      "noUpstream": "Sin upstream",
+      "noUpstreamTitle": "Esta rama no tiene una rama upstream, así que no hay nada con qué compararla.",
+      "askDraftTitle": "Abre el chat con esta solicitud como borrador. No se envía nada hasta que la envíes.",
+      "syncTitle": "{{counts}} (solo lectura)",
+      "renamedFrom": "Renombrado de {{from}} a {{path}}",
+      "copiedFrom": "Copiado de {{from}} a {{path}}"
     },
     "verifyHint": "Comprueba que la CLI de Coder de esta máquina haya iniciado sesión, que exista la plantilla de cada perfil y en qué hosts de Git ha iniciado sesión esta máquina. No se inicia nada ni se lee ninguna credencial.",
     "checkSaveFirst": "Guarda primero: la comprobación usa los ajustes guardados.",

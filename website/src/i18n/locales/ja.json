@@ -337,6 +337,10 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} の再起動が繰り返し失敗しています",
+      "restart_exhausted_message_other": "{{app}} は {{count}} 回連続で再起動に失敗し、数分ごとに再試行を続けます。今すぐ再試行するには、{{app}} を無効にしてから再度有効にしてください。"
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "このコピーを組み立てた担当者向けの詳細",
       "refused_page_handoff_note": "エージェントに質問すると、これらの詳細が添付された状態でチャットが開きます。",
@@ -1644,16 +1648,22 @@
       },
       "composer": {
         "add_screens": "スクリーンを追加",
+        "add_screenshots_or_paste_a_link_first": "先にスクリーンショットを追加するか、リンクを貼り付けてください",
         "clear_all": "すべてクリア",
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "スクリーンショットをドラッグするか、クリックして参照",
+        "fix_my_access": "アクセスを修正",
         "fix_the_link": "リンクを修正",
+        "hide_access_steps": "アクセス手順を隠す",
         "move_earlier": "前に移動",
         "move_later": "後に移動",
         "one_screen_or_several_in_order_for_a_flow_png_jp": "1つのスクリーン、またはフローの順序で複数 · PNG、JPG、WebP",
         "remove": "削除",
+        "remove_name": "{{name}} を削除",
         "send_screenshots": "スクリーンショットを送信",
+        "start_the_critique": "批評を開始",
+        "step_n": "ステップ {{n}}",
         "try_again": "もう一度試す",
         "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "代わりにローカルフォルダーを使用"
@@ -1703,28 +1713,36 @@
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "批評実行中 — クリックして監視",
         "across_the_flow": "フロー全体",
+        "click_to_enlarge": "クリックして拡大",
         "close_esc": "閉じる (Esc)",
         "couldn_t_see": "表示できませんでした",
         "couldn_t_tell_what_that_is_give_me_a_figma_link": "これが何か判別できませんでした。Figma のリンク、GitHub/GitLab/Bitbucket のリポジトリ、ローカルの絶対パス、または配信中の URL を指定してください。",
         "critique_ready": "批評完了",
+        "critique_untitled": "批評",
         "design_critique": "Design Critique",
         "enlarge": "拡大",
         "full_size": "実際のサイズ",
         "full_size_view": "実際のサイズで表示",
+        "history_count": "履歴（{{n}}）",
         "i_got_in_but_there_s_nothing_in_there_i_can": "入れましたが、そこにはレンダリングできるものが何もありません。代わりにスクリーンショットをドロップしてください。",
         "new": "新規",
         "no_screens_to_show_the_critic_couldn_t_get_pixel": "表示するスクリーンなし — 批評家はこれのピクセルを取得できませんでした。パネルの「表示できませんでした」を参照してください。",
         "nothing_major": "特に問題なし",
+        "numbered_pins_mark_issues_on_this_screen": "番号付きのピンはこのスクリーンの問題を示します",
         "on_screen": "● 画面上",
         "only_added_the_first_room_the_limit_is_max_screens": "最初の {{room}} 枚のみ追加しました — 上限は {{max}} 枚です。",
+        "pick_a_step_above": "上でステップを選んでください",
         "point_me_at_a_running_url": "実行中のURLを指定",
         "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "スクリーン、またはフロー全体を指定してください — デザイナーの友人として読みます。動作している内容、改善点、理由を示します。",
         "running": "実行中",
+        "screen_heading": "スクリーン",
+        "screens_in_order": "順番どおりのスクリーン",
         "see_an_example": "例を見る",
         "send_screenshots": "スクリーンショットを送信",
         "show_this_screen": "このスクリーンを表示",
         "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "新しい批評を開始 — 既に実行されているものは継続",
+        "step_n": "ステップ {{n}}",
         "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
         "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
         "switch_critique": "批評を切り替え",
@@ -1741,6 +1759,9 @@
       },
       "findingRow": {
         "based_on": "基づく",
+        "finding": "指摘",
+        "fix": "修正",
+        "suggestion": "提案",
         "what_i_saw": "見たこと",
         "where": "場所"
       },
@@ -2416,13 +2437,16 @@
           "repositories": "リポジトリ"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "既存のレビューセッションを確認できません — 更新時に再試行します",
           "open_ai_code_review_session_for_this": "この {{label}} の AI コードレビューチャットセッションを開く",
           "resume_ai_code_review_session_for_this": "この {{label}} の AI コードレビューチャットセッションを再開",
           "review": "レビュー"
         },
         "settingsSection": {
+          "account": "アカウント",
           "connect_repo": "リポジトリを接続",
           "general": "一般",
+          "repositories": "リポジトリ",
           "repository_settings": "リポジトリ設定",
           "gitlab_groups": "GitLab グループ"
         },
@@ -2523,7 +2547,9 @@
       "connectRepoModal": {
         "close": "クローズ",
         "close_connect_dialog": "接続ダイアログをクローズ",
+        "connect": "接続",
         "connect_a_repo": "リポジトリを接続",
+        "connect_count_other": "{{count}} 件を接続",
         "connecting": "{{done}}/{{total}} を接続中…"
       },
       "issueRadarPage": {
@@ -2538,6 +2564,14 @@
           "crew_sort_created": "作成済み"
         },
         "links": {
+          "merge_request": "マージリクエスト",
+          "merge_request_title": "マージリクエスト",
+          "merge_requests": "マージリクエスト",
+          "merge_requests_title": "マージリクエスト",
+          "pull_request": "プルリクエスト",
+          "pull_request_title": "プルリクエスト",
+          "pull_requests": "プルリクエスト",
+          "pull_requests_title": "プルリクエスト",
           "read_only_here_apply_in_provider": "ここでは読み取り専用です — {{provider}} のリポジトリは {{productName}} から変更できません。{{provider}} で変更してください",
           "tracked_items_work_items": "作業項目",
           "tracked_items_issues": "Issue"
@@ -3063,6 +3097,8 @@
       "welcomeCarousel": {
         "back": "戻る",
         "carl_sagan": "— Carl Sagan",
+        "connect": "接続",
+        "connect_count_other": "{{count}} 件を接続",
         "connecting_n_of_total": "{{n}}/{{total}} を接続中…",
         "next": "次へ",
         "slide_bots_subtitle": "Renovate、Dependabot、CodeRabbit。Issue Radar は、ボットがすでに検出したものを読み取り、最初からやり直す代わりに行動します。",
@@ -5633,6 +5669,7 @@
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
       "consent_required": "「{{speak}}」を使うには、この AWS プロファイルとリージョンで Amazon Polly の利用を確認する必要があります。テキスト音声変換の設定で確認してから、もう一度お試しください。",
+      "polly_rejected": "Amazon Polly は選択した AWS リージョンで、選択した音声またはエンジンを提供していません。テキスト音声変換の設定で別の「音声」、「エンジン」、または「リージョン」を選択してください。",
       "blocked": "ブラウザーが自動再生をブロックしました。完了した返信の下にある「{{moreActions}}」を開き、「{{speak}}」を選択してください。",
       "settings": "{{speak}}の設定（テキスト音声変換）"
     },
@@ -6035,7 +6072,6 @@
         "dismiss": "閉じる",
         "enable": "有効にする",
         "enabled": "有効",
-        "open": "開く",
         "remote_environment_detected": "リモート環境が検出されました",
         "run_this_on_your_local_machine": "これをローカルマシンで実行:",
         "uninstall": "アンインストール",
@@ -10327,6 +10363,13 @@
       "read_failed_title": "この更新の後、リモートクルーのバージョンを確認できませんでした",
       "unread": "{{names}} からはまだバージョンが届いていないため、これらも遅れている可能性があります。"
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}} の KAS エンジンをダウンロードしています。完了するとチャットが始まります。",
+      "downloading_progress": "{{productName}} の KAS エンジンをダウンロードしています（{{percent}}）。完了するとチャットが始まります。",
+      "failed_title": "{{productName}} の KAS エンジンをインストールできませんでした",
+      "retry": "再試行",
+      "retry_failed": "再試行を開始できませんでした（{{reason}}）。"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro サインインが失効しました",
       "open_sign_in": "サインイン設定を開く",
@@ -10387,6 +10430,25 @@
       "reason": "私はこれを実行できませんが、ご自身では実行できます。",
       "run_unanswered": "ターミナルが応答しなかったため、お使いのコンピューターのターミナルアプリにコピーしてください。",
       "title": "ご自身で実行してください"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}：{{title}}",
+      "item_label": "{{title}}（{{app}}）",
+      "item_from": "{{app}} から",
+      "text_unreadable": "このメッセージを読み取れなかったため、{{app}} には何も送信されませんでした。メッセージまでスクロールして、もう一度お試しください。",
+      "menu_load_failed": "アプリのアクションを読み込めなかったため、このメニューに一部が表示されていない可能性があります。",
+      "menu_load_retry": "アプリのアクションを再読み込み",
+      "close": "閉じる",
+      "loading": "{{app}} を開いています…",
+      "load_failed": "{{app}} を開けませんでした。少し待ってからもう一度お試しください。",
+      "app_error": "{{app}} はこの操作を完了できませんでした。",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "copy_failed": "コピーできませんでした",
+      "open_host": "{{host}} を開く",
+      "grant_role_user": "{{title}}：返信だけでなく、あなた自身のメッセージも",
+      "grant_role_assistant": "{{title}}：アシスタントの返信",
+      "grant_format_markdown": "{{title}}：メッセージの Markdown（リンクのアドレスを含む）"
     }
   },
   "hooks": {
@@ -10768,6 +10830,7 @@
       "grants_reconsent_link_hosts": "リンクのホスト: チャットメッセージ内のこれらのサイトへのリンクを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
+      "grants_reconsent_message_actions": "メッセージアクション：チャットメッセージ上のアプリのメニュー項目が読み取れる内容。",
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
     },
     "appPage": {
@@ -10817,8 +10880,6 @@
       "no_apps_available": "利用可能なアプリがありません",
       "no_apps_installed_yet": "まだアプリがインストールされていません",
       "no_enabled_apps": "有効なアプリがありません",
-      "show_disabled_other": "無効なアプリを {{count}} 件表示",
-      "show_enabled_only": "有効なアプリのみ表示",
       "no_matching_apps": "一致するアプリがありません",
       "not_installed_from_apps_your_local_source_code_w": "アプリからインストールされていません — ローカルソースコードは影響を受けません。",
       "removing": "削除中…",
@@ -11015,7 +11076,13 @@
       "col_status": "ステータス",
       "col_est_cost": "推定コスト",
       "col_profile": "プロファイル",
-      "col_expiry": "期限"
+      "col_expiry": "期限",
+      "col_account": "アカウント",
+      "col_region": "リージョン",
+      "col_actions": "アクション",
+      "col_type": "タイプ",
+      "col_url": "リンク",
+      "col_cost": "コスト"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",
@@ -11787,6 +11854,7 @@
         "restore_retry": "再試行",
         "send_blocked_not_loaded": "このサイドの会話がまだ読み込まれていません",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
+        "closed_in_another_tab": "別のタブでコンテキストを更新したため、このサイドチャットはクリアされました",
         "thinking": "考え中…",
         "turn_other": "{{count}} ターン",
         "stop_failed": "サイドターンを停止できませんでした — もう一度お試しください",
@@ -13928,7 +13996,9 @@
         "installing_progress": "KAS {{version}} をインストール中: {{percent}}（{{done}} / {{total}}）",
         "install_failed": "KAS エンジンのインストールを開始できませんでした。",
         "save_failed": "KAS エンジンの設定を保存できませんでした。",
-        "status_unavailable": "KAS エンジンの状態を読み取れませんでした。"
+        "status_unavailable": "KAS エンジンの状態を読み取れませんでした。",
+        "route_auto_no_kiro_cli": "Kiro CLI がインストールされていないため、KAS は {{productName}} 自身のエンジンで動作します。",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI にサインインしていないため、KAS は {{productName}} 自身のエンジンで動作します。"
       },
       "kiroSignInCard": {
         "title": "Kiro サインイン",
@@ -14550,11 +14620,12 @@
       "pin_to_sidebar": "{{name}} をサイドバーにピン留め",
       "tile_actions": "{{name}} の操作",
       "tile_details": "詳細",
-      "tile_disabled": "無効",
       "tile_more_actions": "{{name}} のその他の操作",
       "tile_no_sidebar_page": "サイドバーページなし",
       "tile_pinned": "サイドバーに表示中",
       "tile_unpinned": "サイドバー未表示",
+      "section_enabled": "有効",
+      "section_disabled": "無効",
       "unpin": "ピン留め解除",
       "unpin_from_sidebar": "{{name}} のサイドバーへのピン留めを解除",
       "installed_apps": "インストール済みのアプリ"
@@ -15014,6 +15085,7 @@
         "declared": "宣言のみ",
         "sign_in_required": "サインインが必要",
         "sign_in_required_help": "このサーバーは OAuth を使用しており、まだ誰もサインインしていません。<chatLink>チャットに移動し</chatLink>、新しいセッションを開始して任意のメッセージを送信すると、チャットでサインインの承認を求められます。 その後、プローブしてこの一覧を更新します。",
+        "sign_in_kas_chat_note": "Kiro Agent のチャットは、ここで行ったサインインを使いません。チャットの「認証」カードからサインインしてください。",
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
         "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
         "signed_in": "サインイン済み",
@@ -17573,6 +17645,7 @@
         "custom_sound_error_file_gone": "このサウンドのファイルはこのブラウザーに保存されていないため、元に戻せません。",
         "channel_member": "クルーメイトからのメッセージ",
         "channel_apps": "アプリのアップデート",
+        "channel_turn": "チャットエラー",
         "push_section": "プッシュ通知",
         "push_toggle_label": "{{productName}} を閉じていても通知する",
         "push_toggle_description": "{{productName}} を閉じた後もこの端末に通知を送ります。システム通知は閉じると止まります。",
@@ -20382,6 +20455,43 @@
       "uptime": "稼働時間",
       "notCreatedHint": "次のメッセージを送るとワークスペースが作成されます。",
       "stoppedHint": "次のメッセージを送るとワークスペースが起動します。1 時間アイドル状態が続くと自動で停止します。"
+    },
+    "remoteGit": {
+      "title": "{{name}} の Git",
+      "notRepo": "作業ディレクトリは Git リポジトリではありません。",
+      "changes": "変更",
+      "clean": "最後のコミット以降の変更はありません。",
+      "noDiff": "このファイルに変更はありません。",
+      "history": "履歴",
+      "branchTitle": "現在のブランチ（読み取り専用）",
+      "notPushed_other": "未プッシュのコミット {{count}} 件",
+      "notPulled_other": "未プルのコミット {{count}} 件",
+      "statusModified": "変更",
+      "statusAdded": "追加",
+      "statusRenamed": "名前変更",
+      "statusCopied": "コピー",
+      "statusDeleted": "削除",
+      "statusUntracked": "未追跡",
+      "statusOther": "その他の変更",
+      "truncatedDiff": "この差分は大きすぎて表示できません。モードまたは名前変更の行がある場合は、それだけが表示されます。",
+      "statusFailed": "変更を読み取れませんでした。",
+      "logFailed": "履歴を読み取れませんでした。",
+      "diffFailed": "このファイルの差分を読み取れませんでした。",
+      "emptyDiffListed": "Git では変更ありとして表示されましたが、現在は最後のコミットとの差分はありません。一覧を読み込んだ後に元に戻った可能性があります。更新して最新の状態を確認してください。",
+      "statusTruncated": "一部の変更は表示されていません。",
+      "askFullDiff": "差分の全体をエージェントに依頼する下書きを作成",
+      "fullDiffPrompt": "ワークスペース {{name}} で、{{path}} の最後のコミットとの差分を全体で表示してください。Git パネルで表示するには大きすぎました。",
+      "changesCountCapped": "{{count}} 件以上",
+      "askFullStatus": "一覧の全体をエージェントに依頼する下書きを作成",
+      "fullStatusPrompt": "ワークスペース {{name}} の変更の一覧を全体で表示してください。Git パネルでは一部しか読み取れませんでした。",
+      "askSetUpRepo": "リポジトリのクローンまたは作成をエージェントに依頼する下書きを作成",
+      "setUpRepoPrompt": "ワークスペース {{name}} の作業ディレクトリは Git リポジトリではありません。そこにリポジトリをクローンするか、新しく作成するのを手伝ってください。",
+      "noUpstream": "アップストリームなし",
+      "noUpstreamTitle": "このブランチにはアップストリームのブランチがないため、比較する対象がありません。",
+      "askDraftTitle": "このリクエストを下書きにしてチャットを開きます。送信するまで何も送られません。",
+      "syncTitle": "{{counts}}（読み取り専用）",
+      "renamedFrom": "{{from}} から {{path}} に名前変更",
+      "copiedFrom": "{{from}} から {{path}} にコピー"
     },
     "verifyHint": "このマシンの Coder CLI がサインインしているか、各プロファイルのテンプレートが存在するか、このマシンがどの Git ホストにサインインしているかを確認します。何も起動せず、認証情報も読み取りません。",
     "checkSaveFirst": "先に保存してください。確認には保存済みの設定が使われます。",

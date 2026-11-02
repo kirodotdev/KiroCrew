@@ -667,11 +667,16 @@
           "write": "Write"
         },
         "reviewButton": {
+          "could_not_check_for_an_existing_review_session": "Could not check for an existing review session — retrying on refresh",
           "open_ai_code_review_session_for_this": "Open an AI code-review chat session for this {{label}}",
           "resume_ai_code_review_session_for_this": "Resume the AI code-review chat session for this {{label}}"
         },
         "readOnlyTag": {
           "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access"
+        },
+        "settingsSection": {
+          "account": "Account",
+          "repositories": "Repositories"
         }
       },
       "connectPanel": {
@@ -690,6 +695,9 @@
         "try_again": "Try again"
       },
       "connectRepoModal": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting": "Connecting {{done}} of {{total}}…"
       },
       "views": {
@@ -1028,12 +1036,23 @@
           "crew_sort_created": "Created"
         },
         "links": {
+          "merge_request": "merge request",
+          "merge_request_title": "Merge Request",
+          "merge_requests": "merge requests",
+          "merge_requests_title": "Merge Requests",
+          "pull_request": "pull request",
+          "pull_request_title": "Pull Request",
+          "pull_requests": "pull requests",
+          "pull_requests_title": "Pull Requests",
           "read_only_here_apply_in_provider": "Read-only here — {{provider}} repositories can't be changed from {{productName}}; apply the change in {{provider}}",
           "tracked_items_work_items": "Work Items",
           "tracked_items_issues": "Issues"
         }
       },
       "welcomeCarousel": {
+        "connect": "Connect",
+        "connect_count_one": "Connect {{count}}",
+        "connect_count_other": "Connect {{count}}",
         "connecting_n_of_total": "Connecting {{n}} of {{total}}…",
         "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar reads what your bots already found instead of starting over.",
         "slide_bots_title": "Reads What Your Bots Already Told You",
@@ -1634,6 +1653,7 @@
     "voicePlaybackNotice": {
       "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
       "consent_required": "{{speak}} needs Amazon Polly confirmed for this AWS profile and region. Confirm it in the Text-to-speech settings, then try again.",
+      "polly_rejected": "Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.",
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
       "settings": "{{speak}} settings (Text-to-speech)"
     },
@@ -4566,6 +4586,13 @@
       "read_failed_title": "Could not check your remote crews' versions after this update",
       "unread": "No version from {{names}} yet, so they may be behind too."
     },
+    "kasEngineNotice": {
+      "downloading": "Downloading {{productName}}'s KAS engine. Your chat starts when it finishes.",
+      "downloading_progress": "Downloading {{productName}}'s KAS engine ({{percent}}). Your chat starts when it finishes.",
+      "failed_title": "Could not install {{productName}}'s KAS engine",
+      "retry": "Retry",
+      "retry_failed": "The retry did not start ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro sign-in expired",
       "open_sign_in": "Open sign-in settings",
@@ -4845,6 +4872,7 @@
       "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
+      "grants_reconsent_message_actions": "Message actions: what the app's menu items on chat messages can read.",
       "grants_approved": "Approved: {{entries}}. The app can use them now."
     },
     "appsPage": {
@@ -4865,9 +4893,6 @@
       "no_enabled_apps": "No enabled apps",
       "removing": "Removing…",
       "search_library": "Search library",
-      "show_disabled_one": "Show {{count}} disabled app",
-      "show_disabled_other": "Show {{count}} disabled apps",
-      "show_enabled_only": "Show enabled only",
       "try_a_different_search_term": "Try a different search term",
       "update_all": "Update All",
       "the_app_itself_is_managed_externally": "The app itself is managed externally.",
@@ -4929,7 +4954,13 @@
       "col_status": "Status",
       "col_est_cost": "Est. Cost",
       "col_profile": "Profile",
-      "col_expiry": "Expiry"
+      "col_expiry": "Expiry",
+      "col_account": "Account",
+      "col_region": "Region",
+      "col_actions": "Actions",
+      "col_type": "Type",
+      "col_url": "URL",
+      "col_cost": "Cost"
     },
     "artifactDetailPage": {
       "published_to_provider": "Published to {{provider}}",
@@ -5306,6 +5337,7 @@
         "restore_retry": "Retry",
         "send_blocked_not_loaded": "this side conversation hasn't loaded yet",
         "steer_demoted_to_queue": "The turn ended — queued instead",
+        "closed_in_another_tab": "Refreshing the context in another tab cleared this side chat",
         "stop_failed": "Could not stop the side turn — try again"
       },
       "sidePanel": {
@@ -6865,11 +6897,12 @@
       "pin_to_sidebar": "Pin {{name}} to the sidebar",
       "tile_actions": "Actions for {{name}}",
       "tile_details": "Details",
-      "tile_disabled": "Disabled",
       "tile_more_actions": "More actions for {{name}}",
       "tile_no_sidebar_page": "No sidebar page",
       "tile_pinned": "In sidebar",
       "tile_unpinned": "Not in sidebar",
+      "section_enabled": "Enabled",
+      "section_disabled": "Disabled",
       "unpin": "Unpin",
       "unpin_from_sidebar": "Unpin {{name}} from the sidebar",
       "installed_apps": "Installed apps"
@@ -7149,6 +7182,7 @@
         "servers_scope_tip": "MCP servers across {{productName}} and your interactive {{provider}}/Kiro globals. The {{productName}} badge shows if it'll load in {{productName}} sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.",
         "sign_in_required": "Sign-in required",
         "sign_in_required_help": "This server uses OAuth and nobody has signed in yet. <chatLink>Go to chat</chatLink>, start a new session, and send any message — you'll be asked to approve the sign-in in chat. Then probe to refresh this list.",
+        "sign_in_kas_chat_note": "Chats on Kiro Agent don't use a sign-in made here. Sign in from the chat, with its Authorize card.",
         "sign_in": "Sign in",
         "sign_in_retry": "Try again",
         "sign_in_again": "Sign in again",
@@ -9423,7 +9457,9 @@
         "installing_progress": "Installing KAS {{version}}: {{percent}} ({{done}} of {{total}})",
         "install_failed": "Could not start the KAS engine install.",
         "save_failed": "Could not save the KAS engine setting.",
-        "status_unavailable": "Could not read the KAS engine status."
+        "status_unavailable": "Could not read the KAS engine status.",
+        "route_auto_no_kiro_cli": "Kiro CLI is not installed, so KAS runs on {{productName}}'s own engine.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI is not signed in, so KAS runs on {{productName}}'s own engine."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",
@@ -10284,6 +10320,45 @@
       "uptime": "Uptime",
       "notCreatedHint": "The workspace is created with your next message.",
       "stoppedHint": "The workspace starts with your next message. It stops on its own after an idle hour."
+    },
+    "remoteGit": {
+      "title": "Git on {{name}}",
+      "notRepo": "The working directory is not a Git repository.",
+      "changes": "Changes",
+      "clean": "No changes since the last commit.",
+      "noDiff": "No changes in this file.",
+      "history": "History",
+      "branchTitle": "Current branch (read-only)",
+      "notPushed_one": "{{count}} commit not pushed",
+      "notPushed_other": "{{count}} commits not pushed",
+      "notPulled_one": "{{count}} commit not pulled",
+      "notPulled_other": "{{count}} commits not pulled",
+      "statusModified": "Modified",
+      "statusAdded": "Added",
+      "statusRenamed": "Renamed",
+      "statusCopied": "Copied",
+      "statusDeleted": "Deleted",
+      "statusUntracked": "Untracked",
+      "statusOther": "Other change",
+      "truncatedDiff": "This diff is too large to show. Only its mode or rename lines appear, if any.",
+      "statusFailed": "The changes could not be read.",
+      "logFailed": "History could not be read.",
+      "diffFailed": "This file's diff could not be read.",
+      "emptyDiffListed": "Git listed this as changed, but there is no difference from the last commit now. It may have changed back since the list was read; refresh to update.",
+      "statusTruncated": "Some changes are not shown.",
+      "askFullDiff": "Draft a request to the agent for the full diff",
+      "fullDiffPrompt": "Show me the full diff of {{path}} against the last commit in the workspace {{name}}. It was too large for the Git panel to show.",
+      "changesCountCapped": "{{count}} or more",
+      "askFullStatus": "Draft a request to the agent for the full list",
+      "fullStatusPrompt": "Show me the full list of changes in the workspace {{name}}. The Git panel could only read part of it.",
+      "askSetUpRepo": "Draft a request to the agent to clone or create a repository",
+      "setUpRepoPrompt": "The working directory of the workspace {{name}} is not a Git repository. Help me clone a repository into it or create a new one.",
+      "noUpstream": "No upstream",
+      "noUpstreamTitle": "This branch has no upstream branch, so there is nothing to compare it with.",
+      "askDraftTitle": "Opens the chat with this request drafted. Nothing is sent until you send it.",
+      "syncTitle": "{{counts}} (read-only)",
+      "renamedFrom": "Renamed from {{from}} to {{path}}",
+      "copiedFrom": "Copied from {{from}} to {{path}}"
     },
     "verifyHint": "Checks that the Coder CLI on this machine is signed in, that each profile's template exists, and which git hosts this machine is signed in to. Nothing is started and no credential is read.",
     "checkSaveFirst": "Save first: the check uses the saved settings.",

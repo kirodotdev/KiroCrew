@@ -76,7 +76,43 @@ async def test_status_reports_the_pin_and_nothing_installed(cfg, monkeypatch):
         "installing": False,
         "progress": {"done": 0, "total": 0},
         "error": "",
+        "route": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_status_names_the_route_the_last_spawn_took(cfg, monkeypatch):
+    from kiro_crew.acp import kas_route
+
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(
+        kas_route,
+        "_LAST_SPAWN_ROUTE",
+        kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI),
+    )
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert body["route"] == {
+        "route": "bundle",
+        "automatic": True,
+        "reason": "no_kiro_cli",
+        "summary": "KAS runs on Kiro Crew's own engine because kiro-cli is not installed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_status_shows_an_install_a_spawn_started(cfg, monkeypatch):
+    """The download a KAS spawn started is the dashboard's to show too."""
+    from kiro_crew.acp import kas_engine_install
+
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(
+        kas_engine_install,
+        "_STATE",
+        {"running": True, "done": 7, "total": 70, "error": ""},
+    )
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert body["installing"] is True
+    assert body["progress"] == {"done": 7, "total": 70}
 
 
 @pytest.mark.asyncio
@@ -121,6 +157,8 @@ async def test_install_runs_once_reports_progress_and_finishes(cfg, monkeypatch)
         on_progress("KAS engine", 10, 40)
         on_progress("Node runtime", 5, 60)
         release.wait(5)
+        # What the gateway's installer logs on success: the version and where.
+        return SimpleNamespace(version=KAS_PIN_VERSION, root="/engines/kas")
 
     monkeypatch.setattr(kas_bundle, "install_pinned", fake_install)
     monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
@@ -155,7 +193,8 @@ async def test_a_failed_install_surfaces_the_remedy(cfg, monkeypatch):
     await handler.api_kas_bundle_install(_FakeRequest(app))
     await app[handler._STATE_KEY]["task"]
     body = _body(await handler.api_kas_bundle_status(_FakeRequest(app)))
-    assert body["error"] == "KAS 0.66.33 publishes no Node runtime for linux-riscv64"
+    assert "KAS 0.66.33 publishes no Node runtime for linux-riscv64" in body["error"]
+    assert "`kirocrew kas install`" in body["error"]
     assert body["installing"] is False
 
 

@@ -17,6 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_icons import _is_single_emoji, _is_valid_folder_color
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -654,7 +655,7 @@ async def create_folder_record(
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
-        "order": len(state._folders),
+        "order": next_folder_order(state._folders),
         "collapsed": False,
         "hidden": False,
         "parent_id": parent_id,
@@ -737,7 +738,7 @@ async def create_folder_record(
                 return False, "reused"
             if twins:
                 return False, "name_exists"
-        folder["order"] = len(folders)  # recount under the lock
+        folder["order"] = next_folder_order(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
         folders.append(folder)

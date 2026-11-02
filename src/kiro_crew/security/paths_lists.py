@@ -1200,6 +1200,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
     for leaf in ("seed-provenance", "settings_seeds.json")
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The gateway's config publication record (``config.write_provenance``). Same shape
+    # as the settings-seed record above: no secret, so READS stay open; a WRITE would let
+    # an agent vouch for a substituted config file at the launcher's pin. Its only writer
+    # is ``write_provenance.staging_hook``, outside this gate.
+    f"{prefix}/config-provenance"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 
 _WRITE_PROTECTED_HOME_PATHS += [

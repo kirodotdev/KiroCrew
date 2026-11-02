@@ -3,8 +3,8 @@
 The packaged ``builtin_skills/`` to installed-skills hop is content-verified,
 ``scripts/`` included -- ``test_builtin_skill_sync_safety.py`` pins that with
 ``test_script_only_package_update_reaches_the_install``. The next hop, installed
-skill asset to ``<config_dir>/crons/``, is a hand-run ``cp`` that nothing ever
-compared, so a deployed cron script could run superseded code indefinitely while
+skill asset to ``<config_dir>/crons/``, is a copy made by hand that nothing else
+compares, so a deployed cron script could run superseded code indefinitely while
 looking healthy.
 
 These tests pin the hop-2 comparison. The load-bearing one is
@@ -272,3 +272,29 @@ def test_control_character_name_on_disk_is_enumerated_and_escaped(
     assert "DIVERGED" in out
     assert "\x1b" not in out
     assert "\\x1b" in out
+
+
+def test_diverged_hint_names_each_side_and_no_skill_recipe(
+    data_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The remedy line must describe something the operator can act on.
+
+    No built-in skill documents copying a skill asset into ``crons/``, so a hint
+    that sends the operator to "the owning skill's own copy recipe" points at
+    nothing. The hint instead says what each side is, which is the information
+    needed to choose which one to keep, and still refuses to pick a direction.
+    """
+    from kiro_crew import cli_doctor
+
+    _ship_skill_script(data_home, "pack/skill", "poller.py", "def run(ctx):\n    pass\n")
+    _deploy(data_home, "poller.py", "def run(ctx):\n    return 1\n")
+
+    issues: list[str] = []
+    cli_doctor._doctor_cron_script_sources(issues)
+    out = capsys.readouterr().out
+
+    assert issues == ["deployed cron script diverged from its skill source"]
+    assert "recipe" not in out
+    assert "the path after DIVERGED is the installed skill's copy" in out
+    assert "the crons/ file is what the cron runs" in out
+    assert "does not overwrite either one" in out

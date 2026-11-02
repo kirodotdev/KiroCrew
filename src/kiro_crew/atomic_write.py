@@ -1191,6 +1191,7 @@ def atomic_write(
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
     replace_budget_s: float | None = None,
+    on_staged: Callable[[int], None] | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1300,6 +1301,12 @@ def atomic_write(
     through ``replace_with_retry``, and no transcript caller pins a parent, so
     a budget alongside *parent_dir_fd* would silently do nothing -- it is
     REFUSED there rather than ignored.
+
+    *on_staged* is called with the staged file's open descriptor once its content
+    is complete and before the rename publishes it. It names the exact object that
+    will appear at *path*, which a stat of *path* after the rename cannot: another
+    writer may have replaced it by then. An exception it raises aborts the write
+    like any other staging failure.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1388,6 +1395,7 @@ def atomic_write(
         restrict_on_error=restrict_on_error,
         src_xattrs=src_xattrs,
         pin=pin,
+        on_staged=on_staged,
     )
     if pin is None:
         # Inside a try of its own, so an interrupt that lands after staging
@@ -1445,6 +1453,7 @@ def _stage_temp(
     restrict_on_error: RestrictErrorPolicy,
     src_xattrs: list[tuple[str, bytes]],
     pin: int | None,
+    on_staged: Callable[[int], None] | None = None,
 ) -> str:
     """Write *content* to a new temp file beside *path*, closed; return its name.
 
@@ -1498,6 +1507,8 @@ def _stage_temp(
             _carry_xattrs(fd, src_xattrs, path)
         if fsync:
             os.fsync(fd)
+        if on_staged is not None:
+            on_staged(fd)
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that
         # still has an open handle. Give up ownership of fd first, so a close
         # that itself fails is not retried below; its error still removes the

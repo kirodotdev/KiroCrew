@@ -48,10 +48,15 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_PREVIEW_HOSTS,
+    _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
     _MAX_TITLE,
+    _MESSAGE_ACTION_KEYS,
+    _MESSAGE_ACTION_POPOVER_HEIGHT,
+    _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
+    _POPOVER_KEYS,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
     _TEXT_PATTERN_FLAGS_RE,
@@ -61,17 +66,23 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
     MAX_LINK_PREVIEWS_PER_APP,
+    MAX_MESSAGE_ACTION_CHARS,
+    MAX_MESSAGE_ACTIONS_PER_APP,
     MAX_SESSION_CONTROLS_PER_APP,
+    MESSAGE_ACTION_FORMATS,
+    MESSAGE_ACTION_ROLES,
     CommandArgument,
     CommandContribution,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
     LinkPreviewConfig,
+    MessageActionConfig,
     PanelTabConfig,
     SessionControlContribution,
     _mirrored_len,
     _normalize_status_path,
+    _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
     KEBAB_RE,
@@ -86,9 +97,17 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 )
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
+    _L10N_QUOTED_CHARS,
+    _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    L10N_LOCALE_RE,
+    L10N_TEXT_CAPS,
     LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
     LIFECYCLE_SCRIPT_TIMEOUT_MAX,
+    MAX_L10N_HIGHLIGHT_CHARS,
+    MAX_L10N_HIGHLIGHTS,
+    MAX_L10N_LOCALES,
+    MAX_L10N_WARNINGS,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -96,6 +115,8 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     CronEntry,
     Dependencies,
     HooksConfig,
+    L10nConfig,
+    L10nEntry,
     NotificationChannel,
     NotificationsConfig,
     Permissions,
@@ -107,6 +128,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    _l10n_quoted,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,
@@ -350,6 +372,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "l10n",
     }
 )
 
@@ -423,6 +446,9 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Listing copy per locale (content, never trust; see L10nConfig) ---
+    l10n: L10nConfig = field(default_factory=L10nConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -520,6 +546,13 @@ class AppManifest:
             refusal = path_refusal(preview.entry)
             if refusal:
                 report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
+        # A message-action entry is imported by the same frame bootstrap.
+        for action in self.contributes.messageActions:
+            refusal = path_refusal(action.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -757,6 +790,8 @@ class AppManifest:
             # A link-preview `entry` is an ESM module the dashboard imports and runs
             # in its own origin, like a panel tab's: same reason to sign it.
             or self.contributes.linkPreviews
+            # A message action's roles and format decide which text the app is handed.
+            or self.contributes.messageActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -955,6 +990,9 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        l10n_d = self.l10n.to_dict()
+        if l10n_d:
+            d["l10n"] = l10n_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -1092,6 +1130,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            l10n=L10nConfig.from_value(data.get("l10n")),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

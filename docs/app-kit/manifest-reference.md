@@ -313,6 +313,44 @@ At most one enabled app owns a slot. When two enabled apps declare the same
 `replaces`, the first by app name wins and the collision is reported -- the winner
 does not depend on which app was enabled or installed more recently.
 
+### `l10n` — Listing Copy per Locale
+
+Optional. Your app's display name, description, page label and highlights in other
+languages. The dashboard shows them in place of the English fields for a reader whose
+language matches: first the exact locale, then its base language, then the English
+field.
+
+```json
+{
+  "l10n": {
+    "de": {
+      "displayName": "Einkaufsberater",
+      "description": "Merkt sich, was dir wichtig ist, und hilft beim Vergleichen.",
+      "pageLabel": "Einkauf",
+      "highlights": ["Merkt sich Größen und Vorlieben", "Vergleicht Angebote"]
+    },
+    "zh-CN": { "displayName": "购物顾问" }
+  }
+}
+```
+
+| Rule | Limit |
+|------|-------|
+| Locale key | `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$` (`de`, `pt-BR`, `zh-CN`), at most 32 locales |
+| `displayName` | string, at most 120 characters |
+| `description` | string, at most 1000 characters |
+| `pageLabel` | string, at most 60 characters |
+| `highlights` | array of at most 12 strings, each at most 300 characters |
+
+Every field is optional. A locale with an unknown key or a value over its limit is
+**dropped** and the install logs a warning; the rest of the block, and the install,
+are unaffected. The block is listing content, not a signed field, so it is not part of
+the admission signature. A built-in's own dashboard catalog keys take precedence
+over it.
+
+The published store listing does not carry `l10n` yet, so a store row you have not
+installed shows the English fields.
+
 ## Declarative contributions
 
 ### `contributes.commands` — Adding Rows to the Command Bar
@@ -879,6 +917,115 @@ open the app's card:
   20,000 distinct text nodes are scanned per page load; later ones stay plain. If the worker does not start within 5 seconds,
   plain-text previews are off for that page load. `textPatterns` is signed.
 
+### `contributes.messageActions` — A Button on One Chat Message
+
+A message action is a row in a chat message's More menu. When the user clicks it,
+the app gets that one message's text, in a popover next to the message. Nothing
+else: no other message, no session key, title, folder, agent, model or project, no
+attachments, tool calls or their output, no message id or position, and no DOM.
+No app code runs until the row is clicked. It runs in the same sandboxed frame as
+a link-preview card.
+
+```json
+{
+  "contributes": {
+    "messageActions": [
+      {
+        "id": "save",
+        "title": "Save to notes",
+        "entry": "dist/frame.mjs",
+        "roles": ["assistant"],
+        "format": "plain",
+        "maxChars": 32000,
+        "popover": { "width": 360, "maxHeight": 480 }
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `title` | string | The menu row's label, 1 to 40 UTF-16 units. The row also names the app |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `roles` | string[] | Optional. Which messages the row is on: `assistant` (replies, the default), `user` (the user's own messages), or both |
+| `format` | string | Optional. `plain` (default): the message's own text as the chat renders it, minus what the renderer hides, read at the click: a link gives its label, not its address; an image or a drawn diagram gives nothing; a formula gives its TeX; a code block gives its code. Styling the message's author applied counts as content. `markdown`: the markdown source |
+| `maxChars` | integer | Optional. 1 to 32,000 (default). Longer text is cut, and `truncated` says so |
+| `popover` | object | Optional. `width` 200 to 480 (default 360) and `maxHeight` 120 to 600 (default 480), in CSS px |
+
+At most **two** actions per app. A field with the wrong JSON type, or an unknown
+field, is refused at install, never coerced. Every entry is signed.
+
+**Approval.** Which roles an action is on and whether it gets markdown are part of
+what the owner approves for the app, stored per action as `<id>:role:assistant`,
+`<id>:role:user` and `<id>:format:markdown` in the `messageActions` family of the
+approved-grants file. Installing approves what is declared. An update that adds the
+`user` role, switches to `markdown` or adds an action waits on the app's page under
+**Approve new permissions**; until then the action works at its approved reach (an
+action whose `markdown` waits gets plain text). An update that only narrows needs
+nothing. An action with no approved role is not offered, its frame is not served,
+and an open frame's fetches are refused. User messages are a grant of their own
+because a user's message can hold what they pasted; an assistant reply can hold
+what the agent read, so neither role is free.
+
+**Where it shows.** In the More menu of each finished message of an approved role,
+after the host's own rows, ordered by app name. Never as a row button: the
+message footer keeps its two-control limit whatever apps are installed. Not on a
+streaming reply. On a user message, only where the row has a More menu (the
+chat surfaces that offer Quote).
+
+**Where the module runs.** In an app frame (see `linkPreviews` above for the
+sandbox, the CSP and `ctx.fetch`), served at `/app-frame/<app>/messageActions/<id>/…`, inside a
+popover the host draws below the message. The popover's header names the app and
+the action, outside the frame. Escape, a press outside, the close button or
+another action closes it.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+}): {
+  invoke(
+    message: { text: string; format: 'plain' | 'markdown'; truncated: boolean; role: 'assistant' | 'user' },
+    call: {
+      invocationId: string
+      /** Offer text for the host's Copy button (at most 32,000 UTF-16 units). */
+      offerCopy(text: string): Promise<{ ok: true } | { ok: false; code: string }>
+      /** Offer an https URL for the host's Open button. */
+      offerOpen(url: string): Promise<{ ok: true } | { ok: false; code: string }>
+      resize(size: { width: number; height: number }): void
+      close(): void
+      error(message: string): void
+    },
+  ): void
+  cancel?(invocationId: string, reason: string): void // 'closed' | 'deadline' | 'other' | 'revoked'
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void
+}
+```
+
+**One invocation per click.** The host mints `invocationId`; the frame cannot make
+one. The invocation ends after **2 minutes** without a `resize` or an offer, and
+when the popover closes, which the frame hears as `cancel`. Keep the `call` you
+were handed: an offer, `resize`, `close` or `error` for an earlier invocation is
+refused.
+
+**Copy and Open are the host's buttons.** The frame cannot write the clipboard or
+open a window. It offers a value, and the host draws the button under the frame:
+**Copy** writes the clipboard only when the user clicks it; **Open** shows the
+host name and opens the URL in a new tab with `noopener,noreferrer`. An offer
+replaces the earlier one of its kind. Each offer is answered: `{ ok: true }`, or
+`{ ok: false, code }` with `stale` (another or a closed invocation, or a repeated
+offer), `too_large` or `not_allowed` (not `copy` or `open`, or not an `https:` URL).
+
+A message over 64 KB of JSON, or past a burst of 120 messages refilled at 60 a
+second, is dropped unread. If the frame does not report `ready` within 10 seconds,
+or the module fails to import, or `activate` throws or returns no `invoke`, the
+popover says the app didn't open. An `error` shows that the app couldn't finish.
+
 ### `backend` — App Backend Process
 
 ```json
@@ -943,6 +1090,28 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 | `backend.hooks.on_startup` | string | `module.path:callable` invoked when the app's hooks are wired up |
 | `backend.hooks.on_shutdown` | string | `module.path:callable` invoked when the app is disabled/torn down |
 
+**The `routes` callable** receives the app context and returns a list of routes.
+Each route is any object with three attributes, so the app declares its own
+dataclass and never imports `kiro_crew`:
+
+```python
+from dataclasses import dataclass
+from typing import Any, Callable
+
+@dataclass(frozen=True)
+class Route:
+    method: str        # GET, POST, PUT, DELETE or PATCH (any case)
+    path: str          # relative to /api/apps/<app>/, at most 512 characters
+    handler: Callable  # async (request, ctx) -> response
+
+def register_routes(ctx):
+    return [Route("GET", "/items", list_items), Route("POST", "/items/{item_id}", save_item)]
+```
+
+An item whose `method` is not one of those five, whose `path` is not a string of at
+most 512 characters, or whose `handler` is not callable is skipped with a warning.
+The built-ins' `AppRoute` class is still accepted.
+
 `hooks.routes` handlers are wired up when the app is enabled **through the
 Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
 gateway startup (`on_gateway_startup`) -- so on that path they go live without
@@ -971,7 +1140,9 @@ Python already runs in the Gateway process with full filesystem access, so a
 symlinked sibling resolves wherever it points. Do not use a bare
 `import config`: `sys.modules["config"]` is process-global, so two apps each
 shipping a `config.py` would end up sharing one module. `from kiro_crew...`
-absolute imports are for built-in apps only.
+absolute imports are for built-in apps only; an installed app reaches the host
+through its context (`ctx.require_owner`, `ctx.embed`, `ctx.scrub` and the other
+[context members](api-reference.md#owner-gate-ctxrequire_owner)).
 
 **Python dependencies.** Runtime `requirements.txt` provisioning — the
 `data/.kirocrew-deps/` tree described in the stdio `command`-resolution passage
