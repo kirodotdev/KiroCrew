@@ -949,3 +949,40 @@ class TestNonCredentialValuesUnderCredentialNames:
         value = synth(24, ALNUM, 91)
         result = redact(f"password=${{DB_PASSWORD}} api_key={value}")
         assert result.text == f"password=${{DB_PASSWORD}} api_key={rr.PLACEHOLDER}"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("password=${DB_PW} api_key=abc;def123", "password=${DB_PW} api_key={P}"),
+            ("password=${DB_PW} token=abcd,efghijklmnop", "password=${DB_PW} token={P}"),
+            (
+                "password=${A} secret=${B} api_key=abc;def123",
+                "password=${A} secret=${B} api_key={P}",
+            ),
+            ("password=$PW api_key=abc;def123", "password=$PW api_key={P}"),
+            (
+                "password=${DB_PW} api_key=abc;def123\nnote=a;b",
+                "password=${DB_PW} api_key={P}\nnote=a;b",
+            ),
+        ],
+    )
+    def test_pairs_after_a_placeholder_head_are_read_as_shell_words(
+        self, text: str, expected: str
+    ) -> None:
+        result = redact(text)
+        assert result.text == expected.replace("{P}", rr.PLACEHOLDER)
+        again = redact(result.text)
+        assert again.text == result.text
+        assert again.records == ()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "password=${PW} api_key=<key>",
+            "password=${A} secret=${B} api_key=<key>",
+        ],
+    )
+    def test_placeholders_chained_by_shell_words_are_kept(self, text: str) -> None:
+        result = redact(text)
+        assert result.text == text
+        assert result.records == ()

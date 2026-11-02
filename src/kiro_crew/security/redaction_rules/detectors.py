@@ -237,6 +237,26 @@ def _key_shape(text: str, key_start: int, dash: bool) -> str:
     return LINE if _LINE_LEAD_RE.fullmatch(text, line_start, key_start) else NESTED
 
 
+def _cut_at_placeholder_head(text: str, i: int, wanted: Callable[[str], bool]) -> bool:
+    """A ``SHELL`` value starting at ``i`` ends at a placeholder head.
+
+    Mirrors ``labelled_value``'s head test but holds whatever the value's
+    length, so a short placeholder (``$PW``) that yields no span still marks
+    the rest of its line as shell words.
+    """
+    if text[i : i + 1] in ('"', "'", "\\"):
+        return False
+    hi = _line_end(text, i)
+    start = i
+    scheme = _SCHEME_RE.match(text, i, hi)
+    if scheme:
+        if scheme.group(1).lower() in _SCHEME_PARAM:
+            return False
+        start = scheme.end()
+    head = _PLACEHOLDER_HEAD_RE.match(text, start, hi)
+    return head is not None and wanted(normalise_name(head.group("next")))
+
+
 def label_candidates(
     text: str, urls: _Spans, wanted: Callable[[str], bool] = lambda name: True
 ) -> list[_Named]:
@@ -249,9 +269,16 @@ def label_candidates(
     scan resumes right after each separator rather than after the value, so a
     pair inside another pair's value (``-H "X-Api-Key: ..."``,
     ``Set-Cookie: api_key=...``) is found too.
+
+    When a shell-style value ends at a placeholder head
+    (``password=${PW} api_key=...``), the rest of that line is still a shell
+    command line, so every later pair on it is read in ``SHELL`` shape rather
+    than as a nested pair.
     """
     found: list[_Named] = []
     pos = 0
+    #: End of the line whose shell-style value was cut at a placeholder head.
+    shell_until = -1
     while True:
         m = _KEY_RE.search(text, pos)
         if m is None:
@@ -266,12 +293,17 @@ def label_candidates(
         name = normalise_name(m.group("key"))
         if not wanted(name) or urls.contains(m.start()):
             continue
-        shape = _key_shape(text, m.start(), bool(m.group("dash")))
+        dash = bool(m.group("dash"))
+        shape = _key_shape(text, m.start(), dash)
+        if not dash and m.start() < shell_until:
+            shape = LINE
         if shape == LINE and sep.group(0) == "=":
             shape = SHELL
         span = labelled_value(text, sep.end(), shape, wanted)
         if span is not None:
             found.append(_Named(name, *span))
+        if shape == SHELL and _cut_at_placeholder_head(text, sep.end(), wanted):
+            shell_until = _line_end(text, sep.end())
     found.extend(_xml_elements(text, urls, wanted))
     found.extend(_name_value_pairs(text, urls, wanted))
     return found
