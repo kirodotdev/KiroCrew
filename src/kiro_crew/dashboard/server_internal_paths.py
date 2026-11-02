@@ -214,6 +214,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # itself. The undo ("/api/members/{slug}/self-changes/{id}/undo") is the
         # user's click and stays on owner-only cookie auth, off this prefix.
         "/api/member/self",
+        # MCP-only (select_crew's routing-decision record); no browser caller.
+        # STRICT: the decision is attributed to the session this secret's
+        # X-Session-Key names, so a cookie fall-through would let a browser log
+        # routing on another session's behalf.
+        "/api/member-routing",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.

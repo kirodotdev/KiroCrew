@@ -53,7 +53,8 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/config/sections_session.py` | `KiroCrewAgentConfig` — the crew record: `kiro_agent`, `workspace`, `memory_store`, `model`, `reasoning_effort`, `display_name`, `description`, `triggers`, `source`, `session_color`, `avatar`, per-crew watchdog overrides |
 | `src/kiro_crew/config/loader_agents.py`, `src/kiro_crew/config/loader.py` | `resolve_agent_bindings` (crew to workspace / memory store / template) and `resolve_effective_model` (the default-model precedence) |
 | `src/kiro_crew/mcp_core_parts/crew.py` | `_do_select_crew` — the roster and bind bodies |
-| `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool handler and its `HANDLERS` row |
+| `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool handler and its `HANDLERS` row; posts a bind's routing decision to the gateway |
+| `src/kiro_crew/dashboard/handlers/member_routing.py` | `POST /api/member-routing/decision` — writes a `select_crew` routing decision into the member's activity log |
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
 | `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
@@ -4692,18 +4693,28 @@ membership test against `cfg.agents` is the deny-by-default gate;
 creation only strips the name, so a stricter schema would list a crew in the
 roster and then refuse to bind it.
 
-A bind also records a routing-decision pointer through
-`members.record_activity` with `via="select_crew"`. Two properties of that write
-matter:
+A bind also records a routing-decision pointer with `via="select_crew"`. The
+tool handler posts it to the gateway's strict internal route
+`POST /api/member-routing/decision`, which writes it through
+`members.record_activity`. `select_crew` runs in the sandboxed `kirocrew
+mcp-core`, where `crew-log` is hidden, so it cannot write the log itself. Three
+properties of that write matter:
 
 - The entry keys the session under `decided_in`, not `session`, because the
   decision is made in the parent session while the crew runs somewhere else. A
   consumer counting sessions a crew took part in therefore cannot miscount a
   session the crew never ran in.
-- The caller's memory mode is resolved at the call, and only `persistent`
-  sessions are recorded. An unreadable session degrades to the private spelling,
-  so the failure mode is a missing entry, never a durably logged private session
-  key.
+- The session is the one the transport attests (`session_key_is_attested`),
+  never one the body names. A caller without the internal secret, without a
+  session key or with an unattested one is refused (and audited), and so is a
+  name that is not a configured crew or one whose memory store cannot bind.
+- The gateway resolves that session's memory mode with
+  `resolve_session_memory_mode`, its live policy first, and a private transcript
+  header still vetoes a persistent answer. Only `persistent` sessions are
+  recorded; an unresolvable one counts as private, so the failure mode is a
+  missing entry, never a durably logged private session key. The post takes the
+  5 s best-effort timeout; a refused or failed post leaves the bind as it is and
+  is logged as a warning.
 
 These entries are **intent, not execution**: binding a crew does not oblige the
 model to delegate to it. The run itself is recorded as `via="spawn"` when a
@@ -4828,7 +4839,8 @@ Parent-change and impact previews use the server's redacted projection.
 | `website/src/components/RestartButton.cov80.test.tsx` | Apply & Restart (mounted in the Connections header) asks first, naming what stays (chats and history) and what stops (a reply in progress); declined does nothing, and the confirmed paths (success, failure, in-flight, MCP reconcile) run with the ask answered yes |
 | `test/test_chat_agent_kind.py` | `agent_kind` on local slot create and switch, and a relay-archive switch refused with `409 relay_archive_read_only`: template picks skip the member store pin, name and kind persist atomically, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
 | `test/test_open_slots_persistence.py` (`test_restore_carries_the_agent_selection_namespace`) | A template-picked slot restores as a template pick; an unknown persisted kind reads as name-only |
-| `test/test_select_crew.py` | Roster excludes the default crew (triggers or not) and every triggerless crew, carries `default_agent` plus guidance; an entry and a `route_crew` match or `unavailable` entry carry `display_name` only when it differs from the key; a named crew returns its bindings; an unknown name returns `error` plus `available`, each key followed by its differing label; the schema accepts spaces and dots in a crew name |
+| `test/test_select_crew.py` | Roster excludes the default crew (triggers or not) and every triggerless crew, carries `default_agent` plus guidance; an entry and a `route_crew` match or `unavailable` entry carry `display_name` only when it differs from the key; a named crew returns its bindings; an unknown name returns `error` plus `available`, each key followed by its differing label; the schema accepts spaces and dots in a crew name; a bind, and only a bind, posts its routing decision to the gateway, bounded at the 5 s best-effort timeout |
+| `test/test_member_routing_decision.py` | The gateway records an attested persistent session's decision under `decided_in`; a session the gateway or its transcript header holds private, an unresolvable one, a caller without the internal secret, a session key or attestation (the last audited), an unknown crew and one whose memory cannot bind record nothing; a header-less subagent session records on its live mode; the route is registered and strict internal |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |
 | `test/test_members.py`, `test/test_members_dm_thread.py`, `test/test_members_dm_thread_activity_and_briefing.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |

@@ -428,8 +428,9 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: ``select_crew`` earns its place under the invariant already stated for the
 #: dashboard tuple — a granted verb may CREATE or READ, never MUTATE something
 #: that already exists and is not the agent's own. ``_do_select_crew`` reads
-#: config, resolves the crew's bindings, and appends one routing-decision
-#: record keyed to its OWN session; it binds nothing and starts no work.
+#: config, resolves the crew's bindings and posts one routing decision for its
+#: OWN session to the gateway, which records it; it binds nothing and starts no
+#: work.
 #:
 #: What is granted: reads (``resource_status``, ``list_sessions``, skills), the
 #: patrol loop's own lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``),
