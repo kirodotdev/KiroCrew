@@ -57,6 +57,27 @@ class TestServerAppliers:
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
         assert not any("workflow_run_timeout" in n or "channel" in n for n in subs)
 
+    @pytest.mark.asyncio
+    async def test_browser_settings_written_outside_the_dashboard_push_a_refresh(self) -> None:
+        """Settings -> Browser and the Preview tab read `dashboard.browser_local_origins`
+        and `browser.*` through the dashboard's config query; an edit to config.json
+        reaches an open tab only through a `refresh` frame, which this applier pushes."""
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        subs = self._register(state)
+        apply = subs["browser.settings"].callback()
+        assert apply is not None
+        cfg = KiroCrewConfig()
+        await apply(
+            ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.browser_local_origins"}))
+        )
+        state.push_refresh.assert_called_once_with("config")
+        await apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"browser.live.max_fps"})))
+        assert state.push_refresh.call_count == 2
+        await apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"agent.model"})))
+        assert state.push_refresh.call_count == 2, "an unrelated key pushes nothing"
+
     def test_the_chat_default_model_has_an_applier(self) -> None:
         """Regression: the list carried ``agent.role_models.background`` but not
         ``agent.model``.
@@ -441,6 +462,7 @@ class TestServerAppliers:
             "agent.model",
             "agent.role_models.background",
             "agent.log_level",
+            "browser.settings",
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
         }

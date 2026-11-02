@@ -24,21 +24,18 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/send-message",
         "/api/delete-message",
         "/api/update-message",
-        "/api/browser-event",
-        "/api/browser/frame",
-        "/api/browser/pump-audit",
-        # Native browser command channel (agent->Electron). MACHINE endpoints,
-        # same trust class as ``/api/browser/frame``: the MCP proxy posts commands
-        # and the Electron main process long-polls/returns results, all loopback +
-        # internal-secret. No browser calls them, so STRICT (not mixed). Each
-        # handler re-asserts loopback because a ``local_only=False`` deployment
-        # reclassifies strict paths as mixed.
-        "/api/browser/command",
-        "/api/browser/command-drain",
-        "/api/browser/command-result",
+        # The ``browser`` MCP tool's op leg onto the Browser Harness: the shim posts
+        # one op, the gateway runs it on its supervisor. MCP-only, no browser caller,
+        # so STRICT; the handler re-asserts ``internal_auth``.
+        "/api/browser/op",
+        # Its hand-back poll: the parked tool asks whether the person let go.
+        "/api/browser/handback",
+        # Its quick-ask poll: the parked ``ask`` op asks whether the person answered.
+        # Only an outcome word comes back; the answer itself is the owner's route.
+        "/api/browser/ask/poll",
         # External terminal grant redemption. Its only caller is the desktop
-        # shell's main process, over the same channel as the browser command
-        # drain above; the browser holds the grant but must never redeem it, so
+        # shell's main process, loopback + internal-secret; the browser holds
+        # the grant but must never redeem it, so
         # STRICT (not mixed). The handler re-asserts ``internal_auth`` and
         # loopback because a ``local_only=False`` deployment reclassifies strict
         # paths as mixed.

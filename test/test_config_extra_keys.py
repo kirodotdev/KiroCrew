@@ -338,6 +338,49 @@ def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     assert written["subagent_max_turns"] == 42
 
 
+def test_the_retired_browser_keys_are_dropped_with_one_warning(cfg_home, caplog):
+    """``dashboard.use_builtin_browser`` and ``dashboard.browser_view_port`` went with
+    the agent browser they configured. An existing config that still carries them
+    loads, is told ONCE that they are gone, and writes them out on the next save."""
+    _write(
+        cfg_home,
+        {
+            "dashboard": {
+                "use_builtin_browser": False,
+                "browser_view_port": 7912,
+                "browser_local_origins": ["localhost:5173"],
+            }
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+
+    assert "dashboard" not in cfg._extra_keys
+    assert not hasattr(cfg.dashboard, "use_builtin_browser")
+    assert not hasattr(cfg.dashboard, "browser_view_port")
+    notices = [
+        r.getMessage()
+        for r in caplog.records
+        if "no longer exist and are ignored" in r.getMessage()
+    ]
+    assert len(notices) == 1
+    assert "dashboard.use_builtin_browser" in notices[0]
+    assert "dashboard.browser_view_port" in notices[0]
+
+    cfg.save()
+    written = json.loads(cfg_home.read_text(encoding="utf-8"))["dashboard"]
+    assert "use_builtin_browser" not in written and "browser_view_port" not in written
+    # The live setting sharing the section is untouched.
+    assert written["browser_local_origins"] == ["localhost:5173"]
+
+
+def test_a_config_without_the_retired_browser_keys_gets_no_notice(cfg_home, caplog):
+    _write(cfg_home, {"dashboard": {"browser_local_origins": []}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        KiroCrewConfig.load()
+    assert not [r for r in caplog.records if "no longer exist and are ignored" in r.getMessage()]
+
+
 def test_an_unknown_nested_key_is_not_shipped_to_the_browser(cfg_home):
     """The browser-facing config response drops captured keys.
 

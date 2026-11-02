@@ -220,13 +220,12 @@ def _vet_messaging_governance(
 def _vet_browse_governance(caller_session: str) -> str | None:
     """Return a denial reason if governance forbids web browsing, else None.
 
-    The ``browser`` MCP tool drives the native panel (and points at the
-    playwright-cli fallback), a web-egress surface an enterprise policy may
-    disable via ``capabilities.browse``. When DENIED the tool must refuse
-    outright and NOT fall back to playwright-cli -- falling back would let
-    browsing continue and defeat the control. This is distinct from the
-    no-native-panel case (capability ALLOWED, just no Electron), which is the
-    only condition that legitimately degrades to playwright-cli.
+    The ``browser`` MCP tool drives the agent's browser, a web-egress surface
+    an enterprise policy may disable via ``capabilities.browse``. When DENIED
+    the tool must refuse outright and never fall back to another driver --
+    falling back would let browsing continue and defeat the control. This is
+    distinct from the browser-not-installed case (capability ALLOWED, nothing
+    to drive), which is a plain refusal, not a denial.
 
     Same stdio-silent, best-effort discipline as :func:`_vet_messaging_governance`
     (fail-OPEN on evaluation error: a broken policy eval must not brick browsing

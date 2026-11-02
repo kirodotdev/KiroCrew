@@ -1,593 +1,496 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* ── api client mock ───────────────────────────────────────────────────────
  * The panel reads and writes only through these methods, so mocking them keeps
- * every case network-free. The rest of the module stays real: the 409 parser
- * and `ApiError` are part of what is under test. The install POST resolves with
- * the same shape as the GET, which is what lets the panel re-render from one
- * answer. */
+ * every case network-free. The config read answers the `browser` section and the
+ * Preview origins; every write is the generic single-path PATCH. */
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>()
   return {
     ...actual,
     api: {
-      getBrowserInstall: vi.fn(),
-      installBrowserCli: vi.fn(),
-      installBrowserEngine: vi.fn(),
-      setBrowserToken: vi.fn(),
-      system: vi.fn(),
+      getBrowserStatus: vi.fn(),
+      installBrowserHarness: vi.fn(),
+      testBrowser: vi.fn(),
+      disconnectBrowser: vi.fn(),
+      kirocrewConfig: vi.fn(),
+      patchConfig: vi.fn(),
       dashboardConfig: vi.fn(),
-      updateDashboardConfig: vi.fn(),
     },
   }
 })
 
-/* `isElectron` is a module constant; a getter lets one case flip it. */
-const electron = vi.hoisted(() => ({ value: false }))
-vi.mock('../../lib/electron', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../lib/electron')>()),
-  get isElectron() {
-    return electron.value
-  },
-}))
-
-import { api, type BrowserInstallJob } from '../../api/client'
-import { ApiError } from '../../api/apiError'
-// `/all` for the Japanese catalog used by the language-switch case.
+import { api, type BrowserStatusData } from '../../api/client'
 import { i18next } from '../../i18n/all'
 import { BrowserPanel } from './BrowserPanel'
+import { choiceFromHeadless, choiceFromPicker, pickerValueOf, primaryState } from './browserStatus'
 
-type State = {
-  installed: boolean
-  cli_path: string | null
-  cli_version: string | null
-  node_ok: boolean
-  standalone_install?: string
-  node_version: string | null
-  browser_ok: boolean
-  installing: boolean
-  last_error: string | null
-  token: boolean
-  browsers?: Record<string, boolean>
-  browser_status?: Record<string, 'downloaded' | 'missing' | 'unknown'>
-  install_job?: BrowserInstallJob | null
-}
-
-function state(overrides: Partial<State> = {}): State {
+function status(overrides: Partial<BrowserStatusData> = {}): BrowserStatusData {
   return {
-    installed: false,
-    cli_path: null,
-    cli_version: null,
-    node_ok: true,
-    standalone_install: 'curl -fsSLO https://example.invalid/playwright-cli.sh && sh playwright-cli.sh',
-    node_version: '22.0.0',
-    browser_ok: false,
-    installing: false,
-    last_error: null,
-    token: false,
-    browsers: { chromium: true, firefox: false, webkit: false },
+    installed: true,
+    version: '0.1.13',
+    browser: { kind: 'user_chrome', headless: false },
+    connection: 'connected',
+    detail: null,
+    chromium: { downloaded: true, version: '156' },
     install_job: null,
+    platform: 'darwin',
     ...overrides,
   }
 }
 
-function job(overrides: Partial<BrowserInstallJob> = {}): BrowserInstallJob {
+type Cfg = {
+  browser?: Record<string, unknown>
+  dashboard?: { browser_local_origins?: string[] }
+}
+
+function config(overrides: Cfg = {}): Cfg {
   return {
-    id: 'a1b2c3',
-    kind: 'engine_download',
-    engine: 'firefox',
-    status: 'running',
-    stage: 'downloading_browser',
-    started_at: '2026-01-01T00:00:00Z',
-    updated_at: '2026-01-01T00:00:30Z',
-    finished_at: null,
-    elapsed_s: 30,
-    error_code: null,
-    error_detail: null,
+    browser: { choice: 'auto', live: { enabled: true, quality: 'auto', max_fps: 60, mask_passwords: true } },
+    dashboard: { browser_local_origins: ['localhost:5173'] },
     ...overrides,
   }
 }
 
-const installed = (overrides: Partial<State> = {}) =>
-  state({ installed: true, cli_version: '0.1.18', browser_ok: true, ...overrides })
-
-const mockGet = () => vi.mocked(api.getBrowserInstall)
-const engineButton = (engine: string) =>
-  screen.getByTestId(`browser-engine-${engine}`).querySelector('button') as HTMLButtonElement | null
-
-/** The text an element's `aria-describedby` points at, as assistive tech reads it. */
-function describedText(el: HTMLElement): string {
-  const ids = (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
-  return ids.map((id) => document.getElementById(id)?.textContent ?? '').join(' ')
+const mocked = api as unknown as {
+  getBrowserStatus: ReturnType<typeof vi.fn>
+  installBrowserHarness: ReturnType<typeof vi.fn>
+  testBrowser: ReturnType<typeof vi.fn>
+  disconnectBrowser: ReturnType<typeof vi.fn>
+  kirocrewConfig: ReturnType<typeof vi.fn>
+  patchConfig: ReturnType<typeof vi.fn>
+  dashboardConfig: ReturnType<typeof vi.fn>
 }
 
-async function renderPanel(data: State = state(), afterInstall: State = state({ installing: true })) {
-  mockGet().mockResolvedValue(data as never)
-  vi.mocked(api.installBrowserCli).mockResolvedValue(afterInstall as never)
-  vi.mocked(api.installBrowserEngine).mockResolvedValue(afterInstall as never)
-  const utils = renderWithProviders(<BrowserPanel />)
-  // Wait for the SKELETON to go, not for a title: the loading state renders a
-  // title too, so waiting on it would let every assertion run against loading.
-  await waitFor(() => expect(document.querySelector('[data-slot="skeleton"]')).toBeNull())
-  return utils
+beforeEach(async () => {
+  await i18next.changeLanguage('en')
+  mocked.getBrowserStatus.mockReset().mockResolvedValue(status())
+  mocked.installBrowserHarness.mockReset().mockResolvedValue(status({ install_job: { status: 'running', stage: 'venv' } }))
+  mocked.testBrowser.mockReset().mockResolvedValue({ ok: true, connection: 'connected', detail: null })
+  mocked.disconnectBrowser.mockReset().mockResolvedValue(status({ connection: 'disconnected', browser: null }))
+  mocked.kirocrewConfig.mockReset().mockResolvedValue(config())
+  mocked.patchConfig.mockReset().mockResolvedValue({ ok: true })
+  mocked.dashboardConfig.mockReset().mockResolvedValue({ browse_enabled: true })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('primaryState', () => {
+  it('reports an install job first, whatever else the status says', () => {
+    expect(primaryState(status({ install_job: { status: 'running', stage: 'venv' } }))).toBe('installing')
+    expect(primaryState(status(), true)).toBe('installing')
+  })
+
+  it('splits "not installed" into failed and idle', () => {
+    expect(primaryState(status({ installed: false, install_job: { status: 'failed', error_detail: 'x' } }))).toBe('install_failed')
+    expect(primaryState(status({ installed: false, install_job: null }))).toBe('not_installed')
+  })
+
+  it('leaves a failed job on an INSTALLED engine to the Engine row: the card follows the connection', () => {
+    expect(primaryState(status({ install_job: { status: 'failed', error_detail: 'x' } }))).toBe('connected')
+    for (const c of ['waiting_allow', 'error', 'disconnected', 'connected'] as const) {
+      expect(primaryState(status({ connection: c }))).toBe(c)
+    }
+  })
+})
+
+describe('browser.choice across the picker and the no-window switch', () => {
+  it('the picker reads headless as Kiro’s Chromium and an unknown value as auto', () => {
+    expect(pickerValueOf('headless')).toBe('kiro_chromium')
+    expect(pickerValueOf('kiro_chromium')).toBe('kiro_chromium')
+    expect(pickerValueOf('user_chrome')).toBe('user_chrome')
+    expect(pickerValueOf('nonsense')).toBe('auto')
+  })
+
+  it('picking Kiro’s Chromium while headless writes nothing; any other pick writes that value', () => {
+    expect(choiceFromPicker('headless', 'kiro_chromium')).toBeNull()
+    expect(choiceFromPicker('auto', 'auto')).toBeNull()
+    expect(choiceFromPicker('headless', 'auto')).toBe('auto')
+    expect(choiceFromPicker('auto', 'kiro_chromium')).toBe('kiro_chromium')
+  })
+
+  it('the switch writes headless on and Kiro’s Chromium (with a window) off', () => {
+    expect(choiceFromHeadless(true)).toBe('headless')
+    expect(choiceFromHeadless(false)).toBe('kiro_chromium')
+  })
+})
+
+async function openMore() {
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }))
 }
 
-describe('BrowserPanel', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    electron.value = false
-    vi.mocked(api.system).mockResolvedValue({ hostname: 'fedora-box' } as never)
-    vi.mocked(api.dashboardConfig).mockResolvedValue({ use_builtin_browser: true } as never)
-  })
-  afterAll(async () => {
-    await i18next.changeLanguage('en')
-  })
-
-  it('reports the CLI as installed, separately from any browser download', async () => {
-    await renderPanel(installed())
-    expect(screen.getByTestId('browser-cli-installed').textContent).toMatch(/Playwright CLI installed/)
-    expect(screen.getByText(/0\.1\.18/)).toBeTruthy()
-    // Presence-as-consent is disclosed here because no switch carries it.
-    expect(screen.getByText(/installed. Removing it/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Install Playwright CLI/i })).toBeNull()
-    // No blanket "can browse" claim: engine readiness is its own row.
-    expect(screen.queryByText(/can browse web pages/i)).toBeNull()
-  })
-
-  it('names the three setup paths and the host the downloads land on', async () => {
-    await renderPanel(installed())
-    expect(screen.getByText(/Managed browsers on the Kiro Crew host/)).toBeTruthy()
-    expect(screen.getByText('Connect your existing browser')).toBeTruthy()
-    expect(screen.getByText('Built-in browser in the desktop app')).toBeTruthy()
-    await waitFor(() => expect(screen.getByTestId('browser-host-label').textContent).toMatch(/fedora-box/))
-    expect(screen.getByText(/not on the device showing this page/)).toBeTruthy()
-    expect(within(screen.getByTestId('browser-engine-chromium')).getByText('Default for automation')).toBeTruthy()
-  })
-
-  it('reports a failed host read instead of silently dropping the host badge', async () => {
-    vi.mocked(api.system).mockRejectedValue(new Error('system read refused'))
-    await renderPanel(installed())
-    // Rendered through ErrorNotice (role=alert), so the failure is not a bare string.
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/system read refused/))
-    expect(screen.queryByTestId('browser-host-label')).toBeNull()
-    // Every section is still there: the host name is a label, not a prerequisite.
-    expect(screen.getByTestId('browser-cli-installed')).toBeTruthy()
-    expect(screen.getByTestId('browser-engine-firefox')).toBeTruthy()
-    expect(screen.getByLabelText(/token/i)).toBeTruthy()
-    expect(screen.getByRole('switch', { name: /Use the built-in browser/ })).toBeTruthy()
-    // No hand-off: the token draft shares the panel.
-    expect(screen.queryByTitle(/open a chat with this error/i)).toBeNull()
-  })
-
-  it('offers the install when the CLI is absent', async () => {
-    await renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: /Install Playwright CLI/i }))
-    await waitFor(() => expect(api.installBrowserCli).toHaveBeenCalledTimes(1))
-  })
-
-  it('reports a too-old Node instead of an install button that would fail', async () => {
-    await renderPanel(state({ node_ok: false, node_version: '18.4.0' }))
-    expect(screen.getByText(/Needs Node\.js 20 or newer/i)).toBeTruthy()
-    expect(screen.getByText(/18\.4\.0/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Install Playwright CLI/i })).toBeNull()
-  })
-
-  it('keeps CLI setup progress visible after the CLI binary appears mid-setup', async () => {
-    const early = state({ installing: true, install_job: job({ kind: 'cli_setup', engine: null, stage: 'installing_cli' }) })
-    const later = installed({
-      installing: true,
-      browser_ok: false,
-      browsers: { chromium: false, firefox: false, webkit: false },
-      install_job: job({ kind: 'cli_setup', engine: null, stage: 'installing_skills', elapsed_s: 95 }),
-    })
-    const { queryClient } = await renderPanel(early)
-    const region = screen.getByTestId('browser-install-status')
-    expect(region.textContent).toMatch(/Setting up the Playwright CLI/)
-    expect(region.textContent).toMatch(/Installing the Playwright CLI/)
-
-    mockGet().mockResolvedValue(later as never)
-    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['browserInstall'] }) })
-    const after = screen.getByTestId('browser-install-status')
-    await waitFor(() => expect(after.textContent).toMatch(/Registering the agent's browser skills/))
-    expect(after.textContent).toMatch(/Setting up the Playwright CLI/)
-    expect(after.textContent).not.toMatch(/finished/)
-    expect(screen.getByTestId('browser-install-elapsed').textContent).toMatch(/Running for/)
-    // The binary is on disk, but the row follows the job: it does not say
-    // "installed" or promise browsing while the status region says "setting up".
-    expect(screen.queryByTestId('browser-cli-installed')).toBeNull()
-    expect(screen.queryByText(/Playwright CLI installed/)).toBeNull()
-    expect(screen.queryByText(/Browsing is available/)).toBeNull()
-    const cliButton = screen.getByRole('button', { name: /Installing/ })
-    expect(cliButton.getAttribute('aria-busy')).toBe('true')
-    expect((cliButton as HTMLButtonElement).disabled).toBe(true)
-    // Engine downloads wait for the setup, and say so.
-    expect(engineButton('firefox')!.disabled).toBe(true)
-    expect(describedText(engineButton('firefox')!)).toMatch(/Playwright CLI is being set up/)
-    // ONE copy of the sentence, under the Installing button, describing both the
-    // Install control and the engine rows; not a second copy under the list.
-    expect(screen.getAllByText(/Playwright CLI is being set up/)).toHaveLength(1)
-    expect(screen.queryByTestId('browser-engine-reason')).toBeNull()
-    const reasonIds = (el: HTMLElement) => (el.getAttribute('aria-describedby') ?? '').split(/\s+/)
-    expect(describedText(cliButton)).toMatch(/Playwright CLI is being set up/)
-    expect(reasonIds(engineButton('firefox')!)).toEqual(reasonIds(cliButton))
-    expect(reasonIds(engineButton('webkit')!)).toEqual(reasonIds(cliButton))
-  })
-
-  it('claims the CLI is installed once the setup job has finished', async () => {
-    await renderPanel(
-      installed({
-        install_job: job({ kind: 'cli_setup', engine: null, status: 'succeeded', stage: 'finishing', finished_at: '2026-01-01T00:02:00Z', elapsed_s: 120 }),
-      }),
-    )
-    expect(screen.getByTestId('browser-cli-installed').textContent).toMatch(/Playwright CLI installed/)
-    expect(screen.queryByRole('button', { name: /Installing/ })).toBeNull()
-  })
-
-  it('identifies a Firefox download started elsewhere (refresh or second tab)', async () => {
-    // A fresh mount has no mutation state at all: attribution must come from the job.
-    await renderPanel(installed({ installing: true, install_job: job() }))
-    expect(screen.getByTestId('browser-install-status').textContent).toMatch(/Downloading Firefox/)
-    expect(screen.getByTestId('browser-engine-firefox').getAttribute('data-state')).toBe('downloading')
-    expect(screen.getByTestId('browser-engine-webkit').getAttribute('data-state')).toBe('missing')
-    const webkit = engineButton('webkit')!
-    expect(webkit.disabled).toBe(true)
-    expect(describedText(webkit)).toBe('Firefox is downloading. Other downloads will be available when it finishes.')
-    expect(screen.getByTestId('browser-engine-reason').textContent).toMatch(/Firefox is downloading/)
-  })
-
-  it('blocks duplicate clicks while the POST is pending, attributing only the pressed engine', async () => {
-    await renderPanel(installed())
-    // Hold the mutation open: the pending window is the whole subject.
-    vi.mocked(api.installBrowserEngine).mockReturnValue(new Promise(() => {}))
-    fireEvent.click(engineButton('firefox')!)
-    await waitFor(() => expect(engineButton('webkit')!.disabled).toBe(true))
-    expect(screen.getByTestId('browser-engine-firefox').getAttribute('data-state')).toBe('downloading')
-    expect(screen.getByTestId('browser-engine-webkit').getAttribute('data-state')).toBe('missing')
-    expect(screen.getByTestId('browser-install-status').textContent).toMatch(/Downloading Firefox/)
-    fireEvent.click(engineButton('webkit')!)
-    expect(api.installBrowserEngine).toHaveBeenCalledTimes(1)
-  })
-
-  it('shows the active job a 409 names instead of the refused request', async () => {
-    await renderPanel(installed())
-    const active = job({ engine: 'webkit' })
-    vi.mocked(api.installBrowserEngine).mockRejectedValue(
-      new ApiError(409, 'A browser install is already running.', JSON.stringify({
-        error: 'A browser install is already running.',
-        code: 'install_already_running',
-        install_job: active,
-      })),
-    )
-    // Later reads agree with the conflict, as the gateway would.
-    mockGet().mockResolvedValue(installed({ installing: true, install_job: active }) as never)
-    fireEvent.click(engineButton('firefox')!)
-    await waitFor(() =>
-      expect(screen.getByTestId('browser-engine-webkit').getAttribute('data-state')).toBe('downloading'),
-    )
-    expect(screen.getByTestId('browser-engine-firefox').getAttribute('data-state')).toBe('missing')
-    expect(screen.getByTestId('browser-install-status').textContent).toMatch(/Downloading WebKit/)
-    expect(screen.queryByText(/already running/)).toBeNull()
-  })
-
-  it('reports a 409 that carries no job as a refused request', async () => {
-    await renderPanel(installed())
-    vi.mocked(api.installBrowserEngine).mockRejectedValue(
-      new ApiError(409, 'A browser install is already running.', '{"error": "busy"}'),
-    )
-    fireEvent.click(engineButton('firefox')!)
-    await waitFor(() => expect(screen.getByText(/already running/)).toBeTruthy())
-  })
-
-  it('re-reads the status before allowing a retry when the POST answer is lost', async () => {
-    await renderPanel(installed())
-    let answer: (v: unknown) => void = () => {}
-    vi.mocked(api.installBrowserEngine).mockRejectedValue(new TypeError('Failed to fetch'))
-    mockGet().mockReturnValue(new Promise((resolve) => { answer = resolve }) as never)
-    fireEvent.click(engineButton('firefox')!)
-    await waitFor(() => expect(describedText(engineButton('webkit')!)).toMatch(/Checking whether the last request/))
-    expect(engineButton('firefox')!.disabled).toBe(true)
-
-    // The status answer says the download did start; the row follows it.
-    await act(async () => { answer(installed({ installing: true, install_job: job() })) })
-    await waitFor(() =>
-      expect(screen.getByTestId('browser-engine-firefox').getAttribute('data-state')).toBe('downloading'),
-    )
-    expect(describedText(engineButton('webkit')!)).toMatch(/Firefox is downloading/)
-  })
-
-  it('renders a failed first status read as an error', async () => {
-    mockGet().mockRejectedValue(new Error('boom'))
+describe('BrowserPanel - main card', () => {
+  it('connected: the browser, a status line, and Disconnect as the ONE button', async () => {
     renderWithProviders(<BrowserPanel />)
-    await waitFor(() => expect(screen.getByText(/Cannot load browser status/)).toBeTruthy())
-    expect(screen.queryByRole('button', { name: /Download/ })).toBeNull()
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('connected')
+    expect(within(card).getByText('Your Chrome')).toBeTruthy()
+    expect(within(card).getByTestId('browser-status-line').textContent).toBe('Connected · uses your logins')
+    const buttons = within(card).getAllByRole('button').filter(b => b.getAttribute('aria-label') !== 'More information')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].textContent).toContain('Disconnect')
+    fireEvent.click(buttons[0])
+    await waitFor(() => expect(mocked.disconnectBrowser).toHaveBeenCalledTimes(1))
   })
 
-  it('marks a failed refetch as an error and pauses installs, keeping the token draft', async () => {
-    const { queryClient } = await renderPanel(installed())
-    const field = screen.getByLabelText(/token/i) as HTMLInputElement
-    fireEvent.change(field, { target: { value: 'draft-token-123' } })
-
-    mockGet().mockRejectedValue(new Error('gateway unreachable'))
-    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['browserInstall'] }) })
-    await waitFor(() => expect(screen.getByText(/Cannot read the browser setup status/)).toBeTruthy())
-    expect(engineButton('firefox')!.disabled).toBe(true)
-    expect(describedText(engineButton('firefox')!)).toMatch(/paused until the setup status loads/)
-    // The draft is still there, never copied into the error, and no hand-off is
-    // offered that would navigate away from it.
-    expect((screen.getByLabelText(/token/i) as HTMLInputElement).value).toBe('draft-token-123')
-    expect(screen.getByTestId('browser-install-status').textContent).not.toMatch(/draft-token-123/)
-    expect(screen.queryByTitle(/open a chat with this error/i)).toBeNull()
+  it('installing: a disabled spinner button and a progress bar, whoever started the job', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ installed: false, version: null, connection: 'disconnected', browser: null, chromium: null, install_job: { status: 'running', stage: 'chromium' } }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('installing')
+    expect(within(card).getByText('Getting the browser ready')).toBeTruthy()
+    expect(within(card).getByTestId('browser-primary-action')).toBeDisabled()
+    expect(within(card).getByTestId('browser-install-progress').getAttribute('aria-valuetext')).toBe('chromium')
+    expect(within(card).getByTestId('browser-status-line').textContent).toBe('Installing. You can chat meanwhile.')
   })
 
-  it('renders an older gateway honestly: generic busy copy and Unknown engines', async () => {
-    const old = installed({ installing: true, browsers: undefined })
-    delete old.install_job
-    delete old.browser_status
-    await renderPanel(old)
-    expect(screen.getByTestId('browser-install-status').textContent).toMatch(
-      /Browser setup is running on the .+ host\./,
-    )
-    // The headline and the row reason are different strings, so the screen does
-    // not print the same sentence twice.
-    expect(screen.getByTestId('browser-install-status').textContent).not.toMatch(
-      /Another browser setup operation is running\./,
-    )
-    for (const engine of ['chromium', 'firefox', 'webkit']) {
-      expect(screen.getByTestId(`browser-engine-${engine}`).getAttribute('data-state')).toBe('unknown')
+  it('waiting for Allow: yellow, and the button asks the gateway to attach again', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ connection: 'waiting_allow' }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.className).toContain('border-warn')
+    expect(within(card).getByText('Chrome is asking. Click Allow there.')).toBeTruthy()
+    fireEvent.click(within(card).getByTestId('browser-primary-action'))
+    await waitFor(() => expect(mocked.testBrowser).toHaveBeenCalledTimes(1))
+  })
+
+  it('connection error: red, the gateway detail verbatim in an ErrorNotice, Retry re-attaches', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ connection: 'error', detail: 'CDP handshake refused (ECONNRESET)' }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.className).toContain('border-danger')
+    expect(within(card).getByTestId('browser-status-line').textContent).toBe('Connection failed')
+    const notice = within(card).getByTestId('browser-status-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('CDP handshake refused (ECONNRESET)')
+    expect(within(notice).getByText('Ask the agent')).toBeTruthy()
+    const retry = within(card).getByTestId('browser-primary-action')
+    expect(retry.textContent).toContain('Retry')
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocked.testBrowser).toHaveBeenCalledTimes(1))
+  })
+
+  it('install failed: red, the job’s own detail, Retry runs the install again', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ installed: false, version: null, connection: 'disconnected', browser: null, install_job: { status: 'failed', error_detail: 'downloading: timed out' } }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('install_failed')
+    expect(within(card).getByText('Browser setup failed')).toBeTruthy()
+    expect(within(card).queryByTestId('browser-status-line')).toBeNull()
+    const notice = within(card).getByTestId('browser-status-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('downloading: timed out')
+    expect(within(notice).getByText('Ask the agent')).toBeTruthy()
+    fireEvent.click(within(card).getByTestId('browser-primary-action'))
+    await waitFor(() => expect(mocked.installBrowserHarness).toHaveBeenCalledWith({}))
+  })
+
+  it('an interrupted install on an uninstalled engine reads as failed, with its detail', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ installed: false, version: null, connection: 'disconnected', browser: null, install_job: { status: 'interrupted', error_detail: 'interrupted: the gateway stopped this install' } }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('install_failed')
+    expect(within(card).getByTestId('browser-status-error').textContent).toContain('the gateway stopped this install')
+  })
+
+  it('a connect in flight is disabled and aria-busy', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ connection: 'disconnected', browser: null }))
+    mocked.testBrowser.mockReturnValue(new Promise(() => {}))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    const btn = within(card).getByTestId('browser-primary-action')
+    expect(btn).not.toHaveAttribute('aria-busy')
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn).toHaveAttribute('aria-busy', 'true'))
+    expect(btn).toBeDisabled()
+  })
+
+  it('the no-window switch does not anchor browser.choice: only the picker does', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    const anchors = document.querySelectorAll('[data-setting-key="browser.choice"]')
+    expect(anchors).toHaveLength(1)
+    expect(anchors[0].getAttribute('data-setting-label')).toBe('Which browser')
+  })
+
+  it('connection error with no status detail shows the attach’s own ok:false detail', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ connection: 'error', detail: null }))
+    mocked.testBrowser.mockResolvedValue({ ok: false, connection: 'error', detail: 'port 9222 closed' })
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(within(card).queryByTestId('browser-status-error')).toBeNull()
+    fireEvent.click(within(card).getByTestId('browser-primary-action'))
+    const notice = await within(card).findByTestId('browser-status-error')
+    expect(notice.textContent).toContain('port 9222 closed')
+    expect(screen.queryByTestId('browser-test-result')).toBeNull()
+  })
+
+  it('a rejected save shows while More is closed', async () => {
+    mocked.patchConfig.mockRejectedValue(new Error('config write refused'))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    fireEvent.click(screen.getByRole('switch', { name: 'Show the live view in chat' }))
+    const notice = await screen.findByTestId('browser-save-error')
+    expect(notice.textContent).toContain('config write refused')
+  })
+
+  it('disconnected: Connect attaches, and a 200 ok:false is an ErrorNotice with the gateway detail', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ connection: 'disconnected', browser: null }))
+    mocked.testBrowser.mockResolvedValue({ ok: false, connection: 'disconnected', detail: 'chrome refused the connection' })
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    fireEvent.click(within(card).getByTestId('browser-primary-action'))
+    await waitFor(() => expect(mocked.testBrowser).toHaveBeenCalledTimes(1))
+    const notice = await screen.findByTestId('browser-test-result')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.textContent).toContain('chrome refused the connection')
+  })
+
+  it('the explanation is an info tip on the title, not a line on the card', async () => {
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(within(card).queryByText(/Kiro only works in tabs it opened itself/)).toBeNull()
+    const tip = within(card).getByRole('button', { name: 'More information' })
+    expect(tip.getAttribute('title')).toMatch(/Kiro only works in tabs it opened itself/)
+    fireEvent.focus(tip)
+    const bubble = await screen.findByRole('tooltip')
+    expect(tip.getAttribute('aria-describedby')).toBe(bubble.id)
+  })
+
+  it('the removed pieces stay removed: no step list, no fallback chips, no Test, no Mask switch', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    expect(screen.queryByTestId('browser-first-run')).toBeNull()
+    expect(screen.queryByTestId('browser-chip-user_chrome')).toBeNull()
+    expect(screen.queryByTestId('browser-test')).toBeNull()
+    expect(screen.queryByRole('switch', { name: /Mask password/ })).toBeNull()
+    expect(screen.getByTestId('browser-privacy-footer').textContent).toContain('Nothing is uploaded')
+  })
+})
+
+describe('BrowserPanel - controls and More', () => {
+  it('shows two controls up front and nothing of More until it opens', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    expect(document.querySelector('[data-setting-key="browser.choice"]')).not.toBeNull()
+    expect(screen.getByRole('switch', { name: 'Show the live view in chat' })).toBeTruthy()
+    const more = screen.getByRole('button', { name: 'More' })
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelector('[data-setting-key="browser.live.quality"]')).toBeNull()
+    fireEvent.click(more)
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    for (const key of ['browser.live.quality', 'browser.live.max_fps', 'dashboard.browser_local_origins']) {
+      expect(document.querySelector(`[data-setting-key="${key}"]`), key).not.toBeNull()
     }
-    expect(screen.getAllByText('Unknown')).toHaveLength(3)
-    // The row's own reason, then the shared block reason.
-    expect(describedText(engineButton('webkit')!)).toBe(
-      'Kiro Crew could not confirm this build from the browser cache. Downloading again is safe. Another browser setup operation is running.',
-    )
-    expect(document.body.textContent).not.toMatch(/undefined/)
+    expect(screen.getByTestId('browser-engine-versions').textContent).toBe('Harness 0.1.13 · Chromium 156')
+    expect(screen.getByRole('switch', { name: 'Run with no window' })).toBeTruthy()
   })
 
-  it('says why an engine is Unknown once, below the list, next to its still-enabled Download', async () => {
-    await renderPanel(installed({ browser_status: { chromium: 'unknown', firefox: 'unknown', webkit: 'missing' } }))
-    const reason = screen.getByTestId('browser-engine-unknown-reason')
-    expect(reason.textContent).toBe(
-      'Kiro Crew could not confirm this build from the browser cache. Downloading again is safe.',
-    )
-    // Two unknown rows, one sentence: each row's button points at the same element.
-    expect(screen.getAllByText(/could not confirm this build/)).toHaveLength(1)
-    expect(screen.getAllByText('Unknown')).toHaveLength(2)
-    // Not an error: nothing failed, so it is plain status text, not an alert.
-    expect(screen.queryByRole('alert')).toBeNull()
-    for (const engine of ['chromium', 'firefox']) {
-      const button = engineButton(engine)!
-      expect(button.disabled).toBe(false)
-      expect(button.getAttribute('aria-describedby')).toBe(reason.id)
-      expect(describedText(button)).toBe(reason.textContent)
+  it('every control writes ONE config path; no explanation renders inline', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    fireEvent.click(screen.getByRole('switch', { name: 'Show the live view in chat' }))
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.live.enabled', false))
+    await openMore()
+    fireEvent.click(screen.getByRole('switch', { name: 'Run with no window' }))
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.choice', 'headless'))
+    // Descriptions are tips (on `title` while closed), never body text.
+    for (const text of [/When Kiro uses the browser, the turn shows a live card/, /Auto adapts frame rate/, /60 is the most this machine streams/, /For previewing your own dev server only/]) {
+      expect(screen.queryByText(text)).toBeNull()
     }
-    // Only the unknown rows are described by it.
-    expect(engineButton('webkit')!.getAttribute('aria-describedby')).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'More information' }).length).toBeGreaterThanOrEqual(7)
   })
 
-  it('renders no unknown reason when no engine is unknown', async () => {
-    await renderPanel(installed({ browser_status: { chromium: 'downloaded', firefox: 'missing', webkit: 'missing' } }))
-    expect(screen.queryByTestId('browser-engine-unknown-reason')).toBeNull()
-    expect(engineButton('firefox')!.getAttribute('aria-describedby')).toBeNull()
+  it('the no-window switch is on for a headless config, and off writes Kiro’s Chromium', async () => {
+    mocked.kirocrewConfig.mockResolvedValue(config({ browser: { choice: 'headless' } }))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    const sw = screen.getByRole('switch', { name: 'Run with no window' })
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.choice', 'kiro_chromium'))
   })
 
-  it('prefers the explicit unknown engine status over the boolean', async () => {
-    await renderPanel(installed({ browser_status: { chromium: 'downloaded', firefox: 'unknown', webkit: 'missing' } }))
-    expect(screen.getByTestId('browser-engine-firefox').getAttribute('data-state')).toBe('unknown')
-    expect(screen.getByTestId('browser-engine-webkit').getAttribute('data-state')).toBe('missing')
+  it('Redownload asks the gateway to REPLACE the downloaded Chromium, not to reuse it', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    fireEvent.click(screen.getByTestId('browser-redownload'))
+    await waitFor(() => expect(mocked.installBrowserHarness).toHaveBeenCalledWith({ components: ['chromium'], refresh: true }))
   })
 
-  it('shows a finished failure with its detail and offers Retry on that engine', async () => {
-    await renderPanel(
-      installed({
-        install_job: job({
-          status: 'failed',
-          stage: 'downloading_browser',
-          finished_at: '2026-01-01T00:01:00Z',
-          elapsed_s: 60,
-          error_code: 'step_failed',
-          error_detail: 'install-browser firefox: missing libgtk-3',
-        }),
-        last_error: 'install-browser firefox: missing libgtk-3',
-      }),
-    )
-    const region = screen.getByTestId('browser-install-status')
-    expect(region.textContent).toMatch(/Firefox download failed/)
-    expect(region.textContent).toMatch(/missing libgtk-3/)
-    expect(within(screen.getByTestId('browser-engine-firefox')).getByRole('button', { name: /Retry/ })).toBeTruthy()
-    // No token draft, so the hand-off is safe to offer.
-    expect(screen.getByTitle(/open a chat with this error/i)).toBeTruthy()
+  it('a failed job on an installed engine is an ErrorNotice on the Engine row, not a red card', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({
+      install_job: { status: 'failed', stage: 'downloading', error_detail: 'downloading: 403 from storage.googleapis.com' },
+    }))
+    renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    expect(card.getAttribute('data-state')).toBe('connected')
+    await openMore()
+    const notice = await screen.findByTestId('browser-engine-install-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('403 from storage.googleapis.com')
   })
 
-  it('reports a finished success without claiming the browser was verified', async () => {
-    await renderPanel(
-      installed({
-        browsers: { chromium: true, firefox: true, webkit: false },
-        install_job: job({ status: 'succeeded', stage: 'finishing', finished_at: '2026-01-01T00:01:00Z', elapsed_s: 65 }),
-      }),
-    )
-    const region = screen.getByTestId('browser-install-status')
-    expect(region.textContent).toMatch(/Firefox download finished/)
-    expect(region.textContent).toMatch(/Took/)
-    expect(within(screen.getByTestId('browser-engine-firefox')).getByText('Downloaded')).toBeTruthy()
-    expect(document.body.textContent).not.toMatch(/verified/i)
+  it('lists the origins as chips, adds a normalized entry, refuses a bad one, and removes', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    expect(screen.getByText('localhost:5173')).toBeTruthy()
+    const input = screen.getByPlaceholderText('localhost:5173') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:3000/' } })
+    fireEvent.click(screen.getByTestId('browser-origin-add'))
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('dashboard.browser_local_origins', ['localhost:5173', '127.0.0.1:3000']))
+    expect(input.value).toBe('')
+
+    fireEvent.change(input, { target: { value: 'example.com:80' } })
+    fireEvent.click(screen.getByTestId('browser-origin-add'))
+    expect(screen.getByTestId('browser-origin-invalid')).toBeTruthy()
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(mocked.patchConfig).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove localhost:5173' }))
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('dashboard.browser_local_origins', []))
   })
 
-  it('surfaces a failed install from an older gateway verbatim', async () => {
-    const old = state({ last_error: 'npm: E401 Unable to authenticate' })
-    delete old.install_job
-    await renderPanel(old)
-    expect(screen.getByText(/E401 Unable to authenticate/)).toBeTruthy()
-    expect(screen.getByTitle(/open a chat with this error/i)).toBeTruthy()
+  it('a duplicate add writes nothing', async () => {
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    fireEvent.change(screen.getByPlaceholderText('localhost:5173'), { target: { value: 'LOCALHOST:5173' } })
+    fireEvent.click(screen.getByTestId('browser-origin-add'))
+    expect(mocked.patchConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('BrowserPanel - failures', () => {
+  it('a failed first status read says so with a hand-off', async () => {
+    mocked.getBrowserStatus.mockRejectedValue(new Error('gateway down'))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByText('gateway down')
+    expect(screen.queryByTestId('browser-primary-card')).toBeNull()
   })
 
-  it('explains the desktop-only toggle on the web, readable and linked to the switch', async () => {
-    await renderPanel(installed())
-    const toggle = screen.getByRole('switch', { name: /Use the built-in browser/ })
-    expect(toggle.getAttribute('aria-disabled')).toBe('true')
-    expect(describedText(toggle)).toMatch(/Available in the Kiro Crew desktop app/)
+  it('a config read failure disables the config controls but keeps the status', async () => {
+    mocked.kirocrewConfig.mockRejectedValue(new Error('config unreadable'))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByText('config unreadable')
+    expect(screen.getByTestId('browser-status-card')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: 'Show the live view in chat' }).getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('offers the toggle in the desktop app, independent of the CLI state', async () => {
-    electron.value = true
-    await renderPanel(state({ installed: false }))
-    const toggle = screen.getByRole('switch', { name: /Use the built-in browser/ })
-    await waitFor(() => expect(toggle.getAttribute('aria-disabled')).toBeNull())
-    // The sentence is the row's info tip (its `title` while closed).
-    expect(screen.getByTitle(/built-in panel/)).toBeTruthy()
-    expect(screen.queryByText(/Available in the Kiro Crew desktop app/)).toBeNull()
-  })
-
-  it('keeps a token draft through polling, a save error and a language switch', async () => {
-    const { queryClient, rerender } = await renderPanel(installed())
-    const field = () => screen.getByLabelText(/token|トークン/i) as HTMLInputElement
-    fireEvent.change(field(), { target: { value: 'secret-draft-value' } })
-
-    // A poll answer re-renders every section around the field.
-    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['browserInstall'] }) })
-    expect(field().value).toBe('secret-draft-value')
-
-    // A rejected save leaves the draft in place and does not echo it.
-    vi.mocked(api.setBrowserToken).mockRejectedValue(new Error('token store unavailable'))
-    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(screen.getByText(/token store unavailable/)).toBeTruthy())
-    expect(field().value).toBe('secret-draft-value')
-    for (const alert of screen.getAllByRole('alert')) {
-      expect(alert.textContent).not.toMatch(/secret-draft-value/)
-    }
-
-    // A language switch re-renders in place (as LanguageProvider does), never remounts.
-    await act(async () => { await i18next.changeLanguage('ja') })
+  it('re-renders its copy on a language switch without remounting', async () => {
+    const { rerender } = renderWithProviders(<BrowserPanel />)
+    const card = await screen.findByTestId('browser-status-card')
+    await act(async () => { await i18next.changeLanguage('zh-CN') })
     rerender(<BrowserPanel />)
-    await waitFor(() => expect(screen.getByText('既存のブラウザーに接続')).toBeTruthy())
-    expect(field().value).toBe('secret-draft-value')
-    await act(async () => { await i18next.changeLanguage('en') })
+    expect(screen.getAllByText('你的 Chrome').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('browser-status-card')).toBe(card)
+  })
+})
+
+describe('BrowserPanel - sign-in for Kiro’s Chromium', () => {
+  const cred = (over: Record<string, unknown> = {}) => ({
+    provider: 'Acme SSO', enabled: true, domains: ['example.com'], state: 'applied', reason: null, applied: 3, ...over,
   })
 
-  it('names the remedy when Node is missing entirely, not just the requirement', async () => {
-    await renderPanel(state({ node_ok: false, node_version: null }))
-    expect(screen.getByText(/no Node was found/i)).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Download Node\.js/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Install Playwright CLI/i })).toBeNull()
+  it('with no provider there is no sign-in switch and no domains editor', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred({ provider: null, state: 'none' }) }))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    expect(document.querySelector('[data-setting-key="browser.credentials.enabled"]')).toBeNull()
+    expect(screen.queryByRole('switch', { name: /sign-in/ })).toBeNull()
+    await openMore()
+    expect(screen.queryByText('Sign-in sites')).toBeNull()
   })
 
-  it('offers the no-admin installer, so a locked-down machine is not a dead end', async () => {
-    await renderPanel(state({ node_ok: false, node_version: null }))
-    expect(screen.getByText(/no admin rights/i)).toBeTruthy()
-    // ONE command, composed by the gateway: it knows its own OS, and this page
-    // may be open on a different machine than the one being installed onto.
-    expect(screen.getByText(/playwright-cli\.sh/)).toBeTruthy()
+  it('with a provider: the switch follows the effective setting, and a flip writes it and re-reads the status', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred() }))
+    renderWithProviders(<BrowserPanel />)
+    const sw = await screen.findByRole('switch', { name: 'Use Acme SSO sign-in' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('3 cookies applied')).toBeTruthy()
+    fireEvent.click(sw)
+    const reads = mocked.getBrowserStatus.mock.calls.length
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.credentials.enabled', false))
+    await waitFor(() => expect(mocked.getBrowserStatus.mock.calls.length).toBeGreaterThan(reads))
   })
 
-  it('offers a copy button for the command, which must be exact', async () => {
-    await renderPanel(state({ node_ok: false, node_version: null }))
-    expect(screen.getByRole('button', { name: /Copy command/i })).toBeTruthy()
+  it('one cookie reads singular; a provider asking to renew is quoted verbatim, else the catalog line', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred({ applied: 1 }) }))
+    const first = renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByText('1 cookie applied')).toBeTruthy()
+    first.unmount()
+    mocked.getBrowserStatus.mockResolvedValue(status({
+      credentials: cred({ state: 'needs_refresh', provider_status: { needs_refresh: true, message: 'Run acme-login again' } }),
+    }))
+    const second = renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByText('Run acme-login again')).toBeTruthy()
+    second.unmount()
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred({ state: 'needs_refresh', provider_status: null }) }))
+    renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByText('The sign-in from Acme SSO has run out. Renew it there.')).toBeTruthy()
   })
 
-  it('saves an attach token the operator types, and clears the field after', async () => {
-    const setToken = vi.mocked(api.setBrowserToken)
-    setToken.mockResolvedValue({ ok: true, token: true })
-    await renderPanel(installed())
-    const field = screen.getByLabelText(/token/i)
-    fireEvent.change(field, { target: { value: 'attach-token-value' } })
-    expect((field as HTMLInputElement).value).toBe('attach-token-value')
-    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
-    await waitFor(() => expect(setToken).toHaveBeenCalledWith('attach-token-value'))
-    await waitFor(() => expect((field as HTMLInputElement).value).toBe(''))
+  it('an unset switch reads the edition default the status reports', async () => {
+    mocked.kirocrewConfig.mockResolvedValue(config({ browser: { choice: 'auto', credentials: { enabled: null, domains: [] } } }))
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred({ enabled: true, state: 'pending' }) }))
+    renderWithProviders(<BrowserPanel />)
+    const sw = await screen.findByRole('switch', { name: 'Use Acme SSO sign-in' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('Used from the next page Kiro’s Chromium opens')).toBeTruthy()
   })
 
-  it('saves the typed token on Enter, and ignores Enter on an empty field', async () => {
-    const setToken = vi.mocked(api.setBrowserToken)
-    setToken.mockResolvedValue({ ok: true, token: true })
-    await renderPanel(installed())
-    const field = screen.getByLabelText(/token/i)
-    fireEvent.keyDown(field, { key: 'Enter', code: 'Enter' })
-    expect(setToken).not.toHaveBeenCalled()
-    fireEvent.change(field, { target: { value: 'enter-token-value' } })
-    fireEvent.keyDown(field, { key: 'Enter', code: 'Enter' })
-    await waitFor(() => expect(setToken).toHaveBeenCalledWith('enter-token-value'))
+  it('a failed apply is an ErrorNotice with the reason code', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred({ state: 'error', reason: 'provider_failed' }) }))
+    renderWithProviders(<BrowserPanel />)
+    const notice = await screen.findByTestId('browser-credentials-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('provider_failed')
   })
 
-  it('clears a stored token with an empty save', async () => {
-    const setToken = vi.mocked(api.setBrowserToken)
-    setToken.mockResolvedValue({ ok: true, token: false })
-    await renderPanel(installed({ token: true }))
-    expect(screen.getByText('saved')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Clear$/ }))
-    await waitFor(() => expect(setToken).toHaveBeenCalledWith(''))
-  })
-
-  it('keeps the token field available while the CLI is not installed', async () => {
-    await renderPanel(state({ installed: false }))
-    expect(screen.getByLabelText(/token/i)).toBeTruthy()
-  })
-
-  it('says nothing extra when the gateway is too old to offer a command', async () => {
-    await renderPanel(state({ node_ok: false, node_version: null, standalone_install: undefined }))
-    expect(screen.getByText(/no Node was found/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Copy command/i })).toBeNull()
-    expect(screen.queryByText(/no admin rights/i)).toBeNull()
-  })
-
-  it('confirms the copy only after the clipboard write resolves', async () => {
-    const orig = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-      configurable: true,
-    })
-    try {
-      await renderPanel(state({ node_ok: false, node_version: null }))
-      fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
-      await waitFor(() => expect(screen.getByRole('button', { name: /Copied/i })).toBeTruthy())
-      expect(screen.queryByRole('alert')).toBeNull()
-    } finally {
-      if (orig) Object.defineProperty(navigator, 'clipboard', orig)
-      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+  it('domains under More: a domain is stored lowercase, an IP or a port is refused before any write', async () => {
+    mocked.getBrowserStatus.mockResolvedValue(status({ credentials: cred() }))
+    renderWithProviders(<BrowserPanel />)
+    await screen.findByTestId('browser-status-card')
+    await openMore()
+    expect(screen.getByText('Following Acme SSO’s defaults')).toBeTruthy()
+    const input = screen.getByPlaceholderText('example.com') as HTMLInputElement
+    for (const bad of ['10.0.0.1', 'example.com:443', '*.example.com', 'intranet']) {
+      fireEvent.change(input, { target: { value: bad } })
+      fireEvent.click(screen.getByTestId('browser-cred-domain-add'))
+      expect(screen.getByTestId('browser-cred-domain-invalid')).toBeTruthy()
     }
+    expect(mocked.patchConfig).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: ' .Example.COM ' } })
+    fireEvent.click(screen.getByTestId('browser-cred-domain-add'))
+    await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.credentials.domains', ['example.com']))
+  })
+})
+
+describe('BrowserPanel under a policy that turns browsing off', () => {
+  it('says so and offers no install, connect or setting row', async () => {
+    mocked.dashboardConfig.mockResolvedValue({ browse_enabled: false })
+    mocked.getBrowserStatus.mockResolvedValue(status({ installed: false }))
+    renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByTestId('browser-policy-off')).toHaveTextContent(
+      "Browsing is turned off by your organization's policy",
+    )
+    expect(screen.queryByTestId('browser-primary-card')).toBeNull()
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull()
+    expect(mocked.getBrowserStatus).not.toHaveBeenCalled()
   })
 
-  it('reports a failed copy instead of painting "Copied"', async () => {
-    const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
-    const origExec = document.execCommand
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
-      configurable: true,
-    })
-    document.execCommand = vi.fn().mockReturnValue(false)
-    try {
-      await renderPanel(state({ node_ok: false, node_version: null }))
-      fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
-      await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
-      expect(screen.queryByRole('button', { name: /Copied/i })).toBeNull()
-      expect(screen.getByRole('button', { name: /Copy command/i })).toBeTruthy()
-    } finally {
-      document.execCommand = origExec
-      if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
-      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
-    }
-  })
-
-  it('does not push the installer at someone whose Node is fine', async () => {
-    await renderPanel(state({ node_ok: true, installed: false }))
-    expect(screen.queryByText(/no admin rights/i)).toBeNull()
-    expect(screen.queryByText(/playwright-cli\.sh/)).toBeNull()
-  })
-
-  it('offers every engine as its own download', async () => {
-    await renderPanel(installed())
-    expect(screen.getByTestId('browser-engine-chromium')).toBeTruthy()
-    expect(screen.getByTestId('browser-engine-firefox')).toBeTruthy()
-    expect(screen.getByTestId('browser-engine-webkit')).toBeTruthy()
-    // A downloaded engine shows state, not a button; a missing one is actionable.
-    expect(engineButton('chromium')).toBeNull()
-    fireEvent.click(engineButton('firefox')!)
-    await waitFor(() => expect(api.installBrowserEngine).toHaveBeenCalledWith('firefox'))
-  })
-
-  it('asks for the CLI before offering engine downloads', async () => {
-    await renderPanel(state({ installed: false }))
-    expect(engineButton('firefox')!.disabled).toBe(true)
-    expect(describedText(engineButton('firefox')!)).toBe('Install the Playwright CLI first.')
+  it('keeps the page as it was when the policy permits', async () => {
+    renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByTestId('browser-primary-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-policy-off')).toBeNull()
   })
 })

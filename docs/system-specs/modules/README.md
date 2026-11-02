@@ -110,7 +110,7 @@ agent loads only the one it needs.
 | [themes.md](themes.md) | The theme tier model and the CSS variable contract. |
 | [md-notebook.md](md-notebook.md) | The inline markdown viewer and editor. |
 | [side.md](side.md) | The chat side panel. |
-| [browser.md](browser.md) | Website browsing through the native Browser-panel MCP transport, with `playwright-cli` as the fallback path. |
+| [browser.md](browser.md) | The agent's browser: Browser Harness behind a gateway CDP relay, streamed into the chat as a live card the person can take over; the `browser` MCP tool's ops, the Preview tab, and the retired keys. |
 
 ## Built-in apps
 

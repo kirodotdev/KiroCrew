@@ -18,24 +18,21 @@
 // created in the page realm: notes are typed, stored and rendered in the panel
 // only, and the overlay never receives them (not even as a marker tooltip).
 //
-// A HUMAN action, so it deliberately bypasses the agent control plane
-// (browser-control.js) and the CDP wire ops: the overlay is injected with
+// A HUMAN action on the Preview tab's page: the overlay is injected with
 // `webContents.executeJavaScript`, state is read back by polling a small
 // snapshot function, and the screenshot is `webContents.capturePage()`. No
-// debugger attachment, no competition with the agent's single CDP owner,
-// and Browser Mode may be off.
+// debugger attachment; the agent never drives this view.
 //
-// Refs: the overlay splices in PAGE_HELPERS_SOURCE (browser-ops.js) -- the
-// SAME `assignRef`/`accName`/`roleFor` the agent's `snapshot` walker runs,
-// against the same `window.__kcRefs` map -- so the `eN` written into the chat
-// draft is the `eN` the agent can pass to `click`/`hover`/`evaluate` (refs
-// resolve through the map even for elements the outline does not list, e.g.
-// a paragraph).
+// Refs: the overlay splices in PAGE_HELPERS_SOURCE (browser-page-helpers.js):
+// `assignRef`/`accName`/`roleFor` against the `window.__kcRefs` map, so the
+// `eN` written into the chat draft names one element for the life of the
+// document (refs resolve through the map even for elements the outline does
+// not list, e.g. a paragraph).
 //
 // The page's own DOM is never modified beyond the one host element; the
 // overlay is torn down on `teardown`, and navigation drops it with the doc.
 
-const { PAGE_HELPERS_SOURCE, ANNOTATE_HOST_ID } = require("./browser-ops");
+const { PAGE_HELPERS_SOURCE, ANNOTATE_HOST_ID } = require("./browser-page-helpers");
 
 /** Ops the renderer may ask for. A closed set, like the control ops. */
 const ANNOTATE_OPS = Object.freeze(["start", "stop", "poll", "remove", "clear", "capture", "teardown"]);

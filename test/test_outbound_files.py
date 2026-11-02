@@ -885,9 +885,9 @@ _LINKED_ANCESTOR_REASON = REASON_UNREADABLE
 
 
 class TestBrowserSnapshotRoot:
-    """The browser CLI's output directory is an approved root beside the cwd.
+    """The browser tool's screenshot directory is an approved root beside the cwd.
 
-    ``playwright-cli`` is forced to write under the data home
+    The ``screenshot`` op writes under the data home
     (``snapshot_dir()``), never under a working directory, so without this
     second root no screenshot the agent just took could ever travel inline.
     The root is narrow: the directory itself, lexically, with the read pinned to
@@ -902,7 +902,7 @@ class TestBrowserSnapshotRoot:
         monkeypatch.setenv("KIROCREW_HOME", str(home))
         cwd = tmp_path / "project"
         cwd.mkdir()
-        from kiro_crew.browser_cli.snapshots import snapshot_dir
+        from kiro_crew.browser_snapshots import snapshot_dir
 
         snap = snapshot_dir()
         snap.mkdir(parents=True, exist_ok=True)
@@ -960,7 +960,7 @@ class TestBrowserSnapshotRoot:
 
     def test_a_sibling_of_the_browser_root_is_still_refused(self, roots: tuple[Path, Path]) -> None:
         cwd, snap = roots
-        sibling = _png(snap.parent / "playwright-snapshots-2", "page.png")
+        sibling = _png(snap.parent / "browser-snapshots-2", "page.png")
         assert containing_root(sibling, str(cwd)) is None
         result = extract_local_refs(f"![x]({sibling})", within_root=str(cwd))
         assert result.files == [] and result.rejections[0].reason == REASON_SENSITIVE
@@ -1020,7 +1020,7 @@ class TestBrowserSnapshotRoot:
         monkeypatch.setenv("KIROCREW_HOME", str(home))
         cwd = tmp_path / "project"
         cwd.mkdir()
-        from kiro_crew.browser_cli.snapshots import snapshot_dir
+        from kiro_crew.browser_snapshots import snapshot_dir
 
         snap = snapshot_dir()
         elsewhere = tmp_path / "elsewhere"

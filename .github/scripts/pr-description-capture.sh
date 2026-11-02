@@ -177,7 +177,7 @@ rm -f "$full"
 # name is never part of the output, which removes that class outright.
 #
 # macOS ships no sha256sum, only shasum, so pick the same way cli.sh:296,
-# playwright-cli.sh:447 and ensure-node.sh:235 already do. The lanes run on
+# ensure-node.sh:235 already does. The lanes run on
 # ubuntu, but the digest is documented as reproducible BY HAND -- the verdict
 # tells a reader to recompute it with this script -- so a reader on a Mac has
 # to get the same hash, and the test that executes this runs on every shard.

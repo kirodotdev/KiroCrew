@@ -693,27 +693,21 @@ async def test_update_revalidate_get_still_requires_auth() -> None:
     assert resp.status != 200, "GET on the revalidate path bypassed the token gate"
 
 
-# -- Property 8a-bis: every browser-view relay route form bypasses the gate --
+# -- Property 8a-bis: the retired browser-view relay path is gated like any other --
 #
-# The relay authenticates with the capability token in the PATH (its iframe is
-# an opaque-origin sandbox that carries no cookies), and answers a UNIFORM 404
-# for tokenless and wrong-token requests alike. Both registered route forms
-# must therefore reach the handler: the tokened form via the /browser-view/
-# prefix entry, and the bare form via its own _BYPASS_EXACT entry — without
-# the latter, the middleware 403s the bare path and hands an unauthenticated
-# prober a response that stands out from the uniform 404s.
+# The same-origin relay for the old CLI browser view is gone, and its auth
+# bypass went with it. Nothing under /browser-view may reach a handler without
+# a session: a leftover bypass entry would hand an unauthenticated prober a
+# path that answers differently from every other unknown route.
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/browser-view", "/browser-view/", "/browser-view/tok/x.html"])
-async def test_browser_view_relay_routes_bypass_auth(path: str) -> None:
+async def test_browser_view_relay_paths_no_longer_bypass_auth(path: str) -> None:
     mw = token_auth_middleware()
     req = _make_request(path=path)  # no token, no cookie
     resp = await mw(req, _ok_handler)
-    assert resp.status == 200, (
-        f"{path} was denied by the auth middleware; the relay handler must "
-        f"answer every route form itself (uniform 404 without a valid token)."
-    )
+    assert resp.status != 200, f"{path} bypassed the auth middleware"
 
 
 # -- Property 8b: /api/apps/* still requires auth (security boundary) --

@@ -36,6 +36,7 @@ _OWNERS = tuple(
         "channels",
         "telegram",
         "stt",
+        "browser",
         "decisions",
         "telemetry",
     )

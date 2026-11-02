@@ -84,6 +84,14 @@ export const DECISIONS_MEMORY_POINT = 'memory.recall'
 export const DECISIONS_NUDGE_WAKE_POINT = 'nudge.wake'
 
 /**
+ * The point that helps the browser tool pick its next step (`browser_harness/decide.py`).
+ *
+ * Named here for the same cross-layer reason: the Decisions card lists it, with what
+ * it sends, so the person can see that a browser op may reach the decision model.
+ */
+export const DECISIONS_BROWSER_STEP_POINT = 'browser.step'
+
+/**
  * Config path of the sampling share. One of the six `decisions.*` values the config
  * PATCH accepts, beside the three `model_route` tiers and the two `nudge_wake` keys;
  * the address and the credential are deliberately not among them.
@@ -288,6 +296,14 @@ export interface DecisionsView {
    */
   nudgeEvidence: boolean
   /**
+   * The two `browser.step` scopes: the page OUTLINE of the agent's tab, and
+   * SCREENSHOTS of it. Read as the server reports them: both are reported true when
+   * the keystone does not mention them (on by default once consent stands), so the
+   * card draws what the gate will do.
+   */
+  browser: boolean
+  browserImages: boolean
+  /**
    * The prior-conversation CEILING the owner reviewed, in characters.
    *
    * From the KEYSTONE, not from `config.json`. The two differ exactly when an agent
@@ -318,6 +334,8 @@ const UNSUPPORTED: DecisionsView = {
   compaction: false,
   memoryText: false,
   nudgeEvidence: false,
+  browser: false,
+  browserImages: false,
   historyBudget: 0,
   points: [],
 }
@@ -370,6 +388,8 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
       compaction: false,
       memoryText: false,
       nudgeEvidence: false,
+      browser: false,
+      browserImages: false,
       historyBudget: 0,
     }
   }
@@ -394,6 +414,9 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
   // `compaction` on purpose: that yes covered the owner's OWN transcript at their own
   // agent's compaction, and this one covers rows from sessions the loop watches.
   const nudgeEvidence = root.nudge_evidence === true
+  // Exact `true`s as well; an older gateway omits both and they read as off.
+  const browser = root.browser === true
+  const browserImages = root.browser_images === true
   // A whole non-negative number or nothing: an older gateway omits the field, and a
   // value nobody can read back as a budget is not one. 0 either way, which is the
   // shipped default and the least that can leave.
@@ -409,6 +432,8 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
     compaction,
     memoryText,
     nudgeEvidence,
+    browser,
+    browserImages,
     historyBudget,
   }
 }
