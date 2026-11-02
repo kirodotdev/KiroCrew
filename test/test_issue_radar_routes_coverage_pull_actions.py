@@ -194,6 +194,41 @@ class TestPullReview(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, 409)
         submit.assert_not_called()
 
+    async def test_a_verb_the_provider_cannot_record_is_400_before_any_read(self):
+        # GitLab has no "request changes" verb and Azure DevOps records neither
+        # verdict. That is a request the caller can fix, not a provider outage, so it
+        # is refused before the head is read or the client is asked; a verb the
+        # provider does record still goes ahead.
+        gitlab = {"provider": "gitlab", "host": "gitlab.com"}
+        azure = {"provider": "azure", "host": "dev.azure.com", "owner": "org/proj"}
+        for repo, event, refused in (
+            (gitlab, "request_changes", True),
+            (azure, "approve", True),
+            (azure, "request_changes", True),
+            (gitlab, "approve", False),
+        ):
+            with self.subTest(provider=repo["provider"], event=event):
+                with (
+                    _connected(),
+                    _writable(),
+                    mock.patch.object(
+                        routes, "_refuse_if_head_moved", new=mock.AsyncMock(return_value=None)
+                    ) as head,
+                    mock.patch.object(
+                        routes, "_run_pr_action", new=mock.AsyncMock(return_value={})
+                    ) as run,
+                    mock.patch.object(routes, "_audit"),
+                ):
+                    res = await self._call({**self._base(event=event, body="no"), **repo})
+                if refused:
+                    self.assertEqual(res.status, 400)
+                    self.assertEqual(_body(res)["code"], "unsupported_review_event")
+                    head.assert_not_awaited()
+                    run.assert_not_awaited()
+                else:
+                    self.assertEqual(res.status, 200)
+                    run.assert_awaited_once()
+
     async def test_a_plain_comment_review_skips_the_head_check(self):
         # It records no verdict, so it stays valid prose no matter what the head
         # does — refusing it would only cost the user their typing.
@@ -626,6 +661,27 @@ class TestPullsBulk(unittest.IsolatedAsyncioTestCase):
         with _connected(), _writable():
             res = await self._call(self._base(action="approve", head_shas={"7": SHA}))
         self.assertEqual(_body(res)["code"], "head_shas_required")
+
+    async def test_a_bulk_approve_the_provider_cannot_record_is_400_up_front(self):
+        # Azure DevOps records no approve review, so every row would fail the same
+        # way after its own head read: the batch is refused before any of them.
+        azure = {"provider": "azure", "host": "dev.azure.com", "owner": "org/proj"}
+        with (
+            _connected(),
+            _writable(),
+            mock.patch.object(
+                routes, "_refuse_if_head_moved", new=mock.AsyncMock(return_value=None)
+            ) as head,
+            mock.patch.object(routes, "_run_pr_action", new=mock.AsyncMock(return_value={})) as run,
+            mock.patch.object(routes, "_audit"),
+        ):
+            res = await self._call(
+                {**self._base(action="approve", head_shas={"7": SHA, "8": SHA}), **azure}
+            )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_body(res)["code"], "unsupported_review_event")
+        head.assert_not_awaited()
+        run.assert_not_awaited()
 
     async def test_the_unpinned_verbs_need_no_shas(self):
         with (
