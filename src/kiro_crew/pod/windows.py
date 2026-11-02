@@ -533,6 +533,22 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
     return schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0
 
 
+def task_absent(cfg: PodConfig, name: str) -> bool:
+    """True only when Task Scheduler answered and holds no task for *name*.
+
+    ``task_exists`` keys on ``/Query /TN``'s exit code, but that code is
+    non-zero both for "no such task" and for "the service did not answer", so a
+    non-zero result alone is NOT proof of absence. A bare ``/Query`` (no
+    ``/TN``) exits zero only when Task Scheduler answers, which separates the
+    two. Only when the service answers AND holds no task is the name proven
+    gone; an unreachable service fails CLOSED here so a residue guard keyed on
+    this never deletes on an unanswered query.
+    """
+    if schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0:
+        return False  # the task is still present
+    return schtasks("/Query").returncode == 0  # bare /Query: did the service answer?
+
+
 # ------------------------------------------------------------------------- #
 # The supervised pid record
 # ------------------------------------------------------------------------- #
@@ -898,7 +914,7 @@ def stop(
                 # A stored receipt represents a kernel-zero proof with no further
                 # spawn/resume from that publisher. It survives cleanup retries.
         deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
-        if deleted.returncode != 0 and task_exists(cfg, name):
+        if deleted.returncode != 0 and not task_absent(cfg, name):
             raise OSError("the drained pod's scheduled task could not be deleted")
         _unlink_waiting_out_sharing(task_script_path(cfg, name))
         # Supervisor cleanup is best-effort; authoritative teardown must surface

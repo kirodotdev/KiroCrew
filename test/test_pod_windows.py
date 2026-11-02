@@ -558,18 +558,56 @@ def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch, drainable_sto
 def test_deleting_a_task_that_is_already_gone_is_a_no_op_not_a_failure(
     cfg, monkeypatch, drainable_stop_root
 ):
-    """Judged by re-probing existence, never by /Delete's own localized error."""
+    """Judged by re-probing absence, never by /Delete's own localized error.
+
+    "Already gone" means the service ANSWERED and holds no task: the per-task
+    ``/Query /TN`` is non-zero (no such task) while a bare ``/Query`` is zero
+    (the service is reachable). That reachability proof is what distinguishes
+    this no-op from an unanswered service -- see
+    ``test_stop_keeps_the_task_when_query_cannot_confirm_absence``.
+    """
 
     def fake(*a):
         if a[0] == "/Delete":
             return _cp(returncode=1, stderr="ERROR: The system cannot find the file specified.")
+        if a[0] == "/Query" and len(a) > 1:
+            return _cp(returncode=1)  # no such task
         if a[0] == "/Query":
-            return _cp(returncode=1)  # gone
+            return _cp(returncode=0)  # bare /Query: the service answered
         return _cp()
 
     monkeypatch.setattr(win, "schtasks", fake)
     win.write_task_script(cfg, "smoke")
     assert win.stop(cfg, "smoke").returncode == 0
+
+
+def test_stop_keeps_the_task_when_query_cannot_confirm_absence(
+    cfg, monkeypatch, drainable_stop_root
+):
+    """A /Delete failure plus an UNANSWERED /Query is not proof the task is gone.
+
+    ``schtasks /Query /TN`` exits non-zero both for "no such task" and for
+    "Task Scheduler did not answer"; the exit code alone cannot tell them apart.
+    When /Delete fails and neither the per-task query nor the bare /Query
+    answers, teardown must fail closed: return rc 1, keep the wrapper so
+    ``orphan_homes`` still sees residue, and leave the retirement receipt
+    unconsumed. The old code read the non-zero /Query as "already gone" and
+    returned rc 0, silently deleting the wrapper -- this test fails there.
+    """
+
+    def fake(*a):
+        if a[0] == "/Delete":
+            return _cp(returncode=1, stderr="ERROR: Access is denied.")
+        if a[0] == "/Query":
+            return _cp(returncode=1)  # both the per-task and bare query are unanswered
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", fake)
+    win.write_task_script(cfg, "smoke")
+    cp = win.stop(cfg, "smoke")
+    assert cp.returncode == 1
+    assert "could not be deleted" in cp.stderr
+    assert win.task_script_path(cfg, "smoke").exists()
 
 
 def test_task_exists_reads_the_exit_code_not_the_localized_output(cfg, monkeypatch):
