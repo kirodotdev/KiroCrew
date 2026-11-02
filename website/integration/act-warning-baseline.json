@@ -41,7 +41,6 @@
   "src/test/ToolCallLine.truncationMarker.test.tsx",
   "src/test/TranscriptRowGeometry.test.tsx",
   "src/test/WidgetFrame.test.tsx",
-  "src/test/WorkspacePickerCoverage.test.tsx",
   "src/test/chatPins.test.tsx",
   "src/test/toolDisclosureKey.renderSite.test.tsx",
   "src/test/useAgentSync.recencyOrder.test.tsx",
