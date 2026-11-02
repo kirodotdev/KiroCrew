@@ -1011,7 +1011,7 @@ def test_a_superseded_repair_survives_the_pending_ceiling():
     assert emit.overflow_writes() == before + 1, "the ceiling did not reject a non-exempt job"
 
     _open_successor(previous_sid=SESSION)
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the ceiling refused the repair and the tail stayed open"
@@ -1105,7 +1105,7 @@ def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "append", _lose_the_real_terminal)
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     assert emit.dropped_writes() == 1, "the terminal's attempt budget was never spent"
     closers = _closers(SESSION)
@@ -1155,7 +1155,7 @@ def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(m
     assert queued == [
         (SESSION, "chat-7", 0)
     ], f"the repair was not re-queued after the release: {queued}"
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "a ceiling-rejected terminal left the predecessor's tail open"
@@ -1180,7 +1180,7 @@ def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
 
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, f"the turn got {len(closers)} outcomes, not one"
