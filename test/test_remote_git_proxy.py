@@ -653,6 +653,7 @@ async def _run_channel(tmp_path, upstream, *, credential_source=None):
             credential_source=credential_source or credential,
             agent="researcher",
             egress_permitted=lambda key, host, agent: True,
+            logins_lent=lambda: True,
             http_session=upstream,
         )
         serve = asyncio.ensure_future(channel.serve())
