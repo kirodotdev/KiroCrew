@@ -250,9 +250,8 @@ class TestBootSkillReconcile:
 
 class TestBuiltinSecretForMcpServers:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- class-scoped delenv of one variable, moved verbatim; no test in this suite calls monkeypatch.undo()
-    def _clean_port_env(self, monkeypatch):
-        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    def _clean_port_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("KIROCREW_PORT", raising=False)
 
     def _register_only(self, monkeypatch, apps):
         """Run register_builtin_apps() with exactly `apps` as the builtin set."""
