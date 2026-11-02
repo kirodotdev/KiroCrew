@@ -242,13 +242,18 @@ async def test_a_failed_box_query_reaches_the_recorder_as_unknown(answer) -> Non
 async def test_every_recorded_frame_gets_its_own_box_query_never_a_cached_one() -> None:
     """A login field that appears inside the card's 250 ms cache must still be masked."""
     stream, relay, sink = probe_stream(mask_passwords=True)
-    answers = iter([{"result": {"value": []}}, {"result": {"value": [[0, 0, 10, 10]]}}])
+    box = {"result": {"value": [[0, 0, 10, 10]]}}
+    # The stream's first query (at start), then one per frame.
+    answers = iter([{"result": {"value": []}}, {"result": {"value": []}}, box, box])
     relay.answers["Runtime.evaluate"] = lambda: next(answers)
     await stream.start()
     await relay.on_event(frame_event(jpeg(size=(1280, 800))))
     await relay.on_event(frame_event(jpeg((1, 1, 1), size=(1280, 800))))  # same clock tick
-    assert [r[2] for r in sink.recorded] == [[], [[0, 0, 11, 11]]]
-    assert all(r[3] for r in sink.recorded)
+    await relay.on_event(frame_event(jpeg((2, 2, 2), size=(1280, 800))))
+    # The frame the field appeared in is masked for the card but not recorded:
+    # its two queries disagree. The next one, where they agree, is.
+    assert [r[2] for r in sink.recorded] == [[], [], [[0, 0, 11, 11]]]
+    assert [r[3] for r in sink.recorded] == [True, False, True]
 
 
 async def test_a_frame_whose_page_navigated_before_its_box_query_is_not_kept_as_masked() -> None:
@@ -260,7 +265,7 @@ async def test_a_frame_whose_page_navigated_before_its_box_query_is_not_kept_as_
 
     def _evaluate() -> dict:
         calls["n"] += 1
-        if calls["n"] == 2:
+        if calls["n"] == 3:  # 1 is the stream's first query, 2 the first frame's
             raise RuntimeError("Cannot find context with specified id")  # navigated
         return {"result": {"value": []}}
 
@@ -268,6 +273,22 @@ async def test_a_frame_whose_page_navigated_before_its_box_query_is_not_kept_as_
     await stream.start()
     await relay.on_event(frame_event(jpeg(size=(1280, 800))))
     await relay.on_event(frame_event(jpeg((1, 1, 1), size=(1280, 800))))
+    await relay.on_event(frame_event(jpeg((2, 2, 2), size=(1280, 800))))
+    assert [r[3] for r in sink.recorded] == [True, False, True]
+
+
+async def test_a_secret_field_the_page_removed_after_the_capture_is_not_kept() -> None:
+    """A sign-in page that submits a one-time code drops its field in the same
+    document, after Chrome captured the frame showing the code and before the
+    query. The query then finds no field; the query before it did, so the two
+    disagree and the frame is not recorded."""
+    stream, relay, sink = probe_stream(mask_passwords=True)
+    field = {"result": {"value": [[0, 0, 10, 10]]}}
+    answers = iter([field, field, {"result": {"value": []}}, {"result": {"value": []}}])
+    relay.answers["Runtime.evaluate"] = lambda: next(answers)
+    await stream.start()
+    await relay.on_event(frame_event(jpeg(size=(1280, 800))))
+    await relay.on_event(frame_event(jpeg((1, 1, 1), size=(1280, 800))))  # field now gone
     await relay.on_event(frame_event(jpeg((2, 2, 2), size=(1280, 800))))
     assert [r[3] for r in sink.recorded] == [True, False, True]
 

@@ -755,6 +755,11 @@ class LiveStream:
         #: The last ``_mask_query`` had to make its world: the document it read may
         #: have replaced the one the frame in hand shows.
         self._mask_new_world = False
+        #: The boxes the last answered query found (CSS px), or None after one that
+        #: did not answer. A recorded frame needs this query and the one before it
+        #: to agree: a field the page removed after the capture shows in neither
+        #: the frame's mask nor a single query run after it.
+        self._mask_prev: list[Any] | None = None
         #: The recorder's mask for the frame in hand (see :meth:`_mask_rects`): a
         #: frame whose boxes did not come from its own answered query is never kept.
         self._mask_ok = False
@@ -813,6 +818,14 @@ class LiveStream:
             await self._make_mask_world(self.session_id)
         except Exception:  # noqa: BLE001 - the first query makes it instead
             logger.debug("live stream: mask world not made", exc_info=True)
+        if self.records:
+            try:
+                # The query a first frame's boxes are compared with (_mask_prev).
+                await self._mask_rects(1, 1, force=True)
+            except Exception:  # noqa: BLE001 - that frame is then not recorded
+                logger.debug("live stream: first mask query failed", exc_info=True)
+            # The card's first frame still runs its own query.
+            self._mask_at = -1.0
         if self.visible or self._casts_hidden:
             await self._start_cast()
         if self._auto_control:
@@ -1183,6 +1196,7 @@ class LiveStream:
                 self._mask_boxes, self.scale, width, height, limit=MASK_BOX_LIMIT
             )
         self._mask_at = now
+        prev, self._mask_prev = self._mask_prev, None
         try:
             reply = await self._mask_query(self.session_id)
             # A world made for this query reads whatever document is there now; a
@@ -1208,6 +1222,7 @@ class LiveStream:
                 self._mask_boxes, self.scale, width, height, limit=MASK_BOX_LIMIT
             )
         boxes = boxes + await self._frame_boxes()
+        self._mask_prev = list(boxes)
         self._mask_boxes = boxes
         rects = clip_mask_rects(boxes, self.scale, width, height, limit=MASK_BOX_LIMIT)
         partial = isinstance(value, dict) and bool(value.get("partial"))
@@ -1216,6 +1231,7 @@ class LiveStream:
             and not partial
             and _same_scroll(value, scroll)
             and not new_world
+            and prev == boxes
         ):
             opaque = clip_mask_rects(frames, self.scale, width, height, limit=MASK_BOX_LIMIT)
             self._rec_boxes = rects + opaque

@@ -399,7 +399,11 @@ unmasking. The query runs in an isolated world made on the frame it reads
 report no secret field; no world means a failed query. The world is made when
 the stream starts; a query that has to make it again (a navigation destroyed it,
 as a submitted one-time code does between the capture and the query) read a
-document the frame may not show, so the recorder never keeps that frame. The boxes are kept in CSS pixels and scaled per frame, so a frame at
+document the frame may not show, so the recorder never keeps that frame. A
+recorded frame also needs its query and the one before it to find the same
+boxes (`_mask_prev`; a recording stream runs one query when it starts): a page
+that drops a filled one-time-code field in the same document, after the capture
+and before the query, shows the field in neither, so that frame is not kept. The boxes are kept in CSS pixels and scaled per frame, so a frame at
 another width (a picture change, the settle frame) is masked at its own scale.
 Every clock read and sleep is injected, so the ladder and the settle frame are
 tested on a fake clock.
