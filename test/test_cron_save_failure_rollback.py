@@ -14,7 +14,11 @@ succeeds.
 
 The contract: a mutator rolls its in-memory change back on ANY save failure, the
 way the remove and update cores already do, extended to the add (×2), ack,
-unack and adopt cores plus the loop-stall breaker. ``enable_job`` (pause/resume)
+unack and adopt cores plus the loop-stall breaker. ``update_job`` restores only
+the fields the edit changed, and each only while it still holds the edit's
+value: a run in flight writes its own fields (the failure count, the
+auto-pause, the one-shot park, the last status) onto the same object, and a
+whole-record restore would undo them. ``enable_job`` (pause/resume)
 cannot restore the values it saw: its ``enabled``/``user_paused``/
 ``auto_paused``/``consecutive_failures`` are also written by a run in flight on
 the loop thread, so a field restore would undo the run's write. It reloads the
@@ -381,6 +385,101 @@ def test_a_failed_save_over_an_unreadable_store_refuses_every_later_write(
     assert live.enabled and not live.user_paused, "the readable store did not reload"
 
 
+# ── update_job (edit) ──
+
+
+def _fail_a_run_to_auto_pause(svc: CronService, job_id: str) -> None:
+    """Fail a run of the job on the live object until it auto-pauses, as the
+    loop thread does while a worker thread holds the store lock for a save."""
+    live = next(j for j in svc._jobs if j.id == job_id)
+    live.last_status = "error"
+    live.last_error = "boom"
+    for _ in range(live.auto_pause_limit()):
+        live.record_failure()
+
+
+def test_a_failed_update_keeps_a_concurrent_runs_auto_pause(tmp_path: Path) -> None:
+    """A run fails into its auto-pause while an edit's save is failing. The
+    pause, the failure count and the run's status are the run's writes, not the
+    edit's, so the rollback must keep them, or a job that just hit its
+    auto-pause threshold keeps firing with a fresh failure budget."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="flaky", message="m", every_secs=3600)
+    live = svc._jobs[0]
+
+    with _disk_full_on_save(lambda: _fail_a_run_to_auto_pause(svc, job.id)):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, name="renamed")
+
+    assert svc._jobs[0] is live, "the rollback must restore onto the object readers hold"
+    assert live.name == "flaky", "the edit whose save failed must not stay in memory"
+    assert (live.enabled, live.auto_paused, live.consecutive_failures) == (
+        False,
+        True,
+        live.auto_pause_limit(),
+    ), "the rollback undid the concurrent run's auto-pause"
+    assert (live.last_status, live.last_error) == ("error", "boom")
+
+
+def test_a_failed_update_keeps_a_concurrent_one_shot_park(tmp_path: Path) -> None:
+    """A one-shot fires and parks while an edit's save is failing. The park is
+    the run's write, so the rollback must keep it, or the fired one-shot is due
+    again on the next tick."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="once", message="m", at_ts=time.time() + 3600)
+
+    with _disk_full_on_save(lambda: _finish_a_run(svc, job.id, park=True)):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, message="edited")
+
+    live = svc._jobs[0]
+    assert live.enabled is False, "the rollback re-enabled a one-shot its run had parked"
+    assert live.last_status == "ok"
+    assert live.message == "m"
+
+
+def test_a_failed_update_restores_every_field_it_changed(tmp_path: Path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="edited", message="m", every_secs=3600)
+    live = svc._jobs[0]
+    schedule = live.schedule
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.update_job(
+                job.id,
+                name="new-name",
+                message="new message",
+                every_secs=7200,
+                silent=True,
+                skip_dates=["2030-01-01"],
+            )
+
+    assert svc._jobs[0] is live
+    assert (live.name, live.message, live.silent, live.skip_dates) == ("edited", "m", False, [])
+    assert live.schedule is schedule and live.schedule.every_secs == 3600
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and (reloaded.name, reloaded.message) == ("edited", "m")
+
+
+def test_a_failed_update_keeps_a_field_another_writer_changed_since(tmp_path: Path) -> None:
+    """A field the edit changed and another writer then changed again holds the
+    later write: the rollback restores a field only while it still holds the
+    edit's own value."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="edited", message="m", every_secs=3600)
+    live = svc._jobs[0]
+
+    def overwrite() -> None:
+        live.message = "later"
+
+    with _disk_full_on_save(overwrite):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, name="new-name", message="new message")
+
+    assert (live.name, live.message) == ("edited", "later")
+
+
 # ── NEGATIVE CONTROL: a healthy save must still mutate on every path ──
 #
 # A rollback keyed on the wrong thing could revert a SUCCESSFUL write too. These
@@ -403,6 +502,8 @@ def test_a_healthy_save_still_mutates_on_every_rolled_back_path(tmp_path: Path) 
     svc.unack_job(added.id)
     svc.enable_job(added.id, enabled=True)
     svc.adopt_job(added.id, "dashboard:owner")
+    edited = svc._jobs[0]
+    svc.update_job(added.id, message="edited")
 
     # Every mutation is in the live cache and on disk after a reload.
     live = {j.name: j for j in svc._jobs}
@@ -410,8 +511,10 @@ def test_a_healthy_save_still_mutates_on_every_rolled_back_path(tmp_path: Path) 
     assert live["added"].enabled and not live["added"].user_paused
     assert live["added"].acked_items == []
     assert live["added"].session_key == "dashboard:owner"
+    assert live["added"] is edited and edited.message == "edited"
 
     reloaded = {j.name: j for j in _reloaded(tmp_path).list_jobs(include_disabled=True)}
     assert set(reloaded) == {"added", "absent"}
     assert reloaded["added"].enabled
     assert reloaded["added"].session_key == "dashboard:owner"
+    assert reloaded["added"].message == "edited"
