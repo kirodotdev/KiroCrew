@@ -138,6 +138,7 @@ async def _record_conductor_write(
     operation: str,
     before_write: Callable[[], Awaitable[web.Response | None]] | None = None,
     dispatch: bool = False,
+    attested_caller: str = "",
 ) -> web.Response:
     """Probe, commit and record one conductor-owned write on *key*'s board.
 
@@ -148,7 +149,9 @@ async def _record_conductor_write(
     board lock before the snapshot; a response from it stops the write and is
     returned as is. *dispatch* marks a ``work_dispatch`` create: it never opens a
     ledger, so it is judged under the board lock like every write on an existing
-    one, and refused ``no_ledger`` when the caller owns none.
+    one, and refused ``no_ledger`` when the caller owns none. *attested_caller*
+    is ``conductor_patrol.attested_caller_slot`` for the request, passed on to a
+    bind's default patrol; callers with no request leave it blank.
     """
     # Refused BEFORE the ledger is even bootstrapped: the widest entry this action
     # can produce,
@@ -406,7 +409,9 @@ async def _record_conductor_write(
             # active loop; never raises, never displaces an active loop or a
             # person's stop, and a refusal does not undo the bind
             # (``conductor_patrol`` module docstring).
-            patrol, reason = await conductor_patrol.ensure_patrol(state, key)
+            patrol, reason = await conductor_patrol.ensure_patrol(
+                state, key, attested_caller=attested_caller
+            )
             payload["patrol"] = patrol
             payload["patrol_reason"] = reason
             note = conductor_patrol.patrol_note(state, key, reason)
@@ -487,11 +492,23 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         if refusal is not None:
             return refusal
 
+    # Read from THIS request before the write: only a bind arms a patrol, and only
+    # an attested member thread's own bind may take one (``conductor_patrol``).
+    attested = (
+        await conductor_patrol.attested_caller_slot(request, state) if action == "bind" else ""
+    )
     # A dispatch never opens a ledger: only ``kirocrew-work``'s own
     # ``work_ledger_record`` does, so a session without that server is refused,
     # whatever its backend.
     resp = await _record_conductor_write(
-        state, key, unit, action, cleaned, operation="work_ledger_record", dispatch=dispatch
+        state,
+        key,
+        unit,
+        action,
+        cleaned,
+        operation="work_ledger_record",
+        dispatch=dispatch,
+        attested_caller=attested,
     )
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
