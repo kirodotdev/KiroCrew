@@ -429,7 +429,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
     #:   the data-home root beside writable siblings, so leaf-only is the only
     #:   hold available, as for ``decisions_consent.json``.
-    EXPECTED: dict[str, int] = {"standard": 306, "cc": 313, "strict": 314}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``config-provenance`` -- the gateway's record of the ``config.json`` and
+    #:   ``config.local.json`` objects it published itself, which the launcher's pin
+    #:   reads to tell the gateway's own save from a substituted file. Sealed
+    #:   read-only so an agent cannot vouch for a file of its choosing. The record is
+    #:   republished by a rename INSIDE the directory, so the directory's own inode
+    #:   stays the same, as for ``seed-provenance``; at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold.
+    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
