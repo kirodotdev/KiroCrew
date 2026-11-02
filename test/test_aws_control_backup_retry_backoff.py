@@ -31,9 +31,8 @@ from kiro_crew.apps.builtins.aws_control.backend import backup
 
 class TestDueForNightlyBadStamp:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         yield
 
     def test_unparseable_last_run_timestamp_reads_as_due(self):
@@ -89,9 +88,8 @@ class TestNightlyRetryBackoff:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse state pin moved verbatim; no test in this module calls monkeypatch.undo()
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    def _isolated_state(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         yield
 
     @staticmethod
