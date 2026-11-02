@@ -380,6 +380,45 @@ class TestSlashBearingFolderNames:
         # Exactly one POST: the leaf. No "A" and no "B" were manufactured.
         assert [r.body for r in _writes(dash)] == [{"name": "leaf", "parent_id": "aaaaaaaaaaaa"}]
 
+    def test_a_path_below_a_literal_slash_name_files_inside_it(self) -> None:
+        """``A/B/worker`` extends the folder named ``A/B``; it does not rebuild it.
+
+        A conductor filed in a folder literally named ``A/B`` creates its workers
+        under ``A/B/<agent>``. Splitting every ``/`` minted a new top-level
+        ``A`` > ``B`` pair for them instead of using the existing folder.
+        """
+        made = {"id": "dddddddddddd", "name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        out, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B/worker"},
+            self._routes(self.LITERAL, made=made),
+        )
+        assert not out.startswith("Error:"), out
+        # The first POST is the missing `worker` segment, under the literal folder.
+        assert _writes(dash)[0].body == {"name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        assert all(r.body.get("name") not in ("A", "B") for r in _writes(dash))
+
+    def test_an_existing_folder_below_a_literal_slash_name_resolves(self) -> None:
+        worker = {"id": "dddddddddddd", "name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        tree = [*self.LITERAL, worker]
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B/worker"},
+            self._routes(tree),
+        )
+        assert not out.startswith("Error:"), out
+        assert _writes(dash)[-1].body == {"folder_id": "dddddddddddd"}
+
+    def test_a_path_below_both_readings_is_refused(self) -> None:
+        out, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B/worker"},
+            self._routes(self.BOTH),
+        )
+        assert out.startswith("Error:") and "ambiguous" in out
+        assert "aaaaaaaaaaaa" in out and "cccccccccccc" in out
+        assert _writes(dash) == []
+
     def test_collision_between_the_two_readings_is_refused(self) -> None:
         out, dash = _call(
             "chat_folder_move_session",

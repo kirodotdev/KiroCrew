@@ -155,6 +155,52 @@ def _resolve_chat_folder_ref(
     return "", created, f"folder not found: {redact(ref)}"
 
 
+def _resolve_existing_chat_folder_prefix(
+    segments: list[str], folders: list[dict]
+) -> tuple[str, int, str | None]:
+    """The deepest EXISTING folder a path's leading segments name.
+
+    Returns ``(folder_id, consumed, error)``: ``consumed`` segments are covered
+    by ``folder_id`` (``0`` and ``""`` = nothing exists, start at the top level).
+    A folder name may itself contain ``/``, so each step tries every run of the
+    remaining segments as one name (``a/b`` as well as ``a``) and follows every
+    reading that exists. The deepest reading wins; two readings that reach the
+    same depth through different folders are refused rather than resolved to
+    whichever came first, as are duplicate siblings anywhere on a reading.
+    """
+    reached: dict[int, set[str]] = {}
+    duplicate: str | None = None
+
+    def follow(parent: str, start: int) -> None:
+        nonlocal duplicate
+        reached.setdefault(start, set()).add(parent)
+        for end in range(start + 1, len(segments) + 1):
+            name = redact("/".join(segments[start:end]))
+            matches = _chat_folder_children(folders, parent, name)
+            if len(matches) > 1:
+                duplicate = duplicate or _ambiguous_segment_error(name, matches)
+                continue
+            if matches:
+                follow(str(matches[0].get("id") or ""), end)
+
+    follow("", 0)
+    if duplicate:
+        return "", 0, duplicate
+    depth = max(reached)
+    ids = sorted(reached[depth])
+    if len(ids) > 1:
+        return (
+            "",
+            0,
+            (
+                f"{redact('/'.join(segments[:depth]))} is ambiguous: it names "
+                f"more than one folder ({', '.join(ids)}) — a folder's own name "
+                "can contain '/' — pass the folder id"
+            ),
+        )
+    return ids[0], depth, None
+
+
 def _walk_chat_folder_segments(
     ref: str,
     folders: list[dict],
@@ -184,11 +230,19 @@ def _walk_chat_folder_segments(
     ends the walk there. It is how ``session_create`` asks whether the create
     itself would be refused before any folder exists for it.
     """
-    walked = ""
-    parent = ""
     created: list[str] = []
     checked_before_create = before_create is None
     segments = [s.strip() for s in ref.split("/") if s.strip()]
+    # The existing part of the path is resolved first, honouring folder names
+    # that contain ``/``: ``a/b/worker`` under a folder literally named ``a/b``
+    # must file ``worker`` inside it, not mint a fresh ``a`` > ``b`` pair at the
+    # top level. Only the remainder below that prefix is walked one segment at a
+    # time (and created, when ``create_missing``).
+    walked, consumed, prefix_err = _resolve_existing_chat_folder_prefix(segments, folders)
+    if prefix_err:
+        return "", created, prefix_err
+    parent = walked
+    segments = segments[consumed:]
     if create_missing:
         for raw in segments:
             seg = redact(raw)

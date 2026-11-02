@@ -258,6 +258,30 @@ class TestSessionCreateFolder:
         assert create.body["folder_id"] == "dddddddddddd"
         assert "created folder path" in out
 
+    def test_a_worker_folder_below_a_slash_named_folder_is_filed_inside_it(self) -> None:
+        """A conductor in a folder literally named ``a/b`` files workers under it.
+
+        Its worker folder reference is ``a/b/<agent>``. Splitting every ``/``
+        made a new top-level ``a`` > ``b`` pair for the workers instead.
+        """
+        tree = [{"id": "aaaaaaaaaaaa", "name": "a/b", "parent_id": ""}]
+        made = {"id": "dddddddddddd", "name": "kirocrew-worker", "parent_id": "aaaaaaaaaaaa"}
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "a/b/kirocrew-worker"},
+            {
+                **self._routes(),
+                "GET /api/chat/folders": tree,
+                "POST /api/chat/folders": made,
+            },
+        )
+        folder_posts = [w.body for w in _writes(dash) if w.path == "/api/chat/folders"]
+        assert folder_posts == [{"name": "kirocrew-worker", "parent_id": "aaaaaaaaaaaa"}]
+        create = _writes(dash)[-1]
+        assert create.path == "/api/session-control/create"
+        assert create.body["folder_id"] == "dddddddddddd"
+        assert "a/b/kirocrew-worker" in out
+
     def test_an_unresolvable_folder_refuses_the_whole_create(self) -> None:
         """No session may exist when the filing half cannot be honored.
 
