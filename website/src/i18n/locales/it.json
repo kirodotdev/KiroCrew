@@ -14421,7 +14421,11 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Permette a una chat di affidare attività a una crew e seguirle su una bacheca.",
         "explore": "Esplora",
-        "explore_desc": "Aggiunge Esplora alla barra in alto: funzioni da provare, i tuoi progressi e una scheda «Prova oggi» in una nuova chat."
+        "explore_desc": "Aggiunge Esplora alla barra in alto: funzioni da provare, i tuoi progressi e una scheda «Prova oggi» in una nuova chat.",
+        "remote_dispatch": "Invio remoto",
+        "remote_dispatch_desc": "Esegue le attività di Ultra Mode sulle altre macchine collegate (Settings > Remote Crew), non solo su questa. L'avanzamento di ogni attività resta visibile sul Board di questa chat. Una macchina con questa opzione disattivata non accetta attività da altre macchine. Se nessun'altra macchina è collegata o libera, l'attività non viene eseguita qui; resta in attesa finché non la richiedi di nuovo.",
+        "remote_dispatch_save_failed": "Impossibile salvare l'invio remoto. Riprova.",
+        "remote_dispatch_load_failed": "Impossibile leggere l'impostazione di invio remoto."
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",

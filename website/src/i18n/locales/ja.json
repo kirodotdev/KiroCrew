@@ -13895,7 +13895,11 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "チャットがタスクをクルーに任せ、ボードで追跡できるようにします。",
         "explore": "探索",
-        "explore_desc": "トップバーに探索を追加します。試せる機能、進捗、新しいチャットの「今日試す」カードが表示されます。"
+        "explore_desc": "トップバーに探索を追加します。試せる機能、進捗、新しいチャットの「今日試す」カードが表示されます。",
+        "remote_dispatch": "リモートディスパッチ",
+        "remote_dispatch_desc": "Ultra Mode のタスクを、このマシンだけでなく接続中の他のマシンでも実行します（Settings > Remote Crew）。各タスクの進み具合はこのチャットの Board に表示されます。これがオフのマシンは他のマシンからタスクを受け取りません。他のマシンが接続されていないか空きがない場合、タスクはここでは実行されず、もう一度依頼するまで待機します。",
+        "remote_dispatch_save_failed": "リモートディスパッチを保存できませんでした。もう一度お試しください。",
+        "remote_dispatch_load_failed": "リモートディスパッチの設定を読み込めませんでした。"
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",

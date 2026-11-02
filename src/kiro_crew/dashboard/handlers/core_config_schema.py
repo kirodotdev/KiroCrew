@@ -138,6 +138,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # The remote-dispatch preview switch (Settings → Developer → Feature previews,
+    # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
+    "work_ledger.remote_dispatch": {"type": "bool"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry

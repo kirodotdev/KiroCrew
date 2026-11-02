@@ -14421,7 +14421,11 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Permet à un chat de confier des tâches à une équipe et de les suivre sur un tableau.",
         "explore": "Explorer",
-        "explore_desc": "Ajoute Explorer à la barre du haut : des fonctionnalités à essayer, ta progression et une carte « À essayer aujourd'hui » dans une nouvelle discussion."
+        "explore_desc": "Ajoute Explorer à la barre du haut : des fonctionnalités à essayer, ta progression et une carte « À essayer aujourd'hui » dans une nouvelle discussion.",
+        "remote_dispatch": "Répartition à distance",
+        "remote_dispatch_desc": "Exécute les tâches Ultra Mode sur vos autres machines connectées (Settings > Remote Crew), pas seulement sur celle-ci. La progression de chaque tâche reste visible sur le Board de ce chat. Une machine où ce réglage est désactivé ne prend aucune tâche des autres machines. Si aucune autre machine n'est connectée ou disponible, la tâche ne s'exécute pas ici ; elle attend que vous la redemandiez.",
+        "remote_dispatch_save_failed": "Impossible d'enregistrer la répartition à distance. Réessayez.",
+        "remote_dispatch_load_failed": "Impossible de lire le réglage de répartition à distance."
       },
       "kasBundleCard": {
         "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",

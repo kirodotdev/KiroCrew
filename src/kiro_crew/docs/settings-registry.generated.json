@@ -1129,6 +1129,14 @@
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.remote-dispatch",
+      "label": "Remote dispatch",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=key%3Awork_ledger.remote_dispatch",
+      "description": "Runs Ultra Mode tasks on your other connected machines (Settings > Remote Crew), not only on this one. Each task's progress still shows on this chat's Board. A machine with this off takes no tasks from other machines. If no other machine is connected or has room, the task does not run here; it waits until you ask again.",
+      "configKey": "work_ledger.remote_dispatch"
+    },
+    {
       "id": "developer.reply-threads-on-mate-chat-messages",
       "label": "Reply threads on mate chat messages",
       "tab": "developer",

@@ -68,7 +68,7 @@ async def _preview_on() -> bool:
 
 
 def _not_found() -> web.Response:
-    """The one 404 both routes give: preview off, no such slot, or no hub item."""
+    """The one 404 both routes give with the preview on: no such slot, or no hub item."""
     return _refuse_404(_CODE_NOT_FOUND, "no work item for this slot")
 
 
@@ -295,7 +295,9 @@ async def _slot_mailbox(
     reports stay readable for the hub after its slot is gone.
     """
     if not await _preview_on():
-        return None, _not_found()
+        # The answer for a route that does not exist, as on GET /api/chat/headroom:
+        # a typed code here would tell any caller the preview is installed.
+        raise web.HTTPNotFound()
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return None, denied
