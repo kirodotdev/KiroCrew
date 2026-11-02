@@ -46,9 +46,9 @@ describe('CollapsibleToolGroup header label', () => {
         <div>zzq-child</div>
       </CollapsibleToolGroup>,
     )
-    // The count and the phrase are separate text nodes in one span, so assert
-    // against the header's own text rather than a single text node.
-    expect(header().textContent).toContain(`3 ${T('approvals_pending')}`)
+    // The icon and the phrase are separate nodes in one span, so assert against the
+    // header's own text rather than a single text node.
+    expect(header().textContent).toContain(T('approvals_pending_count', { count: 3 }))
   })
 })
 

@@ -4624,16 +4624,20 @@
       "empty_comment": "_(empty)_",
       "expand_comment": "Expand comment",
       "hide_resolved": "Hide resolved",
-      "messages": "messages",
       "no_comments_yet": "No comments yet.",
       "no_open_threads": "No open threads.",
-      "open": "open ·",
       "reopen": "Reopen",
       "replying_is_github_only_for_now_open_the_merge_r": "Replying is GitHub-only for now — open the pull request to comment.",
       "resolve": "Resolve",
       "resolved": "resolved",
       "show_resolved": "Show resolved",
-      "write_a_comment_to_send": "Write a comment… {{keys}} to send"
+      "write_a_comment_to_send": "Write a comment… {{keys}} to send",
+      "open_count_one": "{{count}} open",
+      "open_count_other": "{{count}} open",
+      "resolved_count_one": "{{count}} resolved",
+      "resolved_count_other": "{{count}} resolved",
+      "messages_count_one": "{{count}} message",
+      "messages_count_other": "{{count}} messages"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Add a comment on the whole artifact…",
@@ -4751,18 +4755,18 @@
       "computing_line_by_line_diff": "Computing line-by-line diff…",
       "highlighting": "Highlighting code…",
       "line_by_line_diff_failed": "Could not compute the diff",
-      "more": "more",
       "no_changes": "no changes",
       "open": "Open File",
       "open_in_side_panel": "Open {{path}} in side panel",
       "removals_one": "{{count}} removal",
       "removals_other": "{{count}} removals",
-      "show": "Show",
       "show_less": "Show less",
       "switch_to_split_view": "Switch to split view",
       "switch_to_unified_view": "Switch to unified view",
       "this_document_is_tracked_as_a_session_artifact_n": "This document is tracked as a session artifact, not a source-file change",
-      "toggle_diff": "Show or hide the diff for {{path}}"
+      "toggle_diff": "Show or hide the diff for {{path}}",
+      "show_more_count_one": "Show {{count}} more",
+      "show_more_count_other": "Show {{count}} more"
     },
     "openFileChips": {
       "open_file": "Open file"
@@ -5359,7 +5363,9 @@
       "save_edit": "Save edit",
       "send_now": "Send now",
       "sub_agent_result_one": "{{count}} sub-agent result",
-      "sub_agent_result_other": "{{count}} sub-agent results"
+      "sub_agent_result_other": "{{count}} sub-agent results",
+      "queued_count_one": "{{count}} queued",
+      "queued_count_other": "{{count}} queued"
     },
     "reasoningEffortDropdown": {
       "effort": "Effort",
@@ -6821,7 +6827,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Approval needed",
-        "approvals_pending": "approvals pending",
         "batch_preview_all": "Review all {{count}} pending calls below — all will be resolved together.",
         "batch_preview_none": "No preview available for this call.",
         "approve": "Approve",
@@ -6837,7 +6842,9 @@
         "tool_call_other": "{{count}} tool calls",
         "trust": "Trust",
         "trusted": "Trusted",
-        "view_full_activity": "View Full Activity →"
+        "view_full_activity": "View Full Activity →",
+        "approvals_pending_count_one": "{{count}} approval pending",
+        "approvals_pending_count_other": "{{count}} approvals pending"
       },
       "cronAckBar": {
         "acknowledge": "Acknowledge",
@@ -7007,7 +7014,6 @@
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "connection unstable — retrying…",
-        "more_running_normally": "more running normally…",
         "show_more_running_in_sidebar_one": "Show {{count}} more running subagent in the sidebar",
         "show_more_running_in_sidebar_other": "Show {{count}} more running subagents in the sidebar",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
@@ -7020,7 +7026,9 @@
         "tool_one": "{{count}} tool",
         "tool_other": "{{count}} tools",
         "waiting_for_your_approval_to_start": "Waiting for your approval to start",
-        "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
+        "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit",
+        "more_running_normally_count_one": "{{count}} more running normally…",
+        "more_running_normally_count_other": "{{count}} more running normally…"
       },
       "subagentQueued": {
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",

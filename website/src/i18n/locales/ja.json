@@ -6688,16 +6688,17 @@
       "empty_comment": "_（空）_",
       "expand_comment": "コメントを展開",
       "hide_resolved": "解決済みを非表示",
-      "messages": "件のメッセージ",
       "no_comments_yet": "まだコメントはありません。",
       "no_open_threads": "未解決のスレッドはありません。",
-      "open": "件が未解決 ·",
       "reopen": "再オープン",
       "replying_is_github_only_for_now_open_the_merge_r": "返信は現在 GitHub のみ対応しています。マージリクエストを開いてコメントしてください。",
       "resolve": "解決",
       "resolved": "件が解決済み",
       "show_resolved": "解決済みを表示",
-      "write_a_comment_to_send": "コメントを入力… {{keys}} で送信"
+      "write_a_comment_to_send": "コメントを入力… {{keys}} で送信",
+      "open_count_other": "{{count}} 件が未解決",
+      "resolved_count_other": "{{count}} 件が解決済み",
+      "messages_count_other": "{{count}} 件のメッセージ"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "アーティファクト全体にコメントを追加…",
@@ -6912,17 +6913,16 @@
       "computing_line_by_line_diff": "行単位の差分を計算中…",
       "highlighting": "構文ハイライト中…",
       "line_by_line_diff_failed": "差分を計算できませんでした",
-      "more": "その他",
       "no_changes": "変更なし",
       "open": "ファイルを開く",
       "open_in_side_panel": "{{path}} をサイドパネルで開く",
       "removals_other": "{{count}} 件の削除",
-      "show": "表示",
       "show_less": "表示を減らす",
       "switch_to_split_view": "分割ビューに切り替え",
       "switch_to_unified_view": "統一ビューに切り替え",
       "this_document_is_tracked_as_a_session_artifact_n": "このドキュメントはセッションアーティファクトとして追跡されており、ソースファイルの変更ではありません",
-      "toggle_diff": "{{path}} の差分を表示または非表示にする"
+      "toggle_diff": "{{path}} の差分を表示または非表示にする",
+      "show_more_count_other": "さらに {{count}} 件を表示"
     },
     "openFileChips": {
       "open_file": "ファイルを開く"
@@ -8308,7 +8308,8 @@
       "save": "保存",
       "save_edit": "編集を保存",
       "send_now": "今すぐ送信",
-      "sub_agent_result_other": "{{count}} 個のサブエージェント結果"
+      "sub_agent_result_other": "{{count}} 個のサブエージェント結果",
+      "queued_count_other": "{{count}} 件がキュー内"
     },
     "readingWidthToggle": {
       "title_full": "全幅",
@@ -11632,7 +11633,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "承認が必要です",
-        "approvals_pending": "承認待ち",
         "batch_preview_all": "保留中の {{count}} 件のコールを以下ですべて確認してください。すべてまとめて処理されます。",
         "batch_preview_none": "このコールのプレビューはありません。",
         "approve": "承認",
@@ -11649,7 +11649,8 @@
         "tool_call_other": "ツール呼び出し {{count}} 件",
         "trust": "信頼",
         "trusted": "信頼済み",
-        "view_full_activity": "すべてのアクティビティを表示 →"
+        "view_full_activity": "すべてのアクティビティを表示 →",
+        "approvals_pending_count_other": "{{count}} 件が承認待ち"
       },
       "cronAckBar": {
         "acknowledge": "確認",
@@ -11966,7 +11967,6 @@
         "backend_hiccup_retrying": "接続が不安定 — 再試行中…",
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",
         "expand_agent_list": "サブエージェント一覧を展開",
-        "more_running_normally": "ほかは正常に実行中…",
         "show_more_running_in_sidebar_other": "サイドバーで実行中のサブエージェントをあと {{count}} 件表示",
         "no_activity_possibly_stalled": "アクティビティなし — 停止している可能性があります",
         "open_in_subagents_sidebar": "{{label}} をサブエージェントサイドバーで開く",
@@ -11995,7 +11995,8 @@
         "chip_done_other": "{{count}} 個のエージェントが完了",
         "chip_failed_other": "{{count}} 個のエージェントが失敗",
         "chip_stopped_other": "{{count}} 個のエージェントが停止",
-        "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性"
+        "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
+        "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",

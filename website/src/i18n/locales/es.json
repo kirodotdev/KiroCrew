@@ -6958,16 +6958,23 @@
       "empty_comment": "_(vacío)_",
       "expand_comment": "Expandir comentario",
       "hide_resolved": "Ocultar resueltos",
-      "messages": "mensajes",
       "no_comments_yet": "Todavía no hay comentarios.",
       "no_open_threads": "No hay hilos abiertos.",
-      "open": "abiertos ·",
       "reopen": "Reabrir",
       "replying_is_github_only_for_now_open_the_merge_r": "Por ahora solo se puede responder en GitHub — abre el merge request para comentar.",
       "resolve": "Resolver",
       "resolved": "resueltos",
       "show_resolved": "Mostrar resueltos",
-      "write_a_comment_to_send": "Escribe un comentario… {{keys}} para enviar"
+      "write_a_comment_to_send": "Escribe un comentario… {{keys}} para enviar",
+      "open_count_one": "{{count}} abierto",
+      "open_count_many": "{{count}} abiertos",
+      "open_count_other": "{{count}} abiertos",
+      "resolved_count_one": "{{count}} resuelto",
+      "resolved_count_many": "{{count}} resueltos",
+      "resolved_count_other": "{{count}} resueltos",
+      "messages_count_one": "{{count}} mensaje",
+      "messages_count_many": "{{count}} mensajes",
+      "messages_count_other": "{{count}} mensajes"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Añade un comentario sobre todo el artefacto…",
@@ -7192,19 +7199,20 @@
       "computing_line_by_line_diff": "Calculando diferencias línea por línea…",
       "highlighting": "Resaltando código…",
       "line_by_line_diff_failed": "No se pudo calcular el diff",
-      "more": "más",
       "no_changes": "sin cambios",
       "open": "Abrir archivo",
       "open_in_side_panel": "Abrir {{path}} en el panel lateral",
       "removals_many": "{{count}} eliminaciones",
       "removals_one": "{{count}} eliminación",
       "removals_other": "{{count}} eliminaciones",
-      "show": "Mostrar",
       "show_less": "Mostrar menos",
       "switch_to_split_view": "Cambiar a la vista dividida",
       "switch_to_unified_view": "Cambiar a la vista unificada",
       "this_document_is_tracked_as_a_session_artifact_n": "Este documento se registra como artefacto de la sesión, no como un cambio en un archivo fuente",
-      "toggle_diff": "Mostrar u ocultar el diff de {{path}}"
+      "toggle_diff": "Mostrar u ocultar el diff de {{path}}",
+      "show_more_count_one": "Mostrar {{count}} más",
+      "show_more_count_many": "Mostrar {{count}} más",
+      "show_more_count_other": "Mostrar {{count}} más"
     },
     "openFileChips": {
       "open_file": "Abrir archivo"
@@ -8620,7 +8628,10 @@
       "send_now": "Enviar ahora",
       "sub_agent_result_many": "{{count}} resultados de subagentes",
       "sub_agent_result_one": "{{count}} resultado del subagente",
-      "sub_agent_result_other": "{{count}} resultados de subagentes"
+      "sub_agent_result_other": "{{count}} resultados de subagentes",
+      "queued_count_one": "{{count}} en cola",
+      "queued_count_many": "{{count}} en cola",
+      "queued_count_other": "{{count}} en cola"
     },
     "readingWidthToggle": {
       "title_full": "Ancho completo",
@@ -12024,7 +12035,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Se requiere aprobación",
-        "approvals_pending": "aprobaciones pendientes",
         "batch_preview_all": "Revisa a continuación las {{count}} llamadas pendientes: todas se resolverán juntas.",
         "batch_preview_none": "No hay vista previa disponible para esta llamada.",
         "approve": "Aprobar",
@@ -12043,7 +12053,10 @@
         "tool_call_other": "{{count}} llamadas a herramientas",
         "trust": "Confiar",
         "trusted": "De confianza",
-        "view_full_activity": "Ver toda la actividad →"
+        "view_full_activity": "Ver toda la actividad →",
+        "approvals_pending_count_one": "{{count}} aprobación pendiente",
+        "approvals_pending_count_many": "{{count}} aprobaciones pendientes",
+        "approvals_pending_count_other": "{{count}} aprobaciones pendientes"
       },
       "cronAckBar": {
         "acknowledge": "Confirmar",
@@ -12370,7 +12383,6 @@
         "backend_hiccup_retrying": "conexión inestable — reintentando…",
         "collapse_agent_list": "Contraer la lista de subagentes",
         "expand_agent_list": "Expandir la lista de subagentes",
-        "more_running_normally": "más en ejecución normal…",
         "show_more_running_in_sidebar_one": "Mostrar {{count}} subagente más en ejecución en la barra lateral",
         "show_more_running_in_sidebar_many": "Mostrar {{count}} subagentes más en ejecución en la barra lateral",
         "show_more_running_in_sidebar_other": "Mostrar {{count}} subagentes más en ejecución en la barra lateral",
@@ -12419,7 +12431,10 @@
         "chip_stopped_other": "{{count}} agentes detenidos",
         "chip_stalled_one": "{{count}} agente posiblemente bloqueado",
         "chip_stalled_many": "{{count}} agentes posiblemente bloqueados",
-        "chip_stalled_other": "{{count}} agentes posiblemente bloqueados"
+        "chip_stalled_other": "{{count}} agentes posiblemente bloqueados",
+        "more_running_normally_count_one": "{{count}} más en ejecución normal…",
+        "more_running_normally_count_many": "{{count}} más en ejecución normal…",
+        "more_running_normally_count_other": "{{count}} más en ejecución normal…"
       },
       "subagentQueued": {
         "low_memory": "esperando para iniciar — necesita {{required}} de memoria libre, ahora hay {{available}} libres; libera memoria para continuar",
