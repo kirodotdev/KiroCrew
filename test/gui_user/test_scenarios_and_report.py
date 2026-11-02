@@ -466,6 +466,28 @@ class TestShippedScenarios:
         assert f'"{REPLY_TEXT}"' in expectations
         assert "no bubble from you" in expectations
 
+    def test_create_first_unfolds_advanced_settings_before_typing_the_goal(self) -> None:
+        """The Goal field lives inside the folded Advanced settings section.
+
+        The New mate dialog opens with Advanced settings folded, so a step
+        that asks for the Goal field must open that section first, and quote
+        both labels exactly as the en catalog ships them.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        members = json.loads((locales / "en.json").read_text(encoding="utf-8"))["pages"][
+            "membersPage"
+        ]
+        advanced = members["create_advanced_settings"]
+        goal = members["create_job"]
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-create-first.yaml")
+        goal_steps = [s for s in sc.steps if f'"{goal}"' in s]
+        assert len(goal_steps) == 1, goal_steps
+        step = goal_steps[0]
+        assert f'click the "{advanced}" toggle' in step, step
+        assert step.index(f'"{advanced}"') < step.index(f'"{goal}"'), step
+        assert "Leave the Advanced section as it is" not in " ".join(sc.steps)
+        assert any(f'"{members["create_submit"]}"' in s for s in sc.steps)
+
     def test_customize_and_memory_scenarios_quote_the_shipped_labels(self) -> None:
         """Each label these scenarios tell the tester to find is a string the UI ships.
 
