@@ -468,6 +468,12 @@ class TestEscapedPipesAndInlineCode:
         table = "| Expr | Meaning |\n| --- | --- |\n| `a | either |"
         assert render_tables(table, policy=TABLE_POLICY_CARDS) == "**`a**\n- Meaning: either"
 
+    def test_a_backslash_inside_code_closes_on_its_own_backtick(self) -> None:
+        # A backslash is literal inside a code span. Reading it as an escape
+        # pairs the opener with the NEXT span and fuses the cells between.
+        table = "| A | B |\n| --- | --- |\n| `C:\\` | `a|b` |"
+        assert render_tables(table, policy=TABLE_POLICY_CARDS) == "**`C:\\`**\n- B: `a|b`"
+
 
 class TestWhitespaceOutsideRunsIsPreserved:
     def test_indentation_and_blank_lines_around_a_run_survive(self) -> None:
