@@ -648,6 +648,13 @@ export interface Notification {
    *  (`native_notification_tag`). The service worker's Web Push banner carries
    *  the same value, so one event shows one banner. Absent on client-made notes. */
   tag?: string
+  /** A coordinator approval's server-issued instance: the id recurs, this
+   *  names the one request the row was raised for. */
+  approval_instance?: string
+  /** Set only on an approval row this tab raised itself (the `approval`
+   *  frame and the approvals reconcile). Client-only: the notification bus
+   *  drops every underscore-prefixed meta key, so no stored note carries it. */
+  _local?: true
   slot?: string; session_key?: string; slack_link?: string
   /** A Crew Mode crew member's approval: the key of the crew member that waits.
    *  `slot` then names its conductor, whose approval card is the only place it is

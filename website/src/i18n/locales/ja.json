@@ -7913,6 +7913,8 @@
         "press_again_to_clear": "もう一度押すとクリアします",
         "reject": "却下",
         "search": "検索…",
+        "decided_clear_failed": "この通知を閉じられませんでした。フィードでこの通知の「{{button}}」を押すと再試行できます。",
+        "decision_recorded": "決定は記録されました。",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
         "try_a_different_search": "別の検索を試す"
