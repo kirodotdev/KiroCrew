@@ -694,25 +694,30 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
         # Scan/update is a single registry transaction.
+        repointed = False
         with rt._QUEUE_LOCK:
             project = existing_project()
-            if project is not None:
-                if preview_url and project.get("previewUrl", "") != preview_url:
-                    project["previewUrl"] = preview_url
-                    rt._save_cfg(rt._CFG)
-                    return self._json(
-                        200,
-                        {
-                            "ok": True,
-                            "project": project,
-                            "existing": True,
-                            "updated": "previewUrl",
-                        },
-                    )
+            if project is not None and preview_url and project.get("previewUrl", "") != preview_url:
+                project["previewUrl"] = preview_url
+                rt._save_cfg(rt._CFG)
+                repointed = True
+        if project is not None:
+            if repointed:
+                # Same rule as `/projects/preview-url`: a live record still fronting
+                # the old dev server would keep serving it, so stop it. Outside the
+                # lock, because teardown can wait on a process kill; a proxy already
+                # rebound to the new URL is left alone.
+                live = rt._DEV_PROCS.get(project["id"])
+                if live is not None and live.get("url") != preview_url:
+                    rt._stop_dev_proc(project["id"])
                 return self._json(
                     200,
-                    {"ok": True, "project": project, "existing": True},
+                    {"ok": True, "project": project, "existing": True, "updated": "previewUrl"},
                 )
+            return self._json(
+                200,
+                {"ok": True, "project": project, "existing": True},
+            )
 
         project = {
             "id": rt.uuid.uuid4().hex[:8],
@@ -788,7 +793,15 @@ class Handler(BaseHTTPRequestHandler):
                     "http://127.0.0.1:PORT"
                 },
             )
+        # `/projects` prefers a live record over the saved URL, so a record still
+        # fronting the old dev server would keep serving it. Stop it when the URL
+        # changes or is cleared; the next preview binds a fresh proxy. Teardown
+        # can wait on a process kill, so it runs before, and outside, the lock.
+        live = rt._DEV_PROCS.get(project_id)
+        if live is not None and live.get("url") != url:
+            rt._stop_dev_proc(project_id)
         with rt._QUEUE_LOCK:
+            # Resolved after teardown, so a concurrent remove is not brought back.
             project = next(
                 (item for item in rt._CFG["projects"] if item["id"] == project_id),
                 None,
