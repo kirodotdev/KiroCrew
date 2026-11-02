@@ -455,7 +455,7 @@ describe('ToolCallLine inline expansion', () => {
     let btn = screen.getByRole('button', { name: /Awaiting approval/i })
     expect(btn.getAttribute('aria-expanded')).toBe('true')
     // Approval resolves through the proper redux action so the selector picks it up
-    store.dispatch(resolveByApprovalId({ id: 'app-1', slot: 'A', decision: 'approved' }))
+    act(() => { store.dispatch(resolveByApprovalId({ id: 'app-1', slot: 'A', decision: 'approved' })) })
     rerender(<ToolCallLine message={msg} running={true} />)
     // Auto-collapse on resolve is rAF-deferred — wait for the next frame to flush.
     await waitFor(() => {
