@@ -1,0 +1,135 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "recovery-invalid": {
+      "type": "stdio"
+    },
+    "recovery-valid": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs"]
+    },
+    "recovery-missing-type": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-missing-type"]
+    },
+    "recovery-command-symlink-posix": {
+      "type": "stdio",
+      "command": "./escape-command-posix",
+      "args": ["node", "${PLUGIN_ROOT}/dist/probe.mjs", "recovery-command-symlink-posix"]
+    },
+    "recovery-command-symlink-windows": {
+      "type": "stdio",
+      "command": "./escape-command-windows.exe",
+      "args": ["/d", "/s", "/c", "node", "${PLUGIN_ROOT}/dist/probe.mjs", "recovery-command-symlink-windows"]
+    },
+    "recovery-cwd-invalid-form": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-cwd-invalid-form"],
+      "cwd": "."
+    },
+    "recovery-cwd-escape": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-cwd-escape"],
+      "cwd": "./.."
+    },
+    "recovery-cwd-data-escape": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-cwd-data-escape"],
+      "cwd": "${PLUGIN_DATA}/.."
+    },
+    "recovery-cwd-symlink-escape": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-cwd-symlink-escape"],
+      "cwd": "./escape-link"
+    },
+    "recovery-unknown-field": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-unknown-field"],
+      "conformanceUnknown": true
+    },
+    "recovery-env-plugin-root": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-env-plugin-root"],
+      "env": { "PLUGIN_ROOT": "${PLUGIN_ROOT}" }
+    },
+    "recovery-env-plugin-data": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe.mjs", "recovery-env-plugin-data"],
+      "env": { "PLUGIN_DATA": "${PLUGIN_DATA}" }
+    },
+    "recovery-http-non-loopback": {
+      "type": "streamable-http",
+      "url": "http://0.0.0.0:43187/conformance/recovery-http-non-loopback"
+    },
+    "recovery-http-relative-url": {
+      "type": "streamable-http",
+      "url": "//127.0.0.1:43187/conformance/recovery-http-relative-url"
+    },
+    "recovery-http-type": {
+      "type": "http",
+      "url": "http://127.0.0.1:43187/conformance/recovery-http-type"
+    },
+    "recovery-http-header-name": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/recovery-http-header-name",
+      "headers": { "X Apc Fixture": "fixture" }
+    },
+    "recovery-http-header-value": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/recovery-http-header-value",
+      "headers": { "x-apc-fixture": "first\r\nsecond" }
+    },
+    "recovery-http-userinfo": {
+      "type": "streamable-http",
+      "url": "http://fixture:fixture@127.0.0.1:43187/conformance/recovery-http-userinfo"
+    },
+    "recovery-http-fragment": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/recovery-http-fragment#invalid-fragment"
+    },
+    "recovery-http-duplicate-headers": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/recovery-http-duplicate-headers",
+      "headers": { "X-Apc-Duplicate": "first", "x-apc-duplicate": "second" }
+    },
+    "recovery-sse-non-loopback": {
+      "type": "sse",
+      "url": "http://0.0.0.0:43187/conformance/recovery-sse-non-loopback"
+    },
+    "recovery-sse-relative-url": {
+      "type": "sse",
+      "url": "//127.0.0.1:43187/conformance/recovery-sse-relative-url"
+    },
+    "recovery-sse-fragment": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/recovery-sse-fragment#invalid-fragment"
+    },
+    "recovery-sse-userinfo": {
+      "type": "sse",
+      "url": "http://fixture:fixture@127.0.0.1:43187/conformance/recovery-sse-userinfo"
+    },
+    "recovery-sse-duplicate-headers": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/recovery-sse-duplicate-headers",
+      "headers": { "X-Apc-Duplicate": "first", "x-apc-duplicate": "second" }
+    },
+    "recovery-sse-header-name": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/recovery-sse-header-name",
+      "headers": { "X Apc Fixture": "fixture" }
+    },
+    "recovery-sse-header-value": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/recovery-sse-header-value",
+      "headers": { "x-apc-fixture": "first\r\nsecond" }
+    }
+  }
+}

@@ -1,12 +1,12 @@
 ---
 title: Agent Plugins standard support on every harness
-status: accepted
+status: in-progress
 author: zezhexu
 created: 2026-11-02
 last-audited: 2026-11-02
 audited-at: ddef7ee860
-doc-pr: null
-implementation-prs: []
+doc-pr: 27719
+implementation-prs: [28461]
 tracking-issues: [27710, 9212]
 supersedes: [rfc-agent-plugins-load-installed.md]
 superseded-by: []
