@@ -8,12 +8,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
-import DesignTweak from '../apps/design-tweak/DesignTweakPage'
-import { renderWithProviders } from './helpers'
-import { i18nT } from '../i18n/t'
+import DesignTweak from './DesignTweakPage'
+import { renderWithProviders } from '../../test/helpers'
+import { i18nT } from '../../i18n/t'
 
-vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/design-tweak/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   fetchProjects: vi.fn(),
   fetchQueue: vi.fn(),
   fetchHistory: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
 
 // The component imports chatRoute for navigate() — we need the real implementation
 // but mock the navigate side. Also mock delivery module to control verifyDelivery.
-vi.mock('../apps/design-tweak/delivery', () => ({
+vi.mock('./delivery', () => ({
   deliveryVerdict: vi.fn(() => 'unknown'),
   needsDeliveryRetry: vi.fn(() => false),
 }))
@@ -39,7 +39,7 @@ vi.mock('react-router-dom', async (importOriginal) => ({
 import {
   fetchProjects, fetchQueue, fetchHistory, fetchHealth,
   clearRequest, deleteRequest,
-} from '../apps/design-tweak/api'
+} from './api'
 
 const mockedFetchProjects = fetchProjects as ReturnType<typeof vi.fn>
 const mockedFetchQueue = fetchQueue as ReturnType<typeof vi.fn>

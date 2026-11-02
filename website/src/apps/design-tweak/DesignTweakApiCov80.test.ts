@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError } from '../api/apiError'
+import { ApiError } from '../../api/apiError'
 import {
   addProject,
   api,
@@ -31,8 +31,8 @@ import {
   stopDevServer,
   submitComment,
   threadEndpoint,
-} from '../apps/design-tweak/api'
-import { REQUEST_PROMPT, SESSION_SEED, SESSION_TITLE } from '../apps/design-tweak/prompts'
+} from './api'
+import { REQUEST_PROMPT, SESSION_SEED, SESSION_TITLE } from './prompts'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -544,11 +544,11 @@ describe('SESSION_SEED', () => {
 })
 
 describe('REQUEST_PROMPT', () => {
-  const req = { id: 'req-42', number: 7 } as import('../apps/design-tweak/types').Request
+  const req = { id: 'req-42', number: 7 } as import('./types').Request
   const comments = [
     { cid: 'c-1', index: 1, status: 'pending', comment: 'make header blue', element: 'h1', sourceFile: 'src/App.tsx' },
     { cid: 'c-2', index: 2, status: 'pending', comment: 'fix padding', count: 3, sourceFile: 'src/Layout.tsx', followUpTo: 'c-1' },
-  ] as import('../apps/design-tweak/types').Comment[]
+  ] as import('./types').Comment[]
 
   it('includes the request number so the agent knows which batch', () => {
     const prompt = REQUEST_PROMPT(req, comments, '/data/queue/req-42.json')

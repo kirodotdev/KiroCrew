@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { pageFamilyFiles } from './pageFamily'
+import { pageFamilyFiles } from '../../test/pageFamily'
 
 /**
  * Design Tweak is a self-contained surface: the app never decides to move the

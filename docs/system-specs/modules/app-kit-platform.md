@@ -4744,7 +4744,7 @@ the issue time. The wire format and the verifier's steps are in
    owner id. Every `token_auth_middleware` branch that can set
    `is_dashboard_user` to true also sets `auth_from_query_token` from the
    credential it validated, including the two internal-path branches that serve
-   mixed internal routes such as `/apps/design-tweak/api/thread`. So the owner's
+   mixed internal routes such as a declared agent tool's route (§30.1). So the owner's
    cookie reads as `owner-session` on those routes too, and so does the owner of
    a personal Crew reaching it through the Kiro relay, whom token auth admits as
    the owner ([dashboard-token-auth § Relay-delivered requests](dashboard-token-auth.md#relay-delivered-requests)).
@@ -5108,6 +5108,55 @@ under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
 "Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
+
+### 30.1 A built-in's agent tool is the built-in's own data
+
+Some built-ins hand their agent work whose progress it must post back to one of the
+app's own backend routes. The agent cannot call that route itself: the gateway's app
+reverse proxy (`/apps/<app>/api/<route>`) needs a dashboard credential no agent session
+holds. The `kirocrew-core` MCP server holds the gateway's internal secret, so the tool
+runs there, and the gateway admits that one route to internal-secret callers.
+
+`kiro_crew/apps/builtin_agent_tools.py` is the seam. Any directory under
+`apps/builtins/` may ship an `agent_tools.py` holding one `AGENT_TOOLS` mapping of plain
+data: the app's installed name and its tools, each with a name, the model-facing
+description and `inputSchema`, the string fields a call is validated by, the route below
+`/apps/<app>/api`, which query parameters and body keys the arguments fill, the fixed
+body keys and the answer's length cap. The loader finds the files on disk, imports each
+once per process and caches the result. Three core tables read it, and none names an
+app:
+
+| Reader | What it builds |
+|---|---|
+| `mcp_tools/apps.py` | the descriptor in `schemas()`, the `TOOL_APPS` row that hides it while the app is off, and `HANDLERS[name]` = `builtin_agent_tool` |
+| `validation_parts/server_registries.py` | the `MCP_CORE_SCHEMAS` row, one `FieldSpec(name, str, ...)` per declared field |
+| `dashboard/server_internal_paths.py` | `/apps/<app>/api<route>` in `_MIXED_INTERNAL_API_PATHS` |
+
+`builtin_agent_tool` is the one handler. It sends a required argument as its query
+parameter always and an optional one only when non-empty, URL-quoted with `safe=''`. It
+copies the declared body arguments that are non-empty after the fixed keys, posts
+through `mcp_core._post`, redacts the answer and cuts it at the cap. A declaration
+therefore chooses data and runs no code in the process that holds the secret. The load
+raises `ValueError` on a malformed row, never skips it: `app` must be the directory's
+installed name, a tool name must begin with the package name and `_`, a route must be a
+plain path, the `inputSchema` must advertise exactly the declared fields and mark exactly
+the required ones, and every forwarded argument must be declared. With no built-in
+declaring a tool, every reader adds nothing.
+
+Only shipped package directories are read, so a declaration is reviewed in this
+repository; an installed or registry app cannot declare one. Design Tweak's
+`design_tweak_update_thread` is the one declared tool.
+
+`test/test_builtin_agent_tools.py` pins the seam with synthetic declarations: empty by
+default, every reader fed from the one load, the handler's URL, body and capped answer,
+and each malformed row. `test_mcp_call_site_auth_coverage.py` resolves the handler's
+call site to every declared URL, so the internal-path grant check still covers it.
+`test/test_core_design_tweak_decoupling.py` is Design Tweak's gate, on the shared
+`test/core_app_independence.py` scans: no core module or script imports the app, and the
+only core strings naming it are the security-posture redaction rows for its three
+backend modules, which leave with those files. The UI half is
+`website/src/apps/design-tweak/designTweakBoundary.test.ts`: only `builtinRegistry.ts`
+imports the app's directory, and the app's tests live in it.
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
