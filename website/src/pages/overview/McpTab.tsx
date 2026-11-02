@@ -1116,10 +1116,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       </span>
                     )
                   ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length ? (
-                    /* A held grant the probe cannot verify. The control checks it
-                       first and asks for consent only when it no longer works, and
-                       the line beside it says so: a bare button on a row that reads
-                       Signed in looks like it would undo the sign-in. */
+                    /* A held grant the probe cannot verify. The probe never uses the
+                       session's grant, so it cannot list this server's tools; the
+                       line says so, plus that a tool call in chat is the real check,
+                       so an empty tools cell does not read as a broken install. The
+                       control checks the grant first and asks for consent only when
+                       it no longer works, and the line says that too: a bare button
+                       on a row that reads Signed in looks like it would undo the
+                       sign-in. */
                     <div className="flex flex-col items-start gap-1">
                       <McpRowSignIn target={signInTarget} serverName={s.name} again />
                       <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_no_tools_hint')}</span>
