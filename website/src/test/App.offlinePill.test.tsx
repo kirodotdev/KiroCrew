@@ -6,8 +6,8 @@
  * disconnected, colour as a second cue); when disconnected the whole capsule
  * tints danger. There is no "Offline" text pill.
  *
- * The offline cause is carried on THREE surfaces that must agree: the button
- * `title`, its `aria-label` (accessible name), and the sr-only `role="status"`
+ * The offline cause is carried on THREE surfaces that must agree: the button's
+ * hover hint, its `aria-label` (accessible name), and the sr-only `role="status"`
  * live region. The last two are the only screen-reader carriers of the cause
  * (the session-expired banner api/client.ts injects is a plain <div> with no
  * role="alert"/aria-live, so it is never announced). So when
@@ -103,14 +103,14 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // visual signal).
     expect(dot.getAttribute('aria-label')).toMatch(/reconnecting/i)
     expect(statusText(dot)).toMatch(/reconnecting/i)
-    expect(dot.getAttribute('title')).toMatch(/reconnecting/i)
+    expect(dot).toHaveAccessibleDescription(/reconnecting/i)
     expect(dot.getAttribute('aria-label')).not.toMatch(/session expired/i)
     // The dot also collapses/expands the readouts, so its accessible name
-    // names that action (matching title); the role="status" live region does
+    // names that action (matching the hint); the role="status" live region does
     // NOT -- a status region announces the connection cause, not the toggle
     // affordance (which would speak "collapse" on every reconnect).
     expect(dot.getAttribute('aria-label')).toMatch(/collapse readouts/i)
-    expect(dot.getAttribute('aria-label')).toBe(dot.getAttribute('title'))
+    expect(dot).toHaveAccessibleDescription(dot.getAttribute('aria-label')!)
     expect(statusText(dot)).not.toMatch(/collapse readouts/i)
   })
 
@@ -119,11 +119,11 @@ describe('App offline capsule — auth-required accessible name + live region', 
     renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     const dot = connDot()
     // The fix: the accessible name AND the role="status" live region — not
-    // just the native title — say the session expired, so a screen-reader
+    // just the hover hint — say the session expired, so a screen-reader
     // user is pointed at pasting a token, not at reconnection.
     expect(dot.getAttribute('aria-label')).toMatch(/session expired, see banner above/i)
     expect(statusText(dot)).toMatch(/session expired, see banner above/i)
-    expect(dot.getAttribute('title')).toMatch(/session expired, see banner above/i)
+    expect(dot).toHaveAccessibleDescription(/session expired, see banner above/i)
     // And the generic wording is gone from the announced surfaces.
     expect(dot.getAttribute('aria-label')).not.toMatch(/reconnecting/i)
     expect(statusText(dot)).not.toMatch(/reconnecting/i)

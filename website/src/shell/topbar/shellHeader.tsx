@@ -16,6 +16,8 @@ import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
 import FeedbackPill from '../../components/FeedbackPill'
+import HoverTip from '../../components/HoverTip'
+import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Glass } from '../../components/Glass'
 import WindowsTitlebarMenu from '../../components/WindowsTitlebarMenu'
 import { NavHistoryArrows } from '../../components/NavHistoryArrows'
@@ -106,6 +108,7 @@ function NotificationsBellButton() {
 
   return (
     <div ref={containerRef} className="relative">
+      <HoverTip label={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}>
       <button
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
         onClick={sheet.toggle}
@@ -119,7 +122,6 @@ function NotificationsBellButton() {
         // findings. `aria-keyshortcuts` is not in that list and is the standards
         // declaration anyway, so the non-visual route survives; the VISIBLE hint
         // stays a rail affordance, where it can be marked opaque.
-        title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
         {...uiLocation('shell.notifications', bellRef)}
         aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
@@ -133,6 +135,7 @@ function NotificationsBellButton() {
           </span>
         )}
       </button>
+      </HoverTip>
       {/* The sheet's scope owner, outside the sheet's own open conditional. */}
       <GuideRevealScope id="menu:shell.notifications" open={open}>
         <NotificationSheet sheet={sheet} />
@@ -160,6 +163,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   // Turning it off closes an open sheet; turning it on reads milestones once.
   const explore = useExplorePreview()
   useExplorePreviewSwitch(explore)
+  // The search trigger's hint. The hook rather than HoverTip: the trigger is a
+  // `flex-1` track item, and HoverTip's wrapper would take that track from it.
+  const { tip: searchTip, tipHandlers: searchTipHandlers, tipId: searchTipId } = useInstantTip({ placement: 'below' })
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
@@ -339,16 +345,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_sessions_files_and_commands')
             }
-            // Gated on the same condition as the label and aria-label above. Leaving
-            // this one unconditional made the hover contradict the words under the
-            // cursor and promise the corpus search the launcher deliberately omits --
-            // the diff's own fix applied to two of three attributes. The owned branch
-            // drops "(K)" because the chord is already printed in the visible label.
-            title={
-              slotOwners['quick-search']
-                ? i18nT('app.open_command_bar')
-                : i18nT('app.search_everywhere_k')
-            }
+            {...searchTipHandlers}
           >
             <span className="text-[13px] truncate min-w-0">
               {slotOwners['quick-search']
@@ -356,16 +353,26 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 : i18nT('app.k_search_for_anything')}
             </span>
           </Glass>
+          {/* Gated on the same condition as the trigger's label and aria-label, so
+              the hint never contradicts the words under the cursor or promises the
+              corpus search the launcher deliberately omits. The owned branch drops
+              "(K)" because the chord is already printed in the visible label. */}
+          <InstantTip tip={searchTip} tipId={searchTipId} className="whitespace-nowrap">
+            {slotOwners['quick-search']
+              ? i18nT('app.open_command_bar')
+              : i18nT('app.search_everywhere_k')}
+          </InstantTip>
           {/* Focus mode. `aria-pressed` rather than a second label, so a screen
               reader gets the state from the control instead of from copy that
               would have to be kept in step with the icon. */}
+          <HoverTip label={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}>
           <button
             type="button"
             data-testid="focus-mode-toggle"
             // A sighted keyboard user who activates this with Enter/Space is the
             // one person the inert chrome leaves stranded: the toggle they just
             // pressed vanishes, Tab cannot bring it back, and the chord that can
-            // lived only in the hover title. So on a keyboard activation that
+            // lived only in the hover hint. So on a keyboard activation that
             // turns focus mode ON, the shared shell notice (the agent-switch card)
             // shows the same sentence the live region speaks, in display
             // spelling. `detail === 0` is how a keyboard-synthesised click differs
@@ -380,15 +387,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 ${focusMode ? 'text-accent' : 'text-muted hover:text-text'}`}
             aria-label={i18nT('app.focus_mode')}
             aria-pressed={focusMode}
-            // The chord as currently bound (focusModeChord): the `title` below
-            // names the default for sighted hover, this names the live one for
+            // The chord as currently bound (focusModeChord): the hint names the
+            // default for sighted hover, this names the live one for
             // assistive tech. Omitted when the user unbound it.
             aria-keyshortcuts={focusModeChord ?? undefined}
             {...uiLocation('shell.focus-mode')}
-            title={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}
           >
             <Fullscreen size={15} />
           </button>
+          </HoverTip>
           </div>
         )}
         {/* Mobile centre cell. On the chat page it is the slot the chat page
@@ -487,12 +494,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             const offline = !connected
             // `gatewayStatusMsg` (useAppShell) is the announced cause; see its
             // comment for why auth wording wins over transport state. It mirrors
-            // the branch the button `title` already uses (minus the
+            // the branch the button's hint already uses (minus the
             // collapse-toggle suffix, which is interaction text, not a status
             // cause).
             // The connection dot doubles as the capsule collapse toggle, so its
             // accessible name must name that action -- not just the gateway
-            // state. title and aria-label share this composed value; the
+            // state. The hint and aria-label share this composed value; the
             // role="status" live region stays pure gatewayStatusMsg (a status
             // region announces the connection cause, not the button's toggle
             // affordance, which would speak "click to collapse" on every
@@ -512,11 +519,10 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // Padding + negative margin keep a usable hit target without
             // growing the visual dot.
             segments.push(
+              <HoverTip key="conn" label={capsuleActionMsg}>
               <button
-                key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={capsuleActionMsg}
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
@@ -532,6 +538,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                     implicit button role for screen readers. */}
                 <span role="status" className="sr-only">{gatewayStatusMsg}</span>
               </button>
+              </HoverTip>
             )
             // Resource pressure indicator — always visible when tight/critical
             if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {

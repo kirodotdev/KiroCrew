@@ -450,7 +450,7 @@ describe('App — Kiro credits modal', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('https://example.awsapps.com/start') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByTitle(/Kiro account & credits/))
+    fireEvent.click(await screen.findByRole('button', { description: /Kiro account & credits/ }))
     const dialog = await screen.findByRole('dialog')
     // Plan pool: the progressbar tracks the plan only, not bonus grants.
     expect(within(dialog).getByText('KIRO POWER')).toBeInTheDocument()
@@ -470,7 +470,7 @@ describe('App — Kiro credits modal', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('not-a-url', 'IamIdentityCenter') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByTitle(/Kiro account & credits/))
+    fireEvent.click(await screen.findByRole('button', { description: /Kiro account & credits/ }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Signed in with IAM Identity Center')).toBeInTheDocument()
   })
