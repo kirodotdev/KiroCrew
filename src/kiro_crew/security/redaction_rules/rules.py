@@ -319,9 +319,13 @@ def _build_rule(index: int, data: Any) -> Rule:
                 raise _fail(where, f"unknown validator {name!r}")
             validate = VALIDATORS[name]
     elif detector in NAME_DETECTORS:
-        for field in ("pattern", "validate"):
-            if field in data:
-                raise _fail(where, f"{field} does not apply to detector {detector.value}")
+        if "pattern" in data:
+            raise _fail(where, f"pattern does not apply to detector {detector.value}")
+        name = data.get("validate")
+        if name is not None:
+            if name not in VALIDATORS:
+                raise _fail(where, f"unknown validator {name!r}")
+            validate = VALIDATORS[name]
         if replace != "value":
             raise _fail(where, f"detector {detector.value} replaces the value only")
         if "labels" not in data:

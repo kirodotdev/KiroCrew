@@ -625,10 +625,10 @@ class TestLabelledSecretField:
         calls = 0
         real = detectors.labelled_value
 
-        def counting(text: str, i: int, shape: str = detectors.NESTED) -> tuple[int, int] | None:
+        def counting(text: str, i: int, *args: object) -> tuple[int, int] | None:
             nonlocal calls
             calls += 1
-            return real(text, i, shape)
+            return real(text, i, *args)  # type: ignore[arg-type]
 
         monkeypatch.setattr(detectors, "labelled_value", counting)
         redact("k=" * 5000 + " password=" + synth(20, ALNUM, 25))
@@ -720,6 +720,7 @@ class TestFullTable:
         ids = [rule.id for rule in rr.load_table().rules]
         assert len(ids) == 29
         assert len(set(ids)) == 29
+        assert "labelled.session_generic" not in ids
 
     def test_every_vendor_rule_has_a_sample(self) -> None:
         table = rr.load_table()
@@ -845,22 +846,106 @@ class TestStructuralRows:
 
 class TestSessionCookie:
     @pytest.mark.parametrize(
-        "template",
+        "template, expected_rule_id",
         [
-            "Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure",
-            "Cookie: theme=dark; PHPSESSID={v}; lang=en",
-            "Cookie: JSESSIONID={v}",
-            "Set-Cookie: connect.sid={v}; Path=/",
-            "Set-Cookie: ASP.NET_SessionId={v}; path=/",
-            'curl -H "Cookie: session={v}" https://app.example.com/me',
+            ("Set-Cookie: sessionid={v}; Path=/; HttpOnly; Secure", "labelled.session_cookie"),
+            ("Cookie: theme=dark; PHPSESSID={v}; lang=en", "labelled.session_cookie"),
+            ("Cookie: JSESSIONID={v}", "labelled.session_cookie"),
+            ("Set-Cookie: connect.sid={v}; Path=/", "labelled.session_cookie"),
+            ("Set-Cookie: ASP.NET_SessionId={v}; path=/", "labelled.session_cookie"),
+            (
+                'curl -H "Cookie: session={v}" https://app.example.com/me',
+                "labelled.session_cookie",
+            ),
         ],
     )
-    def test_session_value_is_redacted_and_other_cookies_kept(self, template: str) -> None:
+    def test_session_value_is_redacted_and_other_cookies_kept(
+        self, template: str, expected_rule_id: str
+    ) -> None:
         value = synth(32, ALNUM, 80)
         result = redact(template.format(v=value))
         assert result.text == template.format(v=rr.PLACEHOLDER)
-        assert rule_ids(result) == ["labelled.session_cookie"]
+        assert rule_ids(result) == [expected_rule_id]
 
     def test_short_or_placeholder_session_is_kept(self) -> None:
         for text in ("session=abc", "sessionid=<session-id>", "session: ${SESSION}"):
             assert redact(text).text == text
+
+
+class TestNonCredentialValuesUnderCredentialNames:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "password=required",
+            '"access_token": "expired"',
+            '{"password": {"type": "string", "required": true}}',
+            "password=${DB_PASSWORD} api_key=<your-api-key>",
+            "DB_PASSWORD=$DB_PASSWORD API_KEY=${API_KEY}",
+        ],
+    )
+    def test_is_kept(self, text: str) -> None:
+        assert redact(text).text == text
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "password=Required1",
+            "password=enabledXYZ",
+            "password=requiredpass",
+            "secret=hiddenvalue",
+            "session=chat-1830",
+            "tmux_session: main-work",
+            "password=hunter2",
+            '"access_token": "{v}"',
+            "session={v}",
+            "password=${{X}} hunter2-tail",
+        ],
+    )
+    def test_real_value_is_still_redacted(self, template: str) -> None:
+        value = synth(24, ALNUM, 90)
+        text = template.format(v=value)
+        result = redact(text)
+        assert result.text != text
+        assert value not in result.text
+        assert "hunter2" not in result.text
+
+    @pytest.mark.parametrize(
+        "text, secret",
+        [
+            ("password=sunflower", "sunflower"),
+            ("password=password", "=password"),
+            ("Authorization: Bearer abcdefghijklmnopqrstuvwx", "abcdefghijklmnopqrstuvwx"),
+            ("Cookie: PHPSESSID=01234567890123456789012345678901", "0123456789012345"),
+            ("Cookie: ASP.NET_SessionId=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("Cookie: JSESSIONID=AABBCCDDEEFFAABBCCDDEEFFAABBCCDD", "AABBCCDDEEFF"),
+            ("Cookie: session=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("password: ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password = ${PREFIX} note=MySecret7!", "MySecret7!"),
+            ("password=sunshine", "sunshine"),
+            ("DB_PASSWORD=postgres", "postgres"),
+            ('"password": "admin"', "admin"),
+            ("MYSQL_ROOT_PASSWORD=root", "=root"),
+            ("secret=letmein", "letmein"),
+            ("Authorization: Basic hunter", "hunter"),
+            ("api_key=abcdefghijklmnopqrstuvwx", "abcdefghijklmnop"),
+            ("PHPSESSID=abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnop"),
+            ("session=ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOP"),
+            ("JSESSIONID=0123456789012345678901234567", "0123456789012345"),
+            ("password=${{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password={{ a }}REALPASS}} next=1", "REALPASS"),
+            ("password=$ABC9 user=bob", "$ABC9"),
+            ("password=<s3cr3t> user=bob", "s3cr3t"),
+            ('{"password": {{ x }}hunter2}', "hunter2"),
+            ("cfg(password={{ x }}hunter2)", "hunter2"),
+            ("mytool --password {{x}}hunter2 --verbose", "hunter2"),
+        ],
+    )
+    def test_single_class_and_lowercase_credentials_are_redacted(
+        self, text: str, secret: str
+    ) -> None:
+        assert secret not in redact(text).text
+
+    def test_placeholder_then_real_pair_redacts_only_the_real_pair(self) -> None:
+        value = synth(24, ALNUM, 91)
+        result = redact(f"password=${{DB_PASSWORD}} api_key={value}")
+        assert result.text == f"password=${{DB_PASSWORD}} api_key={rr.PLACEHOLDER}"
