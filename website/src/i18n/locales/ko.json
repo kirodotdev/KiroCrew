@@ -336,6 +336,10 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}}이(가) 계속 다시 시작하지 못하고 있습니다",
+      "restart_exhausted_message_other": "{{app}}이(가) 연속 {{count}}회 다시 시작에 실패했으며 몇 분마다 계속 재시도합니다. 지금 다시 시도하려면 {{app}}을(를) 비활성화했다가 다시 활성화하세요."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "이 사본을 구성한 담당자를 위한 세부 정보",
       "refused_page_handoff_note": "에이전트에게 질문하면 이 세부 정보가 첨부된 채로 채팅이 열립니다.",

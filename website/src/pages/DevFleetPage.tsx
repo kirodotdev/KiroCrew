@@ -27,7 +27,8 @@ import { addNotification } from '../store/notificationsSlice'
 import { setPendingInput } from '../store/chatSlice'
 import { Server, RefreshCw, ChevronRight, Trash2, LoaderCircle } from 'lucide-react'
 import * as api from './devFleetApi'
-import { ApiError } from '../api/client'
+import { ApiError, api as gatewayApi } from '../api/client'
+import { restartExhaustedNotice } from '../utils/backendStatus'
 
 import { i18nT } from '../i18n/t'
 import { compareText } from '../i18n/format'
@@ -170,6 +171,28 @@ export default function DevFleetPage() {
     queryKey: ['dev-fleet', 'disk'],
     queryFn: () => api.get('/disk'),
     refetchInterval: 30000,
+  })
+
+  // When the fleet backend is unreachable, the gateway may already know WHY: its
+  // health supervisor records a backend that is repeatedly failing to restart on
+  // the app list. Read it only in that failed state (the common case needs no
+  // extra request) so the banner below can name the restart-exhausted condition
+  // and the toggle-to-retry action instead of the generic "unavailable".
+  const fleetBackendDown = !!fleetError
+  const { data: devFleetAppStatus, error: appStatusError } = useQuery({
+    queryKey: ['dev-fleet', 'app-backend-status'],
+    queryFn: async () => {
+      const apps = await gatewayApi.listApps()
+      const self = Array.isArray(apps) ? apps.find((a) => a.name === 'dev-fleet') : undefined
+      return self?.backend_status ?? null
+    },
+    enabled: fleetBackendDown,
+    refetchInterval: POLL_MS,
+    // This is a best-effort enrichment of an already-failed state, not a
+    // load-bearing fetch: do not retry it. A prompt error lets the banner fall
+    // back to the generic notice (carrying the fetch error) instead of masking a
+    // failed refresh with a stale cached diagnosis.
+    retry: false,
   })
 
   // Latest failed action (see `_actionErrorListeners`). Cleared by its own
@@ -1266,9 +1289,29 @@ export default function DevFleetPage() {
   // Both branches are read failures of the fleet itself (a backend {error}
   // body, or the request rejecting) — nothing on this page is typed, so the
   // hand-off is on. `title` keeps the two failure modes distinguishable.
-  else if (error) body = isDiscoveryError
-    ? <ErrorNotice title={i18nT('pages.devFleetPage.discovery_error')} message={error} askAgent testId="fleet-discovery-error" />
-    : <ErrorNotice title={i18nT('pages.devFleetPage.backend_unavailable')} message={error} askAgent testId="fleet-backend-error" />
+  else if (error) {
+    // When the gateway knows the backend is repeatedly failing to restart, say
+    // so with the toggle-to-retry action instead of the generic "unavailable".
+    const statusErrText = appStatusError instanceof Error ? appStatusError.message : appStatusError ? String(appStatusError) : ''
+    // When the status refresh itself FAILED, do not show a (possibly stale)
+    // cached restart-exhausted diagnosis: React Query keeps the last `data`
+    // alongside the new `error`, so suppress the exhausted branch and fall to the
+    // generic notice below, which carries the status-fetch error so it is not
+    // swallowed (errors-use-error-notice).
+    const exhausted = statusErrText
+      ? null
+      : restartExhaustedNotice(i18nT('apps.devFleet.manifest.display_name'), devFleetAppStatus)
+    // The status probe only runs because the fleet read already failed, so its
+    // own failure shares that root cause and rides the SAME ErrorNotice rather
+    // than a second one. Like `error` itself, its message is a backend/exception
+    // string rendered verbatim, not localized copy.
+    const backendMessage = statusErrText ? `${error} (${statusErrText})` : error
+    body = isDiscoveryError
+      ? <ErrorNotice title={i18nT('pages.devFleetPage.discovery_error')} message={error} askAgent testId="fleet-discovery-error" />
+      : exhausted
+        ? <ErrorNotice title={exhausted.title} message={exhausted.message} askAgent testId="fleet-backend-restart-exhausted" />
+        : <ErrorNotice title={i18nT('pages.devFleetPage.backend_unavailable')} message={backendMessage} askAgent testId="fleet-backend-error" />
+  }
   else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.no_worktrees_found')} subtitle={i18nT('pages.devFleetPage.nothing_under_the_worktrees_root_yet')} />
   // Worktrees are discovered from git independently of the live-target pointer,
   // so a gateway that cannot report which checkout is live still yields rows.

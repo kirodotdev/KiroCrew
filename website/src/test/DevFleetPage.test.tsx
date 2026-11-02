@@ -126,6 +126,67 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('Backend unavailable')).toBeInTheDocument())
   })
 
+  it('names the restart-exhausted state when the gateway reports it is repeatedly failing to restart', async () => {
+    // The fleet backend is unreachable AND the gateway's app list says dev-fleet
+    // is repeatedly failing to restart — the banner should name that condition
+    // and the disable/re-enable action instead of the generic "unavailable".
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/api/apps')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              { name: 'dev-fleet', backend_status: { running: false, restart_exhausted: { attempts: 8 } } },
+            ]),
+            { status: 200 },
+          ),
+        )
+      }
+      // The fleet's own backend is unreachable.
+      return Promise.reject(new Error('Network error'))
+    })
+    renderPage()
+    // The banner is two chained queries deep: the fleet query must reject first,
+    // which flips `fleetBackendDown` and ENABLES the `/api/apps` status query whose
+    // restart_exhausted result drives this banner. Give that dependent chain an
+    // explicit ceiling so it does not race Testing Library's 1000 ms default under
+    // a loaded coverage runner (frontend-tests-are-deterministic).
+    await waitFor(
+      () => expect(screen.getByText('Dev Fleet keeps failing to restart')).toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    expect(screen.getByTestId('fleet-backend-restart-exhausted')).toBeInTheDocument()
+    expect(screen.getByText(/disable and re-enable Dev Fleet/i)).toBeInTheDocument()
+    // The generic banner is replaced, not shown alongside.
+    expect(screen.queryByText('Backend unavailable')).toBeNull()
+  })
+
+  it('surfaces a failed backend-status refresh instead of swallowing it or showing stale exhausted advice', async () => {
+    // Fleet is down AND the /api/apps status probe itself fails. The status error
+    // must reach the operator (errors-use-error-notice), and no cached
+    // restart-exhausted diagnosis should be shown in its place.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/api/apps')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'gateway offline' }), { status: 502 }))
+      }
+      return Promise.reject(new Error('fleet down'))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('fleet-backend-error')).toBeInTheDocument(), {
+      timeout: 3000,
+    })
+    // The status-fetch failure reaches the notice, alongside the fleet failure.
+    // Wait for the failing status query to settle (a stale cached exhausted
+    // diagnosis from a sibling test must give way to the error).
+    await waitFor(() => expect(screen.getByText(/gateway offline/i)).toBeInTheDocument(), {
+      timeout: 3000,
+    })
+    // Not the exhausted banner (no stale cached advice once the refresh failed).
+    expect(screen.queryByTestId('fleet-backend-restart-exhausted')).toBeNull()
+    expect(screen.getByText(/fleet down/i)).toBeInTheDocument()
+  })
+
   it('confirm dialog uses accessible Modal with role=dialog and Escape support', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
       const u = typeof url === 'string' ? url : (url as Request).url

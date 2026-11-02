@@ -366,6 +366,12 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} não consegue reiniciar",
+      "restart_exhausted_message_one": "{{app}} falhou ao reiniciar {{count}} vez seguida e continuará tentando a cada poucos minutos. Para tentar agora, desative {{app}} e ative novamente.",
+      "restart_exhausted_message_many": "{{app}} falhou ao reiniciar {{count}} vezes seguidas e continuará tentando a cada poucos minutos. Para tentar agora, desative {{app}} e ative novamente.",
+      "restart_exhausted_message_other": "{{app}} falhou ao reiniciar {{count}} vezes seguidas e continuará tentando a cada poucos minutos. Para tentar agora, desative {{app}} e ative novamente."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Detalhes para quem montou esta cópia",
       "refused_page_handoff_note": "Perguntar ao agente abre um chat com estes detalhes já anexados.",

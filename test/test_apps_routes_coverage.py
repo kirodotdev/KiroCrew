@@ -47,6 +47,7 @@ from apps_routes_coverage_helpers import (
 )
 from dashboard_owner_helpers import as_owner
 
+import kiro_crew.apps.backend as backend_mod
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
@@ -253,6 +254,130 @@ async def test_list_apps_enriches_running_backend(
         "healthy": True,
         "pid": 4242,
     }
+
+
+@pytest.mark.asyncio
+async def test_list_apps_surfaces_restart_exhausted_on_a_tracked_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tracked-but-down backend whose attempt count is PAST the fast-ramp ceiling
+    # is repeatedly failing to restart; the exhausted state rides alongside the
+    # usual flags so the banner can name it.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    enable_app(APP)
+    monkeypatch.setattr(
+        routes_mod,
+        "list_app_processes",
+        lambda: [
+            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": False},
+        ],
+    )
+    monkeypatch.setattr(
+        backend_mod, "_restart_attempts", {APP: backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS + 1}
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert entry["backend_status"]["running"] is False
+    assert entry["backend_status"]["restart_exhausted"] == {
+        "attempts": backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_apps_reports_exhausted_at_the_ceiling_only_once_the_backend_exited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # AT the ceiling the meaning depends on the tracked process: an EXITED record
+    # means the ceiling-th attempt already failed and the loop is in its first
+    # slow wait (exhausted — the 300s window the banner must cover); a LIVE record
+    # means the ceiling-th replacement is still in flight (only ceiling-1 failed,
+    # NOT exhausted). Below the ceiling is never exhausted.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    enable_app(APP)
+    ceiling = backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS
+
+    async def _status(running: bool, attempts: int) -> dict:
+        monkeypatch.setattr(
+            routes_mod,
+            "list_app_processes",
+            lambda: [
+                {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": running},
+            ],
+        )
+        monkeypatch.setattr(backend_mod, "_restart_attempts", {APP: attempts})
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/apps")
+            assert resp.status == 200
+            rows = await resp.json()
+        return next(a for a in rows if a["name"] == APP)["backend_status"]
+
+    # At the ceiling, exited backend -> exhausted (slow-wait window).
+    assert (await _status(running=False, attempts=ceiling)).get("restart_exhausted") == {
+        "attempts": ceiling,
+    }
+    # At the ceiling, still-running backend -> NOT exhausted (in-flight attempt).
+    assert "restart_exhausted" not in await _status(running=True, attempts=ceiling)
+    # Below the ceiling -> never exhausted, even when exited.
+    assert "restart_exhausted" not in await _status(running=False, attempts=ceiling - 1)
+
+
+@pytest.mark.asyncio
+async def test_list_apps_surfaces_restart_exhausted_with_no_tracked_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # In the brief spawn window the dead record is popped while the supervisor is
+    # still retrying past the ceiling — the exhausted state must still reach the
+    # banner, carried on its own backend_status block.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    enable_app(APP)
+    monkeypatch.setattr(routes_mod, "list_app_processes", lambda: [])
+    monkeypatch.setattr(
+        backend_mod, "_restart_attempts", {APP: backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS + 1}
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert entry["backend_status"] == {
+        "restart_exhausted": {"attempts": backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS},
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_apps_suppresses_restart_exhausted_for_a_disabled_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Disabling a crash-looping app persists enabled=False and ends supervision
+    # without clearing the attempt counter, so a stale count must NOT surface the
+    # "will keep retrying" banner once retrying has stopped. A left-installed-but-
+    # disabled app whose counter is past the ceiling stays generic, not exhausted.
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    # Not enabled: _install leaves the app disabled, which is the state after a
+    # disable of a looping app.
+    monkeypatch.setattr(
+        routes_mod,
+        "list_app_processes",
+        lambda: [
+            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242, "running": False},
+        ],
+    )
+    monkeypatch.setattr(
+        backend_mod, "_restart_attempts", {APP: backend_mod._RESTART_ON_EXIT_FAST_ATTEMPTS + 1}
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert "restart_exhausted" not in entry.get("backend_status", {})
 
 
 @pytest.mark.asyncio
