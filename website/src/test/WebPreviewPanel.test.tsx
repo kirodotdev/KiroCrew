@@ -1285,7 +1285,8 @@ describe('WebPreviewPanel — native browser transport', () => {
       fireEvent.click(screen.getByTestId('browser-annotate'))
       await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'start', { editHint: expect.any(String), roleNames: expect.any(Object), seq: 1, idStart: 1 }))
       await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
-      await new Promise(r => setTimeout(r, 400))
+      const pollsBefore = annotate.mock.calls.filter(c => c[1] === 'poll').length
+      await waitFor(() => expect(annotate.mock.calls.filter(c => c[1] === 'poll').length).toBeGreaterThan(pollsBefore + 1))
       expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
     } finally {
       window.removeEventListener('kirocrew-web-preview-annotate', onEv)
@@ -1335,7 +1336,8 @@ describe('WebPreviewPanel — native browser transport', () => {
       : op === 'start' ? { ok: true, url: 'https://example.com/settings', title: 'Settings' } : { ok: true })
     fireEvent.click(screen.getByTestId('browser-annotate'))
     await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
-    await new Promise(r => setTimeout(r, 400))
+    const pollsBefore = annotate.mock.calls.filter(c => c[1] === 'poll').length
+    await waitFor(() => expect(annotate.mock.calls.filter(c => c[1] === 'poll').length).toBeGreaterThan(pollsBefore + 1))
     expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
   })
 
@@ -1371,14 +1373,15 @@ describe('WebPreviewPanel — native browser transport', () => {
   })
 
   it('a noted pick the page stops reporting is kept as detached rather than losing its note', async () => {
-    const { state } = installAnnotateBridge()
+    const { annotate, state } = installAnnotateBridge()
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
     fireEvent.click(await screen.findByTestId('browser-annotate'))
     await screen.findByTestId('browser-annotations')
     await pickAndNote(state, 'too far right')
     // A tampered reply omits the pick without any remove/clear from the user.
     state.items = []
-    await new Promise(r => setTimeout(r, 400))
+    const pollsBefore = annotate.mock.calls.filter(c => c[1] === 'poll').length
+    await waitFor(() => expect(annotate.mock.calls.filter(c => c[1] === 'poll').length).toBeGreaterThan(pollsBefore + 1))
     expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
   })
 
@@ -1454,7 +1457,8 @@ describe('WebPreviewPanel — native browser transport', () => {
     await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
     fireEvent.click(screen.getByTestId('browser-annotate')) // Annotate again
     await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
-    await new Promise(r => setTimeout(r, 400))
+    const pollsBefore = annotate.mock.calls.filter(c => c[1] === 'poll').length
+    await waitFor(() => expect(annotate.mock.calls.filter(c => c[1] === 'poll').length).toBeGreaterThan(pollsBefore + 1))
     expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
     expect(screen.getByTestId('browser-annotations-send')).not.toBeDisabled()
   })
