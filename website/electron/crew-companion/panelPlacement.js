@@ -8,10 +8,12 @@
  * The rule it encodes: the panel opens BESIDE the companion, not in a screen corner.
  *
  *   side 'right' — panel to the RIGHT of the companion, so the companion reads as
- *                  being on the left of the composition. This is the default,
- *                  "mirrored" arrangement from the v1.0 spec.
- *   side 'left'  — the edge fallback, used when the companion is on the right half
- *                  and there is no room to its right.
+ *                  being on the left of the composition. This is the
+ *                  "mirrored" arrangement from the v1.0 spec, used whenever the
+ *                  companion's centre is on the left half of the work area or
+ *                  exactly on its midline.
+ *   side 'left'  — panel to the LEFT, used whenever the companion's centre is on
+ *                  the right half, whether or not the panel would fit to its right.
  *
  * Vertically the card's top aligns with the companion's top, so the panel's hero row
  * lines up with it rather than floating above or below. Everything is clamped to the
