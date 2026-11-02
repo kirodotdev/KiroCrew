@@ -2784,8 +2784,8 @@ where kiro-cli carries `_meta.kiro`):
   checkpoint_ref }
 ```
 
-`StructuredStatus.from_meta` (`acp/types.py`) owns the shape and the version
-gate: an unsupported `version` rejects the WHOLE frame (a newer schema is never
+`StructuredStatus.from_meta` (`acp/structured_status.py`, re-exported by
+`acp/types.py`) owns the shape and the version gate: an unsupported `version` rejects the WHOLE frame (a newer schema is never
 half-applied), an unknown `phase` or a non-vocabulary `wait_reason` rejects it,
 a `wait_reason` outside the waiting phase is dropped, non-bool capabilities are
 False, a non-int `generation` is 0, a non-finite `retry_at` is None, string
