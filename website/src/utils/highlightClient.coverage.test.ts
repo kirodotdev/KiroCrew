@@ -1,12 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 
 // The sanitizer is a collaborator: happy-dom does not reproduce DOMPurify's
-// output, so it is stubbed here with a stripper that removes script elements.
-vi.mock('dompurify', () => ({
-  default: {
-    sanitize: (html: string) => html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''),
-  },
-}))
+// output, so it is a pass-through spy here. A test that must tell the sanitized
+// text from the worker's reply arranges the spy's return value itself.
+const sanitize = vi.hoisted(() => vi.fn((html: string) => html))
+vi.mock('dompurify', () => ({ default: { sanitize } }))
 
 // The main-thread client keeps its worker and pending requests in module state,
 // so every test loads a fresh copy of the module against a fake Worker.
@@ -33,6 +31,8 @@ type Client = typeof import('./highlightClient')
 let client: Client
 
 beforeEach(async () => {
+  sanitize.mockReset()
+  sanitize.mockImplementation((html: string) => html)
   FakeWorker.instances = []
   vi.resetModules()
   vi.stubGlobal('Worker', FakeWorker)
@@ -59,8 +59,11 @@ describe('highlightAsync', () => {
     const w = FakeWorker.instances[0]
     expect(w.url).toContain('hljsWorker')
     expect(w.posted).toEqual([{ id: 1, code: 'const a = 1', lang: 'typescript' }])
+    sanitize.mockReturnValueOnce('<b>hi</b>')
     reply(w, { id: 1, html: '<b>hi</b><script>alert(1)</script>' })
+    // The caller gets the sanitizer's output, never the worker's raw reply.
     await expect(p).resolves.toBe('<b>hi</b>')
+    expect(sanitize).toHaveBeenCalledWith('<b>hi</b><script>alert(1)</script>')
   })
 
   it('shares one worker and routes each reply to its own request', async () => {
