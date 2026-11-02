@@ -340,8 +340,8 @@ class TestApplyMergeSafety:
         barrier = threading.Barrier(2)
 
         def write(source_id: str) -> None:
-            # flake-ok: pre-existing barrier wait with no timeout, moved verbatim
-            barrier.wait()
+            # The timeout is a lost-run bound: a broken barrier fails the test by name.
+            barrier.wait(timeout=30)
             statuses.append(
                 api._write_schedule(
                     api._Item(source_id, "schedules", source_id, payload),
@@ -356,8 +356,8 @@ class TestApplyMergeSafety:
         for thread in threads:
             thread.start()
         for thread in threads:
-            # flake-ok: pre-existing thread join with no timeout, moved verbatim
-            thread.join()
+            thread.join(timeout=30)
+            assert not thread.is_alive(), "a schedule import thread never finished"
 
         assert sorted(statuses) == ["existing", "imported"]
         assert len(service.list_jobs(include_disabled=True)) == 1
