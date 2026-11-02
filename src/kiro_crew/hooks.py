@@ -164,6 +164,7 @@ from kiro_crew.hook_runtime.pinned_writes import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.safe_reads import (  # noqa: F401
     PathDecline,
+    _read_capped,
     safe_copy_file_nolink,
     safe_file_identity,
     safe_read_file,

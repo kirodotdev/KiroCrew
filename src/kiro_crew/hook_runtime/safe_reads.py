@@ -13,7 +13,7 @@ import stat as _stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
@@ -241,6 +241,22 @@ def safe_read_file(path: str) -> str:
     return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _read_capped(fh: BinaryIO, cap: int) -> bytes:
+    """At most ``cap + 1`` bytes of *fh*, so a caller can tell "over the cap" apart.
+
+    ``fh.read(cap + 1)`` allocates the whole ``cap + 1`` buffer before the first
+    byte arrives, which for the 50 MB ceiling is a 50 MB allocation per small file.
+    The first read is sized by ``fstat`` instead; only when it comes back full (the
+    file grew, or reports no size, as procfs files do) does a second read take the
+    rest of the budget. The result is the same bytes ``fh.read(cap + 1)`` returns.
+    """
+    want = min(max(os.fstat(fh.fileno()).st_size, 0), cap) + 1
+    data = fh.read(want)
+    if len(data) == want and want <= cap:
+        data += fh.read(cap + 1 - want)
+    return data
+
+
 def safe_read_file_bytes(raw: str) -> bytes | None:
     """Read file bytes through centralized is_sensitive_path() enforcement.
 
@@ -271,7 +287,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         if not _opened_file_matches_validated_path(fd, path):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = _read_capped(fh, MAX_FILE_BYTES)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
@@ -357,7 +373,7 @@ def safe_read_file_bytes_with_identity(
         if not _stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) not in allowed_identities:
             raise PermissionError("Blocked: file is not in the authorized set")
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = _read_capped(fh, MAX_FILE_BYTES)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
