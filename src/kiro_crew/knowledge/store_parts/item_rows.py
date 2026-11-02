@@ -232,8 +232,12 @@ def delete_items_batch_in_txn(
     commit the transaction, and call :meth:`reload_graph` afterwards, because
     the orphan sweep below drops entities the in-memory graph still holds.
     """
+    revive: set[str] = set()
     for item_id in item_ids:
         if owner_source_id:
+            dropped = self._drop_fuzzy_claimants(item_id, owner_source_id)
+            if dropped:
+                revive.add(dropped)
             others = self.sources_holding_item(item_id, exclude_source_id=owner_source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
@@ -244,6 +248,8 @@ def delete_items_batch_in_txn(
                 )
                 continue
         self._delete_item_cascade(item_id)
+    if revive:
+        self._revive_fuzzy_claimants(revive, owner_source_id)
     self._prune_orphan_entities()
 
 
@@ -269,6 +275,9 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         ]
         doomed: list[str] = []
         for item_id in owned:
+            # A source reaching this item only through a fuzzy claim is not a
+            # holder: it is rebuilt from its own bytes by the revive below.
+            self._drop_fuzzy_claimants(item_id, source_id)
             others = self.sources_holding_item(item_id, exclude_source_id=source_id)
             if others:
                 self.reassign_item_source(item_id, others[0])
@@ -311,11 +320,30 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
         # source already owns and leave it holding two copies.
         for table, healthy in _DOC_STATE_TABLES:
             deferred = self.db.execute(
-                f"SELECT source_id, content_hash, rowid FROM {table} "  # noqa: S608
+                f"SELECT source_id, content_hash, claimed_hash, rowid FROM {table} "  # noqa: S608
                 "WHERE merged_into_source_id = ?",
                 (source_id,),
             ).fetchall()
             for row in deferred:
+                claimed = row["claimed_hash"]
+                if (
+                    # Set only by a FUZZY collapse (see dedup._fuzzy_claim_hash). An
+                    # exact claim has none, keeps its location, and stays
+                    # addressable by the row's own hash.
+                    claimed
+                    and not self.db.execute(
+                        "SELECT 1 FROM items WHERE source_id = ? AND content_hash = ? LIMIT 1",
+                        (row["source_id"], claimed),
+                    ).fetchone()
+                ):
+                    # Every branch below clears ``claimed_hash``, and after that
+                    # nothing can name the claim again. When the claimed copy went
+                    # to ANOTHER holder, this source is still a location of it, so
+                    # the claim is released first; otherwise a later deletion of
+                    # that holder hands this source items no row names. A copy
+                    # reassigned into this very source is its own now and keeps
+                    # its location.
+                    self.detach_source_location_by_hash(row["source_id"], claimed)
                 adopted: list[str] = []
                 if row["content_hash"]:
                     adopted = [
@@ -332,7 +360,7 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
                     # _DOC_STATE_TABLES for why they are not interchangeable.
                     self.db.execute(
                         f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
-                        "status = ?, item_ids = ? WHERE rowid = ?",
+                        "claimed_hash = NULL, status = ?, item_ids = ? WHERE rowid = ?",
                         (healthy, json.dumps(adopted), row["rowid"]),
                     )
                 elif table == "folder_file_state":
@@ -340,7 +368,7 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
                     # walk re-ingest the file, which is the whole point of reviving.
                     self.db.execute(
                         "UPDATE folder_file_state SET merged_into_source_id = NULL, "
-                        "status = 'pending' WHERE rowid = ?",
+                        "claimed_hash = NULL, status = 'pending' WHERE rowid = ?",
                         (row["rowid"],),
                     )
                 else:
@@ -350,8 +378,8 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
                     # nothing would make find_document_by_hash refuse a re-add of
                     # content the Library does not actually hold.
                     self.db.execute(
-                        f"UPDATE {table} SET merged_into_source_id = NULL "  # noqa: S608
-                        "WHERE rowid = ?",
+                        f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
+                        "claimed_hash = NULL WHERE rowid = ?",
                         (row["rowid"],),
                     )
         self.db.execute("DELETE FROM ingestion_jobs WHERE source_id = ?", (source_id,))

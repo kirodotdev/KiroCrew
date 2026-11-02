@@ -333,6 +333,21 @@ def _invalidate_content_hash(
     return cur.rowcount > 0
 
 
+def _release_stale_claim(
+    kstore: KnowledgeStore,
+    source_id: str,
+    slug: str,
+    prev_hash: str | None,
+    content_hash: str,
+    old_item_ids: list[str],
+) -> int:
+    """``release_stale_claim`` with the row's ``claimed_hash``, read in the same hop."""
+    return kstore.release_stale_claim(
+        source_id, prev_hash, content_hash, old_item_ids,
+        prev_claimed_hash=kstore.claimed_hash_of("artifact_item_state", source_id, slug),
+    )
+
+
 def _del_state(kstore: KnowledgeStore, source_id: str, slug: str) -> None:
     kstore.db.execute(
         "DELETE FROM artifact_item_state WHERE source_id = ? AND slug = ?",
@@ -445,7 +460,7 @@ async def ingest_artifact(
     # previous content, and this artifact has changed. Offloaded: it takes the
     # write lock through the knowledge connection.
     await asyncio.to_thread(
-        kstore.release_stale_claim, source_id, prev_hash, content_hash, old_item_ids
+        _release_stale_claim, kstore, source_id, slug, prev_hash, content_hash, old_item_ids
     )
 
     ext = _KIND_EXT.get(art.kind)
@@ -590,7 +605,8 @@ def remove_artifact(kstore: KnowledgeStore, source_id: str, slug: str) -> int:
         # deletion hands the document to a source whose artifact is gone and the text
         # stays searchable with nothing behind it. Items are the winner's; only the
         # claim is dropped.
-        kstore.detach_source_location_by_hash(source_id, prev_hash or "")
+        claimed = kstore.claimed_hash_of("artifact_item_state", source_id, slug)
+        kstore.detach_source_location_by_hash(source_id, claimed or prev_hash or "")
     _del_state(kstore, source_id, slug)
     if item_ids:
         logger.info(

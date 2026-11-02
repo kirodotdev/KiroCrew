@@ -635,6 +635,7 @@ class FolderWatcher:
                     content_hash,
                     json.loads(state.get("item_ids", "[]") or "[]"),
                     state.get("text_hash"),
+                    state.get("claimed_hash"),
                 )
 
             # New or changed file — ingest
@@ -851,7 +852,7 @@ class FolderWatcher:
     def _load_state(self, source_id: str) -> dict[str, dict]:
         """Load folder_file_state rows for this source."""
         rows = self.store.db.execute(
-            "SELECT file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts FROM folder_file_state WHERE source_id = ?",
+            "SELECT file_path, content_hash, text_hash, claimed_hash, mtime, item_ids, last_seen, status, error_message, attempts FROM folder_file_state WHERE source_id = ?",
             (source_id,)).fetchall()
         return {r["file_path"]: dict(r) for r in rows}
 
@@ -1098,7 +1099,8 @@ class FolderWatcher:
             claims: dict[str, str] = {}  # text hash -> one row that claimed under it
             for file_path in file_paths:
                 row = self.store.db.execute(
-                    "SELECT status, item_ids, text_hash, content_hash FROM folder_file_state "
+                    "SELECT status, item_ids, claimed_hash, text_hash, content_hash "
+                    "FROM folder_file_state "
                     "WHERE source_id = ? AND file_path = ?",
                     (source_id, file_path)).fetchone()
                 if row is None:
@@ -1106,7 +1108,8 @@ class FolderWatcher:
                 ids = json.loads(row["item_ids"] or "[]")
                 rows.append((file_path, ids, row["status"]))
                 if not ids:
-                    claims.setdefault(row["text_hash"] or row["content_hash"] or "", file_path)
+                    claims.setdefault(row["claimed_hash"] or row["text_hash"]
+                                      or row["content_hash"] or "", file_path)
             # One release per text hash, before any row loses it: once it runs,
             # the claim is gone for every row of the batch that shared it. That
             # row stays counted, so the helper keeps the claim only when a second
@@ -1125,7 +1128,8 @@ class FolderWatcher:
                 # back first. A 'scanning' row is re-read anyway and its bytes hash
                 # carries its retry budget, so it keeps it.
                 self.store.db.execute(
-                    "UPDATE folder_file_state SET item_ids = '[]', text_hash = NULL"
+                    "UPDATE folder_file_state SET item_ids = '[]', text_hash = NULL, "
+                    "claimed_hash = NULL"
                     + ("" if status in _KEEPS_BYTES_HASH else ", content_hash = ''")
                     + " WHERE source_id = ? AND file_path = ?", (source_id, file_path))
                 if status in ("failed", "skipped"):
@@ -1200,9 +1204,12 @@ class FolderWatcher:
                 # released by content hash. Nothing is deleted: the items are the winner's.
                 # The TEXT hash, not the bytes one: this resolves items, and for a PDF or
                 # HTML file the two differ. A row written before ``text_hash`` existed has
-                # none; its bytes hash is the plaintext hash it claimed under.
+                # none; its bytes hash is the plaintext hash it claimed under. A fuzzy
+                # collapse moved the claim onto different text and recorded that
+                # text's hash in ``claimed_hash``, which then wins.
                 self.store.detach_source_location_by_hash(
-                    source_id, state.get("text_hash") or state.get("content_hash") or "")
+                    source_id, state.get("claimed_hash") or state.get("text_hash")
+                    or state.get("content_hash") or "")
             self.store.db.execute(
                 "DELETE FROM folder_file_state WHERE source_id = ? AND file_path = ?",
                 (source_id, file_path))
