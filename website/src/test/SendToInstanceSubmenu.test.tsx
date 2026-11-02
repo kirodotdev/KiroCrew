@@ -14,8 +14,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import type { InstanceView } from '../api/client'
 import { createTestStore } from './helpers'
-import { markGatewayConnected, markGatewayDisconnected } from '../hooks/websocket/gatewayConnectivity'
-import { sseConnected } from '../store/dashboardSlice'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import { setGatewayConnected } from '../utils/errorReport'
 
 const mocks = vi.hoisted(() => ({
   listInstances: vi.fn(),
@@ -252,13 +252,13 @@ describe('InstanceSendItems', () => {
 
     try {
       // The socket layer moves the store flag and its context-free mirror together.
-      act(() => { markGatewayDisconnected(store.dispatch) })
+      act(() => { store.dispatch(sseDisconnected()); setGatewayConnected(false) })
       expect(screen.queryByText('Ask the agent')).toBeNull()
       expect(screen.queryByTestId('sep')).toBeNull()
       // Only the hand-off depended on the gateway; the failure is still the row's outcome.
       expect(screen.getByRole('alert').textContent).toContain('peer refused the transfer')
     } finally {
-      act(() => { markGatewayConnected(store.dispatch) })
+      act(() => { store.dispatch(sseConnected()); setGatewayConnected(true) })
     }
   })
 
