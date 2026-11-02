@@ -487,13 +487,9 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # the link of a sign-in Crew starts with ``_kiro/mcp/resetServer``, and a remote
 # OAuth server never connects.
 #
-# ``secretStorage`` is NOT in this constant. By default the engine holds the
-# resulting grant in its own memory and Crew never stores an MCP token. Only with
-# ``agent.kas_persist_mcp_sign_in`` on does the spawn add it to a copy of this
-# declaration (``acp/kas_secret_storage.py``): Crew then keeps each server's
-# ``client`` and ``tokens`` in a dedicated encrypted vault under ``kas/``, never the
-# Secrets vault, and serves them back only on the engine's own pipe. Every other
-# callback stays undeclared (= false).
+# ``secretStorage`` is NOT here: with ``agent.kas_persist_mcp_sign_in`` (default on) the
+# spawn adds it to a copy (``acp/kas_secret_storage.py``) and Crew keeps grants in a per-user
+# vault under ``kas/``, never the Secrets vault; else they stay in engine memory. Others: false.
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},

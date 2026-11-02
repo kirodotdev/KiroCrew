@@ -441,6 +441,28 @@ def test_stored_session_control_false_is_reported_but_not_adopted(
     assert issues == []
 
 
+def test_a_stored_mcp_sign_in_false_is_reported_but_never_adopted(tmp_path, monkeypatch, capsys):
+    """An install that materialized ``false`` keeps tokens off disk until it chooses."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": False}})
+    entry = next(
+        e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.kas_persist_mcp_sign_in"
+    )
+
+    assert entry.auto_adopt is False
+    assert superseded_default_drift(_on_disk(tmp_path)) == [entry]
+    assert SD.auto_adoptable(_on_disk(tmp_path)) == []
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert _on_disk(tmp_path)["agent"]["kas_persist_mcp_sign_in"] is False
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+    assert "agent.kas_persist_mcp_sign_in" in out
+    assert "kas/mcp-grants/" in out
+    assert issues == []
+
+
 def test_absent_key_and_absent_section_are_not_drift():
     """An absent key already resolves to the current default, so there is nothing to say."""
     assert superseded_default_drift({"mcp_gateway": {}}) == []
@@ -1046,6 +1068,7 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "watchdog.tool_stall_hard_cap_secs",
         "watchdog.model_silent_probe_secs",
         "agent.session_start_concurrency",
+        "agent.kas_persist_mcp_sign_in",
     }
 
 

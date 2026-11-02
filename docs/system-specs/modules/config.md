@@ -741,6 +741,7 @@ names that test; every other report-only row gives its plain reason:
 | `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
 | `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
 | `agent.session_start_concurrency` | 2 -> "auto", #17055 | reports | the knob to lower when the host or provider is the bottleneck; holding 2 only serialises a burst of starts |
+| `agent.kas_persist_mcp_sign_in` | false -> true, #27966 | reports | false is the documented way to keep OAuth tokens off disk, so adopting would start storing tokens for an operator who said no; holding false only asks each new KAS session to sign in again |
 
 A row whose old value is a supported configuration is not stale noise, whatever
 its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
@@ -1686,7 +1687,7 @@ runs three stages in `config/loader_pipeline.py`, each callable on its own:
 | Stage | Does | Never does |
 |---|---|---|
 | `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
-| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the project-skills off-switch an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
+| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the `skills.project_skills_enabled` and `agent.kas_persist_mcp_sign_in` off-switches an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
 | `persist_write_back(cfg, doc)` | Returns at once for an unloaded document. Otherwise decides the pending migrations, seeds the default crew and `default_agent` into `cfg`, writes the delta under the lock, moves `cfg` to each confirmed adoption, records the `connections_ui` marker, and drops the cache when an adoption did not land. | Write after a load that degraded a section, or raise. |
 
 A `ConfigDocument` carries what the read tells the later stages: the ticket, the
@@ -1694,10 +1695,13 @@ path, `data`, whether a file `loaded`, the content digest, `base_unreadable`, th
 overlay's `base_shadow`, the `overlay` as read, the `adoptable` defaults and the
 `legacy_lazy_stamp`; the one other input of the build is the process-wide sticky
 degraded set. `data` is the read stage's output, not raw file content: the
-overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
-agent off-switch reads as `false`; an unreadable source leaves
-`skills.project_skills_enabled` off), and the document is validated and clamped.
-When nothing loaded it is `{}` or carries only that project-skills marker. A cache
+overlay is merged and the read-stage repairs are applied before validation and
+clamping (a quoted `"false"` on an agent off-switch reads as `false`). A present non-boolean `agent.kas_persist_mcp_sign_in` value, including
+strings, numbers, null and containers, reads as `false`, as does a non-object
+`agent` section. An absent key keeps the `true` default and real booleans are
+honoured. An unreadable source leaves both `skills.project_skills_enabled` and
+`agent.kas_persist_mcp_sign_in` off. When nothing loaded, `data` is `{}` or
+carries those two off-switches. A cache
 hit carries no adoption and no stamp, because a load that did not read the base
 must not decide one. A document is single-use: building normalizes `data` in
 place. Tests build one in memory, holding what the read stage would produce, and
@@ -3242,6 +3246,7 @@ class AgentConfig:
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
+    kas_persist_mcp_sign_in: bool = True  # keep remote MCP sign-ins in a vault PER dashboard user (acp-client.md § KAS MCP OAuth sign-in); only a real true turns it on: the read stage (resolution._fail_closed_kas_mcp_sign_in_config) turns a non-boolean value, a non-object agent section or an unreadable file into false, and an absent key keeps the true default; restart=True
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
     max_subagents: int = 0         # 0 = auto: the subagent_auto_max ceiling (3 when host memory cannot be read); memory bounds starts beneath it (spawn_min_memory_gb). With spawn_min_memory_gb <= 0 the floor is off and auto is sized from memory (compute_memory_sized_parallel_cap). Fixed pins load in [3, 64]
     subagent_auto_max: int = 32    # the count ceiling when max_subagents=0 (provider concurrency / fd / PID stand-in; not sized from memory while the spawn floor is on, and capping the memory-sized figure when spawn_min_memory_gb <= 0 disables it); also caps the TaskRunner's memory-sized auto value. Load-time clamped to [3, 64]

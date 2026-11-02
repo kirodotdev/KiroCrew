@@ -554,6 +554,25 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default="auto",
         changed_in="#17055",
     ),
+    # KAS keeps a dashboard user's remote MCP sign-ins in that user's own grant
+    # vault by default. An install materialized while the default was False keeps
+    # asking every new KAS session to sign in again.
+    #
+    # REPORT-ONLY on the ``stt.streaming`` reasoning, and for a second reason: False
+    # is the documented way to keep OAuth tokens off disk, so a deliberate choice
+    # stores exactly these bytes, and adopting would start storing tokens for an
+    # operator who said no. The ``note`` names what adopting stores.
+    SupersededDefault(
+        dotted_key="agent.kas_persist_mcp_sign_in",
+        old_default=False,
+        new_default=True,
+        changed_in="#27966",
+        note=(
+            "adopting stores each dashboard user's remote MCP client registration and "
+            "tokens in that user's own encrypted vault under kas/mcp-grants/; keep "
+            "false to hold every sign-in in memory only"
+        ),
+    ),
 )
 
 
