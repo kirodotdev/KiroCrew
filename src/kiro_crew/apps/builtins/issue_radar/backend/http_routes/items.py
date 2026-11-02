@@ -159,6 +159,20 @@ async def _handle_issues_first_page(
     )
 
 
+# Timeline kinds kept for the AI summary but not for the detail pane. GitHub's
+# ``review_dismissed`` only says which review stopped counting (the AI path folds
+# it out of the current verdicts); the pane has no row for it and would print the
+# raw kind name.
+_HIDDEN_TIMELINE_KINDS = frozenset({"review_dismissed"})
+
+
+def _visible_timeline(rows: list) -> list:
+    """The timeline rows the detail pane renders."""
+    return [
+        ev for ev in rows if not (isinstance(ev, dict) and ev.get("kind") in _HIDDEN_TIMELINE_KINDS)
+    ]
+
+
 async def _handle_issue_detail(request: web.Request) -> web.Response:
     """GET /issue?owner=<o>&repo=<r>&number=<n>[&refresh=1] — one issue's full
     detail + normalized timeline (comments, label/assignee/close events, and
@@ -200,7 +214,7 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
                 "repo": repo,
                 "number": number,
                 "detail": cached["detail"],
-                "timeline": cached.get("timeline", []),
+                "timeline": _visible_timeline(cached.get("timeline", [])),
                 "from_cache": True,
             }
         )
@@ -222,7 +236,7 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
             "repo": repo,
             "number": number,
             "detail": detail,
-            "timeline": timeline,
+            "timeline": _visible_timeline(timeline),
             "from_cache": False,
         }
     )
@@ -550,7 +564,7 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
                 "repo": repo,
                 "number": number,
                 "detail": cached["detail"],
-                "timeline": cached.get("timeline", []),
+                "timeline": _visible_timeline(cached.get("timeline", [])),
                 "checks": cached.get("checks", []),
                 "checks_summary": client.summarize_checks(cached.get("checks") or []),
                 "from_cache": True,
@@ -595,7 +609,7 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
             "repo": repo,
             "number": number,
             "detail": detail,
-            "timeline": timeline,
+            "timeline": _visible_timeline(timeline),
             "checks": checks,
             # Echoed so the client can patch its cached list row without refetching
             # the whole list (the card's tally + dot come from exactly these rows).

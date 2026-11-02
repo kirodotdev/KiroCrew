@@ -583,6 +583,42 @@ class TestPrAiCommentRows(unittest.TestCase):
         )
         self.assertEqual([r["review_state"] for r in rows], ["APPROVED"])
 
+    DISMISSED = [
+        {
+            "kind": "reviewed",
+            "review_id": 123,
+            "actor": "alice",
+            "created_at": "1",
+            "review_state": "CHANGES_REQUESTED",
+            "body": "Please fix the race.",
+        },
+        {"kind": "review_dismissed", "review_id": 123, "actor": "maintainer", "created_at": "2"},
+    ]
+
+    def test_a_dismissed_verdict_is_not_a_current_verdict(self):
+        self.assertEqual(routes._pr_ai_comment_rows(self.DISMISSED), [])
+        prompt = routes._build_pr_ai_prompt("o", "r", {"number": 1}, self.DISMISSED, [])
+        self.assertNotIn("[review: changes requested]", prompt)
+
+    def test_a_dismissal_changes_the_fingerprint(self):
+        detail = {"state": "open", "head_sha": "a" * 40, "updated_at": "1"}
+        self.assertNotEqual(
+            routes._pr_ai_fingerprint(detail, self.DISMISSED[:1], []),
+            routes._pr_ai_fingerprint(detail, self.DISMISSED, []),
+        )
+
+    def test_a_dismissal_of_another_review_leaves_the_verdict(self):
+        other = [self.DISMISSED[0], {**self.DISMISSED[1], "review_id": 999}]
+        self.assertEqual([r["review_id"] for r in routes._pr_ai_comment_rows(other)], [123])
+
+    def test_verdicts_without_a_review_id_are_never_folded(self):
+        # GitLab and Azure rows carry no review id; a dismissal must not match them.
+        rows = [
+            {"kind": "reviewed", "actor": "bob", "created_at": "1", "review_state": "APPROVED"},
+            {"kind": "review_dismissed", "created_at": "2"},
+        ]
+        self.assertEqual([r["actor"] for r in routes._pr_ai_comment_rows(rows)], ["bob"])
+
     def test_the_verdict_cap_keeps_the_newest(self):
         timeline = [
             {

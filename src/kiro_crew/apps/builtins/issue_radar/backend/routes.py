@@ -171,6 +171,7 @@ from .http_routes.issue_writes import (  # noqa: F401
     _reread_labels_and_patch,
 )
 from .http_routes.items import (  # noqa: F401
+    _HIDDEN_TIMELINE_KINDS,
     _handle_issue_detail,
     _handle_issues,
     _handle_issues_first_page,
@@ -180,6 +181,7 @@ from .http_routes.items import (  # noqa: F401
     _handle_pulls_search,
     _handle_ref_summary,
     _load_open_issues_for_reco,
+    _visible_timeline,
 )
 from .http_routes.pr_actions import (  # noqa: F401
     _BULK_PR_ACTIONS,
