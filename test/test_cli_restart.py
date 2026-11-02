@@ -17,6 +17,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew.service.common import RestartReport
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestRestart:
@@ -32,8 +33,7 @@ class TestRestart:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _fast_restart_ready(self, monkeypatch):
+    def _fast_restart_ready(self, _floor_monkeypatch):
         """Collapse the post-spawn readiness work so these tests don't spin.
 
         These tests mock the gateway lifecycle (``_spawn_detached_gateway`` /
@@ -53,8 +53,8 @@ class TestRestart:
         """
         from kiro_crew import cli_server
 
-        monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 0)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 0)
+        _floor_monkeypatch.setattr(
             "kiro_crew.cli_server._wait_gateway_ready",
             lambda *a, **kw: (cli_server._READY_OK, None),
         )
@@ -1106,8 +1106,7 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=4321)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1154,8 +1153,7 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=9999)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1165,7 +1163,7 @@ class TestRestart:
         # poll the child for early death (and its exit status) before it reports
         # success.
         assert spawned is proc
-        assert spawned.pid == 9999
+        assert spawned.pid == UNALLOCATABLE_PID
         argv = mock_popen.call_args.args[0]
         assert argv == ["/usr/local/bin/kirocrew", "gateway"]
         # Must detach from the controlling terminal — otherwise the detached
@@ -1199,8 +1197,7 @@ class TestRestart:
         own.write_text("#!/bin/sh\n")
         own.chmod(0o755)
         monkeypatch.setattr(sys, "argv", [str(own), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=7777)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1220,8 +1217,7 @@ class TestRestart:
         other.write_text("#!/bin/sh\n")
         other.chmod(0o755)
         monkeypatch.setattr(sys, "argv", [str(other), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=6666)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1238,8 +1234,7 @@ class TestRestart:
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
         monkeypatch.setattr(sys, "argv", [str(tmp_path / "ghost" / "kirocrew"), "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=5555)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
@@ -1276,8 +1271,7 @@ class TestRestart:
         monkeypatch.chdir(tmp_path)
         rel = os.path.join(".venv", venv_bin.name, script_name)
         monkeypatch.setattr(sys, "argv", [rel, "restart"])
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=4444)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen:
             _spawn_detached_gateway()
         spawned = Path(mock_popen.call_args.args[0][0])
@@ -1294,8 +1288,7 @@ class TestRestart:
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process, moved verbatim; the process double is never signalled
-        proc = MagicMock(pid=8888)
+        proc = MagicMock(pid=UNALLOCATABLE_PID)
         with (
             patch("shutil.which", return_value=None),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
