@@ -26,7 +26,7 @@ from kiro_crew import sandbox_launch_mark
 from kiro_crew.constants import KIROCREW_RUNTIME_AGENT_ENV
 from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
 from kiro_crew.platform_compat import IS_POSIX
-from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, without_python_env, wrap_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -336,7 +336,9 @@ def run_aws(
                 # which a GUI-launched gateway leaves minimal. The sandbox's
                 # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
                 # runs it inside the child, on whatever env it is handed.
-                env=aws_spawn_env(argv[0]),
+                # Keep the AWS helper's vetted PATH while isolating a foreign
+                # Python CLI from the gateway's interpreter settings.
+                env=without_python_env(aws_spawn_env(argv[0])),
             )
             if proc_sink is not None:
                 try:
