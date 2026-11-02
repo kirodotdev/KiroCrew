@@ -1683,7 +1683,9 @@ skips it without guessing:
   member's `member_id` is empty;
 - the record's `owner_member`, when set, equals that member's alias, and
   `member-memory.json` is absent or its `owner_member` equals that alias; a
-  malformed manifest refuses. Both labels are writer-populated and a rebinding
+  malformed manifest (unreadable, not UTF-8, not JSON, nested past the
+  recursion limit, or naming no `owner_member`) refuses that store alone, and
+  the scan goes on to the next store. Both labels are writer-populated and a rebinding
   can leave them naming another member, so two labels that agree with each
   other but not with the bound member are refused rather than adopted;
 - `memory.db` exists, is a regular file with exactly one name (`st_nlink == 1`:
