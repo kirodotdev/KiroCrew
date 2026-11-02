@@ -629,15 +629,16 @@ class TestSystemSubprocessOwnership:
 
 class TestSynthesizePolly:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
         # _synthesize_polly() calls wrap_argv before create_subprocess_exec.
         # wrap_argv fail-closes on any host with no OS sandbox backend (macOS 26,
         # every Windows host), which is caught and returns None. Patch to
         # passthrough so the existing create_subprocess_exec mocks run.
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
         # cgroup_scope_argv is neutralized module-wide by _no_cgroup_scope.
-        _patch_aws_on_path(monkeypatch)
+        _patch_aws_on_path(_floor_monkeypatch)
 
     @pytest.mark.asyncio
     async def test_invalid_engine_falls_back_to_default(self, tmp_path) -> None:
@@ -1069,10 +1070,11 @@ class TestSynthesizePollyCancelOwnership:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _sandbox_and_consent(self, monkeypatch, _polly_consented):
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
-        _patch_aws_on_path(monkeypatch)
+    def _sandbox_and_consent(self, _floor_monkeypatch, _polly_consented):
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
 
     @staticmethod
     def _owned_mp3(tmp_path, monkeypatch):
