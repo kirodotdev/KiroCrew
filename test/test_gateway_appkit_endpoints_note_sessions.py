@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,12 +20,13 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app as _make_chat_app
 from chat_test_helpers import _make_state as _make_chat_state
 
-from kiro_crew.dashboard import chat_persistence, chat_runner
+from kiro_crew.dashboard import chat_handlers, chat_persistence, chat_runner
 from kiro_crew.dashboard.chat import api_chat_slot_note
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import drain_pending_context
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestAutomaticSuccessorsDoNotConsumeNotes:
@@ -236,24 +237,36 @@ class TestCleanupPersistsHeldNotes:
             lambda: MagicMock(list_all=MagicMock(return_value=[])),
         )
         state = _make_chat_state(tmp_path)
-        # flake-ok: pre-existing wall-clock read minus nine days that stamps the user row so the cleanup pass with a three-day cutoff sees the slot as stale, moved verbatim; tracked for a de-flake pass
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        # Nine days before a fixed instant; the cleanup request below reads that
+        # instant as its "now" (the clock is installed just before it).
+        clock = ManualClock()
+        old_ts = (clock.now() - timedelta(days=9)).isoformat()
         slot = state.get_or_create_slot("stale-2")
         slot.append("user", "work from last week", ts=old_ts)
         slot.drain()
 
         drained: list[str] = []
+        seated = asyncio.Event()
+        seat = _ChatSlot.append_pending_context
+
+        def _announce_the_seat(self, entry):
+            outcome = seat(self, entry)
+            if outcome and self is slot:
+                seated.set()
+            return outcome
+
+        monkeypatch.setattr(_ChatSlot, "append_pending_context", _announce_the_seat)
 
         async def _draining_turn():
             # Stands in for the live turn: _run_chat calls drain_pending_context,
-            # which builds the prefix and clears the queue.
-            # flake-ok: pre-existing unbounded while-True poll loop in the stand-in turn that drains pending context until the test cancels the task, moved verbatim; tracked for a de-flake pass
-            while True:
-                got = drain_pending_context(slot)
-                if got:
-                    drained.append(got)
-                # flake-ok: pre-existing zero-second sleep that yields the stand-in turn to the event loop so it can drain pending context across the cleanup awaits, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0)
+            # which builds the prefix and clears the queue. It drains the instant
+            # the flush seats the note's context half, the earliest a live turn
+            # could, so a turn still alive then takes the context on every host. A
+            # turn the cleanup pass already cancelled never gets here.
+            await seated.wait()
+            got = drain_pending_context(slot)
+            if got:
+                drained.append(got)
 
         turn = asyncio.get_running_loop().create_task(_draining_turn())
         slot.task = turn
@@ -265,6 +278,9 @@ class TestCleanupPersistsHeldNotes:
                 assert (await resp.json())["visibleDeferred"] is True
                 assert len(slot._deferred_notes) == 1, "fixture: the note must be HELD"
 
+                # The note went in on the real clock, which judges its 24 h context
+                # TTL; only the cleanup pass's cutoff reads the fixed one.
+                clock.install(monkeypatch, chat_handlers)
                 resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
                 assert (await resp.json())["keys"] == [
                     "stale-2"
@@ -272,6 +288,7 @@ class TestCleanupPersistsHeldNotes:
         finally:
             turn.cancel()
 
+        assert seated.is_set(), "fixture: the flush never seated the note's context half"
         assert drained == [], "the doomed turn drained the note's context half before cancellation"
         assert any(
             mark in (e.get("content") or "") for e in slot._pending_context
@@ -291,16 +308,19 @@ class TestCleanupPersistsHeldNotes:
             lambda: MagicMock(list_all=MagicMock(return_value=[])),
         )
         state = _make_chat_state(tmp_path)
-        # flake-ok: pre-existing wall-clock read minus nine days that stamps the user row so the bulk cleanup with a three-day cutoff archives the slot, moved verbatim; tracked for a de-flake pass
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        # Nine days before a fixed instant; the cleanup request below reads that
+        # instant as its "now" (the clock is installed just before it).
+        clock = ManualClock()
+        old_ts = (clock.now() - timedelta(days=9)).isoformat()
         slot = state.get_or_create_slot("stale-1")
         slot.append("user", "work from last week", ts=old_ts)
         slot.drain()
 
         # A stale slot whose turn is still running: the note defers, and the
-        # cleanup pass cancels that turn only AFTER its final save.
-        # flake-ok: pre-existing 30 s sleep task that stands in for a still-running turn so the note defers until cleanup cancels it, moved verbatim; tracked for a de-flake pass
-        turn = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+        # cleanup pass cancels that turn only AFTER its final save. The turn parks
+        # on an event the test releases in its cleanup, so it never ends by itself.
+        release_turn = asyncio.Event()
+        turn = asyncio.get_running_loop().create_task(release_turn.wait())
         slot.task = turn
         try:
             async with self._make_client(state) as client:
@@ -312,11 +332,15 @@ class TestCleanupPersistsHeldNotes:
                 assert (await resp.json())["visibleDeferred"] is True
                 assert len(slot._deferred_notes) == 1
 
+                # The note went in on the real clock, which judges its 24 h context
+                # TTL; only the cleanup pass's cutoff reads the fixed one.
+                clock.install(monkeypatch, chat_handlers)
                 resp = await client.post("/api/chat/slots/cleanup", json={"max_inactive_days": 3})
                 assert (await resp.json())["keys"] == [
                     "stale-1"
                 ], "fixture did not archive the stale slot"
         finally:
+            release_turn.set()
             turn.cancel()
 
         persisted = [
@@ -347,14 +371,18 @@ class TestCleanupPersistsHeldNotes:
             lambda: MagicMock(list_all=MagicMock(return_value=[])),
         )
         state = _make_chat_state(tmp_path)
-        # flake-ok: pre-existing wall-clock read minus nine days that stamps the user row so the cleanup pass with a three-day cutoff selects the slot for archive, moved verbatim; tracked for a de-flake pass
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        # Nine days before a fixed instant; the cleanup request below reads that
+        # instant as its "now" (the clock is installed just before it).
+        clock = ManualClock()
+        old_ts = (clock.now() - timedelta(days=9)).isoformat()
         slot = state.get_or_create_slot("stale-3")
         slot.append("user", "work from last week", ts=old_ts)
         slot.drain()
 
-        # flake-ok: pre-existing 30 s sleep task that stands in for a live turn the cleanup pass cancels before its failing archive save, moved verbatim; tracked for a de-flake pass
-        turn = asyncio.get_running_loop().create_task(asyncio.sleep(30))
+        # The live turn parks on an event the test releases in its cleanup, so only
+        # the cleanup pass's cancel ends it, before the archive save fails.
+        release_turn = asyncio.Event()
+        turn = asyncio.get_running_loop().create_task(release_turn.wait())
         slot.task = turn
 
         async def _failing_save(*a, **k):
@@ -363,11 +391,13 @@ class TestCleanupPersistsHeldNotes:
         try:
             with patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", new=_failing_save):
                 async with self._make_client(state) as client:
+                    clock.install(monkeypatch, chat_handlers)
                     resp = await client.post(
                         "/api/chat/slots/cleanup", json={"max_inactive_days": 3}
                     )
                     body = await resp.json()
         finally:
+            release_turn.set()
             turn.cancel()
 
         assert body.get("failed") == ["stale-3"], f"fixture: archive must fail: {body}"
