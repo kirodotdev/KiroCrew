@@ -36,11 +36,16 @@ vi.mock('../pages/settings/SttSettings', () => ({
 // environment down and throw "window is not defined" as an UNHANDLED error —
 // every test passing and the run still exiting non-zero. `shouldAdvanceTime`
 // keeps the clock moving so `findBy*` behaves as it does with real timers.
+// Testing Library ticks a fake clock inside act() for every `findBy*` and `waitFor` only when it sees a
+// `jest` global, and vitest's `vi` has the same API: the panel's chained reads (config, then the chosen
+// provider's voice list) and the Radix selects they mount all commit inside that act().
 beforeEach(async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.stubGlobal('jest', vi)
   await initI18n('en')
 })
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
