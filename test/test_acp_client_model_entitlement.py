@@ -518,8 +518,7 @@ class TestColdCacheModelFallback:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _cold_advertised_cache(self, monkeypatch):
+    def _cold_advertised_cache(self, _floor_monkeypatch):
         """Pin the cache these tests are ABOUT to the state their name claims.
 
         ``_apply_startup_model`` folds the id onto the advertised spelling through
@@ -532,7 +531,7 @@ class TestColdCacheModelFallback:
         """
         from kiro_crew import model_registry
 
-        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
 
     @staticmethod
     def _claude_client(model):
