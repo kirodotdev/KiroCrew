@@ -613,6 +613,30 @@ async def _post(orch: Any, channel: str, text: str, thread_ts: str | None) -> st
     return str(ts or "")
 
 
+async def _post_kickoff(orch: Any, channel: str, text: str, agent: str, project_dir: str) -> str:
+    """Post the kickoff with the channel's agent picker; returns its ts.
+
+    *agent* is the resolved default the picker starts on. When the agents
+    cannot be listed, or Slack refuses the Block Kit post, the kickoff goes out
+    as plain text: the channel works, only the picker is missing (``/kirocrew
+    agent`` still switches).
+    """
+    from kiro_crew.slack.code_channels import agent_picker
+
+    agents = await agent_picker.agent_choices(project_dir or None)
+    if agents:
+        try:
+            ts = await orch.slack.post_blocks(
+                channel, agent_picker.kickoff_blocks(text, agents, agent), text
+            )
+        except Exception:
+            logger.info("code channel kickoff picker not posted; posting text", exc_info=True)
+        else:
+            if ts:
+                return str(ts)
+    return await _post(orch, channel, text, None)
+
+
 def _folder_name(state: Any, folder_id: str) -> str:
     for folder in getattr(state, "_folders", None) or ():
         if isinstance(folder, dict) and folder.get("id") == folder_id:
@@ -724,7 +748,9 @@ async def _bind_channel(
     spec = await plan_session(
         state, spec, channel_id=channel, team_id=team_id, title=title, channel_name=channel_name
     )
-    anchor = await _post(orch, channel, _kickoff_text(title, state, spec.folder_id), None)
+    anchor = await _post_kickoff(
+        orch, channel, _kickoff_text(title, state, spec.folder_id), spec.agent, spec.project_dir
+    )
     if not anchor:
         raise BindingUnavailable("kickoff post failed")
     # Held from here, with no await since the post returned, until the binding
@@ -764,7 +790,7 @@ async def _bind_channel(
             stored.append(await asyncio.to_thread(write, binding))
 
         _refuse_bind_if_policy_refuses(channel)  # after the kickoff, before the session
-        await create_bound_session(
+        slot = await create_bound_session(
             state,
             spec,
             title=title or "Slack code channel",
@@ -772,9 +798,15 @@ async def _bind_channel(
             anchor_ts=anchor,
             before_publish=record_binding,
         )
-        # No worktree attempt here: each turn's admission prepares the workspace
-        # (one bind attempt per turn), before it captures the session's project.
-        return stored[0]
+    if str(getattr(slot, "agent", "") or spec.agent) != spec.agent:
+        # No resolved default (the session took the default template): show the
+        # agent it really runs on the picker.
+        from kiro_crew.slack.code_channels.agent_picker import refresh_kickoff
+
+        await refresh_kickoff(stored[0])
+    # No worktree attempt here: each turn's admission prepares the workspace
+    # (one bind attempt per turn), before it captures the session's project.
+    return stored[0]
 
 
 def action_user_meta(channel: str, payload: dict[str, Any]) -> dict[str, Any] | None:
