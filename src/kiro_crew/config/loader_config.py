@@ -1439,6 +1439,7 @@ class KiroCrewConfig:
             # kiro -- the member thread then runs as plain chat and the mount
             # step logs why.
             # circular import: members sits above config in the layering.
+            from kiro_crew.acp_backends import ACP_BACKEND_KAS
             from kiro_crew.crewmate_harness import crewmate_backend_pin
             from kiro_crew.members import select_provider_backend
 
@@ -1455,6 +1456,13 @@ class KiroCrewConfig:
                     crewmate_backend_pin(self, session_key) if backend_override is None else None
                 ),
             )
+            # Enterprise (RFC D6): a session on KAS is refused here, before any process
+            # exists, when boot proved KAS cannot start on this host. KAS sessions only:
+            # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
+            if _backend == ACP_BACKEND_KAS:
+                from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+                refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to
             # key on the backend this session actually gets, not on the

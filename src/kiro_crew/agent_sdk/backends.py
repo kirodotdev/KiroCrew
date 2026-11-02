@@ -613,6 +613,38 @@ POLICY_ID_BY_BACKEND: dict = {
 #: Revisit if KAS ever ships a binary of its own.
 GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 
+#: The floor in an ENTERPRISE build: KAS (RFC ``rfc-crew-enterprise-edition.md``, D6).
+#:
+#: The owner made KAS the one harness an enterprise build keeps, because KAS is the
+#: forward harness and kiro-cli is being retired. The precondition argument above
+#: does not apply there: KAS has a second route that needs no kiro-cli (Crew's own
+#: engine bundle, ``acp/kas_bundle.py``), and an enterprise start whose KAS cannot run
+#: on either route is refused (``enterprise_boot.require_kas_harness``) instead of
+#: falling back to the Kiro CLI harness.
+ENTERPRISE_GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KAS  # harness-ok: RFC D6 enterprise floor
+
+
+def governance_floor_backend() -> str:
+    """The backend no policy can remove in THIS build.
+
+    :data:`ENTERPRISE_GOVERNANCE_FLOOR_BACKEND` in an enterprise build, else
+    :data:`GOVERNANCE_FLOOR_BACKEND`. Read at call time from the build-time edition
+    (``kiro_crew.edition``), which is stdlib-only and never reads the platform
+    context or config, so the config-load gate below stays safe (harness-parity H3).
+    Deferred import: this module stays a leaf at import time.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        return ENTERPRISE_GOVERNANCE_FLOOR_BACKEND
+    return GOVERNANCE_FLOOR_BACKEND
+
+
+def floor_label() -> str:
+    """A person's name for :func:`governance_floor_backend`, for log lines."""
+    return "KAS" if governance_floor_backend() == ACP_BACKEND_KAS else "Kiro CLI"
+
+
 # ── Two sets, because policy must be RE-APPLIED, not applied once ──
 #
 # ``_baseline`` is what the BUILD can serve: the public default plus whatever an
@@ -746,15 +778,16 @@ def apply_selectable_denials(denied: Set[str]) -> FrozenSet[str]:
     RESTORES what a previous call removed. That is the property a runtime ceiling
     swap needs and a destructive remove cannot provide.
 
-    :data:`GOVERNANCE_FLOOR_BACKEND` is force-kept even if named in ``denied``. That
+    :func:`governance_floor_backend` is force-kept even if named in ``denied``. That
     is not defence against the governance caller, which never submits the floor to
     the scope — it is so that no caller of this function can empty the set and leave
     the install with no startable harness, a state the dashboard cannot repair
     because the trust-root policy is the one file it may not write.
     """
     keep = {b for b in _baseline if b not in denied and b not in _host_unservable}
-    if GOVERNANCE_FLOOR_BACKEND in _baseline:
-        keep.add(GOVERNANCE_FLOOR_BACKEND)
+    floor = governance_floor_backend()
+    if floor in _baseline:
+        keep.add(floor)
     # Only what *denied* removed: a host mark is reported by whoever placed it, so
     # a policy recompute never logs the host's removal as its own.
     removed = frozenset(b for b in _baseline - keep if b in denied)
@@ -770,7 +803,7 @@ def mark_backend_unservable(backend: str, reason: str) -> None:
     refresh cannot put back a harness the machine cannot start. The floor is never
     marked: it is what keeps the install startable.
     """
-    if backend == GOVERNANCE_FLOOR_BACKEND:
+    if backend == governance_floor_backend():
         return
     _host_unservable[backend] = reason
     _selectable.discard(backend)
@@ -959,7 +992,7 @@ def resolve_selected_backend(value: object) -> str:
     explicit value that is unselectable or unrecognized — a backend this build did
     not register, one policy denied, one this host cannot serve, a typo, or the
     non-string shapes a hand-edited ``config.json`` can hold — degrades to
-    :data:`GOVERNANCE_FLOOR_BACKEND` with the reason in the log rather than
+    :func:`governance_floor_backend` with the reason in the log rather than
     propagating: ``AcpProvider`` rejects an unknown backend by raising, and startup
     refusing with a reason is the contract (harness-parity H3).
 
@@ -967,23 +1000,23 @@ def resolve_selected_backend(value: object) -> str:
     registry is read here, not cached, so ordering is the edition's to get right.
     """
     selectable = selectable_backends()
+    floor = governance_floor_backend()
     if value is None:
-        return (
-            DEFAULT_ACP_BACKEND if DEFAULT_ACP_BACKEND in selectable else GOVERNANCE_FLOOR_BACKEND
-        )
+        return DEFAULT_ACP_BACKEND if DEFAULT_ACP_BACKEND in selectable else floor
     if isinstance(value, str) and value in selectable:
         return value
     # A host mark was announced once by whoever placed it; repeating it on every
     # config load would bury that notice under copies of a vaguer one.
     if isinstance(value, str) and value in _host_unservable:
-        return GOVERNANCE_FLOOR_BACKEND
+        return floor
     logger.warning(
         "Ignoring agent.acp_backend %r (not selectable in this build); using "
-        "the Kiro CLI floor. Selectable values: %s",
+        "the %s floor. Selectable values: %s",
         value,
+        floor_label(),
         ", ".join(repr(b) for b in selectable_stored_backend_values()),
     )
-    return GOVERNANCE_FLOOR_BACKEND
+    return floor
 
 
 def kiro_cli_pick_backend() -> str:

@@ -473,11 +473,25 @@ class BackgroundSessionRuntime:
         # tear the fresh provider down instead of registering it.
         await provider.shutdown()
 
+    def _unreadable_backend(self) -> str:
+        """The backend a background runtime takes when ``agent.acp_backend`` is unreadable.
+
+        ``acp_backend_kiro`` in an ``oss`` build, as before. In an enterprise build the
+        build's floor, KAS (RFC D6), because Kiro CLI there needs a remote rule.
+        """
+        from kiro_crew import edition
+
+        if edition.is_enterprise():
+            from kiro_crew.agent_sdk.backends import governance_floor_backend
+
+            return governance_floor_backend()
+        return self._deps.acp_backend_kiro
+
     def _configured_bg_backend_raw(self) -> str | None:
         """Return the configured background backend, or ``None`` if unreadable."""
         logger = self._deps.logger
         try:
-            backend = getattr(self._owner._cfg.agent, "acp_backend", self._deps.acp_backend_kiro)
+            backend = getattr(self._owner._cfg.agent, "acp_backend", self._unreadable_backend())
         except Exception:
             logger.warning(
                 "agent.acp_backend is unreadable; treating the _bg backend as unknown",
@@ -489,7 +503,7 @@ class BackgroundSessionRuntime:
     def _configured_bg_backend(self) -> str:
         """Return the backend background runtimes must spawn under."""
         backend = self._owner._configured_bg_backend_raw()
-        return backend if backend is not None else self._deps.acp_backend_kiro
+        return backend if backend is not None else self._unreadable_backend()
 
     def _bg_backend_supports_runtime(self) -> bool:
         """Whether the configured backend can use the multiplexed runtime."""
@@ -799,7 +813,7 @@ class BackgroundSessionRuntime:
                 configured_backend = (
                     configured_backend_raw
                     if configured_backend_raw is not None
-                    else self._deps.acp_backend_kiro
+                    else self._unreadable_backend()
                 )
                 runtime_capable = configured_backend in self._deps.runtime_backends()
                 if runtime_capable and runtime is not None and runtime.is_alive():
@@ -875,6 +889,14 @@ class BackgroundSessionRuntime:
                             ),
                         )
 
+                    # Enterprise (RFC D6): a background runtime on a KAS that boot
+                    # proved cannot start is refused before any process, as every
+                    # factory-built session is. A no-op in an oss build.
+                    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+                    from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+                    if configured_backend == ACP_BACKEND_KAS:
+                        refuse_unstartable_kas()
                     replacement = build_runtime(self.state.inherited_scratch)
                     # Bracket the spawn with identity reads so the runtime
                     # carries a spawn stamp: sessions demuxed onto it inherit
