@@ -47,6 +47,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type SidePanelWithholdable } from './SidePanelAddMenu'
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
+import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
@@ -513,6 +514,15 @@ export default function SidePanel({
     }
     closeTab(id)
   }, [tabs, closeTab, deleteTerminalSession])
+  // Each mounted file or working-tree diff tab's own close guard, by tab id. The
+  // chip's × and middle-click close through it, so they ask the same questions
+  // as the panel's own close (unsaved edits, a buffer whose file is gone or
+  // unreadable, an open comment draft).
+  const panelHandles = useRef(new Map<string, MarkdownPanelHandle>())
+  const registerPanelHandle = useCallback((tabId: string, handle: MarkdownPanelHandle | null) => {
+    if (handle) panelHandles.current.set(tabId, handle)
+    else panelHandles.current.delete(tabId)
+  }, [])
   const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const currentSlotRef = useRef(slot)
   currentSlotRef.current = slot
@@ -571,6 +581,25 @@ export default function SidePanel({
     if (ask && !await confirm(ask)) return
     if (currentSlotRef.current !== slot) return
     liveTargets.forEach(tab => handleCloseTab(tab.id))
+  }
+  // The chip's × and middle-click. A file tab whose editor is mounted asks its
+  // own guard; one holding a buffer with no editor mounted (its body withheld
+  // while the chat's machine is resolved, or on a remote chat) takes the batch
+  // preflight above, which names unsaved edits and checks the disk. A tab with
+  // no buffer -- a terminal, a folder, a restored file tab whose first read has
+  // not landed -- has nothing to ask about and closes directly.
+  const closeTabFromChip = (tab: PanelTab) => {
+    const guard = panelHandles.current.get(tab.id)
+    if (guard) {
+      // A background tab is brought forward only when the guard has something
+      // to ask, so the reader sees the buffer the question is about; a close
+      // that needs no answer leaves the strip's focus where it was.
+      guard.requestClose({ beforePrompt: () => { void requestActive(tab.id, activeLeadingIdRef.current) } })
+    } else if ((tab.kind === 'file' || tab.kind === 'wtdiff') && tab.content !== undefined) {
+      void handleCloseTabs([tab])
+    } else {
+      handleCloseTab(tab.id)
+    }
   }
   // Move a terminal tab OUT of this chat into the app-wide bottom panel. Unlike
   // handleCloseTab this must NOT dispose the session — the PTY + xterm live in
@@ -735,7 +764,7 @@ export default function SidePanel({
               instantLayout={resizing || slotSwitched || dimAnimating}
               onSelect={() => { void requestActive(t.id, activeId) }}
               onClose={() => handleCloseTabs([t])}
-              onCloseDirect={() => handleCloseTab(t.id)}
+              onCloseDirect={() => closeTabFromChip(t)}
               closeOthersDisabled={dynamicTabs.length === 1}
               closeRightDisabled={i === dynamicTabs.length - 1}
               onCloseOthers={() => handleCloseTabs(dynamicTabs.filter(tab => tab.id !== t.id))}
@@ -1169,6 +1198,7 @@ export default function SidePanel({
                 tab={t} active={isActive && !panelHidden}
                 slot={slot}
                 onClose={() => handleCloseTab(t.id)}
+                onPanelHandle={registerPanelHandle}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}

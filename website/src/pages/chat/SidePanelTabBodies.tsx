@@ -9,7 +9,7 @@
  * at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useCallback, Suspense, lazy } from 'react'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -133,7 +133,7 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * and file-open host it stays mounted through tree-read failures so its notice,
  * toggle, and Refresh escape hatch remain reachable.
  */
-function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onSubmitComments, connected = true, onRevealConsumed }: {
+function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onPanelHandle, onSubmitComments, connected = true, onRevealConsumed }: {
   tab: PanelTab
   /** Is this the visible tab? Background file tabs stay mounted, so the panel
    *  needs this to keep its Cmd+F handler off a document the user cannot see. */
@@ -154,6 +154,9 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   /** Right-click "Add to context" on a rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
+  /** Receives this tab's close/navigate guard (`null` on unmount), so the tab
+   *  strip's × closes through the same prompts as the panel's own close. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
   onSubmitComments?: (m: string, count?: number) => void | boolean | Promise<void | boolean>
   connected?: boolean
   onRevealConsumed: () => void
@@ -162,10 +165,15 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   const railUsable = !!projectDir && !!onFileOpen
   // The rail re-targets this tab in place, so the panel's own dirty guard has to
   // approve the navigation the way it approves a close.
-  const panelRef = useRef<MarkdownPanelHandle>(null)
+  const panelRef = useRef<MarkdownPanelHandle | null>(null)
+  const tabId = tab.id
+  const setPanelRef = useCallback((handle: MarkdownPanelHandle | null) => {
+    panelRef.current = handle
+    onPanelHandle?.(tabId, handle)
+  }, [onPanelHandle, tabId])
   return (
     <MarkdownPanel
-      ref={panelRef}
+      ref={setPanelRef}
       embedded
       active={active}
       filePath={tab.path || ''}
@@ -299,11 +307,13 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
   return <div data-testid="file-tab-hydrating" className="h-full p-4"><ContentSkeleton rows={8} /></div>
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
+  /** A file or working-tree diff tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
@@ -363,6 +373,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         onFolderOpen={onFolderOpen}
         onAddToContext={onAddToContext}
         onClose={onClose}
+        onPanelHandle={onPanelHandle}
         onSubmitComments={onSubmitComments}
         connected={connected}
         onRevealConsumed={onRevealConsumed}
