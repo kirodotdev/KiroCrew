@@ -731,7 +731,7 @@ def _feed_advertised_model_cache(self: AcpSessionHandle) -> None:
     if not ids:
         return
     if model_registry.refresh_advertised_models(
-        model_registry_namespace(backend), ids, rows=self._available_models
+        model_registry_namespace(backend), ids, rows=self._available_models, confirm_shrink=True
     ):
         self._advertised_models_changed = True
 

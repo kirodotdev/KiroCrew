@@ -618,6 +618,74 @@ class TestAdvertisedModelCache:
         assert mr.refresh_advertised_models("claude_code", []) is False
         assert mr.advertised_models("claude_code") == ["a"]
 
+    # A session/new list is entitlement-filtered, so one degraded read
+    # (a session born in a token-refresh race) must not shrink the cache that
+    # seeds every later session; the same shrunk read twice does.
+    def test_session_snapshot_that_drops_ids_is_held_not_applied(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "sonnet", "haiku"]})
+        assert mr.refresh_advertised_models("claude_code", ["haiku"], confirm_shrink=True) is False
+        assert mr.advertised_models("claude_code") == ["opus", "sonnet", "haiku"]
+
+    def test_session_shrink_confirmed_by_a_second_identical_read(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "sonnet", "haiku"]})
+        mr.refresh_advertised_models("claude_code", ["sonnet", "haiku"], confirm_shrink=True)
+        assert (
+            mr.refresh_advertised_models("claude_code", ["sonnet", "haiku"], confirm_shrink=True)
+            is True
+        )
+        assert mr.advertised_models("claude_code") == ["sonnet", "haiku"]
+
+    def test_full_read_between_shrinks_cancels_the_pending_shrink(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "haiku"]})
+        mr.refresh_advertised_models("claude_code", ["haiku"], confirm_shrink=True)
+        mr.refresh_advertised_models("claude_code", ["opus", "haiku"], confirm_shrink=True)
+        assert mr.refresh_advertised_models("claude_code", ["haiku"], confirm_shrink=True) is False
+        assert mr.advertised_models("claude_code") == ["opus", "haiku"]
+
+    def test_held_shrink_still_takes_the_reads_new_ids_and_labels(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "haiku"]})
+        monkeypatch.setattr(mr, "_ADVERTISED_META", {})
+        rows = [{"modelId": "haiku", "name": "Haiku"}, {"modelId": "fable", "name": "Fable"}]
+        assert (
+            mr.refresh_advertised_models(
+                "claude_code", ["haiku", "fable"], rows=rows, confirm_shrink=True
+            )
+            is True
+        )
+        assert mr.advertised_models("claude_code") == ["opus", "haiku", "fable"]
+        names = {
+            r["model_name"]: r["display_name"] for r in mr.advertised_model_rows("claude_code")
+        }
+        assert names == {"opus": "opus", "haiku": "Haiku", "fable": "Fable"}
+
+    def test_held_shrink_at_the_cap_refuses_the_new_id_and_its_label(self, monkeypatch, caplog):
+        cap = mr.ADVERTISED_MODELS_MAX_IDS
+        cached = [f"m{i}" for i in range(cap)]
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(cached)})
+        monkeypatch.setattr(mr, "_ADVERTISED_META", {})
+        ids = cached[1:] + ["new"]
+        rows = [{"modelId": mid, "name": mid.upper()} for mid in ids]
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            mr.refresh_advertised_models("claude_code", ids, rows=rows, confirm_shrink=True)
+        assert mr.advertised_models("claude_code") == cached
+        assert "new" not in mr._ADVERTISED_META.get("claude_code", {})
+        assert set(mr._ADVERTISED_META["claude_code"]) <= set(cached)
+        assert any("refused 1 model id(s)" in r.message for r in caplog.records)
+
+    def test_growing_session_snapshot_still_replaces_at_once(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["haiku"]})
+        assert (
+            mr.refresh_advertised_models("claude_code", ["opus", "haiku"], confirm_shrink=True)
+            is True
+        )
+        assert mr.advertised_models("claude_code") == ["opus", "haiku"]
+
+    def test_unfiltered_catalog_refresh_still_replaces_on_shrink(self, monkeypatch):
+        # The kiro --list-models catalog is unfiltered: a removed row is gone.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"acp": ["a", "b"]})
+        assert mr.refresh_advertised_models("acp", ["a"]) is True
+        assert mr.advertised_models("acp") == ["a"]
+
     def test_refresh_refuses_an_over_long_id_and_says_so_once(self, monkeypatch, caplog):
         # The id is REFUSED, not truncated: a truncated id names a different
         # model, or none. The rest of the list is retained, and the overflow is
