@@ -5684,9 +5684,14 @@ and confined project skills take neither (they always get the full body).
 
 **Context Budget endpoint.** `GET /api/skills/-/budget` returns the 30-day
 per-skill injection cost with alias folding across renamed/aliased ledger keys.
-Response shape: `{window_days, total_chars, rows: [{key, name, size_bytes,
-deliveries, chars, inject_on_trigger, always, owned, source, idle_days,
-folded_from?}]}`. `deliveries` is `null` when untracked (no ledger entry),
+Response shape: `{window_days, total_chars, rows: [{key, name, description,
+origin, size_bytes, deliveries, chars, inject_on_trigger, always, owned, source,
+idle_days, folded_from?}]}`. `description` is the `SKILL.md` frontmatter
+description (`""` when absent), redacted like `name`, so a row says what the skill
+is. `origin` is `"user"` when the loader's `_is_user_authored` says so, `"app"`
+when the rest resolves into `<data home>/apps` (an installed app registered it),
+and `"builtin"` otherwise; the row shows it as a Yours / App / Built-in tag.
+`deliveries` is `null` when untracked (no ledger entry),
 distinct from `0` (entry exists but zero hits). `chars = size_bytes *
 (deliveries ?? 0)`. `folded_from` lists alias ledger keys whose `SKILL.md`
 resolves (via symlink) to the same real file as the canonical key; their hits are
