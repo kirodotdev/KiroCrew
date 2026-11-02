@@ -1419,6 +1419,9 @@
           "rerun_failed_jobs": "Re-run the failed jobs in {{name}}",
           "rerun_run": "Re-run {{name}}"
         },
+        "providerLink": {
+          "open_on_provider": "Open on {{provider}}"
+        },
         "readOnlyTag": {
           "read_only": "Read Only"
         },

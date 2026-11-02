@@ -2359,6 +2359,9 @@
         "providerBadge": {
           "self_managed_instance": "স্ব-পরিচালিত ইনস্ট্যান্স: {{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "{{provider}}-এ খোলো"
+        },
         "readOnlyTag": {
           "read_only": "শুধু পঠনযোগ্য",
           "read_only_repo_needs_triage_or_push_access": "শুধু পড়ার রিপোজিটরি — ট্রাইএজ বা পুশ অ্যাক্সেস প্রয়োজন"

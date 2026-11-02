@@ -2234,6 +2234,9 @@
           "rerun_failed_jobs": "[Ŕè-ŕùñ ţĥè ƒàìĺèð ĵøƀş ìñ {{name}} ··················]",
           "rerun_run": "[Ŕè-ŕùñ {{name}} ···········]"
         },
+        "providerLink": {
+          "open_on_provider": "[Øþèñ øñ {{provider}} ············]"
+        },
         "readOnlyTag": {
           "read_only": "[Ŕèàð Øñĺý ··············]",
           "read_only_repo_needs_triage_or_push_access": "[Ŕèàð-øñĺý ŕèþø — ñèèðş ţŕìàğè øŕ þùşĥ àççèşş ······················]"

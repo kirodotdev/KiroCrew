@@ -2297,6 +2297,9 @@
         "providerBadge": {
           "self_managed_instance": "自管理实例：{{host}}"
         },
+        "providerLink": {
+          "open_on_provider": "在 {{provider}} 上打开"
+        },
         "readOnlyTag": {
           "read_only": "只读",
           "read_only_repo_needs_triage_or_push_access": "只读仓库 — 需要分类或推送权限"

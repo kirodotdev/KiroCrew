@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 // The context is mocked (same pattern as IssueRadarTagging.test.tsx) so these
 // tests exercise the reference UI without standing up the whole data layer.
@@ -330,6 +332,18 @@ describe('RefSheet', () => {
     renderWithQc(<RefSheet />)
     const link = screen.getByRole('link', { name: 'Open on GitHub' })
     expect(link.getAttribute('href')).toBe(`https://github.com/${OWNER}/${REPO}/pull/7`)
+  })
+
+  it('names the link-out in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      setCtx({ refStack: [{ kind: 'pull', number: 7 }] })
+      renderWithQc(<RefSheet />)
+      const link = screen.getByRole('link', { name: 'Auf GitHub öffnen' })
+      expect(link.getAttribute('title')).toBe('Auf GitHub öffnen')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('offers "open in the workspace" only when the list holds the row', async () => {
