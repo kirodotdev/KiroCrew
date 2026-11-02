@@ -408,6 +408,8 @@ async def apply_approval_mode(
     request_app: str,
     cron_creator: str,
     audit_caller: Callable[[str], str],
+    still_live: Callable[[], bool] | None = None,
+    cascade_may_raise: bool = True,
 ) -> web.Response:
     """Apply an approval mode to ONE resolved slot (or every slot when ``slot`` is None).
 
@@ -415,6 +417,18 @@ async def apply_approval_mode(
     passed. Shared with the crewmate profile write (``PUT /api/agents/{name}``),
     which applies the stored permission to the crewmate's live DM slot through
     this same path rather than a copy of it.
+
+    *still_live* ties the change to one approval prompt (a Slack Code channel's
+    "Trust this channel"): it is asked after the override deactivation (this
+    function's only await before a ``trust`` grant) and before any mode flag or
+    policy is written -- for ``trust`` with no yield between, and for
+    ``trust_reads`` on one slot again after its trust-scope ending -- and a
+    prompt that has stopped waiting gets a 409 and no mode change.
+
+    *cascade_may_raise* False keeps the creator-mode cascade lower-only for a
+    change that only takes a grant away from *slot* (a Slack Code channel
+    lowering one of its workers): *slot*'s tie to the caller may be unverified,
+    so its children are never raised on its behalf.
     """
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -454,6 +468,11 @@ async def apply_approval_mode(
         # re-indexing state._slots.
         await asyncio.to_thread(safety_override().deactivate, "dashboard")
 
+    if still_live is not None and mode != "yolo" and not still_live():
+        return web.json_response(
+            {"ok": False, "error": "the approval is no longer waiting"}, status=409
+        )
+
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
@@ -488,6 +507,12 @@ async def apply_approval_mode(
                 s for s in list(state._slots.values()) if effective_session_key(s) == _reads_key
             ]
             await _end_trust_scopes(_reads_sharing, audit_caller)
+            # Asked again past that await: no yield between it and the writes
+            # (the flags, the policy, then the creator-mode cascade).
+            if still_live is not None and not still_live():
+                return web.json_response(
+                    {"ok": False, "error": "the approval is no longer waiting"}, status=409
+                )
             _reads_live = _still_owning(state, _reads_sharing, _reads_key)
             for _sharing in _reads_live:
                 _sharing._trust = False
@@ -625,7 +650,7 @@ async def apply_approval_mode(
         inherited_slots = _apply_inherited_postures(
             state,
             slot,
-            may_raise=not request_app and not cron_creator,
+            may_raise=not request_app and not cron_creator and cascade_may_raise,
             audit_caller=audit_caller,
         )
 

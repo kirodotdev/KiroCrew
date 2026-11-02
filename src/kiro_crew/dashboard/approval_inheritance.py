@@ -125,10 +125,11 @@ def plan_descendant_postures(
         sessions[key] = sessions.get(key, 0) + 1
     plan: list[PostureChange] = []
     seen: set[int] = {id(root)}
-    # (creator key, the posture that creator now carries)
-    frontier: list[tuple[str, Posture]] = [(str(root.key), carried_posture(root))]
+    # (creator key, the posture that creator now carries, whether every edge
+    # from *root* down to that creator is gateway-authored)
+    frontier: list[tuple[str, Posture, bool]] = [(str(root.key), carried_posture(root), True)]
     while frontier:
-        parent_key, target = frontier.pop()
+        parent_key, target, path_verified = frontier.pop()
         for child in by_creator.get(parent_key, []):
             if id(child) in seen or is_profile_worker(child):
                 continue
@@ -144,11 +145,15 @@ def plan_descendant_postures(
             # session's stored policy is written once per sharing slot, and a slot
             # that shares it through a link vouches for nothing.
             shared = sessions.get(effective_session_key(child), 0) > 1
-            if raising and (shared or not (may_raise and _verified_child(child, parent_key))):
+            # Every edge above a raise must be gateway-authored, not just the last
+            # one: the walk passes through a child whose mode is unchanged, and a
+            # restored ``_created_by`` alone must not carry a raise past it.
+            verified = may_raise and path_verified and _verified_child(child, parent_key)
+            if raising and (shared or not verified):
                 # Not raised, so nothing below it is raised by this walk either.
                 continue
             if target != current:
                 plan.append(PostureChange(child, target))
             # An inherited child carries what it was just given.
-            frontier.append((str(child.key), target))
+            frontier.append((str(child.key), target, verified))
     return plan
