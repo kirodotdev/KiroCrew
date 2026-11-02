@@ -566,7 +566,8 @@ class _BatchRuntimeHolder:
         # work_dir + sandbox_mode="auto" mirror the old AcpClient worker: the
         # OS sandbox scrubs credential paths/env for this LLM-directed subprocess
         # (GitHub fetch/post run via the `gh` CLI's own auth; the worker only
-        # writes data/results and runs `python3 sage_lib/pipeline.py`).
+        # writes data/results and runs `<python_command()> sage_lib/pipeline.py`,
+        # where python_command() is the gateway's own sys.executable).
         rt = AcpRuntime(agent=self._agent, work_dir=self._work_dir, sandbox_mode="auto",
                         acp_backend=backend)
         try:
