@@ -24,7 +24,6 @@ from kiro_crew.terminal_safe import _is_invisible
 
 if TYPE_CHECKING:
     from kiro_crew.config.sections_session import KiroCrewAgentConfig
-    from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -770,31 +769,61 @@ def _normalize_acp_backend(value: object) -> str:
     return resolve_selected_backend(value)
 
 
-def normalize_acp_failover(value: object) -> "AcpFailoverConfig":
-    """Coerce a persisted ``agent.acp_failover`` block to an :class:`AcpFailoverConfig`.
+def _unselectable_failover_names(chain: tuple[str, ...]) -> list[str]:
+    """The chain names, in config spelling, that are not selectable right now."""
+    from kiro_crew.acp_backends import backend_from_stored
 
-    Shape and trigger-set validation live in :meth:`AcpFailoverConfig.from_raw`
-    (a pure leaf with no registry import); this adds the one check that needs the
-    registry: every chain id must be a currently SELECTABLE backend. A chain
-    naming an unknown or denied backend fails the config load with a named error
-    rather than silently never failing over to a backend that cannot run.
+    selectable = set(selectable_backend_values())
+    return [name for name in chain if backend_from_stored(name) not in selectable]
 
-    Backend-id SPELLING is not re-checked with a regex: membership in
-    ``selectable_backend_values()`` is strictly stronger (a selectable id already
-    matches ``^[a-z0-9][a-z0-9_-]*$``), so a separate pattern would be a second,
-    weaker gate. Returns the disabled config for an absent block; raises
-    ``ValueError`` for any invalid shape, trigger, or non-selectable chain id.
+
+def normalize_acp_failover(value: object) -> dict:
+    """``agent.acp_failover`` as the loaded config holds it. Never raises.
+
+    Whether a chain name is selectable depends on the live registry, which an
+    enterprise ceiling or this host can narrow after the block was written, so a
+    load must not fail on it: a member that is not selectable is dropped from the
+    loaded value with a warning, the way ``_read_backend_choice`` treats a backend
+    pick. A block with an invalid shape is logged and loaded as off (``{}``).
+    ``config.json`` keeps what the operator wrote either way: the key is one of
+    ``loader_builders._HARNESS_CHOICE_KEYS``, which a full-document save writes
+    back from disk. The hard refusal is on the write path,
+    :func:`validate_acp_failover`.
     """
     from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
 
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        logger.warning("agent.acp_failover ignored: expected an object")
+        return {}
+    try:
+        parsed = AcpFailoverConfig.from_raw(value)
+    except ValueError as exc:
+        logger.warning("agent.acp_failover ignored: %s", exc)
+        return {}
+    dropped = _unselectable_failover_names(parsed.chain)
+    if not dropped:
+        return dict(value)
+    logger.warning("agent.acp_failover.chain: ignoring %s, which cannot be selected here", dropped)
+    return {**value, "chain": [name for name in parsed.chain if name not in dropped]}
+
+
+def validate_acp_failover(value: object) -> dict:
+    """An ``agent.acp_failover`` value a write may store, else ``ValueError`` naming why.
+
+    The write path's refusal (``kirocrew config set``): stricter than the load
+    path, because the write is the last point where the mistake is still
+    attributable to the command that made it. Refuses a bad shape, a repeated
+    name, a trigger this phase does not consume, and a chain name that is not
+    selectable now.
+    """
+    from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
+
+    if not isinstance(value, dict):
+        raise ValueError("must be an object with 'enabled', 'chain' and optional 'triggers'")
     parsed = AcpFailoverConfig.from_raw(value)
-    if not parsed.chain:
-        return parsed
-    selectable = set(selectable_backend_values())
-    unknown = [b for b in parsed.chain if b not in selectable]
-    if unknown:
-        raise ValueError(
-            "agent.acp_failover.chain may only name selectable backends "
-            f"{sorted(selectable)}; rejected {unknown}"
-        )
-    return parsed
+    unusable = _unselectable_failover_names(parsed.chain)
+    if unusable:
+        raise ValueError(f"chain names {unusable}, which cannot be selected here")
+    return dict(value)

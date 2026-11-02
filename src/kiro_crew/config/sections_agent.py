@@ -41,7 +41,6 @@ from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
 from kiro_crew.effort import EFFORT_LEVELS
-from kiro_crew.subagent_parts.backend_failover import AcpFailoverConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -252,23 +251,26 @@ class AgentConfig:
             # frozen literal.
         ),
     )
-    acp_failover: "AcpFailoverConfig" = field(
-        default_factory=AcpFailoverConfig.disabled,
+    # Plain JSON data, read through ``backend_failover.failover_policy`` where it
+    # is used: a dataclass here would not survive ``to_dict()`` and ``save()``.
+    acp_failover: dict = field(
+        default_factory=dict,
         metadata=_meta(
             "ACP backend failover",
-            "Opt-in, off-by-default policy that retries a sub-agent on another "
-            "harness when its chosen backend is unavailable. An object with "
-            "'enabled' (bool), 'chain' (ordered list of selectable backend ids "
-            "tried in order), and optional 'triggers' (which terminal "
-            "availability verdicts cause a hop: usage_limit, auth, "
-            "backend_not_installed, backend_restart_required). A hop only ever "
-            "goes to another explicit selectable backend, never a silent Kiro "
-            "fallback; a transient fault is never a trigger (that is the "
-            "same-backend retry ladder's job). Absent means no failover.",
-            # No enum: 'chain' holds selectable backend ids, whose live set comes
-            # from the registry, and 'triggers' is validated against the terminal
-            # verdict set in AcpFailoverConfig.from_raw — a frozen literal here
-            # would drift from both, the same hazard acp_backend documents.
+            "Opt-in, off-by-default policy that starts a sub-agent on another "
+            "backend when the one it asked for cannot start. An object with "
+            "'enabled' (bool), 'chain' (ordered list of distinct backend names, "
+            "spelled as spawn_run spells them, e.g. 'codex', 'claude', 'kiro') "
+            "and optional 'triggers' (which refusals cause a hop: "
+            "backend_not_installed, backend_restart_required; both when omitted). "
+            "A hop only goes to a later chain member that can start, never a "
+            "silent Kiro fallback, and the spawn result names the backend that "
+            "ran and the one it replaced. A hop moves the prompt and its context "
+            "to that backend's vendor and bill. A name that is not selectable is "
+            "skipped. Absent means no failover.",
+            # No enum: 'chain' names selectable backends, whose live set comes
+            # from the registry, and 'triggers' is checked in
+            # AcpFailoverConfig.from_raw; a frozen literal here would drift.
         ),
     )
     kas_bundle: bool = field(
