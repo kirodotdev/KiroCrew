@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -9,7 +10,12 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from kiro_crew.messaging.split import iter_fence_spans
+
+if TYPE_CHECKING:
+    from markdown_it import MarkdownIt
 
 try:
     from kiro_crew.security import (
@@ -186,6 +192,69 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+@functools.cache
+def _markdown_parser() -> MarkdownIt:
+    """The CommonMark parser that decides which lines of ``tasks.md`` are code.
+
+    Built on first use because ``markdown_it`` is slow to import and most
+    gateway starts never read a spec.
+    """
+    from markdown_it import MarkdownIt
+
+    # Block structure only. Fences are block tokens, and the inline pass is the
+    # part whose cost grows faster than the input (a run of "[" takes seconds
+    # per MiB); link reference definitions only feed that pass.
+    # ``text_join`` only merges the inline pass's text tokens, so it goes too.
+    return MarkdownIt("commonmark", {"html": True}).disable(["inline", "text_join", "reference"])
+
+
+#: Largest ``tasks.md`` given the CommonMark parse. The block parse is linear but
+#: costs microseconds per line, so a cap keeps a crafted 1 MiB file (the read
+#: cap) from costing seconds of CPU on each new version. A real plan is a few KiB.
+#: A larger file falls back to the shared top-level fence scanner, which is a
+#: single linear pass and misses only fences nested in a list item or a quote.
+_MAX_COMMONMARK_CHARS = 32 * 1024
+
+
+def _fenced_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Character spans of *text* covered by a fenced code block, in order.
+
+    Each span runs from the opener line's start to the end of the closer line,
+    or to the end of the enclosing block when the fence is left open. Text over
+    ``_MAX_COMMONMARK_CHARS`` goes to the shared ``iter_fence_spans`` scanner.
+    """
+    if "```" not in text and "~~~" not in text:
+        return ()
+    if len(text) > _MAX_COMMONMARK_CHARS:
+        return tuple(iter_fence_spans(text))
+    return _commonmark_fenced_spans(text)
+
+
+@functools.lru_cache(maxsize=32)
+def _commonmark_fenced_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Fenced spans of *text* as a CommonMark parse sees them.
+
+    A parse rather than a line scanner, because a fence nested in a list item
+    is indented past the three spaces a top-level fence allows and still
+    renders as code. Cached by text, because every detail poll re-reads the
+    same unchanged file.
+
+    The parser reads a lone ``\\r`` as a line break, while ``_TASK_LINE_RE``
+    breaks only on ``\\n``. Parsing a copy with every ``\\r`` blanked keeps both
+    on the same line numbers and the same offsets.
+    """
+    starts = [0]
+    starts.extend(i + 1 for i, ch in enumerate(text) if ch == "\n")
+    spans: list[tuple[int, int]] = []
+    for token in _markdown_parser().parse(text.replace("\r", " ")):
+        if token.type != "fence" or not token.map:
+            continue
+        first, last = token.map
+        end = starts[last] if last < len(starts) else len(text)
+        spans.append((starts[first], end))
+    return tuple(spans)
+
+
 def _parse_tasks(text: str) -> list[dict]:
     """Enumerate ``tasks.md``'s checklist as addressable tasks.
 
@@ -208,8 +277,18 @@ def _parse_tasks(text: str) -> list[dict]:
     tracked separately, and an agent (or a person) checking a box by hand shows up
     without anything having to be told.
     """
+    text = text or ""
+    # A checklist line inside a fenced code block is example text the document
+    # shows, not a task: it renders as code and nobody can check it off.
+    fenced = _fenced_spans(text)
+    span = 0
     tasks: list[dict] = []
-    for match in _TASK_LINE_RE.finditer(text or ""):
+    for match in _TASK_LINE_RE.finditer(text):
+        at = match.start()
+        while span < len(fenced) and fenced[span][1] <= at:
+            span += 1
+        if span < len(fenced) and fenced[span][0] <= at:
+            continue
         body = (match.group(2) or "").strip()
         if not body:
             # A checkbox with no text is not something a user can be asked to run.
@@ -553,7 +632,8 @@ def _task_prompt(
         f"SINGLE TASK from spec '{name}'. Work ONLY on this one task from "
         f"{spec_dir / 'tasks.md'}, operating inside {working_dir} (your shell already "
         f"starts there — no cd needed). This is checklist item {task_index + 1}, "
-        f"counting non-empty checklist items from top to bottom:\n\n{task_text}\n\n"
+        f"counting non-empty checklist items from top to bottom and skipping "
+        f"any inside fenced code blocks:\n\n{task_text}\n\n"
         f"Mark its checkbox [x] in tasks.md when it is genuinely done, run the "
         f"relevant build/tests to verify, then STOP and summarize. Do NOT continue "
         f"to the following tasks — I am running these one at a time."
