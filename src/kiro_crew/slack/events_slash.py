@@ -735,7 +735,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
 
     slash_command = f"/{orch.slack_command}"
     # Slack Code channel commands (/summarize, /wrap-up, /create-pr, and
-    # `/kirocrew agent` typed in a code channel): answered there while
+    # `/kirocrew agent` and `/kirocrew trust` typed in a code channel): answered there while
     # slack.code_channels is on and the install can run it; a pass-through
     # (False) otherwise, so the rest of this function is unchanged.
     if await code_channel_slash(orch, payload, _respond):

@@ -124,6 +124,7 @@ class TestSwitches:
             "agent": None,
             "model": None,
             "reasoning_effort": None,
+            "approval_mode": None,
         }
         assert body["code_channel_warnings"] == []
 

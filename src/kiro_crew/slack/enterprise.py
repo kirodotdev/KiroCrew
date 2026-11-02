@@ -212,8 +212,7 @@ def _read_allowlist() -> tuple[set[str] | None, str]:
             )
         # Same per-entry filter the loader applies: Slack enterprise/team ids.
         usable = {
-            e for e in entries
-            if isinstance(e, str) and (e.startswith("E") or e.startswith("T"))
+            e for e in entries if isinstance(e, str) and (e.startswith("E") or e.startswith("T"))
         }
         if entries and not usable:
             return None, (
@@ -273,8 +272,7 @@ def _load_allowed_team_ids() -> bool:
     except Exception:
         configured, refusal = None, "unexpected error reading config"
         logger.exception(
-            "Failed to read slack.allowed_enterprise_ids; failing closed "
-            "with no origin admitted"
+            "Failed to read slack.allowed_enterprise_ids; failing closed " "with no origin admitted"
         )
 
     if configured is None:
@@ -402,7 +400,10 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
         # the posture is policy-only (Rule 6 rejects a profile carrying it), so a
         # surface-bound profile must NOT additionally intersect here.  (The degrade
         # audit below uses the _host surface only for honest SEL attribution.)
-        for leaf, value in (("allowed_enterprise_ids", enterprise_id), ("allowed_team_ids", team_id)):
+        for leaf, value in (
+            ("allowed_enterprise_ids", enterprise_id),
+            ("allowed_team_ids", team_id),
+        ):
             if not value:
                 # An EMPTY id (Slack returns enterprise_id="" for every
                 # non-Enterprise-Grid workspace, the common case) cannot satisfy
@@ -569,10 +570,7 @@ def validate_enterprise(
         # Default-open: no allowlist configured, so a missing slack_sdk or
         # auth.test failure must not block startup.  Without cached state,
         # check_message_origin() stays default-open too.
-        logger.warning(
-            "Enterprise validation: auth.test unavailable; "
-            "continuing default-open"
-        )
+        logger.warning("Enterprise validation: auth.test unavailable; " "continuing default-open")
         sel().log_api_access(
             caller="gateway",
             operation="slack.enterprise_validation",
