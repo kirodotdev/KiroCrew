@@ -11573,6 +11573,7 @@
       "failed_to_run_job": "Не удалось запустить задание"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Назад (вне текстовых полей)",
       "chats_panel": "Панель чатов (вне текстовых полей)",
       "cycle_agent": "Сменить агента",
       "cycle_approval_mode": "Сменить режим подтверждения",
@@ -11580,6 +11581,7 @@
       "cycle_reasoning_effort": "Сменить глубину размышлений",
       "focus_pending_approval": "Перейти к ожидающему подтверждению",
       "focus_text_input": "Перейти к полю ввода",
+      "forward_outside_text_fields": "Вперёд (вне текстовых полей)",
       "edit_last_message": "Редактировать последнее сообщение",
       "reopen_closed_session": "Снова открыть закрытый сеанс",
       "no_recently_closed_session": "Нет недавно закрытых сеансов.",

@@ -11328,6 +11328,7 @@
       "failed_to_run_job": "Impossibile eseguire il job"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Indietro (fuori dai campi di testo)",
       "chats_panel": "Pannello delle chat (fuori dai campi di testo)",
       "cycle_agent": "Scorri gli agenti",
       "cycle_approval_mode": "Scorri le modalità di approvazione",
@@ -11335,6 +11336,7 @@
       "cycle_reasoning_effort": "Scorri i livelli di ragionamento",
       "focus_pending_approval": "Attiva l’approvazione in attesa",
       "focus_text_input": "Attiva il campo di testo",
+      "forward_outside_text_fields": "Avanti (fuori dai campi di testo)",
       "edit_last_message": "Modifica l'ultimo messaggio",
       "reopen_closed_session": "Riapri la sessione chiusa",
       "no_recently_closed_session": "Nessuna sessione chiusa di recente.",

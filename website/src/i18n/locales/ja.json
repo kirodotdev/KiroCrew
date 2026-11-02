@@ -10838,6 +10838,7 @@
       "failed_to_run_job": "ジョブの実行に失敗しました"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "戻る（テキスト入力欄の外で）",
       "chats_panel": "チャットパネル（テキスト入力欄の外で）",
       "cycle_agent": "エージェントをサイクル",
       "cycle_approval_mode": "承認モードをサイクル",
@@ -10845,6 +10846,7 @@
       "cycle_reasoning_effort": "推論努力度をサイクル",
       "focus_pending_approval": "保留中の承認にフォーカス",
       "focus_text_input": "テキスト入力にフォーカス",
+      "forward_outside_text_fields": "進む（テキスト入力欄の外で）",
       "edit_last_message": "最後のメッセージを編集",
       "reopen_closed_session": "閉じたセッションを再度開く",
       "no_recently_closed_session": "最近閉じたセッションはありません。",

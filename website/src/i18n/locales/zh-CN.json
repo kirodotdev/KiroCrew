@@ -10838,6 +10838,7 @@
       "failed_to_run_job": "运行任务失败"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "后退（不在文本框中时）",
       "chats_panel": "聊天面板（不在文本框中时）",
       "cycle_agent": "循环切换代理",
       "cycle_approval_mode": "循环切换审批模式",
@@ -10845,6 +10846,7 @@
       "cycle_reasoning_effort": "循环切换推理强度",
       "focus_pending_approval": "聚焦待处理的审批",
       "focus_text_input": "聚焦文本输入框",
+      "forward_outside_text_fields": "前进（不在文本框中时）",
       "edit_last_message": "编辑最后一条消息",
       "reopen_closed_session": "重新打开已关闭的会话",
       "no_recently_closed_session": "没有最近关闭的会话。",

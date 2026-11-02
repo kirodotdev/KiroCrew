@@ -11328,6 +11328,7 @@
       "failed_to_run_job": "Falha ao executar o job"
     },
     "useKeyboardShortcuts": {
+      "back_outside_text_fields": "Voltar (fora dos campos de texto)",
       "chats_panel": "Painel de conversas (fora dos campos de texto)",
       "cycle_agent": "Alternar entre agentes",
       "cycle_approval_mode": "Alternar entre modos de aprovação",
@@ -11335,6 +11336,7 @@
       "cycle_reasoning_effort": "Alternar entre níveis de esforço de raciocínio",
       "focus_pending_approval": "Focar a aprovação pendente",
       "focus_text_input": "Focar a caixa de texto",
+      "forward_outside_text_fields": "Avançar (fora dos campos de texto)",
       "edit_last_message": "Editar a última mensagem",
       "reopen_closed_session": "Reabrir a sessão fechada",
       "no_recently_closed_session": "Nenhuma sessão fechada recentemente.",
