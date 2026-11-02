@@ -13,7 +13,6 @@
 #       --floor <n> --baseline <this file> --update-baseline
 #
 # Format: <path> <rate-when-recorded>   # <covered>/<statements>
-src/kiro_crew/_process_group_supervisor.py 32.0   # 41/128
 src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
 src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py 49.3   # 112/227
 src/kiro_crew/apps/builtins/auto_improvement/backend/sse.py 26.1   # 12/46
