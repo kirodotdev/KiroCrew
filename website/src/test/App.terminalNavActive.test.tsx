@@ -98,8 +98,12 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
     )
   })
   afterEach(() => {
-    __resetBottomTerminal()
-    setTerminalEnabledFlag(false)
+    // The nav row and the dock panel are still mounted here, so the reset's emit
+    // re-renders each of them.
+    act(() => {
+      __resetBottomTerminal()
+      setTerminalEnabledFlag(false)
+    })
   })
 
   it('is unlit and aria-pressed=false while the panel is closed', async () => {
