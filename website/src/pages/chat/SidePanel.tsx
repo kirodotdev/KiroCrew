@@ -720,7 +720,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2 -mb-px"
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-6 list-none m-0 p-0 px-2 -mb-px"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem

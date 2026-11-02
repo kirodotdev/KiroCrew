@@ -509,9 +509,10 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
           values={tabs}
           onReorder={setTabsOrder}
           role="tablist"
-          // Four pixels contain the global 2px outline plus its 2px offset,
-          // including the first/last tab at either end of the scroll range.
-          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-1 list-none m-0 p-1"
+          // 24px of scroll padding keeps a revealed tab clear of the w-6 edge
+          // fades, and also contains the global 2px outline plus its 2px offset.
+          // At either end of the scroll range the fade is not drawn.
+          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-6 list-none m-0 p-1"
         >
           {tabs.map((t, i) => (
             <DraggableTermTab

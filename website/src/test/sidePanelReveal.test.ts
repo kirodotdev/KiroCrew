@@ -156,6 +156,46 @@ describe('revealChip, clamping', () => {
   })
 })
 
+describe('revealChip, edge-fade inset (#27241)', () => {
+  it('stops a right-clipped chip a fade width short of the trailing edge', () => {
+    const f = fixture(150, 40, 0)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.chipRect().right).toBe(V - 24)
+  })
+
+  it('moves a chip that sits flush under the trailing fade', () => {
+    // Inside the box, but its last 24px (the close button) are under the fade.
+    const f = fixture(160, 40, 100)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.chipRect().right).toBe(V - 24)
+  })
+
+  it('stops a left-clipped chip a fade width past the leading edge', () => {
+    const f = fixture(150, 40, 200)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.chipRect().left).toBe(24)
+  })
+
+  it('splits the room when the chip is too wide for both insets', () => {
+    const f = fixture(150, 80, 0)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.chipRect().right).toBe(V - 10)
+  })
+
+  it('lets the last chip reach the end, where no fade is drawn', () => {
+    const f = fixture(360, 40, 0)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.left()).toBe(300)
+    expect(f.chipRect().right).toBe(V)
+  })
+
+  it('leaves a chip already clear of both fades alone', () => {
+    const f = fixture(130, 40, 100)
+    revealChip(f.scroller, f.chip, true, 24)
+    expect(f.writes()).toBe(0)
+  })
+})
+
 describe('revealChip, write style', () => {
   it('never uses scrollIntoView or smooth scrolling', () => {
     const intoView = typeof Element.prototype.scrollIntoView === 'function'
