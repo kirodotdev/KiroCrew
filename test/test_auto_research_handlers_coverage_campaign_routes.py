@@ -554,8 +554,13 @@ class TestKnowledgeRoutes:
 async def _drain_bg_tasks(app: web.Application) -> None:
     tasks = list(app.get("_bg_tasks") or ())
     if tasks:
-        # flake-ok: pre-existing gather with no timeout of the handler's background tasks, moved verbatim; tracked for a de-flake pass
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Lost-run ceiling: a hung background task fails the test by name instead of hanging the run.
+        _done, pending = await asyncio.wait(tasks, timeout=30)
+        assert not pending, f"background tasks still pending after 30 s: {pending!r}"
+        for task in tasks:
+            # Retrieve each outcome so asyncio does not log it; failures stay the handler's own concern, as before.
+            if not task.cancelled():
+                task.exception()
 
 
 # --- assorted helpers -----------------------------------------------------
