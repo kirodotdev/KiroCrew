@@ -633,10 +633,11 @@ class TestDenyMatchingIsQuoteNormalized:
         assert "[^'\\\\]" in pattern and '[^\\"\\\\]' in pattern, pattern
 
         payload = "AA $'" + ("\\" * 2000)
-        start = time.perf_counter()
+        # Thread CPU: the decode runs on this thread, and a wall reading would bill
+        # a loaded runner's scheduling to it.
+        start = time.thread_time()
         security._decode_shell_quoted_literals(payload)
-        elapsed = time.perf_counter() - start
-        # flake-ok: pre-existing 1 s wall-clock ceiling that only separates a linear decode from the Fibonacci-time one, moved verbatim; tracked for a de-flake pass
+        elapsed = time.thread_time() - start
         assert elapsed < 1.0, f"decode took {elapsed:.3f}s -- the ambiguity is back"
 
     def test_the_audit_fields_redact_before_truncating(self):
