@@ -6393,7 +6393,8 @@
       "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
       "updated_from_the_registry": "Updated {{name}} from the registry.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
-      "refresh_store": "Refresh the store"
+      "refresh_store": "Refresh the store",
+      "refreshing_store": "Refreshing the store…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mo",

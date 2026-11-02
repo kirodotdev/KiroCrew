@@ -11043,7 +11043,8 @@
       "synced_from_its_source_directory": "{{name}} को उसकी सोर्स डायरेक्टरी से सिंक कर दिया गया।",
       "updated_from_the_registry": "{{name}} को रजिस्ट्री से अपडेट कर दिया गया।",
       "updated_needs_session_approval_consent": "{{name}} बंद है, क्योंकि यह अब तुम्हारी चैट को नियंत्रित करने की अनुमति मांगता है। ऐप की जानकारी में अनुमति देखो, फिर इसे चालू करो।",
-      "refresh_store": "स्टोर रीफ़्रेश करें"
+      "refresh_store": "स्टोर रीफ़्रेश करें",
+      "refreshing_store": "स्टोर रीफ़्रेश हो रहा है…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/माह",
