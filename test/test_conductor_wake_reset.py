@@ -123,6 +123,7 @@ async def test_vouched_wake_queues_the_reset_and_logs_the_loop(
         ("a different loop is current", LOOP_ID),
         ("the loop is stopped", LOOP_ID),
         ("the slot did not arm it itself", LOOP_ID),
+        ("the loop is the gateway's recorded default patrol", LOOP_ID),
     ],
 )
 async def test_unvouched_wake_is_refused(wake_env: dict[str, Any], case: str, loop_id: str) -> None:
@@ -137,6 +138,12 @@ async def test_unvouched_wake_is_refused(wake_env: dict[str, Any], case: str, lo
         # A cron, a person's dashboard arm or the bind-time default patrol: a
         # live loop with no self-arm record.
         wake_env["recorded"].clear()
+    elif case == "the loop is the gateway's recorded default patrol":
+        # A crewmate thread's default patrol carries a self-arm record so it can
+        # fire; the record must not also vouch for a reset.
+        patrol = _loop()
+        patrol.default_patrol = True
+        wake_env["svc"] = _Svc(patrol)
     slot = _slot()
     result = await _wake_reset(slot, _state(), loop_id=loop_id)
     assert result.startswith("Conversation NOT reset"), case

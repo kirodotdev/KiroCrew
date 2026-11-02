@@ -75,15 +75,26 @@ STALE_GOAL_BASELINE_ERROR = (
     "Send the same save again to replace the stored goal with your text."
 )
 
+#: The refusal ``authorize_and_update_nudge`` answers when an edit would change what
+#: a crewmate thread's gateway default patrol says. The remedy is the path that
+#: already replaces a default patrol.
+DEFAULT_PATROL_EDIT_REFUSAL = (
+    "This loop is the gateway's default patrol, so its message, banner, judge and "
+    "watch are fixed. Call monitor_start with your own loop to replace it; "
+    "interval, cycle and runtime limits and pause or resume still work here."
+)
+
 # Dashboard slot modes that refuse automation turns armed from OUTSIDE the
 # session. A crew-mode slot is driven by its orchestrator and a member-mode
 # slot is a named member's own thread; neither may have work injected by a
 # cron, another session or an app through a nudge loop. The refusal is NOT
 # about the mode being unable to run a loop -- a member is a self-directed
 # resident agent, and its own ``monitor_start`` is the normal way it keeps
-# itself awake -- so the one admitted exception is a SELF-ARM: the arming
+# itself awake -- so the admitted exception is a SELF-ARM: the arming
 # request came from a turn of the bound session itself. See
-# :func:`is_self_arm`.
+# :func:`is_self_arm`. A ``member`` slot also admits the gateway's fixed
+# default ledger patrol on its own thread, and nothing else from outside
+# (:func:`admits_member_default_patrol`).
 _EXTERNAL_ARM_REFUSED_MODES = frozenset({"crew", "member"})
 
 
@@ -101,6 +112,61 @@ def is_self_arm(slot_key: str, initiator_slot_key: str) -> bool:
     """
     initiator = (initiator_slot_key or "").strip()
     return bool(initiator) and initiator == (slot_key or "").strip()
+
+
+def admits_member_default_patrol(
+    *,
+    slot_mode: str,
+    slot_key: str,
+    attested_caller_slot_key: str,
+    caller: str,
+    default_patrol: bool,
+    watch: str,
+    message: str,
+    idle_secs: int,
+    max_cycles: int,
+    max_runtime_secs: int,
+    gate: bool,
+    monitor: Any,
+    judge: Any,
+    banner: str,
+    stop_sentinel_path: str,
+) -> bool:
+    """Whether an outside arm on a ``member`` slot is the gateway's own ledger patrol.
+
+    The one outside arm a crewmate's thread admits. ``conductor_patrol.ensure_patrol``
+    arms it after the crewmate's own ledger ``bind`` (or a ``session_create`` while it
+    holds a ledger), so the crewmate's workers are read without a full model turn on
+    every quiet cycle. Every field must be the gateway's fixed patrol, so the arm
+    carries no agent input:
+
+    * the slot is ``member`` mode -- a ``crew`` slot is never admitted;
+    * ``caller`` is ``conductor-patrol`` and the loop is tagged ``default_patrol``;
+    * the loop is a plain prompt loop (no structured monitor, judge, banner or stop
+      file) that watches ``work-ledger``, gated, with the fixed message and bounds;
+    * the target is the attested caller's OWN thread: *attested_caller_slot_key* is
+      the binding key ``conductor_patrol.attested_caller_slot`` resolved from the
+      dispatch request's transport attestation and execution record, never from the
+      ``X-Session-Key`` header alone. Blank never matches (``is_self_arm``).
+    """
+    from kiro_crew import conductor_patrol
+
+    return (
+        slot_mode == "member"
+        and caller == conductor_patrol.PATROL_CALLER
+        and default_patrol is True
+        and monitor is None
+        and not judge
+        and not banner
+        and not (stop_sentinel_path or "").strip()
+        and gate is True
+        and watch == conductor_patrol.PATROL_WATCH
+        and message == conductor_patrol.PATROL_MESSAGE
+        and idle_secs == conductor_patrol.PATROL_INTERVAL_SECS
+        and max_cycles == conductor_patrol.PATROL_MAX_CYCLES
+        and max_runtime_secs == conductor_patrol.PATROL_MAX_RUNTIME_SECS
+        and is_self_arm(slot_key, attested_caller_slot_key)
+    )
 
 
 def external_arm_refusal(mode: str) -> str:
@@ -850,6 +916,16 @@ async def authorize_and_update_nudge(
                 "be saved. If this keeps happening, restart Kiro Crew.",
                 503,
             )
+    if (
+        getattr(row, "default_patrol", False) is True
+        and getattr(row, "self_armed", False) is True
+        and any(field is not None for field in (message, banner, judge, watch))
+    ):
+        # A crewmate thread's gateway default patrol fires only while it carries the
+        # fixed patrol (``conductor_patrol.is_fixed_patrol_payload``). An edit of what
+        # its wake says would leave it active and never waking, so it is refused
+        # before anything is written; bounds and pause/resume still apply.
+        return _deny(DEFAULT_PATROL_EDIT_REFUSAL, 409)
     if banner is not None:
         # Optional and display-only; ``None`` reached here means "leave
         # unchanged" and was filtered by the caller, so a value present now is a
@@ -1014,6 +1090,11 @@ async def authorize_and_add_nudge(
     #: Arm the gateway's default conductor patrol (``NudgeLoop.default_patrol``):
     #: set by ``conductor_patrol`` alone, and only on a prompt loop.
     default_patrol: bool = False,
+    #: Binding key of the session a dispatch route ATTESTED as its caller (transport
+    #: attestation plus execution record), or "". Set by ``conductor_patrol`` alone;
+    #: it admits nothing but the fixed default patrol on that caller's own member
+    #: thread (``admits_member_default_patrol``).
+    attested_caller_slot_key: str = "",
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -1117,6 +1198,9 @@ async def authorize_and_add_nudge(
     # record is what lets that loop's wake reset the conversation
     # (``session_directive_apply``). The ``self_armed`` bit's meaning is unchanged.
     self_recorded = False
+    # Set when a member slot admits the gateway's fixed default patrol from outside
+    # (``admits_member_default_patrol``): its trust entry is a default-patrol grant.
+    patrol_granted = False
     if is_channel_key(slot_key):
         # Channel-bound loop (Slack / Discord ...). Validate the session is
         # routable so a nudge fired later has somewhere to reply.
@@ -1227,10 +1311,35 @@ async def authorize_and_add_nudge(
             # MCP tool reporting the arm as "requested" and the store holding no
             # loop. Audited under its own outcome so the trail distinguishes
             # "member armed itself" from an ordinary success.
-            if not is_self_arm(slot_key, initiator_slot_key):
+            if is_self_arm(slot_key, initiator_slot_key):
+                _audit("self_armed")
+            elif admits_member_default_patrol(
+                slot_mode=slot_mode,
+                slot_key=slot_key,
+                attested_caller_slot_key=attested_caller_slot_key,
+                caller=caller,
+                default_patrol=default_patrol,
+                watch=watch,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                max_runtime_secs=max_runtime_secs,
+                gate=gate,
+                monitor=monitor,
+                judge=judge,
+                banner=banner,
+                stop_sentinel_path=stop_sentinel_path,
+            ):
+                # The gateway's fixed ledger patrol on the attested caller's own
+                # member thread. Its trust entry is a DEFAULT-PATROL grant, not a
+                # self-arm: the fire-time guard admits its wakes only while the
+                # stored loop still carries the fixed patrol, and it vouches for no
+                # conversation reset. The thread's own ``monitor_start`` replaces it.
+                patrol_granted = True
+                _audit("default_patrol_admitted")
+            else:
                 return _deny(external_arm_refusal(slot_mode), 409)
             self_armed = True
-            _audit("self_armed")
         self_recorded = self_armed or (
             str(getattr(authorized_slot, "agent", "") or "") in WAKE_RESET_AGENTS
             and is_self_arm(slot_key, initiator_slot_key)
@@ -1417,7 +1526,12 @@ async def authorize_and_add_nudge(
     if self_recorded:
         try:
             assert reserved_loop_id is not None
-            await asyncio.to_thread(record_self_arm, reserved_loop_id, slot_key)
+            if patrol_granted:
+                await asyncio.to_thread(
+                    record_self_arm, reserved_loop_id, slot_key, default_patrol=True
+                )
+            else:
+                await asyncio.to_thread(record_self_arm, reserved_loop_id, slot_key)
         except OSError:
             if self_armed:
                 logger.error("self-arm record unavailable; loop not armed", exc_info=True)
