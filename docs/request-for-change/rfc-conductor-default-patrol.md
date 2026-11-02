@@ -20,6 +20,7 @@ superseded-by: []
 - Amends [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) in one place, named in section 3: arming the `work-ledger` watch is no longer only the conductor's own act.
 - Related: [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor) and the goal-conductor skill's `scripts/patrol_budget.py` (the bounds a patrol must pass).
 - Sections 1 to 8 were measured at `a92dde1a6c`. Section 9 was measured at `ac8a96a242`.
+- Amended 2026-11-02 (section 10): a crewmate's own thread takes the default patrol. This supersedes section 9.2 decisions 4 and 5 and the section 9.7 option C rejection for that one arm only. The amendment lands on its own first, as GOVERNANCE.md asks; the implementation is [#27948](https://github.com/kirodotdev/KiroCrew/pull/27948), which rebases onto it.
 
 ## 1. Problem
 
@@ -194,3 +195,37 @@ Each is pinned by a test in the phase 2 implementation PR:
 - A create from a ledger-less caller arms nothing, keeps any stopped row, and carries the no-ledger note.
 - A member or crew caller that holds a ledger is refused on both routes with `outside-arm-refused`; a ledger-less one gets `no-ledger`. Either way no loop row and no trust record is written, and the reply carries the note.
 - Both MCP replies end with `patrol=<outcome> (<reason>)`, including `patrol=unknown` when the route sent no outcome.
+
+## 10. Amendment (2026-11-02): the default patrol on a crewmate's own thread
+
+Decided by the repository owner on 2026-11-02. This section supersedes section 9.2 decisions 4 and 5 and the option C rejection in section 9.7 for ONE arm only: the default patrol on a crewmate's (`member`) own thread. Every other outside arm on a member slot, and every outside arm on a crew slot, stays refused as those sections say. Measured at `9b3374bebf`.
+
+### 10.1 Why
+
+A crewmate that dispatched work had no patrol it could rely on. Its conductor never got the default patrol, because a member slot refuses every outside arm. A loop it armed itself ran ungated or ran out at its cap, and the ledger-only help (`_extend_for_open_ledger`, the person-wait hold) never applied. The owner wants the same guarantee the root conductor already has: once a crewmate dispatches work, a patrol is running.
+
+### 10.2 The admitted arm
+
+`autonudge_authz.admits_member_default_patrol` admits the arm on a `member` slot only when every one of these holds:
+
+- the caller is `conductor-patrol` and the loop is tagged `default_patrol`;
+- it is a plain prompt loop (no structured monitor, judge, banner or stop file), gated, watching `work-ledger`, with the fixed `PATROL_MESSAGE` and the fixed section 3 bounds;
+- the target slot is the attested caller's own thread. `conductor_patrol.attested_caller_slot` reads it from the dispatch request itself: the transport must vouch for the session key (the Unix-socket peer check or the signed per-session token), and the session's execution record must name a member. The slot it answers is derived from that attested session alone, and the authorizer compares it with the patrol's target, so a patrol aimed at any other thread is refused. The `X-Session-Key` header alone is never enough;
+- the route is a ledger `bind`, or a `session_create` while the caller holds a ledger (section 9.2 decision 3 still applies).
+
+The admitted loop gets a default-patrol grant in the keystone-gated trust record (`autonudge_selfarm.record_self_arm(..., default_patrol=True)`), not a self-arm entry. The fire-time crew/member guard admits its wakes only while the stored loop still carries the fixed patrol (`conductor_patrol.is_fixed_patrol_payload`), because the loop store is agent-writable and a row rewritten after the arm must not inherit the grant. An edit of that patrol's message, banner, judge or watch is refused (`DEFAULT_PATROL_EDIT_REFUSAL` in `authorize_and_update_nudge`) and points to `monitor_start`, so the patrol is never left active but unable to wake; its interval, limits and pause or resume still update. The grant never answers `is_recorded_self_arm`, so it vouches for no conversation reset (see the 2026-11-02 note in [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md)). The crewmate's own later `monitor_start` replaces it, as section 3 already says for any default patrol. A loop a person stopped is still kept (`user-stopped`).
+
+### 10.3 The residual, and why it is accepted
+
+Section 9.7 rejected option C because a cron, app or sub-agent turn on the slot would then arm the member's thread. That stays true for this one arm. Such a turn runs in the thread's own session, so its `bind` is attested like the crewmate's own. The owner accepts this. The worst it can do is arm the fixed patrol. That costs at most one wasted gated cycle, after which the crewmate stops the loop itself. The arm carries no agent input: its text, watch and bounds are written by the gateway. So nothing beyond that patrol is opened.
+
+### 10.4 Exit criteria
+
+These replace the member half of the sixth bullet in section 9.8:
+
+- An attested member-slot bind returns `armed`. The loop is tagged `default_patrol`, its wakes are admitted while the stored row still carries the fixed patrol and refused once it is rewritten, and the crewmate's own later `monitor_start` replaces it. An attested member `session_create` with a ledger arms it too.
+- A cron, app, REST, workflow or other-session arm on the same member slot, an unattested request, a request whose execution record is not a member's, and any arm whose fields differ from the fixed patrol are still refused with `outside-arm-refused`.
+- A default patrol aimed at another crewmate's thread, from a crewmate's attested request, is refused.
+- A crew slot is unchanged: refused even when attested.
+- A person-stopped loop is still kept.
+- With an open item, a spent cap on the member patrol is raised by `_extend_for_open_ledger`.

@@ -154,6 +154,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
     is_session_trusted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
@@ -194,6 +195,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
 )
@@ -746,6 +748,9 @@ class _CompactionReplay:
     # Set on the one replay that follows a lost backend session; a second loss
     # inside it ends on a clear error instead of replaying again.
     session_reloaded: bool = False
+    # The first attempt's Hooks-page turn, so a replay neither fires
+    # UserPromptSubmit again nor drops the context it added.
+    hook_turn: Any = None
 
 
 # The privacy-mode machinery lives in ``messaging.privacy_mode`` so a second
@@ -1048,6 +1053,7 @@ async def handle_message(
     try:
         if await _dispatch_before_turn(turn) and await _run_turn(turn):
             await _deliver_answer(turn)
+            await turn.fire_stop_hooks()
     except asyncio.CancelledError:
         # A cancel (``!stop``, warm-pool reclaim, shutdown) can land at any await
         # in any phase, and ``CancelledError`` passes every ``except Exception``

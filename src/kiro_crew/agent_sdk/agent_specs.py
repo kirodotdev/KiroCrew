@@ -164,3 +164,20 @@ def sweep_kas_launch_snapshots(boot_time: float) -> bool:
         return False
     kas_env_launch.sweep_stale(boot_time)
     return True
+
+
+def session_spec_grants(agent: str) -> set[str] | None:
+    """The ``allowedTools`` entries and governed ``autoApprove`` refs of *agent*'s
+    user-level spec, or ``None`` when none reads. Blocking.
+
+    A project checkout's spec is never read: a cloned repository could plant one
+    that grants what the session's own spec withholds."""
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+
+    spec = session_mcp.agent_spec_snapshot(agent, work_dir=None)
+    if not isinstance(spec, dict):
+        return None
+    allowed = spec.get("allowedTools")
+    listed = allowed if isinstance(allowed, list) else []
+    return {e for e in listed if isinstance(e, str)} | set(auto_approve_refs(spec))

@@ -364,8 +364,7 @@ class TestFillLockReleasedAcrossStart:
             started += 1
             if started == 1:
                 first_started.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -427,8 +426,7 @@ class TestFillLockReleasedAcrossStart:
             nonlocal started
             started += 1
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -478,8 +476,7 @@ class TestFillLockReleasedAcrossStart:
 
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _stale_factory(*a, **kw):
             p = _make_provider()
@@ -533,8 +530,7 @@ class TestFillLockReleasedAcrossStart:
 
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: pre-existing gated start stub, moved verbatim; the finally block sets the event and every outer await is bounded
-            await release_start.wait()
+            await await_until(release_start, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()
@@ -582,8 +578,7 @@ class TestMcpConfigFence:
     def _gated_factory(providers: list, in_start: asyncio.Event, release: asyncio.Event):
         async def _slow_start() -> None:
             in_start.set()
-            # flake-ok: gated start stub as the sibling tests use; the finally block sets the event and every outer await is bounded
-            await release.wait()
+            await await_until(release, what="the test releases the gated start")
 
         def _factory(*a, **kw):
             p = _make_provider()

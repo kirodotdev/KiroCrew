@@ -19,6 +19,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
 )
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestAcpClientStaleTurn:
@@ -43,24 +44,26 @@ class TestAcpClientStaleTurn:
         return client
 
     @pytest.mark.asyncio
-    async def test_recent_stderr_activity_prevents_stale_turn(self, tmp_path, caplog):
+    async def test_recent_stderr_activity_prevents_stale_turn(self, tmp_path, caplog, monkeypatch):
         """thinking_tokens on stderr (recent _last_activity) keeps the turn alive.
 
         With a tiny stale timeout, a turn whose stdout is silent but whose
         _last_activity keeps refreshing (as the stderr drain does during
         thinking) must NOT be declared stale.
         """
+        # The client family reads one clock. A virtual one makes every silent
+        # read cost exactly 50 ms of it, whatever the host's speed.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._client_with_silent_stdout(tmp_path)
 
         # Emulate the stderr drain refreshing _last_activity on every poll, so
         # the turn is continuously "active" even though stdout yields nothing.
-        # Sleep well under the stale timeout each poll so liveness never lapses
-        # (mirrors thinking_tokens streaming faster than _STALE_TURN_TIMEOUT).
+        # Each poll costs 50 ms, well under the stale timeout, so liveness never
+        # lapses (mirrors thinking_tokens streaming faster than _STALE_TURN_TIMEOUT).
         async def read_and_touch(*args, **kwargs):
-            # flake-ok: pre-existing 50 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing poll pacing inside the stubbed read, moved verbatim; the comment above explains it
-            await asyncio.sleep(0.05)
-            client._last_activity = time.monotonic()
+            clock.advance(0.05)
+            client._last_activity = clock.monotonic()
             return None
 
         client._read_message = AsyncMock(side_effect=read_and_touch)
@@ -76,6 +79,9 @@ class TestAcpClientStaleTurn:
                 async for action, _msg in client._prompt_loop(req_id=1, timeout=1.0):
                     actions.append(action)
 
+        # The stdout clock alone passes the 0.2s window on the fifth silent read,
+        # so the check had its chances to fire and the absence below is not vacuous.
+        assert client._read_message.await_count >= 5
         assert actions == []  # stdout silent → nothing yielded
         assert "Stale turn detected" not in caplog.text  # fix: not falsely stale
 
@@ -141,7 +147,7 @@ class TestAcpClientStaleTurnOracleGate:
         assert client._consult_liveness_model_wait.await_count >= 2
 
     @pytest.mark.asyncio
-    async def test_real_oracle_movement_defers_via_fake_proc(self, tmp_path, caplog):
+    async def test_real_oracle_movement_defers_via_fake_proc(self, tmp_path, caplog, monkeypatch):
         """End-to-end with the REAL LivenessOracle over a fake /proc tree.
 
         Guards the priming bug the mock hides: the oracle needs a prior sample
@@ -175,10 +181,16 @@ class TestAcpClientStaleTurnOracleGate:
         _write_pid(4242, children=[4243], io_bytes=0)
         _write_pid(4243, children=[], io_bytes=1000)
 
+        # The client family reads one clock; a virtual one lets each silent read
+        # cost exactly its 20 ms on it, so the idle window is arithmetic. The
+        # oracle compares counters, not times, and keeps its own clock.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
+
         client = AcpClient(work_dir=tmp_path)
         client._is_process_alive = MagicMock(return_value=True)
         client._stale_eligible = True
-        client._last_activity = time.monotonic()
+        client._last_activity = clock.monotonic()
         client._pid = 4242
         # Real oracle, tiny sample window so movement is detectable within the
         # fast test loop; point it at the fake /proc tree.
@@ -188,9 +200,7 @@ class TestAcpClientStaleTurnOracleGate:
         _io = {"n": 1000}
 
         async def read_and_move(*args, **kwargs):
-            # flake-ok: pre-existing 20 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read so IO moves between oracle samples, moved verbatim
-            await asyncio.sleep(0.02)
+            clock.advance(0.02)
             _io["n"] += 5000
             _set_io(4243, _io["n"])
             return None
@@ -204,6 +214,10 @@ class TestAcpClientStaleTurnOracleGate:
                     async for action, _msg in client._prompt_loop(req_id=42, timeout=0.5):
                         actions.append(action)
 
+        # Three silent reads (60 ms) outlast the 50 ms cutoff, so the loop did
+        # need the oracle's WORKING verdict to defer it and the absence below is
+        # not vacuous.
+        assert client._read_message.await_count >= 3
         assert actions == []
         assert "Stale turn detected" not in caplog.text  # real movement → deferred
 
@@ -747,12 +761,15 @@ class TestStaleTurnOpenToolCall:
         """Deferral is not a disarm: once the tool resolves, the cutoff fires."""
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 30.0)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.02)
+        # A virtual clock for the client family: each silent read costs exactly
+        # its 20 ms on it, so the 50 ms cutoff is passed on the third read.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._silent_client(tmp_path, tool_dispatched=True)
+        client._last_activity = clock.monotonic()
 
         async def _resolve_then_stay_silent(*_args, **_kwargs):
-            # flake-ok: pre-existing 20 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read before the tool resolves, moved verbatim
-            await asyncio.sleep(0.02)
+            clock.advance(0.02)
             # What _dispatch_events does when the tool's result frame arrives.
             client._tool_dispatched = False
             return None
@@ -1065,6 +1082,11 @@ class TestToolStallKeepalive:
 
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 0.5)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.05)
+        # A virtual clock for the client family: the stubbed reads and the
+        # keepalive cadence below both run on it, so no host speed decides
+        # whether a ping lands inside the stall window.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
 
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
@@ -1072,41 +1094,30 @@ class TestToolStallKeepalive:
         client._stale_eligible = False
         client._is_process_alive = lambda: True
 
-        # _read_message must actually yield to the event loop (simulating the
-        # real readline timeout) so the keepalive pinger gets scheduled.
+        # Simulate keepalive pings refreshing _last_activity every 0.1s
+        # while no stdout data arrives: each stubbed read is one 50 ms readline
+        # timeout, and every second one is followed by a ping.
+        reads = 0
+
         async def slow_read(*_a, **_kw):
-            # flake-ok: pre-existing 50 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read so the keepalive pinger runs, moved verbatim
-            await asyncio.sleep(0.05)
+            nonlocal reads
+            reads += 1
+            clock.advance(0.05)
+            if reads % 2 == 0:
+                # Pings well inside the stall window are what keep the watchdog quiet.
+                client.touch_activity()
             return None
 
         client._read_message = slow_read  # type: ignore[assignment]
-
-        # Simulate keepalive pings refreshing _last_activity every 0.1s
-        # while no stdout data arrives.
-        stop = asyncio.Event()
-
-        async def keepalive_pinger():
-            while not stop.is_set():
-                client.touch_activity()
-                # Pings well inside the stall window are what keep the watchdog quiet.
-                await asyncio.sleep(
-                    0.1
-                )  # flake-ok: the keepalive cadence is the stimulus under test
-
-        pinger = asyncio.create_task(keepalive_pinger())
 
         actions: list[object] = []
         # Outer timeout 1.2s > stall window 0.5s.  Without the fix, the
         # watchdog would fire at ~0.5s.  With the fix, keepalive keeps it
         # alive and the loop runs to the outer deadline.
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         async for action, _ in client._prompt_loop(req_id=1, timeout=1.2):
             actions.append(action)
-        elapsed = time.monotonic() - t0
-
-        stop.set()
-        await pinger
+        elapsed = clock.monotonic() - t0
 
         # Loop ran to outer timeout (1.2s), NOT cut short by stall watchdog (0.5s).
         assert elapsed >= 1.0, f"loop exited at {elapsed:.2f}s — watchdog fired despite keepalive"

@@ -875,7 +875,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 href={safeHttpUrl(detail?.url ?? issue.url ?? '') ?? undefined}
                 target="_blank"
                 rel="noreferrer"
-                title={`Open on ${terms.providerName}`}
+                title={i18nT('apps.issueRadar.components.providerLink.open_on_provider', { provider: terms.providerName })}
                 className="font-mono text-muted hover:text-accent hover:underline"
               >
                 #{issue.number}

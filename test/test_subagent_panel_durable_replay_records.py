@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import pathlib
+import threading
 import time
 from types import SimpleNamespace
 
@@ -1190,7 +1191,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
             write_record(agent_root, agent_id, tombstone_cause=None)
         deliveries = tuple(self.delivery(agent_id) for agent_id in ids)
 
-        started = asyncio.Event()
+        # The worker thread signals through a threading.Event: an asyncio.Event is
+        # not thread-safe, and setting one off the loop does not wake the loop.
+        started = threading.Event()
 
         def slow_batch(batch):
             started.set()
@@ -1198,8 +1201,10 @@ class TestADetachedSettleBatchSurvivesCancellation:
 
         async def drive() -> None:
             task = asyncio.create_task(asyncio.to_thread(slow_batch, deliveries))
-            # flake-ok: the worker thread sets this event as its first statement, so the wait returns; pre-existing, moved verbatim
-            await started.wait()
+            await async_wait_until(
+                started.is_set,
+                describe=lambda: "the settle worker never started the batch",
+            )
             task.cancel()
             # The waiter is gone; the worker is not, so wait for it to finish.
             await async_wait_until(

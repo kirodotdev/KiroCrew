@@ -198,6 +198,7 @@ class TestMemoryInjectionAllAgents:
             session_key="dashboard:plain",
             agent="my-custom-agent",
             interactive=True,
+            directive_user_origin=True,
         )
         assert "ask_question" in msg
         assert "suggest_followup" in msg

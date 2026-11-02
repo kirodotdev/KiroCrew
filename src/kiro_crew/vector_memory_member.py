@@ -34,7 +34,11 @@ from kiro_crew.lesson_validation import (
     extracted_lesson_applies,
     utf8_encodable,
 )
-from kiro_crew.memory_kind_routing import KindRouting, record_kind_routing_in_transaction
+from kiro_crew.memory_kind_routing import (
+    KindRouting,
+    capture_prior_in_transaction,
+    record_kind_routing_in_transaction,
+)
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
 from kiro_crew.validation import normalize_lesson_category
@@ -508,6 +512,9 @@ def apply_consolidation(
                     raise ValueError("Consolidation source identity changed")
                 self.db.rollback()
                 return json.loads(previous[3])
+            if kind_routing is not None:
+                # What the store held before this span writes, read for the log only.
+                kind_routing = capture_prior_in_transaction(self.db, kind_routing)
             semantic = result.get("semantic")
             for item in (semantic if isinstance(semantic, list) else [])[
                 :_MAX_SEMANTIC_PER_CONSOLIDATION

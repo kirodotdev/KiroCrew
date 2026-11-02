@@ -8,6 +8,7 @@ pin in ``_resolve_cron_agent`` collapsed every step onto the one member, so the
 other crews named in the sequence never actually ran.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,6 +40,7 @@ async def _cron_callback(monkeypatch, cfg):
     gw.slack = gw.conv_log = gw.dashboard_state = gw.subagent_mgr = None
     gw._owner_id = "owner"
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     gw._cfg = cfg
     gw.cron_svc = None
@@ -490,3 +492,88 @@ async def test_a_config_write_between_resolve_and_dispatch_keeps_the_dispatched_
     assert bound.store == captured.store
     assert bound.memory_mode == captured.memory_mode
     assert bound.app == captured.app
+
+
+@pytest.mark.asyncio
+async def test_each_sequence_step_streams_under_the_runs_task_and_ends_its_continue_attempt(
+    monkeypatch,
+):
+    """Each step's turn runs in the run's own task, which is in ``_cron_runs_holding``
+    while the step streams, so the idle cleanup leaves a step's session and key to
+    the run's finalizer. Each step hands the dispatcher an ``on_resume`` that ends
+    the interrupted prompt's attempt (``settle_turn`` on its key), so a CONTINUE
+    re-prompt's landing never confirms what only the interrupted prompt received.
+    The set is empty once the run ends."""
+    from kiro_crew.slack import gateway
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+    seen = []
+
+    async def stream(_client, _message, **kw):
+        resume = kw.get("on_resume")
+        seen.append((asyncio.current_task() in gw._cron_runs_holding, resume))
+        if resume is not None:
+            resume()  # the dispatcher's one-shot CONTINUE path
+        return "done", 0
+
+    monkeypatch.setattr(gateway, "_cron_stream_with_posttoken_resume", stream)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-holding",
+        name="sequence holding",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    assert await callback(job) == "done"
+    assert [held for held, _resume in seen] == [True, True], "a step streamed unheld"
+    assert all(resume is not None for _held, resume in seen), "a step passed no on_resume"
+    assert [c.args[0] for c in gw.sessions.settle_turn.call_args_list] == [
+        "cron:seq-holding:beta",
+        "cron:seq-holding:alpha",
+    ]
+    assert gw._cron_runs_holding == set(), "the run's task is still held after it ended"
+
+
+@pytest.mark.asyncio
+async def test_each_sequence_step_marks_its_key_finished_just_before_it_releases_it(monkeypatch):
+    """A step's finally tells the cron service the run is done with that step's key
+    (``finish_session_key``) as it hands the session back, so the last sub-agent's
+    cleanup can retire a step key whose reset was deferred while the run goes on to
+    its next step."""
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+    order = []
+    gw.cron_svc = MagicMock()
+    gw.cron_svc.finish_session_key.side_effect = lambda job_id, key: order.append(
+        ("finish", job_id, key)
+    )
+    gw.sessions.release.side_effect = lambda key: order.append(("release", key))
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-finish",
+        name="sequence finish",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    assert await callback(job) == "done"
+    steps = ["cron:seq-finish:beta", "cron:seq-finish:alpha"]
+    assert [entry for entry in order if entry[0] == "finish"] == [
+        ("finish", "seq-finish", key) for key in steps
+    ]
+    for key in steps:
+        assert order.index(("finish", "seq-finish", key)) == order.index(("release", key)) - 1

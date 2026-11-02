@@ -467,7 +467,10 @@ for a log that states no count. A unit list that only GAINED units at its end --
 session rollover -- is continued too: the held newest unit is read from above what the
 cell folded and each new unit from its first record, in the order a cold fold reads
 them, with the same ordinal bases, so a long-lived slot does not refold its whole
-history on every rollover. Any other change to the unit list, a unit whose seq went
+history on every rollover. With no warm cell, the savepoint beside the newest unit is
+tried first, then the one beside the newest OLDER unit that has one (a restart after a
+rollover): it is admitted on the unit list it was written for and carried over the
+later units the same way. Any other change to the unit list, a unit whose seq went
 backwards, growth in any unit but the held newest, a cut count that moved, a prefix that
 hashes differently, or a cold memo each force a full refold, because each would
 otherwise be a wrong answer rather than a slow one.
@@ -972,10 +975,13 @@ when it arrives. `test_two_concurrent_folds_never_pair_one_passs_seq_with_anothe
 forces the interleaving rather than racing for it, and reports the mismatch as "3 items at
 seq 2" when the lock is removed.
 
-**A closed session drops its slot's memos.** `session/closed` wakes the worker like any
-other type and it calls `forget_slot_folds(slot=...)`: a unit that will never append
-again has no value being held warm for it. This costs the next read of that slot one
-cold fold and never an answer.
+**A closed session seals, then drops, its slot's memos.** `session/closed` wakes the worker
+like any other type. For each eager slot fold it first calls `seal_slot_fold`, which
+brings a held cell up to the log and writes its savepoint whatever the advance (a closed
+unit will not earn the usual threshold again), then `forget_slot_folds(slot=...)`: a unit
+that will never append again has no value being held warm for it. The next read of that
+slot, after a restart or a reopen in a new unit, resumes from that savepoint. A slot with
+no held cell is not sealed, so the worker never folds cold here.
 
 **The warm slot memos are bounded by RESIDENT BYTES, and each cell is charged what it
 retains.** `slot_fold_cache_bytes()` is the one ceiling for every slot cell together,

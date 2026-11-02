@@ -62,6 +62,8 @@ if TYPE_CHECKING:
         _has_user_content,
         _is_machine_only_session,
         _is_user_listed_row,
+        _mark_open_sessions,
+        _open_row_test,
         _open_slot_transcript_keys,
         _search_excluding_incognito,
         _session_meta_row,

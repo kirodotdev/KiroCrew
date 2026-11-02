@@ -51,6 +51,7 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kirocrew.app.code-review-sage")
 

@@ -22,7 +22,8 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
-| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId }`) |
+| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId, opensPathParam? }`) |
+| "Open in <app>" for a file | `apps/pathOpener.ts` | an entry's `opensPathParam` to `pathOpenerTarget(apps)` |
 | Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` to `getBuiltinIcon()` |
 | Theme branding | `themeBranding.tsx` | `registerThemeBranding()` to `getThemeBranding()` |
 | Theme picker options | `hooks/useTheme.tsx` | `registerTheme()` to `getRegisteredThemes()` |

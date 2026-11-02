@@ -25,7 +25,7 @@ from mcp_merge_helpers import DEFAULT_MANAGED_MCPS as _DEFAULT_MANAGED_MCPS
 from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 
 from kiro_crew import agent_state
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 
 @contextmanager
@@ -443,11 +443,9 @@ class TestRefreshForkedTemplates:
             calls.append(len(calls))
             if len(calls) == 1:
                 started_first.set()
-                # flake-ok: pre-existing 5 s ceiling on the first pass's release, moved verbatim; tracked for a de-flake pass
-                assert release_first.wait(5)
+                assert release_first.wait(default_timeout()), "first pass was never released"
             else:
-                # flake-ok: pre-existing 5 s ceiling on the queued pass's release, moved verbatim; tracked for a de-flake pass
-                assert release_second.wait(5)
+                assert release_second.wait(default_timeout()), "queued pass was never released"
 
         monkeypatch.setattr(agent_mod, "_refresh_forked_templates_locked", _blocking_pass)
         monkeypatch.setattr(agent_mod, "_fork_refresh_settled", threading.Event())
@@ -455,8 +453,7 @@ class TestRefreshForkedTemplates:
 
         first = threading.Thread(target=agent_mod._refresh_forked_templates)
         first.start()
-        # flake-ok: pre-existing 5 s ceiling on the first pass starting, moved verbatim; tracked for a de-flake pass
-        assert started_first.wait(5)
+        assert started_first.wait(default_timeout()), "first refresh pass never started"
         second = threading.Thread(target=agent_mod._refresh_forked_templates)
         second.start()
         # The queued pass registers before contending for the pass lock.
@@ -475,10 +472,10 @@ class TestRefreshForkedTemplates:
 
         # Last pass finishes: gate re-opens.
         release_second.set()
-        # flake-ok: pre-existing 5 s join ceiling on the first refresh thread, moved verbatim; tracked for a de-flake pass
-        first.join(5)
-        # flake-ok: pre-existing 5 s join ceiling on the queued refresh thread, moved verbatim; tracked for a de-flake pass
-        second.join(5)
+        first.join(default_timeout())
+        second.join(default_timeout())
+        hung = [t.name for t in (first, second) if t.is_alive()]
+        assert not hung, f"refresh thread(s) still running past the lost-run ceiling: {hung}"
         assert agent_mod._fork_refresh_settled.is_set()
 
     def test_refresh_records_per_fork_failure_and_continues(self, tmp_path: Path, monkeypatch):
@@ -795,8 +792,9 @@ class TestRefreshForkedTemplates:
             agent_mod.rebuild_agent_config(refresh_forks="defer")
             # The background pass re-sets the event when it finishes; the
             # refresh itself must have run (fork re-plumbed).
-            # flake-ok: pre-existing 10 s ceiling on the deferred pass settling, moved verbatim; tracked for a de-flake pass
-            assert agent_mod._fork_refresh_settled.wait(timeout=10)
+            assert agent_mod._fork_refresh_settled.wait(
+                timeout=default_timeout()
+            ), "deferred refresh never settled"
             result = json.loads(path.read_text(encoding="utf-8"))
         assert result["hooks"] == {"preToolUse": "audit"}
 

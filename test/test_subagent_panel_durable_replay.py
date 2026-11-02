@@ -25,6 +25,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from crew_log_drain import assert_drained
 from subagent_panel_durable_replay_helpers import (  # noqa: F401 -- the fixture is requested by name
     DAY,
     agent_root_fixture,
@@ -1338,17 +1339,16 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
             credits=0.0,
         )
         TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
-        assert emit.flush()
+        assert_drained()
         assert emit.child_origin(agent_id) == ("", 0), (
             "the terminal report left the spawn pin standing, so this test is not the "
             "state a finished child is actually in"
         )
 
     def _drawn(self, unit_id: str) -> list[str]:
-        from kiro_crew.crew_log import emit
         from kiro_crew.crew_log import projection as crew_log
 
-        assert emit.flush()
+        assert_drained()
         value = crew_log.fold_session(unit_id, names=("subagents",)).projection("subagents").value
         return sorted(value["by_id"])
 

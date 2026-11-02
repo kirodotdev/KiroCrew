@@ -104,7 +104,7 @@ export default function CrewmateLiveActivity({
           >
             <div className="group">
               <div>
-                <p className="my-1 leading-6 flex items-center text-muted">
+                <p className="my-0 leading-normal flex items-center text-muted">
                   <span className="invisible w-0">{'\u200B'}</span>
                   <TypingDots />
                 </p>

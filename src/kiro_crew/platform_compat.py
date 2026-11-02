@@ -344,6 +344,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         REAP_TIMEOUT_SECS,
         _discard_output_until_exit,
         _isolated_group_of_live_child,
+        _killpg,
         _raise_taskkill_error,
         _run_cleanup_shielded,
         _shares_own_process_group,

@@ -122,21 +122,30 @@ def _read_binding(path: str) -> dict[str, Any]:
 
 
 async def _profile_status(profile: str) -> str:
-    """``ok`` | ``expired`` | ``unavailable`` for *profile*, from the shared probe."""
+    """``ok`` | ``expired`` | ``unavailable`` for *profile*, from the shared probe.
+
+    The profile's region and sign-in kind come from the account policy an app
+    provides through the ``aws_account_policy`` seam (the aws-control app's). With
+    none, the probe runs in the default region and a failed probe is reported as
+    ``unavailable``, because nothing can say the sign-in is an SSO one that expired.
+    """
     from kiro_crew import aws_consent
-    from kiro_crew.apps.builtins.aws_control.backend import accounts
+    from kiro_crew.apps import seams
     from kiro_crew.deploy import profiles as deploy_profiles
 
+    policy = seams.aws_account_policy()
     try:
-        region = await accounts.configured_region(profile) or deploy_profiles.DEFAULT_REGION
-        identity = await aws_consent.probe_identity(profile, region)
+        region = await policy.configured_region(profile) if policy is not None else ""
+        identity = await aws_consent.probe_identity(
+            profile, region or deploy_profiles.DEFAULT_REGION
+        )
         if identity.ok:
             return STATUS_OK
-        kind = await accounts.classify_profile(profile)
+        sso = await policy.is_sso_profile(profile) if policy is not None else False
     except Exception:
         logger.debug("project profile: health probe failed", exc_info=True)
         return STATUS_UNAVAILABLE
-    return STATUS_EXPIRED if kind == accounts.KIND_SSO else STATUS_UNAVAILABLE
+    return STATUS_EXPIRED if sso else STATUS_UNAVAILABLE
 
 
 async def api_aws_project_profile_get(request: web.Request) -> web.Response:

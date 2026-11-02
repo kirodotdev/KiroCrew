@@ -287,7 +287,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         windows_tree_cleanup_pending _create_windows_subprocess_owned
         """.split()),
     "kiro_crew.platform_compat_kill": tuple("""
-        pgroup_exists _raise_taskkill_error kill_pid kill_process_group kill_process_tree
+        pgroup_exists _raise_taskkill_error kill_pid kill_process_group _killpg kill_process_tree
         kill_process_tree_pinned kill_pid_pinned kill_pid_async kill_process_tree_async
         REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
         _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
@@ -394,6 +394,9 @@ _CARVED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.platform_compat_identity",
             "kiro_crew.platform_compat_liveness",
             "kiro_crew.platform_compat_native",
+            # darwin_pgroup_members settles macOS's EPERM for pgroup_exists and for an
+            # all-zombie group's killpg.
+            "kiro_crew.platform_compat_proctable",
             "kiro_crew.platform_compat_trust",
             "kiro_crew.platform_compat_winproc",
             "kiro_crew.platform_compat_wintree",

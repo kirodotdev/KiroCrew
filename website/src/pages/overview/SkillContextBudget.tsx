@@ -147,7 +147,8 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
         <ArrowLeft size={14} /> {i18nT('pages.overview.skillsTab.budget_back')}
       </Btn>
       <h4 className="text-lg font-semibold text-text-strong mb-1">{i18nT('pages.overview.skillsTab.budget_title')}</h4>
-      <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.skillsTab.budget_subtitle')}</p>
+      <p className="text-[12.5px] text-muted mb-1">{i18nT('pages.overview.skillsTab.budget_subtitle')}</p>
+      <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.skillsTab.budget_why')}</p>
       <Card>
         {/* Header row */}
         <div className="flex items-center justify-between md:px-4 py-3 border-b border-border">
@@ -252,6 +253,33 @@ function GroupHeader({ label, right, accent }: { label: string; right: string; a
   )
 }
 
+/** Past this many characters a description is clamped to two lines, with a
+ *  button to show the rest. A character count, not a measured overflow, so the
+ *  control is stable across widths and needs no layout read. */
+const DESCRIPTION_CLAMP_CHARS = 140
+
+function RowDescription({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const long = text.length > DESCRIPTION_CLAMP_CHARS
+  return (
+    <div className="text-[11.5px] text-muted mt-0.5">
+      <p className={`break-words ${long && !open ? 'line-clamp-2' : ''}`}>{text}</p>
+      {long && (
+        <Btn
+          type="button"
+          className="mt-1 -ml-1.5 px-1.5 py-0 text-[11px] text-accent border-transparent hover:border-border"
+          aria-expanded={open}
+          onClick={() => setOpen(o => !o)}
+        >
+          {open
+            ? i18nT('pages.overview.skillsTab.budget_description_less')
+            : i18nT('pages.overview.skillsTab.budget_description_more')}
+        </Btn>
+      )}
+    </div>
+  )
+}
+
 function BudgetRow({
   row,
   maxChars,
@@ -278,10 +306,23 @@ function BudgetRow({
     <div
       className={`flex flex-wrap md:flex-nowrap items-center gap-x-3.5 gap-y-1 py-2 md:px-4 border-b border-border/50 hover:bg-bg-hover transition-colors ${frozen ? 'opacity-80' : ''}`}
     >
-      {/* Column 1: name + key */}
+      {/* Column 1: name + origin, key, and what the skill is. A reader who
+       *  finds a skill they never added here must be able to tell what it is
+       *  and where it came from without leaving the screen. */}
       <div className="flex-1 min-w-0 basis-full md:basis-auto">
-        <div className={`text-[12.5px] truncate ${frozen ? 'text-muted' : 'text-text'}`}>
-          {displayName(row.name)}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`text-[12.5px] truncate ${frozen ? 'text-muted' : 'text-text'}`}>
+            {displayName(row.name)}
+          </span>
+          {row.origin && (
+            <span className="text-[10px] px-1.5 py-[1px] rounded-full border border-border text-muted shrink-0">
+              {row.origin === 'builtin'
+                ? i18nT('pages.overview.skillsTab.budget_source_builtin')
+                : row.origin === 'app'
+                  ? i18nT('pages.overview.skillsTab.budget_source_app')
+                  : i18nT('pages.overview.skillsTab.budget_source_yours')}
+            </span>
+          )}
         </div>
         <div className="text-[10.5px] text-muted font-mono truncate">
           {row.key}
@@ -289,6 +330,7 @@ function BudgetRow({
             <span className="text-muted"> + {row.folded_from.join(', ')} {i18nT('pages.overview.skillsTab.budget_renamed')}</span>
           )}
         </div>
+        {row.description && <RowDescription text={row.description} />}
       </div>
 
       {/* Column 2: bar + chars. A row whose cost is unmeasurable (always: true)

@@ -754,12 +754,13 @@ export default function App() {
 
           {/* Updating overlay */}
           {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
-          {/* Both held while What's new is open, so two update dialogs never stack;
-              each takes its turn once What's new closes, with its state intact. */}
-          <UpdateModal held={showChangelog} />
+          {/* Both held while What's new or the shortcuts dialog is open, so two
+              trapped dialogs never stack and fight over Tab; each takes its turn
+              once the other closes, with its state intact. */}
+          <UpdateModal held={showChangelog || shortcutsOpen} />
           {updateAvailable && (
             <Suspense fallback={null}>
-              <UpdateFoundModal held={showChangelog} />
+              <UpdateFoundModal held={showChangelog || shortcutsOpen} />
             </Suspense>
           )}
           <StartupVideo startupVideo={startupVideo} />

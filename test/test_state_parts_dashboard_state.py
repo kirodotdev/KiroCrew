@@ -165,6 +165,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, questions: 'list[dict]') -> 'list[dict]'",
     ),
+    "_reload_cron_folders_if_unknown": ("function", False, False, "(self) -> 'None'"),
+    "_reload_folders_if_unknown": ("function", False, False, "(self) -> 'None'"),
     "_remove_ws": ("function", False, False, "(self, ws: 'web.WebSocketResponse') -> 'None'"),
     "_reproject_slots": (
         "function",

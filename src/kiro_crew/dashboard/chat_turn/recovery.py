@@ -890,6 +890,11 @@ def refusal_card_text(
     *fallback_off* is ``True`` when ``agent.refusal_fallback_model`` is not
     configured. The card then appends one sentence naming the setting so the
     user can discover the automatic-recovery feature at the moment they need it.
+
+    The same-model case (a fallback configured but equal to the refusing
+    model, the swap-skip case) is NOT handled here: it is a separate ``notice``
+    row carrying the ``refusal_fallback_same_model`` gateway-notice token, so
+    that sentence is localized without tokenizing the rest of this card.
     """
     lines = [_REFUSAL_CARD_LEAD]
     if refusal is not None and refusal.category:

@@ -634,7 +634,10 @@ runtime ships neither `jsonschema` nor a JSON-Schema-consuming pydantic path.
 Supported: `type` (`object`, `array`, `string`, `integer`, `number`, `boolean`,
 `null`, or a union list of those), `properties`, `required`, `items`, `enum`.
 Unknown keywords are ignored, so a richer schema still validates on the parts this
-understands. `bool` is explicitly **not** an `integer` or `number`.
+understands. `bool` is explicitly **not** an `integer` or `number`, and an `enum`
+member matches a `bool` only when it is a `bool` too. A float with no fractional
+part (`3.0`) is an `integer`, as in JSON Schema, and `ctx.agent` returns it as
+the `int` `3`.
 
 `parse_json(text)` is tolerant of the two shapes a model actually returns: a
 fenced ` ```json ` block, and JSON wrapped in prose. Prose recovery delegates to

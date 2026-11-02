@@ -78,6 +78,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backend_cards import LINE_MID_TURN_STEER, card_for
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
 )
@@ -150,6 +151,69 @@ def steer_version_issue(backend: str, agent_version: str) -> str:
         f"{backend} {agent_version} is older than {minimum}, so a message you send "
         f"while it works waits until it finishes. "
         f"Update it: run '{fix}', then start a new chat."
+    )
+
+
+#: The goose release Crew's goose contract was recorded on: the goose capture README
+#: (``test/fixtures/acp_frames/goose/README.md``) names 1.50.1 for every capture but
+#: ``effort-live.jsonl`` (1.54.0, effort only), ``handshake-live.jsonl`` reports it,
+#: and ``agent_sdk/backends.py`` declares the VERIFIED RANGE 1.50.x (the range
+#: ``GOOSE_VERIFIED_VERSION_PREFIX`` logs against). Steer and effort were also measured
+#: on 1.54.0, but the routing contract was not. Lower bound inclusive, upper
+#: exclusive. goose is not in the real-adapter lane, so nothing measures another line.
+GOOSE_TESTED_VERSION = "1.50.1"
+GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
+
+#: The codex-acp release the Real Adapter Contract lane runs: ``test/real_adapters/
+#: package.json`` pins it, and every live codex capture's ``agentInfo.version`` reports
+#: it. codex-acp numbers its releases by semver, so the tested range is its major.
+CODEX_ACP_TESTED_VERSION = "2.3.0"
+CODEX_ACP_TESTED_RANGE = ((2, 0, 0), (3, 0, 0))
+
+#: Per backend: the tested range and the command that installs the tested release.
+#: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
+_TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
+    ACP_BACKEND_GOOSE: (
+        GOOSE_TESTED_RANGE,
+        ACP_BACKEND_LAUNCH[ACP_BACKEND_GOOSE].install_command.replace(
+            "| bash", f"| GOOSE_VERSION={GOOSE_TESTED_VERSION} bash"
+        ),
+    ),
+    ACP_BACKEND_CODEX: (
+        CODEX_ACP_TESTED_RANGE,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}"
+        f"@{CODEX_ACP_TESTED_RANGE[0][0]}",
+    ),
+}
+
+
+def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -> str:
+    """``2.x`` for a whole major, else ``1.50.x`` for a minor line."""
+    if low[1:] == (0, 0) and high == (low[0] + 1, 0, 0):
+        return f"{low[0]}.x"
+    return f"{low[0]}.{low[1]}.x"
+
+
+def untested_version_issue(backend: str, agent_version: str) -> str:
+    """The notice for an *agent_version* outside *backend*'s tested range, else ``""``.
+
+    A warning only: the session still runs. A backend with no tested range, and an
+    absent or unreadable version, gets none. Parsed by :func:`_adapter_version_at_least`,
+    the reader the goose steer floor uses, so the two notices read one version alike.
+    """
+    range_and_fix = _TESTED_VERSION_RANGES.get(backend)
+    if range_and_fix is None or not _adapter_version_at_least(agent_version, (0, 0, 0)):
+        return ""
+    (low, high), fix = range_and_fix
+    if _adapter_version_at_least(agent_version, low) and not _adapter_version_at_least(
+        agent_version, high
+    ):
+        return ""
+    tested = _tested_range_label(low, high)
+    return (
+        f"{backend} {agent_version} is outside the tested range {tested}, so parts of "
+        f"it may behave in ways Crew has not checked. To install the tested release, "
+        f"run '{fix}', then start a new chat."
     )
 
 

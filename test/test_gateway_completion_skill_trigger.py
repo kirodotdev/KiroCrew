@@ -99,7 +99,14 @@ async def _route_call(monkeypatch: pytest.MonkeyPatch, route: str) -> _Recorder:
         inject = gateway._inject_subagent_into_channel_parent
     with patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 1):
         await asyncio.wait_for(
-            inject(info, announce=_ANNOUNCE, body="b", title="t", parent_key=key),
+            inject(
+                info,
+                announce=_ANNOUNCE,
+                body="b",
+                title="t",
+                parent_key=key,
+                carried=(info.id,),
+            ),
             _HANG_CEILING_S,
         )
     assert recorder.args, "build_message was never reached"

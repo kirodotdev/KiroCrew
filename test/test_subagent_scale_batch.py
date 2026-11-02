@@ -137,6 +137,25 @@ class TestCoalescer:
         assert len(sub_frames) == 1 and sub_frames[0][0] == "subagent_batch_chunks"
 
     @pytest.mark.asyncio
+    async def test_recovering_flushes_buffered_state_first(self):
+        """A recovering frame between ticks must reach the client AFTER the
+        agent's older buffered tool update. The other order lets the batch
+        frame's tool field clear the retrying flag the recovering frame set,
+        so a recovering agent shows as working."""
+        c, all_frames, sub_frames = _coalescer(active=50, tick=5.0)
+        c.handle("subagent_tool", {"id": "a1", "slot": "s", "tool": "Read"})
+        c.handle("subagent_chunk", {"id": "a1", "slot": "s", "text": "partial"})
+        assert c.handle("subagent_recovering", {"id": "a1", "slot": "s"}) is False
+        # Flushed synchronously at the recovering boundary, before any tick:
+        # the caller forwards the recovering frame only after these.
+        assert [t for t, _ in all_frames] == ["subagent_batch_update"]
+        assert all_frames[0][1]["updates"][0]["tool"] == "Read"
+        assert [t for t, _ in sub_frames] == ["subagent_batch_chunks"]
+        # Nothing stale is left to flush on the next tick.
+        c.close()
+        assert len(all_frames) == 1 and len(sub_frames) == 1
+
+    @pytest.mark.asyncio
     async def test_close_flushes_and_stops(self):
         c, all_frames, _ = _coalescer(active=50, tick=5.0)
         c.handle("subagent_tool", {"id": "a1", "slot": "s", "tool": "Read"})

@@ -63,6 +63,7 @@ const NOTICE_FAMILIES = {
   model_access_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
   model_unavailable: { role: 'notice', card: 'notice', tone: 'info' },
   model_throttled_fallback: { role: 'notice', card: 'notice', tone: 'warn' },
+  refusal_fallback_same_model: { role: 'notice', card: 'notice', tone: 'info' },
   session_reconnecting: { role: 'error', card: 'error' },
   session_reconnect_give_up: { role: 'error', card: 'error' },
   credentials_reloading: { role: 'error', card: 'error' },
@@ -130,6 +131,7 @@ const COPY_KEY = {
   model_access_fallback: 'pages.chat.gatewayNotice.model_access_fallback',
   model_unavailable: 'pages.chat.gatewayNotice.model_unavailable',
   model_throttled_fallback: 'pages.chat.gatewayNotice.model_throttled_fallback',
+  refusal_fallback_same_model: 'pages.chat.gatewayNotice.refusal_fallback_same_model',
   session_reconnecting: 'pages.chat.gatewayNotice.session_reconnecting',
   session_reconnect_give_up: 'pages.chat.gatewayNotice.session_reconnect_give_up',
   credentials_reloading: 'pages.chat.gatewayNotice.credentials_reloading',
@@ -371,6 +373,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
+  },
+  {
+    re: /^ℹ\uFE0F? Automatic retry was skipped because the fallback model \(`agent\.refusal_fallback_model`\) is the same as your current model — retrying the same model hits the same filter\. Pick a different model for the fallback to retry automatically\.$/u,
+    token: 'refusal_fallback_same_model',
   },
 ]
 

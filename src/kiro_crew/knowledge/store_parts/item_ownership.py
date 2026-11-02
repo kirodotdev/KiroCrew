@@ -22,10 +22,34 @@ from datetime import datetime
 from typing import TYPE_CHECKING, AbstractSet
 from uuid import uuid4
 
+from kiro_crew.knowledge.store_parts.source_rows import _ACCOUNT_BOUND_SOURCE_TYPE
+
 if TYPE_CHECKING:
     from kiro_crew.knowledge.store import KnowledgeStore
 
 logger = logging.getLogger("kiro_crew.knowledge.store")
+
+
+class LiveSourceHoldsNoItems(ValueError):
+    """An item would come to name an account-bound source.
+
+    Raised by :meth:`KnowledgeStore.add_item` and
+    :meth:`KnowledgeStore.add_source_location_in_txn` before the write. A
+    ``bedrock_kb`` row is queried live and holds no items, and ``export_all``
+    relies on that when it leaves the row out of a bundle: an item naming a
+    source the bundle does not carry is refused by ``import_bundle`` as a
+    malformed bundle, and the whole bundle rolls back.
+    The rule lives here, with the writer, because every path that lands an
+    item under a source funnels through these two methods -- the agent's
+    ingest-text route, a folder or upload ingest, and the dedup path that
+    attaches an existing item to a second holder -- and a source id is
+    readable by any authenticated caller off the sources list.
+    """
+
+
+# Named by the path callers import it from: a traceback renders a raised class as
+# ``module.qualname``, so this module's name must not reach it.
+LiveSourceHoldsNoItems.__module__ = "kiro_crew.knowledge.store"
 
 
 # The per-document state tables, each with the status that means "this row owns a
@@ -369,6 +393,10 @@ def add_source_location_in_txn(
     explicit ``BEGIN IMMEDIATE`` would END that transaction early and hand a
     concurrent writer the very gap the caller took the lock to close.
     """
+    # A location is the other way an item comes to name a source: the
+    # dedup path attaches an existing item to the ingesting source here
+    # instead of inserting a copy.
+    self._refuse_live_source(source_id)
     lid = str(uuid4())
     now = datetime.now().isoformat()
     self.db.execute(
@@ -384,8 +412,10 @@ def sources_holding_item(
 ) -> list[str]:
     """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
 
-    The reference count deletion consults: an item is destroyed only when this
-    comes back empty. Joins ``sources`` so a location row left pointing at an
+    The holder count dedup reads. The deletion paths consult
+    :meth:`_reassignment_candidates` instead, which narrows this to the holders
+    that may take ownership; an item is destroyed only when that comes back
+    empty. Joins ``sources`` so a location row left pointing at an
     already-deleted source cannot keep a dead item alive.
     """
     sql = (
@@ -397,6 +427,44 @@ def sources_holding_item(
         sql += " AND sl.source_id != ?"
         params.append(exclude_source_id)
     return [r["source_id"] for r in self.db.execute(sql, params).fetchall()]
+
+
+def _refuse_live_source(self: KnowledgeStore, source_id) -> None:
+    """Raise :class:`LiveSourceHoldsNoItems` if *source_id* names an
+    account-bound source; a ``None`` source and an unknown id pass (the
+    latter is the foreign key's business). One primary-key read."""
+    if source_id is None:
+        return
+    row = self.db.execute("SELECT source_type FROM sources WHERE id = ?", (source_id,)).fetchone()
+    if row is not None and row["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+        raise LiveSourceHoldsNoItems(
+            f"source {source_id} is a live-retrieval source and holds no items"
+        )
+
+
+def _reassignment_candidates(
+    self: KnowledgeStore, item_id: str, losing_source_id: str
+) -> list[str]:
+    """The holders of *item_id* that may take ownership when *losing_source_id*
+    is deleted: :meth:`sources_holding_item` minus the account-bound types.
+
+    A live-retrieval source never holds items (:meth:`_refuse_live_source`
+    guards every writer), so a location row naming one under a local item can
+    only come from a direct write to ``knowledge.db``. Reassigning the item to
+    that row's source would file a local document under a source that
+    :meth:`export_all` leaves out of every bundle, along with everything that
+    names it -- the document would survive in the live store and vanish from
+    the backup. An item whose only other holders are account-bound therefore
+    goes with its owner, as if no other holder existed; the planted location
+    row goes with it.
+    """
+    rows = self.db.execute(
+        "SELECT sl.source_id FROM source_locations sl "
+        "JOIN sources s ON s.id = sl.source_id "
+        "WHERE sl.item_id = ? AND sl.source_id != ? AND s.source_type <> ?",
+        (item_id, losing_source_id, _ACCOUNT_BOUND_SOURCE_TYPE),
+    ).fetchall()
+    return [r["source_id"] for r in rows]
 
 
 def reassign_item_source(self: KnowledgeStore, item_id: str, new_source_id: str) -> None:

@@ -297,8 +297,6 @@ def test_e2e_runs_on_the_fleet_behind_the_boundary(jobs):
         if "$GITHUB_OUTPUT" in step.get("run", "") or "$GITHUB_ENV" in step.get("run", "")
     ]
     assert file_commands and max(file_commands) < provision
-    cache = next(step for step in steps if str(step.get("uses", "")).startswith("actions/cache@"))
-    assert cache["with"]["path"] == "${{ runner.temp }}/ms-playwright"
     consumers = [
         (i, step)
         for i, step in enumerate(steps)

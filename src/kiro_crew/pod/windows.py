@@ -569,9 +569,13 @@ def _read_pid_record(cfg: PodConfig, name: str) -> tuple[int, str] | None:
         raw = pid_record_path(cfg, name).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    if not raw or not raw[0].strip().isdigit():
+    if not raw or not raw[0].strip().isdecimal():
         return None
-    return int(raw[0].strip()), (raw[1].strip() if len(raw) > 1 else "")
+    try:
+        pid = int(raw[0].strip())
+    except ValueError:  # past int()'s digit limit
+        return None
+    return pid, (raw[1].strip() if len(raw) > 1 else "")
 
 
 def supervised_pid(cfg: PodConfig, name: str) -> int | None:
@@ -610,12 +614,17 @@ def supervised_pid(cfg: PodConfig, name: str) -> int | None:
 
 
 def last_result(cfg: PodConfig, name: str) -> int | None:
-    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown."""
+    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown.
+
+    ``ValueError`` covers both a body that is not UTF-8 (``UnicodeDecodeError``)
+    and one ``isdigit`` admits but ``int()`` refuses (U+00B2, ``--1``), so a
+    torn or foreign file reads as unknown instead of crashing ``unit_state``.
+    """
     try:
         raw = result_path(cfg, name).read_text(encoding="utf-8").strip()
-    except OSError:
+        return int(raw) if raw.lstrip("-").isdigit() else None
+    except (OSError, ValueError):
         return None
-    return int(raw) if raw.lstrip("-").isdigit() else None
 
 
 def record_result(cfg: PodConfig, name: str, code: int) -> None:

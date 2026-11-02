@@ -66,6 +66,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _extra_mcp_scopes,
     _is_valid_mcp_name,
     _kirocrew_mcp_json,
+    _load_config_for_update,
     _mcp_config_corrupt,
     _mcp_server_not_found,
     _mcp_spec_invalid,
@@ -316,6 +317,8 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if not_owned is not None:
         return not_owned
     # Refuse before ANY write: the global file is rewritten below as plain JSON.
+    if await asyncio.to_thread(_load_config_for_update, _GLOBAL_MCP_JSON) is None:
+        return _mcp_config_corrupt()
     await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
 
     # One serialized discover→write pass (agent config + CC sidecar), off the
@@ -327,10 +330,9 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if to_sync:
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
-            try:
-                gdata = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-            except (FileNotFoundError, json.JSONDecodeError):
-                gdata = {"mcpServers": {}}
+            gdata = _load_config_for_update(_GLOBAL_MCP_JSON)
+            if gdata is None:
+                return _mcp_config_corrupt()
             gservers = gdata.setdefault("mcpServers", {})
             # The kiro-global mcp.json is NOT ours, and a name cannot say who
             # wrote an entry in it: the minimal ``{"url": ...}`` this emitter
@@ -967,10 +969,9 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _get_mcp_lock():
-        try:
-            data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {"mcpServers": {}}
+        data = _load_config_for_update(_GLOBAL_MCP_JSON)
+        if data is None:
+            return _mcp_config_corrupt()
         data.setdefault("mcpServers", {})[name] = entry
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _write_mcp_json(data)
@@ -1162,6 +1163,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         )
 
     results: list[dict] = []
+    corrupt = False  # a scope file broke mid-batch: stop and refuse
 
     # ── Phase 1 (BEFORE the MCP file lock): companion package uninstalls ──
     # Run capability-manager uninstalls FIRST, off the lock, so:
@@ -1227,8 +1229,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         not_owned = await asyncio.to_thread(_agent_home_not_owned, ", ".join(change_names))
         if not_owned is not None:
             return not_owned
-        # A scope file holding JSONC cannot be written without dropping its
-        # comments, so the batch is refused before its first write.
+        # A broken provider global would be replaced, and a JSONC one would lose
+        # its comments, so the batch is refused before its first write.
+        for path in (_GLOBAL_MCP_JSON, *(scope.global_json for scope in _extra_mcp_scopes())):
+            if await asyncio.to_thread(_load_config_for_update, path) is None:
+                return _mcp_config_corrupt()
         await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
         change_keys, ambiguous = await asyncio.to_thread(_preflight_change_keys, change_names)
         if ambiguous:
@@ -1428,6 +1433,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         spec=resolved_spec,
                         preferred=keys.get(f"{scope.id}Global"),
                     )
+                if "corrupt" in outcome["actions"].values():
+                    corrupt = True
+                    results.append(outcome)
+                    break
 
                 # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
                 tool_overrides = change.get("toolOverrides")
@@ -1539,7 +1548,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         _urls_clean, _ = redact_exfiltration_urls(str(exc))
         rebuild_error, _ = redact_credentials(_urls_clean)
         logger.warning("rebuild_agent_config failed after apply: %s", exc)
-
+    if corrupt:
+        return _mcp_config_corrupt()
     return web.json_response(
         {
             "ok": True,

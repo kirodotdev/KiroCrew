@@ -28,7 +28,9 @@ from session_control_revive_helpers import (  # noqa: F401 -- the autouse fixtur
     _slot,
 )
 
+from kiro_crew import history_schema
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.clock import ManualClock
 
 # ── The resume core's pre-publish containment hook ───────────────────────────
 
@@ -669,16 +671,16 @@ def test_a_marker_restore_that_fails_once_recovers_on_the_retry(tmp_path, monkey
     assert key not in state._slots
 
 
-def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path):
+def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path, monkeypatch):
     """The existence and ``created_at`` identity barrier runs before the hook;
     a delete-and-recreate landing INSIDE the hook window would otherwise publish
     the old transcript under the new file's identity, and every later save would
     take the delete-won arm and drop its rows. The barrier is re-run after the
     hook's last await with the same ``resume_session_deleted`` answer."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
+    clock = ManualClock()
+    clock.install(monkeypatch, history_schema, time=False, datetime=True)
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"), messages=2)
@@ -689,9 +691,7 @@ def test_a_session_recreated_during_the_hook_is_refused_not_published(tmp_path):
 
     async def _recreate(_built):
         assert log.delete_session(hk) is True
-        # flake-ok: pre-existing 10 ms pause that gives the replacement a fresh created_at stamp; moved verbatim and tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms pause that gives the replacement a fresh created_at stamp and moves verbatim
-        time.sleep(0.01)  # a fresh created_at stamp for the replacement
+        clock.advance(1)  # the replacement is stamped one second later
         log.append(hk, "user", "a different conversation")
         return None
 
@@ -764,10 +764,10 @@ def test_the_rollback_never_archives_a_replacement_transcript(tmp_path, monkeypa
     refuses, and the rollback must NOT put the old ``closed`` marker onto the
     replacement: both its write guard and its confirmation read compare the
     stamp against the one this resume read."""
-    import time
-
     from kiro_crew.dashboard import chat_handlers
 
+    clock = ManualClock()
+    clock.install(monkeypatch, history_schema, time=False, datetime=True)
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"), messages=2)
@@ -779,9 +779,7 @@ def test_the_rollback_never_archives_a_replacement_transcript(tmp_path, monkeypa
     def _clear_then_replace(k, **kw):
         real_clear(k, **kw)
         assert log.delete_session(hk) is True
-        # flake-ok: pre-existing 10 ms pause that gives the replacement a fresh created_at stamp; moved verbatim and tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms pause that gives the replacement a fresh created_at stamp and moves verbatim
-        time.sleep(0.01)
+        clock.advance(1)  # the replacement is stamped one second later
         log.append(hk, "user", "a different conversation")
 
     monkeypatch.setattr(log, "clear_closed", _clear_then_replace)

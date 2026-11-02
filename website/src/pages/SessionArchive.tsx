@@ -2,15 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Trans } from 'react-i18next'
 
 import { i18nT } from '../i18n/t'
+import { api, type ArchiveEntry } from '../api/client'
+import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import ErrorNotice from '../components/ErrorNotice'
-interface ArchiveEntry {
-  name: string
-  key: string
-  stamp: string
-  size: number
-  mtime: number
-}
 
 export default function SessionArchive() {
   const [filterKey, setFilterKey] = useState('')
@@ -18,21 +13,29 @@ export default function SessionArchive() {
   const [selected, setSelected] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [contentError, setContentError] = useState('')
+  const [contentErrorReport, setContentErrorReport] = useState<ErrorReport | undefined>(undefined)
   const [contentLoading, setContentLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [errorReport, setErrorReport] = useState<ErrorReport | undefined>(undefined)
   const abortRef = useRef<AbortController | null>(null)
 
   const loadList = useCallback(async () => {
     setLoading(true)
     setError('')
+    setErrorReport(undefined)
     try {
-      const r = await fetch(`/api/session/archive`)
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`)
-      const d = await r.json()
+      const d = await api.sessionArchiveList()
       setArchives(d.archives || [])
     } catch (e) {
       setError(String(e))
+      // A network drop carries the same bare `Failed to fetch` as every other,
+      // so the Ask-agent hand-off cannot resolve it by message (findReport
+      // excludes network entries by design). The typed read journals the
+      // rejection and pins this request's report — route and method — to the
+      // error; pass it through so the hand-off has the endpoint. An answered
+      // failure resolves by message as before.
+      setErrorReport(reportForError(e))
     } finally {
       setLoading(false)
     }
@@ -51,16 +54,20 @@ export default function SessionArchive() {
     setSelected(name)
     setContent('')
     setContentError('')
+    setContentErrorReport(undefined)
     setContentLoading(true)
     try {
-      const r = await fetch(`/api/session/archive/${encodeURIComponent(name)}`, { signal: controller.signal })
+      const r = await api.sessionArchiveRead(name, controller.signal)
       if (!r.ok) throw new Error(await r.text())
       const text = await r.text()
       setContent(text.length > 200_000
         ? text.slice(0, 200_000) + '\n' + i18nT('pages.sessionArchive.truncated_showing_first_200kb')
         : text)
     } catch (e) {
-      if (!controller.signal.aborted) setContentError(String(e))
+      if (!controller.signal.aborted) {
+        setContentError(String(e))
+        setContentErrorReport(reportForError(e))
+      }
     } finally {
       if (abortRef.current === controller) setContentLoading(false)
     }
@@ -80,7 +87,7 @@ export default function SessionArchive() {
         </div>
         {loading && <div className="text-muted text-[13px]">{i18nT('pages.sessionArchive.loading')}</div>}
         {/* askAgent on: a list read; the filter box above is a query, not a draft. */}
-        <ErrorNotice message={error} askAgent testId="session-archive-list-error" />
+        <ErrorNotice message={error} report={errorReport} askAgent testId="session-archive-list-error" />
         <div className="overflow-auto flex-1">
           {archives.length === 0 && !loading && !error && <div className="text-muted text-[13px] p-2 break-words min-w-0"><Trans i18nKey="pages.sessionArchive.no_archives_with_compaction_hint" components={{ settingRef: <SettingRef configKey="session.autocompact_pct" /> }} /></div>}
           {archives.length > 0 && visible.length === 0 && !error && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.no_matches_for_query', { query: filterKey })}</div>}
@@ -106,7 +113,7 @@ export default function SessionArchive() {
             <div className="text-[13px] text-muted mb-2 font-mono truncate">{selected}</div>
             {contentLoading && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.loading')}</div>}
             {/* askAgent on: a read-only archive body; nothing on this pane is editable. */}
-            {!contentLoading && <ErrorNotice message={contentError} askAgent testId="session-archive-content-error" />}
+            {!contentLoading && <ErrorNotice message={contentError} report={contentErrorReport} askAgent testId="session-archive-content-error" />}
             {!contentLoading && !contentError && <pre className="flex-1 overflow-auto text-[13px] bg-bg-elevated p-2 rounded whitespace-pre-wrap">{content}</pre>}
           </>
         )}

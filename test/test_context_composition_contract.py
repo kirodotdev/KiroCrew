@@ -152,6 +152,9 @@ def _mask_stable_text(text: str) -> str:
 
 
 def _turn(rig: _Rig, text: str, is_new: bool, **kwargs) -> str:
+    # The matrix pins the bytes of a turn a person sent. An automation turn's
+    # guidance is covered in test_followup_guidance_origin_gate.py.
+    kwargs.setdefault("directive_user_origin", True)
     message, _hook = rig.builder.build_message(text, is_new, **kwargs)
     return message
 

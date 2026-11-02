@@ -504,6 +504,17 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_memory_names_the_server_a_settings_connect_started():
+    # Settings → MCP posts an owner-configured server as ``{"server": ...}``, not
+    # ``{"slug": ...}``; the memory line must name it instead of reading "null".
+    text = catalog.describe_manual_change(
+        ("POST", "/api/connections/mint"), {}, {"server": "atlassian"}
+    )
+    assert text == "started connecting atlassian"
+    text = catalog.describe_manual_change(("POST", "/api/connections/mint"), {}, {"slug": "github"})
+    assert text == "started connecting github"
+
+
 def test_every_hooked_route_is_a_real_registered_route():
     sources = "\n".join(
         p.read_text(encoding="utf-8")

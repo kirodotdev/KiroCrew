@@ -33,16 +33,15 @@ class TestMovedAsideRestore:
     _SERVED = ["global.anthropic.claude-opus-5[1m]"]
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolated_provenance(self, monkeypatch):
+    def _isolated_provenance(self, _floor_monkeypatch):
         """Per-test provenance registries and a warm advertised-model cache."""
         from kiro_crew import model_registry
         from kiro_crew.acp import seed_provenance
 
-        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
-        monkeypatch.setattr(seed_provenance, "_LIVE", {})
-        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        _floor_monkeypatch.setattr(
             model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
         )
 
@@ -422,17 +421,18 @@ class TestCreateRaceLoserPoll:
     _SERVED = ["global.anthropic.claude-opus-5[1m]"]
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _isolated_provenance(self, tmp_path, monkeypatch):
+    def _isolated_provenance(self, tmp_path, _floor_monkeypatch):
         """Per-test provenance registries, sidecar and a warm advertised-model cache."""
         from kiro_crew import model_registry
         from kiro_crew.acp import seed_provenance
 
-        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
-        monkeypatch.setattr(seed_provenance, "_LIVE", {})
-        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
-        monkeypatch.setattr(seed_provenance, "_sidecar_path", lambda: tmp_path / "seeds.json")
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        _floor_monkeypatch.setattr(
+            seed_provenance, "_sidecar_path", lambda: tmp_path / "seeds.json"
+        )
+        _floor_monkeypatch.setattr(
             model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
         )
 

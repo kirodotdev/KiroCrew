@@ -23,7 +23,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 )
 
 from kiro_crew.session import BACKGROUND_KEY, SessionManager
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestOrphanedDashboardSessions:
@@ -522,10 +522,10 @@ class TestStartPoolNonBlocking:
         # A backend without a shared runtime, so the boot start is observable.
         monkeypatch.setattr(mgr, "_bg_backend_supports_runtime", lambda: False)
         await mgr.start_pool(blocking=False)
-        # Let background tasks run
-        # flake-ok: fixed 0.1 s barrier for the non-blocking start task to spawn its session; a loaded host can miss it; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- fixed wait for the non-blocking start task to spawn its session before the assert; moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.1)
+        await async_wait_until(
+            lambda: BACKGROUND_KEY in mgr._sessions,
+            describe=lambda: "the non-blocking start task never spawned its session",
+        )
         assert BACKGROUND_KEY in mgr._sessions
         await mgr.close_all()
 
@@ -562,9 +562,10 @@ class TestScheduleReplenish:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._pool_size = 2
         mgr._schedule_replenish()
-        # flake-ok: fixed 0.1 s barrier for the replenish task to fill the pool; a loaded host can miss it; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- fixed wait for the replenish task to fill the pool before the qsize assert; moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.1)  # let task run
+        await async_wait_until(
+            lambda: mgr._warm_pool.qsize() >= 1,
+            describe=lambda: "the replenish task never filled the pool",
+        )
         assert mgr._warm_pool.qsize() >= 1
         await mgr.close_all()
 

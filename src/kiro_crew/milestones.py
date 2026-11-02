@@ -47,6 +47,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.events import emit_counter
 from kiro_crew.platform_lock_compat import file_lock, open_lock_file
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,10 @@ DIRECT_SEND_IDS = frozenset({"widgets", "parallel-chats"})
 
 #: How long after a starter click an event still counts as led by that starter.
 _STARTER_WINDOW_S = 24 * 3600
+
+#: How long after a "Try it" click an arrival at its page still completes the row.
+#: A prompt row's arrival waits on a chat create, which can take a few seconds.
+_ARRIVAL_WINDOW_S = 10 * 60
 
 # Metric names (RFC 4.11). Attribute values are ids from the fixed table and
 # closed enums only.
@@ -318,7 +323,7 @@ def load(*, strict: bool = False) -> dict[str, Any]:
     """
     st = _empty()
     try:
-        raw = json.loads(_path().read_text(encoding="utf-8"))
+        raw = loads_user_json(_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return st
     except (OSError, ValueError, RecursionError):
@@ -351,7 +356,7 @@ def load(*, strict: bool = False) -> dict[str, Any]:
         for key, row in reached.items():
             if isinstance(key, str) and isinstance(row, dict):
                 source = row.get("source")
-                if source in ("event", "backfill", "manual"):
+                if source in ("event", "backfill", "manual", "arrived"):
                     st["reached"][key] = {"at": _num(row.get("at")), "source": source}
     st["skipped"] = _str_list(raw.get("skipped"))
     st["noticed"] = _str_list(raw.get("noticed"))
@@ -446,7 +451,8 @@ def _features_completed_event(st: dict[str, Any], events: list) -> None:
     sources = {st["reached"].get(r.id, {}).get("source", "event") for r in feature_rows()}
     if sources == {"manual"}:
         via = "manual"
-    elif "manual" in sources:
+    elif sources & {"manual", "arrived"}:
+        # An arrival is a visit, not proven use, so it never counts as organic.
         via = "mixed"
     else:
         via = "organic"
@@ -824,6 +830,37 @@ def op_starter_clicked(milestone_id: str, surface: str) -> Op:
         st["starter_clicked"][row.id] = now
         send = "route" if row.starter.kind == "route" else row.starter.send
         events.append((M_STARTER_CLICKED, {"surface": surface, "milestone": row.id, "send": send}))
+
+    return apply
+
+
+def op_starter_arrived(milestone_id: str, today: date) -> Op:
+    """A "Try it" from Try today landed on its page: the row is done, and today counts.
+
+    Only an arrival after this row's own ``starter_clicked`` (server-stamped,
+    within ``_ARRIVAL_WINDOW_S``) counts, so the row cannot be completed by an
+    arrival alone. The row is written ``source: "arrived"`` and never announced:
+    the user just went there. Repeats are no-ops, and the streak day is counted
+    once per day by ``_op_active_day``. Usage rows can never reach this op:
+    the route accepts feature ids only.
+    """
+
+    def apply(st: dict[str, Any], now: float, events: list) -> None:
+        row = _row(milestone_id)
+        if row is None or row.group != "features" or row.starter is None:
+            return
+        clicked = st["starter_clicked"].get(row.id, 0.0)
+        if not clicked or not 0 <= now - clicked <= _ARRIVAL_WINDOW_S:
+            return
+        if not _feature_done(st, row):
+            was_complete = _features_complete(st)
+            st["reached"][row.id] = {"at": now, "source": "arrived"}
+            if row.id not in st["noticed"]:
+                st["noticed"].append(row.id)
+            events.append((M_REACHED, {"group": row.group, "milestone": row.id, "via": "arrived"}))
+            if not was_complete and _features_complete(st):
+                _features_completed_event(st, events)
+        _op_active_day(today)(st, now, events)
 
     return apply
 

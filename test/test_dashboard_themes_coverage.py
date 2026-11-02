@@ -1144,6 +1144,26 @@ class TestApiThemeDetailDelete:
         assert not (themes_dir / "lcars").exists()
 
     @pytest.mark.asyncio
+    async def test_a_pack_left_half_removed_reports_an_error(
+        self, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A file another process holds open survives the delete on Windows.
+        # Simulate it: the rmtree removes every file but ``theme.json``.
+        pack = themes_dir / "lcars"
+        _make_pack(pack)
+
+        def leave_one_file(path: Any, *args: Any, **kwargs: Any) -> None:
+            for child in Path(path).rglob("*"):
+                if child.is_file() and child.name != "theme.json":
+                    child.unlink()
+
+        monkeypatch.setattr(th.shutil, "rmtree", leave_one_file)
+        resp = await th.api_theme_detail(_detail("DELETE", "lcars"))
+        assert resp.status == 500
+        assert _body(resp)["code"] == "theme_delete_incomplete"
+        assert (pack / "theme.json").is_file()
+
+    @pytest.mark.asyncio
     async def test_unknown_slug_is_404(self, themes_dir: Path) -> None:
         resp = await th.api_theme_detail(_detail("DELETE", "ghost"))
         assert resp.status == 404

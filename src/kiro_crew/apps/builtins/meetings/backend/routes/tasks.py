@@ -193,14 +193,22 @@ def _normalize_task(raw: Any) -> dict[str, Any] | None:
     }
 
 
-def read_normalized(meeting_id: str, root: Any) -> list[dict[str, Any]]:
+def read_normalized(meeting_id: str, root: Any, *, for_update: bool = False) -> list[dict[str, Any]]:
     """Every task from ``tasks.json``, coerced and redacted. BLOCKING.
 
     Public because the meeting-lifecycle ``/outputs`` poll returns the task list
     too: it MUST come through here rather than straight off
     ``store.read_tasks``, or agent-written text reaches the dashboard unredacted.
+
+    Every helper that writes the list back passes ``for_update=True``, which reads
+    through ``store.read_tasks_for_update``: an unparseable file is moved aside
+    before the write and an unreadable one refuses it, so one edit never saves
+    over the tasks still in the file.
     """
-    doc = store.read_tasks(meeting_id, root)
+    if for_update:
+        doc = store.read_tasks_for_update(meeting_id, root)
+    else:
+        doc = store.read_tasks(meeting_id, root)
     out: list[dict[str, Any]] = []
     # Ids are DE-DUPLICATED here, because `tasks.json` is agent-written and nothing
     # stops the model emitting `t1` twice. Every route keys on the id, so a duplicate
@@ -250,7 +258,7 @@ def _append_task(meeting_id: str, body: dict[str, Any], root: Any) -> dict[str, 
                 "meeting not found", status=404, code="meeting_not_found"
             )
         description = field_str(body, "description", required=True, max_len=_MAX_DESCRIPTION)
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         if len(tasks) >= _MAX_TASKS:
             raise BadRequest(f"a meeting is limited to {_MAX_TASKS} tasks")
         task = _normalize_task(
@@ -291,7 +299,7 @@ def _patch_task(
     would discard any task added concurrently.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         updated: dict[str, Any] | None = None
         for index, task in enumerate(tasks):
             if task["id"] != task_id:
@@ -333,7 +341,7 @@ def _drop_task(meeting_id: str, task_id: str, root: Any) -> list[dict[str, Any]]
     same read-modify-write reason as :func:`_patch_task`.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         remaining = [t for t in tasks if t["id"] != task_id]
         if len(remaining) == len(tasks):
             return None
@@ -415,7 +423,7 @@ def _record_filing(
     pre-await snapshot, which would silently revert concurrent edits.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         for index, task in enumerate(tasks):
             if task["id"] == task_id:
                 tasks[index] = {
@@ -555,7 +563,7 @@ def _set_review_state(
     for them to resolve and the response still carries the true list.
     """
     with _TASKS_LOCK:
-        tasks = read_normalized(meeting_id, root)
+        tasks = read_normalized(meeting_id, root, for_update=True)
         found = False
         for index, task in enumerate(tasks):
             if task["id"] == task_id:

@@ -255,6 +255,7 @@ describe('DesignTweakPage — history, archive, states', () => {
   it('toggles the history section open and closed', async () => {
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
+    await screen.findByText(i18nT('apps.designTweak.requests.request_number', { number: 1 }))
 
     // Wait for data to load
     await waitFor(() => {
@@ -519,6 +520,7 @@ describe('DesignTweakPage — history, archive, states', () => {
   it('renders history requests collapsed by default', async () => {
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
+    await screen.findByText(i18nT('apps.designTweak.requests.request_number', { number: 1 }))
 
     // Open the history panel
     const historyBtn = await screen.findByRole('button', {
@@ -543,6 +545,8 @@ describe('DesignTweakPage — history, archive, states', () => {
   it('renders the page title and tagline', async () => {
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
+    // Wait for the queue to load, so the late data updates land inside the test.
+    await screen.findByText(i18nT('apps.designTweak.requests.request_number', { number: 1 }))
 
     await waitFor(() => {
       expect(
@@ -642,6 +646,7 @@ describe('DesignTweakPage — history, archive, states', () => {
       ],
     })
     renderWithProviders(<DesignTweak />)
+    await screen.findByText(i18nT('apps.designTweak.requests.request_number', { number: 1 }))
 
     // Open history
     const historyBtn = await screen.findByRole('button', {
@@ -664,6 +669,7 @@ describe('DesignTweakPage — history, archive, states', () => {
   it('shows zero history count when no history exists for the project', async () => {
     setupHappyPath({ history: [] })
     renderWithProviders(<DesignTweak />)
+    await screen.findByText(i18nT('apps.designTweak.requests.request_number', { number: 1 }))
 
     await waitFor(() => {
       expect(screen.getByText('(0)')).toBeInTheDocument()

@@ -31,6 +31,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.wait import await_until
 
 
 # --------------------------------------------------------------------------
@@ -183,15 +184,18 @@ async def test_find_worktree_by_path_matches_known_worktree(monkeypatch, tmp_pat
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_cleanup_kills_runs_and_cancels_workers(monkeypatch):
-    async def _never():
-        # flake-ok: pre-existing placeholder coroutine that never finishes on its own; the cleanup cancels it, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(30)
+    async def _never(started: asyncio.Event):
+        started.set()
+        # Nothing sets this event: the cleanup's cancel ends the wait, and the lost-run
+        # ceiling fails the task by name if a cleanup ever stops cancelling it.
+        await await_until(asyncio.Event(), what="the cleanup to cancel the placeholder task")
 
-    run_task = asyncio.create_task(_never())
-    refresher = asyncio.create_task(_never())
-    # flake-ok: pre-existing one-turn yield so the tasks start before the cleanup, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    run_started = asyncio.Event()
+    refresher_started = asyncio.Event()
+    run_task = asyncio.create_task(_never(run_started))
+    refresher = asyncio.create_task(_never(refresher_started))
+    await await_until(run_started, what="run task started before the cleanup")
+    await await_until(refresher_started, what="refresher started before the cleanup")
 
     proc = MagicMock()
     proc.returncode = None
@@ -216,14 +220,15 @@ async def test_cleanup_kills_runs_and_cancels_workers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cleanup_tolerates_already_dead_process(monkeypatch):
-    async def _never():
-        # flake-ok: pre-existing placeholder coroutine that never finishes on its own; the cleanup cancels it, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(30)
+    async def _never(started: asyncio.Event):
+        started.set()
+        # Nothing sets this event: the cleanup's cancel ends the wait, and the lost-run
+        # ceiling fails the task by name if a cleanup ever stops cancelling it.
+        await await_until(asyncio.Event(), what="the cleanup to cancel the placeholder task")
 
-    run_task = asyncio.create_task(_never())
-    # flake-ok: pre-existing one-turn yield so the task starts before the cleanup, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0)
+    run_started = asyncio.Event()
+    run_task = asyncio.create_task(_never(run_started))
+    await await_until(run_started, what="run task started before the cleanup")
 
     proc = MagicMock()
     proc.returncode = None

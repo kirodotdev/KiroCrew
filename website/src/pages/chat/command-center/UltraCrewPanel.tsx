@@ -8,7 +8,7 @@
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronRight, Loader } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronRight, Loader, Pause } from 'lucide-react'
 import { api } from '../../../api/client'
 import type { CrewWorker } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
@@ -78,12 +78,12 @@ export function summaryRecap(summary: SessionSummary | undefined, milestoneTitle
 
 const BOOKKEEPING = /\b(task limit|open-task|tasks used|cap|ledger|item id|session|dispatch|worker|round|retry|try|timed out|approval|auto-nudge|monitor|patrol)\b/i
 
-/** The milestone sentence: "4 of 8 done; A and B wait on you; C is running." */
-export function milestoneSentence(done: number, total: number, waiting: string[], running: string[], blocked: string[] = []): string {
+/** The milestone sentence: "4 of 8 done; A and B wait on you; C has stalled; D is running." */
+export function milestoneSentence(done: number, total: number, waiting: string[], running: string[], stalled: string[] = []): string {
   if (total === 0) return i18nT('components.crewMode.ultra_recap_empty')
   const parts = [i18nT('components.crewMode.ultra_recap_head', { done, total })]
   if (waiting.length) parts.push(i18nT(waiting.length === 1 ? 'components.crewMode.ultra_recap_wait_one' : 'components.crewMode.ultra_recap_wait', { names: joinNames(waiting) }))
-  if (blocked.length) parts.push(i18nT(blocked.length === 1 ? 'components.crewMode.ultra_recap_blocked_one' : 'components.crewMode.ultra_recap_blocked_many', { names: joinNames(blocked) }))
+  if (stalled.length) parts.push(i18nT(stalled.length === 1 ? 'components.crewMode.ultra_recap_stalled_one' : 'components.crewMode.ultra_recap_stalled_many', { names: joinNames(stalled) }))
   if (running.length) parts.push(i18nT(running.length === 1 ? 'components.crewMode.ultra_recap_run_one' : 'components.crewMode.ultra_recap_run_many', { names: joinNames(running) }))
   return `${parts.join('; ')}.`
 }
@@ -171,29 +171,59 @@ export function goalScope(text: string): string {
   return m ? m[1].trim() : ''
 }
 
-type MilestoneState = 'done' | 'blocked' | 'running' | 'waiting' | 'next'
+type MilestoneState = 'done' | 'needs_you' | 'running' | 'waiting' | 'stalled' | 'next'
+
+/** A report a worker said only a person can move (`reason` approval / needs_human). */
+const PERSON_REASONS = new Set(['approval', 'needs_human'])
+
+/** The item's last blocked / question report has its answer: for a question the
+ *  board's own `outstanding` (a newer decision or person's steer), for a blocked
+ *  report the conductor's `decide`, or a decision / steer after the newest report
+ *  on the event tail, as `answered_since_report` reads it on the server. */
+export function reportAnswered(item: WorkBoardItem): boolean {
+  if (item.status === 'question') return !item.outstanding
+  // Stamps may carry different offsets (a remote peer keeps its own), so they
+  // are compared as instants; one that does not parse answers nothing.
+  const reported = item.last_report_at ? Date.parse(item.last_report_at) : NaN
+  const atOrAfterReport = (ts: string | null | undefined) => {
+    const t = ts ? Date.parse(ts) : NaN
+    return Number.isFinite(t) && (!item.last_report_at || (Number.isFinite(reported) && t >= reported))
+  }
+  if (atOrAfterReport(item.decided_at)) return true
+  const events = item.events || []
+  let last = -1
+  events.forEach((e, n) => { if (e.kind === 'report') last = n })
+  if (last >= 0) return events.slice(last + 1).some(e => e.kind === 'decision' || e.kind === 'steer')
+  return events.some(e => (e.kind === 'decision' || e.kind === 'steer') && atOrAfterReport(e.ts))
+}
 
 export function milestoneState(item: WorkBoardItem, waiting: boolean): MilestoneState {
-  // A closed item is finished whatever its last report said. Then waiting on
-  // the person; then a session working again reads as running even after an
-  // earlier "done" report. A blocked report counts only until the conductor
-  // decides on it (`decided_at` at or after the report hands it back).
+  // A closed item is finished whatever its last report said. Then the person;
+  // then a session working again reads as running even after an earlier
+  // "done" report. A report counts only until the conductor decides on it
+  // (`decided_at` at or after the report hands it back).
   if (item.state === 'accepted' || item.terminal) return 'done'
-  // `waiting` is a pending approval of the item's member (on the person); a
-  // worker's unanswered question (`outstanding`) waits on the main chat.
-  if (waiting || item.outstanding) return 'blocked'
+  const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
+  // Needs you only when the person must act: a pending approval of the item's
+  // member (`waiting`), or an unanswered blocked / question report whose reason
+  // names a person. An answer -- the conductor's or the person's own steer -- ends it.
+  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item))) return 'needs_you'
   if (item.alive === 'running') return 'running'
-  // A report left open by a worker whose session closed is not running: it
-  // stopped there, so it reads as blocked (the item itself is not done).
-  if (item.alive === 'closed' && (item.status === 'progress' || item.status === 'blocked' || item.status === 'question')) return 'blocked'
-  const decided = !!item.decided_at && (!item.last_report_at || item.decided_at >= item.last_report_at)
-  if (item.status === 'blocked' && !decided) return 'blocked'
-  // Only a live turn reads as running (above): an idle session whose last
-  // report was progress, or an answered blocked / question, is waiting to be
-  // resumed, as the List shows it.
-  if (item.status === 'progress' || item.status === 'blocked' || item.status === 'question') return 'waiting'
+  // The worker stopped and nobody is moving it: its session closed on an open
+  // report, or the board's own stale / orphaned flag.
+  // Only an open report can stall: a done report or an unstarted item keeps its
+  // own state even when the whole board is orphaned (its conductor tab closed).
+  if (open && (item.alive === 'closed' || item.stale || item.orphaned)) return 'stalled'
+  // An idle session after progress, or a question / blocked report the
+  // conductor still owns, is waiting, as the List shows it.
+  if (open) return 'waiting'
   if (item.status === 'done') return 'done'
   return 'next'
+}
+
+/** The conductor still owes this item an answer: an open question, or a blocked report it has not decided on. */
+function onConductor(item: WorkBoardItem): boolean {
+  return (item.status === 'blocked' || item.status === 'question') && !reportAnswered(item)
 }
 
 function minutesBetween(a: string | null | undefined, b: string | number | null | undefined): number {
@@ -210,9 +240,10 @@ function fmtMinutes(mins: number): string {
 
 const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,
-  blocked: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
+  needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
+  stalled: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_20%,transparent)] crew-tone-muted"><Pause size={11} strokeWidth={2.5} /></span>,
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
@@ -225,6 +256,12 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {item.pr != null && <span className="shrink-0 ultra-accent">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
       {link && <a className="shrink-0 ultra-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
     </>
+  } else if (state === 'stalled' || (state === 'waiting' && onConductor(item))) {
+    // Who acts next, not the worker's own words: a stalled row says how to
+    // restart it, and a row the conductor owns says the main chat is on it.
+    const said = firstSentence(item.summary)
+    const text = i18nT(state === 'stalled' ? 'components.crewMode.ultra_ms_stalled_next' : 'components.crewMode.ultra_ms_main_chat_answering')
+    sub = <span className="truncate" title={said || text}>{text}</span>
   } else if (state === 'waiting') {
     const said = firstSentence(item.summary)
     sub = <>
@@ -232,7 +269,7 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {said && <span className="truncate" title={said}>· {said}</span>}
     </>
   } else {
-    const text = state === 'blocked' ? waitingOn
+    const text = state === 'needs_you' ? waitingOn
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.ultra_ms_running'))
         : i18nT('components.crewMode.ultra_ms_not_started')
     sub = <span className="truncate" title={text}>{text}</span>
@@ -249,7 +286,7 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
         {onOpen
           ? <button type="button" onClick={onOpen} data-testid="ultra-milestone-open" className={`block max-w-full text-left text-[13px] font-medium truncate hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
           : <span className={`block text-[13px] font-medium truncate ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</span>}
-        <span className={`flex items-center gap-1 min-w-0 text-[12px] ${state === 'blocked' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
+        <span className={`flex items-center gap-1 min-w-0 text-[12px] ${state === 'needs_you' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
       </span>
       <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'ultra-accent font-medium' : 'text-muted'}`}>{right}</span>
     </li>
@@ -287,7 +324,6 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
   const pendingQuestion = useAppSelector(st => pendingQuestionFor(st.chat.pendingQuestions, root))
   const questionCount = pendingQuestion?.questions?.length ? 1 : 0
   const c = ultraCounts(workers, approvals.length, questionCount)
-  const needYou = c.approvals + c.questions
   const waitingNames = [...new Set(approvals.map(a => a.title))]
   // Same query key and read as the side panel's Summary tab, so one cache serves both.
   const summary = useQuery({ queryKey: ['session-summary', root], queryFn: () => api.sessionSummary(root), enabled: !!root, staleTime: 30_000, retry: false })
@@ -349,10 +385,15 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
   }
   const milestones = items.map(item => {
     const state = milestoneState(item, approvalByItem.has(item.item_id))
-    const waitingOn = approvalByItem.get(item.item_id) || (item.outstanding ? i18nT('commandCenter.worker_group_with_conductor') : (firstSentence(item.summary) || i18nT('components.crewMode.ultra_ms_blocked')))
+    const waitingOn = approvalByItem.get(item.item_id) || firstSentence(item.summary) || i18nT('components.crewMode.ultra_needs_you')
     return { item, state, waitingOn }
   })
   const doneMs = milestones.filter(m => m.state === 'done')
+  // Needs-you milestones with no approval card of their own count too (an
+  // approval row's card is already in `c.approvals`), so the header and the
+  // rows agree on whether the person must act.
+  const needsYouRows = milestones.filter(m => m.state === 'needs_you' && !approvalByItem.has(m.item.item_id)).map(m => m.item.title)
+  const needYou = c.approvals + c.questions + needsYouRows.length
   const openMs = milestones.filter(m => m.state !== 'done')
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
@@ -366,10 +407,9 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w ? () => open(w) : undefined
   }
-  const asksPerson = (m: typeof milestones[number]) => approvalByItem.has(m.item.item_id)
   const recap = summaryRecap(summary.data, items.map(i => i.title))
     || (items.length
-      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'blocked' && asksPerson(m)).map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'blocked' && !asksPerson(m)).map(m => m.item.title))
+      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stalled').map(m => m.item.title))
       : ultraRecap(c, waitingNames, questionCount > 0))
 
   return (
@@ -403,9 +443,12 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
               approval cards, both compact. */}
           <section data-testid="ultra-needs-you" className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_needs_input')} · ${needYou}`}</h3>
-            {/* Blocked work that needs no approval is not counted here, but the
-                line does not claim nothing is wrong: it points at the rows below. */}
-            {needYou === 0 && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{i18nT(milestones.some(m => m.state === 'blocked') ? 'components.crewMode.ultra_needs_you_none_blocked' : 'components.crewMode.ultra_needs_you_none')}</p>}
+            {/* A milestone that needs the person without an approval card, or one
+                that stalled, is not counted here, but the line does not claim
+                nothing is wrong: it points at the rows below. */}
+            {(needYou === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{needsYouRows.length
+              ? i18nT(needsYouRows.length === 1 ? 'components.crewMode.ultra_needs_you_rows_one' : 'components.crewMode.ultra_needs_you_rows_many', { names: joinNames(needsYouRows) })
+              : i18nT(milestones.some(m => m.state === 'stalled') ? 'components.crewMode.ultra_needs_you_none_stalled' : 'components.crewMode.ultra_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="ultra-main-question">
                 <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>

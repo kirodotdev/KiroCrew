@@ -95,6 +95,36 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     return keys
 
 
+def _open_row_test(state: DashboardState) -> Callable[[str], bool]:
+    """Whether a session row's ``key`` names a transcript an open tab owns.
+
+    The one answer for every reader: the Older-sessions list hides these rows and
+    the session search marks them ``open``, so a session counts as open in both
+    places or in neither. Folded through ``_canonical_key`` as well:
+    ``list_sessions`` and ``search_sessions`` deduplicate by canonical name but
+    report the RAW stem of whichever file won on mtime, so a resume round-trip's
+    ``dashboard_dashboard_<name>`` file arrives under a name no slot produces.
+    """
+    open_keys = _open_slot_transcript_keys(state)
+    log = getattr(state, "conversation_log", None)
+    canon = getattr(log, "_canonical_key", None) or (lambda key: key)
+    return lambda key: key in open_keys or canon(key) in open_keys
+
+
+def _mark_open_sessions(rows: list[dict], state: DashboardState) -> None:
+    """Set ``open: True`` on each local search row :func:`_open_row_test` accepts.
+
+    Only ``True`` is ever written. A state with no slot registry (a test double)
+    marks nothing.
+    """
+    if getattr(state, "_slots", None) is None:
+        return
+    is_open = _open_row_test(state)
+    for row in rows:
+        if is_open(row.get("key", "")):
+            row["open"] = True
+
+
 #: Session namespaces whose transcripts are a machine run rather than a conversation
 #: anyone addressed. This membership is a PRESENTATION judgement for one pane, not a
 #: shared roster: two other modules carry similar-looking tuples that answer different
@@ -294,18 +324,8 @@ async def api_sessions(request: web.Request) -> web.Response:
         )
         _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
     if exclude_open:
-        open_keys = _open_slot_transcript_keys(state)
-        # Fold through ``_canonical_key`` as well: ``list_sessions`` deduplicates
-        # by canonical name but reports the RAW stem of whichever file won on
-        # mtime, so a resume round-trip's ``dashboard_dashboard_<name>`` file
-        # reaches here under a name no slot ever produces. Without the fold that
-        # session is listed as a second, separate conversation.
-        canon = state.conversation_log._canonical_key
-        all_sessions = [
-            s
-            for s in all_sessions
-            if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
-        ]
+        is_open = _open_row_test(state)
+        all_sessions = [s for s in all_sessions if not is_open(s.get("key", ""))]
     if user_only:
         log = state.conversation_log
 
@@ -492,6 +512,9 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         sessions = await asyncio.get_running_loop().run_in_executor(
             None, state.conversation_log.search_sessions, q, limit
         )
+        # The dashboard's own search ranks open tabs first. Only this arm marks
+        # them: an app caller and a remote crew read get the rows unchanged.
+        _mark_open_sessions(sessions, state)
     for s in sessions:
         for field in SESSION_SEARCH_TEXT_FIELDS:
             value = s.get(field)

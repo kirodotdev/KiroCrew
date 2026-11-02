@@ -23,6 +23,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     SESSION,
     SUCCESSOR,
@@ -310,7 +311,7 @@ def _dangling_predecessor() -> None:
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_tool_called(SESSION, 1, name="fs_read", call_id="tc-1")
-    assert emit.flush()
+    assert_drained()
 
 
 def _closers(session_id: str) -> list[dict]:
@@ -340,7 +341,7 @@ def test_a_supersede_closes_the_predecessors_interrupted_tail():
     assert _closers(SESSION) == [], "the predecessor's turn is open before the supersede"
 
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the superseded turn was not closed exactly once"
@@ -371,12 +372,12 @@ def test_the_repair_refuses_a_candidate_whose_header_names_another_slot():
     bystander = "acp-sess-other-slot"
     emit.on_session_opened(bystander, agent="kirocrew", slot="chat-99")
     emit.on_turn_started(bystander, 1, "user")
-    assert emit.flush()
+    assert_drained()
     # Nothing is live for it any more: a fresh claim ends every turn no terminal is
     # coming for, so a stale pin cannot stand the repair down for a reason other than
     # the one under test.
     emit.on_session_opened(bystander, agent="kirocrew", slot="chat-99")
-    assert emit.flush()
+    assert_drained()
     assert emit.live_turn(bystander) == 0
 
     emit._repair_superseded(bystander, "chat-7")
@@ -453,7 +454,7 @@ def test_the_repair_leaves_an_unmatched_child_open():
         _open_session()
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
-        assert emit.flush()
+        assert_drained()
         # The predecessor's ACP session is gone, so this process holds none of its
         # live state. Left standing, turn 1's record means a turn still RUNNING and
         # the repair correctly stands down, which is a state no superseded session
@@ -461,7 +462,7 @@ def test_the_repair_leaves_an_unmatched_child_open():
         emit.reset_caches()
 
         _open_successor(previous_sid=SESSION)
-        assert emit.flush()
+        assert_drained()
     finally:
         emit.set_child_liveness(None)
 
@@ -499,7 +500,7 @@ def test_a_predecessor_collected_during_the_deferral_costs_no_dropped_write():
         "closing a superseded crew log's interrupted tail",
         SESSION,
     )
-    assert emit.flush()
+    assert_drained()
 
     assert emit.dropped_writes() == before, "a collected predecessor was counted as a loss"
 
@@ -542,7 +543,7 @@ def test_the_repair_runs_after_an_abandoned_outcome_and_closes_the_tail():
 
     emit._submit(_doomed, "the predecessor's real turn/completed", SESSION)
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
 
     assert (
         attempts == DEFAULT_LIMITS.max_write_attempts
@@ -576,7 +577,7 @@ def test_a_real_outcome_that_lands_leaves_the_repair_nothing_to_close():
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
 
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the repair added a second outcome for one turn"
@@ -655,7 +656,7 @@ def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
     # opening entry lands durably, the follow-on job is never queued.
     with unittest.mock.patch.object(emit, "_queue_tail_repair", lambda previous_sid, slot: None):
         _open_successor(previous_sid=SESSION)
-        assert emit.flush()
+        assert_drained()
 
     assert _closers(SESSION) == [], "the repair was not actually lost, so this proves nothing"
     # The edge IS durable, which is what makes recovery possible at all.
@@ -665,7 +666,7 @@ def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
     # The restart: no in-memory state survives it.
     emit.reset_caches()
     emit.on_session_opened(SUCCESSOR, agent="kirocrew", slot="chat-7", resumed=True)
-    assert emit.flush()
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the re-attach did not recover the lost repair"
@@ -691,10 +692,10 @@ def test_the_recovery_reads_this_logs_own_edge_not_the_callers(caplog):
     third = "sid-a-live-third-session"
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    assert emit.flush()
+    assert_drained()
     # A successor opened with NO predecessor, so its file records no edge.
     emit.on_session_opened(SUCCESSOR, agent="kirocrew", slot="chat-7")
-    assert emit.flush()
+    assert_drained()
     opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
     assert opened and "previous" not in opened[0]["data"], "the fixture wrote an edge"
 
@@ -703,7 +704,7 @@ def test_the_recovery_reads_this_logs_own_edge_not_the_callers(caplog):
         emit.on_session_opened(
             SUCCESSOR, agent="kirocrew", slot="chat-7", resumed=True, previous_sid=third
         )
-        assert emit.flush()
+        assert_drained()
 
     assert _closers(third) == [], "the caller's named unit was repaired on a re-attach"
     assert _closers(SESSION) == [], "a unit this log never names was repaired"
@@ -751,7 +752,7 @@ def _chain_of_open_tails(sids: "list[str]") -> None:
             with _lose_the_repair():
                 _open_on_chat_7(sid, previous_sid=sids[index - 1])
         emit.on_turn_started(sid, 1, "user")
-        assert emit.flush()
+        assert_drained()
         emit.reset_caches()
     for sid in sids:
         assert _closers(sid) == [], f"{sid} was closed while building the chain"
@@ -780,12 +781,12 @@ def test_a_cold_start_closes_a_tail_two_hops_back_in_the_chain():
         _open_successor(previous_sid=SESSION)
         emit.on_turn_started(SUCCESSOR, 1, "user")
         emit.on_turn_completed(SUCCESSOR, 1, stop_reason="end_turn")
-        assert emit.flush()
+        assert_drained()
     emit.reset_caches()
     assert _closers(SESSION) == [], "A's repair was not actually lost, so this proves nothing"
 
     _open_on_chat_7(third, previous_sid=SUCCESSOR)
-    assert emit.flush()
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the tail two hops back stayed open after the cold start"
@@ -806,7 +807,7 @@ def test_a_cold_start_closes_every_open_tail_of_the_chain():
     _chain_of_open_tails(chain[:3])
 
     _open_on_chat_7(chain[3], previous_sid=chain[2])
-    assert emit.flush()
+    assert_drained()
 
     for sid in chain[:3]:
         closers = _closers(sid)
@@ -828,7 +829,7 @@ def test_a_reattach_recovery_walks_the_chain_too():
     _chain_of_open_tails(chain)
 
     _open_on_chat_7(chain[2], resumed=True)
-    assert emit.flush()
+    assert_drained()
 
     assert len(_closers(chain[1])) == 1, "the recovered hop was not closed"
     assert len(_closers(chain[0])) == 1, "the recovery did not walk past the first hop"
@@ -859,7 +860,7 @@ def test_a_cyclic_predecessor_pointer_ends_the_walk_with_a_logged_stop(edges, mo
     for sid in sorted(set(edges) | set(edges.values())):
         _open_on_chat_7(sid)
         emit.on_turn_started(sid, 1, "user")
-        assert emit.flush()
+        assert_drained()
     emit.reset_caches()
     monkeypatch.setattr(emit, "_durable_previous", lambda sid: edges.get(sid, ""))
 
@@ -888,7 +889,7 @@ def test_the_walk_stops_at_its_hop_bound_with_a_logged_stop(monkeypatch, caplog)
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         emit._queue_tail_repair(chain[3], "chat-7")
-        assert emit.flush()
+        assert_drained()
 
     assert [len(_closers(sid)) for sid in chain] == [0, 0, 1, 1]
     stops = [r.message for r in caplog.records if "the walk's bound" in r.message]
@@ -913,7 +914,7 @@ def test_a_walk_that_reaches_a_log_retention_removed_ends_quietly(caplog):
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         _open_on_chat_7(chain[2], previous_sid=chain[1])
-        assert emit.flush()
+        assert_drained()
 
     assert len(_closers(chain[1])) == 1, "the hop that still exists was not closed"
     warned = [r.getMessage() for r in caplog.records if chain[0] in r.getMessage()]
@@ -933,7 +934,7 @@ def test_a_walk_does_not_follow_an_edge_to_another_slots_log(monkeypatch, caplog
     foreign = "acp-sess-0009"
     emit.on_session_opened(foreign, agent="kirocrew", slot="chat-8", owner="default")
     emit.on_turn_started(foreign, 1, "user")
-    assert emit.flush()
+    assert_drained()
     _chain_of_open_tails(["acp-sess-0001"])
     monkeypatch.setattr(
         emit, "_durable_previous", lambda sid: foreign if sid == "acp-sess-0001" else ""
@@ -941,7 +942,7 @@ def test_a_walk_does_not_follow_an_edge_to_another_slots_log(monkeypatch, caplog
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         emit._queue_tail_repair("acp-sess-0001", "chat-7")
-        assert emit.flush()
+        assert_drained()
 
     assert len(_closers("acp-sess-0001")) == 1
     assert _closers(foreign) == [], "another slot's log was closed"
@@ -973,9 +974,9 @@ def test_a_second_supersede_in_one_process_does_not_rewalk_the_chain(monkeypatch
 
     monkeypatch.setattr(emit, "_repair_superseded", _spy)
     _open_on_chat_7(chain[2], previous_sid=chain[1])
-    assert emit.flush()
+    assert_drained()
     _open_on_chat_7(chain[3], previous_sid=chain[2])
-    assert emit.flush()
+    assert_drained()
 
     assert sorted(repaired) == sorted(chain[:3]), f"a log was walked twice: {repaired}"
     assert [len(_closers(sid)) for sid in chain[:2]] == [1, 1]
@@ -1010,7 +1011,7 @@ def test_a_superseded_repair_survives_the_pending_ceiling():
     assert emit.overflow_writes() == before + 1, "the ceiling did not reject a non-exempt job"
 
     _open_successor(previous_sid=SESSION)
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "the ceiling refused the repair and the tail stayed open"
@@ -1091,7 +1092,7 @@ def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
 
     real_append = lg.CrewLog.append
@@ -1104,7 +1105,7 @@ def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(lg.CrewLog, "append", _lose_the_real_terminal)
         emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-        assert emit.flush(timeout=20.0)
+        assert_drained()
 
     assert emit.dropped_writes() == 1, "the terminal's attempt budget was never spent"
     closers = _closers(SESSION)
@@ -1134,7 +1135,7 @@ def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(m
     emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
 
     queued: list[tuple[str, str, int]] = []
@@ -1154,7 +1155,7 @@ def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(m
     assert queued == [
         (SESSION, "chat-7", 0)
     ], f"the repair was not re-queued after the release: {queued}"
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, "a ceiling-rejected terminal left the predecessor's tail open"
@@ -1175,11 +1176,11 @@ def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
     assert _closers(SESSION) == [], "the repair did not stand down for the live turn"
 
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert emit.flush(timeout=20.0)
+    assert_drained()
 
     closers = _closers(SESSION)
     assert len(closers) == 1, f"the turn got {len(closers)} outcomes, not one"
@@ -1286,7 +1287,7 @@ def test_three_stores_of_one_slot_form_a_chain_with_no_store_skipped():
     first, second, third = SESSION, SUCCESSOR, "acp-sess-0003"
 
     emit.on_session_opened(first, agent="kirocrew", slot="chat-7", cwd="/home/dev/project")
-    assert emit.flush()
+    assert_drained()
 
     emit.on_session_opened(
         second,
@@ -1295,7 +1296,7 @@ def test_three_stores_of_one_slot_form_a_chain_with_no_store_skipped():
         cwd="/home/dev/project",
         previous_sid=first,
     )
-    assert emit.flush()
+    assert_drained()
 
     emit.on_session_opened(
         third,
@@ -1304,7 +1305,7 @@ def test_three_stores_of_one_slot_form_a_chain_with_no_store_skipped():
         cwd="/home/dev/project",
         previous_sid=second,
     )
-    assert emit.flush()
+    assert_drained()
 
     def _previous(session_id: str) -> dict | None:
         opened = [e for e in _body(session_id) if e["type"] == "session/opened"]
@@ -1527,9 +1528,9 @@ def test_a_store_whose_front_retention_removed_reports_no_edge():
     claim a slot's history began at the oldest segment that survived.
     """
     _open_session()
-    assert emit.flush()
+    assert_drained()
     _open_successor(previous_sid=SESSION)
-    assert emit.flush()
+    assert_drained()
     assert crew_log_projection.read_projection(SUCCESSOR, "status").value["previous"] == SESSION
 
     _remove_as_retention_does(_log_path(SUCCESSOR).unlink)

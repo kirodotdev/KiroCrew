@@ -1411,7 +1411,7 @@ def _staged_wheel() -> Path:
     machine. ``scripts/build_microvm_image_zip.py`` stages it; a launch that finds
     none says so and names that script.
     """
-    vendor = recipe_mod.RUNTIME_DIR / "vendor"
+    vendor = recipe_mod.runtime_path("RUNTIME_DIR") / "vendor"
     wheels = sorted(vendor.glob("*.whl"))
     if not wheels:
         raise ValueError(

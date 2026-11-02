@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -65,7 +66,7 @@ def _publish(crew: str, data: dict[str, Any], *, title: str = "board") -> None:
             "crew_key": agent_panel.crew_key(crew),
         },
     )
-    assert crew_log_emit.flush(), "the publish line did not land"
+    assert_drained()
     projection.forget_slot_folds()
 
 

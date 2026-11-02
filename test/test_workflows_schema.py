@@ -65,6 +65,58 @@ def test_c3_bool_is_not_integer() -> None:
     assert any("count" in e for e in errs)
 
 
+def test_integer_accepts_float_with_no_fraction() -> None:
+    # JSON Schema: a number with a zero fractional part is an integer.
+    assert validate_against_schema(3.0, {"type": "integer"}) == []
+    assert validate_against_schema(-0.0, {"type": "integer"}) == []
+    assert validate_against_schema(3, {"type": "integer"}) == []
+
+
+@pytest.mark.parametrize("value", [3.5, float("inf"), float("nan"), True, "3"])
+def test_integer_still_rejects_non_integers(value: object) -> None:
+    assert validate_against_schema(value, {"type": "integer"}) != []
+
+
+def test_coerce_returns_int_for_integer_typed_float() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer"},
+            "lines": {"type": "array", "items": {"type": "integer"}},
+            "score": {"type": "number"},
+            "either": {"type": ["integer", "number"]},
+        },
+    }
+    value, errs = coerce_and_validate(
+        '{"count": 3.0, "lines": [1.0, 2], "score": 2.0, "either": 4.0, "extra": 5.0}', schema
+    )
+    assert errs == []
+    assert value == {"count": 3, "lines": [1, 2], "score": 2.0, "either": 4.0, "extra": 5.0}
+    assert type(value["count"]) is int
+    assert all(type(n) is int for n in value["lines"])
+    assert type(value["score"]) is float
+    assert type(value["either"]) is float
+    assert type(value["extra"]) is float
+
+
+def test_enum_bool_does_not_match_number() -> None:
+    assert validate_against_schema(True, {"enum": [1]}) != []
+    assert validate_against_schema(False, {"enum": [0]}) != []
+    assert validate_against_schema(1, {"enum": [True]}) != []
+    assert validate_against_schema([True], {"enum": [[1]]}) != []
+    assert validate_against_schema({"a": False}, {"enum": [{"a": 0}]}) != []
+
+
+def test_enum_keeps_json_equality_for_same_kind_values() -> None:
+    assert validate_against_schema(True, {"enum": [True, 1]}) == []
+    assert validate_against_schema(1, {"enum": [1.0]}) == []
+    assert validate_against_schema(1.0, {"enum": [1]}) == []
+    assert validate_against_schema([1, "a"], {"enum": [[1.0, "a"]]}) == []
+    assert validate_against_schema({"a": 1}, {"enum": [{"a": 1}]}) == []
+    assert validate_against_schema(None, {"enum": [None]}) == []
+    assert validate_against_schema("low", FINDING_SCHEMA["properties"]["severity"]) == []
+
+
 def test_union_type_still_enforces_required_and_properties() -> None:
     # Keying the object sub-checks on the literal string
     # "object" skipped required/properties for union spellings, so an invalid

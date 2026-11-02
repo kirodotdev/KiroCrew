@@ -18,7 +18,11 @@ from typing import Any
 
 from kiro_crew import member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
-from kiro_crew.members_parts.member_sessions import is_member_session_key, member_slot_key
+from kiro_crew.members_parts.member_sessions import (
+    _slot_part,
+    is_member_session_key,
+    member_slot_key,
+)
 from kiro_crew.members_parts.member_space import (
     DM_BINDINGS_DIR_NAME,
     DM_SLOT_KEY_PREFIX,
@@ -118,8 +122,9 @@ def _read_canonical_binding(slug: str) -> dict | None:
     try:
         path = dm_binding_path(slug)
     except (MemberSlugError, OSError, RuntimeError):
-        # member_dir resolves (and may mkdir) real filesystem paths, so an
-        # unreadable directory or a symlink loop surfaces here — read_dm_binding's
+        # dm_binding_path resolves real filesystem paths (and the one-time records
+        # move it can trigger creates directories), so an unreadable directory or
+        # a symlink loop surfaces here — read_dm_binding's
         # totality contract says every such state reads as "not bound", and the
         # restore paths rely on that to survive any on-disk state at boot.
         return None
@@ -176,13 +181,8 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
     report failure instead of advertising a thread that will not be found
     again.
 
-    No fsync, deliberately: the binding is re-derivable — the slot key is a
-    pure function of the slug and the endpoint that writes it is idempotent —
-    so losing it to a crash costs one re-create, while a durability barrier
-    would stall the event-loop thread pool for every thread open. The write
-    itself is atomic (unique temp file + rename), so a torn file is never
-    observable. Not a secret (a slot key and a crew name), so no owner-only
-    permission tightening.
+    The write is atomic (unique temp file + rename), so a torn file is never
+    observable, and fsynced, for the reason given at the write below.
     """
     path = dm_binding_path(slug)
     if slot_key != member_slot_key(slug, memory_store):
@@ -252,11 +252,7 @@ def member_identity_for_session(session_key: str | None) -> dict[str, str] | Non
     """
     if not session_key or not is_member_session_key(session_key):
         return None
-    key = session_key
-    for prefix in ("dashboard_", "dashboard:"):
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-            break
+    key = _slot_part(session_key)
     binding = read_dm_binding_for_slot(key)
     slug = slug_from_dm_slot_key(key)
     if binding is None or not slug:

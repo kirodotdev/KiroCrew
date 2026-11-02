@@ -61,6 +61,7 @@ class TestCronApprovalModeGateway:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._no_crons = False
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
         gw.sessions.release = MagicMock()
@@ -139,6 +140,7 @@ class TestCronApprovalModeExtraEnv:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._no_crons = False
 
         captured_kwargs: dict = {}
@@ -479,6 +481,7 @@ class TestCronSubagentInjection:
         gw.dashboard_state = None
         gw._owner_id = "U000"
         gw._cron_injecting = {}
+        gw._cron_runs_holding = set()
         gw._cfg = MagicMock()
         gw._cfg.agent.max_subagents = 5
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
@@ -546,7 +549,7 @@ class TestCronSubagentInjection:
 
         gw.sessions.get_or_create.assert_awaited_once_with("cron:daily-prep")
         gw.sessions.release.assert_called_once_with("cron:daily-prep")
-        gw.sessions.reset.assert_awaited_once_with("cron:daily-prep")
+        gw.sessions.reset.assert_awaited_once_with("cron:daily-prep", skip_if_busy=True)
         assert gw._cron_injecting == {}
 
     def test_cron_injection_defers_reset_when_others_running(self) -> None:

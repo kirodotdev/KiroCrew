@@ -61,6 +61,12 @@ def _gateway(sessions: SessionManager) -> Any:
     gateway.slack = None
     gateway._owner_id = ""
     gateway._cron_injecting = {}
+    gateway._cron_runs_holding = set()
+    gateway._inline_parked = {}
+    gateway._inline_tasks = set()
+    # As service boot wires it: a turn's release settles its inline marks.
+    if hasattr(sessions, "parent_turns"):
+        sessions.parent_turns.on_released = gateway._settle_inline
     gateway.cron_svc = None
     gateway.subagent_mgr = MagicMock()
     gateway.subagent_mgr.running = []
@@ -129,14 +135,24 @@ async def _drive(route: str, key: str) -> tuple[Any, Any, _ParentNextTurn, Sessi
             ]
             await asyncio.wait_for(
                 gateway._finish_subagent_cron_or_notify(
-                    info, announce="child done", body="b", title="t", parent_key=key
+                    info,
+                    announce="child done",
+                    body="b",
+                    title="t",
+                    carried=(info.id,),
+                    parent_key=key,
                 ),
                 _HANG_CEILING_S,
             )
         else:
             await asyncio.wait_for(
                 gateway._inject_subagent_into_channel_parent(
-                    info, announce="child done", body="b", title="t", parent_key=key
+                    info,
+                    announce="child done",
+                    body="b",
+                    title="t",
+                    carried=(info.id,),
+                    parent_key=key,
                 ),
                 _HANG_CEILING_S,
             )

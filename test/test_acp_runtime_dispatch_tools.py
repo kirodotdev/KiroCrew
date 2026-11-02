@@ -21,8 +21,10 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import METHOD_SESSION_UPDATE
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import await_until
 
 # ── _dispatch_events: notification kind branches ──
@@ -409,13 +411,15 @@ async def test_tool_stall_cancels_session_not_runtime(monkeypatch):
     handle._tool_dispatched = True  # a tool was dispatched this turn
     handle._stale_eligible = False  # the stale-turn check must NOT be what fires
 
-    # Queue that always times out (empty forever), advancing the wall clock a
-    # little each poll so the stall idle window is crossed deterministically.
+    # Queue that always times out (empty forever). Each poll advances the
+    # dispatch module's clock by 60 ms, so the 50 ms stall window is crossed
+    # on the virtual clock without any real sleep.
+    clock = ManualClock()
+    clock.install(monkeypatch, session_handle_dispatch)
+
     class _SilentQueue:
         async def get(self):
-            # flake-ok: pre-existing 60 ms stand-in queue poll that crosses the 50 ms stall window, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed queue's own poll delay, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.06)
+            clock.advance(0.06)
             raise asyncio.TimeoutError
 
         def qsize(self) -> int:
@@ -459,11 +463,12 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
     # the same except Exception).
     handle.cancel = AsyncMock(side_effect=RuntimeError("runtime unresponsive"))  # type: ignore[method-assign]
 
+    clock = ManualClock()
+    clock.install(monkeypatch, session_handle_dispatch)
+
     class _SilentQueue:
         async def get(self):
-            # flake-ok: pre-existing 60 ms stand-in queue poll that crosses the 50 ms stall window, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed queue's own poll delay, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.06)
+            clock.advance(0.06)
             raise asyncio.TimeoutError
 
         def qsize(self) -> int:

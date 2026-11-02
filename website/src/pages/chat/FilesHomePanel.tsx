@@ -37,8 +37,11 @@ function basename(p: string): string {
  * already `cd`'d into it" is offered here instead of requiring the user to know
  * that a side-panel tab kind spawns a shell in the right directory.
  */
-export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext, onOpenTerminal, onOpenFolder, onExternalTerminalFailed, active = true }: {
+export default function FilesHomePanel({ projectDir, title, onFileOpen, onAddToContext, onOpenTerminal, onOpenFolder, onExternalTerminalFailed, active = true }: {
   projectDir: string
+  /** The header's name for this view, already localised. Defaults to "Files";
+   *  a host that renames the tab passes the same word so tab and header agree. */
+  title?: string
   /** `opts.line` opens the file at that line — a rail content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
   /** Right-click "Add to context" on a tree row — forwarded to the composer
@@ -175,7 +178,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
-        <span className="text-[12px] font-semibold text-text-strong">{t('pages.chat.filesHome.title')}</span>
+        <span className="text-[12px] font-semibold text-text-strong">{title ?? t('pages.chat.filesHome.title')}</span>
         {projectDir && <span className="text-[11.5px] text-muted truncate" title={projectDir}>{basename(projectDir)}</span>}
         <span className="flex-1" />
         {projectDir && (

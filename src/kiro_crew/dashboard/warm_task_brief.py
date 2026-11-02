@@ -205,6 +205,9 @@ The snapshot, most important first:
   with its "options".
 - "changes_since_away": what changed while the owner was away, each with its
   source and time.
+- "live_prs": pull requests the gateway read from GitHub just now ("read_at").
+  An entry with "checked": false was not read; "checks": "not fully read" means
+  its check results are unknown.
 - "transcript_since_owner": the owner's last message and every turn since.
 - "open_items": open work items, questions and blocked ones first.
 - "goal", and "goal_progress" when the goal has a count.
@@ -216,15 +219,15 @@ Write these parts in order, leaving out any that would be empty:
 3. Needs you, numbered. For each ask: what it is, why only the owner can do
    it, every option with what happens if it is chosen, which one you
    recommend and why. Use the waiting_on_you options exactly as written; never
-   add, drop or rename one. An ask that a newer change shows already done goes
-   under part 2 instead. An ask about someone else's pull request says whose it
+   add, drop or rename one. An ask that live_prs or a newer change shows already
+   done goes under part 2 instead. An ask about someone else's pull request says whose it
    is.
 4. Problems that do not need the owner, each with its cause.
 5. What you will do next without the owner.
 
 Facts: say a pull request is merged, green, approved or in conflict only from
-a change newer than the away time. Otherwise write "not checked since HH:MM"
-with the time of the newest report or message that states it. Name only pull
+live_prs or from a change newer than the away time. Otherwise write "not
+checked since HH:MM" with the time the snapshot gives. Name only pull
 requests that appear in the snapshot. Never state a percentage, elapsed time,
 deadline or ETA, and never count work items unless goal_progress gives the
 count. If a fact is missing, say you are not sure.
@@ -407,20 +410,6 @@ def is_brief_thread(slot: "_ChatSlot") -> bool:
     return slot.mode == members_mod.DM_SLOT_MODE or crew_mode.slot_is_crew_mode_root(slot)
 
 
-def _mark_hidden_leave(state: "DashboardState", conn: int, slot_key: str) -> None:
-    """Record that owner view *conn* left *slot_key* through an explicit page hide.
-
-    The mark belongs to the view: its next frame spends it, whatever it names.
-    """
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    if not isinstance(marks, dict):
-        return
-    marks.pop(conn, None)
-    marks[conn] = slot_key
-    while len(marks) > _MAX_LAST_SEEN:
-        marks.pop(next(iter(marks)))
-
-
 def note_view_closed(state: "DashboardState", conn: int) -> None:
     """An owner socket closed: the thread it showed left that view's screen.
 
@@ -430,9 +419,6 @@ def note_view_closed(state: "DashboardState", conn: int) -> None:
     previous = foreground.get(conn) if isinstance(foreground, dict) else None
     if isinstance(previous, str) and previous:
         _stamp_seen(state, previous, time.time())
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    if isinstance(marks, dict):
-        marks.pop(conn, None)
 
 
 def handle_focus_frame(
@@ -441,7 +427,6 @@ def handle_focus_frame(
     slot_key: object,
     *,
     announce: bool = False,
-    hidden: bool = False,
 ) -> None:
     """Handle one owner focus frame; schedule at most one brief for its thread.
 
@@ -451,24 +436,13 @@ def handle_focus_frame(
     process holds no on-screen record of. Two windows on one thread are one
     view: a frame for a thread another owner view shows is not a return.
 
-    *hidden* marks a null frame the page sent because it became hidden. A Crew
-    Mode chat can sit visible in a split-view pane while another pane holds
-    focus, so for it only a leave through such a hide starts an away episode;
-    a pane or sidebar switch, a socket loss and a restart never do.
+    A crewmate thread and a Crew Mode root share one leave rule: a switch to
+    another chat (sidebar or another split-view pane) leaves the thread, as a
+    page hide does, because the owner's attention left it.
     """
     now = time.time()
     foreground = getattr(state, "_foreground_slots", None)
     previous = foreground.get(conn) if isinstance(foreground, dict) else None
-    # This view's next frame spends its hide mark: it is a hidden return only
-    # when it names the thread the hide left.
-    marks = getattr(state, "_warm_task_brief_hidden_left", None)
-    marked = marks.pop(conn, None) if isinstance(marks, dict) else None
-    hidden_leave = isinstance(slot_key, str) and bool(slot_key) and marked == slot_key
-    # Another view naming the thread puts it back on screen: every other
-    # view's hide of it is spent too.
-    if isinstance(marks, dict) and isinstance(slot_key, str) and slot_key:
-        for other in [c for c, key in marks.items() if key == slot_key]:
-            marks.pop(other, None)
     if isinstance(previous, str) and previous and slot_key != previous:
         _stamp_seen(state, previous, now)
         # The last owner view leaving a thread drops a brief whose "preparing"
@@ -478,9 +452,6 @@ def handle_focus_frame(
         opened = getattr(state, "_warm_task_brief_opened", ())
         if previous not in opened and not _shown_by_other(foreground, conn, previous):
             cancel_warm_task_brief(state, previous)
-        # A thread another view still shows did not leave the screen.
-        if hidden and not slot_key and not _shown_by_other(foreground, conn, previous):
-            _mark_hidden_leave(state, conn, previous)
     # The foreground registry's key bound, before any key is retained.
     if not isinstance(slot_key, str) or not slot_key or len(slot_key) > _MAX_FOREGROUND_KEY:
         return
@@ -503,9 +474,6 @@ def handle_focus_frame(
     slot = state.get_slot(slot_key)
     if slot is None or not is_brief_thread(slot):
         _skip(slot_key, "not_member_thread")
-        return
-    if slot.mode != members_mod.DM_SLOT_MODE and not hidden_leave:
-        _skip(slot_key, "not_hidden_return")
         return
     tasks = state._warm_task_brief_tasks
     existing = tasks.get(slot_key)
@@ -596,6 +564,8 @@ def _work_item_payload(item: Any) -> dict[str, Any]:
         "item_id": item.item_id,
         "title": item.title,
         "pr": getattr(item, "pr", None),
+        # The live read takes a PR's repo from here: ledger data, never text.
+        "acceptance": getattr(item, "acceptance", None) or {},
         "state": item.state,
         "verdict": item.verdict,
         "decision": item.decision,
@@ -1010,6 +980,35 @@ def _ask_items(snapshot: TaskSnapshot) -> list[dict[str, Any]]:
     return [item for item in snapshot.work_items if inputs.is_open_ask(item, work_item_is_terminal)]
 
 
+def _ask_texts(snapshot: TaskSnapshot) -> list[str]:
+    """The text of every open ask, where the live read looks for full PR URLs."""
+    texts = [
+        part
+        for item in snapshot.waiting
+        for part in (str(item.get("text") or ""), *(str(o) for o in item.get("options") or []))
+        if part
+    ]
+    for item in _ask_items(snapshot):
+        texts.extend(
+            str(v)
+            for v in (
+                item.get("title"),
+                item.get("summary"),
+                item.get("decision"),
+                *(item.get("artifacts") or {}).values(),
+            )
+            if v
+        )
+    return texts
+
+
+def _live_refs(snapshot: TaskSnapshot) -> list[inputs.PrRef]:
+    """The PRs the open asks name: each ask item's own PR from ledger data,
+    then full PR URLs in the asks' text. A bare ``#N`` is never guessed."""
+    ledger = (inputs.ledger_ref(item) for item in _ask_items(snapshot))
+    return inputs.pr_refs(_ask_texts(snapshot), [ref for ref in ledger if ref is not None])
+
+
 def _is_quiet(snapshot: TaskSnapshot, previous_digest: str, anchor: float | None) -> bool:
     """Nothing changed since the previous brief and nothing waits on the owner.
 
@@ -1026,7 +1025,11 @@ def _is_quiet(snapshot: TaskSnapshot, previous_digest: str, anchor: float | None
     )
 
 
-def _payload(snapshot: TaskSnapshot, anchor: float | None) -> dict[str, Any]:
+def _payload(
+    snapshot: TaskSnapshot,
+    anchor: float | None,
+    live: tuple[dict[str, Any], ...] = (),
+) -> dict[str, Any]:
     """The prompt's snapshot: each section budgeted on its own, whole entries
     only, what waits on the owner and the changes first."""
     progress = snapshot.progress
@@ -1036,6 +1039,7 @@ def _payload(snapshot: TaskSnapshot, anchor: float | None) -> dict[str, Any]:
         "changes_since_away": inputs.change_entries(
             snapshot.work_items, anchor, snapshot.session_state
         ),
+        "live_prs": inputs.public_live(live),
         "transcript_since_owner": inputs.turns_since_owner(snapshot.turns),
         "open_items": inputs.open_item_entries(snapshot.work_items, anchor, work_item_is_terminal),
         "running_worker_sessions": snapshot.running_workers,
@@ -1057,10 +1061,11 @@ def _build_prompt(
     *,
     conductor: bool = False,
     anchor: float | None = None,
+    live: tuple[dict[str, Any], ...] = (),
 ) -> str:
     """The one-call prompt; *conductor* words it for a thread that owns work items."""
     role, role_hint = _ROLE_CONDUCTOR if conductor else _ROLE_CREWMATE
-    rendered = json.dumps(_payload(snapshot, anchor), ensure_ascii=False)
+    rendered = json.dumps(_payload(snapshot, anchor, live), ensure_ascii=False)
     return _PROMPT.format(
         snapshot=rendered,
         now=inputs.clock(time.time()),
@@ -1114,6 +1119,18 @@ class Brief:
             meta["waiting"] = [{"title": title, "ask": ask} for title, ask in self.waiting]
             meta["waiting_total"] = self.waiting_total
         return meta
+
+    def model_text(self) -> str:
+        """Every text field the model wrote, for the PR-number post-check.
+
+        The widget is HTML the owner never reads as text, and a colour such
+        as ``#333`` would read as a pull request, so it is left out."""
+        parts = [self.headline, self.asked, self.remaining, self.body]
+        parts.extend(self.done + self.needs_you + self.next)
+        for title, items in self.extra:
+            parts.append(title)
+            parts.extend(items)
+        return "\n".join(parts)
 
 
 # A chat control marker the dashboard acts on when it reads an assistant row's
@@ -1354,10 +1371,23 @@ def _post_message(
 
 
 async def _generate(
-    state: "DashboardState", slot: "_ChatSlot", fresh: TaskSnapshot, anchor: float | None
-) -> str:
-    """One tool-free background model call over *fresh*; "" on any failure."""
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    fresh: TaskSnapshot,
+    anchor: float | None,
+    live: tuple[dict[str, Any], ...] = (),
+) -> tuple[str, str]:
+    """One tool-free background model call over *fresh*: ``(text, source)``,
+    with "" text on any failure. *source* is every text value of the prompt's
+    input, decoded, one per line: what the PR-number post-check reads. The JSON
+    form would hide a reference after an escape (``\\n#222`` reads ``n#222``)."""
+    source = ""
     try:
+        # The original request is in too: the gateway fills ``asked`` from it
+        # when the model leaves that field empty.
+        source = "\n".join(
+            [fresh.original_request, *inputs.text_values(_payload(fresh, anchor, live))]
+        )
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         prompt = _build_prompt(
             fresh,
@@ -1368,10 +1398,11 @@ async def _generate(
                 or slot.mode != members_mod.DM_SLOT_MODE
             ),
             anchor=anchor,
+            live=live,
         )
         state._warm_task_brief_model_active.add(slot.key)
         try:
-            return await run_bg_oneliner(
+            text = await run_bg_oneliner(
                 state.sessions,
                 prompt,
                 model=cfg.agent.resolve_model("background"),
@@ -1382,13 +1413,14 @@ async def _generate(
                 max_output_bytes=WARM_TASK_BRIEF_MAX_OUTPUT_BYTES,
                 retry_rejected_model=False,
             )
+            return text, source
         finally:
             state._warm_task_brief_model_active.discard(slot.key)
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.debug("warm task brief generation failed for %s", slot.key, exc_info=True)
-        return ""
+        return "", source
 
 
 async def _prepare_warm_task_brief(
@@ -1484,7 +1516,8 @@ async def _run_warm_task_brief(
     # a ledger write during the model call makes the result stale. Regenerate
     # once from the new state; a second change posts nothing this visit.
     for _attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
-        text = await _generate(state, slot, fresh, anchor)
+        live = tuple(await inputs.read_live_prs(_live_refs(fresh)))
+        text, source = await _generate(state, slot, fresh, anchor, live)
         # Once the indicator shows, the result lands as ordinary history even
         # while the owner is away from the thread. A turn that started
         # meanwhile defers publication until it ends.
@@ -1498,6 +1531,11 @@ async def _run_warm_task_brief(
         _skip(slot.key, "changed_during_write")
         return
     brief = _parse_result(text, fresh.original_request, fresh.progress, fresh.work_items)
+    if brief is not None and inputs.pr_numbers(brief.model_text()) - inputs.pr_numbers(source):
+        # A pull request the input never named is invented, and so may be
+        # every fact around it: post the fixed line.
+        _skip(slot.key, "unknown_pr_in_result")
+        brief = None
     if brief is None:
         _post_message(
             state,

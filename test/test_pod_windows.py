@@ -280,6 +280,30 @@ def test_last_result_ignores_a_non_numeric_body(cfg):
     assert win.last_result(cfg, "smoke") is None
 
 
+# U+00B2 SUPERSCRIPT TWO passes isdigit but int() refuses it; b"\xff" is not UTF-8.
+@pytest.mark.parametrize(
+    "body",
+    ["\u00b2\n".encode(), b"--1\n", b"\xff\xfe1\n", b"9" * 5000],
+    ids=["sup2", "dash", "bytes", "long"],
+)
+def test_last_result_reads_a_torn_or_foreign_body_as_unknown(cfg, body):
+    win.result_path(cfg, "smoke").write_bytes(body)
+    assert win.last_result(cfg, "smoke") is None
+    assert win.unit_state(cfg, "smoke") == ("inactive", 0)
+
+
+def test_last_result_still_reads_a_negative_code(cfg):
+    win.result_path(cfg, "smoke").write_text("-1\n")
+    assert win.last_result(cfg, "smoke") == -1
+
+
+@pytest.mark.parametrize("first", ["\u00b2", "9" * 5000], ids=["sup2", "long"])
+def test_a_pid_record_int_refuses_reads_as_no_process(cfg, first):
+    win.pid_record_path(cfg, "smoke").parent.mkdir(parents=True, exist_ok=True)
+    win.pid_record_path(cfg, "smoke").write_text(f"{first}\ntoken\n", encoding="utf-8")
+    assert win.supervised_pid(cfg, "smoke") is None
+
+
 # --------------------------------------------------------------------------
 # Enumeration and logs
 # --------------------------------------------------------------------------

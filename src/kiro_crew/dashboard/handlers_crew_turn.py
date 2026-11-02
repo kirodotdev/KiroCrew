@@ -3,9 +3,9 @@
 A remote Kiro Crew GATEWAY is reached by embedding its own dashboard: the hub
 opens a tunnel, mints a dashboard token, and the iframe does the rest. A headless
 crew has no dashboard to embed. It serves one turn route -- the OpenAI-shaped
-``POST /v1/chat/completions`` of
-``apps/builtins/aws_control/crew/runtime/container/front`` -- and nothing else,
-so the hub has to be the client.
+``POST /v1/chat/completions`` of the crew container's front (``container/front``
+in the crew runtime an app provides through the ``crew_runtime`` seam of
+:mod:`kiro_crew.apps.seams`) -- and nothing else, so the hub has to be the client.
 
 That is what this module is: the hub's side of a conversation with a crew that
 cannot draw its own.

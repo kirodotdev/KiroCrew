@@ -47,6 +47,7 @@ Two properties the callers depend on:
 
 from __future__ import annotations
 
+import bisect
 import re
 import unicodedata
 
@@ -173,6 +174,8 @@ _BLOCK_HTML_TAGS = (
     "track",
     "ul",
 )
+#: One run of backticks, the unit CommonMark pairs into a code span.
+_BACKTICK_RUN_RE = re.compile(r"`+")
 _BLOCK_HTML_START_RE = re.compile(
     r"^</?(?:" + "|".join(_BLOCK_HTML_TAGS) + r")(?:[ \t]|/?>|$)",
     re.IGNORECASE,
@@ -512,34 +515,54 @@ def _code_spans(row: str) -> list[tuple[int, int]]:
     CommonMark pairs a run of N backticks with the next run of EXACTLY N. An
     unpaired run is literal text and opens nothing -- otherwise one stray
     backtick would swallow the rest of the row and merge every cell after it.
-    A backslash-escaped backtick is skipped for the same reason.
+    Outside a span, a backslash-escaped backtick opens nothing. Inside a span
+    a backslash is literal, so `` `C:\\` `` closes on its own backtick.
     """
-    runs: list[tuple[int, int]] = []  # (start, run length)
-    i, n = 0, len(row)
-    while i < n:
-        if row[i] == "\\":
-            i += 2  # an escape pair; its second char is literal
-            continue
-        if row[i] != "`":
-            i += 1
-            continue
-        j = i
-        while j < n and row[j] == "`":
-            j += 1
-        runs.append((i, j - i))
-        i = j
+    runs = [(m.start(), m.end()) for m in _BACKTICK_RUN_RE.finditer(row)]
+    by_length: dict[int, list[int]] = {}
+    for index, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, []).append(index)
     spans: list[tuple[int, int]] = []
+    outside = 0  # first position not inside an earlier span
     opener = 0
     while opener < len(runs):
-        start, length = runs[opener]
-        closer = next((k for k in range(opener + 1, len(runs)) if runs[k][1] == length), None)
-        if closer is None:
+        start, end = runs[opener]
+        backslashes = start
+        while backslashes > outside and row[backslashes - 1] == "\\":
+            backslashes -= 1
+        if (start - backslashes) % 2:
+            start += 1  # the first backtick is escaped and stays literal
+        candidates = by_length.get(end - start, []) if start < end else []
+        later = bisect.bisect_right(candidates, opener)
+        if later == len(candidates):
             opener += 1
             continue
-        close_start, close_len = runs[closer]
-        spans.append((start, close_start + close_len))
+        closer = candidates[later]
+        spans.append((start, runs[closer][1]))
+        outside = runs[closer][1]
         opener = closer + 1
     return spans
+
+
+def _in_cell_code_spans(row: str) -> list[tuple[int, int]]:
+    """The :func:`_code_spans` of *row* that sit inside one cell.
+
+    A lone backtick in each of two cells (``| ` | ` | x |``) pairs into a
+    "span" whose content is only blanks and pipes, with a blank at each end.
+    That is two cells, not code, so such a span is dropped. ``| `a|b` |`` and
+    ``| ` |foo| ` |`` hold text, and ``| `|` |`` or ``| `||` |`` has no
+    padding: each stays one code span.
+    """
+    kept: list[tuple[int, int]] = []
+    for start, end in _code_spans(row):
+        span = row[start:end]
+        ticks = len(span) - len(span.lstrip("`"))
+        inner = span[ticks:-ticks]
+        padded = inner[:1] in (" ", "\t") and inner[-1:] in (" ", "\t")
+        if padded and "|" in inner and not inner.strip(" \t|"):
+            continue
+        kept.append((start, end))
+    return kept
 
 
 def _row_cells(row: str, *, gfm_boundaries: bool = False) -> list[str]:
@@ -565,7 +588,7 @@ def _row_cells(row: str, *, gfm_boundaries: bool = False) -> list[str]:
     markup can pass the header/separator width check and lose authored cells
     during conversion.
     """
-    spans = [] if gfm_boundaries else _code_spans(row)
+    spans = [] if gfm_boundaries else _in_cell_code_spans(row)
     cells: list[str] = []
     buf: list[str] = []
     escaped = False

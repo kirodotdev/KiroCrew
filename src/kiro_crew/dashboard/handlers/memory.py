@@ -1523,6 +1523,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew._sqlite_compat import (  # noqa: F401
+        is_cjk_char,
+    )
     from kiro_crew.apps.registry import (  # noqa: F401
         minimal_env,
     )

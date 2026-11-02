@@ -1419,6 +1419,9 @@
           "rerun_failed_jobs": "Re-run the failed jobs in {{name}}",
           "rerun_run": "Re-run {{name}}"
         },
+        "providerLink": {
+          "open_on_provider": "Open on {{provider}}"
+        },
         "readOnlyTag": {
           "read_only": "Read Only"
         },
@@ -5280,6 +5283,7 @@
       "no_ci_checks_were_returned": "No CI checks were returned.",
       "no_commits_were_returned": "No commits were returned.",
       "no_description_was_provided": "No description was provided.",
+      "open_check_details": "Open {{name}} check details",
       "open_pull_request": "Open pull request",
       "pr_number": "PR #{{number}}",
       "pull_request_sections": "Pull request sections",
@@ -5942,6 +5946,9 @@
       "badge_not_enabled": "Not enabled",
       "confirmed_on": "confirmed {{date}}",
       "billing_notice_short": "Billable. Nothing is sent until you confirm.",
+      "pending_profile_hint": "Finish editing the profile to confirm.",
+      "bedrock_kb_billing_short": "Billed per search: one Bedrock Retrieve call per Knowledge Base",
+      "aws_pricing_link": "AWS pricing",
       "withdraw_effect": "Withdrawing stops agents using this service until you confirm again."
     },
     "tailnetMobile": {
@@ -7046,6 +7053,7 @@
         "model_unavailable": "{{model}} isn't offered right now — this session is running on auto instead. Pick another model from the composer, or leave it: your model choice is kept and will be used automatically once it's offered again.",
         "compaction_continuing": "The context was compacted mid-turn and the response stopped there — continuing automatically.",
         "model_throttled_fallback": "{{primary}} is throttled — running on {{fallback}} until {{primary}} recovers.",
+        "refusal_fallback_same_model": "Automatic retry was skipped because the fallback model (`agent.refusal_fallback_model`) is the same as your current model — retrying the same model hits the same filter. Pick a different model for the fallback to retry automatically.",
         "session_reconnecting": "The agent lost this chat's session — reconnecting…",
         "session_reconnect_give_up": "Could not reconnect this chat's session. Send your message again, or start a new chat if this keeps happening.",
         "credentials_reloading": "The agent could not load its cloud credentials — restarting it to load them again…",
@@ -9178,7 +9186,14 @@
         "view_audit": "Audit",
         "view_episodic": "Episodic",
         "view_semantic": "Semantic",
-        "view_switch_label": "Memory view"
+        "view_switch_label": "Memory view",
+        "column_key": "Key",
+        "column_value": "Value",
+        "column_confidence": "Confidence",
+        "column_source": "Source",
+        "column_event": "Event",
+        "column_key_type": "Key/Type",
+        "column_details": "Details"
       },
       "wakatimeTab": {
         "active_projects": "Projects you worked on",
@@ -10002,7 +10017,18 @@
         "theme_experience": "Experience",
         "theme_experience_sounds": "Sounds",
         "theme_experience_overlays": "Overlays",
-        "theme_experience_persona": "Persona"
+        "theme_experience_persona": "Persona",
+        "interface_chat": "Chat",
+        "theme_mode_auto": "Auto",
+        "theme_mode_light": "Light",
+        "theme_mode_dark": "Dark",
+        "color_mode_solid_tint": "Solid Tint",
+        "color_mode_gradient": "Gradient",
+        "intensity_soft": "Soft",
+        "intensity_clear": "Clear",
+        "intensity_vivid": "Vivid",
+        "intensity_bold": "Bold",
+        "intensity_intense": "Intense"
       },
       "importPanel": {
         "agent_data": "Agent data",

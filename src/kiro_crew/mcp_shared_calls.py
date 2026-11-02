@@ -173,18 +173,41 @@ class DeferredTool:
         """
         return None
 
+    def on_answered(self, written: bool) -> None:
+        """Hook run once, AFTER the driver wrote the answer that carries the text
+        :meth:`on_settled` was handed.
+
+        ``written`` is True only when the whole response frame reached the
+        client's own pipe. It is False when the write tore, and it is False for
+        every call a pooled backend answers: that process writes into the MCP
+        gateway's broker, whose relay to the client confirms nothing back. A
+        side effect that claims the client HOLDS the text (marking a result
+        delivered) belongs here, and only on True.
+
+        Runs on the driver's thread with the call's caller identity installed,
+        so a request it sends authenticates as the call; it blocks that thread,
+        so what it sends must be bounded (one short request). A call the driver
+        answers any other way -- cancelled, refused, failed, never answered --
+        never hears this.
+        """
+        return None
+
 
 def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
     """Run ``deferred`` to completion inline, sleeping between steps.
 
     ``clock`` is a module-like object with ``monotonic`` and ``sleep``, so a
     caller can hand in the one its tests patch (``mcp_core.time``). Nothing
-    can cancel an inline drive, so the settling text is committed at once.
+    can cancel an inline drive, so the settling text is committed at once. The
+    text is returned to the caller itself, so :meth:`DeferredTool.on_answered`
+    hears True; an ``on_settled`` that raises propagates first and nothing
+    hears it.
     """
     while True:
         result = deferred.step()
         if result is not None:
             deferred.on_settled(result)
+            deferred.on_answered(True)
             return result
         delay = deferred.due_at() - clock.monotonic()
         if delay > 0:
@@ -219,6 +242,9 @@ class _MappedDeferred(DeferredTool):
 
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)
 
 
 #: How often the loop reports in-flight deferred ids while any exist
@@ -541,3 +567,6 @@ class _AuditedDeferred(DeferredTool):
     def on_settled(self, text: str) -> None:
         self._inner.on_settled(text)
         self._audit(text)
+
+    def on_answered(self, written: bool) -> None:
+        self._inner.on_answered(written)

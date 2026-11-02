@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, emit
@@ -648,7 +649,7 @@ def test_the_emitter_writes_the_entry_and_advances_the_fold():
         "s-d", agent="kirocrew", slot="D", model="opus", cwd="/w", owner="raymond"
     )
     emit.on_session_adopted("s-a", slot="A", parent_slot="D", parent_sid="s-d")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
 
     assert stp.projection().nodes()["A"].parent_slot == "D"
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
@@ -674,7 +675,7 @@ def test_the_emitter_reports_the_durable_outcome_to_a_waiting_caller():
     emit.on_session_adopted(
         "s-a", slot="A", parent_slot="D", parent_sid="s-d", on_settled=settled.append
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert settled == [True]
     # And the entry really is there, so ``True`` is not merely "the job ran".
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
@@ -689,7 +690,7 @@ def test_the_emitter_reports_failure_when_there_is_no_log_to_write_to():
     touched."""
     settled: list[bool] = []
     emit.on_session_adopted("s-missing", slot="A", parent_slot="D", on_settled=settled.append)
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert settled == [False]
 
 
@@ -748,7 +749,7 @@ def test_the_emitter_records_the_parent_a_takeover_replaced():
         previous_parent_slot="OLD",
         previous_parent_sid="s-old",
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     entry = read_last_tree_edge(crew_store.newest_segment(directory))
     assert entry.data["previous_parent"] == {"slot": "OLD", "sid": "s-old"}
@@ -768,11 +769,11 @@ def test_a_release_written_by_the_emitter_returns_the_session_to_a_root():
         owner="raymond",
         parent_slot="D",
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().nodes()["A"].parent_slot == "D"
 
     emit.on_session_released("s-a", slot="A", previous_parent_slot="D", previous_parent_sid="s-d")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().nodes()["A"].parent_slot is None
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     entry = read_last_tree_edge(crew_store.newest_segment(directory))
@@ -788,7 +789,7 @@ def test_the_emitter_writes_nothing_without_both_sides_of_the_edge():
     emit.on_session_adopted("s-a", slot="", parent_slot="D")
     emit.on_session_adopted("s-a", slot="A", parent_slot="")
     emit.on_session_released("s-a", slot="")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     assert read_last_tree_edge(crew_store.newest_segment(directory)) is None
     assert _store_name("s-a") == directory.name

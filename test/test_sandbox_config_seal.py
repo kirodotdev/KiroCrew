@@ -111,6 +111,22 @@ def test_sandboxed_config_set_reports_the_seal_on_the_publishing_rename(home, ca
     _assert_hint(capsys.readouterr().err)
 
 
+@pytest.mark.parametrize("code", [errno.EPERM, errno.EROFS])
+def test_sandboxed_config_set_reports_the_seal_on_the_publication_record(home, capsys, code):
+    """The writer records a save before the rename, so the record's seal refuses first."""
+    from kiro_crew.cli_config import _config_cmd
+    from kiro_crew.config.write_provenance import record_path
+
+    with patch(
+        "kiro_crew.cli_config.update_config_locked",
+        side_effect=OSError(code, "denied", str(record_path())),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            _config_cmd(_set_args())
+    assert exc.value.code == 1
+    _assert_hint(capsys.readouterr().err)
+
+
 def test_a_denial_against_an_unrelated_file_is_not_relabelled(home):
     """Errno alone is not the seal: the same errno against another path is re-raised."""
     from kiro_crew.cli_config import _config_cmd

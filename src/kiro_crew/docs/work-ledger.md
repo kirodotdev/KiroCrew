@@ -276,9 +276,9 @@ The total is advisory. Each goal is expected to create at most `item_cap` items,
 closed ones and every round's re-plans included; the default is 20 and a `goal`
 write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
 returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included; the conductor puts `items used: N of <item_cap>` in every round
-report and, when `cap_exceeded` is true, tells the user the goal has spent past
-its line. Only a goal write with `new_goal=true` (a goal the user replaced)
+reads included. The conductor keeps the count out of its round reports and
+tells the user once, the first report after `cap_exceeded` turns true, that the
+goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
 starts a new count; rewording the goal, moving the round or changing a cap
 keeps it. A board that never records a goal, such as a pipeline or security
 conductor's queue, has neither goal cap. Two rounds in a row with nothing
@@ -362,7 +362,9 @@ built with; running it is a second, explicit invocation.
 
 Flags: `--purge` (irreversible), `--older-than-days N` (default 30) and
 `--purge-unreadable`, which also removes records the sweep could not parse —
-they are listed but kept without it.
+they are listed but kept without it. `--purge-unreadable` only works with
+`--purge`; alone it is refused. A purge exits 1 when any delete failed, after
+finishing the rest and naming each store it could not delete.
 
 The sweep is conservative by design. A conductor holding an open item is never a
 candidate at any age, neither is one with no items at all, and each delete is

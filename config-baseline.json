@@ -28,6 +28,7 @@
         "mcp_quarantine_after_failures": 3,
         "acp_backend": "kas",
         "member_acp_backend": "kas",
+        "acp_failover": {},
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
@@ -372,6 +373,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
+    },
+    {
+      "path": "agent.acp_failover",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "ACP backend failover",
+      "help": "Opt-in, off-by-default policy that starts a sub-agent on another backend when the one it asked for cannot start. An object with 'enabled' (bool), 'chain' (ordered list of distinct backend names, spelled as spawn_run spells them, e.g. 'codex', 'claude', 'kiro') and optional 'triggers' (which refusals cause a hop: backend_not_installed, backend_restart_required; both when omitted). A hop only goes to a later chain member that can start, never a silent Kiro fallback, and the spawn result names the backend that ran and the one it replaced. A hop moves the prompt and its context to that backend's vendor and bill. A name that is not selectable is skipped. Absent means no failover.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "agent.kas_bundle",

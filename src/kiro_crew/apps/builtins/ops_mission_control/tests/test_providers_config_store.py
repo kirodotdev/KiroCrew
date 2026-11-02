@@ -57,8 +57,8 @@ class TestConcurrentStoreWritesDoNotLoseData(unittest.TestCase):
             for th in threads:
                 th.start()
             for th in threads:
-                # flake-ok: pre-existing unbounded join of self-completing writers, moved verbatim
-                th.join()
+                th.join(timeout=30.0)
+                self.assertFalse(th.is_alive(), "a concurrent writer did not finish within 30 s")
             cfg = read_config()
             if cfg.get("primary_instance") is not False or (
                 cfg.get("providers", {}).get("cloudwatch", {}).get("region") != "new"
@@ -81,8 +81,8 @@ class TestConcurrentStoreWritesDoNotLoseData(unittest.TestCase):
             for th in threads:
                 th.start()
             for th in threads:
-                # flake-ok: pre-existing unbounded join of self-completing writers, moved verbatim
-                th.join()
+                th.join(timeout=30.0)
+                self.assertFalse(th.is_alive(), "a concurrent writer did not finish within 30 s")
             if backend.get("pagerduty", "api_token") != "pd" or (
                 backend.get("datadog", "api_key") != "dd"
             ):

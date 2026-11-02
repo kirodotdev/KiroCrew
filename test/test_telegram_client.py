@@ -23,6 +23,7 @@ from kiro_crew.telegram.client import TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.wait import async_wait_until
 
 
 class TestClientSession:
@@ -1053,8 +1054,9 @@ class TestClientClose:
                 raise ValueError("malformed update")
 
             client._task = asyncio.create_task(_buggy_loop())
-            # flake-ok: pre-existing zero-length yield so the failing task ends before close(), moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)  # let the task actually finish before close()
+            # close() must meet a task that has already ended with its error, so wait on
+            # that state instead of on a count of loop turns.
+            await async_wait_until(client._task.done, describe=lambda: repr(client._task))
 
             try:
                 await client.close()

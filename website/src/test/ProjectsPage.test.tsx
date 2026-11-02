@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { useNavigate, type NavigateFunction } from 'react-router-dom'
 import { renderWithProviders } from './helpers'
@@ -7,6 +7,7 @@ import ProjectsPage from '../pages/ProjectsPage'
 import PhasedView from '../pages/aidlc/PhasedView'
 import DagView from '../pages/aidlc/DagView'
 import type { ProjectRun, TaskDetail } from '../types'
+import { api } from '../api/client'
 
 // Mock child components for ProjectsPage isolation
 vi.mock('../pages/ProjectDetailPage', () => ({ default: () => <div data-testid="project-detail">Detail</div> }))
@@ -34,6 +35,10 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+// The mount load (api.taskRunnerStatus, polled every 3s) lands its state update after the
+// render. Tests that assert on the mounted page wait for that call before they read the DOM.
+const taskRunnerStatusMock = () => vi.mocked(api.taskRunnerStatus)
+
 const mockTasks: TaskDetail[] = [
   { index: 1, title: 'Setup', description: '', status: 'passed', error: '', result: '', attempts: 1, depends_on: [], requires_approval: false },
   { index: 2, title: 'Build', description: '', status: 'in_progress', error: '', result: '', attempts: 1, depends_on: [1], requires_approval: false },
@@ -48,8 +53,9 @@ const mockTasks: TaskDetail[] = [
 describe('ProjectsPage', () => {
   beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear() })
 
-  it('renders page header and mode toggle', () => {
+  it('renders page header and mode toggle', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByText('Task Runner')).toBeInTheDocument()
     expect(screen.getByText(/Compose/)).toBeInTheDocument()
     expect(screen.getByText(/From Spec/)).toBeInTheDocument()
@@ -117,8 +123,9 @@ describe('ProjectsPage', () => {
     expect(order).toEqual(['Newest', 'Middle', 'Oldest', 'PlanB', 'PlanA'].map(n => `Open project ${n}`))
   })
 
-  it('renders compose textarea by default', () => {
+  it('renders compose textarea by default', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByPlaceholderText('Describe your task...')).toBeInTheDocument()
   })
 
@@ -140,7 +147,7 @@ describe('ProjectsPage', () => {
     fireEvent.change(ws, { target: { value: '/custom/dir' } })
     fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do the thing' } })
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    expect(mockApi.planTask).toHaveBeenCalledWith('do the thing', 'text', '', '', '/custom/dir')
+    await waitFor(() => expect(mockApi.planTask).toHaveBeenCalledWith('do the thing', 'text', '', '', '/custom/dir'))
   })
 
   it('sends an empty workspace (no override) when the field is untouched', async () => {
@@ -150,28 +157,32 @@ describe('ProjectsPage', () => {
     await screen.findByPlaceholderText('/ws/root')
     fireEvent.change(screen.getByPlaceholderText('Describe your task...'), { target: { value: 'do it' } })
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-    expect(mockApi.planTask).toHaveBeenCalledWith('do it', 'text', '', '', '')
+    await waitFor(() => expect(mockApi.planTask).toHaveBeenCalledWith('do it', 'text', '', '', ''))
   })
 
-  it('switches to From Spec mode with file upload', () => {
+  it('switches to From Spec mode with file upload', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/From Spec/))
     expect(screen.getByPlaceholderText('Paste spec content or upload a file...')).toBeInTheDocument()
   })
 
-  it('renders agent selector', () => {
+  it('renders agent selector', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     expect(screen.getByTestId('agent-select')).toBeInTheDocument()
   })
 
-  it('shows empty state when no runs', () => {
+  it('shows empty state when no runs', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     // With no runs, the project list renders but is empty
     expect(screen.queryByTestId('agent-select')).toBeInTheDocument()
   })
 
-  it('persists mode to sessionStorage', () => {
+  it('persists mode to sessionStorage', async () => {
     renderWithProviders(<ProjectsPage />)
+    await waitFor(() => expect(taskRunnerStatusMock()).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/From Spec/))
     expect(sessionStorage.getItem('tr-mode')).toBe('spec')
   })
@@ -430,7 +441,7 @@ describe('ProjectsPage', () => {
     // selectedRun updates; auto-run useEffect fires and reads
     // pendingAutoApproveRef — MUST be false (not the stale true from step 1).
     await waitFor(() => expect(capturedNavigate).not.toBeNull())
-    capturedNavigate!('/?applied=plan-url&autoRun=true')
+    await act(async () => { capturedNavigate!('/?applied=plan-url&autoRun=true') })
 
     await waitFor(() => {
       expect(mockApi.executePlan).toHaveBeenCalledWith('plan-url', '', false)
@@ -504,7 +515,7 @@ describe('ProjectsPage', () => {
     // task ('plan-url'). Under the buggy design the stale intent from
     // 'plan-compose' would be consumed by 'plan-url'.
     await waitFor(() => expect(capturedNavigate).not.toBeNull())
-    capturedNavigate!('/?applied=plan-url&autoRun=true')
+    await act(async () => { capturedNavigate!('/?applied=plan-url&autoRun=true') })
 
     // The URL-triggered task must be executed WITHOUT the stale trust.
     await waitFor(() => {
@@ -597,6 +608,8 @@ describe('ProjectsPage', () => {
     // the visible signal is synchronous with the click, matching Fable UX
     // recommendation A ("clear the compose checkbox when Plan is clicked").
     expect(composeAutoApproveCheckbox).not.toBeChecked()
+    // The Plan click starts planTask; wait for that call so its settle lands inside the test.
+    await waitFor(() => expect(api.planTask).toHaveBeenCalled())
   })
 
   it('shows the auto-approve badge on a project card when the run has a live grant', async () => {

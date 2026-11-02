@@ -85,6 +85,7 @@ def build_message(
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
+    directive_user_origin: bool = False,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -128,6 +129,12 @@ def build_message(
     agent's template when the turn has no *project*. It is used only to find
     the agent spec, never read for project guides and never made the project.
     ``None`` falls back to the context provider's cwd.
+
+    Pass *directive_user_origin* ``True`` only for a turn a person sent on a
+    dashboard slot. It is the provenance the directive applier reads, and
+    the guidance offers ``suggest_followup`` only when that applier would
+    admit it. The default ``False`` matches the applier's: a cron, a wake,
+    a sub-agent, a peer send or a slot-less channel turn is not offered it.
 
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
@@ -960,6 +967,7 @@ def build_message(
         session_key=session_key,
         agent=agent,
         minimal_context=minimal_context,
+        producer_is_user_facing=directive_user_origin,
     )
 
     # Injected blocks are not the only source of prior context. A warm

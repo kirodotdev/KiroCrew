@@ -14,7 +14,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -552,26 +551,28 @@ class TestTheGrantIsATransaction:
         assert path.exists()
 
         entered = threading.Event()
+        cancel_landed = threading.Event()
         real_settle = client._settle_claude_settings_seed
 
         def _slow_settle(*args, **kwargs):
             entered.set()
-            # Long enough that the cancel below lands while this is mid-transaction,
-            # which is the window the awaited-sequence version could not survive.
-            # flake-ok: 200 ms stub delay keeps the settle mid-transaction; moved verbatim
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- slow-work stub, the test waits on entered
-            time.sleep(0.2)
+            # Held until the cancel below has landed, so the cancel arrives while this is
+            # mid-transaction, which is the window the awaited-sequence version could not survive.
+            assert cancel_landed.wait(timeout=30), "the teardown was never cancelled"
             return real_settle(*args, **kwargs)
 
         monkeypatch.setattr(client, "_settle_claude_settings_seed", _slow_settle)
 
         async def _cancel_mid_teardown() -> None:
             task = asyncio.ensure_future(client._discard_claude_settings_seed())
-            await asyncio.to_thread(entered.wait, 5)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
-                await task
+            try:
+                await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
+                    await task
+            finally:
+                cancel_landed.set()
 
         # ``asyncio.run`` shuts the default executor down on the way out, so by the
         # time it returns the shielded thread has finished -- no polling needed.

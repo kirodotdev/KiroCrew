@@ -78,7 +78,12 @@ async def _inject(gateway: Any, key: str) -> None:
     with patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 1):
         await asyncio.wait_for(
             gateway._inject_subagent_into_channel_parent(
-                info, announce="child done", body="b", title="t", parent_key=key
+                info,
+                announce="child done",
+                body="b",
+                title="t",
+                parent_key=key,
+                carried=(info.id,),
             ),
             _HANG_CEILING_S,
         )

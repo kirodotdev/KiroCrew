@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching mate's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching mate's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -502,8 +502,24 @@ design: an agent that has just worked out that a job needs its own session can
 open it pre-named and bound to the right agent, in the caller's workspace, and
 hand the person a key they can read and stop. Without it the person does that by
 hand -- new tab, retype the title, pick the agent -- and the two observation verbs
-have nothing to point at that the agent itself put there. It deliberately does
-NOT seed a first message: that would be delivery.
+have nothing to point at that the agent itself put there. An optional `message`
+seeds the first turn in the same call, through `send_to_target` -- the same
+target gate, size limit, provenance and audit as `session_send` -- so a caller
+never sends to a key it has not read back. A message `session_send` would refuse
+is refused before anything is created; a delivery failure after the create is
+returned next to the key, and the session is kept. A message never skips the
+prompt `session_send` would get: when the user-level spec of the caller's runtime
+template (never a project checkout's copy, which a cloned repository could plant)
+auto-approves
+`session_create` but not `session_send` (the conductors), through `allowedTools`
+or `autoApprove`, or the spec cannot be read, it is refused with `message_needs_send_approval` (403) before any create.
+A project-only template has no user-level spec, so it is refused the same way and
+creates, then calls `session_send`. `session_create` is read with the
+over-matching `mcp_refs.entry_reaches` (reading more refuses more), and
+`session_send` with the strict `mcp_refs.entry_grants`: only the exact ref, `*`,
+a bare `@kirocrew-dashboard`, or `@kirocrew-dashboard/<glob>` (case-sensitive,
+`*` and `?` only) count as granting send. A bare `session_send`, `*_send` or `@*`
+does not, since kiro-cli still prompts for them.
 
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
@@ -2459,6 +2475,8 @@ A crew create takes only `title`, `agent`, `model` and `work_item` (`crew_field_
 With the switch on, a peer's `crew_busy` refusal of the create keeps its code (`crew_busy`, 503) instead of `crew_peer_refused`.
 
 With the switch on, `work_ledger_read` first pulls each open remote item (at most 32 per read, 4 s each and 6 s per read, tried longest-ago first), reading the roster under the board lock: the crew's slot list (`running`, `pending_approval`, and `closed` when a complete list lacks the slot) and `GET api/chat/slots/{s}/work-item`. Under the board lock, and only while the item still names the same crew and slot, the peer worker's LATEST fields (`status`, `summary`, `artifacts`, `pr`, `reason`, stamped with the peer's `last_report_at`) are filed as an ordinary recorded `report` (actor `worker`, `by` the peer slot, `board_copy`), unless the hub item already holds exactly those values or the snapshot is older than the item's `last_report_at`. Worker fields are latest-value, so the item is the dedupe and nothing else is remembered between reads; a status the worker passed through between two reads is not kept. The report passes the peer's own report schema, redaction and one-line fit; one that fails is not filed and the row says why. What the pull learnt is kept in `work-ledger/remote/<board>/<item>.json`, outside the board directory, so a rebuild never prunes it. A crew that is down, skewed or unreadable keeps the last answers and sets `crew_state`, `crew_down_since` and `remote_error`; nothing is ever invented as a status.
+
+With the switch on, the hub also runs that pull with no model turn (`dashboard/handlers/remote_puller.py`): every 30 s (`work_ledger.REMOTE_PULL_INTERVAL_SECS`) it pulls each ledger here holding an open crew-bound item (`work_ledger.boards_with_open_remote`), at most 8 boards at once and 64 per run, each board cut off at 10 s, so one unreachable crew never stalls another. Runs never overlap, and a board a read is already pulling is skipped, as is a board whose cache is flagged dirty (it waits for a rebuild). A filing the crew log refuses is retried for the same peer snapshot (stamp and worker fields) only after 10 minutes (`remote_ingest.UNRECORDED_RETRY_SECS`), on a read too; a changed snapshot is filed at once. A pulled report is filed exactly as on a read, so `conductor_wake` and the work-ledger probe wake the conductor for a remote `done`, `question`, `blocked` or `reply` within one interval. The task starts at boot when the switch is on, and again on a crew bind or a ledger read; it ends at its next run once the switch is off, and the dashboard's cleanup stops it. The person-wait hold (`probes/work_ledger.py` `person_wait_fingerprint`) applies to a board with a remote item only while every remote item's last pull is fresh (`work_ledger.remote_pull_fresh`: connected, slot list read, no error, under 90 s old); a stale or failed pull, or the switch off, lets the patrol run.
 
 A remote row adds `worker_instance_id`, `crew_state`, `crew_down_since`, `pending_approval` and `remote_error` (compact rows too). Its `stale`, the Crew board's and the work-ledger probe's stall wake all answer liveness from that stored record through `work_ledger.item_liveness`, never from this gateway's slot table; with no pull yet it reads neither running nor closed. A recorded `decide` on a remote item then PATCHes `api/chat/slots/{s}/work-item {decision}` (scrubbed); the reply carries `remote_decide` `{ok}` or `{ok: false, code}`, and the local decision stands either way. The whole forward (its per-item lock, the settled read and the PATCH) is bounded at 10 s (`DECIDE_DEADLINE_SECS`), under the record tool's 30 s wait, and past it answers `crew_decide_timeout`. The pull and the forward run on a patrol wake too; see the patrol-wake exception under the owner-only caller rule. With the switch off none of this runs and a board with no remote item reads and records exactly as before.
 

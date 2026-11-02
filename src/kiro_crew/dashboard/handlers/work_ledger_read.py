@@ -75,8 +75,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     if remote_on:
         # Remote dispatch (preview): pull each open remote item's peer copy and file
         # what is new BEFORE the snapshot below, outside its lock (the pull is network).
-        from kiro_crew.dashboard.handlers import remote_ingest
+        from kiro_crew.dashboard.handlers import remote_ingest, remote_puller
 
+        remote_puller.ensure_running(request.app["state"])
         await remote_ingest.ingest_board(request.app["state"], key)
     # Under the board lock for the same reason the brief read is: a write's
     # cache commit and its record append are two steps, and a read between them
@@ -157,8 +158,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
     # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
-    # number the conductor's "items used: N of <item_cap>" line reports, and
-    # whether that line has gone past its cap, both read off the same header.
+    # goal's item count, and whether it has gone past ``item_cap`` (which the
+    # conductor tells the user once), both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
     # ``max_depth`` is the conducting depth cap in force right now (never stored),

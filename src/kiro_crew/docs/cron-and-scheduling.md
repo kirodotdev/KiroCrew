@@ -262,14 +262,18 @@ The CLI has no flag for this. `kirocrew cron add` leaves `strict_schedule` at it
 | List | Schedule page | `cron list` | `kirocrew cron list` |
 | Pause | Pause button | `cron pause <id>` | `kirocrew cron pause <id>` |
 | Resume | Resume button | `cron resume <id>` | `kirocrew cron resume <id>` |
+| Run now | Run button | — | `kirocrew cron trigger <id>` |
 | Delete | Delete button | `cron remove <id>` | `kirocrew cron remove <id>` |
+| Delete an installer's job | Delete button | — | `kirocrew cron remove --managed-by <key>` |
 | Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
+
+`kirocrew cron add --managed-by <key>` registers a job for an external installer. The key is unique across the store: a second add with the same key is refused, so a re-install runs `kirocrew cron remove --managed-by <key>` first and then adds again. `kirocrew cron list` prints the key as `managed by: <key>`.
 
 ### Which chat session owns a job
 
 A job's `session_key` names the chat session it belongs to, and that one field carries one meaning: it is also where the job's output is delivered (`session="origin"` sends and script results both resolve a slot from it). A job created outside a chat — `kirocrew cron add`, the dashboard Schedule page, an onboarding import — therefore has no owning session, which is truthful rather than a defect: there is no chat to deliver into.
 
-The consequence is worth stating plainly, because it is easy to read as a job that disappeared. A job with no owning session is outside every chat session's scope: `cron_list` from chat does not list it, and the mutating cron tools answer a deliberately vague `job not found` so the reply cannot be used to enumerate jobs the caller may not see. Those jobs are managed from the operator surfaces instead: `kirocrew cron list`, which is the only surface that shows *who* owns a job, and the dashboard Schedule page, which lists and manages every job regardless of owner but does not yet display ownership (its API payload does not carry `session_key`).
+The consequence is worth stating plainly, because it is easy to read as a job that disappeared. A job with no owning session is outside every chat session's scope: `cron_list` from chat does not list it, and the mutating cron tools answer a deliberately vague `job not found` so the reply cannot be used to enumerate jobs the caller may not see. Those jobs are managed from the operator surfaces instead: `kirocrew cron list` and the dashboard Schedule page. Both list and manage every job regardless of owner and show who owns it: the Schedule page prints the owning `session_key` under the job's name, or says the job has no owning session.
 
 `kirocrew cron adopt` is the way across that line, in both directions:
 

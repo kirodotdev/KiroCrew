@@ -617,6 +617,33 @@ registry-metadata read on the detail page keeps the known id visible and reports
 the failure through an inline ErrorNotice, rather than silently losing review
 information.
 
+## A file opens in an app page through the page's registry row
+
+The file viewer's ⋯ menu ("Open in <app>") hands a file's absolute path to an app
+page without naming the app. A `BuiltinAppEntry` in
+`website/src/apps/builtinRegistry.ts` declares `opensPathParam`, the query
+parameter its page reads a path from. `website/src/apps/pathOpener.ts` takes the
+first such entry whose app `appNavTarget` routes to that entry's own route, which
+means enabled, not orphaned and not AppHost-routed, and builds
+`<route>?<param>=<encoded path>`. With no declaring entry the row is absent. The
+Files app's row is the one that declares it today (`path`).
+
+The Files app is held apart from the core on both sides.
+`test/test_core_file_explorer_decoupling.py` fails on any module under
+`src/kiro_crew` outside `apps/builtins/`, or any script under `scripts/`, that
+imports `kiro_crew.apps.builtins.file_explorer` or names `file_explorer` /
+`file-explorer` in a non-docstring string. `website/src/apps/file-explorer/fileExplorerBoundary.test.ts`
+fails on any dashboard module outside `src/apps/file-explorer/` except
+`builtinRegistry.ts` that imports from it. What the two share is core code the app
+imports (`hooks/useDebouncedValue.ts`, `utils/parentDir.ts`), and the app pins its
+copy of the core file-read endpoint's binary-extension set in its own `tests/`.
+
+Every backend app gate runs the same scanner, `test/core_app_independence.py`:
+`core_app_imports` finds a core import of the app's package in any spelling, and
+`core_name_strings` finds a core string naming it, minus the reasoned rows the gate
+allows. The aws-control and Files gates call it with their own package and names,
+and the next app to leave adds a gate that does the same, never another scanner.
+
 ## 0. Three-axis classification: origin, resources, lifecycle
 
 An installed app's `installed.json` carries three **independent** fields, each
@@ -4215,19 +4242,31 @@ owner each:
 - **The invocation contract**, for a point whose work starts with one user act.
   The host mints a string `invocationId` per act and sends it in the point's own
   invoke message with `deadlineMs`; the point script hands its handler
-  `invocationControls(invocationId)`, frozen to that id: `offerCopy(text)` and
-  `offerOpen(url)` post a sequenced `result.offer { invocationId, seq, kind, value }`
+  `invocationControls(invocationId)`, frozen to that id: `offerCopy(text)`,
+  `offerOpen(url)` and `offerInsert(text)`, plus a `signal` that aborts on
+  `invoke.cancel` before the handler's `cancel` runs. It is null for an id that is
+  not `[A-Za-z0-9_-]{8,64}` or was already used, so one id starts one invocation.
+  The offers post a sequenced `result.offer { invocationId, seq, kind, value }`
   and resolve on the host's `result.ack` or `result.error { code: stale | too_large
   | not_allowed }`; `resize`, `close` and `error` post `invocation.resize`,
   `invocation.close`, `invocation.error`. The host sends `invoke.cancel {
   invocationId, reason }` when the act ends without a result, which the runtime
   hands to the handler's `cancel`. The host side is `HostInvocation`
   (`website/src/appFrame/invocation.ts`): it accepts an offer only for the open
-  invocation and a `seq` above the last, re-arms the deadline on each resize and
-  accepted offer, and acts on an offer only through a host-drawn button (Copy
-  writes the clipboard on the user's click; Open takes an `https:` URL without
-  userinfo). `readInvocationMessage` caps a frame message at
-  `MAX_HOST_MESSAGE_BYTES` (64 KB of JSON); a copy is at most 32,000 UTF-16 units
+  invocation, a `seq` above the last, and a kind the point allows (`allowedKinds`,
+  default `copy` and `open`; any other is `not_allowed`). The point's `onOffer`
+  may return a refusal code for its own limit, sent as `result.error` instead of
+  `result.ack`, without extending the deadline. The host re-arms the deadline on
+  each resize and accepted offer. `settle()`, for a point that got the answer it
+  waited for, stops the deadline and nothing else: the invocation stays open, so
+  later offers are still checked and acked (without re-arming a deadline),
+  `invocation.close` and `invocation.resize` still reach their callbacks, and
+  `cancel` or `dispose()` (`cancel('closed')`, the host tearing its surface down)
+  still posts `invoke.cancel`. An offer is acted on only through
+  a host-drawn control (Copy writes the clipboard on the user's click; Open takes
+  an `https:` URL without userinfo; an insert's text is the point's to place as
+  literal text the person still sends). `readInvocationMessage` caps a frame message at
+  `MAX_HOST_MESSAGE_BYTES` (64 KB of JSON); a copy or an insert is at most 32,000 UTF-16 units
   and a URL 2,048. `displaySafe` strips C0 controls and bidi overrides from any
   text the host shows from a frame. The link-preview point keeps its own
   show/card messages (§18a) and does not use the contract.
@@ -4239,8 +4278,15 @@ owner each:
   `point_grant_families()`. A family name already taken, or `api` / `events`, is
   refused.
 - **One host rule** (`apps/app_hosts.py`): `normalize_host` (lowercase, IDNA, no
-  trailing dot, leading dot kept) and `host_refusal` (not a hostname, a public
-  suffix or a bare TLD), for every point that names hosts.
+  trailing dot, leading dot kept) and `host_refusal` (not a hostname, an IP
+  literal (a numeric last label), `localhost` or a name under it, a public suffix
+  or a bare TLD), `normalized_hosts` (what a grant stores) and `host_list_errors`
+  (a point entry's `hosts` validation), for every point that names hosts. The
+  dashboard mirror is `website/src/appFrame/hosts.ts`: `normalizeHost`,
+  `isClaimableHost`, `readHostClaims` (normalized, refused dropped, cut to the
+  grant), `claimableUrlHost` (`https:` only, the link-preview rule unchanged; a point that
+  must refuse userinfo or a port checks those itself),
+  `claimsHost` and `withoutQuery`.
 - **Dashboard side** (`website/src/appFrame/`): `createSandboxedFrame` (the
   attributes), `mintAppFrame(app, point, id, frameId?)` (accepts only an
   `/app-frame/` URL), `loadMintedFrame` (`init` on the first load, teardown on a
@@ -4925,6 +4971,169 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_static.py`, `apps/routes_art.py`, `apps/routes_listing.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
+
+## 30. A core feature that needs an app's code asks a seam, and never imports the app
+
+`kiro_crew/apps/seams.py` is a registry of the things a core feature needs and only an
+app ships. Core names each need as a seam and asks for its provider when it runs. The
+app registers the provider. Core therefore never imports the app, and the app can leave
+this repository without core changing.
+
+| Seam | Provider protocol | Core caller | With no provider |
+|---|---|---|---|
+| `crew_runtime` | `CrewRuntime`: `runtime_dir`, `bundle_digest(dir)` | `cloud/microvm/recipe.py` | `RecipeRefused` (see `cloud.md`, "What the lane borrows from an app") |
+| `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
+| `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
+
+A builtin app registers from a `seams.py` at its package root. The first lookup of any
+seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
+that no other app's package is imported. A seam therefore answers the same in the
+gateway, a CLI process and a test. That module is imported by core callers that never
+load the app's backend, so it binds paths and small provider objects, and each provider
+method imports what it delegates to at call time. The aws-control package `__init__`
+serves `register_routes` lazily for the same reason. Any other in-process code, such as
+an installed app's `on_startup` hook, calls `seams.register` itself.
+
+A provider answers whether or not its app is enabled, because the core features above
+worked with aws-control switched off (its default). One app holds a seam: a second app
+registering it is refused with `ValueError`, so the answer cannot depend on import order.
+A broken provider module is logged and skipped. The one-time load holds its own lock,
+never the registry's, so a provider module registering from another thread cannot
+deadlock it; a seams module therefore only registers while it is imported, and never
+looks a seam up. The registry is process state and holds no per-caller data.
+
+`test_app_seams.py` pins the registry, the shipped providers, and each core caller's
+answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
+under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
+name the package are a pinned list that may only shrink (see `aws-control.md`,
+"Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
+
+## 31. A marketplace app installs disabled and is trusted by its listing
+
+A Kiro Space marketplace app version is one zip of the app folder.
+`apps/marketplace_install.py` is the gateway's only path for it, in two calls.
+`prepare_market_install(client, ref, version)` resolves the version through a
+`MarketClient`, downloads the zip from the signed URL into a fresh folder under
+`<data home>/market-staging/`, and refuses it unless its SHA-256 equals the
+resolved one; the download's own hash must match the resolved hash before the
+fetch. Only then is the zip unpacked, into a new `mkdtemp` folder, after every
+entry passed the archive rules: at most 25 MiB zipped, 100 MiB and 2,000
+entries unpacked (the entry cap through `zip_vet.vet_zip_inventory`, before
+`ZipFile` parses the central directory), 25 MiB and 100:1 per entry (counted on the bytes actually
+written, not the header), 16 segments and 240 bytes per path; no absolute name,
+drive letter, colon anywhere (a later `D:` segment re-roots a Windows join,
+`x:y` is an alternate data stream), backslash, control character, `.` or `..`
+segment, or two names
+equal after NFC and case folding; regular files and directories only (a link,
+device, FIFO or socket refuses), no setuid, setgid or sticky bit, no encrypted
+or spanned archive. Files are created with `O_EXCL | O_NOFOLLOW` and modes
+reduced to 0644 or 0755. Bundled component hashes are recomputed. Any refusal
+deletes the staging folder. A version that `requires` other listings is
+refused until their kinds have installers. The unpacked `app.json` is then
+parsed with `AppManifest`, and its own crons, MCP servers and agents are
+listed in the confirm data (`inFolder`). Each must be named by the resolved
+permissions (a cron as `cron: <name>` in `background`, a server in
+`mcpServers`, an agent path in `agents`); one that is not refuses the install
+as `market_undeclared_capability`, so the person never approves a list shorter
+than what the folder holds.
+
+The confirm data carries the publisher, versions, SHA-256 prefix, the declared
+permissions under "declared by the publisher, not enforced" and the label
+"Community, not reviewed by Kiro Space". `complete_market_install(prepared,
+confirmed=True)` then calls `install_app(<folder>, expected_name=<listing
+name>, market_source=..., source_commit=...)` directly, never the dashboard
+local-path route (which registers the app and starts its backend after a fresh
+install). `install_app` writes `origin = "local"`, `source =
+"market:<ref>@<n>"` and `sourceCommit = <zip SHA-256>` in its FIRST record
+write, still `enabled = False`, so no record ever names the staging folder
+(which a local-folder grant would admit), and its install-time trust check
+compares against `market:<ref>`. A malformed `market_source` is refused as
+`market_source_invalid`. Nothing is registered or started; that happens only
+at enable. The staging folder is deleted whatever the outcome. The listing
+server is reached only through `MarketClient`, and a signed URL that is not
+`https://` is refused before any fetch.
+
+`resolve_installed_trust_repository` maps a `market:<ref>@<n>` source to the
+coordinate `market:<ref>` (`apps/market_source.py`), so the trust dialog binds
+the grant to that listing in `agent.apps_trusted_repositories`. A grant kept in
+`agent.apps_trusted_local` never covers it: enabling a marketplace app with only
+a local grant returns `app_execution_denied` and the dialog asks again. A
+malformed `market:` source resolves to nothing and cannot be granted.
+
+Writers: `apps/marketplace_install.py`, `apps/market_source.py`,
+`apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
+`apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
+
+## 32. App Kit seam level 1: what a former built-in needs, offered to every app
+
+An installed app reaches the host only through its context and the dashboard SDK,
+never through a `kiro_crew` import or a dashboard source path: such an import pins the
+app to one wheel's private layout and breaks silently on the next upgrade. Level 1 is
+the set of seams a built-in's code needed from core, published generically. Nothing in
+any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
+(`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
+`test/test_app_sdk_level_mirror.py`. An app reads `ctx.sdk_level` or the SDK export to
+detect an older host and degrade, instead of failing on a missing attribute.
+
+**Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
+`_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,
+PUT, DELETE or PATCH (any case), whose `path` is a str of at most 512 characters, and
+whose `handler` is callable. Anything else is skipped with the existing warning and is
+never registered. Dispatch, prefixing and teardown are unchanged.
+
+**Owner gate.** `AppContext.require_owner(request, operation)` is
+`require_owner_dashboard_request` with the audit operation `<ctx.name>.<operation>`.
+It returns `None` for the owner and the host's own refusal (403 `owner_only`, or the
+stale-session 401) for everyone else, app tokens included. The app chooses where to
+call it. A non-identifier `operation` is audited as `<app>.unnamed`, and the request is
+still denied, so an app cannot write free text into the audit log or attribute a row
+to another app. It needs no permission because it only removes access. The import is
+lazy, so `apps/context.py` keeps its aiohttp-free import.
+
+**Shared embedder.** `AppContext.embed` is an `EmbedSDK` (`apps/embed_sdk.py`),
+always populated like `scrub`. It adds no reach, since the app's in-gateway Python
+could import the embedder anyway, and it keeps one model resident instead of one per
+app. `embed_sync` asks `embeddings_shared.get_shared_embedder()` for a vector, so an
+app's vectors match the host memory's model id and width. It returns `None` when the
+backend is neither ready nor loadable on demand, when the embed raises (logged once per
+process and message), and when called on a running event loop. `run(func, *args,
+**kwargs)` binds the call with `functools.partial` before handing it to
+`executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
+parameters. No method raises into the app.
+
+**Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
+`apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
+discovery conversion. A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
+locale past the 32nd, an unknown entry key or an over-cap value drops that locale. The
+drops are kept in `L10nConfig.warnings`, logged by the install validation
+(`manager_tree._validate_source_path`) and never refuse an install. The block is not in
+`signing_payload`: it is content, not authority. The dashboard
+(`components/appstore/appManifest.ts`) reads it only when no catalog key covers the
+app, so a catalog-keyed built-in keeps its own copy. It looks up the exact locale,
+then the base language, then the English field, with own-property lookups and the
+parser's length caps.
+
+**Dashboard SDK.** `openChat` gains `memoryMode` (`'persistent'`, `'incognito'`,
+`'temporary'`; anything else is dropped) and `sessionFolder: false`. Both apply only
+without `slotKey`, and either one makes the launch a new draft (`chatLaunchOpensDraft`
+in `app-sdk/chatLaunch.ts`). The routed chat's `?new=1` intake claims that intent and
+passes `memory_mode` and `sessionFolder` into `createSlot`. The send intake leaves it
+alone, so the message is staged and never auto-sent. `fmtCurrency` and `APP_SDK_LEVEL`
+join `@kirocrew/app-sdk`. `Select` (a narrowed wrapper over the host's own select) and
+`guideCaution` join `@kirocrew/app-sdk/ui`. Each vendor stub names exactly its
+barrel's runtime exports, pinned by `src/test/appSharedModuleBoundary.test.ts`, because
+a name a stub omits fails the importing bundle at link time.
+
+Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
+`apps/embed_sdk.py`, `apps/manifest_sections.py`, `apps/manifest.py`,
+`apps/discovery.py`, `apps/manager_tree.py`, `website/src/app-sdk/index.ts`,
+`website/src/app-sdk/chatLaunch.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`website/src/kirocrew-ui/index.ts`, `website/src/kirocrew-ui/Select.tsx`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/public/vendor/kirocrew-ui.mjs`,
+`website/src/pages/chat/useChatPageSessionController.ts`,
+`website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
+`website/src/components/appstore/appManifest.ts`.
 
 ## Windows stale-backend cleanup capacity
 

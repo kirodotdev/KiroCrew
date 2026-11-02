@@ -30,6 +30,7 @@ from kiro_crew.mcp_discovery import (
     _probe_cache,
     probe_server,
 )
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestProbeServerConsentGate:
@@ -605,8 +606,11 @@ class TestProbeTempContainment:
         stale = bt.backend_tmp_root() / "probe-deadbeef-old"
         stale.mkdir(parents=True)
         (stale / bt.OWNER_FILENAME).write_text(str(2**22 + 5), encoding="utf-8")
-        # flake-ok: pre-existing wall-clock read aging the stale dir two hours back; moved verbatim
-        old = time.time() - 7200
+        # The sweep reads backend_tmp's clock as its reference. Seed one frozen clock
+        # from the real time once and age the stale dir from that same reading.
+        clock = ManualClock(start=time.time())
+        clock.install(monkeypatch, bt)
+        old = clock.time() - 7200
         os.utime(stale / bt.OWNER_FILENAME, (old, old))
         os.utime(stale, (old, old))
         os.utime(bt.backend_tmp_root(), (old, old))

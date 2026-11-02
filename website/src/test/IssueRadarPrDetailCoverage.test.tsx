@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 import type {
   PullRequest, PrDetailData, PrCheck, PullDetailResponse,
@@ -255,6 +257,18 @@ describe('PrDetail — header and first paint', () => {
 
     release(response())
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
+  })
+
+  it('titles the #number link-out in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      const { header } = renderPane()
+      await waitFor(() => expect(within(header()).getByRole('link', { name: '#7' })).toBeTruthy())
+      expect(within(header()).getByRole('link', { name: '#7' }).getAttribute('title'))
+        .toBe('Auf GitHub öffnen')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 })
 

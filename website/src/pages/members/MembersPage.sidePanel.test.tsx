@@ -165,8 +165,8 @@ vi.mock('../../components/crew/useCrewEditor', () => ({
 // The Files body exposes the directory it was rooted in: one case below pins
 // that it is the slot's RESOLVED project, never the crew's workspace NAME.
 vi.mock('../chat/FilesHomePanel', () => ({
-  default: ({ projectDir }: { projectDir?: string }) => (
-    <div data-testid="files-home-stub" data-project-dir={projectDir ?? ''} />
+  default: ({ projectDir, title }: { projectDir?: string; title?: string }) => (
+    <div data-testid="files-home-stub" data-project-dir={projectDir ?? ''} data-title={title ?? ''} />
   ),
 }))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
@@ -591,6 +591,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.queryByRole('tab', { name: 'Schedules' })).toBeNull()
     // Side Chat remains dynamic rather than standing.
     expect(screen.queryByRole('tab', { name: 'Side Chat' })).toBeNull()
+  })
+
+  it('the Workspace tab heads its file browser "Workspace" too, not "Files" (issue #28031)', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-dashboard')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
+    const body = await screen.findByTestId('files-home-stub')
+    expect(body).toHaveAttribute('data-title', 'Workspace')
   })
 
   it('the Dashboard is the mate\'s generated page, with no repeated identity row', async () => {

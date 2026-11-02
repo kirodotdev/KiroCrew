@@ -89,6 +89,17 @@ WORKER_FIELD: Final[str] = "crew_root"
 #: Equal to the root for its own crew; a sub-conductor's key for that one's crew.
 DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 
+#: A crewmate (mate) thread is a root of its own kind, kept apart from Crew Mode so
+#: no ``crew_root`` rule fires for it. ``mate_root`` is the mate thread's key on each
+#: session it dispatched, directly or through another; ``mate_dispatched_by`` is that
+#: row's direct creator. Absent elsewhere. Inert: no list or client reads them yet
+#: (``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``).
+MATE_ROOT_FIELD: Final[str] = "mate_root"
+MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
+#: The slot ``mode`` of a mate thread: ``members.DM_SLOT_MODE``, spelled here because
+#: this module is a leaf (``test_crew_mode_mate_stamps`` pins the two equal).
+MATE_SLOT_MODE: Final[str] = "member"
+
 #: Whether a crew member's approvals and questions are routed to its conductor:
 #: the ``ask_question`` refusal toward the conductor and the conductor's no-card
 #: reads of its own crew members (``tool_approval._crew_root_own_worker_call``).
@@ -228,6 +239,17 @@ def known_roots() -> frozenset[str]:
     return frozenset(_known_roots)
 
 
+#: Mate thread keys a slot frame stamped, live or closed: the :data:`_known_roots`
+#: rule for :data:`MATE_ROOT_FIELD`, so a session a mate dispatched keeps its mate
+#: after the mate's tab closes. In memory only.
+_known_mate_roots: set[str] = set()
+
+
+def known_mate_roots() -> frozenset[str]:
+    """Every mate thread key this process has stamped as a root."""
+    return frozenset(_known_mate_roots)
+
+
 def persisted_parents() -> dict[str, str]:
     """``{slot: creator slot}`` from the crew log's session tree, closed slots included.
 
@@ -292,6 +314,16 @@ def _row_is_root(row: Mapping[str, Any]) -> bool:
     return runs_crew_mode(
         row.get("agent"), row.get("agent_kind"), row.get("mode"), row.get(STAMP_FIELD)
     )
+
+
+def _row_is_mate_root(row: Mapping[str, Any]) -> bool:
+    """Whether *row* (a slot payload) is a mate thread: its slot ``mode`` is the mate's.
+
+    App-owned and remote rows are left out, as :func:`_row_is_root` leaves them out.
+    """
+    if row.get("app") or row.get("instance_id"):
+        return False
+    return row.get("mode") == MATE_SLOT_MODE
 
 
 def lineage_is_settled() -> bool:
@@ -391,6 +423,11 @@ def stamp_rows(
     node for the row (*tree_slots*, default :func:`persisted_tree_slots`), so a
     release still stands. It is display only: it decides which list shows the
     row and grants no control over it. It is never inferred from the agent.
+
+    The same walk stamps :data:`MATE_ROOT_FIELD` and :data:`MATE_DISPATCHER_FIELD`
+    on each session a mate thread (:func:`_row_is_mate_root`) dispatched, stopping
+    at the nearest root of either kind; a mate thread remembered in
+    :func:`known_mate_roots` holds its sessions after its tab closes.
     """
     rows = list(rows)
     saved_of = saved_creators or {}
@@ -425,6 +462,14 @@ def stamp_rows(
     # here keeps a later close from stamping its sessions back into Crew Mode.
     _known_roots.difference_update(key for key in by_key if key not in roots)
     closed_roots = known_roots() - set(by_key)
+    # Mate roots, by the same no-creator rule: a mate thread has no creator, so this
+    # never makes a row a mate root that a Crew Mode walk would have passed through.
+    mate_roots = {
+        key for key, row in by_key.items() if _row_is_mate_root(row) and not creator_of(key, row)
+    }
+    _known_mate_roots.update(mate_roots)
+    _known_mate_roots.difference_update(key for key in by_key if key not in mate_roots)
+    closed_mate_roots = known_mate_roots() - set(by_key)
     lineage: list[Mapping[str, str] | None] = [parents]
 
     def persisted(key: str) -> str:
@@ -437,7 +482,9 @@ def stamp_rows(
         row[ROOT_FIELD] = key in roots
         row.pop(WORKER_FIELD, None)
         row.pop(DISPATCHER_FIELD, None)
-        if key in roots:
+        row.pop(MATE_ROOT_FIELD, None)
+        row.pop(MATE_DISPATCHER_FIELD, None)
+        if key in roots or key in mate_roots:
             continue
         seen = {key}
         current: Mapping[str, Any] | None = row
@@ -447,6 +494,10 @@ def stamp_rows(
             if creator in roots or creator in closed_roots:
                 row[WORKER_FIELD] = creator
                 row[DISPATCHER_FIELD] = direct
+                break
+            if creator in mate_roots or creator in closed_mate_roots:
+                row[MATE_ROOT_FIELD] = creator
+                row[MATE_DISPATCHER_FIELD] = direct
                 break
             seen.add(creator)
             above = by_key.get(creator)
@@ -573,6 +624,20 @@ def live_stamps(
     that is no worker. *parents* is each key's ``parent`` as the frame computed
     it, so an adoption edge counts as the full frame counts it. No I/O.
     """
+    return {
+        key: (str(row.get(WORKER_FIELD) or ""), bool(row.get(ROOT_FIELD)))
+        for key, row in live_stamp_rows(slots, parents, settled=settled).items()
+    }
+
+
+def live_stamp_rows(
+    slots: Mapping[str, Any], parents: Mapping[str, Any] | None = None, *, settled: bool = False
+) -> dict[str, dict[str, Any]]:
+    """``{key: stamped row}`` for every live slot in *slots*: :func:`live_stamps`'s pass.
+
+    Each row carries every field :func:`stamp_rows` writes, the Crew Mode and the
+    mate stamps alike, so a ``slot_patch`` frame reads both off one walk. No I/O.
+    """
     rows = [_live_row(s) for s in list(slots.values())]
     for row in rows:
         if parents is not None:
@@ -581,10 +646,12 @@ def live_stamps(
             row.pop("parent", None)
     saved = {str(row["key"]): str(row.pop("saved_created_by") or "") for row in rows}
     stamp_rows(rows, settled=settled and parents is not None, saved_creators=saved)
-    return {
-        str(row["key"]): (str(row.get(WORKER_FIELD) or ""), bool(row.get(ROOT_FIELD)))
-        for row in rows
-    }
+    return {str(row["key"]): row for row in rows}
+
+
+def mate_stamps_of(row: Mapping[str, Any]) -> tuple[str, str]:
+    """``(mate_root, mate_dispatched_by)`` of a stamped row, ``("", "")`` off every mate tree."""
+    return (str(row.get(MATE_ROOT_FIELD) or ""), str(row.get(MATE_DISPATCHER_FIELD) or ""))
 
 
 def slot_in_crew_tree(

@@ -10,7 +10,7 @@
  * each is pinned here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
@@ -51,7 +51,7 @@ describe('CopyBtn', () => {
 
     // The confirmation is transient: it must return to the idle label, or the
     // button claims a copy that happened a long time ago.
-    vi.advanceTimersByTime(1600)
+    await act(async () => { vi.advanceTimersByTime(1600) })
     await waitFor(() => expect(btn).toHaveTextContent(i18nT('apps.awsControl.console.copy')))
   })
 

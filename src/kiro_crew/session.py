@@ -94,6 +94,7 @@ from kiro_crew.messaging.link import (  # noqa: F401
 )
 from kiro_crew.metrics.events import SESSION_IDLE_EXPIRED, emit_counter  # noqa: F401
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.parent_turns import ParentTurnLedger as _ParentTurnLedger
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.pycache_gc import PYCACHE_GC_INTERVAL_SECS, prune_pycache  # noqa: F401
 from kiro_crew.runtime_ownership import PidRefcount  # noqa: F401
@@ -601,6 +602,7 @@ class SessionManager:
     get_or_create = _claims.get_or_create
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
+    fresh_start_unclaimed = _claims.fresh_start_unclaimed
     record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure
@@ -624,6 +626,11 @@ class SessionManager:
     forget_conversation_if_sid = _claims.forget_conversation_if_sid
     conversation_provider = _claims.conversation_provider
     release = _claims.release
+    turn_holder = _claims.turn_holder
+    turn_token = _claims.turn_token
+    turn_prompt_in_flight = _claims.turn_prompt_in_flight
+    note_turn_landed = _claims.note_turn_landed
+    settle_turn = _claims.settle_turn
     _safe_cleanup = _claims._safe_cleanup
     is_busy = _claims.is_busy
     touch = _claims.touch
@@ -870,6 +877,10 @@ class SessionManager:
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._session_map = SessionMap()
+        # What each turn-permit holding owes at its release: whether its engine
+        # noted that it landed, and the inline marks that release confirms or
+        # revokes (``kiro_crew.parent_turns``).
+        self.parent_turns = _ParentTurnLedger()
 
         self._pool = WarmSessionPool(
             cast(Any, self),

@@ -41,8 +41,11 @@ jobs:
     # issue-summary.yml/issue-triage.yml: this fires on `issue_comment`, any
     # commenter can trigger it, and a non-collaborator commenter's dispatch
     # is rejected by the AWS webhook's actor allowlist, queuing the job
-    # forever instead of running it.
-    runs-on: ubuntu-latest
+    # forever instead of running it. The group is a GitHub-hosted Ubuntu VM
+    # dispatched by GitHub rather than that webhook, so no actor allowlist
+    # applies and the reason above is untouched; it buys queue position on a
+    # lane whose reply a maintainer is waiting on to clear a disposition.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       # The four tests a tracked deferral passes live in

@@ -15,8 +15,7 @@ class TestKiroHooksAutoimport:
     """Tests for auto-discovery of executable hook scripts in ~/.kiro/hooks/."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the HOME fake every test of this class needs, moved verbatim; none of them calls monkeypatch.undo()
-    def _isolate_home(self, tmp_path: Path, monkeypatch):
+    def _isolate_home(self, tmp_path: Path, _floor_monkeypatch):
         """Point Path.home() at tmp_path so hooks_dir validation accepts tmp dirs.
 
         The production rule rejects kiro_hooks_dir values that do not resolve
@@ -24,7 +23,7 @@ class TestKiroHooksAutoimport:
         autoimport at /tmp or similar.  Tests legitimately use tmp_path for
         isolation, so we fake HOME = tmp_path for every test in this class.
         """
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _floor_monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
 
     def _make_script(
         self,

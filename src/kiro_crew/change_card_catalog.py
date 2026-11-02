@@ -582,7 +582,8 @@ def describe_manual_change(
         verb = "enabled" if b.get("enabled", True) else "disabled"
         return f"{verb} MCP tool {s(b.get('server'))}/{s(b.get('tool'))}"
     if route == ("POST", "/api/connections/mint"):
-        return f"started connecting {s(b.get('slug'))}"
+        # Settings → MCP mints an owner-configured server by ``{"server": ...}``.
+        return f"started connecting {s(b.get('slug') or b.get('server'))}"
     if route == ("POST", "/api/connections/disconnect"):
         return f"disconnected {s(b.get('slug'))}"
     if route == ("POST", "/api/secrets"):

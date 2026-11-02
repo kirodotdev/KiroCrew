@@ -1273,3 +1273,130 @@ class TestSessionState:
         # flake-ok: pre-existing real-clock check that release stamped last_used within 1 s; a worker stall over 1 s reds it; moved verbatim; tracked for a de-flake pass
         assert time.monotonic() - sess.last_used < 1.0
         await mgr.close_all()
+
+
+class TestRealClaimJoinsAnInFlightEagerStart:
+    """A real claim that arrives while the key's eager (speculative) start is
+    still starting waits for that start and claims its session, instead of
+    cold-starting a second process for the same key. When the eager start
+    fails, the claim cold-starts as before."""
+
+    @staticmethod
+    def _gated_factory(gate: asyncio.Event, providers: list, fail_first: bool = False):
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = base(session_key, agent, channel_id, **kwargs)
+            failing = fail_first and not providers
+
+            async def _start():
+                await gate.wait()
+                if failing:
+                    raise RuntimeError("eager start failed")
+
+            m.start = _start
+            providers.append(m)
+            return m
+
+        return factory
+
+    @staticmethod
+    def _real_claim_parked(mgr: SessionManager, key: str, providers: list) -> bool:
+        # On the old path the real claim spawns its own provider (a second
+        # factory call). On the joined path it waits on the eager start's
+        # announcement. Either way it has stopped moving.
+        if len(providers) >= 2:
+            return True
+        entry = getattr(mgr._allocation_state, "speculative_starts", {}).get(key)
+        return bool(entry is not None and getattr(entry[0], "_waiters", None))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("priority", ["fg", "bg"])
+    async def test_a_send_during_an_eager_start_spawns_one_process(self, cfg, priority):
+        from kiro_crew.start_priority import StartPriority
+
+        start_priority = StartPriority(priority)
+        gate = asyncio.Event()
+        providers: list = []
+        mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
+        key = "dashboard:join-eager"
+
+        eager = asyncio.create_task(
+            mgr.get_or_create(key, speculative=True, start_priority=start_priority)
+        )
+        await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+        real = asyncio.create_task(mgr.get_or_create(key, start_priority=start_priority))
+        await async_wait_until(
+            lambda: self._real_claim_parked(mgr, key, providers),
+            describe=lambda: len(providers),
+        )
+
+        gate.set()
+        eager_provider, eager_new, _ = await await_until(eager, what="eager start")
+        assert eager_new is True
+        mgr.release(key)
+        real_provider, real_new, _ = await await_until(real, what="real claim")
+
+        assert len(providers) == 1, "the send spawned a second process"
+        assert real_provider is eager_provider
+        # The eager start left the first-turn flag armed for the real message.
+        assert real_new is True
+        assert mgr.count == 1
+        assert mgr._allocation_state.speculative_starts == {}
+        mgr.release(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_foreground_send_does_not_wait_on_a_background_eager_start(self, cfg):
+        """A BACKGROUND eager start waits in every start queue at BACKGROUND: a
+        person's FOREGROUND claim must not inherit that position, so it
+        cold-starts at its own priority as before."""
+        from kiro_crew.start_priority import StartPriority
+
+        providers: list = []
+        gate = asyncio.Event()
+        gate.set()
+        mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
+        key = "dashboard:join-eager-background"
+        queued = asyncio.Event()  # never set: the eager start is still waiting
+        mgr._allocation_state.speculative_starts[key] = (queued, StartPriority.BACKGROUND)
+
+        real = asyncio.create_task(mgr.get_or_create(key, start_priority=StartPriority.FOREGROUND))
+        provider, is_new, _ = await await_until(real, what="real claim", timeout=10.0)
+
+        assert not queued.is_set()
+        assert providers == [provider]
+        assert is_new is True
+        mgr.release(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_send_cold_starts_when_the_eager_start_fails(self, cfg):
+        gate = asyncio.Event()
+        providers: list = []
+        mgr = SessionManager(
+            cfg, provider_factory=self._gated_factory(gate, providers, fail_first=True)
+        )
+        key = "dashboard:join-eager-fails"
+
+        with patch.object(SessionManager, "_dispatch_hard_kill"):
+            eager = asyncio.create_task(mgr.get_or_create(key, speculative=True))
+            await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+            real = asyncio.create_task(mgr.get_or_create(key))
+            await async_wait_until(
+                lambda: self._real_claim_parked(mgr, key, providers),
+                describe=lambda: len(providers),
+            )
+
+            gate.set()
+            with pytest.raises(RuntimeError, match="eager start failed"):
+                await await_until(eager, what="eager start")
+            real_provider, real_new, _ = await await_until(real, what="real claim")
+
+        assert len(providers) == 2
+        assert real_provider is providers[1]
+        assert real_new is True
+        assert mgr.count == 1
+        assert mgr._allocation_state.speculative_starts == {}
+        mgr.release(key)
+        await mgr.close_all()

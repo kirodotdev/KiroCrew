@@ -8,15 +8,18 @@ interact with gateway services only through this interface.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
 from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
+from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
@@ -50,6 +53,12 @@ class AppHealthStatus:
         if self.last_checked:
             d["last_checked"] = self.last_checked
         return d
+
+
+# The audit row's operation is ``<app>.<operation>``. The app names the second
+# half, so it is held to a short identifier: a free-form value would let an app
+# write arbitrary text into the audit log on every denied request.
+_OWNER_OPERATION_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}")
 
 
 @dataclass
@@ -98,6 +107,41 @@ class AppContext:
     # object. An app with only lifecycle hooks gets ``None`` and must say so
     # rather than guess -- hence ``| None`` and no default instance.
     http_app: Any | None = None
+    # Unconditional, like `scrub` and for the same reason: it adds no reach (the
+    # app's in-gateway Python could import the embedder anyway) and it keeps ONE
+    # shared model in memory instead of a second copy per app. See
+    # embed_sdk.EmbedSDK; it carries no app identity, so the default is complete.
+    embed: EmbedSDK = field(default_factory=EmbedSDK)
+    # The App Kit seam level this host provides. An app built against a newer
+    # seam reads it to degrade (or report itself degraded) instead of failing on
+    # a missing attribute.
+    sdk_level: int = APP_SDK_LEVEL
+
+    async def require_owner(self, request: Any, operation: str) -> Any | None:
+        """``None`` when *request* comes from the dashboard owner; else the refusal.
+
+        The refusal is the host's own response, the one its core owner-only
+        routes return: a 403 ``owner_only``, or a 401 for a stale pre-owner
+        session. A route handler returns it unchanged. The denial is audited as
+        operation ``<app>.<operation>``: the app name comes from this context,
+        so an app cannot attribute a row to another app, and an *operation* that
+        is not a short identifier (letters, digits, ``_ . : -``, at most 64) is
+        recorded as ``<app>.unnamed`` rather than refused, because the gate must
+        still deny.
+
+        Not gated by a permission: it only ever removes access. The import is
+        lazy so this module keeps its aiohttp-free import.
+        """
+        from kiro_crew.dashboard.handlers._shared import (
+            require_owner_dashboard_request,
+        )
+
+        label = (
+            operation
+            if isinstance(operation, str) and _OWNER_OPERATION_RE.fullmatch(operation)
+            else "unnamed"
+        )
+        return await require_owner_dashboard_request(request, f"{self.name}.{label}")
 
 
 def manifest_declares_routes(manifest: dict[str, Any]) -> bool:

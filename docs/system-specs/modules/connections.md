@@ -1151,6 +1151,27 @@ for the premint path and answers `None` for an unconfigured provider so nothing
 warms against a vendor that will only say "unknown client". The mint spec copies
 the emitted entry verbatim, so the cold path inherits it.
 
+**Google consent links ask for offline access.** Google issues a refresh token
+only when the consent link carries `access_type=offline` (and re-issues one on a
+repeat consent only with `prompt=consent`). Neither engine sends either: KAS
+(`@kiro/agent`) and kiro-cli v2 build the authorize URL from fixed fields and
+have no config key for extra parameters, so a Google grant would expire after
+about an hour. Crew reads every consent URL before any surface shows it, so
+`acp/oauth_offline.py:with_google_offline_access` sets both parameters as the
+URL is read off the wire (the kiro-cli init drain and mid-turn frame, and the
+session handle's `_accept_oauth_request`, which is also where a KAS
+`_kiro/openExternalUrl` link lands). The Connections card mint, the warm table
+and the chat banner all read those URLs, so each gets the same link. Only a URL
+whose scheme is `https`, netloc exactly `accounts.google.com` and path exactly
+`/o/oauth2/v2/auth` changes; any existing `access_type` / `prompt` is replaced,
+and every other query segment (PKCE, `state`, `redirect_uri`, `scope`) keeps its
+bytes and order, so the engine's code-for-token swap is unchanged. Every other
+server's link is untouched. `security/exfil_oauth.py` already allows both names.
+`prompt=consent` is deliberate: Google then shows its consent screen on every
+re-authorization, even when a refresh token already exists. That is the accepted
+cost, because without it a repeat consent returns no new refresh token; do not
+drop the parameter to save the extra screen.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`

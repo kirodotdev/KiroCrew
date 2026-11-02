@@ -89,18 +89,19 @@ class TestSttStatus:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_dashboard_handlers_core_coverage*.py modules calls monkeypatch.undo()
-    def _quiet_probes(self, monkeypatch):
-        monkeypatch.setattr(core_mod, "availability_detail", lambda _cfg: _availability(True))
-        monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: False)
-        monkeypatch.setattr(
+    def _quiet_probes(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(
+            core_mod, "availability_detail", lambda _cfg: _availability(True)
+        )
+        _floor_monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: False)
+        _floor_monkeypatch.setattr(
             "kiro_crew.stt.engine.shared_engine", lambda *a, **k: SimpleNamespace(loaded=False)
         )
         # The decoder probe stats the operator's real package directories and can
         # hash an 80 MB executable, so the default answer is pinned; the tests
         # that assert on it override this.
-        monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
-        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+        _floor_monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
+        _floor_monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
 
     @pytest.mark.asyncio
     async def test_voice_off_reports_no_backend_and_does_not_load_the_library(
@@ -334,8 +335,7 @@ class TestSttPrepare:
         """Every test here asserts on what was scheduled, so the set must be ours."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_dashboard_handlers_core_coverage*.py modules calls monkeypatch.undo()
-    def _no_real_download(self, monkeypatch):
+    def _no_real_download(self, _floor_monkeypatch):
         """Record the requested model instead of fetching 148 MB over the wire."""
         self.requested: list[str] = []
 
@@ -343,7 +343,7 @@ class TestSttPrepare:
             self.requested.append(name)
             return True
 
-        monkeypatch.setattr("kiro_crew.stt.session.ensure_model", _fake_ensure)
+        _floor_monkeypatch.setattr("kiro_crew.stt.session.ensure_model", _fake_ensure)
 
     @pytest.mark.asyncio
     async def test_prepare_answers_202_and_starts_the_transfer(
@@ -512,8 +512,7 @@ class TestSttFfmpegDownload:
         """Every test here asserts on what was scheduled, so the set must be ours."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_dashboard_handlers_core_coverage*.py modules calls monkeypatch.undo()
-    def decoder_store(self, monkeypatch):
+    def decoder_store(self, _floor_monkeypatch):
         """Give the test its own decoder store, and never let it reach the network.
 
         The real one is a process global holding live transfer state, so a test
@@ -528,8 +527,10 @@ class TestSttFfmpegDownload:
             return None
 
         store.ensure = _fake_ensure  # type: ignore[method-assign]
-        monkeypatch.setattr(core_mod.stt_decoder, "_store", store)
-        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        _floor_monkeypatch.setattr(core_mod.stt_decoder, "_store", store)
+        _floor_monkeypatch.setattr(
+            core_mod.platform_compat, "is_bundled_interpreter", lambda: False
+        )
         return store
 
     @pytest.mark.asyncio
@@ -723,15 +724,16 @@ class TestSttTranscribe:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_dashboard_handlers_core_coverage*.py modules calls monkeypatch.undo()
-    def _backend_ready(self, monkeypatch):
+    def _backend_ready(self, _floor_monkeypatch):
         """Pin the availability probe, which imports an optional extra.
 
         Left real, every test in this class would answer differently on a host
         with the ``voice`` extra installed than on one without.
         """
-        monkeypatch.setattr(core_mod, "availability_detail", lambda _cfg: _availability(True))
-        monkeypatch.setattr(core_mod, "audio_exceeds_secs", AsyncMock(return_value=False))
+        _floor_monkeypatch.setattr(
+            core_mod, "availability_detail", lambda _cfg: _availability(True)
+        )
+        _floor_monkeypatch.setattr(core_mod, "audio_exceeds_secs", AsyncMock(return_value=False))
 
     @pytest.mark.asyncio
     async def test_unavailable_backend_is_503_naming_the_reason(self, monkeypatch) -> None:

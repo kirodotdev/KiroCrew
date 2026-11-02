@@ -25,6 +25,7 @@ import pathlib
 import stat
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -781,7 +782,6 @@ class TestADismissalMadeBeforeTheLogHeldOneIsCorrectedIntoTheLog:
         monkeypatch.setattr(persistence, "panel_dismissal_recorded", _recorded)
 
     def test_a_pre_upgrade_dismissal_stays_hidden_across_two_reconnects(self, monkeypatch):
-        from kiro_crew.crew_log import emit as crew_log_emit
         from kiro_crew.dashboard.ws import backfill_legacy_panel_dismissals
 
         monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
@@ -804,7 +804,7 @@ class TestADismissalMadeBeforeTheLogHeldOneIsCorrectedIntoTheLog:
         # Second reconnect, reading the log the first one wrote. The card stays
         # hidden with no exclusion passed in, which is the fold carrying the
         # dismissal -- and the registry is not asked about that child again.
-        assert crew_log_emit.flush(timeout=10.0) is True
+        assert_drained()
         asked.clear()
         assert backfill_legacy_panel_dismissals(units) == frozenset()
         assert _ids(_read(units)) == ["kept-1"]
@@ -881,7 +881,7 @@ class TestTheDismissalEmitterReportsWhetherItsAppendCommitted:
         _log("acp-commit", slot="chat-1")
         seen: list[bool] = []
         emit.on_subagent_dismissed("acp-commit", agent_id="a-1", on_settled=seen.append)
-        assert emit.flush(timeout=10.0) is True
+        assert_drained()
         assert seen == [True]
 
     def test_a_job_that_finds_no_log_reports_false(self, monkeypatch):
@@ -892,7 +892,7 @@ class TestTheDismissalEmitterReportsWhetherItsAppendCommitted:
         monkeypatch.setattr(emit, "_handle", lambda session_id: None)
         seen: list[bool] = []
         emit.on_subagent_dismissed("acp-nolog", agent_id="a-1", on_settled=seen.append)
-        assert emit.flush(timeout=10.0) is True
+        assert_drained()
         assert seen == [False]
 
     def test_a_switched_off_emitter_reports_false_rather_than_staying_silent(self, monkeypatch):
@@ -922,12 +922,12 @@ class TestTheDismissalEmitterReportsWhetherItsAppendCommitted:
         emit.remember_child_origin("a-1", "acp-pin", 1)
         emit.on_subagent_spawned("acp-pin", 1, agent_id="a-1", agent="w")
         emit.open_child_origin("a-1")
-        assert emit.flush(timeout=10.0) is True
+        assert_drained()
         assert emit.child_origin("a-1")[0] == "acp-pin"
 
         seen: list[bool] = []
         assert emit.dismiss_child("a-1", on_settled=seen.append) == "acp-pin"
-        assert emit.flush(timeout=10.0) is True
+        assert_drained()
         assert seen == [True]
 
     def test_an_unpinned_child_queues_nothing_so_nothing_settles(self):

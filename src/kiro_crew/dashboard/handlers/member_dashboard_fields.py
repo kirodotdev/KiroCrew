@@ -751,7 +751,11 @@ def _run_package_page(
                     if real is not None
                     else member_dashboard._newest_unit(slot)
                 ),
-                redact=member_dashboard._page_safe,
+                redact=(
+                    member_dashboard.page_safe_for(state)
+                    if real is not None
+                    else member_dashboard._page_safe
+                ),
                 # A snapshot has no browser to say the reader's language, so it takes
                 # the one Settings persists (``dashboard.language``); the save check
                 # keeps the default it always had.

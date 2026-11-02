@@ -13,30 +13,15 @@
 #       --floor <n> --baseline <this file> --update-baseline
 #
 # Format: <path> <rate-when-recorded>   # <covered>/<statements>
-src/kiro_crew/_process_group_supervisor.py 32.0   # 41/128
 src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
-src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py 49.3   # 112/227
-src/kiro_crew/apps/builtins/auto_improvement/backend/commit.py 33.9   # 40/118
-src/kiro_crew/apps/builtins/auto_improvement/backend/sse.py 26.1   # 12/46
 src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551
 src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
-src/kiro_crew/apps/builtins/mochi/queue_poller.py 49.7   # 178/358
 src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
 src/kiro_crew/apps/builtins/mochi/watchlist_file.py 59.3   # 207/349
-src/kiro_crew/apps/builtins/mochi/watchlist_service.py 65.3   # 109/167
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 58.9   # 116/197
-src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
-src/kiro_crew/cli_cloud.py 61.2   # 178/291
-src/kiro_crew/cloud/wizard.py 65.8   # 283/430
-src/kiro_crew/computer_use/cli.py 68.8   # 130/189
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
 src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
-src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
-src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
 src/kiro_crew/emoji_list.py 0.0   # 0/1
 src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
-src/kiro_crew/knowledge/readers.py 61.7   # 74/120
-src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
-src/kiro_crew/webex/client.py 64.1   # 173/270

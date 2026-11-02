@@ -488,6 +488,15 @@ class AcpProvider(LLMProvider):
         )
 
     @property
+    def tested_version_notice(self) -> str:
+        """The notice when this session's harness reports a release outside the one
+        Crew tested it on (goose and codex today), else ``""``. A warning, never a refusal."""
+        from kiro_crew.acp.client_turn_control import untested_version_issue
+
+        backend = str(getattr(self._client, "backend", "") or "")
+        return untested_version_issue(backend, self.agent_version)
+
+    @property
     def agent_prompt_upgrade_notice(self) -> str:
         """The upgrade notice when the KAS this session runs drops its agent's prompt,
         else ``""``. Recorded when the session registered its ``customAgents``."""

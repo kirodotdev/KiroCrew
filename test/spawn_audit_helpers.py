@@ -225,6 +225,14 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
+        # ``asyncio.run`` driving the async consent gate — matched because the
+        # detector's receiver set covers asyncio.* and attr set covers .run,
+        # but this is an event-loop entrypoint, not a subprocess primitive.
+        # The one subprocess it transitively reaches is the STS identity probe
+        # in cloud/aws.run_aws: fixed argv (aws sts get-caller-identity) with
+        # profile/region from operator-typed source config, never from agent
+        # output, and the probe result only ever REFUSES the retrieval.
+        "knowledge/connectors/bedrock_kb.py::_consent_allows",
         # The shadow-venv update engine's one spawn seam. Nothing it runs is
         # agent-influenced, and none of it can route through sandboxed_spawn_argv,
         # because the engine's whole job is to build the NEXT gateway install
@@ -518,6 +526,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # created; the sole input is the operator-typed app name.
         "cli_commands_app.py::_register_app_crons_to_scheduler",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving the shared ``_remove_member_leftovers``
+        # teardown from the loop-less ``kirocrew agent delete``. No child process is
+        # created here; the only input is the operator-typed agent name. The
+        # worktree step's git calls run inside ``crewmate_worktree``'s own runner.
+        "cli_commands_agent.py::_remove_deleted_agent_leftovers",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
         # login`` / ``kas logout`` verbs. No child process is created: the
@@ -535,6 +549,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # own credential store, and every failure is folded into its result. Same
         # classification as ``cli_doctor.py::_doctor`` above.
         "cli_doctor_parts/host_probes.py::_discord_intent_grants",
+        # ``<kiro-cli> --version`` with a fixed argv and a 5 s timeout, read-only,
+        # for the Connectivity row. The binary is the one ``resolve_kiro_cli``
+        # found; no agent-influenced argument, cwd or env reaches it. Split out
+        # of ``_doctor``; same classification as ``host_probes.py::_report_node``.
+        "cli_doctor.py::_kiro_cli_version_row",
         "cli_doctor_parts/mcp_sections.py::_doctor_mcp_tools",
         # ``node -v`` with a fixed argv and a 5 s timeout, read-only, to judge the
         # installed Node against ``MIN_NODE_VERSION``. Split out of ``_doctor``

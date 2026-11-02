@@ -1544,6 +1544,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``apply_remote_report``, on an item already bound to that crew. It takes
         # no supplied identity; ``create_bound`` binds the caller's own item.
         "dashboard/handlers/remote_ingest.py",
+        # Its background puller (rfc-conductor-remote-dispatch open question 1). It
+        # takes no identity and writes nothing itself: it lists the boards holding an
+        # open crew-bound item (``boards_with_open_remote``) and hands each to
+        # ``remote_ingest.ingest_board``, which files exactly as on a read.
+        "dashboard/handlers/remote_puller.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

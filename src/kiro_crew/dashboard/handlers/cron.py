@@ -74,6 +74,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_one_shot_at,
         _schema_field,
         _unknown_chat_folder_response,
+        _with_schedule_warnings,
         api_cron_batch_delete,
         api_cron_delete,
         api_cron_enable,
@@ -158,6 +159,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         CronStoreBusy,
         CronStoreUnreadable,
         is_valid_timezone,
+        never_fires_warning,
         parse_time_string,
     )
     from kiro_crew.cron_script import (  # noqa: F401

@@ -51,6 +51,7 @@ import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from
 import { useSidePanelSize } from './useSidePanelSize'
 import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 // The panel's parts live in sibling owners that never import this module:
 // `SidePanelAddMenu.tsx` (the + menu's catalog and gates), `SidePanelTabChip.tsx`
@@ -720,7 +721,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2 -mb-px"
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-6 list-none m-0 p-0 px-2 -mb-px"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
@@ -1098,6 +1099,7 @@ export default function SidePanel({
                 <FilesHomePanel
                   active={isActive && !panelHidden}
                   projectDir={projectDir ?? ''}
+                  title={viewTitles?.files}
                   // A diff open from the Changed segment opens the working-tree
                   // diff as its OWN tab (coexisting with any plain file tab for
                   // the same path, #9695) when the host supplies the opener;
@@ -1168,7 +1170,7 @@ export default function SidePanel({
                 onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
-                onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
+                onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 // A folder opened from a file tab keeps that tab's origin chat.

@@ -126,6 +126,7 @@ from kiro_crew.messaging.turn_bracket import rollback_skill_bodies  # noqa: F401
 from kiro_crew.messaging.turn_bracket import stop_reason_landed  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import TurnBracket
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import settle_turn
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -1128,6 +1129,9 @@ class ChannelTurns:
                     # the successor's semaphore, which the next retry's reset would
                     # pop from under it.
                     _set_replay_gap(sessions, session_key, opened=True)
+                # The abandoned turn did not land: end its attempt now, so what it
+                # received inline is revoked and a replay runs as a new attempt.
+                settle_turn(sessions, session_key)
                 reset_ok = True
                 try:
                     await sessions.reset(session_key)

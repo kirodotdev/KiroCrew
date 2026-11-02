@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         hooks_config_from_config_dict,
         is_local_only,
         kiro_agents_dir,
+        ledger_of,
         live,
         log_probe_failure,
         logger,
@@ -368,6 +369,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.sessions.set_injection_probe(
         lambda key: self._cron_injecting.get(key, 0) > 0,
     )
+    # A turn's release settles the inline marks it received: confirmed if it
+    # landed, revoked otherwise, and the completions parked on it with them.
+    _ledger = ledger_of(self.sessions)
+    if _ledger is not None:
+        _ledger.on_released = self._settle_inline
 
     # Channel history buffer. data_home(), not config_dir(): this method is
     # async and config_dir() re-runs start-of-process maintenance (mkdir,

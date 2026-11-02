@@ -27,7 +27,7 @@ from kiro_crew.dashboard.chat import (
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
@@ -275,12 +275,11 @@ class TestLinkedSlotSessionKey:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Barrier: the racing request is observed parked on the held lock
+                # before the linked binding lands, so the switch must read it after.
+                await until_parked(slot._lock, timeout=30, describe=lambda: repr(task))
                 slot.linked_session_key = "cron:job-1"
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, timeout=30, what="model switch request")
             assert resp.status == 200
             assert slot.model == _MODEL_B
             probed = {c.args[0] for c in state.sessions.get_provider.call_args_list}
@@ -723,8 +722,7 @@ class TestLinkedSlotSessionKey:
 
         async def _blocked_warm(*_args, **_kwargs):
             entered_resolution.set()
-            # flake-ok: pre-existing unbounded wait inside the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_resolution.wait()
+            await await_until(release_resolution, timeout=30, what="test releases resolution")
 
         cfg = MagicMock()
         cfg.agents = {}

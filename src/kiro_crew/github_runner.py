@@ -128,6 +128,12 @@ WINDOWS_PROVIDER_EXECUTABLE_SUBDIRS = {
     "glab": ("GitLab CLI", "glab"),
     "az": (os.path.join("Microsoft SDKs", "Azure", "CLI2", "wbin"),),
 }
+# winget package ids for the Windows arm of the provider setup guidance; the
+# POSIX text says ``brew install <exe>`` where none of brew/apt runs.
+PROVIDER_WINGET_ID = {
+    "gh": "GitHub.cli",
+    "glab": "GLab.GLab",
+}
 WINDOWS_PROGRAM_ROOT_VARS = ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)")
 
 # Generic operator override for the gh binary, honored by every caller after
@@ -1126,9 +1132,13 @@ def resolve_gh(*, override_env: str = "", cache: bool = True) -> str:
 
     hint = override_env or GH_BIN_ENV
     detail = f" (last check: {last_error})" if last_error else ""
+    if sys.platform == "win32":
+        install = f"(`winget install --id {PROVIDER_WINGET_ID['gh']}`)"
+    else:
+        install = "(`brew install gh` or your distro's package manager)"
     raise SetupError(
         f"no usable `gh` CLI found on this host{detail} — install it "
-        "(`brew install gh` or your distro's package manager) and run "
+        f"{install} and run "
         f"`gh auth login`, or set {hint} to an absolute gh path",
         reason="executable_untrusted" if last_error else "executable_not_found",
     )

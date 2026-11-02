@@ -23,7 +23,7 @@ import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
 import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
-import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_SETTING_ID } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
@@ -1673,7 +1673,9 @@ export function AgentBackendTab() {
  */
 function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
   const [params] = useSearchParams()
-  const wanted = params.get('highlight') === `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`
+  const highlight = params.get('highlight')
+  // The chat's link sends the anchor; a Settings search hit sends its registry id.
+  const wanted = highlight === `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}` || highlight === KIRO_SIGN_IN_SETTING_ID
   const callback = useRef(onSignIn)
   callback.current = onSignIn
   useEffect(() => {

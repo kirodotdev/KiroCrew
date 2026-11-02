@@ -398,8 +398,12 @@ describe('McpTab needs_auth status', () => {
 
     await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
-    // The reason sits next to the button, so it does not read as a sign-out.
-    expect(screen.getByText(/No tools listed. Sign in again to check the sign-in/)).toBeInTheDocument()
+    // The reason sits next to the button, so it does not read as a sign-out,
+    // and it says the empty tools cell is this page's limit, not a broken install.
+    const hint = screen.getByText(/This page can't list this server's tools; calling one in chat is the real check/)
+    expect(hint).toHaveTextContent(/^Signed in\./)
+    expect(hint).toHaveTextContent(/Sign in again checks the sign-in/)
+    expect(screen.queryByText(/No tools listed/)).not.toBeInTheDocument()
   })
 
   it('offers Sign in again under an OAuth failure on a user-added server', async () => {

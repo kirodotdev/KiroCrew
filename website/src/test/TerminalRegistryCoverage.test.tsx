@@ -154,7 +154,8 @@ describe('terminalRegistry', () => {
       disposeTerminalConnection(id)
       unregisterTerminalWs(id)
     }
-    setTerminalEnabledFlag(false)
+    // RTL unmounts after this hook, so the flag's subscribers are still mounted: flip it inside act.
+    act(() => { setTerminalEnabledFlag(false) })
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
@@ -1298,18 +1299,20 @@ describe('terminalRegistry', () => {
         })
       }
       expect(result.current).toBe('disconnected')
-      retryTerminalConnection(id) // dials socket #11
+      act(() => { retryTerminalConnection(id) }) // dials socket #11
       const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
       latest.readyState = MockWebSocket.CLOSING
       const before = WS_INSTANCES.length
 
-      retryTerminalConnection(id)
+      act(() => { retryTerminalConnection(id) })
       // No competing dial while CLOSING.
       expect(WS_INSTANCES).toHaveLength(before)
 
       // The deferred close now fires; the reset budget redials on schedule.
-      latest.simulateClose()
-      vi.advanceTimersByTime(60_000)
+      act(() => {
+        latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      })
       expect(WS_INSTANCES.length).toBeGreaterThan(before)
     })
 

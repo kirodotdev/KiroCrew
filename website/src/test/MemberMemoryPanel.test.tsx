@@ -452,7 +452,8 @@ describe('private member memory lifecycle', () => {
     expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE)
     expect(api.memoryRetired).toHaveBeenCalledWith(MEMBER_STORE, expect.any(Number))
     const advanced = screen.getByText('Advanced memory analysis').closest('details')!
-    advanced.open = true
+    // happy-dom fires `toggle` synchronously from the `open` setter, into onToggle's setAdvanced.
+    act(() => { advanced.open = true })
     fireEvent(advanced, new Event('toggle'))
     await waitFor(() => expect(api.memoryCarve).toHaveBeenCalled())
     expect(api.memoryCarve).toHaveBeenCalledWith(expect.objectContaining({ store: MEMBER_STORE }))

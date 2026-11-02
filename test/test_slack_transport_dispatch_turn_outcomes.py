@@ -31,6 +31,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_EN
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import handler as _handler
 from kiro_crew.slack import transport_dispatch
+from kiro_crew.testing.wait import await_until
 
 
 class TestConversationLogAgentMetadata:
@@ -282,8 +283,12 @@ def _run_transport_titling(monkeypatch, *, restricted=False, conversation_log=No
         loop = asyncio.get_running_loop()
         pending = [t for t in list(_handler._background_tasks) if t.get_loop() is loop]
         if pending:
-            # flake-ok: drains this loop's auto-title tasks whose fakes answer at once; moved verbatim
-            await asyncio.gather(*pending, return_exceptions=True)
+            # The join is bounded, so a title task that never finishes fails
+            # this test by name.
+            await await_until(
+                asyncio.gather(*pending, return_exceptions=True),
+                what="this loop's auto-title tasks to finish",
+            )
 
     asyncio.run(_drive())
     return slack, sessions, provider

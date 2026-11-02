@@ -51,9 +51,12 @@ def _session_tools() -> tuple[Tool, ...]:
                 "separate workstream has a home of its own. The new session appears in "
                 "the user's sidebar like any other — they can read it, take it over and "
                 "close it — so use it to stand up a workstream alongside this one (watch a "
-                "build, grind a long refactor) rather than to hide work. It starts empty: "
-                "the person is the one who types the first message into it. Returns its "
-                "key; pass that as `target` to the other session tools. To open a session "
+                "build, grind a long refactor) rather than to hide work. Pass `message` "
+                "to start its first turn in this same call, attributed to you exactly "
+                "as a session_send would be; without it the session starts empty. "
+                "Returns its key and, with `message`, the delivery receipt; pass the "
+                "key as `target` to the other session tools. Never session_send to a "
+                "key this call has not returned yet. To open a session "
                 "that already CARRIES a transcript (splitting your own investigation into "
                 "several sessions), use session_fork instead."
             ),
@@ -143,6 +146,18 @@ def _session_tools() -> tuple[Tool, ...]:
                             "other session, including yours, are unchanged. Omit to follow "
                             "the agent's own default, else the global value. The person can "
                             "still change or reset it later."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "First message for the new session, delivered through "
+                            "session_send's own path (same authorization, size limit and "
+                            "'sent by' line), so its first turn starts on it. A message "
+                            "session_send would refuse is refused here before any session "
+                            "is opened. If the session opens but delivery fails, the reply "
+                            "still gives the key plus the delivery error; the session is "
+                            "kept, so you can session_send to it."
                         ),
                     },
                 },

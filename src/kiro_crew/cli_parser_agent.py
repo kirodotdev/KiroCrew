@@ -814,10 +814,7 @@ def register_agent_parser(sub: _Commands) -> None:
     )
     agent_update.add_argument(
         "--memory-store",
-        help=(
-            "Existing memory store identity (cannot be changed, except to 'default' "
-            "from a store name the config refuses)"
-        ),
+        help="Existing memory store identity (cannot be changed; any other value is refused)",
     )
     agent_update.add_argument(
         "--model",

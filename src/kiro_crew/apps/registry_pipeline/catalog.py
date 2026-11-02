@@ -1126,7 +1126,9 @@ def resolve_installed_trust_repository(
     New registry installs persist ``sourceUrl`` and are bound directly to that
     immutable install provenance.  Older installs predate that field, but retain
     the ``registry:<name>`` source marker; for those records, resolve the same
-    current authoritative row a legacy update would use.  A genuinely local or
+    current authoritative row a legacy update would use.  A marketplace install
+    (``source = "market:<ref>@<n>"``) binds to ``market:<ref>``, so a grant
+    recorded for local-folder code never covers it.  A genuinely local or
     self-registered app has neither form of registry provenance and remains a
     valid repository-less app.
 
@@ -1144,6 +1146,18 @@ def resolve_installed_trust_repository(
     storefront/grant path remains the only caller that may perform that blocking
     migration lookup, and already offloads it.
     """
+    # Imported here so the registry facade's star import gains no new names.
+    from kiro_crew.apps.market_source import is_market_source, market_trust_coordinate
+
+    source = app.get("source", "")
+    if is_market_source(source):
+        # A marketplace app binds its grant to its listing, never to a local
+        # folder: a non-empty coordinate is what keeps an ``apps_trusted_local``
+        # grant from covering it. A malformed marker is unresolved, so the
+        # grant path refuses instead of recording a local grant.
+        coordinate = market_trust_coordinate(source)
+        return bool(coordinate), coordinate
+
     source_url = app.get("sourceUrl", "")
     source_url = source_url if isinstance(source_url, str) else ""
     if _git_target_is_unsupported(source_url):
@@ -1152,7 +1166,6 @@ def resolve_installed_trust_repository(
     if repository:
         return True, repository
 
-    source = app.get("source", "")
     if not isinstance(source, str) or not is_registry_source(source):
         return True, ""
 

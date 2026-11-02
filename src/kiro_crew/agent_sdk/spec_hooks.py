@@ -610,7 +610,8 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     """Whether a session on *provider* runs none of its agent spec's ``hooks``.
 
     True where the backend's mirror rules the hooks concern ``no-channel`` or
-    ``withheld``: the harness is not sent the field, and Crew does not fire it.
+    ``withheld``, or where a ``broker-only`` backend (pi) has no mirror to send the
+    field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
     (``crew_fires_spec_hooks``), and for a backend with no ruling, about which
     nothing is established.

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from kiro_crew.acp.worker_pool import WorkerPool
@@ -57,6 +58,7 @@ from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    persist_step_usage_row,
     step_effort_kwargs,
     vet_step_spawn,
 )
@@ -201,7 +203,19 @@ class _WorkflowSessionWorker:
                 agent=self._agent,
                 cwd=self._cwd,
             )
+        # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms at 0),
+        # started right before the turn so session reuse is not charged to it.
+        _turn_t0 = time.monotonic()
         result = await _run_step(self._provider, prompt, timeout=timeout)
+        # Per-turn usage row on the warm pool's REAL key (wf-pool:…), through the
+        # same shared writer the cold path uses — surface/trigger "workflow".
+        await persist_step_usage_row(
+            slot_key=self._key,
+            model=self._model or "",
+            provider=self._provider,
+            agent=self._agent or "",
+            elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+        )
         if self._memory_scope is not None:
             await self._memory_scope.validate()
         self._is_new = False
@@ -457,7 +471,21 @@ def build_pooled_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
                 )
+            # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms
+            # at 0), started right before the turn so session setup is not
+            # charged to it.
+            _turn_t0 = time.monotonic()
             result = await _run_step(provider, prompt)
+            # Per-turn usage row on this overflow session's REAL key
+            # (wf-unpooled:… or the named session= key), through the same shared
+            # writer the cold and pooled paths use — surface/trigger "workflow".
+            await persist_step_usage_row(
+                slot_key=key,
+                model=opts.get("model") or default_model or "",
+                provider=provider,
+                agent=opts.get("agent") or default_agent or "",
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+            )
             if memory_scope is not None:
                 await memory_scope.validate()
             return result

@@ -114,7 +114,8 @@ def snapshot_stdout_fd() -> Optional[int]:
     Called once at ``run_mcp_stdio_loop`` entry. Returns the dup'd fd, or
     ``None`` when stdout is not fd-backed (pytest's captured stdout, an
     embedded host handing us a StringIO) -- in that case ``respond()`` falls
-    back to ``sys.stdout`` exactly as before.
+    back to ``sys.stdout`` exactly as before, and reports each frame unwritten,
+    since nothing then shows the client received it.
     """
     global _stdout_fd
     with _stdout_fd_lock:
@@ -170,10 +171,17 @@ def _write_all(fd: int, payload: bytes) -> int:
     return written
 
 
-def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
-    """Write a validated JSON-RPC response to stdout."""
+def respond(req_id: Any, result: Any, error: dict | None = None) -> bool:
+    """Write a validated JSON-RPC response to stdout.
+
+    True only once the whole frame is in the client's pipe (see
+    :func:`_write_frame`); False when there was nothing to write to (no id), the
+    write tore, the frame could only go to ``sys.stdout``, or the answer failed
+    validation and an "Internal error" frame went in its place, so nothing shows
+    the client holds this answer.
+    """
     if req_id is None:
-        return
+        return False
     resp: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
     if error:
         resp["error"] = error
@@ -182,12 +190,16 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
     try:
         resp = validate_jsonrpc_response(resp)
     except ValidationError:
-        resp = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32603, "message": "Internal error"},
-        }
-    _write_frame(resp, label=f"request {req_id}")
+        _write_frame(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32603, "message": "Internal error"},
+            },
+            label=f"request {req_id}",
+        )
+        return False  # the client holds an error, not this answer
+    return _write_frame(resp, label=f"request {req_id}")
 
 
 def notify(method: str, params: dict[str, Any]) -> None:
@@ -195,11 +207,16 @@ def notify(method: str, params: dict[str, Any]) -> None:
     _write_frame({"jsonrpc": "2.0", "method": method, "params": params}, label=method)
 
 
-def _write_frame(msg: dict[str, Any], *, label: str) -> None:
+def _write_frame(msg: dict[str, Any], *, label: str) -> bool:
     """Frame ``msg`` per the negotiated framing and write it to the client.
 
     ``label`` names the frame in the torn-write log line (a request id, or a
-    notification method).
+    notification method). True only once the whole frame went into the client's
+    pipe: the private descriptor captured before any tool ran. Every other
+    outcome is False. A torn write drops the frame; a frame that pipe refused,
+    or one written with no pipe captured, goes to whatever ``sys.stdout`` is
+    bound to now, and the stdout suppressor rebinds it to a devnull while a tool
+    runs, so that write is no evidence the client holds the frame.
     """
     body = json.dumps(msg)
     if _framing == "content-length":
@@ -223,7 +240,7 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> None:
         if fd is not None:
             try:
                 _write_all(fd, frame)
-                return
+                return True
             except OSError as exc:
                 # The dup'd fd is unusable (client pipe closed). Fall back to
                 # sys.stdout ONLY if nothing was written, so a genuinely broken
@@ -240,13 +257,16 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> None:
                         len(frame),
                         exc.__class__.__name__,
                     )
-                    return
+                    return False
+    # This write claims nothing reached the client: ``sys.stdout`` may be the
+    # suppressor's devnull, or a fd 1 a library dup2'd away from the client.
     if _framing == "content-length":
         sys.stdout.buffer.write(frame)
         sys.stdout.buffer.flush()
     else:
         sys.stdout.write(frame.decode("utf-8"))
         sys.stdout.flush()
+    return False
 
 
 def _read_message(stdin) -> dict[str, Any] | _Skipped | None:

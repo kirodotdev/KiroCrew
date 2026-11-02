@@ -57,7 +57,7 @@ import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { canOpenFileInEditor, openFileInEditor } from '../lib/electron'
-import { parentDir } from '../apps/file-explorer/deepLink'
+import { parentDir } from '../utils/parentDir'
 import { i18nT } from '../i18n/t'
 
 /** What the wrapped path is on disk. Directories cannot be "opened".

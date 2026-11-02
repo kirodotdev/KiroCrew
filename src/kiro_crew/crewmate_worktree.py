@@ -482,22 +482,25 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
     return removed, kept
 
 
-def remove_for_member(name: str, config) -> None:
+def remove_for_member(name: str, config) -> tuple[list[str], list[str]] | None:
     """Remove the worktrees of crewmate *name* (its record read from *config*). Best-effort.
 
     Called when the crewmate is deleted; never raises, so it cannot block that.
+    Returns ``(removed, kept)`` as :func:`remove_crewmate_worktrees` does, or
+    ``None`` when the worktrees could not be looked at at all.
     """
     from kiro_crew.config import loader
     from kiro_crew.members import member_slug
 
     record = getattr(config, "agents", {}).get(name)
     if record is None:
-        return
+        return [], []
     try:
         workspace = str(loader.workspace_dir_for(getattr(record, "workspace", "") or None))
-        _removed, kept = remove_crewmate_worktrees(workspace, member_slug(name, config))
+        removed, kept = remove_crewmate_worktrees(workspace, member_slug(name, config))
     except Exception:  # noqa: BLE001 - never blocks the crewmate's removal
         logger.warning("worktrees of %s were not removed", name, exc_info=True)
-        return
+        return None
     if kept:
         logger.warning("kept %d worktree(s) of %s: %s", len(kept), name, kept)
+    return removed, kept

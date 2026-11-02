@@ -176,6 +176,35 @@ describe('the behind band', () => {
   })
 })
 
+describe('a background re-read that fails', () => {
+  beforeEach(() => {
+    memberDashboard.mockReset()
+    listeners.length = 0
+  })
+
+  it('keeps the same page on screen under an error band; the next good read clears it', async () => {
+    // Removing the page here was a true reload: the error card replaced it, and the
+    // next good read built a brand-new frame.
+    memberDashboard.mockResolvedValue(answer(1))
+    const { container, queryByTestId, getByTestId, queryClient } = await mounted()
+    const frame = container.querySelector('iframe')
+
+    memberDashboard.mockRejectedValue(new Error('503 the gateway is restarting'))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['member-dashboard'] }) })
+    await waitFor(() => expect(getByTestId('crew-dashboard-read-error-band')).toBeTruthy())
+    expect(getByTestId('crew-dashboard-read-error').getAttribute('role')).toBe('alert')
+    expect(queryByTestId('crew-dashboard-error')).toBeNull()
+    expect(container.querySelector('iframe')).toBe(frame)
+
+    // Its Retry re-reads; a good read clears the band and keeps the same frame.
+    memberDashboard.mockResolvedValue(answer(2))
+    await act(async () => { getByTestId('crew-dashboard-read-error-retry').click() })
+    await waitFor(() => expect(queryByTestId('crew-dashboard-read-error-band')).toBeNull())
+    expect(queryByTestId('crew-dashboard-behind-band')).toBeNull()
+    expect(container.querySelector('iframe')).toBe(frame)
+  })
+})
+
 describe('a tab coming back to the front', () => {
   beforeEach(() => {
     memberDashboard.mockReset()

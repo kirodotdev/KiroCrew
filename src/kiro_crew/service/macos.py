@@ -482,10 +482,16 @@ def _domain_unavailable(res: subprocess.CompletedProcess[str]) -> bool:
     return res.returncode == 125 or "125: domain does not support" in text
 
 
-def uninstall() -> None:
-    """Boot out and remove the plist and the live-gateway launcher. Idempotent."""
+def uninstall() -> str | None:
+    """Boot out and remove the plist and the live-gateway launcher. Idempotent.
+
+    Returns the launchd domain that still holds the agent when no bootout was
+    accepted, else None, so the caller can report a teardown that did not stop
+    it. The files are removed either way.
+    """
+    accepted = False
     if PLIST_PATH.exists():
-        _bootout(wait=False)
+        accepted = _bootout(wait=False)
         PLIST_PATH.unlink()
     # Drop the launcher too: leaving it behind would make a later `status` look
     # like a partially installed service.
@@ -493,6 +499,22 @@ def uninstall() -> None:
         LIVE_PROGRAM.unlink()
     except OSError:
         pass
+    # An accepted bootout is asynchronous, so probing after it would race the
+    # job's exit. Without one (refused, never loaded, or no plist left by an
+    # earlier refused run) ask launchd directly.
+    return None if accepted else _loaded_domain()
+
+
+def _loaded_domain() -> str | None:
+    """The domain where ``launchctl print`` finds the agent, else None.
+
+    Unlike :func:`is_loaded` it does not read the plist, so it still sees a job
+    whose plist is gone, and only a definite answer (exit 0) counts as loaded.
+    """
+    for domain in _legacy_domains():
+        if _launchctl("print", f"{domain}/{LAUNCHD_LABEL}").returncode == 0:
+            return domain
+    return None
 
 
 def is_active() -> bool:

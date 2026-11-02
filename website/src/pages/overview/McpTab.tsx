@@ -4,7 +4,7 @@ import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, 
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { configuredAcpBackend, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
+import { configuredAcpBackend, kasChatOwnsMcpSignIn, mcpServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
@@ -527,6 +527,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     const active = configuredAcpBackend(harnessCfg)
     return harnessProbe.backends?.find(b => b.id === active)
   }, [harnessCfg, harnessProbe])
+  // Chats on KAS never read a sign-in made from this table (#24693); each row
+  // that offers one says so. Off while the config has not loaded.
+  const kasChatNote = kasChatOwnsMcpSignIn(harnessCfg)
 
   const pendingCount = useMemo(() => {
     return servers.reduce((count, s) => {
@@ -1085,7 +1088,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           scopes). Signing in again is the remedy the row can offer. */}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
-                          <McpRowSignIn target={signInTarget} serverName={s.name} again />
+                          <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote} />
                           <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_hint')}</span>
                         </span>
                       )}
@@ -1106,7 +1109,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
                     signInTarget ? (
-                      <McpRowSignIn target={signInTarget} serverName={s.name} />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={kasChatNote} />
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans
@@ -1116,12 +1119,16 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       </span>
                     )
                   ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length ? (
-                    /* A held grant the probe cannot verify. The control checks it
-                       first and asks for consent only when it no longer works, and
-                       the line beside it says so: a bare button on a row that reads
-                       Signed in looks like it would undo the sign-in. */
+                    /* A held grant the probe cannot verify. The probe never uses the
+                       session's grant, so it cannot list this server's tools; the
+                       line says so, plus that a tool call in chat is the real check,
+                       so an empty tools cell does not read as a broken install. The
+                       control checks the grant first and asks for consent only when
+                       it no longer works, and the line says that too: a bare button
+                       on a row that reads Signed in looks like it would undo the
+                       sign-in. */
                     <div className="flex flex-col items-start gap-1">
-                      <McpRowSignIn target={signInTarget} serverName={s.name} again />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote} />
                       <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_no_tools_hint')}</span>
                     </div>
                   ) : s.tools?.length ? (<div>

@@ -12,7 +12,8 @@ unreadable cron store aside.
 Orchestrator fields read: ``_cfg``, ``_no_crons``, ``_running_script_ids``,
 ``ctx_builder``, ``dashboard_state``, ``sessions``.
 Orchestrator fields written: ``_cron_armed``, ``_cron_quarantine``,
-``_cron_reconciled``, ``cron_svc``.
+``_cron_reconciled``, ``_cron_runs_holding`` (a message run's task, from before its
+first acquire to its end), ``cron_svc``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -20,7 +21,7 @@ see :mod:`kiro_crew.slack.gateway_runtime`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     import asyncio
@@ -238,7 +239,26 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
             dispatch = self._cron_run_single(job, cap, retry=_cron_callback)
         from kiro_crew.shared_crew.admission_entry import admitted_cron_dispatch
 
-        return await admitted_cron_dispatch(job, dispatch)
+        return await admitted_cron_dispatch(job, _held(dispatch))
+
+    async def _held(dispatch: Any) -> Any:
+        # ── The run's own holding ──
+        # The task awaiting this is the cron run from before its first acquire
+        # to its end, so a permit it holds is the run's own from the moment the
+        # claim sets the session's turn_owner. The idle cleanup after a last
+        # sub-agent (_reset_cron_parent_when_idle) reads that holder and leaves
+        # a session this task holds to the run's finalizer. The outermost frame
+        # owns the entry: a retry re-enters _cron_callback in the same task and
+        # must not drop it when its own frame returns.
+        run_task = asyncio.current_task()
+        owned = run_task if run_task not in self._cron_runs_holding else None
+        if owned is not None:
+            self._cron_runs_holding.add(owned)
+        try:
+            return await dispatch
+        finally:
+            if owned is not None:
+                self._cron_runs_holding.discard(owned)
 
     self._cron_reconciled = False
     self._cron_armed = False

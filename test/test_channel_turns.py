@@ -1253,6 +1253,23 @@ class TestCompactionRecovery:
         assert recorder.surfaced == 0 and sessions.count("set_channel") == 1
         assert outcome.is_new is False
 
+    def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self) -> None:
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessions):
+            def settle_turn(self, key: str) -> None:
+                self.ledger.append(("settle_turn", key))
+
+        first = ScriptedProvider(_abandoned(), transient=True, name="first")
+        sessions = _Settling(first, ScriptedProvider(answer("the reply"), name="second"))
+
+        _answer(_turns(sessions))
+
+        names = sessions.names()
+        assert names.count("settle_turn") == 1
+        assert names.index("settle_turn") < names.index("reset")
+
     def test_identity_is_published_before_every_attempts_build(self) -> None:
         sessions = FakeSessions(
             ScriptedProvider(_abandoned(), transient=True), ScriptedProvider(answer())

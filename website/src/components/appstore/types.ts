@@ -179,6 +179,8 @@ export type InstalledApp = {
     iconPathDark?: string
     openCommand?: string
     hidden?: boolean
+    /** The app's own listing copy per locale (`l10n` in app.json); see `appL10nText`. */
+    l10n?: unknown
   }
 }
 

@@ -886,7 +886,7 @@ async def _bang_project(
             reply_ts,
         )
         return ""
-    resolved = os.path.realpath(os.path.expanduser(raw_path))
+    resolved = await asyncio.to_thread(os.path.realpath, os.path.expanduser(raw_path))
     # Checked first, so no record below ever carries an over-limit path: the maps keep
     # a value only within their per-value limit (a Windows long path can pass it).
     too_long = thread_override_slots.setter_refusal("project", resolved)
@@ -914,7 +914,7 @@ async def _bang_project(
             channel, "Cannot use sensitive path as project directory.", reply_ts
         )
         return ""
-    if not os.path.isdir(resolved):
+    if not await asyncio.to_thread(os.path.isdir, resolved):
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",

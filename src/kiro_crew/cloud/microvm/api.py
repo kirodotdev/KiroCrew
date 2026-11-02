@@ -911,15 +911,25 @@ def image_version_status(
 def staging_dir(prefix: str) -> Iterator[Path]:
     """A private directory for a file the AWS CLI must read by name.
 
-    Cut under the ``aws-control-staging`` root, which every agent sandbox masks,
-    so a same-UID sandboxed agent cannot read a control secret or an activation
-    code while the call runs. A ``0600`` file in the shared temp directory does
-    not stop that, because the agent runs as the same user. The CLI child is
-    granted this one directory through ``visible_dirs``. Removed on exit.
-    """
-    from kiro_crew.apps.builtins.aws_control.backend.storage import pinned_staging
+    Cut by the app that provides the ``transfer_staging`` seam, under the
+    ``aws-control-staging`` root, which every agent sandbox masks, so a same-UID
+    sandboxed agent cannot read a control secret or an activation code while the
+    call runs. A ``0600`` file in the shared temp directory does not stop that,
+    because the agent runs as the same user. The CLI child is granted this one
+    directory through ``visible_dirs``. Removed on exit.
 
-    with pinned_staging(prefix) as (path, _fd):
+    Refused, with :class:`RuntimeError`, when no app provides the seam: falling back
+    to the shared temp directory would hand the secret to that same agent.
+    """
+    from kiro_crew.apps import seams
+
+    staging = seams.transfer_staging()
+    if staging is None:
+        raise RuntimeError(
+            "no sandbox-masked staging root is available, so no secret is written: "
+            "the app that provides the transfer_staging seam is not installed"
+        )
+    with staging.pinned_staging(prefix) as (path, _fd):
         yield Path(path)
 
 

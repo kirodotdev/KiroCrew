@@ -152,7 +152,7 @@ _PROMPT_AND_STOP_HOOKS = {
 _RUN_NOWHERE = "does not run an agent's hooks"
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI])
 def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     backend, agents_dir, notices
 ):
@@ -163,7 +163,7 @@ def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     assert "a1 has hooks on userPromptSubmit, stop." in notices[0]
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_PI])
 def test_the_run_nowhere_notice_needs_a_new_session_and_a_spec_with_hooks(
     backend, agents_dir, notices
 ):
@@ -176,7 +176,7 @@ def test_the_run_nowhere_notice_needs_a_new_session_and_a_spec_with_hooks(
 
 @pytest.mark.parametrize(
     "backend",
-    [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI],
+    [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE],
 )
 def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     backend, agents_dir, notices
@@ -184,6 +184,21 @@ def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     _write_spec(agents_dir, "a1", hooks=_PROMPT_AND_STOP_HOOKS)
     _prepare(_client(backend), "a1", is_new=True)
     assert not any(_RUN_NOWHERE in text for text in notices)
+
+
+def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
+    """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
+    assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
+    # The ruling follows the Crew-fires set: once pi joins it, the notice goes.
+    import kiro_crew.agent_sdk.backends as backends_mod
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
+
+    monkeypatch.setattr(
+        backends_mod,
+        "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS",
+        backends_mod.ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | {ACP_BACKEND_PI},
+    )
+    assert "hooks" not in ability_for(ACP_BACKEND_PI).withheld
 
 
 def test_an_unreadable_spec_renders_no_run_nowhere_notice(agents_dir, notices):

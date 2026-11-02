@@ -791,6 +791,7 @@ from kiro_crew.mcp_dashboard_references import (  # noqa: E402, F401
     _resolve_chat_slot_key,
     _resolve_chat_tag_column,
     _resolve_chat_tag_ids,
+    _resolve_existing_chat_folder_prefix,
     _walk_chat_folder_segments,
 )
 from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
@@ -805,6 +806,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _dispatch_cleanup,
     _dispatch_failed,
     _dispatch_outcome,
+    _first_message_line,
     _pending_approval_phrase,
     _RefusalCodes,
     _render_session_summary,

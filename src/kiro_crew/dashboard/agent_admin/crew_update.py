@@ -451,12 +451,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
-        # A binding is immutable in both directions -- a private store is never
-        # shared or rebound, and a live V1 binding is kept until the owner opts in
-        # -- with one exception: a V1 binding whose name no resolver composes
-        # (``unusable_legacy_binding``) may move to the global store. Nothing is
-        # protected on it: the name resolves no directory, so the member cannot
-        # run a turn on it, and the same name is what refused every repair.
+        # A binding is immutable in both directions: a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts
+        # in. Every changed value is refused, the global store included, and so
+        # is a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``). The CLI's ``agent update`` refuses the
+        # same way.
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {

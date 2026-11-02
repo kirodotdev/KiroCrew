@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         DISMISSAL_FAILED,
         MAX_ERROR_DETAIL_LEN,
         Any,
+        Iterable,
         Literal,
         ProcessHandle,
         SubagentDelivery,
@@ -298,6 +299,12 @@ def notify_injection_failed(
     self: SubagentManager, info: SubagentInfo, reason: str = "delivery timed out"
 ) -> None:
     return self._terminal.notify_injection_failed_impl(info, reason)
+
+
+def suppress_retired_delivery(
+    self: SubagentManager, info: SubagentInfo, members: Iterable[str] = ()
+) -> bool:
+    return self._terminal.suppress_retired_delivery_impl(info, members)
 
 
 def batch_members_pending(self: SubagentManager, batch_id: str) -> bool:

@@ -192,10 +192,10 @@ def _legacy_token(text: str) -> str | None:
 
 
 def test_token_tables_have_the_pinned_size() -> None:
-    # 3 transient-5xx tokens and 58 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 61
-    assert len(_frontend_families()) == 61
-    assert len(_legacy_entries()) == 63
+    # 3 transient-5xx tokens and 59 gateway tokens; a new row family moves both.
+    assert len(_backend_tokens()) == 62
+    assert len(_frontend_families()) == 62
+    assert len(_legacy_entries()) == 64
 
 
 def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
@@ -258,7 +258,7 @@ def test_every_tokenized_literal_site_is_recognised_by_its_legacy_pattern() -> N
     # English, so the frontend's LEGACY table must map each wording to the very
     # token the site writes today.
     sites = _tokenized_literal_sites()
-    assert len(sites) == 27
+    assert len(sites) == 29
     wrong = [
         (p, line, tok, _legacy_token(text))
         for p, line, tok, text in sites
@@ -323,7 +323,7 @@ def test_every_cancelled_replay_wording_has_its_own_token() -> None:
 def test_localized_copy_avoids_internal_vocabulary() -> None:
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
     copy = catalog["pages"]["chat"]["gatewayNotice"]
-    assert len(copy) == 60
+    assert len(copy) == 61
     for key, text in copy.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (key, text)

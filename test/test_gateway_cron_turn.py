@@ -320,6 +320,30 @@ async def test_a_raise_before_the_acquire_releases_nothing(fire: _Fire) -> None:
     assert fire.rearms() == [{"consumed": False, "landed": False, "compacted": False}]
     assert "release" not in fire.names()
     assert "reset" not in fire.names()
+    fire.svc.finish_session_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True], ids=["reset_now", "reset_deferred"])
+async def test_the_finally_marks_the_runs_key_finished_just_before_it_releases(
+    fire: _Fire, pending: bool
+) -> None:
+    """The run tells the cron service it is done with the key it registered
+    (``finish_session_key``) as it hands the session back, so the last sub-agent's
+    cleanup can retire a key whose reset this run deferred, even before the run's
+    claim is released."""
+    fire.pending = pending
+    fire.svc.register_active_session_key.side_effect = lambda *a: fire.calls.append(("register", a))
+    fire.svc.finish_session_key.side_effect = lambda *a: fire.calls.append(("finish", a))
+
+    await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.count("finish") == 1
+    assert names.index("finish") == names.index("release") - 1
+    registered = next(c[1] for c in fire.calls if not isinstance(c, str) and c[0] == "register")
+    finished = next(c[1] for c in fire.calls if not isinstance(c, str) and c[0] == "finish")
+    assert finished == registered, "the run marked a key other than the one it registered"
 
 
 @pytest.mark.asyncio

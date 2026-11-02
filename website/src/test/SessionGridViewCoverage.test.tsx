@@ -156,6 +156,7 @@ describe('SessionGridView — entry seeding', () => {
   it('splits the current session in place, session pane beside a fresh picker', async () => {
     seedApi([{ key: 'a', title: 'Alpha' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect(await screen.findByTestId('pane-a')).toBeTruthy()
     expect(pickers()).toHaveLength(1)
@@ -190,6 +191,7 @@ describe('SessionGridView — entry seeding', () => {
     })
     seedApi([{ key: 'a' }, { key: 'b' }, { key: 'c' }])
     renderGrid('a', { control: <button type="button" aria-label="toggle sessions" /> })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect((await screen.findByTestId('pane-a')).getAttribute('data-leading')).toBe('control')
     expect(screen.getByTestId('pane-b').getAttribute('data-leading')).toBe('none')
@@ -213,6 +215,7 @@ describe('SessionGridView — entry seeding', () => {
     seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-p'), leaf('l-a', 'a')] })
     seedApi([{ key: 'a' }])
     renderGrid('a', { inset: true })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-a')
     expect(screen.getByTestId('pane-a').getAttribute('data-leading')).toBe('none')
     const pickerHeader = onlyPicker().firstElementChild as HTMLElement
@@ -227,6 +230,7 @@ describe('SessionGridView — entry seeding', () => {
     seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-a', 'a'), leaf('l-b', 'b')] })
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
     const dimOf = (id: string) => screen.getByTestId(`pane-${id}`).querySelector('[data-pane-dim]') as HTMLElement
     expect(dimOf('a').dataset.paneDim).toBe('off')
@@ -247,6 +251,7 @@ describe('SessionGridView — entry seeding', () => {
     seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-a', 'a'), leaf('l-b', 'b')] })
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
     const dimOf = (id: string) => screen.getByTestId(`pane-${id}`).querySelector('[data-pane-dim]') as HTMLElement
     expect(dimOf('a').style.opacity).toBe('0')
@@ -278,6 +283,7 @@ describe('SessionGridView — entry seeding', () => {
     seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect(await screen.findByTestId('pane-a')).toBeTruthy()
     expect(screen.getByTestId('pane-b')).toBeTruthy()
@@ -397,6 +403,7 @@ describe('SessionGridView — healing a restored layout', () => {
     seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
     seedApi([{ key: 'a' }, { key: 'b' }])
     const { onCollapse, onClose } = renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     await waitFor(() => expect(vi.mocked(api).chatSlots).toHaveBeenCalled())
     expect(screen.getByTestId('pane-a')).toBeTruthy()
@@ -439,6 +446,7 @@ describe('SessionGridView — slot-focus intent signal', () => {
     seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     await waitFor(() => expect(vi.mocked(emitSlotFocused).mock.calls.at(-1)).toEqual(['a']))
   })
@@ -451,6 +459,7 @@ describe('SessionGridView — dictation key ownership', () => {
     seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
 
     fireEvent.click(screen.getByLabelText('focus a'))
@@ -486,6 +495,7 @@ describe('SessionGridView — leaf rendering', () => {
     )
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect(await screen.findByText('Terminal pane — coming in Phase 2')).toBeTruthy()
   })
@@ -497,6 +507,7 @@ describe('SessionGridView — leaf rendering', () => {
     )
     seedApi([{ key: 'a' }, { key: 'b' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     await screen.findByTestId('pane-a')
     expect(pickers()).toHaveLength(1)
@@ -523,6 +534,7 @@ describe('SessionGridView — per-pane file opener (#9921)', () => {
     seedApi([{ key: 'a' }, { key: 'b' }])
     const onFileOpen = vi.fn()
     renderGrid('a', undefined, onFileOpen)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
 
     fireEvent.click(screen.getByLabelText('open file b'))
@@ -535,6 +547,7 @@ describe('SessionGridView — per-pane file opener (#9921)', () => {
     seedApi([{ key: 'a' }, { key: 'b' }])
     const onFileOpen = vi.fn()
     renderGrid('a', undefined, onFileOpen)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
 
     fireEvent.click(screen.getByLabelText('open file a'))
@@ -547,6 +560,7 @@ describe('SessionGridView — per-pane file opener (#9921)', () => {
   it('renders a pane without an opener when the host supplies none', async () => {
     seedApi([{ key: 'a' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     const pane = await screen.findByTestId('pane-a')
     // The stub's open-file button is inert (onFileOpen undefined); clicking it
     // must not throw. Pinning that the pane still renders is enough.
@@ -911,6 +925,7 @@ describe('SessionGridView — picker controls', () => {
     seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b'), leaf('l-p')]))
     seedApi([{ key: 'a', title: 'Alpha' }, { key: 'b', title: 'Bravo' }])
     renderGrid('a')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     await screen.findByTestId('pane-b')
 
     fireEvent.click(screen.getByLabelText('focus b'))

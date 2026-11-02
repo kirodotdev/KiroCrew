@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import (
     CODE_BAD_DATA_FIELD,
@@ -1108,7 +1109,7 @@ def test_every_entry_a_real_turn_produces_validates():
         context_window=200_000,
     )
     emit.on_session_closed(SESSION, "reset")
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     assert emit.dropped_writes() == 0
     body = _entries()[1:]
     assert body, "the emitter wrote nothing"
@@ -1138,7 +1139,7 @@ def test_every_entry_a_real_turn_produces_validates():
 def test_an_oversize_body_and_its_chunk_group_validate():
     emit.on_session_opened(SESSION, agent="kirocrew", owner="default")
     emit.on_message_sent(SESSION, 1, step=1, text="x" * 200_000)
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     body = _entries()[1:]
     kinds = [entry["type"] for entry in body]
     assert "message/chunk" in kinds and "message/sent" in kinds
@@ -1177,7 +1178,7 @@ def test_the_failed_turn_closer_validates_without_credits_or_tokens():
     emit.on_session_opened(SESSION, agent="kirocrew", owner="default")
     emit.on_turn_started(SESSION, 1, "user")
     emit.on_turn_failed(SESSION, 1, error="AcpError", duration_ms=12, model="c", provider="kiro")
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     closer = [e for e in _entries()[1:] if e["type"] == "turn/completed"][-1]
     assert "credits" not in closer["data"] and "tokens" not in closer["data"]
     validate_data("session", "turn/completed", closer["data"])
@@ -1202,7 +1203,7 @@ def test_the_measured_turn_closer_validates_with_credits_and_no_tokens():
         model="c",
         provider="kiro",
     )
-    assert emit.flush(timeout=5.0)
+    assert_drained()
     closer = [e for e in _entries()[1:] if e["type"] == "turn/completed"][-1]
     assert closer["data"]["credits"] == 0.42
     assert "tokens" not in closer["data"]

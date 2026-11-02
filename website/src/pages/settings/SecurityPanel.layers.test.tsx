@@ -26,6 +26,16 @@ describe('SecurityPanel defense-in-depth layers', () => {
     }
   })
 
+  it('never calls the dashboard sign-in tokens single-use', async () => {
+    // A sign-in link can be opened again until its link window ends
+    // (dashboard-token-auth.md, "Link re-exchange is deliberately allowed").
+    renderWithProviders(<LayersSection />)
+    await screen.findByText(HEADING())
+    const description = i18nT(FEATURE_DESCRIPTION_KEY.token_auth)
+    expect(screen.getByText(description)).toBeInTheDocument()
+    expect(description).not.toMatch(/single[- ]use|one[- ]time/i)
+  })
+
   it('badges each row with the layer its feature belongs to', async () => {
     renderWithProviders(<LayersSection />)
     await screen.findByText(HEADING())

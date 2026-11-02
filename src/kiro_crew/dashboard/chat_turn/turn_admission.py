@@ -872,12 +872,18 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # session/new is on its send path: the first message's embedding starts now
     # and runs beside it. A resumable key restores its transcript instead and
     # builds no session-start memory.
-    if (
-        not _wait_if_busy
-        and not is_slash
-        and not state.sessions.resumable_hint(session_key)
-        and not _message_rewritten_before_build(slot, message)
-    ):
+    #
+    # A prewarmed session nobody has claimed yet is the other case that builds
+    # session-start memory. Its own registration mapped its id, so the resumable
+    # hint is set for it, but it restores nothing: the claim takes its FRESH
+    # observation. The reads then run beside the claim and the steps before the
+    # build (model settle, replay, store preparation).
+    _starts_fresh = (
+        state.sessions.fresh_start_unclaimed(session_key)
+        if _wait_if_busy
+        else not state.sessions.resumable_hint(session_key)
+    )
+    if _starts_fresh and not is_slash and not _message_rewritten_before_build(slot, message):
         await _prewarm_startup_query(
             state,
             slot,

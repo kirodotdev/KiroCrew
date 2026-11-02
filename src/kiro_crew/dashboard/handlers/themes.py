@@ -972,12 +972,26 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             # Acquire the per-slug install lock (same key _do_install stages/swaps
             # under) so we never rmtree mid-reinstall and race its stage→rename;
             # re-check is_dir() under the lock in case a reinstall just replaced it.
-            def _locked_remove() -> None:
+            # ``rmtree_force`` answers whether the folder is gone: a file another
+            # process holds open (a Windows lock) can survive it, and a partly
+            # removed pack reports an error instead of a false success that
+            # later lists as an invalid installed theme.
+            def _locked_remove() -> bool:
                 with _theme_install_lock(safe_slug):
-                    if dir_target.is_dir():
-                        shutil.rmtree(dir_target, ignore_errors=True)
+                    if not dir_target.is_dir():
+                        return True
+                    return rmtree_force(dir_target)
 
-            await loop.run_in_executor(discovery_executor(), _locked_remove)
+            removed = await loop.run_in_executor(discovery_executor(), _locked_remove)
+            if not removed:
+                return web.json_response(
+                    {
+                        "error": "the theme folder could not be fully removed; "
+                        "close any program using its files and try again",
+                        "code": "theme_delete_incomplete",
+                    },
+                    status=500,
+                )
             return web.json_response({"ok": True})
         return web.json_response({"error": "not found"}, status=404)
 

@@ -84,10 +84,96 @@ class TestMacOSControlPaths:
         assert ["launchctl", "bootout", f"gui/{uid}/{LAUNCHD_LABEL}"] in called
         assert sentinel.read_text() == "user data"
 
+    def test_uninstall_reports_the_domain_that_still_holds_the_agent(self, tmp_path, monkeypatch):
+        """A refused bootout leaves the agent loaded: uninstall names the
+        domain holding it (here user/<uid>, an SSH install) and still removes
+        the plist and the launcher."""
+        from kiro_crew.service import macos as svc_macos
+
+        plist_path = tmp_path / f"{LAUNCHD_LABEL}.plist"
+        plist_path.write_text("<plist/>")
+        launcher = tmp_path / "kirocrew-live"
+        launcher.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", launcher)
+        gui, user = svc_macos._legacy_domains()
+
+        def _print(argv, **_kw):
+            if argv[-1] == f"{user}/{LAUNCHD_LABEL}":
+                return MagicMock(returncode=0, stdout="state = running\n", stderr="")
+            return MagicMock(returncode=113, stdout="", stderr="Could not find service")
+
+        with (
+            patch.object(svc_macos, "_bootout", return_value=False),
+            patch("kiro_crew.service.macos.subprocess.run", side_effect=_print),
+        ):
+            assert svc_macos.uninstall() == user
+        assert not plist_path.exists()
+        assert not launcher.exists()
+
+    def test_uninstall_retry_still_reports_a_loaded_agent(self, tmp_path, monkeypatch):
+        """A refused run already removed the plist; running uninstall again
+        must not report success while launchd still holds the job."""
+        from kiro_crew.service import macos as svc_macos
+
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "kirocrew-live")
+        loaded = MagicMock(returncode=0, stdout="state = running\n", stderr="")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded):
+            assert svc_macos.uninstall() == svc_macos._legacy_domains()[0]
+
+    def test_uninstall_of_an_agent_never_loaded_succeeds(self, tmp_path, monkeypatch):
+        """False from _bootout also means nothing was loaded: that is a clean
+        uninstall, not a failure."""
+        from kiro_crew.service import macos as svc_macos
+
+        plist_path = tmp_path / f"{LAUNCHD_LABEL}.plist"
+        plist_path.write_text("<plist/>")
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "kirocrew-live")
+
+        absent = MagicMock(returncode=113, stdout="", stderr="Could not find service")
+        with (
+            patch.object(svc_macos, "_bootout", return_value=False),
+            patch("kiro_crew.service.macos.subprocess.run", return_value=absent),
+        ):
+            assert svc_macos.uninstall() is None
+        assert not plist_path.exists()
+
+    def test_uninstall_does_not_probe_after_an_accepted_bootout(self, tmp_path, monkeypatch):
+        """An accepted bootout is asynchronous: a probe right after it could
+        still see the leaving job, so a clean uninstall never asks."""
+        from kiro_crew.service import macos as svc_macos
+
+        plist_path = tmp_path / f"{LAUNCHD_LABEL}.plist"
+        plist_path.write_text("<plist/>")
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "kirocrew-live")
+        with (
+            patch.object(svc_macos, "_bootout", return_value=True),
+            patch("kiro_crew.service.macos.subprocess.run") as run,
+        ):
+            assert svc_macos.uninstall() is None
+        run.assert_not_called()
+
+    def test_uninstall_with_nothing_installed_only_asks_launchd(self, tmp_path, monkeypatch):
+        """Nothing installed: uninstall asks launchd, boots nothing out and
+        reports success."""
+        from kiro_crew.service import macos as svc_macos
+
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "kirocrew-live")
+        absent = MagicMock(returncode=113, stdout="", stderr="Could not find service")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=absent) as run:
+            assert svc_macos.uninstall() is None
+        verbs = [c.args[0][1] for c in run.call_args_list]
+        assert verbs and set(verbs) == {"print"}
+
     def test_uninstall_idempotent_when_plist_missing(self, tmp_path, monkeypatch):
         from kiro_crew.service import macos as svc_macos
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
+        monkeypatch.setattr(svc_macos, "_loaded_domain", lambda: None)
         with patch("kiro_crew.service.macos.subprocess.run") as run:
             svc_macos.uninstall()
         run.assert_not_called()

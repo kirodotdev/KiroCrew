@@ -1247,7 +1247,7 @@ describe('DevFleetPage restart handshake', () => {
       await waitFor(() => expect(screen.getByLabelText('Restart gateway')).toBeDisabled())
       expect(screen.getByText('Pull+Build').closest('button')).toBeDisabled()
     } finally {
-      releaseMakeLive?.()
+      await act(async () => { releaseMakeLive?.() })
     }
   }, 15000)
 

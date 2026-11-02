@@ -1200,6 +1200,11 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 if isinstance(value, str) and value:
                     row[field] = redact(value)
             redacted_local.append(row)
+        # Local rows only: a peer row is rebuilt by ``_clean`` from an allowlist
+        # without ``open``, so another gateway's tabs never rank as open here.
+        from kiro_crew.dashboard.handlers.sessions import _mark_open_sessions
+
+        _mark_open_sessions(redacted_local, state)
         sources.append(redacted_local)
     for iid, result in zip(connected, results[1:]):
         if isinstance(result, BaseException):

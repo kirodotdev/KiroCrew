@@ -3752,6 +3752,8 @@ Parameters:
 - `keep` (bool, optional): request guaranteed resumability on a dedicated process and extend retention; ordinary runs remain continuable best-effort during their result-retention window.
 - `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. Precedence: per-call value → `agent.role_efforts['subagent']` pin → provider default; `""`/absent changes nothing. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. Inherited by a continuation (`spawn_continue`, a `spawn_steer` follow-up): a continuation is another turn of the same run, so it keeps the model the caller pinned at spawn (`SubagentInfo.model`; a model the run took from `agent.role_models['subagent']` or a `model.route` tier is not a pin and resolves again) and the run's effort. Effort follows the model, as in [rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md) rule 4: when `spawn_continue` names a model, the run's effort is not carried and the effort resolves for that model (role pin, else default). After a gateway restart both come from the run's `state.json`: `pinned_model` and `reasoning_effort`; a record written before they were recorded has neither and requests neither. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the selected member's own model pin, the provider template's pin, and the global fallback) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines. When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. When nothing is pinned (the model resolves to `auto`), no model can be named at accept time on any backend: the factory carries the level unkeyed and the provider binds it at start to the model the backend reports serving (`AcpProvider._bind_unbound_effort`), and an unpinned kiro-cli serves its own `chat.defaultModel` when one is set and `auto` only when none is. So the response carries neither verdict but a third field, `effort_pending`, saying the level is bound at start and applied only if that model takes effort; the tool renders it as a neutral `ℹ` line with no `✓` and neither verdict word, and the provider logs the level as not applied when the served model takes none. For a requested effort whose selection resolves, exactly one of `effort_dropped`, `effort_applied` and `effort_pending` is set. A per-spawn `backend` keeps its own rules above that: one with no effort channel still reports the drop, and one that advertises its own levels still carries none of the three. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. A `tasks[]` object entry may override it for one task (see `tasks` above).
 - `backend` (str, optional): the agent harness the run starts on, spelled as a governance rule spells it (`kiro`, `claude`, `codex`, ...), batch-wide like `model`; a `tasks[]` object entry may override it for one task. `/api/spawn` maps the name to the backend id (`kiro` → `""`) and refuses one this gateway cannot start -- unknown, not in `selectable_backend_values()`, or reported `missing` (or `restart_required`: installed after the gateway cached its absence) by `backend_install.probe_backend` (run off-loop; an `unknown` probe does not block) -- with 400 `unknown_backend`, `backend_not_installed` plus the `install_command`, or `backend_restart_required` and the names that can start, before the manager counts it, rather than letting the factory degrade it to Kiro. The id rides `SubagentInfo.backend` (`None` = the gateway default) through the stagger queue, the run record (`state.json` `backend`), the retry endpoint and `spawn_continue`, which inherits it from the live record or `state.json` because the conversation lives on that harness. A value rules out the shared runtime (the parent's process, on the parent's backend) and reaches the provider factory as `backend_override`, the first tier of `members.select_provider_backend` (override → member-DM route → configured default); the allocator skips the warm pool for it (`pool_decision = "bypass_backend_override"`), since a pooled child runs the default backend.
+
+  Spawn-time failover (opt-in, off by default; design: [rfc-acp-backend-failover](../../request-for-change/rfc-acp-backend-failover.md)) sits in front of this refusal. A backend is swapped only when BOTH hold: the operator set `agent.acp_failover.enabled`, AND the refusal's code is one of the block's `triggers`. In this phase those are `backend_not_installed` and `backend_restart_required` (`acp_failover.FAILOVER_TRIGGERS`); `usage_limit` and `auth` are refused as not yet active, and a transient kind such as `throttle` is refused because it is the same-backend retry ladder's job. When both hold and the requested name is in `chain`, `/api/spawn` walks the chain one hop at a time with the pure `acp_failover.next_failover_backend`: by index, never revisiting a member, at most `len(chain)` hops. Chain names are config spelling, read through `backend_from_stored` (`"kiro"` is Kiro). The first member that is in this spawn's fresh, governance-narrowed probe starts the run, so a member a ceiling has denied since the block was written is never probed or tried. An exhausted chain returns the SAME typed refusal, naming the members the walk tried in its `error` and in `failover_chain` (never the requested backend, and an empty list when nothing was tried, such as when the requested backend is the chain's last member); a disabled or invalid block, and an unknown backend name, never fail over. So a spawn never silently lands on Kiro unless `kiro` is a named member. Every hop is reported, because it moves the prompt and its context to another vendor's account and bill: the receipt carries `backend` (the name the run starts on) and `failover_from` (the name the caller asked for), `spawn_run` prints a line naming both, and `SubagentInfo.failover_from` keeps it on the run, where `spawn_status` and `spawn_list` show it. `SubagentInfo.backend` is the backend that ran, which is what a continuation, retry or reset reads, so a successor never re-runs the chain. Loading never raises on the block: `config.sections_agent_fields.normalize_acp_failover` drops a chain member the live selectable set excludes (an enterprise ceiling can narrow it after the block was written) and loads an invalid block as off, logging either. `config.json` keeps what the operator wrote, because `acp_failover` is one of `loader_builders._HARNESS_CHOICE_KEYS`, which a full-document save writes back from disk. The hard refusal is on the write path: `kirocrew config set agent.acp_failover` runs `sections_agent_fields.validate_acp_failover`, and the dashboard PATCH does not accept the key at all. Failover is a SELECTION layer only: it chooses a value the existing construction gate already validates, adds no second gate, and widens no governance.
 - `label` (str, optional): a short display name for the task, shown in place of the task text in the dashboard's task box (the subagent progress bar) and on the task's line in the tool's own result. Display only: the subagent receives the task text unchanged and nothing routes on the value. `spawn_label.normalize_spawn_label` holds it to one line of at most 80 characters (control characters become spaces, whitespace runs collapse, a longer value is cut), and `SubagentInfo` applies the same rule on construction, so a value reaching `/api/spawn` from another caller is bounded too. Batch-wide; a `tasks[]` object entry may set its own. A labelled row in the task box shows the start of the task text, muted, after the label, and keeps the whole task as its hover title. Label every member of a wave or none, so its rows read alike. Carried on `SubagentInfo.label` through the stagger queue and task-store recovery, and on the `subagent_spawn`, `subagent_done` and reconnect-snapshot frames (redacted like `task`). Absent means the task text names the row, as before.
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): which switchable context groups the subagent inherits, applied to every task in a batch spawn. All-on is byte-identical to the injection a normal session gets, so a caller that omits them changes nothing. `include_memory=false` drops preferences, projects, daily history, semantic and episodic memory, and prior-session provenance — the normal choice for fan-out whose task text is self-contained. `include_lessons=false` additionally drops the user's learned corrections and profile, so keep it on for any subagent that writes code, edits files, or runs git. `include_project=false` drops the docs pointer and the project-directory line. It also drops the injected steering block, but ONLY on the Claude Code backend: on the ACP/kiro backend `kiro-cli --agent` loads the agent's `resources` (including steering globs) itself, which Kiro Crew cannot suppress from here, so steering still reaches an ACP sub-agent regardless of this flag. The conduct group — critical output-format rules, date, agent identity, runtime, workspace identity, and the skills index — is never switchable, because a subagent without it cannot discover its own capabilities or format what it reports back. A subagent is told by name which groups were withheld (`[CONTEXT SCOPE]`) so it reports the gap rather than guessing. Resolved once at spawn, carried through the capacity-queue round-trip and `POST /api/spawn/{id}/retry` like `approval_mode`/`silent`/`keep`. `spawn_continue` does not take the flags but does **inherit** them from the run it continues: a continuation rebuilds session context (`get_or_create` reports `is_new=True` even when it restores the session via `session/load`), so without inheritance a scoped-down run would regain a group on its follow-up turn. See `memory-skills-hooks.md` § Switchable context groups for the section-by-section mapping.
 
@@ -3793,11 +3795,168 @@ call is answered with the ids of the children it already spawned, marked still
 running and not to be spawned again, rather than told to retry; their
 completion events still arrive, while a mid-submission abandonment also names
 the count of members not submitted or spawned, which may be resubmitted.
-Collection steps only build result text;
-`on_settled` marks finished children collected after the driver accepts that
-text, with the call's identity installed. Cancellation discards a collect result
-without suppressing those children's completion events. The audited wrapper
-writes the tool's terminal invocation row once.
+Collection steps only build result text. `on_settled` writes the tool's own SEL
+row once the driver accepts that text; cancellation discards a collect result,
+and the audited wrapper writes the tool's terminal invocation row once.
+
+**A returned result is delivered once, and a reply that never landed loses nothing.** A
+member the call returns inline still has its completion event, the other way its
+result reaches the parent, and every completion route skips an announce only
+when the parent's own call already returned every member it carries:
+
+- **The mark follows the written frame.** The stdio dispatcher answers the call,
+  then runs `DeferredTool.on_answered(written)`: True only when `respond()`
+  reports the whole frame written to the client's own pipe, the descriptor the
+  loop captured before any tool ran. A torn write, no id and a write that raises
+  are not; nor is a frame that pipe refused or one written with no pipe
+  captured, which `respond()` writes to `sys.stdout`, possibly the stdout
+  suppressor's devnull. It is never True for a pooled backend
+  (`install_liveness.is_pooled_backend`), whose frame lands in the MCP broker
+  and whose relay to the client confirms nothing (confirming it is #18743).
+  `spawn_sub_agents` POSTs `mark-collected` from that hook on True, for the
+  members whose whole block the reply carries (`_carried_in_reply`; a member
+  whose block ends past the `MAX_RESPONSE_LEN` cut is left out). A cancelled,
+  refused, abandoned, crashed, torn or brokered answer marks nothing.
+- **Only the caller's own children are marked.** `mark-collected` sets
+  `SubagentInfo._collected_inline` on each named record whose
+  `parent_session_key` is the authorised claim; an unknown id, another parent's
+  child and a parentless claim mark nothing. Only a mark carrying
+  `written: true` changes anything: a `kirocrew-core` that marks without it
+  (one from before the mark moved behind the write) flags no record and touches
+  no tab slot, so its members keep their completion events, a queued one
+  included. A dashboard-born parent's slot takes only the ids a written mark
+  flagged: they go on `_subagents_inline_collected`, the synthesis turn's
+  bookkeeping, and a completion of theirs already queued there is settled
+  (`_settle_collected_on_slot`). A tab that shows any other parent is settled
+  the same way, but only by the landed release of the turn that received them.
+- **A mark is pending until its turn releases, for every parent that is not
+  dashboard-born.** `written` means the reply's bytes reached kiro-cli's pipe,
+  not that the parent's model finished with them: a cron deadline, a stop, a
+  reap or a failure can still end the turn first. So for every parent but a
+  dashboard-born one (`parent_turns.settles_at_release`), whether or not a tab
+  shows it, `mark-collected` holds the mark, pending (`_inline_state`,
+  `_inline_token`), under an attempt of the parent's permit: the token
+  `(key, task, epoch)`, the canonical key, the task holding the permit and the
+  attempt's epoch (`SessionManager.turn_token`, `kiro_crew.parent_turns`). An
+  attempt opens at the parent tool's spawn (`POST /api/spawn`), its done read
+  (`GET /api/spawn/{id}`) or a landing note, and ends at `settle_turn` or
+  `release`. A mark is held only under the attempt that spawned the child, and
+  only while that attempt is open. The spawn names that attempt only when the
+  parent's own session posts it (internal auth, `X-Session-Key`), and only the
+  attempt that held the session's permit with its prompt in flight
+  (`SessionManager.turn_prompt_in_flight`) when the request arrived, read before
+  the handler awaits anything. It records it on the child
+  (`SubagentInfo._spawned_under`) only if that attempt still holds the permit
+  when the spawn returns. One `spawn_sub_agents` call is one spawning attempt:
+  `wave.py` sends one `call_id` per call (12 hex characters) as a
+  `POST /api/spawn` transport field, as it sends `batch_id`, and a later member
+  records the attempt only when it is the one the call's first member named
+  (`ParentTurnLedger.call_attempt`, which keeps the newest 1,024 calls). A
+  `call_id` that is not ASCII letters and digits, at most 32 characters, is a
+  `400` coded `invalid_call_id`; a body with none (an older client, the CLI,
+  `spawn_run`) is judged by its own holding. A member the admission gate queued
+  carries its attempt to the record the pump builds when it starts
+  (`SubagentManager.carry_spawn_attempt`). A done read under any other attempt,
+  or after the spawning attempt ended, holds nothing: the next turn, a sibling's
+  injection or a compaction holding the permit flags nothing, and the completion
+  takes normal delivery, a duplicate turn at worst and never a loss outside the
+  two windows the Residual below names. Each engine notes landing where it
+  already decides it
+  (`note_turn_landed`: cron single and sequence steps, `TurnBracket.landed` for
+  the `ChannelTurns` engines, Slack, the Slack transport loop, Telegram, the task
+  runner, the heartbeat, `_inject_with_retry` for a completion's own turn, from
+  its stop reason, and the dashboard runner for a turn that ended on `end_turn`,
+  on any tab: `_turn_context_usage`). Each turn the runner re-queues (an empty
+  response, a promise-only answer, a compaction, a leaked tool call, an infra
+  retry) takes its own claim, so its landing never confirms the first turn's
+  marks. `_inject_with_retry`'s in-claim retry settles the failed
+  attempt first (`SessionManager.settle_turn`), and so does its re-load after
+  the backend lost the session, so the retry's landing confirms only what the
+  retry received. The cron CONTINUE re-prompt after a post-token error does the
+  same (`cron_dispatch.py`, through the `on_resume` both cron engines pass), so
+  the re-prompt's landing confirms only what the re-prompt received.
+  `SessionManager.release` settles the holding it
+  ends before it does anything else, including on the orphaned release of a
+  session a reaper or reset popped: noted, the marks are confirmed; not noted,
+  they are revoked.
+- **No route waits inside `_on_done`.** The cron and channel routes ask
+  `_inline_verdict(mgr, sessions, carried)` before claiming the parent's
+  session and again after the claim, and the tab route asks it at entry and
+  again after waiting out the tab's turn. *Confirmed* (every member it carries,
+  `_WaveDigest.carried`, was returned in a turn that landed): acknowledged, with
+  no claim and no turn. *Pending* (every member's mark is still held under one
+  live holding): the completion is parked (`_park_inline`) and the route returns
+  at once, so `_ON_DONE_TIMEOUT` never resets a live parent on its behalf. Its
+  owed delivery marks are taken off the record and `_delivery_queued` stops the
+  run loop's `delivered` tombstone, as for a queued tab completion; a restart
+  before the settle therefore finds the folder untombstoned, `list_orphans()`
+  re-announces it, and the result pruner never deletes it. *Deliver*: anything
+  else, a revoked mark included. At the release, `_settle_inline` runs the
+  parked completion through its route again on a task and writes the owed
+  tombstones once that route delivered (`settle_queued_delivery`). A parked
+  completion whose parent was retired meanwhile takes no route (`_finish_parked`,
+  through `suppress_retired_delivery`). A parked tab
+  completion is routed from the tab the parent shows then, by the steps
+  `_subagent_done` takes for a fresh one (`_parent_tab`, `_route_completion`),
+  so a tab that closed meanwhile, or whose window cannot be read, hands it to the
+  parent's own route. Its held
+  wave siblings go back on the record first, so a tab turn or queued card that
+  takes it owes them to its consumption (`_defer_queued_delivery`). A re-routed
+  completion of a cron parent is counted in `_cron_injecting` before the cron
+  `finally` decides its reset, on the cron route and the tab route alike (the
+  tab's turn runs on the cron session); the tab route holds the count until the
+  tab's turn has delivered it, then runs the deferred reset
+  (`_reset_cron_parent_when_idle`). A dashboard-born tab keeps its own skip:
+  `_delivered_inline`, asked at the same two points.
+- **The cron route's cleanup never resets under a live turn.** The route's "last
+  subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
+  `reset(parent_key, skip_if_busy=True)`, which declines while a turn holds the
+  session. Who holds it decides the rest. Every branch that retires a key goes
+  through `CronService.retire_finished_session_key`, which leaves a key the job's
+  live run registered (a newer run, waiting for the permit or holding it) to that
+  run's own finalizer, unless that run is done with it. Each cron engine marks
+  the key it registered as it releases the session (`CronService.finish_session_key`,
+  in the single run's and each sequence step's `finally`), and a marked key is
+  retired here even while the run's claim is live: a sequence on a later step,
+  or a run between its `finally` and its claim release. Registering the key
+  again, by any run, takes the mark off:
+  - the reset happened, or no session was left: the job's active-session key is
+    retired;
+  - a cron run's own task holds the permit (`SessionManager.turn_holder` is in
+    `_cron_runs_holding`, which `_cron_callback` fills from before the run's
+    first acquire to its end): the session and the key are left to that run's
+    finalizer (`cron_turn.py`), which resets the session once nothing is
+    pending and retires the key;
+  - any other turn holds it, on a tab that shows the job or a person's own: that
+    turn keeps the session, left to the idle sweep, and the key is retired;
+  - a reset that raises leaves the key registered, so the reaper can still
+    target the session.
+
+  The channel route resets only an injection attempt that timed out, after it
+  claimed the session itself.
+- **Residual:** each of these plays one duplicate turn and never loses a
+  result: a mark processed after its spawning attempt ended; a member spawned
+  while no prompt of its turn was in flight; a queued member whose carried
+  attempt a gateway restart dropped, or that ends before it starts (its
+  synthetic terminal record names no attempt); a member with no `call_id`
+  whose own holding changed between members; and a returned result received by
+  a turn on an engine that does not note landing: a monitor nudge into a Slack
+  thread, a webhook `hook:` session, a channel agent (whose lifetime lease also
+  parks such a completion until the agent ends), side threads, workflow agents,
+  Issue Radar and the auto-improvement runner. Two windows can still lose a
+  result, and both need kiro-cli to stop waiting for a call the server is not
+  told to drop: a cut turn's `spawn_sub_agents` call whose first member's POST
+  reaches the gateway only after the successor's prompt is in flight (the MCP
+  server held the call's first step past the successor's whole start), when
+  the backend keeps that call running after `session/cancel`; and a call
+  kiro-cli gives up on without sending `notifications/cancelled` (the stdio
+  dispatcher drops a call it is told about), whose answer is still written into
+  the open pipe while the same turn goes on to end on `end_turn`, so that
+  turn's landing confirms a result it never read. A dashboard-born tab parent
+  still acknowledges a returned result while its own turn can be stopped, as on
+  main (#23495). Members are judged against Kiro Crew's own `MAX_RESPONSE_LEN`
+  cut; a harness with a smaller cap of its own (Claude Code saves an oversized
+  MCP result to a file) can drop a member a whole frame carried.
 
 Each sub-agent runs as its own Kiro Crew-owned ACP session (via
 `SubagentManager`), so its text and tool calls stream live to the Activity

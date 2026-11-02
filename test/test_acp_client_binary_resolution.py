@@ -20,6 +20,7 @@ from kiro_crew.acp.client import (
     _resolve_vendored_claude_acp,
     _vendored_acp_roots,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestVendoredClaudeAcp:
@@ -497,8 +498,7 @@ class TestResolveKiroBinEnvOverride:
         fake.write_bytes(b"#!/bin/sh\n# original\n")
         fake.chmod(0o755)
         mock_exec = AsyncMock()
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process; tracked for a de-flake pass
-        mock_exec.return_value.pid = 12345
+        mock_exec.return_value.pid = UNALLOCATABLE_PID
         with (
             patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}),
             patch("kiro_crew.session._track_pid"),
@@ -754,10 +754,9 @@ class TestMiseNodeInstallsDir:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _clean_env(self, monkeypatch):
-        monkeypatch.delenv("MISE_DATA_DIR", raising=False)
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    def _clean_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        _floor_monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
     def test_default_layout_is_unchanged(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod

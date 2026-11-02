@@ -674,7 +674,7 @@ def revouch_at_verified_admission(
     Callable only where the key is genuinely gate-verified; every other reader of
     the vouched map stays read-only.
     """
-    from kiro_crew.members import is_member_session_key, slug_from_dm_slot_key
+    from kiro_crew.members import _slot_part, is_member_session_key, slug_from_dm_slot_key
 
     if not verified_session_key:
         return False
@@ -684,15 +684,11 @@ def revouch_at_verified_admission(
         return _revouch_from_durable_record(verified_session_key, execution, config)
     # The member id the VERIFIED key names, taken from the key's own slug rather
     # than from any field the session writes. `is_member_session_key` accepts the
-    # `dashboard_`/`dashboard:` layer prefixes, so strip the same set before the
-    # canonical `slug_from_dm_slot_key`, which drops the `.memory-<store>` slot
-    # suffix so a key that carries it still reads the bare slug.
-    key = verified_session_key
-    for prefix in ("dashboard_", "dashboard:"):
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-            break
-    verified_member_id = slug_from_dm_slot_key(key)
+    # `dashboard_`/`dashboard:` layer prefixes, so strip them with the same
+    # `_slot_part` it reads before the canonical `slug_from_dm_slot_key`, which
+    # drops the `.memory-<store>` slot suffix so a key that carries it still reads
+    # the bare slug.
+    verified_member_id = slug_from_dm_slot_key(_slot_part(verified_session_key))
     if not verified_member_id or verified_member_id != execution.member_id:
         # The record claims a member the verified key does not name -- the forgery
         # shape. Vouch for nothing.

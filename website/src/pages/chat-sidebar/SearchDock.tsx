@@ -40,12 +40,26 @@ import type { SidebarScope } from './scope'
  * phone, where those options render inline rather than in a flyout — the
  * dormant-collapse thresholds. One component so the two lists cannot drift, and
  * so the duplicated class/style pair does not read as copy-paste.
+ *
+ * `role="radio"`, not the toggle-button `aria-pressed`: each list is one choice
+ * out of a mutually exclusive set, so a screen reader must hear "which one is in
+ * effect", not "this toggle is on". The caller wraps the chips in a
+ * `role="radiogroup"` (`DurationChipGroup`) so the set is one named group,
+ * matching the desktop submenu's `menuitemradio` grammar.
+ *
+ * A radio is operated as a group, not as N buttons: only one chip is a Tab stop
+ * (`tabbable` — the checked one, or the first when none is checked) and the
+ * group's arrow keys move between them. The caller decides `tabbable` because
+ * only it knows whether ANY chip is checked (a custom Recent window matches no
+ * preset).
  */
-function DurationChip({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
+function DurationChip({ label, selected, tabbable, onSelect }: { label: string; selected: boolean; tabbable: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
-      aria-pressed={selected}
+      role="radio"
+      aria-checked={selected}
+      tabIndex={tabbable ? 0 : -1}
       className="px-2 py-0.5 rounded-full text-[11px] cursor-pointer border transition-colors"
       style={selected
         ? { background: 'color-mix(in srgb, var(--ok) 12%, transparent)', color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 35%, transparent)' }
@@ -57,6 +71,45 @@ function DurationChip({ label, selected, onSelect }: { label: string; selected: 
     >
       {label}
     </button>
+  )
+}
+
+/** Arrow-key step through a radio group (WAI-ARIA radio pattern: Right/Down is
+ *  the next radio, Left/Up the previous, wrapping at either end). */
+const RADIO_KEY_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
+
+/**
+ * The `role="radiogroup"` around a run of `DurationChip`s, with the radio
+ * keyboard behaviour: an arrow key (or Home/End) moves focus to the adjacent
+ * chip AND selects it, as a native radio group does. The key is consumed
+ * (`stopPropagation`) so the host Radix menu does not also treat it as its own
+ * item-to-item arrow navigation and pull focus out of the group.
+ */
+function DurationChipGroup({ ariaLabel, ariaLabelledBy, className, children }: {
+  ariaLabel?: string
+  ariaLabelledBy?: string
+  className?: string
+  children: React.ReactNode
+}) {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const isEdge = e.key === 'Home' || e.key === 'End'
+    if (!isEdge && RADIO_KEY_STEP[e.key] === undefined) return
+    const radios = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+    if (radios.length === 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const current = radios.indexOf(document.activeElement as HTMLButtonElement)
+    const next = e.key === 'Home' ? 0
+      : e.key === 'End' ? radios.length - 1
+        : (Math.max(current, 0) + RADIO_KEY_STEP[e.key] + radios.length) % radios.length
+    radios[next].focus()
+    radios[next].click()
+  }
+  return (
+    // eslint-disable-next-line jsx-a11y/interactive-supports-focus -- a radiogroup is not itself a Tab stop; focus lives on its one tabbable radio (roving tabindex), and this handler only routes arrow keys between them
+    <div role="radiogroup" aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} className={className} onKeyDown={onKeyDown}>
+      {children}
+    </div>
   )
 }
 
@@ -278,16 +331,17 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         onMouseDown={e => e.stopPropagation()}
                         onKeyDown={e => e.stopPropagation()}
                       >
-                        <div className="flex flex-wrap gap-1 px-1 mb-2">
-                          {RECENT_WINDOW_PRESETS.map(preset => (
+                        <DurationChipGroup ariaLabel={i18nT(FILTER_LABEL_KEY.recent)} className="flex flex-wrap gap-1 px-1 mb-2">
+                          {RECENT_WINDOW_PRESETS.map((preset, i) => (
                             <DurationChip
                               key={preset.ms}
                               label={preset.label}
                               selected={recentWindowMs === preset.ms}
+                              tabbable={recentWindowMs === preset.ms || (i === 0 && !RECENT_WINDOW_PRESETS.some(p => p.ms === recentWindowMs))}
                               onSelect={() => selectRecentPreset(preset.ms)}
                             />
                           ))}
-                        </div>
+                        </DurationChipGroup>
                         <div className="px-1 text-[12px] text-muted">
                           <div className="mb-1">{i18nT('pages.chatSidebar.custom')}</div>
                           <div className="flex items-center gap-1.5">
@@ -677,20 +731,22 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         <DropdownMenuLabel
                           className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"
                           data-testid="stale-collapse-menu"
+                          id="stale-collapse-presets-label"
                         >
                           {staleRowBody}
                         </DropdownMenuLabel>
                         {staleCaption}
-                        <div className="flex flex-wrap gap-1 px-2 pb-1.5">
-                          {STALE_COLLAPSE_PRESETS_MS.map(ms => (
+                        <DurationChipGroup ariaLabelledBy="stale-collapse-presets-label" className="flex flex-wrap gap-1 px-2 pb-1.5">
+                          {STALE_COLLAPSE_PRESETS_MS.map((ms, i) => (
                             <DurationChip
                               key={ms}
                               label={staleLabel(ms)}
                               selected={staleCollapseMs === ms}
+                              tabbable={staleCollapseMs === ms || (i === 0 && !STALE_COLLAPSE_PRESETS_MS.includes(staleCollapseMs))}
                               onSelect={() => setStaleCollapseMs(ms)}
                             />
                           ))}
-                        </div>
+                        </DurationChipGroup>
                       </>
                     )
                   }
@@ -703,15 +759,27 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="min-w-[150px] max-w-[240px]">
                     {staleCaption}
-                    {STALE_COLLAPSE_PRESETS_MS.map(ms => (
-                      <DropdownMenuItem
-                        key={ms}
-                        onSelect={() => setStaleCollapseMs(ms)}
-                      >
-                        <span className="flex-1">{staleLabel(ms)}</span>
-                        {staleCollapseMs === ms && <Check size={14} className="text-accent shrink-0" />}
-                      </DropdownMenuItem>
-                    ))}
+                    {/* A switcher over mutually exclusive thresholds, so each row
+                        is a `menuitemradio` reporting `aria-checked` — a screen
+                        reader says WHICH threshold is in effect, which a plain
+                        item's check icon (kept, sighted-only) cannot convey. The
+                        write stays on each row's `onSelect`, not the group's
+                        `onValueChange`, so a re-pick of the already-active
+                        threshold still fires; the group's `value` is the ms
+                        preset serialized to a string (Radix radio values are
+                        strings). */}
+                    <DropdownMenuRadioGroup value={String(staleCollapseMs)}>
+                      {STALE_COLLAPSE_PRESETS_MS.map(ms => (
+                        <DropdownMenuRadioItem
+                          key={ms}
+                          value={String(ms)}
+                          onSelect={() => setStaleCollapseMs(ms)}
+                        >
+                          <span className="flex-1">{staleLabel(ms)}</span>
+                          {staleCollapseMs === ms && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                   )

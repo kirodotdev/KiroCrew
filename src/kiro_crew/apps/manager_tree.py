@@ -49,6 +49,10 @@ def _validate_source_path(source: Path) -> list[str]:
         errors.append(f"invalid {APP_MANIFEST_FILENAME}: {exc}")
         return errors
     errors.extend(manifest.validate(app_root=source))
+    # A malformed `l10n` locale was dropped at parse: listing copy never refuses an
+    # install, so the drop is reported here, the install path, and nowhere else.
+    for warning in manifest.l10n.warnings:
+        logger.warning("App %s: %s", manifest.name or source.name, warning)
     # `ui.overlays` replaces a host surface by naming an overlay component compiled
     # into the dashboard bundle. An installed app has no way to supply one -- there is
     # no per-overlay `entryPoint` the way `ui.pages` has -- so accepting the manifest

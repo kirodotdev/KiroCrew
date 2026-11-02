@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -49,6 +51,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _audit,
     _board_header,
     _board_lock,
+    _conductor_unit,
     _drain_before_cancelling,
     _entry_probe_with_baseline,
     _entry_with_baseline,
@@ -459,6 +462,14 @@ async def _ingest_item(
     if mgr is None or crew_state != "connected":
         await _mark_down(board, item.item_id, crew_state, "proxy_peer_not_connected")
         return
+    # The unit the board's copy is filed into, as for a local worker's report: the
+    # conductor's live unit, else its slot's newest one, so a pull with no live
+    # conductor turn (the background puller) still files. Resolved before any peer
+    # call, so a board with nowhere to file costs the crew nothing.
+    unit, unit_error = await _board_unit(state, board)
+    if unit_error is not None:
+        await _mark_error(board, item.item_id, unit_error)
+        return
     try:
         await routes.check_version(mgr, crew)
     except routes.CrewCallError as exc:
@@ -492,7 +503,6 @@ async def _ingest_item(
             "running": bool(row and row["running"]),
             "pending_approval": bool(row and row["pending_approval"]),
         }
-    unit, refusal = _acting_unit(state, board, "work_ledger_read.ingest", item.item_id)
     async with _board_lock(board):
         # Read under the lock, so two pulls never write over each other's record.
         record = await asyncio.to_thread(_stored, board, item.item_id)
@@ -500,20 +510,76 @@ async def _ingest_item(
         record.crew_down_since = None
         for name, value in observed.items():
             setattr(record, name, value)
+        # Whether this pull read the crew's roster: without it ``closed`` is the last
+        # known answer, not a fresh one, so the probe's person-wait hold must not
+        # rest on it (``remote_pull_fresh``).
+        record.roster_read = listed is not None
         if status == 404:
             # No such slot, or no item on it: nothing to ingest. The slot list
             # above answers whether the session is gone.
             record.error = "crew_work_item_not_found"
         elif not 200 <= status < 300 or not isinstance(payload, dict):
             record.error = "crew_peer_refused"
-        elif refusal is not None or unit is None:
-            record.error = _response_code(refusal) if refusal is not None else "crew_log_off"
+        elif _unrecorded_hold(record, payload):
+            # This snapshot's filing failed to reach the crew log moments ago: keep the
+            # error and wait out the window rather than audit the same failure again.
+            record.error = "crew_log_unrecorded"
         else:
             record.error = await _ingest_report_locked(
                 state, board, unit, item.item_id, crew, slot, payload
             )
+            failed = record.error == "crew_log_unrecorded"
+            record.unrecorded_key = _snapshot_key(payload) if failed else None
+            record.unrecorded_at = _now() if failed else None
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
+
+
+#: Seconds before a pull retries a peer stamp whose filing the crew log refused.
+UNRECORDED_RETRY_SECS = 600.0
+
+
+#: The peer item fields a snapshot's retry key covers: its stamp and every worker field.
+_SNAPSHOT_FIELDS = ("last_report_at", "status", "summary", "reason", "artifacts", "pr")
+
+
+def _snapshot_key(payload: dict[str, Any]) -> str | None:
+    """A short digest of the peer worker's latest snapshot, or ``None`` with no stamp.
+
+    Two reports in the same second share a stamp, so the stamp alone cannot tell a
+    changed snapshot from a repeat; the digest covers every worker field too.
+    """
+    peer = payload.get("work_item")
+    if not isinstance(peer, dict):
+        return None
+    stamp = peer.get("last_report_at")
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    fields = {name: peer.get(name) for name in _SNAPSHOT_FIELDS}
+    raw = json.dumps(fields, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _unrecorded_hold(record: work_ledger.RemoteState, payload: dict[str, Any]) -> bool:
+    """Whether this pull skips filing: the same peer snapshot failed to record within
+    :data:`UNRECORDED_RETRY_SECS`. A changed snapshot is always filed."""
+    key = _snapshot_key(payload)
+    if not key or key != record.unrecorded_key or not record.unrecorded_at:
+        return False
+    since = _stamp(record.unrecorded_at)
+    if since is None:
+        return False
+    age = (datetime.now(timezone.utc) - since).total_seconds()
+    return 0 <= age < UNRECORDED_RETRY_SECS
+
+
+async def _board_unit(state: "DashboardState", board: str) -> tuple[str, str | None]:
+    """``(unit, None)`` for the unit *board*'s copy of a report is filed into, else
+    ``("", code)``. No audit row: a pull is not a caller's write being refused."""
+    if not crew_log_emit.enabled():
+        return "", "crew_log_off"
+    unit = await asyncio.to_thread(_conductor_unit, state, board)
+    return (unit, None) if unit else ("", "crew_log_unit_unknown")
 
 
 #: A record for an item never pulled.

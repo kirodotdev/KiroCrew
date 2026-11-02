@@ -142,6 +142,8 @@ async def _reconcile_failed_tag_create(
         state._tags = durable.tags
         state._unparsed_tag_entries = durable.unparsed
         state._tags_authoritative = True
+        # The in-memory vocabulary mirrors the file it just read.
+        state._tags_load_failed = False
         committed = next((row for row in durable.tags if row.get("id") == tag_id), None)
         if committed is not None:
             logger.warning(
@@ -209,7 +211,7 @@ def create_tag_definition(
         "id": uuid.uuid4().hex[:12],
         "name": clean_name,
         "color": clean_color,
-        "order": len(state._tags),
+        "order": _next_order(state._tags),
         "status": bool(status),
     }
     state._tags.append(tag)
@@ -322,3 +324,13 @@ def _order_key(row: dict) -> int:
     if isinstance(value, float) and not math.isfinite(value):
         return 0
     return int(value)
+
+
+def _next_order(rows: list[dict]) -> int:
+    """The position that sorts a new tag or column after every existing row.
+
+    One past the highest stored ``order`` (0 for an empty list). The list
+    length is not that position: deletes leave gaps, so after removing two of
+    four rows the length equals a survivor's ``order`` and the new row ties it.
+    """
+    return max((_order_key(row) for row in rows), default=-1) + 1

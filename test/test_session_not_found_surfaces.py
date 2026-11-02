@@ -117,6 +117,28 @@ async def test_slack_lost_session_resets_and_replays_once():
 
 
 @pytest.mark.asyncio
+async def test_slack_lost_session_ends_the_lost_attempt_before_its_reset():
+    """The lost turn never landed, so its attempt ends before the reset and what
+    it received inline is revoked before the replay runs."""
+    from test_slack_handler import FakeSessionManager, MockSlackClient
+
+    from kiro_crew.slack.handler import handle_message
+
+    class _Settling(FakeSessionManager):
+        def settle_turn(self, key):
+            self.removed.append(f"settle:{key}")
+
+    provider = _ScriptedSlackProvider([[_lost()], _answer()])
+    sessions = _Settling(provider)
+
+    await handle_message(MockSlackClient(), sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+    assert provider.turns == 2
+    assert sessions.removed.count("settle:thread1") == 1
+    assert sessions.removed.index("settle:thread1") < sessions.removed.index("reset:thread1")
+
+
+@pytest.mark.asyncio
 async def test_slack_second_loss_ends_on_a_clear_error():
     from test_slack_handler import FakeSessionManager, MockSlackClient, _visible_texts
 

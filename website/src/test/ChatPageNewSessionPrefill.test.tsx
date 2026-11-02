@@ -276,7 +276,9 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
 
 
 describe('App SDK chat launch intent', () => {
-  function launch(options: { message: string; slotKey?: string; autoSend?: boolean; agent?: string }) {
+  function launch(options: {
+    message: string; slotKey?: string; autoSend?: boolean; agent?: string; memoryMode?: string; sessionFolder?: boolean
+  }) {
     ;(window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch = { ...options, ts: Date.now() }
   }
 
@@ -595,6 +597,42 @@ describe('App SDK chat launch intent', () => {
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     expect(createChatSlot.mock.calls[0]).toContain('example-agent')
     expect(sendChat).not.toHaveBeenCalled()
+  })
+
+  // `api.createChatSlot`'s positional arguments the launch shapes.
+  const CREATE_AGENT = 1, CREATE_MEMORY_MODE = 4, CREATE_SKIP_SESSION_FOLDER = 9
+
+  it('creates a new draft session with the launch memory mode and no session folder', async () => {
+    launch({ message: PROMPT, agent: 'example-agent', memoryMode: 'persistent', sessionFolder: false })
+    const store = await renderAt('/chat?new=1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    const call = createChatSlot.mock.calls[0]
+    expect(call[CREATE_AGENT]).toBe('example-agent')
+    expect(call[CREATE_MEMORY_MODE]).toBe('persistent')
+    expect(call[CREATE_SKIP_SESSION_FOLDER]).toBe(true)
+    // A session-shaping launch is a draft: the message waits for the user.
+    expect(sendChat).not.toHaveBeenCalled()
+    expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+  })
+
+  it('ignores an unknown memory mode and keeps the default', async () => {
+    launch({ message: PROMPT, autoSend: false, memoryMode: 'forever' })
+    const store = await renderAt('/chat?new=1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    expect(createChatSlot.mock.calls[0][CREATE_MEMORY_MODE]).not.toBe('forever')
+    expect(createChatSlot.mock.calls[0][CREATE_SKIP_SESSION_FOLDER]).toBe(false)
+  })
+
+  it('does not apply session-shaping options to a targeted launch', async () => {
+    launch({ message: PROMPT, slotKey: 'chat-other', memoryMode: 'incognito', sessionFolder: false })
+    const store = await renderAt('/chat?sid=chat-other', 'Target notes', 'chat-old')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-other'))
+    // Still the targeted auto-send path: the existing session keeps its mode.
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(createChatSlot).not.toHaveBeenCalled()
   })
 
   it.each([true, false])('activates another slot on a hot launch (autoSend=%s)', async (autoSend) => {

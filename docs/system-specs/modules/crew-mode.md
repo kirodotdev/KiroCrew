@@ -31,6 +31,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | Every conductor is Crew Mode: `conductor_agents` is the shipped conductor templates plus the configured one and the deprecated names that resolve to it; the catalog lists them as `conductor_agents` and names `crew_mode_agent`, and masks both for a non-owner | `crew_mode.conductor_agents`, `handlers/agent_catalog.py` |
 | A chat that turned Crew Mode on carries the stamp `crew_mode_agent` (the slot field, persisted with the slot's own metadata), so a root on a custom conductor absent from the config stays Crew Mode | `crew_mode.STAMP_FIELD`, `slot_persistence/metadata_codec.py` |
 | A **Crew Mode root** is a root session (nothing dispatched it) running a conductor as a template. Every session it dispatched, directly or through another, is its **crew member**: the slot list stamps `crew_mode_root: true` on the root and `crew_root: <root key>` on each member, following the persisted lineage past closed sessions, so a member whose root's tab closed after this gateway saw the root, or one reopened from History while its root is known, keeps its root. The known roots are in memory: a root still closed when the gateway starts is not remembered until it is reopened (the migration part reads closed roots from saved metadata) | `crew_mode.stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
+| A **mate thread** (slot `mode` `member`) is a root of its own kind, kept apart from Crew Mode: the same walk stamps `mate_root: <mate thread key>` and `mate_dispatched_by: <direct creator>` on each session it dispatched, directly or through another, stopping at the nearest root of either kind, and a mate thread this gateway saw holds its sessions after its tab closes. No row gains `crew_root` from it. Inert: no list or client reads the two fields yet ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), Design 1) | `crew_mode.stamp_rows`, `crew_mode.live_stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A Crew Mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so, `chat_folder_file_self` is a no-op | [session-control](session-control.md) § `session_create`'s folder |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
@@ -59,7 +60,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
 | `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
 | `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
-| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `trust/` and the identity it answers for a session |
+| `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `member-records/` and the identity it answers for a session |
 | `src/kiro_crew/members_parts/self_edit.py` | What a mate may change on its own record: cleaning, the update, its undo, the rename |
 | `src/kiro_crew/members_parts/prompt_layers.py` | The permanent rules and the self-maintained briefing |
 | `src/kiro_crew/members_parts/member_activity.py` | The activity log |
@@ -78,7 +79,7 @@ which restates what a member's DM session carries in its context.
 | `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A mate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
-| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return trigger, 30-minute away time from the in-memory last-on-screen time with a durable chat-history fallback, durable task-fingerprint claims, one ordinary mate message (a fixed quiet line, or one bounded background call over sectioned inputs from `warm_task_brief_inputs.py`), and stale-result suppression |
+| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return trigger, 30-minute away time from the in-memory last-on-screen time with a durable chat-history fallback, durable task-fingerprint claims, one ordinary mate message (a fixed quiet line, or one bounded background call over sectioned inputs from `warm_task_brief_inputs.py` with a bounded live PR read), and stale-result suppression |
 | `website/src/pages/chat/CrewmateMessage.tsx` | One mate message in its chat: the bubble alone, placed by its run position (no author line, no avatar gutter) |
 
 Crew creation reports `409 agent_exists` for both an existing name and a
@@ -2912,7 +2913,8 @@ and key-results compare-and-sets accept the scrubbed form the page was shown as
 keeps the stored text (`member_goals.keep_unscrubbed`), so saving one milestone
 never replaces another's real text with redaction placeholders. Deleting a mate removes its check-in schedules
 (`crew_removal._remove_goal_check_ins`) unless another live crew still derives
-the slug; the goal record stays, like the rules file.
+the slug; the goal record stays, like the rules file. Both deletes run it, the
+route and `kirocrew agent delete`, through `crew_removal._remove_member_leftovers`.
 
 Since such a mate has a goal and no description, the Profile card's About
 shows its first goal, marked **From the goal**, while the description is
@@ -3051,7 +3053,8 @@ tool and its `GET /api/members/{slug}/panel` read; no surface on this page draws
 it. Files is the standard SidePanel browser scoped
 to the workspace rule above, labelled **Workspace** on this page's strip (the
 Profile card's word for the same directory; `SidePanel.viewTitles` changes the
-title only, the tab id stays `files`). Dashboard and Files are the only
+title only, the tab id stays `files`). The browser's own header carries the same
+`viewTitles` word, so tab and header agree (#28031). Dashboard and Files are the only
 STANDING tabs. Side Chat remains available dynamically through selection Ask
 and the plus menu; it is not a standing entry — and the plus menu offers
 Terminal, Browser and app-contributed tabs, bound to the member's slot
@@ -3886,7 +3889,16 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   servers Crew launches (`mate_worker.conductor_mcp_servers`, the keys of
   `agent._MANAGED_MCP_SERVERS`), `includeMcpJson` is off, and no `tools` or
   `allowedTools` ref to any other server survives, so the user's own servers
-  reach the crewmate's worker only, through its file. Computer use
+  reach the crewmate's worker only, through its file. On top of that filter
+  it mounts the work ledger, `kirocrew-work`, which `build_agent_config()`
+  skips as an `opt_in` server (`service_agents._mount_work_ledger`, the entry
+  built by `managed_mcp._managed_opt_in_entry("mcp-work")` so it keeps
+  `"type": "registry"` and the `KIROCREW_HOME` pin): `@kirocrew-work` in
+  `tools` and the ledger conductor's grants
+  (`agent._LEDGER_CONDUCTOR_WORK_GRANTS`, `work_ledger_read` /
+  `work_ledger_record` among them) in `allowedTools`, through the governance
+  ceiling, so a withheld verb stays mounted and prompts. Every crewmate gets
+  it (`test/test_mate_work_ledger_mount.py`). Computer use
   (`@kirocrew-computer`) and the browser tool stay, and so does `cron_add`,
   scripted jobs included. A crewmate's
   scheduled AGENT turn does not run on the conductor at all: at every fire,
@@ -3926,8 +3938,39 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   member working protocol (`context_assembly.member._MEMBER_HOW_YOU_WORK_COMMON`)
   hand research and long work to a worker session for the same reason, and
   they, the operating-mode block (`operating_mode_block`) and the heartbeat
-  prompt all dispatch and END the turn rather than waiting, polling or arming a
-  monitor loop: the worker's report wakes the thread.
+  prompt all dispatch and END the turn rather than waiting or polling: for a
+  quick single task the worker's report wakes the thread, and no monitor loop is
+  armed. **Ledger-tracked work is the one exception**, and only where the
+  conductor's chat spec mounts `kirocrew-work` and grants `work_ledger_record`
+  after the governance ceiling
+  (`member_mate_tools.binding_has_ledger_tools`). There the tracking sentence
+  names `work_ledger_record` / `work_ledger_read` (`conductor.tracking_ledger`
+  in place of `conductor.tracking`), and the operating-mode block appends
+  `conductor.patrol`. That piece teaches the dispatch for work with more than one
+  item, or work the user asked to track. It opens by sending the crewmate to the
+  `goal-conductor` skill before planning such work, and to follow it for
+  dispatch, patrol, verdicts and worker debate, as the conductor's own charter
+  does. Then: record the goal, then per item
+  `work_ledger_record action=create`, `session_create`, `work_ledger_record
+  action=bind`, `session_send`, binding before the seed. It also teaches the
+  patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
+  its default (never `gate:false`), `interval_secs` within 300..900, and
+  `patrol_budget.py renew` when the budget line ends `10% or less left`. The
+  band and renew wording are copied from the conductor's `## Patrol`
+  (`agent_parts/spec_prompts.py`). A spec that does not mount and grant the
+  ledger keeps the text above unchanged, and no loop is taught. The mate
+  conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
+  skill scope) and the `dashboard` skill its prompt names only when its spec
+  passes the same check after the governance ceiling. That mapping is ADDED
+  to the trees the conductor inherits (`~/.kiro/skills` and a trusted
+  workspace `.kiro/skills`), never put in their place. The rule lives in one
+  function, `skill_scope.mate_conductor_scope`: `agent_skill_globs` returns
+  through it on every path whatever `inherit_defaults` its caller passes (the
+  session scope, the injection plan, the per-turn triggered-skill filter), and
+  KAS's `deny skill` rule (`acp/kas_skill_scope._spec_globs`) calls it too, so
+  the user's own skills stay offered on both harnesses; without it the spec
+  maps no skill and keeps the skills it inherits (`test_crewmate_prompts.py`,
+  `test_mate_conductor_agent.py`).
 - **The worker**, `kirocrew-mate-worker`, is what the conductor hands work to:
   its `session_create` opens the worker template on the crewmate's own
   workspace, store and member identity whatever `agent` it names, because the
@@ -3935,7 +3978,12 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   another crewmate keeps that crewmate's resolution, which refuses it
   (session-control.md, "What a created child inherits"). The worker's own
   unnamed children inherit the worker, and it has no request tool ("What the
-  worker lacks" below). Both specs are written from
+  worker lacks" below). It mounts `kirocrew-work` the same way as the
+  conductor, granting only the worker's verbs (`agent._WORKER_WORK_GRANTS`:
+  `work_brief`, `work_report`), so a worker bound to an item in its
+  crewmate's ledger can read its brief and report on it; it is a base server,
+  so a crewmate's file cannot replace its entry (a switch-off is still a
+  restriction, below). Both specs are written from
   `build_agent_config()` on every gateway start
   (`service_agents._install_mate_conductor_agent` /
   `_install_mate_worker_agent`) into `~/.kiro/mates/agents/`, beside the
@@ -4080,9 +4128,9 @@ things here and leaves every other git step to the worker's prompt
    repository's `aws.project_profiles` binding still applies in the worktree:
    the cwd is matched as the same path in the checkout, asked of git each time
    (`crewmate_worktree.source_path`; config.md, "Project AWS profiles").
-3. **It goes with the crewmate.** Deleting the crewmate
-   (`crew_removal.api_kirocrew_agent_delete`, `crewmate_worktree.remove_for_member`)
-   lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
+3. **It goes with the crewmate.** Deleting the crewmate, from the dashboard
+   or with `kirocrew agent delete` (`crew_removal._remove_member_leftovers`,
+   `crewmate_worktree.remove_for_member`) lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
    a worktree of its repository with `git worktree remove` (never `--force`).
    One with uncommitted changes, ignored files or a repository that configures a
    checkout filter is kept and logged; so is anything git does not register.
@@ -4914,6 +4962,10 @@ Crew Mode chat.
 | A PEER's crew members stay rows in the federated session list (`sessionSources.ts`): a local crew member leaves the list because its root's Crew panel lists it, but a peer's root opens in the crew window, which has no such panel, and the panel reads this gateway's slots and routes, so for a peer's crew member the list is the one way in. The rows keep their `crew_root` / `crew_mode_root` stamps for the marks | `website/src/pages/chat-sidebar/sessionSources.ts`, `website/src/hooks/useInstanceSessions.ts` |
 | What a hidden crew member (its root open) owes the person rides on its root. The Command Bar's Needs You lifts a Crew Mode root whose workers wait on a tool approval with the Approve pill and the count (`crewWaitingApprovals` over the FULL slot set, the count the fleet page's command center uses); the root's own approval, when it has one, reads as any session's. The sessions view still lists no crew member | `website/src/apps/command-bar/CommandBarOverlay.tsx`, `website/src/apps/command-bar/CommandBarOverlayRootRows.tsx` |
 | Crew panel data: a worker's group (`approval`, `working`, `with_conductor`, `waiting`, `done`), the root summary, the sub-dispatcher order, the Status view's milestone state, Done-when and Recap rules, and the steer receipt notice | `lib/crewWorkers.ts`, `pages/chat/command-center/UltraCrewPanel.tsx`, `lib/crewSteerNotice.ts`, `types/index.chat.ts` |
+| While a crew member is on screen, the Crew tab opens with a **Back to main chat** row (`CrewPanelBack`, above both views); it reads **Open main chat** while the root is closed, and then reopens the root from its saved transcript before opening it. Desktop keeps the side panel open on the root; a phone lands on the chat. A failed reopen shows the inline notice under the row (`commandCenter.worker_reopen_failed`, with the agent hand-off). The row takes its label and action from `useCrewBack`, the one place a Back comes from; the worker view's breadcrumb is plain text read through `useCrewRoot` and has no control | `components/crew/useCrewBack.ts`, `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/UltraCrewPanel.tsx`, `components/crew/CrewWorkerBreadcrumb.tsx` |
+| While one of a root's crew members is the active chat, the sidebar marks the root's row as its parent: class `session-crew-parent`, `data-crew-parent`, and a screen-reader line (`components.crewMode.parent_row_hint`). `ChatSidebar` derives `crewParent` from the active slot's `crew_root`; `rowView` sets `isCrewParent` only when no crew window covers the pane, and the mark never makes the root the active row | `pages/ChatSidebar.tsx`, `pages/chat-sidebar/rows.ts`, `pages/chat-sidebar/SessionRow.tsx`, `styles/crew-mode.css` |
+| The List view folds finished members (group `done`) under one **Finished · N** row, folded by default. The open or folded choice is kept per browser in localStorage (`CREW_FINISHED_OPEN_KEY`, `mc-crew-workers-finished-open`). The fold hides every finished row, the one on screen included; the Back row stays the way to the root | `pages/chat/command-center/UltraCrewPanel.tsx`, `pages/chat/command-center/CrewWorkerList.tsx` |
+| The List view shows a search box (`CrewWorkerSearch`) from `CREW_WORKER_SEARCH_MIN` (6) crew members up, or while a query is set. It matches a member's title and task line, case-insensitive after NFKC normalization, so accents still count (`searchCrewWorkers`), finished members included. The query is kept per root for the browser tab in sessionStorage (`mc-crew-workers-search:<root>`), so opening a match keeps the search. No match shows one status line (`crew-search-empty`). Esc clears a typed query; on an empty box Esc is left to the panel. While a query is set, finished matches show unfolded and a toggle does not change the stored fold; clearing the query returns the Finished row to the stored choice. The Status view has no search | `pages/chat/command-center/CrewWorkerList.tsx`, `pages/chat/command-center/UltraCrewPanel.tsx`, `lib/crewWorkers.ts` |
 | `withoutConductors(choices)` is the one filter a normal chat's agent picker and the Split View pane picker read their rows through: every conductor template left out, since the composer's Crew Mode switch is the way onto one (crewmates kept whatever their name). The part before wired both pickers through it with the rule inert; the part that added the switch turned it on in this one function. The agent chords (`agentCycleTarget`) skip every conductor whatever this filter does, so a chord never turns Crew Mode on by accident. `useAgents` keys both picker memos on the catalog's Crew Mode fields (`crewCatalogKey`), so a catalog read that changes only `agent.crew_mode_agent` re-filters the picker even when the roster is unchanged. A chat already on a conductor has no picker to mirror, so the chords do nothing there (the server refuses to move a Crew Mode root) | `website/src/lib/crewMode.ts`, `website/src/hooks/useAgents.ts` |
 | A crew member's pending tool approval is decided only on its conductor's approval card (`crewApprovalDecidableHere`); every other surface in `CREW_APPROVAL_SURFACES` (the crew member's own composer in the main pane or a Split View pane, the conductor side panel's Approvals, All Dashboards' Needs you) shows it as information with a way to that card; when the conductor is closed, that way reopens it from its saved transcript first, since its key is no live slot. A crew member's approval always alerts the person (`docs/decisions/2026-10-29-crew-member-approvals-notify.md`): while its conductor is open the chime, unread mark, bell note, banner and OS toast point at the conductor, under the crew member's name, and the note offers no Approve or Reject (`crewWorkerRoot`); the conductor's row shows the wait even while it runs, unless the conductor itself owes the person a decision (`crewWaitingApprovals`). With the conductor closed there is no card to show it, so it alerts like any chat's. A session that is no crew member keeps its usual controls everywhere | `lib/crewMode.ts`, `pages/chat/page/ComposerDockView.tsx`, `components/ChatPane.tsx`, `pages/chat/command-center/model.ts`, `pages/chat/command-center/AttentionCard.tsx`, `hooks/websocket/approvals.ts`, `hooks/websocket/chatStream.ts`, `components/notifications/NotificationFeed.tsx`, `pages/chat-sidebar/SessionRow.tsx` |
 | The chat page keeps TWO lists (`pages/chat/page/pageEnvironment.ts`): `chatPageSlots`, every chat-surface row with crew members included, which the page's active-slot rules read so a crew member opened from its root's Crew panel stays the active chat in the main pane; and `personChatPageSlots`, the same list through `crewModeView`, which the collapsed-sidebar flyout lists and the unread count counts (`surfaceUnreadKeys`). The global counts skip crew members the same way: the Sessions badge and the tab title (`selectUnreadByMode`) and the count relayed to the Instances hub (`relayedUnreadKeys`) leave out every crew member whose root is open (`crewMemberKeys`, the same rule as `crewModeView`), while its unread entry stays for its root's Crew panel. The sidebar component applies `crewModeView` at its own `slots` door, so no lane, the Broadcast dialog, the bulk model switch or any other reader of that collection sees a crew member; the Sessions page, Recents, the Command Bar, Send-to-session and Split View read `selectPersonSlots`. A crew member opened from its root's Crew panel is the active chat without a sidebar row; on a screen narrower than `CREW_WORKER_ROOMY_PX` the sessions list steps aside while it is open | `website/src/pages/ChatSidebar.tsx`, `website/src/pages/SessionsPage.tsx`, `commandPalette/providers/recentsProvider.ts`, `apps/command-bar/CommandBarOverlay.tsx`, `components/SessionGridView.tsx`, `pages/chat/page/sessionsDrawer.ts`, `store/dashboardSlice.ts`, `store/dashboard/unread.ts` |

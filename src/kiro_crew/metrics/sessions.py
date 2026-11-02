@@ -791,7 +791,19 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
             # writer and one generation, so a session registering mid-scan gets a
             # file of its own and never shares a name with anything here.
             with _crumb_io_lock:
-                key, started_at, pid, start_id = _read_crumb(path)
+                try:
+                    key, started_at, pid, start_id = _read_crumb(path)
+                except OSError as exc:
+                    # Present but unreadable right now (a sharing violation, an
+                    # ACL): the owner is undecidable, so the crumb stays for a
+                    # later boot to judge, as _owner_still_running's fail-closed
+                    # rule requires.
+                    logger.debug(
+                        "session crumb %s unreadable (%s); kept for a later boot",
+                        path.name,
+                        type(exc).__name__,
+                    )
+                    continue
                 if _owner_still_running(pid, start_id):
                     # A LIVE session, in this process or a sibling. Reaping it
                     # would both invent a crash and delete the evidence of the
@@ -845,11 +857,17 @@ def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
 def _read_crumb(path: Path) -> tuple[str, float | None, object, object]:
     """Return ``(session_key, started_at, pid, start_id)`` from *path*.
 
-    ``("", None, None, None)`` when the file is missing, unreadable or malformed.
+    ``("", None, None, None)`` when the file is missing or malformed. Raises
+    ``OSError`` when the file exists but cannot be read, so the caller can keep a
+    crumb whose owner it cannot judge instead of reaping it as malformed.
     ``pid`` / ``start_id`` are absent on crumbs written before ownership existed.
     """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return "", None, None, None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
     except Exception:
         return "", None, None, None
     if not isinstance(payload, dict):

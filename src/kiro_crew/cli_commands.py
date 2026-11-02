@@ -747,6 +747,7 @@ __all__ = sorted(
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.cli_commands_agent import (  # noqa: F401
+        _LEFTOVER_FAILED,
         _agent_list_label,
         _agent_list_model,
         _agent_model_or_exit,
@@ -754,6 +755,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_agent,
         _kiro_agent_or_exit,
         _memory_store_or_exit,
+        _remove_deleted_agent_leftovers,
     )
     from kiro_crew.cli_commands_app import (  # noqa: F401
         _SESSION_APPROVAL_CONSENT_REQUIRED,

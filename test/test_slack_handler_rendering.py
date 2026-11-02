@@ -473,6 +473,34 @@ class TestToSlackMrkdwnTruncation:
         assert to_slack_mrkdwn("hello world") == "hello world"
 
 
+class TestToSlackMrkdwnInlineCode:
+    """Slack shows inline code as written, so its markers are never rewritten."""
+
+    def test_bold_and_strike_markers_inside_inline_code_are_kept(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("call `f(**kwargs)` now") == "call `f(**kwargs)` now"
+        assert to_slack_mrkdwn("`a~~b~~c` and ~~gone~~") == "`a~~b~~c` and ~gone~"
+
+    def test_emphasis_around_a_code_span_still_converts(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("**a `b` c**") == "*a `b` c*"
+        assert to_slack_mrkdwn("~~a `x` b~~") == "~a `x` b~"
+
+    def test_a_backslash_inside_code_does_not_reach_past_the_span(self):
+        """A backslash is literal inside code, so `C:\\` closes on its own."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("Use `C:\\` then **bold** and `x`.")
+        assert out == "Use `C:\\` then *bold* and `x`."
+
+    def test_an_escaped_backtick_outside_code_opens_nothing(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("\\`a **b** `c`") == "\\`a *b* `c`"
+
+
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
 
@@ -491,6 +519,39 @@ class TestToSlackMrkdwnKeepTables:
         result = to_slack_mrkdwn(self.TABLE, keep_tables=True)
         assert "| Model | Cost |" in result
         assert "•" not in result
+
+    def test_a_lone_pipe_row_is_never_swallowed(self):
+        """A pipe line with no separator under it is prose, not a header."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("Legend:\n| a | b |\nend") == "Legend:\n| a | b |\nend"
+
+    def test_a_table_inside_a_code_fence_is_left_alone(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        src = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+        assert to_slack_mrkdwn(src) == src
+
+    def test_a_table_in_a_tilde_or_longer_fence_is_left_alone(self):
+        from kiro_crew.slack.format import _convert_tables
+
+        table = "| a | b |\n|---|---|\n| 1 | 2 |"
+        for src in (f"~~~\n{table}\n~~~", f"````\n```\n{table}\n````"):
+            assert _convert_tables(src) == src
+
+    def test_escaped_and_inline_code_pipes_stay_in_their_cell(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
+        assert escaped == "• *op:* a | b | *meaning:* or"
+        code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
+        assert code == "• *op:* `a|b` | *meaning:* or"
+
+    def test_an_empty_row_keeps_its_place(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
+        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
 
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
@@ -587,10 +648,9 @@ class TestMermaidSequenceArrows:
 
     @staticmethod
     def _seq(line: str) -> str:
-        from kiro_crew.slack.format import _mermaid_sequence
+        from kiro_crew.slack.format import _convert_mermaid
 
-        # _mermaid_sequence skips the first line ("sequenceDiagram")
-        return _mermaid_sequence("sequenceDiagram\n" + line)
+        return _convert_mermaid("```mermaid\nsequenceDiagram\n" + line + "\n```")
 
     def test_dashed_arrows_point_same_direction_as_solid(self):
         # All four arrow types describe A talking to B; none should point back at A.

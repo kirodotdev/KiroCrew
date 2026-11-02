@@ -23,9 +23,9 @@ chose, channel or sender id, or control text is ever an attribute.
 **Skill and app ids are exported only for what Kiro Crew ships.** An operator's
 own skill can be named after what they work on, so a name outside
 :data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. The same holds for apps: an
-app that is not one of :data:`OFFICIAL_APP_IDS` is ``private``. Both lists are
-spelled out in this module, so neither importing it nor labelling a value reads
-the filesystem.
+app that is not one of :data:`OFFICIAL_APP_IDS` (the shipped built-ins) is
+``private``. Both lists are in memory at import, so neither importing this module
+nor labelling a value reads the filesystem.
 
 **Recording never changes the result of what it measures.** Every function here
 swallows its own failures after a debug log, and each call site records only
@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import logging
 import re
+
+from kiro_crew.apps.builtins import BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +234,12 @@ def skill_label(name: object) -> str:
 # -- app.task.completed -------------------------------------------------------
 
 
-#: The official apps that report a unit of work, by their ``apps/builtins/``
-#: directory name. An app joins this list in the change that makes it report, so
-#: the list never names an app that sends nothing; a test holds every
-#: ``record_app_task`` call in the package to an id listed here.
-_OFFICIAL_APP_ID_LIST: tuple[str, ...] = ("papyrus",)
-
-#: Every official app id. Any other app reports :data:`APP_PRIVATE`.
-OFFICIAL_APP_IDS: frozenset[str] = frozenset(_OFFICIAL_APP_ID_LIST)
+#: Every official app id: the apps the package ships, by their ``apps/builtins/``
+#: directory name. Those names are public, so sending one discloses nothing an
+#: operator chose; any other app reports :data:`APP_PRIVATE`. Read from
+#: ``BUILTIN_NAMES`` rather than spelled out here, so this module names no app;
+#: a test holds every ``record_app_task`` call in the package to an id in it.
+OFFICIAL_APP_IDS: frozenset[str] = frozenset(BUILTIN_NAMES)
 
 APP_PRIVATE = "private"
 

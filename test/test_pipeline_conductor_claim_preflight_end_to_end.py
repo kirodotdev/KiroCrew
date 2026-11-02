@@ -1087,8 +1087,7 @@ class TestAgainstRealGit:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's own git-env pin, moved verbatim; no test in the test_pipeline_conductor_claim_preflight*.py modules calls monkeypatch.undo()
-    def _hermetic_git_for_the_script(self, monkeypatch):
+    def _hermetic_git_for_the_script(self, _floor_monkeypatch):
         """The SCRIPT's git inherits this process's environment, unlike the fixture's.
 
         ``_git`` below hands its spawns ``_fixture_git_env``; ``mod.git`` does not
@@ -1098,10 +1097,10 @@ class TestAgainstRealGit:
         questions are answered about the clone and nothing else.
         """
         for name in _GIT_LOCATION_VARS:
-            monkeypatch.delenv(name, raising=False)
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+            _floor_monkeypatch.delenv(name, raising=False)
+        _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        _floor_monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        _floor_monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
     @pytest.fixture(scope="module")
     def _clone_template(self, tmp_path_factory):

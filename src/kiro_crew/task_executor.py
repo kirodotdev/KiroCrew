@@ -56,6 +56,7 @@ from kiro_crew.messaging.dispatch import (
     rollback_skill_bodies,
 )
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.providers.base import (
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
@@ -986,6 +987,7 @@ async def execute_task(
             # completion, never gets here: the raises above hand those to the
             # retry ladder, and the finally re-arms.
             _turn_landed = True
+            note_turn_landed(sessions, session_key)
             # The ONE place the resume hint is cleared: an attempt completed
             # normally, so nothing it steered is left undone. See Task.resume_hint.
             task.resume_hint = ""
