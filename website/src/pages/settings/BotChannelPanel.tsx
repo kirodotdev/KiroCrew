@@ -10,6 +10,7 @@ import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
+import { parseWholeNumber } from '../../utils/wholeNumber'
 /** Config shape shared by every bot-token channel (Discord, Telegram, …). */
 export interface BotChannelConfigData {
   connected: boolean
@@ -469,8 +470,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     if (!draft) return
     setSaveError('')
     setThresholdError('')
-    const pct = parseInt(draft.soft_threshold_pct, 10)
-    if (!Number.isInteger(pct) || pct < 1 || pct > 100) {
+    const pct = parseWholeNumber(draft.soft_threshold_pct)
+    if (pct === null || pct < 1 || pct > 100) {
       setThresholdError(i18nT('pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between'))
       setTimeout(() => setThresholdError(''), 8000)
       return

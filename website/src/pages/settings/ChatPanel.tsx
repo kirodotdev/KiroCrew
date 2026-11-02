@@ -40,6 +40,7 @@ import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
 import { useModelsAuthRequired } from '../../providers/modelListHealth'
 import ErrorNotice from '../../components/ErrorNotice'
+import { parseWholeNumber } from '../../utils/wholeNumber'
 
 export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
@@ -855,9 +856,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             step={500}
             onChange={setLocalKeepChars}
             onBlur={() => {
-              const n = parseInt(localKeepChars, 10)
+              const n = parseWholeNumber(localKeepChars)
               if (
-                isNaN(n) ||
+                n === null ||
                 n < COMPLETION_KEEP_CHARS_MIN ||
                 n > COMPLETION_KEEP_CHARS_MAX
               ) {
