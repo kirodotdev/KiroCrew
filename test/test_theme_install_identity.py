@@ -258,11 +258,35 @@ class TestLegacyCustomPackContinuity:
             finally:
                 done.set()
 
-        lock = th_mod._theme_install_lock("custom")
+        real_lock_for = th_mod._theme_install_lock
+        reached = threading.Event()
+
+        class _SignalledLock:
+            """The real legacy lock, reporting when the install starts to wait for it."""
+
+            def __init__(self, inner: threading.Lock) -> None:
+                self._inner = inner
+
+            def __enter__(self) -> bool:
+                reached.set()
+                return self._inner.__enter__()
+
+            def __exit__(self, *exc: object) -> None:
+                self._inner.__exit__(*exc)
+
+        def _signalled_lock_for(slug: str) -> "threading.Lock | _SignalledLock":
+            real = real_lock_for(slug)
+            return _SignalledLock(real) if slug == "custom" else real
+
+        lock = real_lock_for("custom")
         assert lock.acquire(timeout=30.0), "the legacy install lock was not free within 30 s"
+        monkeypatch.setattr(th_mod, "_theme_install_lock", _signalled_lock_for)
         worker = threading.Thread(target=_install, daemon=True)
         worker.start()
         try:
+            # The install is at the legacy lock before the window starts, so the
+            # window below measures it blocked there, not still staging the source.
+            assert reached.wait(timeout=30.0), "the install never asked for the legacy lock"
             # Cannot reach its decision while the lock is held: the install
             # stays blocked for the whole 2 s window and reports nothing.
             assert not done.wait(timeout=2.0), "install finished while the legacy lock was held"
