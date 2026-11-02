@@ -90,7 +90,6 @@
   "src/test/MarkdownPanel.test.tsx",
   "src/test/MarkdownPanelCoverage.test.tsx",
   "src/test/MarkdownRenderer.mermaid.test.tsx",
-  "src/test/MarkdownRenderer.mermaidConfig.test.tsx",
   "src/test/McpAppFrame.test.tsx",
   "src/test/McpManagement.test.tsx",
   "src/test/McpRowSignIn.test.tsx",
