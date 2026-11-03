@@ -3219,6 +3219,7 @@
         "view_list": "평면 목록"
       },
       "preview": {
+        "detailsSummaryFallback": "세부 정보",
         "mermaidError": "잘못된 Mermaid 다이어그램 — 소스를 표시합니다."
       },
       "row": {

@@ -3307,6 +3307,7 @@
         "view_list": "Lista simples"
       },
       "preview": {
+        "detailsSummaryFallback": "Detalhes",
         "mermaidError": "Diagrama Mermaid inválido — mostrando o código-fonte."
       },
       "row": {

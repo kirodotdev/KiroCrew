@@ -3308,6 +3308,7 @@
         "view_list": "Flache Liste"
       },
       "preview": {
+        "detailsSummaryFallback": "Details",
         "mermaidError": "Ungültiges Mermaid-Diagramm — Quelltext wird angezeigt."
       },
       "row": {

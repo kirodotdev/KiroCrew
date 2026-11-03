@@ -3219,6 +3219,7 @@
         "view_list": "সরল তালিকা"
       },
       "preview": {
+        "detailsSummaryFallback": "বিস্তারিত",
         "mermaidError": "অবৈধ Mermaid ডায়াগ্রাম — সোর্স দেখানো হচ্ছে।"
       },
       "row": {

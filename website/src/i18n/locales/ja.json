@@ -3219,6 +3219,7 @@
         "view_list": "フラットリスト"
       },
       "preview": {
+        "detailsSummaryFallback": "詳細",
         "mermaidError": "無効な Mermaid 図 — ソースを表示しています。"
       },
       "row": {

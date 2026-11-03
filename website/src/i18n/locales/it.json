@@ -3307,6 +3307,7 @@
         "view_list": "Elenco semplice"
       },
       "preview": {
+        "detailsSummaryFallback": "Dettagli",
         "mermaidError": "Diagramma Mermaid non valido: viene mostrato il codice sorgente."
       },
       "row": {

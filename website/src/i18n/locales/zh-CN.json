@@ -3131,6 +3131,7 @@
         "view_list": "平铺列表"
       },
       "preview": {
+        "detailsSummaryFallback": "详情",
         "mermaidError": "无效的 Mermaid 图表——显示其源代码。"
       },
       "row": {

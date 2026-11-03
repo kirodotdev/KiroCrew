@@ -3395,6 +3395,7 @@
         "view_list": "Плоский список"
       },
       "preview": {
+        "detailsSummaryFallback": "Подробности",
         "mermaidError": "Недопустимая диаграмма Mermaid — показан исходный код."
       },
       "row": {

@@ -3219,6 +3219,7 @@
         "view_list": "सपाट सूची"
       },
       "preview": {
+        "detailsSummaryFallback": "विवरण",
         "mermaidError": "अमान्य Mermaid आरेख — स्रोत दिखाया जा रहा है।"
       },
       "row": {
