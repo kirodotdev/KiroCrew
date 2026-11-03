@@ -196,6 +196,39 @@ def channel_policy_refusal(channel_id: str, *, operation: str, caller: str) -> s
         return "channel policy unreadable"
 
 
+def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
+    """Every Slack action/interaction handler of the code channel, with how many
+    :func:`channel_policy_refusal` calls it makes: one before any side effect and
+    one at its commit point, after the awaits a policy change can land during.
+
+    ``tools.run_tool`` checks once, after its own awaits and just before the tool
+    runs; ``commands.sync_commands`` at entry and again after its lock and read,
+    before the ``gh`` probe. Every Slack write after that meets the
+    policy again in the clients (``SurfaceClient._call`` for ``agents.*``,
+    ``SlackClient``'s ``require_channel`` for ``chat.*``). A slash command's turn
+    runs through ``routing.deliver_directed``, which checks before a session is
+    bound, before the worktree and again before the turn. ``_bind_channel`` (also
+    reached by a new channel's creation) checks before it cuts the worktree and
+    before it binds the session; its closing ``prepare_workspace`` cuts nothing
+    new and publishes only through the policy-checked client. The only writes outside both clients are a slash
+    command's fixed-text replies to its own invoker (``response_url``). A new
+    handler belongs on this list; its test
+    (``test_every_policy_gated_handler_checks_at_entry_and_at_its_commit_point``)
+    holds the counts.
+    """
+    from kiro_crew.slack.code_channels import commands, routing, tools, wrapup
+
+    return (
+        (commands.handle_slash, 2),  # /summarize, /wrap-up, /create-pr
+        (routing.deliver_directed, 3),  # bind, worktree, then the turn a command runs
+        (routing._refuse_bind_if_policy_refuses, 1),  # in _bind_channel: cut, then session
+        (wrapup.handle_archive_click, 3),  # the Archive button (and its recovery)
+        (wrapup.post_wrap_up, 2),  # the wrap-up message (tool and /wrap-up fallback)
+        (tools.run_tool, 1),  # every agent tool, incl. the context bar
+        (commands.sync_commands, 2),  # the channel's command set, at turn start
+    )
+
+
 def channel_admits(cfg: Any, binding: Binding) -> bool:
     """The code channel and its origin admit the bot (off or review mode refuse).
 
