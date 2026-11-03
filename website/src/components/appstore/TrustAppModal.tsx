@@ -30,6 +30,7 @@ import { Badge, Btn } from '../ui'
 import SessionApprovalModes from './SessionApprovalModes'
 import { i18nT } from '../../i18n/t'
 import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
+import { safeHref } from '../../utils/safeHref'
 import { sourceLabel, type RegistryApp } from './types'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
@@ -406,24 +407,9 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
   }
 }
 
-/**
- * Return *raw* as an href ONLY if it is a scheme we can hand a user, else `null`.
- *
- * Repository text still reaches this dialog from a remote source. Parsed
- * with the URL constructor rather than a regex: a prefix check is defeated by
- * `\tjavascript:`, `JaVaScRiPt:`, and percent/entity encodings that the browser
- * still resolves, whereas `new URL().protocol` is the browser's own normalized
- * answer. Everything outside the allowlist — `javascript:`, `data:`, `blob:`,
- * `file:` — is refused, and a value the parser rejects outright is refused too.
- */
-export function safeHref(raw: string): string | null {
-  try {
-    const url = new URL(raw)
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null
-  } catch {
-    return null
-  }
-}
+// Repository text still reaches this dialog from a remote source, so its
+// provenance link goes through the shared scheme allowlist.
+export { safeHref }
 
 /**
  * The three capabilities a trust grant confers, each paired with its icon.
