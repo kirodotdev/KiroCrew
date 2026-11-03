@@ -59,7 +59,7 @@ def _fresh_bus():
 
 
 def _cases() -> list[dict[str, Any]]:
-    return list(json.loads(FIXTURES.read_text())["cases"])
+    return list(json.loads(FIXTURES.read_text(encoding="utf-8"))["cases"])
 
 
 def _delta(revision: int, base: int, value: Any = None, ops: Any = None) -> bus.FoldAdvanced:
@@ -347,7 +347,7 @@ def test_metrics_subscribes_to_session_folds_only_so_never_sees_a_work_delta():
     bus.subscribe(bus.FOLD_ADVANCED, seen.append, scope=bus.SCOPE_SESSION)
     bus.publish(bus.FOLD_ADVANCED, _delta(5, 4))
     assert seen == []
-    source = pathlib.Path(crew_log_export.__file__).read_text()
+    source = pathlib.Path(crew_log_export.__file__).read_text(encoding="utf-8")
     assert "scope=crew_log_bus.SCOPE_SESSION" in source
 
 
