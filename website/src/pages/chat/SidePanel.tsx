@@ -260,7 +260,26 @@ export default function SidePanel({
   viewTitles,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
-  const hiddenViews = hostHiddenViews
+  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
+  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
+  const crewModePreview = useCrewMode()
+  // A Crew Mode root or one of its workers: its panel offers Workers, and the
+  // tab is put on its strip whenever the session is shown (a fresh browser, a
+  // reload, a reopened browser tab). It is the tab the panel opens on until the
+  // user picks another; a picked tab keeps focus. Closing it holds until the
+  // next visit; the + menu brings it back at any time.
+  const crewMode = useAppSelector(st => {
+    const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
+    return crewModeRoot(row) || !!crewRootOf(row)
+  })
+  // Ultra Mode shows only the Board (docs/decisions/2026-11-02-ultra-mode-shows-only-the-board.md):
+  // with the preview on, an Ultra Mode chat's Dashboard (`command-center`) tab is
+  // withheld like a host withdrawal -- no chip, no + menu entry, focus falls back --
+  // while the stored tab and the gateway's page stay, so preview off brings it back.
+  const hiddenViews = useMemo<ReadonlySet<SidePanelWithholdable> | undefined>(
+    () => (crewMode && crewModePreview ? new Set([...(hostHiddenViews ?? []), 'command-center']) : hostHiddenViews),
+    [crewMode, crewModePreview, hostHiddenViews],
+  )
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
   const closable = !!onClose
@@ -310,18 +329,6 @@ export default function SidePanel({
   // disabled server-side, and never list the pinned views (Changes / Files /
   // Artifacts, and Summary while Pin Summary holds it) — those are always
   // present in the strip.
-  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
-  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
-  const crewModePreview = useCrewMode()
-  // A Crew Mode root or one of its workers: its panel offers Workers, and the
-  // tab is put on its strip whenever the session is shown (a fresh browser, a
-  // reload, a reopened browser tab). It is the tab the panel opens on until the
-  // user picks another; a picked tab keeps focus. Closing it holds until the
-  // next visit; the + menu brings it back at any time.
-  const crewMode = useAppSelector(st => {
-    const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
-    return crewModeRoot(row) || !!crewRootOf(row)
-  })
   // while a new chat's Ultra Mode switch lands (no root stamp yet),
   // a Crew tab already on its strip is pinned first too.
   const freshChat = useAppSelector(st => {

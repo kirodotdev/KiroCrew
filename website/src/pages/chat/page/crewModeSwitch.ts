@@ -24,7 +24,9 @@ import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 
 const EMPTY: ReadonlySet<string> = new Set()
-// The tabs Ultra Mode puts on a chat's strip: Crew and Dashboard.
+// The tabs Ultra Mode puts on a chat's strip: Board and Dashboard. The side panel
+// withholds the Dashboard while the preview is on (Ultra Mode shows only the Board);
+// it stays stored so the chat keeps it with the preview off.
 const BOARD_VIEWS: readonly ViewKind[] = ['workers', 'command-center']
 const withKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => (set.has(key) ? set : new Set(set).add(key))
 const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => {
@@ -136,7 +138,8 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
       if (activityOpen) panelWasClosed.current.delete(key)
       else panelWasClosed.current.add(key)
       dispatch(openActivityPanel())
-      // The Dashboard tab still opens as before; Crew (pinned first) is in front.
+      // The Dashboard tab is stored as before (withheld while the preview is on);
+      // the Board (pinned first) is in front.
       openView('command-center')
       openView('workers')
     }
