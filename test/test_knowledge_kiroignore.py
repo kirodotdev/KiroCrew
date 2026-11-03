@@ -191,6 +191,35 @@ class TestKiroIgnoreLoad:
         assert m.is_ignored("secrets", is_dir=True) is True
         assert m.is_ignored("a.log", is_dir=False) is True
 
+    @pytest.mark.parametrize(
+        ("bom", "codec"),
+        [(b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")],
+        ids=["le", "be"],
+    )
+    def test_a_utf16_bom_file_applies_every_rule(self, tmp_path, caplog, bom, codec):
+        # Windows PowerShell 5.1 Out-File and ``>`` write UTF-16 with a BOM.
+        rules = "secret-notes.md\r\nbuild/\r\n*.txt\r\n"
+        (tmp_path / kiroignore.KIROIGNORE_FILENAME).write_bytes(bom + rules.encode(codec))
+        with caplog.at_level("WARNING", logger=kiroignore.__name__):
+            m = kiroignore.load(tmp_path)
+        assert m is not None
+        assert m.is_ignored("secret-notes.md", is_dir=False) is True
+        assert m.is_ignored("build", is_dir=True) is True
+        assert m.is_ignored("notes.txt", is_dir=False) is True
+        assert m.is_ignored("keep.md", is_dir=False) is False
+        assert not caplog.records
+
+    def test_a_bomless_utf16_file_warns_and_matches_nothing(self, tmp_path, caplog):
+        (tmp_path / kiroignore.KIROIGNORE_FILENAME).write_bytes(
+            "secret-notes.md\r\n*.txt\r\n".encode("utf-16-le"))
+        with caplog.at_level("WARNING", logger=kiroignore.__name__):
+            m = kiroignore.load(tmp_path)
+        assert m is None or not m.is_ignored("notes.txt", is_dir=False)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert kiroignore.KIROIGNORE_FILENAME in warnings[0].getMessage()
+        assert "UTF-8" in warnings[0].getMessage()
+
     def test_unreadable_file_degrades_to_no_exclusions(self, tmp_path, monkeypatch):
         (tmp_path / kiroignore.KIROIGNORE_FILENAME).write_text("cdk.out/\n")
 
