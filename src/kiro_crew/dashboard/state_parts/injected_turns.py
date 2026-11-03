@@ -13,7 +13,7 @@ import json
 import re
 
 from kiro_crew.constants import SUBAGENT_BATCH_COMPLETION_PREFIX, SUBAGENT_COMPLETION_PREFIX
-from kiro_crew.deny_guidance import remediation_for
+from kiro_crew.deny_guidance import remediation_for, rule_id_for
 
 # Structured monitor wakeups are automation, not user speech. The controller
 # owns the complete envelope; every delivery surface passes it through unchanged.
@@ -381,7 +381,14 @@ def build_refusal_recovery_prompt(
         )
     lines += ["", "Blocked:"]
     for title, reason in refusals:
-        lines.append(f"  - {title}: {reason}" if reason else f"  - {title}")
+        # A catalog rule is named by its id before the pattern; the reason's
+        # ``Blocked by security policy:`` marker stays at the line's end, where
+        # RecoveryCard reads the pattern chip from.
+        rule_id = rule_id_for(reason)
+        if rule_id:
+            lines.append(f"  - {title}: blocked by rule {rule_id}. {reason}")
+        else:
+            lines.append(f"  - {title}: {reason}" if reason else f"  - {title}")
     lines += [
         "",
         (
