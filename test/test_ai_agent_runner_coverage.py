@@ -313,12 +313,16 @@ def test_unlink_quietly_removes_the_launcher_and_tolerates_absence(tmp_path):
     R._unlink_quietly("")
 
 
-def test_unlink_quietly_swallows_an_os_error(monkeypatch, tmp_path):
+def test_unlink_quietly_swallows_an_os_error(monkeypatch, tmp_path, caplog):
     def _boom(self, missing_ok=False):
         raise OSError("busy")
 
     monkeypatch.setattr(Path, "unlink", _boom)
-    R._unlink_quietly(tmp_path / "whatever")  # must not raise
+    with caplog.at_level(logging.DEBUG, logger=R.logger.name):
+        R._unlink_quietly(tmp_path / "whatever")  # must not raise
+    assert [r.getMessage() for r in caplog.records if r.name == R.logger.name] == [
+        "could not remove sandbox launcher temp file"
+    ]
 
 
 # ── _shell_words ────────────────────────────────────────────────────────────
@@ -626,9 +630,13 @@ def test_audit_fallback_tool_never_emits_raw_text_when_redaction_breaks(monkeypa
     assert call["metadata"]["target"] == "[redaction unavailable]"
 
 
-def test_audit_fallback_tool_survives_an_unwritable_log(broken_sel, monkeypatch):
+def test_audit_fallback_tool_survives_an_unwritable_log(broken_sel, monkeypatch, caplog):
     monkeypatch.setattr("kiro_crew.security.redact", lambda t: t)
-    R._audit_fallback_tool(tool="Bash", detail="x", cwd=None)  # must not raise
+    with caplog.at_level(logging.DEBUG, logger=R.logger.name):
+        R._audit_fallback_tool(tool="Bash", detail="x", cwd=None)  # must not raise
+    assert [r.getMessage() for r in caplog.records if r.name == R.logger.name] == [
+        "SEL audit failed for fallback tool 'Bash'"
+    ]
 
 
 # ── _summarize_stream_event ─────────────────────────────────────────────────
@@ -1604,12 +1612,16 @@ async def test_reject_still_refuses_when_the_audit_cannot_be_written(broken_sel)
 
 
 @pytest.mark.asyncio
-async def test_reject_tolerates_a_provider_that_cannot_be_told(fake_sel):
+async def test_reject_tolerates_a_provider_that_cannot_be_told(fake_sel, caplog):
     class _Deaf(_FakeProvider):
         async def reject_tool(self, rid):
             raise RuntimeError("stdin closed")
 
-    await R.SessionAgentRunner._reject(_Deaf(), "r9", tool="bash", cause=None)  # must not raise
+    with caplog.at_level(logging.DEBUG, logger=R.logger.name):
+        await R.SessionAgentRunner._reject(_Deaf(), "r9", tool="bash", cause=None)
+    assert [r.getMessage() for r in caplog.records if r.name == R.logger.name] == [
+        "reject_tool failed for 'bash'"
+    ]
 
 
 @pytest.mark.asyncio

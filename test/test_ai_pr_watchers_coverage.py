@@ -23,6 +23,7 @@ exercised, so it runs everywhere the backend runs — Linux, macOS, Windows, 3.1
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -1487,7 +1488,7 @@ class TestCloneDirAndCleanup:
         assert not mine.exists()
 
     def test_a_cleanup_failure_is_swallowed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         reg = _reg(clones_root=str(tmp_path / "clones"))
         st = W.WatcherState(fp="fp1", pr="x")
@@ -1496,7 +1497,12 @@ class TestCloneDirAndCleanup:
             raise ValueError("embedded null byte in the fingerprint")
 
         monkeypatch.setattr(reg, "_clone_dir", _boom)
-        reg._cleanup_clone(st, str(tmp_path))  # must not raise
+        with caplog.at_level(logging.DEBUG, logger=W.logger.name):
+            reg._cleanup_clone(st, str(tmp_path))  # must not raise
+        assert [r.getMessage() for r in caplog.records if r.name == W.logger.name] == [
+            "watcher fp1: clone cleanup failed"
+        ]
+        assert tmp_path.is_dir()
 
 
 class TestRunWatcher:
