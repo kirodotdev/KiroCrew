@@ -36,6 +36,7 @@ from kiro_crew.apps.registry import (
 )
 from kiro_crew.apps.routes_lifecycle import (
     _app_may_run_after_install,
+    _backend_platform_refusal,
     _check_min_version,
     _deregister_app_off_loop,
     _refuse_while_startup_hook_runs,
@@ -116,7 +117,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
-                await _restore_app_after_failed_update(name)
+                restore_refused = await _restore_app_after_failed_update(name)
+                if restore_refused:
+                    reg_install["backend_refused"] = restore_refused
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_update",
@@ -131,10 +134,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
             still_enabled = await _app_may_run_after_install(name)
             if still_enabled:
                 reg_result = await _register_app_off_loop(name)
-                await asyncio.get_running_loop().run_in_executor(
+                backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
                 reg_install["registration"] = reg_result.to_dict()
+                backend_refused = await _backend_platform_refusal(name, backend)
+                if backend_refused:
+                    reg_install["backend_refused"] = backend_refused
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
@@ -172,7 +178,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             subprocess_executor(), lambda: update_app(source, expected_name=name)
         )
         if not up_result.ok:
-            await _restore_app_after_failed_update(name)
+            restore_refused = await _restore_app_after_failed_update(name)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_update",
@@ -180,13 +186,17 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 resources=name,
                 error=up_result.error,
             )
-            return web.json_response(up_result.to_dict(), status=400)
+            failed_body = up_result.to_dict()
+            if restore_refused:
+                failed_body["backend_refused"] = restore_refused
+            return web.json_response(failed_body, status=400)
 
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
         # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot
         # would start a backend the user has not re-consented to.
         up_reg = None
+        backend_refused = None
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
             up_reg = await _register_app_off_loop(name)
@@ -201,9 +211,10 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # and registry are already current, and the next registration
             # pass applies the same definitions.
             await _resync_app_crons_after_update(request, name)
-            await asyncio.get_running_loop().run_in_executor(
+            backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
+            backend_refused = await _backend_platform_refusal(name, backend)
 
     sel().log_api_access(
         caller="dashboard", operation="app_update", outcome="completed", resources=name
@@ -211,6 +222,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
+    if backend_refused:
+        resp["backend_refused"] = backend_refused
     return web.json_response(resp)
 
 
@@ -473,16 +486,14 @@ async def handle_install_app(request: web.Request) -> web.Response:
             reg = await _register_app_off_loop(result.name)
             # Spawn the backend now so the app is reachable without a gateway
             # reboot (see _start_backend_after_install). No-op for backend-less apps.
-            await _start_backend_after_install(result.name)
+            backend_refused = await _start_backend_after_install(result.name)
         else:
             reg = await _suspend_app_for_session_approval_reconsent(result.name)
+            backend_refused = None
     sel().log_api_access(
         caller="dashboard", operation="app_install", outcome="completed", resources=result.name
     )
-    return web.json_response(
-        {
-            **result.to_dict(),
-            "registration": reg.to_dict(),
-        },
-        status=201,
-    )
+    install_body: dict[str, Any] = {**result.to_dict(), "registration": reg.to_dict()}
+    if backend_refused:
+        install_body["backend_refused"] = backend_refused
+    return web.json_response(install_body, status=201)

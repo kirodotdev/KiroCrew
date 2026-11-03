@@ -30,6 +30,7 @@ import TrustAppModal, {
 import { isRegistrySourced, normalizeRegistryApp, type RegistryApp } from '../components/appstore/types'
 import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
+import { backendRefusedNotice } from '../components/appstore/backendRefused'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
@@ -82,6 +83,15 @@ export default function AppDetailPage() {
    * the same reason, and both paths this fix wires need to say it.
    */
   const [successMsg, setSuccessMsg] = useState('')
+  /**
+   * The app enabled, installed or updated, but the host refused its backend
+   * (`backend_refused`). A warning, not a success: nothing runs behind the app.
+   * Stays until the next action, which is the user's chance to act on it.
+   */
+  const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
+  // The page is reused across /apps/detail/:name, so a refusal belongs to the
+  // app it was reported for and goes when the route names another one.
+  useEffect(() => { setBackendRefusedMsg('') }, [name])
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
@@ -503,6 +513,7 @@ export default function AppDetailPage() {
     // Drop the previous attempt's reason: a retry that fails for a new cause (or
     // is aborted, which has none) must never show the first attempt's.
     installFailureRef.current = { message: '', code: '' }
+    setBackendRefusedMsg('')
     setClientInstall(null)
     installAbortRef.current?.abort()
     const controller = new AbortController()
@@ -550,6 +561,7 @@ export default function AppDetailPage() {
       setInstallDone(true)
       if (result.ok) {
         recordEvent('app_install', { app: app.name, source: 'registry', version: app.version })
+        setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
@@ -588,8 +600,9 @@ export default function AppDetailPage() {
 
   /** The single enable path — shared by the action buttons and the trust retry. */
   const runEnable = useCallback(async (name: string) => {
-    await api.enableApp(name, app?.sessionApprovalConsentPending === true)
+    const result = await api.enableApp(name, app?.sessionApprovalConsentPending === true)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
+    setBackendRefusedMsg(backendRefusedNotice(app ? appDisplayName(app) : name, result))
     await load()
     window.dispatchEvent(new Event('mc:apps-changed'))
   }, [app, load])
@@ -672,9 +685,10 @@ export default function AppDetailPage() {
       return
     }
     startAction(action)
-    let updateResult: { notice?: string } | undefined
+    let updateResult: { notice?: string; backend_refused?: string } | undefined
     clearError()
     setSuccessMsg('')
+    setBackendRefusedMsg('')
     try {
       if (action === 'enable') {
         // Consent to chat control is restated at click time, on the trusted and
@@ -705,7 +719,10 @@ export default function AppDetailPage() {
       // reaches here is not gated on source, and `handle_update_app` re-clones a
       // registry-sourced app from the registry rather than copying a directory, so
       // each case has to name where the update actually came from.
-      if (action === 'update') {
+      // An update whose backend the host refused gets the warning, not the toast.
+      const refused = action === 'update' ? backendRefusedNotice(appDisplayName(app), updateResult) : ''
+      if (refused) setBackendRefusedMsg(refused)
+      else if (action === 'update') {
         // A widened session-approval grant leaves the app DISABLED pending
         // re-consent (`notice: session_approval_reconsent`). Saying "updated"
         // alone would report success over an app that just stopped running, so
@@ -933,6 +950,17 @@ export default function AppDetailPage() {
           </div>
         )}
 
+        {/* The action landed but the host refused the app's backend: a failure
+            the server named, so it gets the error surface, not a success. */}
+        {backendRefusedMsg && (
+          <ErrorNotice
+            message={backendRefusedMsg}
+            askAgent
+            onDismiss={() => setBackendRefusedMsg('')}
+            className="mb-4 animate-rise"
+          />
+        )}
+
         {/* Re-consent after an update that widened the session-approval grant.
             Warn-styled like the PR's other session-approval surfaces -- the text
             says "it is now disabled", so a green box would contradict it. Cleared
@@ -1042,7 +1070,7 @@ export default function AppDetailPage() {
                 startAction('approve_grants')
                 const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : [])].join(', ')
                 try {
-                  await api.enableApp(app.name, false, {
+                  const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
                     events: stagedEvents,
                     linkPreviewHosts: stagedLinkHosts,
@@ -1052,6 +1080,7 @@ export default function AppDetailPage() {
                     linkOpenHosts: stagedOpenHosts,
                     linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
                   })
+                  setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
                   window.dispatchEvent(new Event('mc:apps-changed'))

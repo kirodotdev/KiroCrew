@@ -25,6 +25,7 @@ import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { isRegistrySourced } from '../../components/appstore/types'
 import { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
+import { backendRefusedNotice } from '../../components/appstore/backendRefused'
 import type { AppsData } from './useAppsData'
 
 type AppUpdatesInput = Pick<AppsData, 'apps' | 'updatables' | 'announceAppsChanged'> & {
@@ -64,6 +65,7 @@ export function useAppUpdates({
   const [updatingAll, setUpdatingAll] = useState<{ done: number; total: number } | null>(null)
   /** Name of the app whose single in-place update is in flight, or null. */
   const [updatePending, setUpdatePending] = useState<string | null>(null)
+  const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
 
   // Update dispatches on the RECORDED SOURCE, mirroring ``handle_update_app``'s
   // own branch. A registry-sourced app is re-cloned from its registry and the
@@ -89,7 +91,9 @@ export function useAppUpdates({
       updateApp(name)
       return
     }
-    setSuccess(i18nT('pages.appsPage.updated_app', { count: 1 }))
+    const refused = backendRefusedNotice(label(name), updateResult)
+    if (refused) setError(refused)
+    else setSuccess(i18nT('pages.appsPage.updated_app', { count: 1 }))
   }
 
   // One update at a time: `updatePending` is a single slot, so a second
@@ -118,8 +122,11 @@ export function useAppUpdates({
       // version, so the card re-renders byte-identical and the dev cannot tell
       // whether new bytes landed. Reflect it the way `disable` already does.
       // A registry update's row leaves the worklist on refresh, so it gets the
-      // batch path's own success wording instead.
-      setSuccess(isRegistrySourced(target)
+      // batch path's own success wording instead. A backend the host refused
+      // is a warning, not a success: the update landed but nothing runs.
+      const refused = backendRefusedNotice(target.displayName || name, updateResult)
+      if (refused) setError(refused)
+      else setSuccess(isRegistrySourced(target)
         ? i18nT('pages.appsPage.updated_app', { count: 1 })
         : i18nT('pages.appsPage.synced_from_its_source_directory', {
             name: target.displayName || name,
@@ -143,6 +150,7 @@ export function useAppUpdates({
     const failed: string[] = []
     let succeeded = 0
     const consentNeeded: string[] = []
+    const refusedNotices: string[] = []
     for (let i = 0; i < targets.length; i++) {
       try {
         const updateResult = await api.updateApp(targets[i])
@@ -150,6 +158,8 @@ export function useAppUpdates({
         if (updateResult?.notice === 'session_approval_reconsent') {
           consentNeeded.push(targets[i])
         }
+        const refused = backendRefusedNotice(label(targets[i]), updateResult)
+        if (refused) refusedNotices.push(refused)
       } catch {
         failed.push(targets[i])
       }
@@ -166,12 +176,12 @@ export function useAppUpdates({
     // One notice for the whole batch. An update that newly asks for chat
     // control leaves that app DISABLED pending consent; that is not a failure,
     // but the user must hear about every such app, not be routed to the first.
-    const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
     const notices: string[] = []
     if (failed.length) notices.push(i18nT('pages.appsPage.failed_to_update', { names: failed.map(label).join(', ') }))
     for (const name of consentNeeded) {
       notices.push(i18nT('pages.appsPage.updated_needs_session_approval_consent', { name: label(name) }))
     }
+    notices.push(...refusedNotices)
     // One line per fact: the notice surface is whitespace-pre-wrap, so a
     // newline keeps "Docs failed" and "Crew Keyboard awaits consent" from
     // reading as one sentence about each other.

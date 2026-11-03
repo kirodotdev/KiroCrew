@@ -6425,6 +6425,7 @@
       "app_one": "{{count}} app",
       "app_other": "{{count}} apps",
       "available": "available",
+      "backend_refused_notice": "The backend of {{name}} did not start: {{reason}}",
       "cancel": "Cancel",
       "category": "Category",
       "confirm_uninstall": "Confirm uninstall",
