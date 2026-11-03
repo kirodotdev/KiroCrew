@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -303,8 +302,11 @@ class TestProbe:
             m.setattr(Path, "resolve", boom)
             m.setattr(Path, "home", classmethod(lambda cls: boom()))
             m.setattr(Path, "stat", boom)
-            m.setattr(os, "stat", boom)
-            m.setattr(os, "lstat", boom)
+            # os.stat / os.lstat are NOT patched: _stamp_config_state is pure and
+            # never calls them directly.  A global os.lstat patch would intercept
+            # the coverage tracer's own path-canonicalization on the first visit to
+            # mcp_entry_is_muted, causing a spurious failure when coverage is
+            # active and mcp_cleanup has not yet been traced in this xdist worker.
             mcp_mod._stamp_config_state(
                 shared,
                 {"npm:@figma/mcp": {"command": "x", "disabled": "false"}},
