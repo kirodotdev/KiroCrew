@@ -75,7 +75,8 @@ _BOT_INFO_RETRY_FIRST_SECS = 30.0
 _BOT_INFO_RETRY_MAX_SECS = 600.0
 
 # Bounded dedup window for redelivered WS frames: keep the most recent N
-# message_ids and evict in arrival order (see ``_handle_receive_v1``).
+# message_ids and evict in arrival order (see ``FeishuTransport.receive`` in
+# ``feishu/transport.py``).
 
 
 @dataclass
