@@ -233,6 +233,13 @@ class TestApplySecurityHeaders:
         assert "http://*.localhost:*" not in csp
         assert "frame-ancestors 'self'" in csp
 
+    def test_csp_keeps_form_posts_on_the_dashboard_origin(self) -> None:
+        """form-action has no default-src fallback, so it must be named."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        directives = [d.strip() for d in resp.headers["Content-Security-Policy"].split(";")]
+        assert "form-action 'self'" in directives
+
     def test_csp_script_src_admits_wasm_but_not_eval(self) -> None:
         """The Pierre highlight workers tokenize with the shiki-wasm engine
         (website/src/pierre/config.ts, PIERRE_REGEX_ENGINE), and a same-origin

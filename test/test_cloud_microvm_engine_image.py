@@ -341,7 +341,8 @@ class TestTheRecipeIsNotEncryptedWithTheLaneKey:
     with AccessDenied -- minutes later, in a log the operator does not hold.
     """
 
-    def test_the_upload_names_no_kms_key(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _upload_kwargs(tmp_path, monkeypatch) -> list[dict]:
         import dataclasses
 
         from kiro_crew.cloud.microvm import engine as engine_mod
@@ -384,11 +385,21 @@ class TestTheRecipeIsNotEncryptedWithTheLaneKey:
         )
 
         ApiVmLauncher(spec).resolve_image(profile="p", region="us-east-1")
+        return seen
 
+    def test_the_upload_names_no_kms_key(self, tmp_path, monkeypatch):
+        seen = self._upload_kwargs(tmp_path, monkeypatch)
         assert seen, "the recipe was never uploaded"
         assert not seen[0].get(
             "kms_key_id"
         ), "the recipe was encrypted with the lane CMK, which the build role cannot decrypt"
+
+    def test_the_upload_pins_the_bucket_to_the_lanes_own_account(self, tmp_path, monkeypatch):
+        """A bucket name outlives its stack, so the put must refuse a bucket some
+        other account now owns rather than hand that account the crew bundle."""
+        seen = self._upload_kwargs(tmp_path, monkeypatch)
+        assert seen, "the recipe was never uploaded"
+        assert seen[0].get("expected_bucket_owner") == "123456789012"
 
     def test_an_upload_with_no_key_still_sends_an_encryption_header(self, monkeypatch):
         """S3-managed, not absent. A bucket that denies unencrypted puts tests the

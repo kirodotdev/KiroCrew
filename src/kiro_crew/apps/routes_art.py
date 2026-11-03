@@ -866,10 +866,16 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         outcome="served",
         resources=f"repo={_strip_git_target_userinfo(repo)} path={file_path}",
     )
+    # The same sandbox CSP as the app-art route above, for the same reason: these
+    # bytes come from a registry author's repo, and a top-level open of a scripted
+    # `.svg` would otherwise run as a document on the dashboard's own origin. It
+    # does not apply when the bytes load as an `<img>`, so store rendering is
+    # unchanged.
     return web.FileResponse(  # type: ignore[return-value]
         cache_path,
         headers={
             "Content-Type": content_type,
             "Cache-Control": "public, max-age=86400",  # 24h browser cache
+            "Content-Security-Policy": "default-src 'none'; sandbox",
         },
     )
