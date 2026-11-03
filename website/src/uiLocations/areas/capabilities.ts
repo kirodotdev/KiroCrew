@@ -77,6 +77,28 @@ export const LOCATIONS = {
     },
     placements: [{ surface: 'capabilities', parent: 'tab.capabilities.skills', entry: 'toolbar' }],
   },
+  // Customize > Knowledge opens on its List view (local state, not the URL), so
+  // Add Source hangs under the Sources view tab: the path names the click that
+  // reveals it.
+  'knowledge.sources-tab': {
+    kind: 'tab',
+    terms: {
+      en: ['knowledge sources', 'my knowledge folders', 'indexed folders', 'watched folders'],
+      'zh-CN': ['知识来源', '知识库文件夹', '已索引的文件夹'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'tab.capabilities.knowledge', entry: 'tab' }],
+  },
+  'knowledge.add-source': {
+    kind: 'button',
+    terms: {
+      en: [
+        'add a folder to the knowledge base', 'add files to knowledge', 'upload a document to knowledge',
+        'index a folder', 'watch a folder', 'add knowledge', 'add to knowledge base',
+      ],
+      'zh-CN': ['添加文件夹到知识库', '上传文档到知识库', '索引文件夹', '添加知识'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'knowledge.sources-tab', entry: 'toolbar' }],
+  },
   'skills.refresh': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },

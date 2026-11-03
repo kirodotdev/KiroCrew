@@ -1,7 +1,8 @@
 /**
  * Goldens for the wave-3 additions to the `schedule`, `artifacts` and
  * `capabilities` areas (Schedule's job controls, the Artifacts toolbar extras,
- * Customize > Skills and the MCP probe): the exact parent chain, entry, route,
+ * Customize > Skills, the MCP probe and Customize > Knowledge's Sources view
+ * and Add Source): the exact parent chain, entry, route,
  * label key and requirements each location carries in the generated index, and
  * the one render site its marker sits on, in the committed index.
  */
@@ -22,6 +23,8 @@ const SCHEDULE_SRC = src('../pages/SchedulePage.tsx')
 const ARTIFACTS_SRC = readPageFamily('ArtifactsPage')
 const SKILLS_SRC = src('../pages/overview/SkillsTab.tsx')
 const MCP_SRC = src('../pages/overview/McpTab.tsx')
+const KNOWLEDGE_SRC = src('../pages/knowledge/index.tsx')
+const SOURCES_SRC = src('../pages/knowledge/SourcesList.tsx')
 
 const cond = (...ids: string[]): Req[] => ids.map(id => ({ kind: 'condition', id }))
 
@@ -85,6 +88,22 @@ const EXPECTED: Record<string, Expect> = {
   'skills.create': { kind: 'button', labelKey: 'pages.overview.skillsTab.create_new_skill', source: SKILLS_SRC, placement: skills },
   'skills.add': { kind: 'button', labelKey: 'pages.overview.skillsTab.add_skill', source: SKILLS_SRC, placement: skills },
   'skills.refresh': { kind: 'button', labelKey: 'pages.overview.skillsTab.refresh_skills', source: SKILLS_SRC, placement: skills },
+  // Customize > Knowledge opens on its List view, so Add Source hangs under
+  // the Sources view tab that reveals it.
+  'knowledge.sources-tab': {
+    kind: 'tab', labelKey: 'pages.knowledge.index.sources_tab', source: KNOWLEDGE_SRC,
+    placement: {
+      surface: 'capabilities', route: '/capabilities?tab=knowledge',
+      parents: ['page.capabilities', 'tab.capabilities.knowledge'], entry: 'tab', requires: [],
+    },
+  },
+  'knowledge.add-source': {
+    kind: 'button', labelKey: 'pages.knowledge.sourcesList.add_source', source: SOURCES_SRC,
+    placement: {
+      surface: 'capabilities', route: '/capabilities?tab=knowledge',
+      parents: ['page.capabilities', 'tab.capabilities.knowledge', 'knowledge.sources-tab'], entry: 'toolbar', requires: [],
+    },
+  },
   'mcp.probe': {
     kind: 'button', labelKey: 'pages.overview.mcpTab.probe_mcp_servers', source: MCP_SRC,
     placement: {
