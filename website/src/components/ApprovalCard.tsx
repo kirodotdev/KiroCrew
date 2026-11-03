@@ -3,8 +3,10 @@ import { CheckCircle, Handshake, Ban, Package, Wrench } from 'lucide-react'
 import ToolInputPreview from './ToolInputPreview'
 import TrustDropdown from './TrustDropdown'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
 import { ApiError } from '../api/client'
-import { isTerminalApprovalRefusal } from '../api/apiError'
+import { approvalRefusalEndState } from '../api/apiError'
+import { isExpectedEndState, type ExpectedEndState } from './expectedEndStates'
 import { baseCommandLabel } from '../utils/trustPatterns'
 import { haptic } from '../lib/haptic'
 
@@ -52,18 +54,18 @@ export default function ApprovalCard(props: ApprovalCardProps) {
 
 function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, hasCommand = true, baseCommand, baseDerivable, trustAllLabelKey, trustCommandLabelKey, trustBaseLabelKey, trustedLabelKeys, labelValues, onApprove }: ApprovalCardProps) {
   const [decided, setDecided] = useState<string | null>(null)
-  // null = no failure. `terminal` marks a refusal that retrying can never
-  // clear; `message` is the server's own refusal text ('' = a response-less
+  // null = no failure. `endState` names an expected end state (a gone
+  // approval, `expectedEndStates.ts`) that retrying can never clear; `message` is the server's own refusal text ('' = a response-less
   // transport failure, which renders the generic hedged copy — raw fetch
   // internals like "Failed to fetch" are not user vocabulary).
-  const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
+  const [failure, setFailure] = useState<{ endState: ExpectedEndState | null; message: string; attempted: string } | null>(null)
   const buttonsRef = useRef<HTMLDivElement | null>(null)
   // The decided state flips optimistically so the buttons collapse on click,
   // but a rejected decision request rolls it back: a card must never read
   // "Trusted"/"Approved" on a failed POST. An ApiError carries the server's
   // own verdict, so its copy asserts the decision was not recorded; a
   // response-less transport failure proves only that no response arrived, so
-  // it hedges with "may not have been recorded". `isTerminalApprovalRefusal`
+  // it hedges with "may not have been recorded". `approvalRefusalEndState`
   // decides which refusals keep their buttons (#11180).
   const handle = (d: string, pattern?: string) => {
     setFailure(null)
@@ -79,7 +81,7 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
       setDecided(null)
       const refusal = err instanceof ApiError ? err : null
       setFailure({
-        terminal: isTerminalApprovalRefusal(err),
+        endState: approvalRefusalEndState(err),
         message: refusal && refusal.message ? refusal.message : '',
         attempted: d,
       })
@@ -92,7 +94,7 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
   // Positional: Approve renders first and Reject last; a trust attempt lands
   // on the dropdown trigger between them.
   useEffect(() => {
-    if (!failure || failure.terminal) return
+    if (!failure || failure.endState) return
     const buttons = Array.from(buttonsRef.current?.querySelectorAll('button') ?? [])
     if (!buttons.length) return
     const target = failure.attempted === 'approved' ? buttons[0]
@@ -100,7 +102,10 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
         : buttons.length > 2 ? buttons[1] : buttons[0]
     target.focus()
   }, [failure])
-  const borderColor = decided === 'approved' || decided === 'trust' || decided === 'trust_command' || decided === 'trust_base' ? 'border-l-ok' : decided === 'rejected' || failure?.terminal ? 'border-l-danger' : 'border-l-warn'
+  // A gone approval is status, so it keeps the neutral warn rail, never the
+  // red danger rail — a red bar reads as a failure. Only a user's own
+  // rejection stays danger.
+  const borderColor = decided === 'approved' || decided === 'trust' || decided === 'trust_command' || decided === 'trust_base' ? 'border-l-ok' : decided === 'rejected' ? 'border-l-danger' : 'border-l-warn'
 
   const isShell = title.startsWith('Running: ')
   const normalized = title.replace(/^(Running: |Reading )/, '')
@@ -126,7 +131,7 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
         : <>{showButtons ? <><Package className="lucide-inline" /> </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
-      {showButtons && !decided && !failure?.terminal && (
+      {showButtons && !decided && !failure?.endState && (
         // Grouped so a screen reader announces approve / trust / reject as one
         // decision cluster rather than three loose buttons; operators batch-
         // approve, so the controls must read as a set (Req 2.5, WCAG AA). The
@@ -139,15 +144,18 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}
-      {failure !== null && (
+      {failure !== null && (isExpectedEndState(failure.endState) ? (
+        // A gone approval (expired, decided elsewhere, replaced) is status, not
+        // a failure — nothing on the user's side went wrong — so it reads as a
+        // muted status row, never the red hand-off error below.
+        <StatusNotice variant="inline" className="mt-1.5" testId="approval-card-gone" message={i18nT('components.approvalCard.approval_no_longer_pending')} />
+      ) : (
         // The card holds no draft: the pending buttons are not user input and the
         // failed decision is retryable, so the hand-off loses nothing.
-        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
-      )}
+        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.message
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+          : i18nT('components.approvalCard.decision_failed')} />
+      ))}
       {decided && (
         <div className="mt-1.5 text-[13px] text-muted">
           {decided === 'approved' && <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>}

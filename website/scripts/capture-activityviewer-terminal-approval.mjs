@@ -1,6 +1,7 @@
 /**
  * Frames of the activity panel's two approval cards refusing a decision on an
- * approval that is already gone (#11180).
+ * approval that is already gone (#11180), which now reads as STATUS not an
+ * error (#18203).
  *
  * Reuses the spawn-approval capture entry with `subagent=1&refuse=404`, so both
  * surfaces render and every approval POST answers 404.
@@ -18,7 +19,7 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.argv[2] || 'http://127.0.0.1:6823'
 const OUT = process.argv[3] || '../temp-screenshots/activityviewer-terminal-approval'
 const BEFORE = process.argv.includes('--before')
-const EXPECTED = 'This approval has expired or was already decided'
+const EXPECTED = 'nothing is waiting on it'
 mkdirSync(OUT, { recursive: true })
 
 const browser = await chromium.launch()
@@ -34,14 +35,17 @@ for (const theme of ['dark', 'light']) {
   const cards = await approve.count()
   for (let i = cards - 1; i >= 0; i--) await approve.nth(i).click()
 
-  await root.getByRole('alert').first().waitFor()
+  // A gone approval reads as a muted role="status" row, never a role="alert"
+  // error (#18203).
+  await root.getByRole('status').first().waitFor()
   await page.waitForTimeout(400)
-  const notices = await root.getByRole('alert').allInnerTexts()
+  const notices = await root.getByRole('status').allInnerTexts()
+  const alerts = await root.getByRole('alert').allInnerTexts()
   const live = await root.locator('button', { hasText: /^\s*(Approve|Reject)\s*$/ }).count()
 
-  const terminal = notices.length === cards && notices.every(t => t.includes(EXPECTED))
+  const terminal = notices.length === cards && notices.every(t => t.includes(EXPECTED)) && alerts.length === 0
   const ok = cards === 2 && (BEFORE ? !terminal && live === 4 : terminal && live === 0)
-  console.log(`${theme}${BEFORE ? ' (before)' : ''}: cards=${cards} live=${live} notices=${JSON.stringify(notices)} ${ok ? 'OK' : 'MISMATCH'}`)
+  console.log(`${theme}${BEFORE ? ' (before)' : ''}: cards=${cards} live=${live} notices=${JSON.stringify(notices)} alerts=${JSON.stringify(alerts)} ${ok ? 'OK' : 'MISMATCH'}`)
   if (!ok) { failed = true; continue }
 
   await page.screenshot({ path: `${OUT}/terminal-approval-${theme}${BEFORE ? '-before' : ''}.png` })

@@ -13,6 +13,7 @@
  */
 import { i18nT } from '../i18n/t'
 import { looksLikeHtmlDocument, edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
+import type { ExpectedEndState } from '../components/expectedEndStates'
 
 /**
  * A failed API call, carrying the HTTP status so callers can branch on specific
@@ -95,6 +96,13 @@ export const isTerminalApprovalRefusal = (e: unknown): boolean => {
   if (r.authRequired) return false
   return r.status === 404 || (r.status === 400 && r.message === 'no pending approval')
 }
+
+/** The expected end state a refused approval press reached: `approval_gone` for
+ *  a terminal refusal ({@link isTerminalApprovalRefusal}), else `null` — a real
+ *  failure. Surfaces pass the result to `isExpectedEndState`
+ *  (`components/expectedEndStates.ts`) to pick status over an error notice. */
+export const approvalRefusalEndState = (e: unknown): ExpectedEndState | null =>
+  isTerminalApprovalRefusal(e) ? 'approval_gone' : null
 
 /**
  * Does this failure come from an interposed proxy's own sign-in page?

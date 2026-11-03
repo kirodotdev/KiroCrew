@@ -2742,9 +2742,13 @@ The gone verdict belongs to the pending phase only: a real `subagent_spawn` or t
 frame moves the card to running/tool without clearing the marker, so neither it nor
 the retired verdict (terminal `stopped` only) may classify a live card; a tool frame
 also clears the retired marker, so a launched run that later ends `stopped` reads as
-stopped, never as retired. The failed
-approval request is reported once, as an error notice on the surface that sent it: the
-composer, or the activity card whose button was pressed. Every other surface shows only
+stopped, never as retired. A press that
+finds the approval gone is reported once, as a status notice (`StatusNotice`, not an
+error) on the surface that sent it: the composer, or the activity card whose button was
+pressed. The gone approval is the `approval_gone` entry of the closed expected-end-state
+list (`website/src/components/expectedEndStates.ts`), which every surface reads through
+`isExpectedEndState`. A press that failed any other way stays an `ErrorNotice` and keeps its buttons
+for a retry. Every other surface shows only
 neutral status: the progress bar states each unresolved row as a liveness check, and a
 gone approval found on reconnect was never pressed, so no surface reports an error for
 it. The activity card of an unresolved gone approval reads "Checking whether it

@@ -36,7 +36,7 @@ import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 
 const SLOT = 'test-slot'
 const PARKED_LABEL = 'Waiting for your approval to start'
-const GONE_ERROR = 'This approval has expired or was already decided'
+const GONE_ERROR = 'This approval expired, was decided elsewhere, or was replaced'
 const CHECKING = 'Checking whether it started…'
 
 function chip({ parked = 0, running = 0, seed }: {
@@ -154,7 +154,7 @@ describe('subagent whose spawn approval is gone', () => {
     const { container } = chip({ parked: 2, seed: goneSeed })
     // The refused request already reported itself where it was pressed (the
     // composer or the activity card); a second copy here would show the same
-    // red sentence on two surfaces at once.
+    // sentence on two surfaces at once.
     expect(container.textContent).not.toContain(GONE_ERROR)
     expect(container.querySelector('[role="alert"]')).toBeNull()
     // The open liveness question: neutral, on the row and the count.
