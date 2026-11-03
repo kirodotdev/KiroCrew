@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -41,6 +41,9 @@ from kiro_crew.apps.registry import install_from_registry
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -284,7 +287,11 @@ async def _restore_app_after_failed_update(
 
 
 async def _reinstall_from_registry(
-    name: str, registry_name: str, log_lines: list[str] | None = None
+    name: str,
+    registry_name: str,
+    log_lines: list[str] | None = None,
+    *,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
 ) -> dict[str, Any]:
     """Re-install installed *name* from the registry, taking it down only to replace it.
 
@@ -300,8 +307,18 @@ async def _reinstall_from_registry(
     self-managed (``resources: "app"``) skips the take-down, so once the record says so
     the backend is stopped and the app fully deregistered: it registers its own from
     then on.
+
+    *still_idle*, when given, is awaited as the take-down starts, after the clone and
+    build. A non-empty answer stops the install there, before anything is taken
+    down, and returns the retryable ``app_busy`` refusal: the automatic updater's
+    second look, made at the moment its update would cut work off.
     """
     taken_down = False
+    busy = ""
+
+    class _UpdatePutOff(Exception):
+        """Raised by the take-down to stop ``install_from_registry`` before the copy."""
+
     loop = asyncio.get_running_loop()
 
     async def _is_self_managed() -> bool:
@@ -310,7 +327,13 @@ async def _reinstall_from_registry(
     was_self_managed = await _is_self_managed()
 
     async def _take_down() -> None:
-        nonlocal taken_down
+        nonlocal taken_down, busy
+        if still_idle is not None:
+            busy = await still_idle()
+            if busy:
+                # install_from_registry answers this as a failed install and its
+                # ``finally`` restores any checkout it moved aside.
+                raise _UpdatePutOff(busy)
         taken_down = True
         await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
         await _deregister_app_off_loop(name, keep_agents=True)
@@ -323,6 +346,15 @@ async def _reinstall_from_registry(
     result = await install_from_registry(
         registry_name, log_lines=log_lines, before_replace=_take_down
     )
+    if busy:
+        return {
+            "ok": False,
+            "name": name,
+            "error": f"cannot update {name!r} now: {busy}",
+            "code": "app_busy",
+            "retryable": True,
+            "app": name,
+        }
     if not taken_down:
         if not was_self_managed and await _is_self_managed():
             await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)

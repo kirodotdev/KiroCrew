@@ -1317,6 +1317,15 @@
     "pages.settings.notificationsPanel.channel_tip_member": "Settings > Notifications > Sources: tooltip on the 'Bot messages' source row. 'Bot' is the product's name for an always-on AI agent on the user's crew: keep it as the Latin word Bot in every language, never translated or transliterated; 'banner' is the on-screen pop-up notification.",
     "pages.settings.notificationsPanel.channel_tip_apps": "Settings > Notifications > Sources: tooltip on the 'App updates' source row. 'App' is a dashboard app the user installed from the App Store; 'published' means released by its author.",
     "pages.settings.notificationsPanel.channel_tip_turn": "Settings > Notifications > Sources: tooltip on the 'Chat errors' source row. 'Provider' is the AI model service; 'rate limit' means the service refused more requests for now; 'refused reply' is a content-filter refusal. 'App' is a dashboard app the user installed.",
-    "appSdk.chatPanel.session_gone": "Notice inside an app's embedded chat panel when the chat session the app opened there has been deleted; 'the app' is the app the panel sits in, which is where the user opens or starts another session."
+    "appSdk.chatPanel.session_gone": "Notice inside an app's embedded chat panel when the chat session the app opened there has been deleted; 'the app' is the app the panel sits in, which is where the user opens or starts another session.",
+    "pages.settings.appUpdates.title": "Heading of the Settings > About group that controls whether installed apps (add-ons from the App Store) update themselves.",
+    "pages.settings.appUpdates.mode_off": "Value of 'Update apps automatically': only a notification, nothing is installed.",
+    "pages.settings.appUpdates.mode_ask": "Value of 'Update apps automatically': a notification with an Update button the user presses.",
+    "pages.settings.appUpdates.mode_on": "Value of 'Update apps automatically': new versions install without asking. An adjective, not a verb.",
+    "pages.settings.appUpdates.interval_hours": "Option in the app update check interval picker; {{hours}} is a number of hours, 'h' is the hour unit abbreviation.",
+    "pages.settings.appUpdates.interval_days": "Option in the app update check interval picker; {{days}} is a number of days, 'd' is the day unit abbreviation.",
+    "pages.appDetailPage.auto_update_follow": "Option on one app's page meaning 'use the global app updates setting'; {{mode}} is that setting's current value (Off, Ask or Automatic), already translated.",
+    "pages.appDetailPage.auto_update_always": "Option on one app's page: install every new version of this app automatically.",
+    "pages.appDetailPage.auto_update_never": "Option on one app's page: never update this app automatically, keep the installed version."
   }
 }

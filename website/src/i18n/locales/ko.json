@@ -11341,7 +11341,14 @@
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
       "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
-      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다.",
+      "auto_update_title": "업데이트",
+      "auto_update_label": "자동 업데이트",
+      "auto_update_hint": "항상: 묻지 않고 이 앱의 새 버전을 설치합니다. 안 함: 이 버전으로 유지합니다. 새 권한을 요청하는 업데이트는 항상 사용자의 확인을 기다립니다.",
+      "auto_update_follow": "앱 업데이트 설정 따르기({{mode}})",
+      "auto_update_always": "항상",
+      "auto_update_never": "안 함",
+      "auto_update_save_failed": "이 앱의 업데이트 설정을 저장하지 못했습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -20142,6 +20149,20 @@
         "row_label": "{{app}}이(가) 여는 세션 음소거",
         "failed_to_save": "{{app}}의 음소거 설정을 저장하지 못했습니다.",
         "config_load_failed": "저장된 앱 음소거 설정을 불러오지 못했습니다. 불러올 때까지 스위치를 사용할 수 없습니다."
+      },
+      "appUpdates": {
+        "title": "앱 업데이트",
+        "mode_label": "앱 자동 업데이트",
+        "mode_hint": "끔: 설치된 앱의 새 버전이 게시되면 한 번 알려 줍니다. 묻기: 그 알림에 업데이트 버튼을 추가합니다. 자동: 앱이 유휴 상태일 때 설치합니다. 새 권한을 요청하는 업데이트는 항상 사용자의 확인을 기다립니다.",
+        "mode_off": "끔",
+        "mode_ask": "묻기",
+        "mode_on": "자동",
+        "interval_label": "앱 업데이트 확인",
+        "interval_hint": "자동 업데이트하는 앱이 있을 때 게이트웨이가 앱 레지스트리를 새로 고치는 주기입니다.",
+        "interval_hours": "{{hours}}시간마다",
+        "interval_days": "{{days}}일마다",
+        "save_failed": "앱 업데이트 설정을 저장하지 못했습니다.",
+        "load_failed": "앱 업데이트 설정을 불러오지 못했습니다."
       }
     },
     "settingsPage": {

@@ -11841,7 +11841,14 @@
         "installed_needs_newer_host": "La versione installata di {{name}} richiede un {{productName}} più recente. Aggiorna {{productName}}; i tuoi dati restano invariati."
       },
       "grants_reconsent_composer_actions": "Pulsanti dell'editor: consente all'app di aggiungere questi pulsanti al menu + dell'editor. Un clic inserisce il testo dell'app nella tua bozza; l'app non può vedere la bozza né inviarla.",
-      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire."
+      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire.",
+      "auto_update_title": "Aggiornamenti",
+      "auto_update_label": "Aggiorna automaticamente",
+      "auto_update_hint": "Sempre installa le nuove versioni di questa app senza chiedere. Mai la mantiene a questa versione. Un aggiornamento che chiede nuove autorizzazioni attende sempre te.",
+      "auto_update_follow": "Segui l'impostazione aggiornamenti ({{mode}})",
+      "auto_update_always": "Sempre",
+      "auto_update_never": "Mai",
+      "auto_update_save_failed": "Impossibile salvare l'impostazione di aggiornamento di questa app."
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",
@@ -21140,6 +21147,20 @@
         "row_label": "Silenzia le sessioni aperte da {{app}}",
         "failed_to_save": "Impossibile salvare il silenziamento per {{app}}.",
         "config_load_failed": "Impossibile caricare i silenziamenti salvati delle tue app. Gli interruttori non sono disponibili finché non vengono caricati."
+      },
+      "appUpdates": {
+        "title": "Aggiornamenti delle app",
+        "mode_label": "Aggiorna le app automaticamente",
+        "mode_hint": "Disattivato ti avvisa una volta quando viene pubblicata una nuova versione di un'app installata. Chiedi aggiunge un pulsante Aggiorna a quell'avviso. Automatico la installa quando l'app è inattiva. Un aggiornamento che chiede nuove autorizzazioni attende sempre te.",
+        "mode_off": "Disattivato",
+        "mode_ask": "Chiedi",
+        "mode_on": "Automatico",
+        "interval_label": "Cerca aggiornamenti delle app",
+        "interval_hint": "Ogni quanto il gateway aggiorna i registri delle app mentre un'app si aggiorna automaticamente.",
+        "interval_hours": "Ogni {{hours}} h",
+        "interval_days": "Ogni {{days}} g",
+        "save_failed": "Impossibile salvare l'impostazione di aggiornamento delle app.",
+        "load_failed": "Impossibile caricare le impostazioni di aggiornamento delle app."
       }
     },
     "settingsPage": {

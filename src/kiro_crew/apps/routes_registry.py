@@ -254,7 +254,10 @@ async def handle_registry_install(request: web.Request) -> web.Response:
                 # update: carry its rewritten crons into the running scheduler
                 # (see handle_update_app). A fresh install is disabled, and
                 # enabling it registers the crons.
-                await _resync_app_crons_after_update(request, result["name"])
+                state = request.app.get("state")
+                await _resync_app_crons_after_update(
+                    getattr(state, "crons", None) if state else None, result["name"], "dashboard"
+                )
             # Spawn the backend now so apps with a server are reachable immediately —
             # without this the backend only starts on the next gateway reboot (via
             # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -393,7 +396,12 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     reg = await _register_app_off_loop(r["name"])
                     if was_installed:
                         # An update, as in handle_registry_install.
-                        await _resync_app_crons_after_update(request, r["name"])
+                        state = request.app.get("state")
+                        await _resync_app_crons_after_update(
+                            getattr(state, "crons", None) if state else None,
+                            r["name"],
+                            "dashboard",
+                        )
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.

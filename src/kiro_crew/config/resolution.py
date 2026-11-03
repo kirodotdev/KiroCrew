@@ -67,6 +67,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "memory_stores",
         "default_memory_store",
         "apps",
+        "app_updates",
         "stt",
         "computer_use",
         "aws",

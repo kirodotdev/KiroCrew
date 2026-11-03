@@ -603,8 +603,15 @@ take the hold in `cli.main` after argument parsing.
   every retry runs under the same mandatory grace, so a floor's grace warning
   still fires. An apply still in flight (an approved in-app one) counts as
   in-flight work, so a pending restart never cancels it; its own restart owns
-  the exec. `_restart_after_update` claims `_gateway_restart_in_progress`, the
-  flag `_restart_gateway` claims, so only one restart sequence runs at a time.
+  the exec. An installed app updating itself (`apps.auto_update.applying()`)
+  counts as background work as well, and `_restart_after_update` defers while
+  one applies: the exec skips `_shutdown`'s app-update drain, so an app caught
+  mid-swap would be left half replaced. It holds the app loop off new updates
+  (`hold_for_restart`) until it execs or defers; `_restart_gateway` and the
+  `/restart` command wait for one instead (`settle_for_restart`, up to `UPDATE_INSTALLER_STOP_SECS`), since a
+  person asked for them. See app-kit-platform § 35. `_restart_after_update` claims
+  `_gateway_restart_in_progress`, the flag `_restart_gateway` claims, so only
+  one restart sequence runs at a time.
   The interpreter is `respawn_executable()`: the stable link's RESOLVED tree.
   No restart is scheduled when that would not exec the promoted tree
   (`wheel_apply.restart_reaches`; `respawn_executable` falls back to the running
