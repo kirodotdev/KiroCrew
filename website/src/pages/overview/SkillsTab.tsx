@@ -708,7 +708,10 @@ export default function SkillsTab() {
                     <ErrorNotice askAgent title={i18nT('pages.overview.skillsTab.edit_read_failed_title')} message={editReadError} messagePlacement="below" onDismiss={() => setEditReadError('')} testId="skill-edit-read-failure" />
                   </div>
                 )}
-                <InjectionRow skill={selectedSkill} />
+                {/* Keyed like the browser below: the row's pending and error
+                    state belongs to one skill and must not follow the
+                    selection to the next. */}
+                <InjectionRow key={selectedSkill.key} skill={selectedSkill} />
                 <div className="flex-1 min-h-0 p-3">
                   <SkillDirectoryBrowser key={selectedSkill.key} skillKey={selectedSkill.key} skill={selectedSkill} />
                 </div>
