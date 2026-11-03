@@ -220,8 +220,8 @@ class TestSendReply:
             ws_url="wss://fake",
             on_message=AsyncMock(),
         )
-        # Should not raise
-        await client.send_reply("", "Hello!")
+        # No response_url means nothing was delivered, and the verdict says so.
+        assert await client.send_reply("", "Hello!") is False
 
     @pytest.mark.asyncio
     async def test_reuses_live_ws_session_without_closing_it(self) -> None:
@@ -455,6 +455,8 @@ class TestAckPongHandling:
             ws_url="wss://fake",
             on_message=AsyncMock(),
         )
+        client._stream_of_req["some-req"] = "stream-1"
+        client._mark_stream_rejected("stream-1")
         ack_frame = json.dumps(
             {
                 "headers": {"req_id": "some-req"},
@@ -462,6 +464,9 @@ class TestAckPongHandling:
             }
         )
         await client._handle_message(ack_frame)
+        # An acceptance supersedes the earlier refusal on the same stream.
+        assert client.stream_had_rejection("stream-1") is False
+        assert client.stream_is_dead("stream-1") is False
 
 
 # ------------------------------------------------------------------
@@ -616,6 +621,7 @@ class TestMalformedFrames:
         await client._handle_message(json.dumps(payload))
 
         handler.assert_not_awaited()
+        assert client._handler_tasks == set()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -647,6 +653,8 @@ class TestMalformedFrames:
         await client._handle_message(json.dumps(frame))
 
         handler.assert_not_awaited()
+        # No turn task was started for the malformed frame.
+        assert client._handler_tasks == set()
 
     @pytest.mark.asyncio
     async def test_handler_error_does_not_abort_receive_loop(self) -> None:

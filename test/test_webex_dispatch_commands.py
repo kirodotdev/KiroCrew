@@ -221,6 +221,9 @@ class TestDashboardLink:
             await d.handle_message(_inbound(f"/kirocrew {arg}"))
 
         assert gen.call_args.kwargs["ttl_seconds"] == 3600
+        # The user is told the window they actually got.
+        reply = d.client.sent[-1][1]
+        assert "token=TOK" in reply and "(valid 1h)" in reply
 
     def test_the_ttl_is_clamped_to_the_server_maximum(self) -> None:
         # A user-supplied duration must not be able to widen the login window.

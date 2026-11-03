@@ -216,7 +216,7 @@ class TestNotifyNudgeExpired:
         for key in ("slack:1700000000.123456", "discord:kirocrew:direct:42"):
             state = MagicMock()
             loop = self._loop(slot_key=key)
-            GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop)
+            assert GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop) is True, key
             state.notify.assert_called_once()
             assert state.notify.call_args.kwargs["meta"] is None, key
 
