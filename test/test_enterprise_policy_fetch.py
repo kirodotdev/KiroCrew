@@ -745,13 +745,29 @@ class TestSwitchRows:
         )
         assert doc["capabilities"] == {capability: {"enabled": False}}
 
+    @pytest.mark.parametrize("effect", ["allow", "deny"])
     @pytest.mark.parametrize("extra", ["exclude: [x]", "match: [x]", "when: 'client == \"crew\"'"])
-    def test_an_unknown_shape_keeps_the_baseline(self, extra):
-        """The binary grant shape is unconfirmed: a shape not known here grants nothing."""
+    @pytest.mark.parametrize("capability", ["messaging", "cron"])
+    def test_an_unknown_shape_turns_it_off(self, capability, extra, effect):
+        """The binary grant shape is unconfirmed: a shape not known here turns it off.
+
+        Unnamed would not be safe: ``cron`` is an open control (RFC D3), so an unnamed one keeps Crew's default and a restricting
+        policy would widen it.
+        """
         doc = _translate(
-            "{capability: cron, effect: allow}", f"{{capability: cron, effect: deny, {extra}}}"
+            f"{{capability: {capability}, effect: deny}}",
+            f"{{capability: {capability}, effect: {effect}, {extra}}}",
         )
-        assert "capabilities" not in doc
+        assert doc["capabilities"] == {capability: {"enabled": False}}
+
+    def test_an_unknown_cron_shape_denies_in_an_enterprise_build(self, enterprise):
+        """End to end: an unconditional cron deny beside a conditional allow stays a deny."""
+        doc = _translate(
+            "{capability: cron, effect: deny}",
+            "{capability: cron, effect: allow, when: 'client == \"crew\"'}",
+        )
+        ceiling = governance.parse_policy(doc)
+        assert not governance.resolve(ceiling, None, "capabilities.cron", "").permitted
 
     def test_an_unknown_effect_is_refused(self):
         from kiro_crew.platform import enterprise_policy_translate as t
@@ -788,7 +804,9 @@ class TestTranslatedRowsResolve:
     @pytest.mark.parametrize(
         "rules, cron, messaging, yolo",
         [
-            ([], False, False, False),
+            # ``capabilities.cron`` is an open control (RFC D3):
+            # unnamed, it keeps Crew's default; a policy deny below still closes it.
+            ([], True, False, False),
             (
                 [
                     "{capability: cron, effect: allow}",
@@ -954,7 +972,9 @@ class TestBootWithoutCompanion:
         assert not governance.resolve(ceiling, None, "channels", "discord").permitted
         # Not named: the built-in baseline holds it at its minimal set.
         assert not governance.resolve(ceiling, None, "network.egress", "example.com").permitted
-        assert not governance.gate_decision(ceiling, None, "Running: ls").permitted
+        assert not governance.resolve(ceiling, None, "capabilities.browse", "").permitted
+        # Not named, but an open control (RFC D3): it keeps Crew's default.
+        assert governance.gate_decision(ceiling, None, "Running: ls").permitted
 
     def test_a_local_policy_only_narrows(self, enterprise, vault, cps, monkeypatch, tmp_path):
         local = tmp_path / "local-policy.json"
