@@ -425,7 +425,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         It has to be: ``mount(2)`` cannot seal an absent path, so a leaf left off the
         precreate list stays WRITABLE in the sandbox on every install that has not run
         pi yet -- which is the ordinary install. The nofollow list matters for the same
-        reason it matters for ``playwright-cli``: the gateway later execs out of this
+        reason it matters for ``browser-harness``: the gateway later execs out of this
         name, so the mounted name must stay the real directory.
         """
         assert "pi-gate" in sandbox._CREW_READONLY_LEAVES
@@ -435,7 +435,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
             sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
         )
 
-    @pytest.mark.parametrize("leaf_name", ["pi-gate", "playwright-cli"])
+    @pytest.mark.parametrize("leaf_name", ["pi-gate", "browser-harness"])
     @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
     def test_a_squat_refuses_the_spawn_with_no_per_leaf_exception(
         self, monkeypatch, tmp_path, leaf_name

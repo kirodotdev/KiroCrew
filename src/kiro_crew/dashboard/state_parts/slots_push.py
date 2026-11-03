@@ -1105,6 +1105,10 @@ async def deliver_ws_owners(self: DashboardState, msg_type: str, data: WsPayload
     return await _websocket_for(self).deliver_ws_owners(msg_type, data)
 
 
+async def deliver_ws_owners_bytes(self: DashboardState, payload: bytes) -> int:
+    return await _websocket_for(self).deliver_ws_owners_bytes(payload)
+
+
 def broadcast_ws_owners(self: DashboardState, msg_type: str, data: WsPayload) -> None:
     _websocket_for(self).broadcast_ws_owners(msg_type, data)
 
@@ -1149,10 +1153,6 @@ def add_fold_watch_listener(
     self: DashboardState, listener: Callable[[], None]
 ) -> Callable[[], None]:
     return _websocket_for(self).add_fold_watch_listener(listener)
-
-
-def broadcast_browser_event(self: DashboardState, event_type: str, data: dict) -> None:
-    _websocket_for(self).broadcast_browser_event(event_type, data)
 
 
 def register_ws(self: DashboardState, ws: web.WebSocketResponse, *, owner: bool = False) -> None:

@@ -117,7 +117,7 @@ def sampled(tmp_path, monkeypatch):
         async def ask(self, _state, _questions):
             return {tr.QUESTION_ID: Answer(id=tr.QUESTION_ID, value=tr.TIER_RISKY, p=0.88)}
 
-    monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Oracle)
+    monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Oracle)
     return keystone
 
 

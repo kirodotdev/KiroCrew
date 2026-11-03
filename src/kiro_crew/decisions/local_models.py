@@ -1,14 +1,14 @@
 """Local System One models the decision seam can use instead of hosted Jev.
 
 A local model is an open-weight decision server the owner runs on this machine,
-speaking the same ``/v1/systemone`` wire format Jev does, so :class:`JevOracle`
+speaking the same ``/v1/systemone`` wire format Jev does, so :class:`SystemOneProvider`
 talks to it unchanged. This module owns three things:
 
 * the PRESETS the dashboard offers, each with the numbers a reader needs to
   choose one -- how close it comes to Jev, how much memory it needs, how slow it
   is on a CPU;
 * :func:`is_loopback_endpoint`, the one test for "this endpoint is on this
-  machine", which ``impl_jev`` uses to withhold the Jev key and the provider
+  machine", which ``impl_systemone`` uses to withhold the Jev key and the provider
   route uses to decide whether a switch may carry consent across;
 * :func:`endpoint_for`, which builds a preset's endpoint from a port, so no
   caller ever composes a local URL from caller-supplied text;
@@ -35,8 +35,12 @@ import yarl
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
 from kiro_crew.security import canonicalize_ip
 
-#: Preset id that means "hosted Jev at the shipped default endpoint".
-PRESET_JEV = "jev"
+#: Preset id that means "the hosted provider at the shipped default endpoint". The
+#: VALUE stays ``"jev"``: it is stored in config and bound into consent, so a new
+#: spelling would void every consent already given. ``PRESET_JEV`` is the former
+#: name of the same constant.
+PRESET_HOSTED = "jev"
+PRESET_JEV = PRESET_HOSTED
 
 #: Preset id, and the endpoint the provider route writes for it, meaning "no decision
 #: model": nothing is sent, no local server runs, and every point uses its built-in

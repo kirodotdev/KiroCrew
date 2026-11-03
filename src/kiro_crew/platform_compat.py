@@ -289,6 +289,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _statx_mnt_id_unreported,
         chmod_safe,
         claude_code_managed_settings_dir,
+        dup_fd_at_or_above,
         ensure_owner_rwx_dirs,
         fchmod_safe,
         is_executable_file,

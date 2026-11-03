@@ -218,7 +218,7 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter statusLabel={environmentStart} running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
+        <ChatFooter statusLabel={environmentStart} running={slotRunning || !!currentSlot?.preparing} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} />
         {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
           <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <SessionPulseSurveyCard
@@ -271,7 +271,7 @@ export default function ChatTranscriptView({
           // `data-image-turn` on both wrappers below: the image viewer pages a
           // turn's markdown images and file cards as one set (dispatchLightbox).
           if (item.kind === 'turn') {
-            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn=""><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} /></div>
+            return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn=""><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} disclosureKey={vi.key} onDisclosureChange={setTurnDisclosureFor} mayBeLive={turnRowMayBeLive} browserLiveSessionKey={activeSlot ?? undefined} /></div>
           }
           // This row's bubble is the one the pinned banner is standing in for
           // (identity rule below): hide the row and mark it for index.css. The
