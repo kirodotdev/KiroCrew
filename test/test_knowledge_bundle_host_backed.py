@@ -60,7 +60,7 @@ def _folder_row(store, *, file_path, uri="/watched/notes", body="folder body"):
 def _real_file(tmp_path, body="folder body"):
     path = tmp_path / "watched" / "a.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 

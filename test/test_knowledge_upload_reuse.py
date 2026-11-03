@@ -260,7 +260,7 @@ async def test_manual_resync_holds_the_gate_until_the_task_has_claimed(
     from kiro_crew.knowledge.ingestion import IngestionPipeline
 
     path = tmp_path / "notes.md"
-    path.write_text("# notes\n")
+    path.write_text("# notes\n", encoding="utf-8")
     sid = store.add_source(name="notes.md", source_type="local_file", uri=str(path), properties={})
     store.update_source(sid, sync_status="error")
     pipeline = IngestionPipeline.__new__(IngestionPipeline)

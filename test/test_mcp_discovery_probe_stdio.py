@@ -849,7 +849,8 @@ class TestProbeGroupReap:
         # modeling a launcher shim wedged mid-cold-start.
         script = tmp_path / "fake_launcher.sh"
         script.write_text(
-            "#!/bin/sh\n" "sleep 300 &\n" f"echo $! > {grandchild_pid_file}\n" "sleep 300\n"
+            "#!/bin/sh\n" "sleep 300 &\n" f"echo $! > {grandchild_pid_file}\n" "sleep 300\n",
+            encoding="utf-8",
         )
         script.chmod(0o755)
 
