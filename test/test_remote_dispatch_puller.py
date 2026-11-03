@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import work_ledger_projection_helpers as helpers
-from test_remote_dispatch_hub_ingest import CONDUCTOR, StubCrew, _read, _remote_item, _state
+from test_remote_dispatch_hub_ingest import CONDUCTOR, StubCrew, _remote_item, _state
 
 from kiro_crew import work_ledger
 from kiro_crew.dashboard.handlers import remote_ingest, remote_puller
@@ -385,7 +385,7 @@ def test_a_stale_failed_or_switched_off_pull_never_holds(recorded, peer, monkeyp
     async def go() -> str:
         item_id = await _remote_item(peer)
         peer.report("blocked", "need a login", "2026-10-29T10:00:00+00:00", reason="needs_human")
-        await _read(peer)
+        await remote_puller.run_once(_state(peer))
         return item_id
 
     item_id = asyncio.run(go())
