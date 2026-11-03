@@ -33,6 +33,7 @@ from dashboard_handlers_core_coverage_helpers import seeded_config_fixture  # no
 from dashboard_handlers_core_coverage_helpers import _json_req, _req, _seed_stt
 
 from kiro_crew import extras
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import MAX_THREADS, MIN_PARTIAL_INTERVAL_MS, MIN_SILENCE_MS
@@ -102,7 +103,7 @@ class TestPageAndAssets:
             "kiro_crew.hooks.validate_file_path", lambda p: str(avatar) if p else None
         )
         resp = await core_mod.logo(_req())
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
 
     @pytest.mark.asyncio
     async def test_logo_prefers_nightly_variant_on_nightly_build(
@@ -121,7 +122,7 @@ class TestPageAndAssets:
         monkeypatch.setattr("kiro_crew.dashboard.handlers._STATIC_DIR", tmp_path)
         monkeypatch.setattr("kiro_crew.__version__", "9.9.9-nightly.20260812")
         resp = await core_mod.logo(_req())
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
         assert os.path.realpath(resp._path) == os.path.realpath(nightly)
 
     @pytest.mark.asyncio
@@ -158,7 +159,7 @@ class TestPageAndAssets:
         (dist / "manifest.webmanifest").write_text("{}", encoding="utf-8", newline="\n")
         monkeypatch.setattr(core_mod, "_DIST_DIR", dist)
         resp = await core_mod.pwa_file(_req(match_info={"name": "manifest.webmanifest"}))
-        assert isinstance(resp, web.FileResponse)
+        assert isinstance(resp, DistFileResponse)
 
     @pytest.mark.asyncio
     async def test_pwa_file_404_for_missing_name(self, monkeypatch, tmp_path) -> None:
