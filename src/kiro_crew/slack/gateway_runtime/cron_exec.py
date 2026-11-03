@@ -155,6 +155,10 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             job.id,
             job.secret_env,
             job.secret_env_pin,
+            # created_by: app-owned jobs keep cc under off (the app backend runs
+            # confined), so the operator-off downgrade is for non-app jobs only.
+            # "" on a job with no owner means not app-owned.
+            job.created_by,
             timeout=_claim_backstop(job, cmd_timeout),
         )
         if result.get("status") == "cancelled":
@@ -615,6 +619,10 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.thread_ts or "",
             ),
             self._live_internal_secret,
+            # created_by: app-owned jobs keep cc under off (the app backend runs
+            # confined), so the operator-off downgrade is for non-app jobs only.
+            # "" on a job with no owner means not app-owned.
+            job.created_by,
             timeout=_claim_backstop(job, script_timeout),
         )
         status = result.get("status", "error")

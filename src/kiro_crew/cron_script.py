@@ -75,11 +75,93 @@ from kiro_crew.sandbox import (
     CRON_SCRIPT_CHILD_ENV,
     SandboxUnavailableError,
     cgroup_scope_argv,
+    configured_sandbox_mode,
+    effective_sandbox_mode,
     popen_limited,
     run_limited,
+    spawn_delegates_masking,
     wrap_argv,
 )
 from kiro_crew.security import redact
+
+
+def _cron_tier_with_operator_off(base_mode: str, created_by: str | None) -> str:
+    """*base_mode* for a cron child, downgraded to ``"off"`` only when the
+    operator's ``agent.sandbox`` resolves to a genuine ``"off"`` on this host,
+    the agent that wrote the body is itself unconfined, AND the job is not owned
+    by an app.
+
+    The agent and sub-agent sessions that WRITE cron bodies honour
+    ``agent.sandbox`` (the ACP and one-shot kiro-cli spawns resolve it through
+    :func:`configured_sandbox_mode`). When that setting is ``"off"`` AND those
+    writers run unconfined, confining the cron they wrote adds no protection — it
+    only breaks a cron doing what an agent shell already may. Three conditions,
+    all required:
+
+    * EFFECTIVE tier is ``off`` (:func:`effective_sandbox_mode`), not the raw
+      config value, because ``off`` does not always stay ``off``: an enterprise
+      build floors it at the shipped default, and a ``sandbox.min_level``
+      governance floor lifts it at least to that floor. On such a host the clamp
+      ``wrap_argv`` applies would carry a raw-``off`` request UP to ``standard`` —
+      LOOSER than the ``cc`` base, re-opening ``~/.aws``, the SSO cache,
+      ``~/.kube``, ``~/.netrc``, ``~/.git-credentials``, ``~/.npmrc`` and
+      ``~/.pypirc``.
+
+    * The authoring agent is really unconfined
+      (:func:`spawn_delegates_masking` is false). Under ``off`` the agent's own
+      kiro-cli spawn delegates to kiro-cli's built-in sandbox on macOS (when its
+      internal sandbox is on) and on Windows, so there the author is confined
+      while a non-kiro-cli cron child at ``mode="off"`` would be left unwrapped —
+      looser than its author. Only on Linux (and macOS with that sandbox off) is
+      the author genuinely unconfined. That predicate is the one
+      ``wrap_argv``'s delegation uses, reused here so the two cannot diverge; it
+      reads as delegated (confined) on any unreadable setting.
+
+    * The job is NOT owned by an app (*created_by*). An app-registered cron's
+      body runs with the app's bundle on ``sys.path``, and the app's own backend
+      runs confined at ``standard`` — so its cron must not be looser than the
+      backend that ships it. ``created_by`` of ``None`` means the caller did not
+      state ownership, which is treated as app-owned-unknown and keeps ``cc``;
+      ANY ``app:``-prefixed stamp (``APP_OWNER_PREFIX``) keeps ``cc`` too,
+      including a bare ``"app:"`` that names no app — the prefix alone marks the
+      job app-registered, so the gate keys on it rather than on a resolved app
+      name (``app_owner_name('app:')`` is ``""``, which would otherwise read as
+      operator-owned and reach ``off`` — a fail-open). Only an owner with NO
+      ``app:`` prefix (an operator or an agent, ``""`` or a person tag) reaches
+      the ``off`` gate.
+
+    Any condition failing keeps *base_mode*, so the function only ever turns
+    confinement OFF where the author is already unconfined and the job is the
+    operator's or an agent's, and never picks a looser confined tier than
+    *base_mode*.
+
+    Every other effective value — the shipped default, and every explicit tier —
+    leaves *base_mode* exactly as the caller chose it, so no spawn confined today
+    is loosened. A secret-bearing (granted) script run does NOT go through here:
+    its isolation is part of what the operator approved per job and it refuses to
+    run without an OS backend, so it pins its own tier regardless of this setting.
+    """
+    # Deferred: apps.cron_sdk imports cron_script (resolve_script_path), so a
+    # top-level import here would cycle.
+    from kiro_crew.apps.cron_sdk import APP_OWNER_PREFIX
+
+    # Any app: stamp keeps cc — the prefix alone marks the job app-registered.
+    # Keying on the prefix (not app_owner_name's resolved name) fails closed: a
+    # bare "app:" resolves to "" there, which would otherwise reach the off gate.
+    if created_by is None or created_by.startswith(APP_OWNER_PREFIX):
+        return base_mode
+    try:
+        effective = effective_sandbox_mode(configured_sandbox_mode())
+    except Exception:
+        # effective_sandbox_mode re-reads the governance floor and may raise
+        # (e.g. a PlatformCompositionError a floor read deliberately propagates
+        # so it never silently downgrades DENY to ALLOW). Fail closed to the
+        # confined base_mode: an operator's "off" must never be honoured on the
+        # strength of a floor this process could not evaluate.
+        return base_mode
+    if effective == "off" and not spawn_delegates_masking():
+        return "off"
+    return base_mode
 
 
 def _new_envelope_tag() -> str:
@@ -111,6 +193,7 @@ def run_script_sandboxed(
     secret_env_pin: str = "",
     delivery: str = "",
     internal_secret_provider: Callable[[], str] | None = None,
+    created_by: str | None = None,
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
@@ -399,7 +482,19 @@ def run_script_sandboxed(
         # the existing route an operator already approves per job: a vault
         # secret_env grant, which runs ``strict`` and injects the one approved
         # secret instead of exposing a store.
-        sandbox_mode = "strict" if stdin_payload is not None else "cc"
+        #
+        # An UNGRANTED script additionally follows the operator's
+        # ``agent.sandbox`` setting for the single case of ``off``
+        # (:func:`_cron_tier_with_operator_off`): the agents that wrote this body
+        # run unconfined under that setting, so confining the body they wrote
+        # only breaks it. Every other configured tier leaves the ``cc`` base
+        # untouched. A GRANTED (secret-bearing) run pins ``strict`` regardless:
+        # its isolation is part of what the operator approved per job, and the
+        # refusal below keeps it from running without an OS backend.
+        if stdin_payload is not None:
+            sandbox_mode = "strict"
+        else:
+            sandbox_mode = _cron_tier_with_operator_off("cc", created_by)
         # ``seal_hidden_dirs=hidden``: a granted script has no business WRITING into
         # the crons dir or its own parent -- they are hidden so it cannot read a mutable
         # sibling, and on Linux a hidden dir's stand-in is a writable empty tmpfs, so a
@@ -883,6 +978,7 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    created_by: str | None = None,
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
@@ -946,6 +1042,12 @@ def run_command_sandboxed(
     # defense-in-depth and is bypassed when the OS backend falls back to "none"
     # (e.g. macOS >= 26 — see _clean_cron_env).
     #
+    # The ``cc`` base follows the operator's ``agent.sandbox`` setting for the
+    # single case of ``off`` (:func:`_cron_tier_with_operator_off`), exactly as
+    # the ungranted script path does: the agents that author a command cron run
+    # unconfined under that setting, so confining the command they wrote only
+    # breaks it. Every other configured tier leaves the ``cc`` base untouched.
+    #
     # wrap_argv is INSIDE the try: on a host with no OS sandbox backend (every
     # Windows host) it fail-closes by raising, and outside the try that escaped
     # this function entirely — the scheduler's caller saw a bare exception
@@ -965,7 +1067,7 @@ def run_command_sandboxed(
         cron_scratch = _allocate_cron_scratch(job_id)
         sandboxed_argv, sandbox_cleanup = wrap_argv(
             argv,
-            mode="cc",
+            mode=_cron_tier_with_operator_off("cc", created_by),
             extra_private_dirs=(str(cron_scratch),) if cron_scratch is not None else (),
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling

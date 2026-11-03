@@ -23,6 +23,7 @@ from kiro_crew.cron_script import (
     _MAX_BAD_OUTPUT_HEAD,
     _MAX_SCRIPT_STDERR_TAIL,
     _REDACT_STRADDLE_MARGIN,
+    _cron_tier_with_operator_off,
     _resolve_internal_secret,
     run_command_sandboxed,
     run_script_sandboxed,
@@ -945,3 +946,275 @@ class TestCronSpawnTiersAreAligned:
         )
 
         assert modes[-1] == "strict"
+
+    def _write_script(self, tmp_path):
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "s.py"
+        script.write_text("def run(ctx):\n    return None\n")
+        return script
+
+    def _force_configured(self, monkeypatch, value, effective=None, delegated=False):
+        """Make the operator's ``agent.sandbox`` resolve to *value* for the run.
+
+        *effective* is what the governance clamp would turn *value* into on the
+        host; it defaults to *value* (ungoverned, the clamp is a no-op). Pass a
+        tighter *effective* to model a ``sandbox.min_level`` floor or an
+        enterprise build that lifts a raw ``off``.
+
+        *delegated* pins :func:`spawn_delegates_masking`, which is
+        platform-dependent (macOS kiro-cli delegation, Windows). It defaults to
+        ``False`` (author genuinely unconfined, Linux's behaviour) so the ``off``
+        cases below assert that path regardless of the CI host the test runs on.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.configured_sandbox_mode", lambda: value)
+        resolved = value if effective is None else effective
+        monkeypatch.setattr("kiro_crew.cron_script.effective_sandbox_mode", lambda mode: resolved)
+        monkeypatch.setattr("kiro_crew.cron_script.spawn_delegates_masking", lambda: delegated)
+
+    def test_off_runs_an_ungranted_script_unsandboxed(self, tmp_path, monkeypatch):
+        """``agent.sandbox: off`` must run an ungranted script child unconfined.
+
+        The agents that wrote the body run unconfined under that setting, so
+        confining the body only breaks a job doing what an agent shell already
+        may. The child follows the operator's own tier, exactly as the LLM-cron
+        and one-shot kiro-cli spawns do.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-off-script", timeout=10, created_by="")
+
+        assert modes[-1] == "off"
+
+    def test_off_runs_a_command_unsandboxed(self, tmp_path, monkeypatch, posix_test_shell):
+        """``agent.sandbox: off`` must run a command cron child unconfined too."""
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed("true", job_id="job-off-command", timeout=10, created_by="")
+
+        assert modes[-1] == "off"
+
+    def test_off_does_not_loosen_a_secret_granted_script(self, tmp_path, monkeypatch):
+        """``off`` must NOT reach the granted branch: it pins ``strict`` regardless.
+
+        A grant's isolation is part of what the operator approved per job, and a
+        granted run refuses to execute without an OS backend. So the operator's
+        ``off`` tier applies to ungranted bodies only; the granted branch keeps
+        ``strict`` even under ``off``.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._secret_env_precheck",
+            lambda *a, **k: ({"TOKEN": "v"}, ""),
+        )
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(
+            f"{script}:run",
+            job_id="job-off-granted",
+            timeout=10,
+            secret_env={"TOKEN": "vault:t"},
+            secret_env_pin="pin",
+        )
+
+        assert modes[-1] == "strict"
+
+    def test_off_clamped_by_a_floor_keeps_cc_not_the_looser_standard(
+        self, tmp_path, monkeypatch, posix_test_shell
+    ):
+        """A floor (or enterprise build) that lifts ``off`` must keep ``cc``.
+
+        Where governance floors ``agent.sandbox: off`` — an enterprise build, or
+        a ``sandbox.min_level`` of ``standard`` — ``wrap_argv``'s clamp would
+        carry a raw ``off`` request UP to ``standard``, which is LOOSER than the
+        ``cc`` base and re-opens the credential stores. The operator's ``off``
+        cannot take effect on that host, so the cron must keep ``cc``. Gating on
+        the EFFECTIVE (post-clamp) tier is what prevents the downgrade.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        # The operator set "off", but the governance clamp lifts it to "standard".
+        self._force_configured(monkeypatch, "off", effective="standard")
+
+        # created_by="" (not app-owned), so it is the floor — not the app gate —
+        # that keeps cc here.
+        script_modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-floor-script", timeout=10, created_by="")
+
+        command_modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed("true", job_id="job-floor-command", timeout=10, created_by="")
+
+        assert script_modes[-1] == "cc"
+        assert command_modes[-1] == "cc"
+
+    def test_an_unevaluable_floor_keeps_cc(self, tmp_path, monkeypatch):
+        """A governance floor read that RAISES must fail closed to ``cc``.
+
+        ``effective_sandbox_mode`` re-reads the floor and may raise (a
+        ``PlatformCompositionError`` a floor read propagates so it never silently
+        downgrades). An operator's ``off`` must not be honoured on the strength
+        of a floor this process could not evaluate.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        monkeypatch.setattr("kiro_crew.cron_script.configured_sandbox_mode", lambda: "off")
+
+        def _boom(_mode):
+            raise RuntimeError("floor unevaluable")
+
+        monkeypatch.setattr("kiro_crew.cron_script.effective_sandbox_mode", _boom)
+
+        modes = self._capture_mode(monkeypatch)
+        # created_by="" so the app gate does not short-circuit; the raise path
+        # is what keeps cc.
+        run_script_sandboxed(f"{script}:run", job_id="job-floor-raise", timeout=10, created_by="")
+
+        assert modes[-1] == "cc"
+
+    @pytest.mark.parametrize("configured", ["auto", "standard", "cc", "strict"])
+    def test_a_non_off_tier_leaves_the_cc_base_unchanged(
+        self, tmp_path, monkeypatch, posix_test_shell, configured
+    ):
+        """Only ``off`` is honoured: every other configured tier keeps ``cc``.
+
+        The script and command base tier is ``cc`` and must stay ``cc`` for the
+        shipped default and for every explicit tier — the fix never picks a
+        looser confined tier than the base, and never changes the default.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, configured)
+
+        # created_by="" (not app-owned), so it is the non-off tier — not the app
+        # gate — that keeps cc.
+        script_modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-keep-script", timeout=10, created_by="")
+
+        command_modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed("true", job_id="job-keep-command", timeout=10, created_by="")
+
+        assert script_modes[-1] == "cc"
+        assert command_modes[-1] == "cc"
+
+    def _tier_under_effective_off(self, monkeypatch, created_by=""):
+        """``_cron_tier_with_operator_off("cc", created_by)`` with the effective tier
+        pinned to ``off`` — so the result is decided purely by the delegation gate
+        the surrounding test sets up through ``spawn_delegates_masking``'s inputs
+        (``sys.platform`` / the kiro-cli probe in ``sandbox_spawn``).
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.configured_sandbox_mode", lambda: "off")
+        monkeypatch.setattr("kiro_crew.cron_script.effective_sandbox_mode", lambda mode: "off")
+        return _cron_tier_with_operator_off("cc", created_by)
+
+    def test_a_delegated_author_keeps_cc_under_off(self, monkeypatch):
+        """When the authoring agent's own spawn is DELEGATED to kiro-cli's sandbox
+        (macOS with its internal sandbox on, or Windows), the cron keeps ``cc``.
+
+        An unwrapped cron child under ``mode="off"`` would be looser than its
+        confined author, so the helper must keep ``cc`` whenever
+        ``spawn_delegates_masking`` reports delegation. Patched on the name
+        ``cron_script`` reads (the facade-threaded binding), not on the owner
+        module, so the facade-mirror guard stays satisfied; the platform mapping
+        itself is owned by ``spawn_delegates_masking``'s own tests.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.spawn_delegates_masking", lambda: True)
+        assert self._tier_under_effective_off(monkeypatch) == "cc"
+
+    def test_an_undelegated_author_honours_off(self, monkeypatch):
+        """When the authoring agent is genuinely unconfined (Linux, or macOS with
+        kiro-cli's internal sandbox off), an effective ``off`` is honoured."""
+        monkeypatch.setattr("kiro_crew.cron_script.spawn_delegates_masking", lambda: False)
+        assert self._tier_under_effective_off(monkeypatch) == "off"
+
+    def test_app_owned_script_cron_keeps_cc_under_off(self, tmp_path, monkeypatch):
+        """An APP-registered script cron keeps ``cc`` even under an effective ``off``
+        with an unconfined author: the app's backend runs confined at ``standard``,
+        so its cron must not be looser."""
+        from kiro_crew.apps.cron_sdk import owner_tag
+
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(
+            f"{script}:run", job_id="job-app", timeout=10, created_by=owner_tag("my-app")
+        )
+
+        assert modes[-1] == "cc"
+
+    def test_app_owned_command_cron_keeps_cc_under_off(
+        self, tmp_path, monkeypatch, posix_test_shell
+    ):
+        """An APP-registered command cron keeps ``cc`` under ``off`` too."""
+        from kiro_crew.apps.cron_sdk import owner_tag
+
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed(
+            "true", job_id="job-app-cmd", timeout=10, created_by=owner_tag("my-app")
+        )
+
+        assert modes[-1] == "cc"
+
+    def test_bare_app_prefix_stamp_keeps_cc_under_off(self, tmp_path, monkeypatch):
+        """A bare ``"app:"`` stamp (names no app) must keep ``cc`` under an effective
+        ``off`` with an unconfined author — fail closed.
+
+        ``app_owner_name("app:")`` is ``""``, so a gate keyed on the resolved app
+        name would read this as operator-owned and reach the ``off`` gate. The
+        ``"app:"`` prefix alone marks the job app-registered, so it keeps ``cc``.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-bare-app", timeout=10, created_by="app:")
+
+        assert modes[-1] == "cc"
+
+    def test_agent_owned_script_cron_honours_off(self, tmp_path, monkeypatch):
+        """A non-app owner (an agent/operator tag) reaches the off gate under
+        effective ``off`` with an unconfined author."""
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-agent", timeout=10, created_by="U0OWNER")
+
+        assert modes[-1] == "off"
+
+    def test_created_by_omitted_keeps_cc_under_off(self, tmp_path, monkeypatch):
+        """``created_by`` unset (``None``) means the caller did not state ownership,
+        treated as app-owned-unknown — keep ``cc`` even under an effective ``off``."""
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        script = self._write_script(tmp_path)
+        self._force_configured(monkeypatch, "off")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-none", timeout=10)
+
+        assert modes[-1] == "cc"
