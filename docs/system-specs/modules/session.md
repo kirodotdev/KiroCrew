@@ -2938,6 +2938,13 @@ envelope on a cold session.
 - `close_all()`: saves all active mappings before killing processes.
 - `start_pool()`: prunes stale entries (files deleted by kiro-cli GC).
 
+**A file the load cannot use is never written over unread.** One leading UTF-8
+byte-order mark reads normally. A file that is not a JSON object starts the map
+empty, and the first write moves it to `session_map.json.corrupt-<utc>` before
+landing; a failed move fails that write and the state stays owed. A file whose
+read raises `OSError` is left alone, and every write raises until a restart reads
+it (`session_map_store._load`, `_write_payload`).
+
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
 repair), the session pointer and the per-conversation state, the privacy rows, and the
