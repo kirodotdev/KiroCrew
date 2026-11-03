@@ -4438,7 +4438,8 @@
       "could_not_render": "Couldn't render this artifact",
       "image_could_not_be_loaded": "Image couldn't be loaded",
       "rendering": "Rendering…",
-      "retry": "Retry"
+      "retry": "Retry",
+      "view_full_size": "View full size"
     },
     "artifactFolderDeleteDialog": {
       "cancel": "Cancel",

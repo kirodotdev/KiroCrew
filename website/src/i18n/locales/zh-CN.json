@@ -6179,6 +6179,7 @@
       "artifact": "产物：{{slug}}",
       "could_not_render": "无法渲染此产物",
       "image_could_not_be_loaded": "无法加载图片",
+      "view_full_size": "查看原图",
       "no_longer_showing": "此产物已不再显示",
       "rendering": "渲染中…",
       "retry": "重试",

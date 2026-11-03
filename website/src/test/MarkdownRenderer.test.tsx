@@ -1378,20 +1378,20 @@ describe('Lightbox keyboard navigation', () => {
   }
 
   it('renders nothing initially', () => {
-    const { container } = render(<Lightbox />)
-    expect(container.firstChild).toBeNull()
+    render(<Lightbox />); const container = document.body
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('closes on Escape', async () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     expect(container.querySelector('img')).not.toBeNull()
     act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('ArrowRight advances index, ArrowLeft retreats, both clamp at the ends', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([
       { src: 'a.png', alt: 'a' },
       { src: 'b.png', alt: 'b' },
@@ -1416,7 +1416,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('arrow keys are no-ops with a single image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'only.png', alt: 'only' }]))
     act(() => { fireEvent.keyDown(window, { key: 'ArrowRight' }) })
     act(() => { fireEvent.keyDown(window, { key: 'ArrowLeft' }) })
@@ -1424,14 +1424,14 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('keyboard events are ignored when the viewer is closed', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.keyDown(window, { key: 'ArrowRight' })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('accepts the legacy { src, alt } payload as a single-image set', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => {
       window.dispatchEvent(new CustomEvent('lightbox', { detail: { src: 'legacy.png', alt: 'legacy' } }))
     })
@@ -1483,7 +1483,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('enlarges and shrinks the image via +/- keys, clamped, and resets on close', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const style = () => container.querySelector('img')!.getAttribute('style') || ''
     // Fit-to-screen baseline: scale(1), fit box.
@@ -1505,7 +1505,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('ignores +/-/0 when chorded with a browser-zoom modifier', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const style = () => container.querySelector('img')!.getAttribute('style') || ''
     act(() => { fireEvent.keyDown(window, { key: '+', metaKey: true }) })
@@ -1515,7 +1515,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('clicking the image does not change zoom (zoom lives in the toolbar/keyboard)', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const imgEl = () => container.querySelector('img')!
     const style = () => imgEl().getAttribute('style') || ''
@@ -1531,7 +1531,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('resets zoom when navigating to another image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }, { src: 'b.png', alt: 'b' }], 0))
     act(() => { fireEvent.keyDown(window, { key: '+' }) })
     expect(container.querySelector('img')!.getAttribute('style')).toContain('scale(1.5)')
@@ -1541,7 +1541,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('drags an enlarged image to pan it, and a pan-drag does not step the zoom', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const imgEl = () => container.querySelector('img')!
     // Give the image a layout box larger than the viewport so the clamp allows travel.

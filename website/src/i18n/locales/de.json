@@ -6319,6 +6319,7 @@
       "artifact": "Artefakt: {{slug}}",
       "could_not_render": "Dieses Artefakt konnte nicht dargestellt werden",
       "image_could_not_be_loaded": "Bild konnte nicht geladen werden",
+      "view_full_size": "In voller Größe anzeigen",
       "no_longer_showing": "Dieses Artefakt wird nicht mehr angezeigt",
       "rendering": "Wird gerendert…",
       "retry": "Wiederholen",

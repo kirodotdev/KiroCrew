@@ -6146,6 +6146,7 @@
       "artifact": "アーティファクト：{{slug}}",
       "could_not_render": "このアーティファクトを表示できませんでした",
       "image_could_not_be_loaded": "画像を読み込めませんでした",
+      "view_full_size": "フルサイズで表示",
       "no_longer_showing": "このアーティファクトは表示されなくなりました",
       "rendering": "レンダリング中…",
       "retry": "再試行",
