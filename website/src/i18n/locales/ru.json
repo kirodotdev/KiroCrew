@@ -9506,7 +9506,12 @@
       "loading_commands_ctrl_enter_held": "Загрузка команд… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
       "loading_commands_enter_held": "Загрузка команд… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "no_matching_commands_ctrl_enter_sends": "Нет подходящих команд — Ctrl+Enter отправит сообщение",
-      "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение"
+      "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение",
+      "workflows_load_failed": "Не удалось загрузить сохранённые процессы",
+      "workflows_load_failed_enter_sends": "Не удалось загрузить сохранённые процессы — Enter отправит сообщение",
+      "workflows_load_failed_ctrl_enter_sends": "Не удалось загрузить сохранённые процессы — Ctrl+Enter отправит сообщение",
+      "loading_workflows_enter_held": "Загрузка сохранённых процессов… — Enter пока не отправляет; нажми Esc, затем Enter отправит сообщение",
+      "loading_workflows_ctrl_enter_held": "Загрузка сохранённых процессов… — Ctrl+Enter пока не отправляет; нажми Esc, затем Ctrl+Enter отправит сообщение"
     },
     "slotTagPopover": {
       "assign_tags": "Назначить теги",

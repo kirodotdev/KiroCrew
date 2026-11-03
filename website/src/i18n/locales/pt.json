@@ -9297,7 +9297,12 @@
       "loading_commands_ctrl_enter_held": "Carregando comandos… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
       "loading_commands_enter_held": "Carregando comandos… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "no_matching_commands_ctrl_enter_sends": "Nenhum comando correspondente — Ctrl+Enter envia a mensagem",
-      "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem"
+      "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem",
+      "workflows_load_failed": "Não foi possível carregar os fluxos salvos",
+      "workflows_load_failed_enter_sends": "Não foi possível carregar os fluxos salvos — Enter envia a mensagem",
+      "workflows_load_failed_ctrl_enter_sends": "Não foi possível carregar os fluxos salvos — Ctrl+Enter envia a mensagem",
+      "loading_workflows_enter_held": "Carregando fluxos salvos… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
+      "loading_workflows_ctrl_enter_held": "Carregando fluxos salvos… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem"
     },
     "slotTagPopover": {
       "assign_tags": "Atribuir etiquetas",
