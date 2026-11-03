@@ -6186,7 +6186,8 @@
       "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt",
       "trusted_channel_all": "Vertrauenswürdig — alle Werkzeuge in diesem Kanal werden automatisch genehmigt, bleibt nach Neustarts bestehen",
       "trusted_channel_base": "Vertrauenswürdig — {{base}}-Befehle werden für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
-      "trusted_channel_command": "Vertrauenswürdig — „{{cmd}}“ wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt"
+      "trusted_channel_command": "Vertrauenswürdig — „{{cmd}}“ wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
+      "title_wants_to_run": "<title/> möchte ausgeführt werden"
     },
     "approvalModePicker": {
       "nudge_body": "Hier stellst du ein, wie {{productName}} um Genehmigung bittet. Wählst du hier „Vertrauen“, arbeitet es in diesem Chat, ohne vorher zu fragen – du kannst jederzeit zurückwechseln.",
@@ -6754,7 +6755,9 @@
       "copy": "Kopieren",
       "generating": "wird erstellt…",
       "unwrap": "Zeilenumbruch aufheben",
-      "wrap": "Zeilen umbrechen"
+      "wrap": "Zeilen umbrechen",
+      "code_label": "Code",
+      "code_region": "{{lang}}-Code"
     },
     "blockquote": {
       "copied": "Kopiert!",

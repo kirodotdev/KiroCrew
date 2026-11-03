@@ -6335,7 +6335,8 @@
       "trusted_auto_approving_future_calls": "De confianza — se aprobarán automáticamente las llamadas futuras",
       "trusted_channel_all": "De confianza — todas las herramientas de este canal se aprobarán automáticamente, persiste tras reiniciar",
       "trusted_channel_base": "De confianza — los comandos {{base}} se aprobarán automáticamente para @{{role}} hasta que {{productName}} se reinicie",
-      "trusted_channel_command": "De confianza — «{{cmd}}» se aprobará automáticamente para @{{role}} hasta que {{productName}} se reinicie"
+      "trusted_channel_command": "De confianza — «{{cmd}}» se aprobará automáticamente para @{{role}} hasta que {{productName}} se reinicie",
+      "title_wants_to_run": "<title/> quiere ejecutarse"
     },
     "approvalModePicker": {
       "nudge_body": "Aquí puedes ajustar cómo {{productName}} pide aprobación. Si eliges «Confianza» aquí, podrá trabajar en este chat sin preguntar antes; puedes volver a cambiarlo cuando quieras.",
@@ -6913,7 +6914,9 @@
       "copy": "Copiar",
       "generating": "generando…",
       "unwrap": "Desactivar ajuste de líneas",
-      "wrap": "Ajustar líneas"
+      "wrap": "Ajustar líneas",
+      "code_label": "código",
+      "code_region": "Código {{lang}}"
     },
     "blockquote": {
       "copied": "¡Copiado!",

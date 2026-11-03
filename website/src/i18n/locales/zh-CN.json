@@ -6037,7 +6037,8 @@
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准",
       "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",
       "trusted_channel_base": "已信任 — {{base}} 命令将对 @{{role}} 自动批准，{{productName}} 重启前有效",
-      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效"
+      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效",
+      "title_wants_to_run": "<title/> 请求运行"
     },
     "approvalModePicker": {
       "nudge_body": "在这里可以调整 {{productName}} 的审批模式——选择这里的“信任”后，它在此对话中无需先询问即可工作，随时可以改回。",
@@ -6595,7 +6596,9 @@
       "copy": "复制",
       "generating": "生成中…",
       "unwrap": "不折行",
-      "wrap": "折行"
+      "wrap": "折行",
+      "code_label": "代码",
+      "code_region": "{{lang}} 代码"
     },
     "blockquote": {
       "copied": "已复制！",

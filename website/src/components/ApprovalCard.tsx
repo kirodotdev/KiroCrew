@@ -8,6 +8,7 @@ import { isTerminalApprovalRefusal } from '../api/apiError'
 import { baseCommandLabel } from '../utils/trustPatterns'
 import { haptic } from '../lib/haptic'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
 import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 type ApprovalCardProps = {
@@ -123,7 +124,9 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
     <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`} {...guideTrustRoot}>
       {toolInput
         ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
-        : <>{showButtons ? <><Package className="lucide-inline" /> </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>
+        : <>{showButtons ? <><Package className="lucide-inline" /> </> : <><Wrench className="lucide-inline" /> </>}{showButtons
+            ? <Trans i18nKey="components.approvalCard.title_wants_to_run" components={{ title: <strong>{displayTitle}</strong> }} />
+            : <strong>{displayTitle}</strong>}</>
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
       {showButtons && !decided && !failure?.terminal && (

@@ -6004,7 +6004,8 @@
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인",
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
       "trusted_channel_base": "신뢰함 — {{base}} 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
-      "trusted_channel_command": "신뢰함 — ‘{{cmd}}’ 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인"
+      "trusted_channel_command": "신뢰함 — ‘{{cmd}}’ 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
+      "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
     "approvalModePicker": {
       "nudge_body": "여기에서 {{productName}}의 승인 모드를 조정할 수 있습니다. 여기에서 '신뢰'를 선택하면 이 대화에서 먼저 묻지 않고 작업합니다. 언제든지 되돌릴 수 있습니다.",
@@ -6595,7 +6596,9 @@
       "copy": "복사",
       "generating": "생성 중…",
       "unwrap": "줄 바꿈 해제",
-      "wrap": "줄 바꿈"
+      "wrap": "줄 바꿈",
+      "code_label": "코드",
+      "code_region": "{{lang}} 코드"
     },
     "blockquote": {
       "copied": "복사했습니다!",
