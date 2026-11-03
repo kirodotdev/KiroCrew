@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -255,13 +255,30 @@ def _redact_deep(value: Any) -> Any:
     patterns. It is deliberately fail-closed on a composition error, which surfaces
     as a 500 here -- a host that cannot compose its redaction must not answer with
     un-redacted content instead.
+
+    Each DISTINCT string is redacted once per call: a board repeats the same keys,
+    states and words thousands of times, and the redactor is a wide regex sweep.
+    The memo is local to this one call, so nothing is kept across replies or users.
     """
+    memo: dict[str, str] = {}
+
+    def redact(text: str) -> str:
+        hit = memo.get(text)
+        if hit is None:
+            hit = memo[text] = redact_via_context(text)
+        return hit
+
+    return _redact_walk(value, redact)
+
+
+def _redact_walk(value: Any, redact: Callable[[str], str]) -> Any:
+    """The recursive half of :func:`_redact_deep`, with its per-call *redact*."""
     if isinstance(value, str):
-        return redact_via_context(value)
+        return redact(value)
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         for key, item in value.items():
-            safe_key = redact_via_context(key) if isinstance(key, str) else key
+            safe_key = redact(key) if isinstance(key, str) else key
             if safe_key in redacted:
                 # Two distinct keys can redact to the same placeholder. Keep both
                 # rows rather than let the later one overwrite the earlier.
@@ -269,10 +286,10 @@ def _redact_deep(value: Any) -> Any:
                 while f"{safe_key} ({suffix})" in redacted:
                     suffix += 1
                 safe_key = f"{safe_key} ({suffix})"
-            redacted[safe_key] = _redact_deep(item)
+            redacted[safe_key] = _redact_walk(item, redact)
         return redacted
     if isinstance(value, list):
-        return [_redact_deep(item) for item in value]
+        return [_redact_walk(item, redact) for item in value]
     return value
 
 
