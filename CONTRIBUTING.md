@@ -307,7 +307,13 @@ Three things make agent-assisted contributions land:
 
 Keep the change small and focused on one thing. A large diff that touches many
 areas is harder to review than the same work split into three, and it is the most
-common reason a well-intentioned pull request stalls.
+common reason a well-intentioned pull request stalls. The exception is a change a
+tool made rather than one you decided, such as a formatter run or a trimmed baseline
+file: there is nothing per-file to review and every pull request pays CI's full
+fixed cost, so group these into one pull request per directory. A change that has
+to land all at once, such as a rename, stays in one pull request even when it spans
+directories. Flake fixes are not in this group, so keep each in its own pull request,
+because it unblocks other people's work.
 
 Open an issue first for anything significant, so the approach is agreed before you
 or your agent spend real time on it.
