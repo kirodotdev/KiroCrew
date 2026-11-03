@@ -11,8 +11,10 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.spec_hooks import (
+    OverlongHookCommand,
     crew_fired_spec_hooks,
     merge_user_hook_files,
+    overlong_spec_hook_commands,
     project_hook_files_present,
     session_agent,
     spec_hook_events,
@@ -235,6 +237,10 @@ async def _prepare_spec_hooks(
             "msg msg-info",
         )
     if is_new:
+        await _surface_overlong_hook_commands(
+            state, slot, agent, spec_project_dir(client), by_session.get("session_key", "")
+        )
+    if is_new:
         # A withheld project spec yields the user-level spec in its place, so
         # these hooks are exactly the user-level ones that still run.
         await _surface_withheld_project_hooks(
@@ -247,6 +253,61 @@ async def _prepare_spec_hooks(
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
     return hooks, False, work_dir
+
+
+#: How many too-long hooks the notice names before it counts the rest.
+_OVERLONG_NOTICE_ENTRIES = 3
+
+
+def _overlong_hook_commands_notice(agent: str, hooks: list[OverlongHookCommand]) -> str:
+    """The session-start notice for spec hooks whose command is over the length limit."""
+    shown = []
+    for hook in hooks[:_OVERLONG_NOTICE_ENTRIES]:
+        # Redact each whole value before the cut, as the steering notice does.
+        label = _redact_display_text(hook.event)[:64]
+        if hook.matcher:
+            label += f" (matcher {_redact_display_text(hook.matcher)[:64]})"
+        shown.append(f"{label}: {hook.length:,} characters, limit {hook.limit:,}")
+    text = "; ".join(shown)
+    more = len(hooks) - _OVERLONG_NOTICE_ENTRIES
+    if more > 0:
+        text += f"; and {more} more"
+    noun = "hook does" if len(hooks) == 1 else "hooks do"
+    return (
+        f"ℹ Agent {agent}: {len(hooks)} {noun} not run because the command is too "
+        f"long ({text}). Put the logic in a script file and call that script from "
+        "the hook."
+    )
+
+
+async def _surface_overlong_hook_commands(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    agent: str,
+    project_dir: str | None,
+    session_key: str,
+) -> None:
+    """One notice row naming the spec hooks dropped for a command over the length limit.
+
+    Best-effort: a spec that cannot be read renders no row rather than failing the turn.
+    """
+    by_session = {"session_key": session_key} if session_key else {}
+    try:
+        hooks = await asyncio.to_thread(
+            functools.partial(overlong_spec_hook_commands, agent, project_dir, **by_session)
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("too-long spec hooks for %r could not be read", agent, exc_info=True)
+        return
+    if hooks:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_overlong_hook_commands_notice(agent, hooks)),
+            "msg msg-info",
+            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+        )
 
 
 async def _surface_withheld_project_hook_files(
