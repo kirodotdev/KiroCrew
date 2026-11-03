@@ -163,7 +163,14 @@ async def test_a_row_is_the_conductor_item_shape_minus_the_masked_field():
     row = body["items"][0]
 
     item_keys = set(wl.WorkItem().to_dict()) - {"worker_session_key"}
-    derived = {"orphaned", "stale", "acceptance_concrete", "report_undelivered", "events"}
+    derived = {
+        "orphaned",
+        "stale",
+        "acceptance_concrete",
+        "report_undelivered",
+        "awaits_person",
+        "events",
+    }
     joined = {"alive", "outstanding", "terminal"}
     assert set(row) == item_keys | derived | joined
 
