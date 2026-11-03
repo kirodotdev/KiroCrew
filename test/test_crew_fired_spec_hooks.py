@@ -281,6 +281,40 @@ def test_an_oversized_or_unsafe_matcher_drops_the_hook_and_retains_nothing():
     assert [(h.command, h.matcher) for h in hooks] == [("z", "exec*")]
 
 
+def test_an_object_form_command_past_4096_characters_still_runs():
+    # kiro-cli runs an object-form hook of this length, so KAS must too.
+    command = "echo " + "x" * 6000
+    hooks = spec_hooks.spec_script_hooks("a1", {"hooks": {"agentSpawn": [{"command": command}]}})
+    assert [h.command for h in hooks] == [command]
+
+
+def test_the_command_bound_is_the_shell_gate_scan_ceiling():
+    from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
+
+    assert spec_hooks._MAX_COMMAND_LEN == MAX_SCANNABLE_COMMAND_CHARS
+
+
+def test_a_command_past_the_bound_is_dropped_with_its_length_and_the_fix(monkeypatch, caplog):
+    import kiro_crew.agent as agent_mod
+
+    audited: list = []
+    monkeypatch.setattr(
+        agent_mod, "_sel_hook_rejected", lambda event, value, reason: audited.append(reason)
+    )
+    command = "x" * (spec_hooks._MAX_COMMAND_LEN + 1)
+    with caplog.at_level("WARNING", logger=spec_hooks.logger.name):
+        hooks = spec_hooks.spec_script_hooks(
+            "a1", {"hooks": {"agentSpawn": [{"command": command}]}}
+        )
+    assert hooks == []
+    assert len(audited) == 1
+    for text in (audited[0], caplog.text):
+        assert f"{len(command)} characters" in text
+        assert f"{spec_hooks._MAX_COMMAND_LEN} limit" in text
+        assert "script file" in text
+        assert "no usable command" not in text
+
+
 def test_conversion_stops_at_the_hook_cap():
     entries = [{"command": f"c{i}"} for i in range(500)]
     hooks = spec_hooks.spec_script_hooks("a1", {"hooks": {"stop": entries}})
