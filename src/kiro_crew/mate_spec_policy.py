@@ -109,9 +109,15 @@ def without_held(policy: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]
         kept_hooks: dict[str, Any] = {}
         for event, entries in hooks.items():
             have = held.get(event)
-            seen = {_canon(e) for e in (have if isinstance(have, list) else [have] if have else [])}
-            rest = [e for e in (entries if isinstance(entries, list) else [entries])]
-            rest = [e for e in rest if _canon(e) not in seen]
+            if isinstance(have, list):
+                held_entries = have
+            elif have:
+                held_entries = [have]
+            else:
+                held_entries = []
+            seen = {_canon(e) for e in held_entries}
+            listed = entries if isinstance(entries, list) else [entries]
+            rest = [e for e in listed if _canon(e) not in seen]
             if rest:
                 kept_hooks[event] = rest
         if kept_hooks:
