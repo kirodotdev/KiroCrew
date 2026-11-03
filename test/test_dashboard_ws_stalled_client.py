@@ -510,32 +510,34 @@ async def test_a_stalled_tab_does_not_delay_a_reading_tab(ws_state):
     """Control: one fan-out task per send, so a stalled tab holds only its own sends."""
 
     async def body(state, stalled, reading, received):
-        # How many frames fill the stalled tab's socket buffers depends on the
-        # host, so send until writing to it is paused rather than a fixed count.
+        transport = stalled._req.transport
+        # Send until the stalled tab's transport holds a backlog the kernel will not
+        # take: past its socket buffers (which a kernel can grow, so a first pause
+        # may clear again), and under the drop limit, so the tab stays registered.
+        # From then on each send to it waits on a drain that never comes. How many
+        # frames that takes depends on the host, so no fixed count.
         n = 0
+        backlog = 0
         try:
             async with asyncio.timeout(30):
-                while not stalled._req.protocol._paused and n < 2000:
+                while backlog <= 256 * 1024 and n < 2000:
                     n, _ = await _broadcast(state, n, 1)
+                    # Read the level in the same step as the send, with no await
+                    # between: once the test yields, a kernel that grows its send
+                    # buffer (macOS does) can take queued bytes and lower it.
+                    backlog = transport.get_write_buffer_size()
         except TimeoutError:
             pass
-        # Read the level in the same step that saw writing pause, with no await
-        # between: once the test yields, a kernel that grows its send buffer
-        # (macOS does) can take every queued byte and empty the level.
-        paused_at = stalled._req.transport.get_write_buffer_size()
-        assert stalled._req.protocol._paused, (
-            f"precondition: writing to the stalled tab never paused after {n} frames of "
-            f"{FRAME // 1024} KiB ({paused_at} bytes buffered)"
-        )
+        # The reading tab must get every frame, including those sent while sends to
+        # the stalled tab waited on its drain. A hub that let one of those waiting
+        # sends hold up the other tab's sends stops the reading tab short here.
         await _wait_received(received, n)
-        # The reading tab got every frame sent while writing to the stalled tab
-        # was paused, so no frame waited on the stalled tab's buffer.
+        assert backlog > 256 * 1024, (
+            f"precondition: the stalled tab's backlog never passed 256 KiB after {n} "
+            f"frames of {FRAME // 1024} KiB ({backlog} bytes buffered)"
+        )
+        assert stalled._req.protocol._paused, "precondition: writing to the stalled tab is paused"
         assert stalled in state._ws_clients, "a tab under the limit must stay registered"
-        # Under the selector loops a paused transport holds its frames in its
-        # level. The proactor loop's level can read 0 even then, once the kernel
-        # holds them all.
-        if _level_moves_on_this_loop():
-            assert paused_at > 0, f"writing paused with {paused_at} bytes buffered"
         assert reading in state._ws_clients
 
     await _harness(ws_state, body)
