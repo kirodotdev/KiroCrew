@@ -293,6 +293,25 @@ async def test_a_secret_field_the_page_removed_after_the_capture_is_not_kept() -
     assert [r[3] for r in sink.recorded] == [True, False, True]
 
 
+async def test_an_embedded_frame_the_page_removed_after_the_capture_is_not_kept() -> None:
+    """A cross-origin frame holding a code form is painted over whole (an opaque
+    box). If it is removed between the capture and the query, the later answer has
+    no such box, and the earlier one did: the two disagree, so the frame is not
+    recorded."""
+    stream, relay, sink = probe_stream(mask_passwords=True)
+    framed = {
+        "result": {"value": {"boxes": [], "frames": [[100, 200, 400, 300]], "partial": False}}
+    }
+    gone = {"result": {"value": {"boxes": [], "frames": [], "partial": False}}}
+    answers = iter([framed, framed, gone, gone])
+    relay.answers["Runtime.evaluate"] = lambda: next(answers)
+    await stream.start()
+    await relay.on_event(frame_event(jpeg(size=(1280, 800))))
+    await relay.on_event(frame_event(jpeg((1, 1, 1), size=(1280, 800))))  # frame now gone
+    await relay.on_event(frame_event(jpeg((2, 2, 2), size=(1280, 800))))
+    assert [r[3] for r in sink.recorded] == [True, False, True]
+
+
 async def test_boxes_follow_the_frame_size_after_a_ladder_step() -> None:
     stream, relay, sink = probe_stream(mask_passwords=True)
     relay.answers["Runtime.evaluate"] = {"result": {"value": [[100, 100, 200, 30]]}}

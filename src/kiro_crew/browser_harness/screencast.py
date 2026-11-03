@@ -775,7 +775,7 @@ class LiveStream:
         #: did not answer. A recorded frame needs this query and the one before it
         #: to agree: a field the page removed after the capture shows in neither
         #: the frame's mask nor a single query run after it.
-        self._mask_prev: tuple[list[Any], list[Any] | None] | None = None
+        self._mask_prev: tuple[list[Any], list[Any] | None, list[Any]] | None = None
         #: The recorder's mask for the frame in hand (see :meth:`_mask_rects`): a
         #: frame whose boxes did not come from its own answered query is never kept.
         self._mask_ok = False
@@ -1244,7 +1244,10 @@ class LiveStream:
         # a field cleared or moved between the capture and this query would leave
         # the captured one unpainted.
         named_ok = isinstance(named, list) and all(_is_box(b) for b in named)
-        signature = (list(boxes), list(named) if named_ok else None)
+        # The opaque boxes (an embedded cross-origin frame) are part of it too: a
+        # frame that held a code form and was removed after the capture leaves the
+        # captured pixels unpainted, and only a changed list shows it.
+        signature = (list(boxes), list(named) if named_ok else None, list(frames))
         self._mask_prev = signature
         self._mask_boxes = boxes
         rects = clip_mask_rects(boxes, self.scale, width, height, limit=MASK_BOX_LIMIT)
