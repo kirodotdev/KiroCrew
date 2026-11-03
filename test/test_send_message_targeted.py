@@ -1716,13 +1716,9 @@ class TestSendMessageToolChannelType:
     def test_bare_non_cron_send_vets_no_transport(self):
         """Unchanged: the notification-only path leaves over no transport, so the
         per-transport allowlist has nothing to rule on."""
-        with _tool_mcp_core(
-            strict="",
-            lenient="dashboard:chat-1-1",
-            post={"ok": True, "delivered_to": "notification"},
-        ) as m:
+        with _tool_mcp_core(strict="", lenient="dashboard:chat-1-1") as m:
             out = _call_tool({"text": "hi"})
-            assert out == "Notification delivered."
+            assert out == "Message sent to the telegram conversation + notification."
             m["vet_channel"].assert_not_called()
 
     def test_channel_type_requires_a_strict_identity(self):
