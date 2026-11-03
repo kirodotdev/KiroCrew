@@ -1,6 +1,6 @@
 ---
 name: web-verify
-description: Use after a user-visible UI edit to verify your OWN change on an isolated loopback server. Capture, read and show real screenshots. Backends: playwright-cli (live Browser panel), agent-browser (annotated frames, pixel diff, a11y), or scripted Playwright. Not web-preview or external-page web-browse.
+description: Use after a user-visible UI edit to verify your OWN change on an isolated loopback server. Capture, read and show real screenshots. Backends: the `browser` MCP tool (live in chat; origin must be listed), agent-browser (pixel diff, a11y), or scripted Playwright. Not web-preview or web-browse.
 triggers: verify the ui, check my change, does it look right, screenshot my change, verify front-end, visual check, self-verify, look at the change, prove the ui works, screenshots for the pr, agent-browser, playwright screenshot
 ---
 
@@ -14,37 +14,31 @@ did.
 
 This is the **self-verification** path: the screenshot is evidence, not decoration.
 It is view-only (navigate plus screenshot); clicking and typing through a flow uses
-the same CLI with more verbs. Keep the frame count bounded (see below). Restraint
+the same tool with more ops. Keep the frame count bounded (see below). Restraint
 here is about context cost, not permission.
 
 ## Three ways to capture, and name the one you used
 
-Not a backend here: the **`browser` MCP tool**. Its `screenshot` op renders in
-the Browser panel and hands you no image file to read, and it refuses loopback
-unless the operator listed that exact `host:port` in
-the dashboard's local-origins setting (every URL in this skill is loopback). So
-`playwright-cli` is the local-verification path by design, not by preference.
-
 | backend | how | notes |
 |---|---|---|
-| **`playwright-cli`** | `playwright-cli open <url>` then `playwright-cli screenshot`. It prints the path it wrote; read that. The positional argument is an element **ref**, not a path, and `--filename` resolves against the CWD (so it can clobber a repo file and is not auto-approved) -- take the printed path instead of naming the file. | The panel-integrated path: the session is what the dashboard's **Browser** panel shows, so the user watches the verification instead of waiting for a summary. Prefer it when `playwright-cli` is on PATH. |
-| **agent-browser** (`vercel-labs/agent-browser`) | `agent-browser open <url>` then `screenshot <path>`; `snapshot -i` for refs, `screenshot --full` for a whole page, `screenshot --annotate` for numbered element labels, `diff screenshot --baseline before.png` for a pixel diff, `a11y` for an axe-core audit. Batch a whole flow in one call with `agent-browser batch`. | A standalone Rust CLI (`npm install -g agent-browser` plus `agent-browser install`); it drives its own Chrome, so frames land on disk and do **not** appear in the Browser panel. Reach for it when it is already installed, or when you specifically want annotated frames, a baseline pixel diff, or the a11y audit. |
-| **Scripted Playwright** | the `pod-e2e` runner, or a repo capture harness under `website/scripts/`, writing PNGs to a directory. | The right choice for many deterministic frames or a repeatable harness in CI, and it keeps this loop working on a host with no browser CLI at all. |
+| **`browser` MCP tool** | `browser(op="navigate", args={"url": ...})` then `browser(op="screenshot")`. It writes a PNG and returns its absolute path; read that file. | The live path: the user watches the page in the chat while you verify. It refuses a loopback URL unless that exact `host:port` is listed under **Settings → Browser → Local preview origins** (every URL in this skill is loopback), so this backend works only when the user listed your dev server's origin. A refusal means it is not listed: say so and use a row below, or ask them to add it. |
+| **agent-browser** (`vercel-labs/agent-browser`) | `agent-browser open <url>` then `screenshot <path>`; `snapshot -i` for refs, `screenshot --full` for a whole page, `screenshot --annotate` for numbered element labels, `diff screenshot --baseline before.png` for a pixel diff, `a11y` for an axe-core audit. Batch a whole flow in one call with `agent-browser batch`. | A standalone Rust CLI (`npm install -g agent-browser` plus `agent-browser install`); it drives its own Chrome, so frames land on disk and do **not** appear in the chat's live view. Reach for it when it is already installed, or when you specifically want annotated frames, a baseline pixel diff, or the a11y audit. |
+| **Scripted Playwright** | the `pod-e2e` runner, or a repo capture harness under `website/scripts/`, writing PNGs to a directory. | The right choice for many deterministic frames or a repeatable harness in CI, and it keeps this loop working on a host with no browser set up at all. |
 
 All three end the same way: read the frame, judge it, embed it in chat. **Say which
-backend produced the screenshots** ("in the Browser panel session via
-`playwright-cli`", "captured with agent-browser", "scripted Playwright via
-pod-e2e") so the user knows whether they could have watched it happen. Never imply
-a panel session that did not exist.
+backend produced the screenshots** ("live in the chat via the `browser` tool",
+"captured with agent-browser", "scripted Playwright via pod-e2e") so the user
+knows whether they could have watched it happen. Never imply a live view that did
+not exist.
 
 > **Keep every frame you read under 2000px on both edges.** A single image past
 > that wedges the session permanently: the provider rejects the WHOLE request once
 > a conversation carries many images, kiro-cli replays the full history every turn,
 > and the offending block sits at a fixed history index that nothing can evict, so
-> the same error re-fires on every later turn no matter what you do next. Capture
-> at a 1400-1500px viewport (`playwright-cli resize 1440 900`) and prefer an
-> element screenshot (`screenshot <ref>`) over a full-page one on a long page. If a
-> file is already oversized, downscale it BEFORE reading it:
+> the same error re-fires on every later turn no matter what you do next. The
+> `browser` tool's `screenshot` captures the viewport, which stays under the cap;
+> with agent-browser prefer an element or viewport frame over a full-page one on a
+> long page. If a file is already oversized, downscale it BEFORE reading it:
 >
 > ```bash
 > python3 "${KIROCREW_HOME:-$HOME/.kiro/crew}/skills/web-verify/scripts/downscale_image.py" "/abs/path/shot.png"
@@ -61,31 +55,21 @@ a panel session that did not exist.
 
 ## Precondition: a browser must actually be available
 
-```bash
-command -v playwright-cli    # or: command -v agent-browser
-```
-
-`playwright-cli` (Node.js 20 or newer) is installed by Kiro Crew into its own
-managed prefix, `<data-home>/playwright-cli`, which agent shells get on `PATH`.
-The gateway also accepts a copy in a fixed system directory (`/usr/local/bin`,
-`/usr/bin`, a Homebrew prefix) only when the gateway user cannot write any part
-of it: a user-owned Homebrew or npm-global copy is refused even though
-`command -v` finds it, as is one found only through `PATH`. `agent-browser` is a
-separate CLI. Either may be absent.
+The `browser` tool answers "browsing is not set up on this host" when the engine
+is not installed; `command -v agent-browser` tells you about the second row.
+Either may be absent.
 
 If **none** of the three backends is available, do NOT fake it and do NOT claim
 visual verification you did not do. Say plainly that you verified the code but not
 the rendering, and name the fix. Give the USER the one-click route rather than only
-a command they have to paste: **Settings → Browser** has an Install button that
-installs the CLI into that managed prefix and fetches a browser. That button is
-the remedy for `playwright-cli`: an `npm install -g @playwright/cli@latest` into a
-user or version-manager prefix is not seen by the gateway, so the Browser panel
-stays unavailable. `agent-browser` installs with its own commands, and scripted
-Playwright via `pod-e2e` needs no browser CLI at all. Presence of the binary is
-what makes browsing available, so installing it is the whole remedy; there is no
-Browser Mode setting to switch on.
+a command they have to paste: **Settings → Browser** installs the browser engine
+on the gateway's machine (and connects their own Chrome on a desktop). The same
+page holds **Local preview origins**, where they list the `host:port` your dev
+server binds so the `browser` tool may open it. `agent-browser` installs with its
+own commands, and scripted Playwright via `pod-e2e` needs no browser set up at
+all. There is no Browser Mode setting to switch on.
 
-The steps below describe the `playwright-cli` path. Steps 1, 2, 4, 5, and 6 apply
+The steps below describe the `browser` tool path. Steps 1, 2, 4, 5, and 6 apply
 to the other two backends unchanged; only the navigate and screenshot calls differ.
 
 ## Steps
@@ -100,37 +84,24 @@ to the other two backends unchanged; only the navigate and screenshot calls diff
    on). Rebuild the frontend first if the server serves a built bundle, otherwise
    you will screenshot the old UI and pass it off as the new one.
 2. **Confirm it is actually up** (HTTP 200/401/403) before navigating, and emit the
-   `web-preview` marker so the user's Browser panel points at the same URL:
+   `web-preview` marker so the user's Preview tab points at the same URL:
    `<!-- kirocrew:preview url="http://127.0.0.1:PORT" -->`
-3. **Open it:** `playwright-cli open "http://127.0.0.1:PORT/?token=…"`. Include the
-   auth token in the URL when the app needs one; a screenshot of a 403 page
-   verifies nothing. The command prints the page URL, the title, and a snapshot
-   path, which is enough to confirm you landed on the right page without opening
-   the YAML. **Expect one approval prompt here.** Navigation to loopback is not
-   auto-approved: every local control plane lives there, Kiro Crew's own
-   dashboard included, and driving that dashboard is how an agent would widen its
-   own permissions. Approve it and carry on — the prompt is the boundary working,
-   not a broken install. Everything after it (`snapshot`, `click`, `screenshot`)
-   runs without prompting as usual.
-4. **Screenshot** with `playwright-cli screenshot` and take the path it prints (pass a `[ref]`
-   from a `snapshot` to capture one element), then **read the file** and actually
-   check it: is the surface you changed present, laid out, and legible? A
-   screenshot you never looked at is not verification.
+3. **Open it:** `browser(op="navigate", args={"url": "http://127.0.0.1:PORT/?token=…"})`.
+   Include the auth token in the URL when the app needs one; a screenshot of a 403
+   page verifies nothing. The result carries the URL and title, enough to confirm
+   you landed on the right page. **A refusal here is the loopback gate**, not a
+   broken install: the origin is not in the user's list. Say so and either ask
+   them to add it or switch to another backend; never try to widen the gate.
+4. **Screenshot** with `browser(op="screenshot")` and take the path it returns,
+   then **read the file** and actually check it: is the surface you changed
+   present, laid out, and legible? A screenshot you never looked at is not
+   verification.
 5. **Show it in chat**: `![what it shows](/absolute/path.png)`. State what you
    confirmed and what you could not see.
 6. **Fix and re-shoot** if the frame contradicts your change. Iterate, then report
    the final state.
 
-`PLAYWRIGHT_CLI_SESSION` names your process's browser; bare commands use it.
-A parent and its subagents normally share one session family's browser. If a
-subagent may browse alongside its parent or siblings, it must choose ONE
-task-specific `-s=<name>` and use it on every command, `open` / `attach` included.
-Do not reuse, navigate away from, or close the user's borrowed attached browser.
-Use a separate context for verification.
-
-For an element ref, run `playwright-cli snapshot` and read its YAML. Printed paths
-are relative to the command's working directory; after moving, use
-`$PLAYWRIGHT_MCP_OUTPUT_DIR/<printed filename>`, never a guessed filename.
+For an element ref, run `browser(op="snapshot")` and read the outline it returns.
 Take a fresh snapshot after navigation or a click that changes the page.
 
 ## Keep it bounded
@@ -146,16 +117,17 @@ Take a fresh snapshot after navigation or a click that changes the page.
 A first-run instance renders behind onboarding and prerequisite gates and starts
 with empty `localStorage`, so a naive load often yields a blank or modal-covered
 page. Before assuming your change broke: check the snapshot for a mounted
-gate/modal, dismiss it (`playwright-cli press Escape`, or click the close
-control), and confirm the token was accepted. The `pod-e2e` runner pre-seeds
-`localStorage` and dismisses first-run modals for exactly this reason.
+gate/modal, dismiss it (`browser(op="press_key", args={"key": "Escape"})`, or
+click the close control), and confirm the token was accepted. The `pod-e2e`
+runner pre-seeds `localStorage` and dismisses first-run modals for exactly this
+reason.
 
-## Fallback: when `playwright-cli` is absent
+## Fallback: when the `browser` tool cannot open your server
 
 Use the installed `agent-browser` or Scripted Playwright row above. Their frames
-land on disk, not in the Browser panel; say so, then read and embed the PNGs.
-Capture harnesses can miss new gates: for a blank frame, stub the gate's status
-endpoint in the isolated harness rather than accepting it as evidence.
+land on disk, not in the chat; say so, then read and embed the PNGs. Capture
+harnesses can miss new gates: for a blank frame, stub the gate's status endpoint
+in the isolated harness rather than accepting it as evidence.
 
 ## Screenshots for the PR
 
@@ -167,7 +139,7 @@ against committing binaries. Capture once, use twice.
 
 - **Showing the user an external page**: `web-browse`.
 - **Just giving the user a live preview to click** with no verification of your
-  own: `web-preview` (loopback iframe, no screenshot).
-- **Driving a multi-step flow** (click, type, submit): the same CLI, using
-  `snapshot` for refs then `click` / `fill` / `press`.
+  own: `web-preview` (the Preview tab, no screenshot).
+- **Driving a multi-step flow** (click, type, submit): the same tool, using
+  `snapshot` for refs then `click` / `type` / `press_key`.
 - **Backend-only changes**: tests are the evidence; do not invent a screenshot.

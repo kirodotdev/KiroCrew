@@ -71,6 +71,7 @@ SECTION_CLASS: dict[str, str] = {
     "mcp": "McpConfig",
     "instances": "InstancesConfig",
     "decisions": "DecisionsConfig",
+    "browser": "BrowserConfig",
     "work_ledger": "WorkLedgerConfig",
     "power": "PowerConfig",
 }

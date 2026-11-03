@@ -66,69 +66,58 @@ _BASE_NAMES = frozenset("""
         Any BLOCKS_REMOTE_MEDIA_ERROR CHANNEL_CONFIG_SECTIONS CHANNEL_ID_RE CHANNEL_MAX_LEN
         CHANNEL_SEND_NAMESPACES CRON_NOTIFICATION_KIND CRON_NOTIFY_END CRON_NOTIFY_PREFIX
         CRON_SESSION_RE Callable ChannelLink CronStoreBusy CronStoreUnreadable
-        DEFAULT_COMMAND_TIMEOUT_MS DEFAULT_DRAIN_WAIT_MS DEFERRED_QUEUED_REASONS
-        DISMISSAL_FAILED DISMISSAL_LOG_ABSENT DISMISSAL_LOG_COMMITTED DISMISSAL_LOG_FAILED
-        DISMISSAL_NO_FOLDER DM_TARGET_PREFIX DashboardState HOST_SESSION_KEY
-        IMESSAGE_SERVICES IS_MACOS KiroCrewConfig LINK_WINDOW_SECS
-        NATIVE_CHILD_NOT_RESUMABLE NoPanelError NotificationPayload
-        NotificationValidationError OPTIONS_FALLBACK_TEXT PERSISTED_SUBAGENT_REPLAY_KEEP
+        DEFERRED_QUEUED_REASONS DISMISSAL_FAILED DISMISSAL_LOG_ABSENT DISMISSAL_LOG_COMMITTED
+        DISMISSAL_LOG_FAILED DISMISSAL_NO_FOLDER DM_TARGET_PREFIX DashboardState
+        HOST_SESSION_KEY IMESSAGE_SERVICES IS_MACOS KiroCrewConfig LINK_WINDOW_SECS
+        NATIVE_CHILD_NOT_RESUMABLE NotificationPayload NotificationValidationError
+        OPTIONS_FALLBACK_TEXT PERSISTED_SUBAGENT_REPLAY_KEEP
         PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS PanelRecords Path PostedOptions
-        QueueFullError QueuedReadUnavailable QueuedRun QueuedRunListing ROUTE_PREFIX
-        SESSION_LINK_ACTION SLACK_NAMESPACE SLACK_THREAD_TS_RE SPAWN_RUN_SCHEMA
-        SUBAGENT_COMPLETION_KIND SUBAGENT_COMPLETION_META_KEY SUCCESSOR_UNKNOWN
-        TELEGRAM_ACTIVATIONS ValidationError _ABSENT _CHANNEL_SDK_EXTRA _CHANNEL_TYPE_RE
-        _COLLECTED_IDS_CAP _COLLECTED_ID_MAX_LEN _ChannelSendFailed _CredentialTupleChanged
-        _DISCORD_TOKEN_RE _DM_TARGET_PREFIX _EMOJI_NAME_RE _IDENTITY_LESS_RUN_CONTROL
-        _LockedSectionWrite _MAX_BLOCKS _MAX_WALK_DEPTH _RESERVED_SESSION_TARGETS
-        _SEND_MESSAGE_CHANNEL_TYPES _SLACK_ONLY_BODY_FIELDS _SLACK_SECRET_FIELDS
-        _SLACK_SECTION_TEXT_MAX _SLACK_TS_MAX_LEN _SPAWN_REJECTED_CODE
-        _SPAWN_STATUS_MAX_GREP_LEN _SPAWN_STATUS_MAX_LINES _TEAMS_CREDENTIAL_REJECT_STATUSES
-        _TELEGRAM_TOKEN_RE _TOKEN_VERIFY_TIMEOUT _ThresholdPairInverted
-        _WEBEX_VERIFY_TIMEOUT _agent_dir _apply_result_view _audit_allow _audit_deny
-        _awaiting_spawn_approval _blocks_request_remote_media _browser_install_active
-        _browser_install_conflict _browser_install_job _browser_install_status
-        _browser_view_payload _channel_delivery_key _channel_sdk_status _clean_id_list
-        _clean_imessage_path _coerce_like _continue_on_loop _deliver_channel_dm
-        _deliver_to_channel _deny_non_owner_browser_request _discord_config_save_locked
+        QueuedReadUnavailable QueuedRun QueuedRunListing SESSION_LINK_ACTION SLACK_NAMESPACE
+        SLACK_THREAD_TS_RE SPAWN_RUN_SCHEMA SUBAGENT_COMPLETION_KIND
+        SUBAGENT_COMPLETION_META_KEY SUCCESSOR_UNKNOWN TELEGRAM_ACTIVATIONS ValidationError
+        _ABSENT _CHANNEL_SDK_EXTRA _CHANNEL_TYPE_RE _COLLECTED_IDS_CAP _COLLECTED_ID_MAX_LEN
+        _ChannelSendFailed _CredentialTupleChanged _DISCORD_TOKEN_RE _DM_TARGET_PREFIX
+        _EMOJI_NAME_RE _IDENTITY_LESS_RUN_CONTROL _LockedSectionWrite _MAX_BLOCKS
+        _MAX_WALK_DEPTH _RESERVED_SESSION_TARGETS _SEND_MESSAGE_CHANNEL_TYPES
+        _SLACK_ONLY_BODY_FIELDS _SLACK_SECRET_FIELDS _SLACK_SECTION_TEXT_MAX _SLACK_TS_MAX_LEN
+        _SPAWN_REJECTED_CODE _SPAWN_STATUS_MAX_GREP_LEN _SPAWN_STATUS_MAX_LINES
+        _TEAMS_CREDENTIAL_REJECT_STATUSES _TELEGRAM_TOKEN_RE _TOKEN_VERIFY_TIMEOUT
+        _ThresholdPairInverted _WEBEX_VERIFY_TIMEOUT _agent_dir _apply_result_view _audit_allow
+        _audit_deny _awaiting_spawn_approval _blocks_request_remote_media _channel_delivery_key
+        _channel_sdk_status _clean_id_list _clean_imessage_path _coerce_like _continue_on_loop
+        _deliver_channel_dm _deliver_to_channel _discord_config_save_locked
         _feishu_config_save_locked _hot_apply_after_write _imessage_config_save _is_slack_ts
         _is_valid_feishu_id _is_valid_imessage_handle _is_valid_teams_principal
-        _is_valid_webex_email _is_valid_wecom_userid _loader _log_panel_dismissal
-        _mask_secret _missing_scope_message _native_child_refusal _owner_dm_target
+        _is_valid_webex_email _is_valid_wecom_userid _loader _log_panel_dismissal _mask_secret
+        _missing_scope_message _native_child_refusal _owner_dm_target
         _pip_install_channel_available _queue_unreadable _queued_lookup _queued_not_started
-        _queued_run _queued_run_payload _queued_runs _redact _redact_all
-        _remove_queued_by_id _resolve_session_link_url _resolve_session_target
-        _retry_failed_run _run_belongs_to_caller _sanitize_blocks _sel
-        _send_to_channel_target _session_link_blocks _slack_config_save_locked
-        _spawn_on_loop _spawn_request_memory_mode _spawn_result_view _spawn_scope_refusal
-        _start_browser_install_job _teams_config_save _telegram_config_save_locked
-        _terminate_install_scope _threshold_pct_rejection _validate_discord_token
-        _validate_slack_token _validate_teams_app_credentials _validate_telegram_token
-        _validate_webex_token _vet_channel_send _webex_config_save _wecom_config_save_locked
-        _wide_env_refusal _write_env_off_loop _write_env_updates _write_env_updates_locked
-        annotations api_browser_command api_browser_command_drain api_browser_command_result
-        api_browser_engine_install api_browser_install_get api_browser_install_start
-        api_browser_open api_browser_token_put api_browser_view_get api_browser_view_start
+        _queued_run _queued_run_payload _queued_runs _redact _redact_all _remove_queued_by_id
+        _resolve_session_link_url _resolve_session_target _retry_failed_run
+        _run_belongs_to_caller _sanitize_blocks _sel _send_to_channel_target
+        _session_link_blocks _slack_config_save_locked _spawn_on_loop _spawn_request_memory_mode
+        _spawn_result_view _spawn_scope_refusal _teams_config_save _telegram_config_save_locked
+        _threshold_pct_rejection _validate_discord_token _validate_slack_token
+        _validate_teams_app_credentials _validate_telegram_token _validate_webex_token
+        _vet_channel_send _webex_config_save _wecom_config_save_locked _wide_env_refusal
+        _write_env_off_loop _write_env_updates _write_env_updates_locked annotations
         api_channel_folder_backfill api_delete_message api_discord_config_get
         api_discord_config_save api_feishu_config_get api_feishu_config_save
         api_imessage_config_get api_imessage_config_save api_notification_ack
-        api_notification_agent_push api_notification_channel_settings
-        api_notification_channels api_notification_delete api_notification_unack
-        api_notifications api_notifications_ack_all api_notifications_clear api_send_message
-        api_slack_config_get api_slack_config_save api_slack_manifest api_slack_pins
-        api_slack_profile api_slack_reactions api_spawn api_spawn_continue api_spawn_delete
-        api_spawn_list api_spawn_lost api_spawn_mark_collected api_spawn_release
-        api_spawn_retry api_spawn_status api_spawn_steer api_spawn_stop_all
-        api_teams_activity api_teams_config_get api_teams_config_save
-        api_telegram_config_get api_telegram_config_save api_update_message
-        api_webex_config_get api_webex_config_save api_wecom_config_get
-        api_wecom_config_save backfill_channel_folder
-        blocks_request_remote_media browser_cli_install browser_cli_launcher
-        browser_cli_token browser_cli_view browser_install_job build_options_blocks
-        caller_names_a_missing_slot cast channel_restart_required chunk_for_transport
-        chunk_text classify_persisted_ending clean_session_folder config_path
-        dashboard_slot_key delivery_confirmed display_safe_for drained_to_thread
-        effective_session_key effort_applied_note effort_drop_reason ensure_channel_folder
-        extract_options format_overflow generate_token get_command_bus
+        api_notification_agent_push api_notification_channel_settings api_notification_channels
+        api_notification_delete api_notification_unack api_notifications
+        api_notifications_ack_all api_notifications_clear api_send_message api_slack_config_get
+        api_slack_config_save api_slack_manifest api_slack_pins api_slack_profile
+        api_slack_reactions api_spawn api_spawn_continue api_spawn_delete api_spawn_list
+        api_spawn_lost api_spawn_mark_collected api_spawn_release api_spawn_retry
+        api_spawn_status api_spawn_steer api_spawn_stop_all api_teams_activity
+        api_teams_config_get api_teams_config_save api_telegram_config_get
+        api_telegram_config_save api_update_message api_webex_config_get api_webex_config_save
+        api_wecom_config_get api_wecom_config_save backfill_channel_folder
+        blocks_request_remote_media build_options_blocks caller_names_a_missing_slot cast
+        channel_restart_required chunk_for_transport chunk_text classify_persisted_ending
+        clean_session_folder config_path dashboard_slot_key delivery_confirmed display_safe_for
+        drained_to_thread effective_session_key effort_applied_note effort_drop_reason
+        ensure_channel_folder extract_options format_overflow generate_token
         guard_owner_surface_routes internal_memory_scope is_direct_local_request
         is_proxied_request is_sensitive_path live logger mint_options_token
         parent_project_dirs parent_template_allowlists parent_work_supported persisted_replay_denial_reason
@@ -137,9 +126,8 @@ _BASE_NAMES = frozenset("""
         record_panel_dismissal_outcome redact_credentials redact_exfiltration_urls
         redact_for_display rehydrate_slot_from_history_async remember_slack_options
         run_to_completion slack_options_owner_key slot_owner_snapshot sole_direct_target
-        stop_browser_install
-        stored_folder_name subagent_event_slot validate_tool_args
-        warm_project_agents_for_spawn web
+        stored_folder_name subagent_event_slot validate_tool_args warm_project_agents_for_spawn
+        web
     """.split())
 
 #: The owners the facade composes. Adding or removing one changes the composition,
@@ -159,7 +147,6 @@ _OWNER_MODULES = (
     "imessage_settings",
     "wecom_settings",
     "feishu_settings",
-    "browser_routes",
     "channel_config_writes",
     "slack_workspace",
     "channel_folder_backfill",
@@ -169,81 +156,86 @@ _OWNER_MODULES = (
 #: Each moved name and the owner its responsibility puts it in.
 _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "spawn": tuple("""
-        _continue_on_loop _spawn_on_loop _spawn_request_memory_mode api_spawn
-        api_spawn_continue
+        _continue_on_loop _spawn_on_loop _spawn_request_memory_mode api_spawn api_spawn_continue
+
         """.split()),
     "run_control": tuple("""
         _log_panel_dismissal _native_child_refusal _queue_unreadable _queued_lookup
         _queued_not_started _queued_run _queued_run_payload _queued_runs _retry_failed_run
-        _spawn_scope_refusal
-        api_spawn_delete api_spawn_lost api_spawn_mark_collected api_spawn_release
-        api_spawn_retry api_spawn_steer api_spawn_stop_all
+        _spawn_scope_refusal api_spawn_delete api_spawn_lost api_spawn_mark_collected
+        api_spawn_release api_spawn_retry api_spawn_steer api_spawn_stop_all
+
         """.split()),
     "run_views": tuple("""
-        _apply_result_view _awaiting_spawn_approval _redact _spawn_result_view
-        api_spawn_list api_spawn_status
+        _apply_result_view _awaiting_spawn_approval _redact _spawn_result_view api_spawn_list
+        api_spawn_status
+
         """.split()),
     "notifications": tuple("""
         api_notification_ack api_notification_channel_settings api_notification_channels
         api_notification_delete api_notification_unack api_notifications
         api_notifications_ack_all api_notifications_clear
+
         """.split()),
     "proactive_send": tuple("""
         _redact_all _resolve_session_link_url _resolve_session_target _sanitize_blocks
         _session_link_blocks api_delete_message api_update_message
+
         """.split()),
     "channel_delivery": tuple("""
         _ChannelSendFailed _channel_delivery_key _deliver_channel_dm _deliver_to_channel
         _owner_dm_target _send_to_channel_target _vet_channel_send
+
         """.split()),
     "slack_settings": tuple("""
         _slack_config_save_locked _validate_slack_token api_slack_config_get
         api_slack_config_save
+
         """.split()),
     "discord_settings": tuple("""
         _discord_config_save_locked _validate_discord_token api_discord_config_get
         api_discord_config_save
+
         """.split()),
     "telegram_settings": tuple("""
         _telegram_config_save_locked _validate_telegram_token api_telegram_config_get
         api_telegram_config_save
+
         """.split()),
     "teams_settings": tuple("""
         _is_valid_teams_principal _teams_config_save _validate_teams_app_credentials
         api_teams_config_get api_teams_config_save
+
         """.split()),
     "webex_settings": tuple("""
         _coerce_like _is_valid_webex_email _validate_webex_token _webex_config_save
         api_webex_config_get api_webex_config_save
+
         """.split()),
     "imessage_settings": tuple("""
         _clean_imessage_path _imessage_config_save _is_valid_imessage_handle
         api_imessage_config_get
+
         """.split()),
     "wecom_settings": tuple("""
         _is_valid_wecom_userid _wecom_config_save_locked api_wecom_config_get
         api_wecom_config_save
+
         """.split()),
     "feishu_settings": tuple("""
-        _channel_sdk_status _feishu_config_save_locked _is_valid_feishu_id
-        api_feishu_config_get api_feishu_config_save
-        """.split()),
-    "browser_routes": tuple("""
-        _browser_install_active _browser_install_conflict _browser_install_job
-        _browser_install_status _browser_view_payload _deny_non_owner_browser_request
-        _start_browser_install_job _terminate_install_scope api_browser_command
-        api_browser_command_drain api_browser_command_result api_browser_engine_install
-        api_browser_install_get api_browser_install_start api_browser_open
-        api_browser_token_put api_browser_view_get api_browser_view_start
-        stop_browser_install
+        _channel_sdk_status _feishu_config_save_locked _is_valid_feishu_id api_feishu_config_get
+        api_feishu_config_save
+
         """.split()),
     "channel_config_writes": tuple("""
         _LockedSectionWrite _clean_id_list _mask_secret _threshold_pct_rejection
         _wide_env_refusal _write_env_or_roll_back _write_env_updates _write_env_updates_locked
+
         """.split()),
     "slack_workspace": tuple("""
         _missing_scope_message api_slack_manifest api_slack_pins api_slack_profile
         api_slack_reactions
+
         """.split()),
     "channel_folder_backfill": ("api_channel_folder_backfill",),
     "agent_push": ("api_notification_agent_push",),
@@ -252,7 +244,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
 #: moved name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "32afbb324bcb7429bd46b174a7e0d5966be4b6c38d4af4ba6f5ec62cacaf536f"
+_BASE_SHAPE_DIGEST = "5f9f90e8f0b3a71e8d11ad7ad64866a681de7fbdf2e1f64daf875f7248cfbff0"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -339,7 +331,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Routes, the handlers package, other handlers and tests read private names off
     the facade as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) > 270
+    assert len(_BASE_NAMES) > 240
     assert sorted(name for name in _BASE_NAMES if not hasattr(msg, name)) == []
 
 
@@ -347,7 +339,7 @@ def test_a_fresh_interpreter_sees_every_base_public_name(tmp_path: Path) -> None
     """The public names resolve in a process that imports nothing else first, and the
     handlers package's re-exports are the facade's own objects there too."""
     public = sorted(name for name in _BASE_NAMES if not name.startswith("_"))
-    assert len(public) > 150
+    assert len(public) > 140
     _run_child(
         tmp_path,
         """
@@ -413,11 +405,11 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     assert len({id(h) for h in served}) >= 28
     assert [h.__name__ for h in served if getattr(msg, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 60
+    assert len(reexports) == 49
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
     server_names = _server_handler_names()
-    assert {"api_spawn", "api_send_message", "stop_browser_install"} <= server_names
-    assert len(server_names) >= 29
+    assert {"api_spawn", "api_send_message"} <= server_names
+    assert len(server_names) >= 18
     assert [n for n in server_names if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
 
 
@@ -493,7 +485,7 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    for name in ("api_spawn", "api_spawn_list", "stop_browser_install", "parent_work_supported"):
+    for name in ("api_spawn", "api_spawn_list", "parent_work_supported"):
         assert getattr(module, name) is getattr(msg, name)
 
 
@@ -582,7 +574,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(
         f"{name} {_shape(getattr(msg, name))}" for names in _BASE_OWNERS.values() for name in names
     )
-    assert len(lines) == 120
+    assert len(lines) == 101
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 

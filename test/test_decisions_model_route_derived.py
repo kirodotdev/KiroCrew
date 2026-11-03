@@ -123,12 +123,12 @@ class _Oracle:
 def answers(monkeypatch):
     """Pin the config snapshot to *cfg* and answer every question with *tier*."""
     import kiro_crew.decisions.gate as gate_mod
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     def _set(tier: str, cfg, p: float = 0.95) -> _Oracle:
         oracle = _Oracle(tier, p)
         monkeypatch.setattr(gate_mod, "_snapshot", lambda: cfg)
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: oracle)
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: oracle)
         return oracle
 
     return _set

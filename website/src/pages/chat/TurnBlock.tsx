@@ -19,6 +19,29 @@ import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
+import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
+
+/**
+ * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
+ * `browser` call (that row is its anchor, so the binding survives a remount)
+ * and renders after the turn's LAST browser row, so while the agent browses
+ * the picture stays at the bottom of the work, next to the live Thinking line,
+ * and never has tool rows appearing below it one by one.
+ */
+function browserLivePlacement(items: TurnItem[]): { anchor: ReturnType<typeof browserLiveAnchor>; after: number } | null {
+  let first = -1
+  let last = -1
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'single' && isBrowserToolMessage(it.msg)) {
+      if (first < 0) first = i
+      last = i
+    }
+  }
+  if (first < 0) return null
+  const anchorItem = items[first]
+  return anchorItem.kind === 'single' ? { anchor: browserLiveAnchor(anchorItem.msg), after: last } : null
+}
 
 // A workflow_run launch renders as its own always-visible inline card
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call
@@ -464,7 +487,11 @@ function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
  *  opened, read from its own disclosure map). Without it such a row folds
  *  after a remount, as it always did.
  */
-function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange, mayBeLive = NEVER_LIVE }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; mayBeLive?: (it: TurnItem) => boolean }) {
+function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange, mayBeLive = NEVER_LIVE, browserLiveSessionKey }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; mayBeLive?: (it: TurnItem) => boolean;
+  /** The session this turn belongs to. With it, a turn that called the `browser`
+   *  tool shows its live-browser card (BrowserLiveCard); without it (a host
+   *  that cannot name the session) the turn renders as before. */
+  browserLiveSessionKey?: string }) {
   // memo() bails out of the provider-level language repaint, so this component
   // subscribes to language generation itself: its i18nT() strings must
   // re-translate even when no prop moves.
@@ -490,6 +517,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // turn shows one collapsed "Thought process" instead of a per-burst wall.
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
   const pinnedRows = useMemo(() => findPinnedRows(items), [items])
+  const browserLive = useMemo(() => (browserLiveSessionKey ? browserLivePlacement(items) : null), [items, browserLiveSessionKey])
   // One React key per row of `items`, by message identity (see the block
   // comment above); `rowKey(i)` indexes THIS list.
   const msgKey = useStableMessageKey()
@@ -647,6 +675,15 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
         </div>
       </div>,
     )
+    // The live-browser card: its own row, outside the fold (a fold hides working
+    // steps; the picture is the turn's result while it runs and its record after).
+    if (browserLive && browserLiveSessionKey && i === browserLive.after) {
+      out.push(
+        <div key={`browser-live-${browserLive.anchor.key}`}>
+          <BrowserLiveCard sessionKey={browserLiveSessionKey} anchorKey={browserLive.anchor.key} anchorTs={browserLive.anchor.ts} running={!turn.complete} />
+        </div>,
+      )
+    }
   })
   return <>{out}</>
 }

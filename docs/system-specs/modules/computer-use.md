@@ -1650,10 +1650,9 @@ floating picture-in-picture panel mirrors what the agent sees. It rides an
 existing capture rather than opening a new one: `emit_snapshot_frame` POSTs the
 already-encoded JPEG to the loopback `/api/computer-use/frame` ingress, which
 rebroadcasts it to OWNER websockets as a `computer_use_frame` event. The
-in-gateway browse mirror this shape was modelled on is gone — browsing now runs
-through the external `playwright-cli` binary (`kiro_crew/browser_cli/`), which
-serves its own dashboard (`playwright-cli show`, supervised by
-`browser_cli/view.py`) instead of relaying frames through the gateway.
+agent's browser follows the same shape in its own module: the live card's
+frames are binary `browser_frame` messages to OWNER websockets from the
+gateway's CDP relay ([browser module spec](browser.md)).
 
 **It is a RELAY, not a capture.** `capture_snapshot_image` hands the JPEG it just
 encoded for the model to `emit_snapshot_frame`. There is no timer, no second
@@ -2615,9 +2614,9 @@ computer use.
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
   (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no
-  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
-  is a second pixel channel and lands on this same plane: it is a shell command,
-  so an `mcp`-scope deny cannot reach it. None of these are covered by any
+  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. The `browser`
+  tool's `screenshot` op is a second pixel channel on a different plane: it sits
+  behind `capabilities.browse`, not behind computer-use governance. None of these are covered by any
   `computer_use.*` scope, and the spec says so rather than implying coverage.
 
 ---
