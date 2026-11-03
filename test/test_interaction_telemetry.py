@@ -197,6 +197,8 @@ class TestDashboardInteractionTelemetry:
 
             await _run_chat(state, slot, "hello")
 
+            replies = [m["content"] for m in slot.messages if m["role"] == "assistant"]
+            assert replies == ["hello"]
             state.sessions.record_success.assert_called_once()
         finally:
             reset_context()

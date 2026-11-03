@@ -45,7 +45,10 @@ class TestGenerateSourceSummary:
         """Should return early when items have no summaries."""
         sid = store.add_source("test", "local_file", "/tmp/test.md")
         store.add_item("title", "content", "doc", source_id=sid)  # no summary
+        pipeline.extractor._pool.send.return_value = '{"topic": "made up", "themes": ["x"]}'
         await pipeline.generate_source_summary(sid)
+        row = store.db.execute("SELECT summary_topic FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["summary_topic"] is None
         pipeline.extractor._pool.send.assert_not_called()
 
     @pytest.mark.asyncio

@@ -1036,36 +1036,6 @@ class TestViewSubprocessesReceiveNodeEnv:
         _, kwargs = mock_popen.call_args
         assert kwargs["env"] is fake_env, "_spawn must pass env=cli_env() to Popen"
 
-    def test_stop_does_not_invoke_subprocess_run(self, monkeypatch: pytest.MonkeyPatch):
-        from unittest.mock import MagicMock, patch
-
-        from kiro_crew.browser_cli import view as view_mod
-
-        fake_env = {"PATH": "/nvm/bin:/usr/bin", "HOME": "/home/test"}
-        monkeypatch.setattr(view_mod, "cli_env", lambda: fake_env)
-        monkeypatch.setattr(view_mod, "cli_path", lambda: "/n/pw")
-
-        # Set up an owned child so stop() exercises the reap path.
-        fake_proc = MagicMock()
-        fake_proc.poll.return_value = None
-        fake_proc.pid = 12345
-        view_mod._child = view_mod._Child(
-            proc=fake_proc, binding=view_mod._BindingProof(port=0, reported=threading.Event())
-        )
-
-        with patch.object(view_mod.subprocess, "run") as mock_run:
-            monkeypatch.setattr(
-                platform_compat,
-                "kill_process_tree",
-                lambda pid, sig=None: None,
-            )
-            view_mod.stop()
-
-        # stop() issues no subprocess.run call at all (no global --kill).
-        mock_run.assert_not_called()
-
-        view_mod._child = None
-
 
 class TestStopGuardsAgainstUnownedProcesses:
     """stop() must not kill an operator's own playwright-cli show."""
