@@ -946,6 +946,91 @@ class MessageActionConfig:
         return errors
 
 
+#: One link-open entry per app, for the reason there is one link-preview provider:
+#: a click opens the FIRST app that claims the link's host.
+MAX_LINK_OPEN_PER_APP = 1
+#: Host patterns per entry; the click handler tests every claimed link against them.
+_MAX_LINK_OPEN_HOSTS = 64
+
+
+@dataclass
+class LinkOpenConfig:
+    """A link-open entry: a plain click on a claimed link can open it in the app.
+
+    The host owns the click. A plain left click on an ``https:`` link in a chat
+    message whose host one of ``hosts`` claims is held, and the host asks whether to
+    open it in the app or in the browser; "Always" remembers the answer for this
+    entry and that one host. Opening in the app creates a sandboxed, opaque-origin
+    frame (``apps/app_frame.py``, registered by ``apps/link_open_frame.py``) in a
+    host-drawn dialog, which imports ``entry`` and calls the module's ``activate(ctx)``; the returned provider's ``open`` receives
+    that one URL. Every other click, and every link nobody claims, behaves as it
+    did.
+
+    Declarative for the reason ``linkPreviews`` is: core reads ``hosts`` without
+    importing app code, so a disabled or broken app costs nothing on a click.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    # Exact hostnames, or a leading dot for "this domain and every subdomain".
+    # https links only. Same rules as ``linkPreviews.hosts`` (``app_hosts``).
+    hosts: list[str] = field(default_factory=list)
+    #: ``hosts`` present but not a list. Not serialized.
+    bad_hosts: bool = False
+    # Optional: hand the module the clicked URL whole. By default the host strips
+    # the query and fragment, which can carry signed tokens or other secrets.
+    fullUrl: bool = False  # noqa: N815
+    #: ``fullUrl`` present but not a boolean. Not serialized.
+    bad_full_url: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.entry:
+            d["entry"] = self.entry
+        if self.hosts:
+            d["hosts"] = list(self.hosts)
+        if self.fullUrl:
+            d["fullUrl"] = True
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LinkOpenConfig:
+        raw_hosts = data.get("hosts", [])
+        return cls(
+            id=str(data.get("id", "")),
+            entry=str(data.get("entry", "")),
+            # Normalized, as ``LinkPreviewConfig`` does, so what is matched, signed and
+            # granted is one form.
+            hosts=(
+                [normalize_host(h) or str(h).lower() for h in raw_hosts]
+                if isinstance(raw_hosts, list)
+                else []
+            ),
+            bad_hosts="hosts" in data and not isinstance(raw_hosts, list),
+            fullUrl=data.get("fullUrl") is True,
+            bad_full_url="fullUrl" in data and not isinstance(data.get("fullUrl"), bool),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.linkOpen[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.linkOpen: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        # The rule every host-claiming point shares (``app_hosts``).
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_OPEN_HOSTS))
+        if self.bad_full_url:
+            errors.append(f"{where}: fullUrl must be true or false")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -1169,6 +1254,11 @@ class Contributes:
     #: Same reasoning as the flags above. Not serialized.
     bad_message_actions: bool = False
     dropped_message_actions: int = 0
+    linkOpen: list[LinkOpenConfig] = field(default_factory=list)  # noqa: N815
+    #: ``linkOpen`` present but not a list / entries that were not objects. Not
+    #: serialized.
+    bad_link_open: bool = False
+    dropped_link_open: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1195,6 +1285,10 @@ class Contributes:
             d["linkPreviews"] = kept_previews
         if self.messageActions:
             d["messageActions"] = [a.to_dict() for a in self.messageActions]
+        opens = [o.to_dict() for o in self.linkOpen]
+        kept_opens = [o for o in opens if o]
+        if kept_opens:
+            d["linkOpen"] = kept_opens
         return d
 
     @classmethod
@@ -1230,12 +1324,17 @@ class Contributes:
         preview_entries = previews_raw if isinstance(previews_raw, list) else []
         actions_raw = data.get("messageActions", [])
         action_entries = actions_raw if isinstance(actions_raw, list) else []
+        opens_raw = data.get("linkOpen", [])
+        open_entries = opens_raw if isinstance(opens_raw, list) else []
         return cls(
             messageActions=[
                 MessageActionConfig.from_dict(a) for a in action_entries if isinstance(a, dict)
             ],
             bad_message_actions="messageActions" in data and not isinstance(actions_raw, list),
             dropped_message_actions=sum(1 for a in action_entries if not isinstance(a, dict)),
+            linkOpen=[LinkOpenConfig.from_dict(o) for o in open_entries if isinstance(o, dict)],
+            bad_link_open="linkOpen" in data and not isinstance(opens_raw, list),
+            dropped_link_open=sum(1 for o in open_entries if not isinstance(o, dict)),
             linkPreviews=[
                 LinkPreviewConfig.from_dict(p) for p in preview_entries if isinstance(p, dict)
             ],
@@ -1404,4 +1503,22 @@ class Contributes:
                     # The id keys the grant and the frame's point: two would share both.
                     errors.append(f"contributes.messageActions: duplicate id {action.id!r}")
                 action_ids.add(action.id)
+        if self.bad_link_open:
+            errors.append(
+                "contributes.linkOpen must be an array -- a non-array value passes as "
+                "empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any effect on a click"
+            )
+        if self.dropped_link_open:
+            errors.append(
+                f"contributes.linkOpen: {self.dropped_link_open} entr"
+                f"{'y' if self.dropped_link_open == 1 else 'ies'} must be an object"
+            )
+        if len(self.linkOpen) > MAX_LINK_OPEN_PER_APP:
+            errors.append(
+                f"contributes.linkOpen: {len(self.linkOpen)} entries exceeds the "
+                f"limit of {MAX_LINK_OPEN_PER_APP}"
+            )
+        for link_open in self.linkOpen:
+            errors.extend(link_open.validate())
         return errors

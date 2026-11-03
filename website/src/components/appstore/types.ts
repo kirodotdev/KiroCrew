@@ -20,6 +20,15 @@ export interface MessageActionGrantRow {
   staged?: string[]
 }
 
+/** An app row's `linkOpenGrant`: approved hosts, and the ones an update holds back. */
+export interface LinkOpenGrantRow {
+  hosts?: string[]
+  stagedHosts?: string[]
+  /** Whole URLs (query and fragment) approved, and asked for but waiting. */
+  fullUrl?: boolean
+  stagedFullUrl?: boolean
+}
+
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
  *
@@ -105,6 +114,8 @@ export type InstalledApp = {
   linkPreviewGrant?: LinkPreviewGrantRow
   /** Approved message actions, and the entries an update holds back. */
   messageActionGrant?: MessageActionGrantRow
+  /** Approved link-open hosts, and the ones an update holds back. */
+  linkOpenGrant?: LinkOpenGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.execution import shipped_builtin_app_root
+from kiro_crew.apps.link_open_grants import link_open_grant_row
 from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager_builtins import detect_orphaned_builtins
 from kiro_crew.apps.manager_records import (
@@ -398,6 +399,7 @@ def list_apps() -> list[dict[str, Any]]:
             **_approved_grants_row(entry.name),
             **link_preview_grant_row(entry.name, manifest_data),
             **message_action_grant_row(entry.name, manifest_data),
+            **link_open_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -435,6 +437,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         **_approved_grants_row(name),
         **link_preview_grant_row(name, manifest_data),
         **message_action_grant_row(name, manifest_data),
+        **link_open_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
 

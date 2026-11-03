@@ -38,6 +38,7 @@ import AppStoreDialog from '../components/appstore/AppStoreDialog'
 import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
+import LinkOpenChoices from '../linkOpen/LinkOpenChoices'
 import type { AppContributor } from '../types'
 import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
@@ -95,7 +96,10 @@ export default function AppDetailPage() {
   // Message-action reach an update widened (the user role, markdown, a new action).
   const stagedMessageActions = app?.messageActionGrant?.staged || []
   const declaredMessageActions = (app?.manifest as { contributes?: { messageActions?: unknown } } | undefined)?.contributes?.messageActions
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length > 0 || stagedFullUrl
+  // So do link-open hosts and whole URLs for opened links.
+  const stagedOpenHosts = app?.linkOpenGrant?.stagedHosts || []
+  const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length > 0 || stagedFullUrl || stagedOpenFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -271,6 +275,7 @@ export default function AppDetailPage() {
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
+            linkOpenGrant: installed.linkOpenGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -398,6 +403,7 @@ export default function AppDetailPage() {
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
+            linkOpenGrant: installed.linkOpenGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -999,6 +1005,19 @@ export default function AppDetailPage() {
                   </ul>
                 </div>
               )}
+              {stagedOpenHosts.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_hosts')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {stagedOpenHosts.map(h => (
+                      <code key={h} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{h}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stagedOpenFullUrl && (
+                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1011,7 +1030,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions))].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : [])].join(', ')
                 try {
                   await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1020,6 +1039,8 @@ export default function AppDetailPage() {
                     linkPreviewTextPatterns: stagedLinkPatterns,
                     linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
                     messageActions: stagedMessageActions,
+                    linkOpenHosts: stagedOpenHosts,
+                    linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
                   })
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
@@ -1042,6 +1063,7 @@ export default function AppDetailPage() {
             <span className="text-ok text-sm block">{grantsApprovedMsg}</span>
           </div>
         )}
+        {app.installed && <LinkOpenChoices appName={app.name} label={appDisplayName(app)} />}
 
         {/* Error. No special execution-policy branch here any more: an untrusted
             third-party app is refused with `app_execution_denied`, and that

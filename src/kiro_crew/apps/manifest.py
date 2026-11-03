@@ -47,6 +47,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_OPEN_HOSTS,
     _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
@@ -63,6 +64,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_LINK_OPEN_PER_APP,
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
     MAX_LINK_PREVIEWS_PER_APP,
@@ -76,6 +78,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkOpenConfig,
     LinkPreviewConfig,
     MessageActionConfig,
     PanelTabConfig,
@@ -553,6 +556,10 @@ class AppManifest:
                 report_path(
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
+        for link_open in self.contributes.linkOpen:
+            refusal = path_refusal(link_open.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -792,6 +799,9 @@ class AppManifest:
             or self.contributes.linkPreviews
             # A message action's roles and format decide which text the app is handed.
             or self.contributes.messageActions
+            # A link-open `entry` is the same kind of module, and `hosts` decides which
+            # clicked links the app is handed.
+            or self.contributes.linkOpen
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
