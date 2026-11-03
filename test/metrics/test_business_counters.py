@@ -644,7 +644,7 @@ class TestSubagentCompleted:
         source = Path(run_turn.__file__).read_text(encoding="utf-8")
         flag = source.index("info.returned_reply = not _no_reply")
         assert source.index("_no_reply = not cleaned.strip()") < flag
-        assert flag < source.index("cleaned = annotate_model_fallback(cleaned, client)")
+        assert flag < source.index("cleaned = annotate_model_fallback(")
 
     def test_the_no_reply_placeholder_is_the_runners_own(self):
         """``empty`` is read from the placeholder the runner stores for a run with

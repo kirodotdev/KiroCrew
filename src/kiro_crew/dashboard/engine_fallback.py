@@ -65,6 +65,9 @@ def record_engine_fallback(
     slot.model = to
     # Counted as a pick, so a pending Crew restore reads as stale.
     slot._model_pick_gen = getattr(slot, "_model_pick_gen", 0) + 1
+    # Stamped as the runtime's own write, so a reader that treats a moved
+    # generation as a person's pick (a crew's triage model switch) skips it.
+    slot._model_runtime_pick_gen = slot._model_pick_gen
     try:
         host = pick_epoch_host(client)
         host._explicit_pick_epoch = getattr(host, "_explicit_pick_epoch", 0) + 1

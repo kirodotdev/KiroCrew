@@ -1029,6 +1029,8 @@ def test_dashboard_promotion_moves_a_pinned_slot_and_stales_restores() -> None:
         dash.record_engine_fallback(state, slot, client, walk, notice)
     assert slot.model == B
     assert slot._model_pick_gen == 1 and client._explicit_pick_epoch == 1
+    # A runtime write, not a person's pick: crew readers must not hold on it.
+    assert slot._model_runtime_pick_gen == slot._model_pick_gen
     slot.record_served_model.assert_called_once_with(B)
     state.push_slots_update.assert_called_once()
 
