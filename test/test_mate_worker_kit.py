@@ -578,12 +578,18 @@ def test_adopting_a_name_a_user_level_agent_declares_is_refused(home, monkeypatc
 @pytest.mark.parametrize(
     "limit",
     [
+        # A rule KAS cannot parse makes it refuse the whole block, denies included.
         {"permissions": {"rules": [{"effect": "deny", "tools": ["@jira/delete_issue"]}]}},
+        # This home has no worker base, so nothing can be shown to carry.
         {"hooks": {"preToolUse": [{"command": "deny.sh"}]}},
     ],
 )
 def test_a_template_whose_limits_the_worker_cannot_carry_is_refused(home, limit):
-    """A deny rule or a hook would not reach the worker, so no copy is made."""
+    """A limit that would not reach the worker exactly is refused; no copy is made.
+
+    A template whose hooks, permissions and tool settings do carry is covered in
+    ``test_mate_spec_policy.py``.
+    """
     user, mates = home
     limited = {**TEMPLATE, "excludedTools": ["@jira/delete_issue"], **limit}
     (user / "release-bot.json").write_text(json.dumps(limited), encoding="utf-8")
