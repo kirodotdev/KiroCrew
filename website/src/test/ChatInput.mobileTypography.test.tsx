@@ -1,41 +1,19 @@
-import { describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
-import ChatInput from '../components/ChatInput'
-import { renderWithProviders } from './helpers'
+import { describe, expect, it } from 'vitest'
 import { readIndexCss } from './indexCssSource'
 
 const INDEX_CSS = readIndexCss()
 
+// jsdom evaluates no media queries and computes no layout, so this reads the
+// stylesheet's text. What it guards: on a touch screen the composer's typed text
+// and its placeholder are one size. Its auto-size measures the placeholder at the
+// FIELD's font size (chat-input/sizing.ts), so a coarse-pointer rule that raises
+// the field (or shrinks the hint) makes an empty composer measure a line taller
+// than the hint it shows. Focus zoom is held off by the viewport's
+// `maximum-scale=1` instead, which noPageZoom.test.ts pins.
 describe('mobile composer typography', () => {
-  it('floors the textarea and paste mirror at 16px on coarse pointers', () => {
-    const { container } = renderWithProviders(
-      <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />,
-    )
-
-    expect(screen.getByLabelText('Message input')).toHaveAttribute('data-composer-typo')
-    expect(container.querySelector('[aria-hidden][data-composer-typo]')).not.toBeNull()
-    // The attribute is doubled to raise specificity to (0,2,0) so the rule outranks
-    // Tailwind's `.text-sm` (0,1,0) NO MATTER which stylesheet the bundler emits
-    // last. A bare `[data-composer-typo]` ties at (0,1,0) and would win only while
-    // index.css happens to follow the utilities -- an import-order or build-pipeline
-    // change would then make the fix inert on device while every assertion here
-    // still passed. Doubling stays element-agnostic on purpose: the hook is on a
-    // <textarea> AND on the paste mirror's <div>, so element-qualifying it
-    // (`textarea[data-composer-typo]`) would raise specificity but silently drop
-    // the mirror, whose font metrics must track the field's.
-    expect(INDEX_CSS).toMatch(
-      /@media\s*\(pointer:\s*coarse\)\s*\{[\s\S]*?\[data-composer-typo\]\[data-composer-typo\]\s*\{\s*font-size:\s*max\(16px,\s*var\(--mc-message-font-size,\s*14px\)\);\s*\}/,
-    )
-  })
-
-  // jsdom does not evaluate media queries, so this matches the rule's text rather
-  // than its effect: it guards the pairing (a floored field must keep its
-  // placeholder at the un-floored desktop size) against one half being edited
-  // away, and cannot show the cascade resolves. That is covered by the device
-  // capture on the pull request.
-  it('holds the placeholder at the desktop size so the hint stays on one line', () => {
-    expect(INDEX_CSS).toMatch(
-      /\[data-composer-typo\]::placeholder\s*\{\s*font-size:\s*var\(--mc-message-font-size,\s*14px\);\s*\}/,
-    )
+  it('sets no coarse-pointer font size on the composer typography hook', () => {
+    const coarseBlocks = INDEX_CSS.match(/@media\s*\(pointer:\s*coarse\)\s*\{[\s\S]*?\n\}/g) ?? []
+    const sized = coarseBlocks.filter(b => /\[data-composer-typo\][^{]*\{[^}]*font-size/.test(b))
+    expect(sized, 'a coarse-pointer rule sizes [data-composer-typo] again -- the empty composer will measure its hint at the wrong size').toEqual([])
   })
 })

@@ -920,8 +920,8 @@ export default function LexicalComposerInput({
           }
           placeholder={
             /* Not a real `::placeholder`, so it carries the same hook as the
-               editor: on a coarse pointer both get the 16px floor together and
-               the overlay stays metric-identical to the text it stands in for. */
+               editor: any rule on that hook reaches both, and the overlay stays
+               metric-identical to the text it stands in for. */
             <div data-composer-typo="" data-composer-placeholder="" className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
               {placeholder}
             </div>
