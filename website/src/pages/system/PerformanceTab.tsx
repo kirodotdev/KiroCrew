@@ -382,11 +382,11 @@ function LargeGraph({ history, resource }: { history: HistoryPoint[]; resource: 
   const caption =
     resource === 'network'
       ? i18nT('pages.performanceTab.graph_scale_network', {
-          max: max.toFixed(1),
-          seconds: String(values.length * SAMPLE_INTERVAL_S),
+          max: fmtUnit(max, 'kilobyte-per-second', { maximumFractionDigits: 1 }),
+          seconds: fmtUnit(values.length * SAMPLE_INTERVAL_S, 'second'),
         })
       : i18nT('pages.performanceTab.graph_scale_percent', {
-          seconds: String(values.length * SAMPLE_INTERVAL_S),
+          seconds: fmtUnit(values.length * SAMPLE_INTERVAL_S, 'second'),
         })
 
   return (

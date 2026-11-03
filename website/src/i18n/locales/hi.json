@@ -16357,8 +16357,6 @@
       "free": "खाली",
       "gateway_cpu": "गेटवे CPU",
       "gateway_rss": "गेटवे RSS",
-      "graph_scale_network": "पूर्ण स्केल {{max}} KB/s · पिछले {{seconds}} सेकंड",
-      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}} सेकंड",
       "hostname": "होस्टनाम",
       "ip_address": "IP पता",
       "kiro_cli_procs": "Kiro CLI",
@@ -16384,7 +16382,9 @@
       "used": "उपयोग",
       "used_pct": "उपयोग",
       "utilization": "उपयोगिता",
-      "working_directory": "कार्य डायरेक्टरी"
+      "working_directory": "कार्य डायरेक्टरी",
+      "graph_scale_network": "पूर्ण स्केल {{max}} · पिछले {{seconds}}",
+      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}"
     },
     "popoutFrame": {
       "session": "सेशन",
@@ -19399,7 +19399,6 @@
       "hide_turn_detail": "प्रति टर्न विवरण छिपाएँ",
       "instruments": "इंस्ट्रूमेंट",
       "loading_telemetry": "टेलीमेट्री लोड हो रही है…",
-      "local_only_no_egress": "· केवल स्थानीय, कोई एग्रेस नहीं",
       "max_col": "max",
       "mean_col": "औसत",
       "mean_credits_by_occupancy": "उपयोग किए गए कॉन्टेक्स्ट के अनुसार प्रति टर्न औसत क्रेडिट",
@@ -19433,7 +19432,6 @@
       "session_col": "सेशन",
       "session_startup": "सेशन स्टार्टअप",
       "sessions_col": "सेशन",
-      "shard_s_source": "शार्ड · स्रोत",
       "share_col": "हिस्सा",
       "show_turn_detail": "प्रति टर्न विवरण दिखाएँ",
       "showing_partial_window": "{{total}} में से {{shown}} नमूने दिखाए जा रहे हैं (विंडो के भीतर हिस्टोग्राम सीमाएँ बदल गईं)",
@@ -19493,7 +19491,8 @@
       "range_to": "अंतिम तारीख",
       "no_telemetry_in_window": "इस अवधि ({{period}}) में कोई टेलीमेट्री दर्ज नहीं हुई।",
       "otel_retention_cap": "टर्न, लेटेंसी और स्टार्टअप के आँकड़े केवल पिछले {{days}} दिन के हैं; पुराने मेट्रिक हटा दिए जाते हैं (<settingRef/>)।",
-      "window_footer": "OTEL अनुभाग · अवधि: {{period}} ·"
+      "window_footer_shards_one": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
+      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",

@@ -16708,8 +16708,6 @@
       "free": "Libero",
       "gateway_cpu": "CPU Gateway",
       "gateway_rss": "RSS Gateway",
-      "graph_scale_network": "Scala piena {{max}} KB/s · ultimi {{seconds}} s",
-      "graph_scale_percent": "Scala piena 100% · ultimi {{seconds}} s",
       "hostname": "Nome host",
       "ip_address": "Indirizzo IP",
       "kiro_cli_procs": "Kiro CLI",
@@ -16735,7 +16733,9 @@
       "used": "Utilizzato",
       "used_pct": "Utilizzato",
       "utilization": "Utilizzo",
-      "working_directory": "Directory di lavoro"
+      "working_directory": "Directory di lavoro",
+      "graph_scale_network": "Scala piena {{max}} · ultimi {{seconds}}",
+      "graph_scale_percent": "Scala piena 100% · ultimi {{seconds}}"
     },
     "popoutFrame": {
       "session": "Sessione",
@@ -19789,7 +19789,6 @@
       "hide_turn_detail": "Nascondi dettaglio per turno",
       "instruments": "Strumenti",
       "loading_telemetry": "Caricamento della telemetria…",
-      "local_only_no_egress": "· solo locale, nessun traffico in uscita",
       "max_col": "max",
       "mean_col": "Media",
       "mean_credits_by_occupancy": "Crediti medi per turno, raggruppati per contesto usato",
@@ -19823,7 +19822,6 @@
       "session_col": "Sessione",
       "session_startup": "Avvio della sessione",
       "sessions_col": "Sessioni",
-      "shard_s_source": "shard · origine",
       "share_col": "Quota",
       "show_turn_detail": "Mostra dettaglio per turno",
       "showing_partial_window": "Mostrati {{shown}} campioni su {{total}} (i limiti dell'istogramma sono cambiati nella finestra)",
@@ -19887,7 +19885,9 @@
       "range_to": "Data di fine",
       "no_telemetry_in_window": "Nessuna telemetria registrata in questo periodo ({{period}}).",
       "otel_retention_cap": "I dati su turni, latenza e avvio coprono solo gli ultimi {{days}} g; le metriche più vecchie vengono eliminate (<settingRef/>).",
-      "window_footer": "Sezioni OTEL · periodo: {{period}} ·"
+      "window_footer_shards_one": "Sezioni OTEL · periodo: {{period}} · {{n}} frammento · origine: <dir/> · solo locale, nessun traffico in uscita",
+      "window_footer_shards_many": "Sezioni OTEL · periodo: {{period}} · {{n}} frammenti · origine: <dir/> · solo locale, nessun traffico in uscita",
+      "window_footer_shards_other": "Sezioni OTEL · periodo: {{period}} · {{n}} frammenti · origine: <dir/> · solo locale, nessun traffico in uscita"
     },
     "terminalPopoutFrame": {
       "return": "Torna al dock",
