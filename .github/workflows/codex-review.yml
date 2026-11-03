@@ -612,7 +612,10 @@ jobs:
           # PUSH_BUDGET_MIN blocked pushes, so a first-time review is exactly
           # as long as it was. The count is the one `pr_findings.py --rounds`
           # and `sweep_check.py` print: `blocked_push_count` in the
-          # prepare-pr skill's `_review_pushes.py`, run here as a script. A
+          # prepare-pr skill's `_review_pushes.py`, run here as a script. It
+          # stops at PUSH_BUDGET_MIN (REVIEW_PUSHES_STOP_AT), because the
+          # section needs only "at least that many" and every replaced head
+          # costs a check-run read from the shared REST quota. A
           # push counts when the head it replaced was blocked: the newest
           # check run of a review lane (GPT, Opus, Design, UX, First
           # Principles, Security Scope Review) failed on it, or a
@@ -641,7 +644,8 @@ jobs:
           push_budget_count() {
             case "$PR" in ''|*[!0-9]*) return 1 ;; esac
             [ -s "$counter_dir/$counter_tree/_review_pushes.py" ] || return 1
-            python3 "$counter_dir/$counter_tree/_review_pushes.py" --repo "$REPO" --pr "$PR"
+            REVIEW_PUSHES_STOP_AT="$PUSH_BUDGET_MIN" \
+              python3 "$counter_dir/$counter_tree/_review_pushes.py" --repo "$REPO" --pr "$PR"
           }
           if [ -s "$budget_prompt" ]; then
             # Remove before creating: a symlink at this path would redirect the write.

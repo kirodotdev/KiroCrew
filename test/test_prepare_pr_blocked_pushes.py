@@ -612,6 +612,29 @@ def test_the_script_entry_prints_the_same_count_the_contract_returns(capsys):
     assert out.out == "{}\n".format(expected)
 
 
+def test_the_script_entry_stops_at_the_env_threshold_and_skips_the_later_reads(capsys, monkeypatch):
+    history = [_force(h) for h in SHA[:9]]
+    checks = {h: [(LANE, "failure")] for h in SHA[:8]}
+    monkeypatch.setenv("REVIEW_PUSHES_STOP_AT", "3")
+    gh = _FakeGh(history, checks)
+
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=gh) == 0
+    assert capsys.readouterr().out == "3\n"
+    assert gh.check_calls() == 3
+
+
+@pytest.mark.parametrize("value", ["", "0", "-2", "three", " "])
+def test_an_unusable_env_threshold_counts_in_full(capsys, monkeypatch, value):
+    history = [_force(h) for h in SHA[:9]]
+    checks = {h: [(LANE, "failure")] for h in SHA[:8]}
+    monkeypatch.setenv("REVIEW_PUSHES_STOP_AT", value)
+    gh = _FakeGh(history, checks)
+
+    assert _pushes_module().main(["--repo", "o/r", "--pr", "7"], run=gh) == 0
+    assert capsys.readouterr().out == "8\n"
+    assert gh.check_calls() == 8
+
+
 def test_the_script_entry_prints_nothing_on_an_unreadable_read_and_refuses_bad_input(capsys):
     gh = _FakeGh([_force(SHA[0]), _force(SHA[1])])
     gh.broken_timeline = True
