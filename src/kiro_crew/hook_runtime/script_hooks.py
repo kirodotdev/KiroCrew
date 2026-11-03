@@ -489,8 +489,10 @@ class ScriptHookStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
+        from kiro_crew.user_json import loads_user_json
+
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            data = loads_user_json(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
             return
@@ -567,12 +569,14 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
+        from kiro_crew.user_json import loads_user_json
+
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = json.loads(self._path.read_text(encoding="utf-8"))
+                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"

@@ -2374,7 +2374,11 @@ complete, and the keystone floor closes the whole class).
   source. Parsed into `HooksConfig` as `denied_commands_disable_all` /
   `denied_commands_disabled_ids` / `denied_commands_user_added` (list of
   `UserDeniedPattern`). Missing file / keys → the safe "nothing disabled" state
-  (fail-safe for a deny gate).
+  (fail-safe for a deny gate). A file saved with one leading UTF-8 byte-order
+  mark is read like the same file without it (`user_json.loads_user_json`, also
+  on the Settings > Security read and write paths and for `hooks.json`). A file
+  that is present but unreadable, not JSON or not an object also yields that
+  state, and logs a WARNING because its `user_added` rules then do not apply.
 - **Write (dashboard):** the `/api/security/denied-commands` mutations run
   `_write_denied_state` — an atomic read-modify-write of `denied_commands.json`
   under the shared config lock, routed through

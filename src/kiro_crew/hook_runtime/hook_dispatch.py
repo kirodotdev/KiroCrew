@@ -68,8 +68,10 @@ def persisted_hook_store() -> ScriptHookStore:
     store = ScriptHookStore(load=False)
     if not store._path.exists():
         return store
+    from kiro_crew.user_json import loads_user_json
+
     with webhooks.locked(store._path):
-        data = json.loads(read_bytes_with_retry(store._path).decode("utf-8"))
+        data = loads_user_json(read_bytes_with_retry(store._path).decode("utf-8"))
     hooks_data = data.get("hooks", []) if isinstance(data, dict) else None
     if not isinstance(hooks_data, list):
         raise ValueError(f"{store._path} does not hold a hooks list")

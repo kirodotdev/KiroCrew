@@ -78,8 +78,10 @@ def _read_denied_data() -> dict:
     path = denied_commands_path()
     if not path.exists():
         return {}
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = loads_user_json(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, dict) else {}
     except (OSError, json.JSONDecodeError):
         logger.warning("denied_commands.json unreadable/corrupt; treating as empty", exc_info=True)
@@ -95,8 +97,10 @@ def _read_denied_strict() -> dict:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigCorruptError(str(exc)) from exc
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(raw)
+        loaded = loads_user_json(raw)
     except json.JSONDecodeError as exc:
         raise ConfigCorruptError(f"denied_commands.json is not valid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
