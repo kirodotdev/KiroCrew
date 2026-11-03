@@ -72,6 +72,10 @@ BASELINE: dict[str, tuple[int, str]] = {
     "dashboard/server_runtime/owner_notices.py": (1, "owner DM notice"),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/code_channels/routing.py": (
+        1,
+        "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
+    ),
     "slack/events.py": (5, "!stop and !restart notices and the not-authorized refusal"),
     "slack/files.py": (1, "notes for images Slack refused to upload"),
     "slack/gateway_runtime/cron_delivery.py": (

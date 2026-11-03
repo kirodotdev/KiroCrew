@@ -2,80 +2,97 @@
 
 ``processing`` shows Slack's "Working..." loader (and its Stop button, which
 reaches us as ``agent_session_stopped``); ``active`` means ready for the next
-prompt. Slack drops ``processing`` back to ``active`` after an hour, so a turn
-that runs longer re-sends it on a timer until it ends.
+prompt. Every write goes through the agent-sessions driver
+(:class:`~kiro_crew.slack.agent_sessions.status.AgentSessionStatus`), the one
+``agents.sessions.setStatus`` writer, addressing the whole channel with
+``thread_ts=None``. It sends nothing for a channel this process never put into
+``processing``, and it takes Slack's refusals to the shared capability latch.
+
+The driver used here is its own instance, gated on code channels instead of
+on thread agent sessions: an install can run code channels with thread agent
+sessions switched off, and the channel must still show its status. A code
+channel's turn runs outside a Slack turn scope, so the driver arms no keepalive
+for it and Slack's own one-hour timeout bounds a ``processing`` it was sent.
 
 Installed as ordinary :mod:`.hooks` subscribers by :func:`install`. A status
-write that fails is logged and ignored: the status is decoration on a turn
-that runs either way.
+write that fails is logged by the driver and ignored: the status is decoration
+on a turn that runs either way.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.slack.agent_sessions.status import (
+    SESSION_STATUS_ACTIVE,
+    SESSION_STATUS_PROCESSING,
+    AgentSessionStatus,
+)
 from kiro_crew.slack.code_channels import hooks
-from kiro_crew.slack.code_channels.client import CodeChannelsClient
-from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.store import Binding
 
 logger = logging.getLogger(__name__)
 
-#: Re-send ``processing`` this often (Slack resets it after 60 minutes).
-REFRESH_SECS = 50 * 60
+#: Where the driver is attached on the live Slack client.
+_ATTR = "code_channel_status"
 
-_client_factory: Callable[[], CodeChannelsClient | None] | None = None
-_refreshers: dict[str, asyncio.Task[None]] = {}
-
-
-def set_client_factory(factory: Callable[[], CodeChannelsClient | None] | None) -> None:
-    """Where status writes get their client (set by :func:`install`, tests)."""
-    global _client_factory
-    _client_factory = factory
+_slack_provider: Callable[[], Any] | None = None
 
 
-def _client() -> CodeChannelsClient | None:
-    return _client_factory() if _client_factory is not None else None
+def _gate() -> bool:
+    from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
+
+    return code_channels_on(live_config())
+
+
+def driver_for(slack: Any) -> AgentSessionStatus | None:
+    """The code-channel status driver on *slack*, created on first use."""
+    if slack is None or not hasattr(slack, "_web"):
+        return None
+    driver = getattr(slack, _ATTR, None)
+    if not isinstance(driver, AgentSessionStatus):
+        driver = AgentSessionStatus(slack, gate=_gate, own_latch=True)
+        setattr(slack, _ATTR, driver)
+    return driver
+
+
+def set_slack_provider(provider: Callable[[], Any] | None) -> None:
+    """Where status writes find the live Slack client (set by :func:`install`, tests)."""
+    global _slack_provider
+    _slack_provider = provider
+
+
+def _driver() -> AgentSessionStatus | None:
+    return driver_for(_slack_provider()) if _slack_provider is not None else None
 
 
 async def set_status(channel_id: str, status: str) -> bool:
-    client = _client()
-    if client is None:
+    """Move the channel's session to *status*; False when nothing was sent."""
+    driver = _driver()
+    if driver is None:
         return False
-    try:
-        await client.set_channel_status(channel_id, status)
-        return True
-    except CodeChannelApiError as exc:
-        logger.info("code channel %s status %s not set: %s", channel_id, status, exc.code)
-        return False
+    return await driver.set_status(channel_id, None, status)
 
 
-async def _refresh(channel_id: str) -> None:
-    while True:
-        await asyncio.sleep(REFRESH_SECS)
-        await set_status(channel_id, "processing")
+async def settle_after_stop(channel_id: str) -> None:
+    """Move a stopped channel to ``active`` (Slack never clears it after Stop)."""
+    driver = _driver()
+    if driver is not None:
+        await driver.settle_after_stop(channel_id, None)
 
 
 async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
-    await set_status(binding.channel_id, "processing")
-    previous = _refreshers.pop(binding.channel_id, None)
-    if previous is not None:
-        previous.cancel()
-    _refreshers[binding.channel_id] = asyncio.ensure_future(_refresh(binding.channel_id))
+    await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
-    task = _refreshers.pop(binding.channel_id, None)
-    if task is not None:
-        task.cancel()
-    await set_status(binding.channel_id, "active")
+    await set_status(binding.channel_id, SESSION_STATUS_ACTIVE)
 
 
 def install(slack_provider: Callable[[], Any]) -> None:
     """Subscribe the status hooks; *slack_provider* returns the live Slack client."""
-    set_client_factory(lambda: CodeChannelsClient.from_slack(slack_provider()))
+    set_slack_provider(slack_provider)
     hooks.on_turn_start(_on_start)
     hooks.on_turn_end(_on_end)
