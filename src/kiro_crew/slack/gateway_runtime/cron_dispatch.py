@@ -75,58 +75,34 @@ async def _await_cron_fire_time_gate(
 ) -> tuple[str | None, bool]:
     """Await the fire-time governance gate, bounded, returning ``(reason, starved)``.
 
-    The gate runs on its OWN pool, never as a bare ``run_in_executor`` on the
-    shared governance pool, and its TOTAL wait -- queue plus execution, which is
-    why the budget is split across those phases rather than given to each -- is
-    bounded below the wake deadline ``_execute_with_timeout`` has already armed.
-    Both halves of that matter:
+    The gate runs on its OWN pool, and its total wait (queue plus execution) is
+    bounded below the wake deadline ``_execute_with_timeout`` armed. The shared
+    governance pool is paced by remote senders, so an inbound burst would queue
+    ahead of the gate, and a message job has no ``_pool_queue_allowance`` to
+    absorb that. If the wake deadline fired first, ``_merge_job_result`` would
+    see a finished run and consume a ``delete_after_run`` job that never
+    dispatched.
 
-    * the shared governance pool is paced by REMOTE senders, so an inbound burst
-      would put an unbounded FIFO backlog ahead of a cron gate; and
-    * a message job carries no ``_pool_queue_allowance``, so that whole backlog
-      would be charged to its execution budget.  With the wake deadline expiring
-      first, ``_execute_with_timeout`` catches the ``TimeoutError`` and returns
-      normally, so ``_merge_job_result`` sees an ordinary finished run -- and a
-      ``delete_after_run`` job is consumed by a run that never dispatched.
-
-    Bounding the wait below the wake budget makes starvation surface as
-    ``CronQueueTimeout`` BEFORE the deadline can fire.  That is what makes the
-    retention marker reachable: ``starved`` is reported to the caller and
-    ``run_never_started`` is set here, which the cron service's delete site honours.
-    The marker is deliberately not
-    ``fire_time_denied`` -- that flag also parks an at-job disabled and records
-    the event as a policy denial, and pool capacity is neither.
-
-    ``record_failure()`` is deliberately NOT called, matching both the deny path
-    and the command/script starvation handlers: a fleet-capacity state must not
-    auto-pause a job that never ran a line.
+    So starvation surfaces as ``CronQueueTimeout`` first: ``starved`` is
+    returned and ``run_never_started`` set, which the delete site honours. Not
+    ``fire_time_denied``, which parks an at-job disabled as a policy denial.
+    ``record_failure()`` is not called: pool capacity must not auto-pause a job
+    that never ran a line.
     """
     budget = cron_gate_budget(effective_wake_budget(job))
-    # Default to RETAIN for exactly the duration of the await, not only INSIDE the
-    # handler below -- that is, not only when the await raises something that
-    # handler catches.  A recoverable event-loop stall can carry wall clock past
-    # the gate's own bounds AND the wake deadline, and the ``asyncio.wait_for`` in
-    # ``_execute_with_timeout`` then cancels this coroutine AT the await: no
-    # handler runs, so a marker armed only there would stay False, that timeout is
-    # caught and returns normally, and ``_merge_job_result`` consumes a
-    # ``delete_after_run`` job that never dispatched.  Sizing the internal bounds
-    # correctly cannot prevent it, because nothing inside the call is scheduled to
-    # notice.  ``CancelledError`` is a ``BaseException`` on both interpreters in
-    # this matrix, so it escapes the ``except Exception`` below and the marker
-    # survives.
+    # Retain for the whole await, not only in the handler: an event-loop stall
+    # can let ``_execute_with_timeout`` cancel this coroutine AT the await, and
+    # no handler runs. ``CancelledError`` is a ``BaseException``, so it escapes
+    # the ``except Exception`` below and the marker survives.
     job.run_never_started = True
     try:
         reason = await run_in_cron_gate_pool(vet_job_at_fire_time, job, timeout=budget)
     except CronQueueTimeout as exc:
-        # Scoped exactly as _run_job_isolated's own result-less clear
-        # (close_run, cron_service/execution.py). For an agent/message job ``last_result`` is the
-        # cross-run dedup context cron_prior_result_context carries as "do
-        # NOT repeat", and a run starved here produced no result to replace it
-        # -- clearing it would make the NEXT run repeat content it had already
-        # sent. Command and script jobs still clear: the prompt built for them is
-        # discarded, so a carried value could only show a previous run's output
-        # beside this run's status. The message fire-time deny path below never
-        # clears either, so all three sites agree.
+        # Scoped as close_run's result-less clear (cron_service/execution.py).
+        # A message job keeps ``last_result``: it is the "do NOT repeat" context
+        # cron_prior_result_context carries, and clearing it would make the next
+        # run repeat what was already sent. Command and script jobs discard
+        # their prompt, so a carried value could only mislabel this run.
         if job.command or job.script:
             job.clear_carried_result()
         job.last_status = "error"
@@ -153,13 +129,9 @@ async def _await_cron_fire_time_gate(
         # distinction :class:`CronGateWorkTimeout` draws.
         job.run_never_started = False
         raise
-    # A verdict came back, so this run reached its dispatch decision.  Clearing is
-    # not optional: hold the marker past a verdict and a HEALTHY one-shot is
-    # retained instead, so it fires again or never leaves the queue -- the same
-    # data-integrity failure pointing the other way.  A DENY clears it too, because
-    # its retention is owned by ``fire_time_denied``, whose readers also park an
-    # at-job disabled; conflating them would park a job for a policy decision that
-    # was never made.
+    # A verdict came back, so clear: a marker held past it would retain a
+    # healthy one-shot. A deny clears too, since ``fire_time_denied`` owns its
+    # retention.
     job.run_never_started = False
     return reason, False
 
@@ -232,33 +204,18 @@ def cron_job_env_without_reserved(job_env: dict[str, str] | None) -> dict[str, s
 async def _pre_create_cron_slot(dashboard_state: "DashboardState", job: CronJob) -> None:
     """Pre-create the job's first-run dashboard tab, best-effort.
 
-    :func:`ensure_cron_slot` gives a first run its tab — and with it its
-    session-control caller identity and dashboard-surface routing — before
-    dispatch.  But the tab is an amenity of the run, not a precondition, and
-    the first bind does transcript I/O.  Awaiting it BARE in the pre-dispatch
-    window would let any failure there kill the run the tab was meant to serve —
-    and worse than killing it: ``_execute`` clears ``run_never_started``
-    before invoking this callback and its ``except`` arm never re-arms it, so
-    an error propagating from here would reach the cron service's delete site with
-    the retention marker down, and a ``delete_after_run`` one-shot — the DEFAULT
-    shape of an at-scheduled job — would be consumed by a run that never
+    The tab (via :func:`ensure_cron_slot`) is an amenity, not a precondition,
+    and the bind does transcript I/O. ``_execute`` clears ``run_never_started``
+    before this callback and never re-arms it, so an error escaping here would
+    let the delete site consume a ``delete_after_run`` one-shot that never
     dispatched.
 
-    Same shape as :func:`_await_cron_fire_time_gate`, for the same reason:
-    the marker is armed for exactly the duration of the await, so the wake
-    deadline cancelling this coroutine AT the await leaves it standing
-    (``CancelledError`` is a ``BaseException`` on every interpreter in this
-    matrix and escapes the ``except Exception`` below) and the one-shot is
-    retained.  An ordinary failure is contained instead of propagated: the
-    run proceeds without the pre-created tab, losing first-run identity for
-    this run only — delivery's own bind still creates the tab afterwards,
-    which is exactly the status quo the pre-create improves on.  The clear on
-    the linear path is not optional either: dispatch begins after this call,
-    and holding the marker past it would retain a HEALTHY one-shot — the
-    same data-integrity failure pointing the other way (the fire-time gate
-    documents the identical contract).  ``record_failure()`` is deliberately
-    not called anywhere here: a tab that could not be minted is not a defect
-    of the job.
+    As in :func:`_await_cron_fire_time_gate`, the marker is armed for exactly
+    the await, so a cancel at the await retains the one-shot. An ordinary
+    failure is logged and the run proceeds without the tab; delivery's bind
+    still creates it later. The marker must be cleared before dispatch, or a
+    healthy one-shot is retained. ``record_failure()`` is not called: a tab that
+    could not be minted is not a defect of the job.
     """
     job.run_never_started = True
     try:
@@ -304,24 +261,14 @@ class CronClaimAbandoned(Exception):
 class _ClaimHandoff:
     """Serialises a worker starting its payload against its awaiter giving up.
 
-    :func:`run_in_cron_pool` reaches its execution phase only once a worker has
-    CLAIMED the call, and a thread cannot be interrupted -- so when that phase
-    times out the submitted callable keeps running.  That was tolerable while
-    the claimed thread was already inside the sandbox, whose own ``timeout``
-    bounds it.  With the claim-time vet the vet runs FIRST, so the deadline can
-    land while the payload has not started, and it would then start after the
-    caller's ``finally`` released the overlap guard -- running alongside the
-    next fire.  ``run_in_cron_pool``'s own docstring names that harm for the
-    queue phase ("reporting a queue timeout here would release the caller's
-    overlap guard while the command runs, letting the next fire duplicate its
-    side effects"); this closes the same hole for a deadline landing mid-vet.
+    A claimed thread cannot be interrupted, and the claim-time vet runs before
+    the payload, so the deadline can land mid-vet. The payload would then start
+    after the caller's ``finally`` released the overlap guard and run beside the
+    next fire, duplicating its side effects.
 
-    The lock is what makes the outcome DETERMINISTIC rather than a race.
-    Exactly one of :meth:`claim` and :meth:`abandon` observes an unset flag, so
-    a payload either starts -- and is reported as still running, which is the
-    pre-existing claimed-and-running case -- or never starts at all.  Without
-    it ``claim`` could read an unset flag that ``abandon`` sets an instant
-    later, and the refusal would silently not happen.
+    The lock makes the outcome deterministic: exactly one of :meth:`claim` and
+    :meth:`abandon` sees an unset flag, so a payload either starts (and is
+    reported as still running) or never starts.
     """
 
     def __init__(self) -> None:
@@ -351,19 +298,15 @@ class _ClaimHandoff:
 class CronVetOverran(Exception):
     """The claim-time vet spent more than the allowance the deadline carries for it.
 
-    Starting the payload anyway is the harm: the remaining budget does not
-    cover the subprocess bound plus
+    The remaining budget then cannot cover the subprocess bound plus
     :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS`, so the deadline
-    would fire with the subprocess already running -- and a thread cannot be
-    interrupted, so the overlap guard would clear while it runs on and the next
-    fire would duplicate its side effects.  Refusing before the payload starts
-    trades a reported missed run for a silent duplicate execution.
+    would fire mid-subprocess, the overlap guard would clear, and the next fire
+    would duplicate its side effects. Refusing trades that for a reported
+    missed run.
 
-    Deliberately NOT a :class:`CronClaimTimeDenied` subclass -- an overrun is a
-    budget fact, not a policy decision, and recording it as a denial would park
-    an at-job disabled for a decision never made.  Deliberately NOT a
-    :class:`CronQueueTimeout` subclass either: that arm reports "never got a
-    worker slot", which a vet that ran for its full bound plainly did.
+    Not a :class:`CronClaimTimeDenied` subclass (an overrun is not a policy
+    decision and must not park an at-job), nor a :class:`CronQueueTimeout`
+    subclass (the vet did get a worker slot).
     """
 
     def __init__(self, elapsed: float, bound: float) -> None:
@@ -488,61 +431,36 @@ async def _cron_stream_with_posttoken_resume(
 ) -> tuple[str, float | None]:
     """Run a cron agent turn, resuming ONCE after a post-token transient error.
 
-    Closes the seam between the two existing transient-retry layers:
-    stream_and_collect's in-stream retry stops once tokens have streamed
-    (re-running would duplicate the already-emitted output), and
-    _cron_callback's whole-callback retry stops once the prompt is dispatched
-    (tools may have run). A transient backend error raised AFTER the first
-    token therefore failed the whole cycle even though the live session still
-    holds the interrupted turn's context.
+    stream_and_collect's in-stream retry stops once tokens have streamed, and
+    _cron_callback's whole-callback retry stops once the prompt is dispatched,
+    so a transient error after the first token would fail the cycle while the
+    live session still holds the turn's context.
 
-    Recovery mirrors the dashboard's post-token CONTINUE re-prompt
-    (chat_runner's ``_posttoken_retry_used`` branch) and the subagent's
-    ``_stream_with_transient_retry`` post-activity arm: the streamed partial is
-    preserved, the SAME live session is re-prompted with a continuation
-    instruction (never the original message, so completed work is not re-run),
-    and the returned result is partial + continuation. The allowance is a
-    strict one-shot per turn (``_resume_used``, same style as
-    ``_posttoken_retry_used``): a transient error during the continuation
-    propagates unchanged, so the unrecovered path records the error exactly as
-    before.
+    Like chat_runner's ``_posttoken_retry_used`` branch, the streamed partial is
+    kept and the SAME session is re-prompted with a continuation instruction
+    (never the original message, so completed work is not re-run); the result
+    is partial + continuation. One-shot per turn: a transient during the
+    continuation propagates. Only ``acp_error_is_transient`` errors qualify,
+    and only after tokens streamed.
 
-    Returns ``(text, carried_credits)``. ``carried_credits`` is ``None`` when
-    the turn completed without a resume; on a resumed turn it is the credits
-    the INTERRUPTED prompt accumulated — snapshotted before the continuation
-    prompt's ``AcpPromptStats.carry_over()`` zeroes the per-turn counter — so
-    the caller's usage row can bill both prompts instead of only the
-    continuation.
+    Returns ``(text, carried_credits)``. ``carried_credits`` is ``None``
+    without a resume; otherwise it is the interrupted prompt's credits,
+    snapshotted before ``AcpPromptStats.carry_over()`` zeroes the counter, so
+    the usage row bills both prompts.
 
-    Eligibility deliberately reuses ``acp_error_is_transient`` — the one
-    authoritative classifier — so auth/validation failures and every other
-    non-transient error propagate untouched. With NO tokens streamed the error
-    also propagates untouched: that window is stream_and_collect's own retry's
-    job, and by the time it raises here its budget is spent.
+    Accepted tradeoffs:
 
-    Inherited tradeoffs, stated for the record (both are the mirrored owner
-    decisions from chat_runner/subagent, extended here to the cron surface):
+    - A side-effecting tool IN FLIGHT when the transient hit may be re-issued
+      by the continuation (CONTINUE forbids re-running *completed* tools only).
+      On an ``approval_mode == "auto"`` job that re-issue meets no gate and no
+      human. Accepted because the window is rare.
+    - The resume adds at most one prompt plus one backoff sleep inside the same
+      per-wake ``asyncio.wait_for`` deadline; ``CancelledError`` is not caught.
 
-    - A side-effecting tool that was IN FLIGHT (dispatched, no completion)
-      when the transient hit may be legitimately re-issued by the continuation
-      turn — the CONTINUE instruction forbids re-running *completed* tools
-      only. On an ``approval_mode == "auto"`` job that re-issue meets no gate
-      and no human, an unattended posture narrower than the live-viewer
-      surface the tradeoff is accepted for. Accepted: the window
-      is rare (mid-flight tool AND a transient), and failing the whole cycle
-      fast is the behaviour the resume exists to remove.
-    - The resume adds at most one bounded prompt plus one backoff sleep to the
-      cycle's worst case, inside the same per-wake ``asyncio.wait_for``
-      deadline. A deadline firing mid-continuation degrades exactly as a
-      deadline mid-turn does today (``CancelledError`` is not caught here), so
-      no remaining-budget plumbing is added for a one-shot.
-
-    ``parts`` observes chunks across stream_and_collect's internal attempts.
-    Its transient retry only fires while no text has streamed, and — a stated
-    ASSUMPTION about the provider, not an enforced invariant — a prompt-busy
-    error is only raised at prompt submission, before this turn's stream emits
-    chunks. Under that assumption the accumulated text never contains chunks
-    from an abandoned attempt.
+    ``parts`` spans stream_and_collect's internal attempts. That retry fires
+    only before any text streams, and we ASSUME (not enforced) a prompt-busy
+    error is raised only at submission, so no chunks from an abandoned attempt
+    end up in the text.
     """
     parts: list[str] = []
     preserved = ""
