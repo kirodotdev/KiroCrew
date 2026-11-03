@@ -3210,7 +3210,6 @@
           "frontier_caption": "Les éléments nouvellement débloqués ont tous leurs bloqueurs enregistrés fermés ou fusionnés. Ouvrez un élément pour le détail, ou ouvrez son arbre.",
           "focus_caption": "Tout l’arbre de dépendances actif de l’élément sélectionné. Cliquez sur un nœud pour le mettre en racine, Entrée l’ouvre. Pointillé = déduit, barré = satisfait.",
           "focus_empty": "Sélectionnez un élément pour tracer son arbre de dépendances.",
-          "tree_stat": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}} arêtes actives",
           "ghost_satisfied": "satisfait",
           "ci_fail": "ÉCHEC CI",
           "led_wait": "WAIT",
@@ -3218,7 +3217,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}} arêtes actives",
           "aria_node": "{{kind}}-{{number}}, {{state}} : {{title}}",
           "empty_board": "CARTE NON PEUPLÉE",
           "empty_title": "Aucune dépendance pour l’instant",
@@ -3231,7 +3229,16 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab n'a pas répondu pour la plupart des tickets (panne ou limite de débit). Patiente un instant, puis réessaie.",
           "empty_unavailable_issue_scope": "Le graphe de dépendances a besoin de la liste des tickets ouverts, qui n’est pas encore disponible. Ouvre l’onglet Tickets pour la mettre en cache, ou regarde l’erreur ci-dessous, puis réessaie.",
           "refresh_failed_stale_graph": "Affichage du dernier graphe chargé ; la dernière actualisation a échoué.",
-          "retry": "RÉESSAYER"
+          "retry": "RÉESSAYER",
+          "tree_stat_one": "arbre de {{kind}}-{{number}} : {{nodes}} nœud · {{edges}}",
+          "tree_stat_many": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}}",
+          "tree_stat_other": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}}",
+          "aria_tree_one": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœud, {{edges}}",
+          "aria_tree_many": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}}",
+          "aria_tree_other": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}}",
+          "live_edges_one": "{{n}} arête active",
+          "live_edges_many": "{{n}} arêtes actives",
+          "live_edges_other": "{{n}} arêtes actives"
         },
         "groupReviewsView": {
           "title": "Demandes de revue",
@@ -5347,14 +5354,16 @@
         },
         "taskList": {
           "done": "Terminée",
-          "done_of_total": "{{done}} tâches terminées sur {{total}}",
           "no_tasks_yet": "Pas encore de tâches. Une fois la conception approuvée, la liste ordonnée des tâches apparaît ici et vous pouvez les lancer une par une.",
           "pause_the_build_first": "Mettez la construction en pause avant de lancer une seule tâche",
           "run": "Lancer",
           "run_only_this_task_and_stop": "Lancer uniquement cette tâche, puis s’arrêter",
           "run_task": "Lancer la tâche : {{task}}",
           "starting": "Démarrage…",
-          "task_progress": "Avancement des tâches"
+          "task_progress": "Avancement des tâches",
+          "done_of_total_one": "Tâches terminées : {{done}}/{{total}}",
+          "done_of_total_many": "Tâches terminées : {{done}}/{{total}}",
+          "done_of_total_other": "Tâches terminées : {{done}}/{{total}}"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Décris ce que tu veux construire, réponds à quelques questions et obtiens un plan relu — exigences, conception et tâches — qu'un agent peut réaliser.",
@@ -5723,7 +5732,6 @@
         "costs_refresh_failed": "La dernière lecture de la facture a échoué. Ceci est la valeur en cache."
       },
       "page": {
-        "totals_summary": "{{accounts}} comptes · {{healthy}} clés sur {{keys}} en bon état",
         "refresh": "Actualiser",
         "health_ok": "Sain",
         "health_degraded": "À vérifier",
@@ -5786,7 +5794,13 @@
         "remove_account_error": "Le compte n'a pas pu être retiré.",
         "remove_account_hint": "Rien ne change dans AWS",
         "forget_key_confirm": "Oublier la clé « {{name}} » de cette ligne ? Rien ne change dans AWS ni dans votre configuration de l'AWS CLI.",
-        "forget_key_action": "Oublier la clé"
+        "forget_key_action": "Oublier la clé",
+        "totals_summary_one": "{{accounts}} compte · {{keys}}",
+        "totals_summary_many": "{{accounts}} comptes · {{keys}}",
+        "totals_summary_other": "{{accounts}} comptes · {{keys}}",
+        "keys_healthy_one": "clés en bon état : {{healthy}}/{{n}}",
+        "keys_healthy_many": "clés en bon état : {{healthy}}/{{n}}",
+        "keys_healthy_other": "clés en bon état : {{healthy}}/{{n}}"
       },
       "rail": {
         "accounts": "Comptes et identifiants",
@@ -16755,7 +16769,6 @@
       "resource_network": "Réseau",
       "sandbox_procs": "Sandbox",
       "session_storage": "Stockage des sessions",
-      "session_storage_detail": "{{sessions}} sessions · {{reclaimable}} récupérables",
       "session_storage_measuring": "Mesure en cours…",
       "threads": "Threads",
       "total": "Total",
@@ -16765,7 +16778,10 @@
       "utilization": "Utilisation",
       "working_directory": "Répertoire de travail",
       "graph_scale_network": "Pleine échelle {{max}} · dernières {{seconds}}",
-      "graph_scale_percent": "Pleine échelle 100 % · dernières {{seconds}}"
+      "graph_scale_percent": "Pleine échelle 100 % · dernières {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} session · {{reclaimable}} récupérables",
+      "session_storage_detail_many": "{{sessions}} sessions · {{reclaimable}} récupérables",
+      "session_storage_detail_other": "{{sessions}} sessions · {{reclaimable}} récupérables"
     },
     "popoutFrame": {
       "session": "Session",

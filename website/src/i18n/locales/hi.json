@@ -3033,7 +3033,6 @@
           "frontier_caption": "नए अनलॉक आइटम के सभी दर्ज ब्लॉकर बंद या मर्ज हो चुके हैं। कारण देखने के लिए आइटम खोलें, या उसका ट्री खोलें।",
           "focus_caption": "चयनित आइटम का पूरा सक्रिय निर्भरता ट्री। किसी नोड पर क्लिक से उसे रूट बनाएँ, Enter से खोलें। डैश = अनुमानित, कटा = पूरा।",
           "focus_empty": "निर्भरता ट्री बनाने के लिए एक आइटम चुनें।",
-          "tree_stat": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}} सक्रिय किनारे",
           "ghost_satisfied": "पूरा",
           "ci_fail": "CI विफल",
           "led_wait": "WAIT",
@@ -3041,7 +3040,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}} सक्रिय किनारे",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "खाली बोर्ड",
           "empty_title": "अभी कोई निर्भरता नहीं",
@@ -3054,7 +3052,13 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab ने अधिकांश इश्यू के लिए उत्तर नहीं दिया (आउटेज या रेट लिमिट)। थोड़ी देर प्रतीक्षा करो, फिर पुनः प्रयास करो।",
           "empty_unavailable_issue_scope": "डिपेंडेंसी ग्राफ़ को खुले इश्यू की सूची चाहिए, जो अभी उपलब्ध नहीं है। इसे कैश करने के लिए इश्यू टैब खोलो, या नीचे दी गई त्रुटि देखो, फिर पुनः प्रयास करो।",
           "refresh_failed_stale_graph": "अंतिम लोड किया गया ग्राफ़ दिखाया जा रहा है; हालिया रिफ़्रेश विफल रहा।",
-          "retry": "पुनः प्रयास"
+          "retry": "पुनः प्रयास",
+          "tree_stat_one": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}}",
+          "tree_stat_other": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}}",
+          "aria_tree_one": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}}",
+          "live_edges_one": "{{n}} सक्रिय किनारा",
+          "live_edges_other": "{{n}} सक्रिय किनारे"
         },
         "groupReviewsView": {
           "title": "समीक्षा अनुरोध",
@@ -5139,14 +5143,15 @@
         },
         "taskList": {
           "done": "पूरा",
-          "done_of_total": "{{total}} में से {{done}} कार्य पूरे",
           "no_tasks_yet": "अभी कोई कार्य नहीं है। डिज़ाइन स्वीकृत करने के बाद क्रमबद्ध कार्य सूची यहाँ आ जाएगी और तुम एक-एक कार्य चला सकोगे।",
           "pause_the_build_first": "एक कार्य चलाने से पहले निर्माण रोको",
           "run": "चलाओ",
           "run_only_this_task_and_stop": "सिर्फ़ यह कार्य चलाओ, फिर रुक जाओ",
           "run_task": "कार्य चलाओ: {{task}}",
           "starting": "शुरू हो रहा है…",
-          "task_progress": "कार्य की प्रगति"
+          "task_progress": "कार्य की प्रगति",
+          "done_of_total_one": "पूरे कार्य: {{done}}/{{total}}",
+          "done_of_total_other": "पूरे कार्य: {{done}}/{{total}}"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "बताओ कि तुम क्या बनाना चाहते हो, कुछ प्रश्नों के उत्तर दो, और एक समीक्षित योजना पाओ — आवश्यकताएं, डिज़ाइन और कार्य — जिसे कोई एजेंट पूरा कर सके।",
@@ -5597,7 +5602,6 @@
         "costs_refresh_failed": "बिल की ताज़ा रीडिंग विफल रही; यह कैश किया गया आँकड़ा है।"
       },
       "page": {
-        "totals_summary": "{{accounts}} खाते · {{keys}} में से {{healthy}} कुंजियाँ स्वस्थ",
         "refresh": "रीफ़्रेश करें",
         "health_ok": "स्वस्थ",
         "health_degraded": "ध्यान देने की ज़रूरत",
@@ -5655,7 +5659,11 @@
         "remove_account_error": "खाता हटाया नहीं जा सका।",
         "remove_account_hint": "AWS में कुछ नहीं बदलता",
         "forget_key_confirm": "इस पंक्ति की कुंजी “{{name}}” भुला दें? AWS में या तुम्हारे AWS CLI कॉन्फ़िगरेशन में कुछ नहीं बदलता।",
-        "forget_key_action": "कुंजी भुलाएँ"
+        "forget_key_action": "कुंजी भुलाएँ",
+        "totals_summary_one": "{{accounts}} खाता · {{keys}}",
+        "totals_summary_other": "{{accounts}} खाते · {{keys}}",
+        "keys_healthy_one": "स्वस्थ कुंजियाँ: {{healthy}}/{{n}}",
+        "keys_healthy_other": "स्वस्थ कुंजियाँ: {{healthy}}/{{n}}"
       },
       "rail": {
         "accounts": "खाते और क्रेडेंशियल",
@@ -16402,7 +16410,6 @@
       "resource_network": "नेटवर्क",
       "sandbox_procs": "सैंडबॉक्स",
       "session_storage": "सत्र संग्रहण",
-      "session_storage_detail": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य",
       "session_storage_measuring": "माप रहे हैं…",
       "threads": "थ्रेड",
       "total": "कुल",
@@ -16412,7 +16419,9 @@
       "utilization": "उपयोगिता",
       "working_directory": "कार्य डायरेक्टरी",
       "graph_scale_network": "पूर्ण स्केल {{max}} · पिछले {{seconds}}",
-      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}"
+      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य",
+      "session_storage_detail_other": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य"
     },
     "popoutFrame": {
       "session": "सेशन",

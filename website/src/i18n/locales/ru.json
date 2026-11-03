@@ -3207,7 +3207,6 @@
           "frontier_caption": "У разблокированных элементов все учтённые блокеры закрыты или смерджены. Откройте элемент, чтобы увидеть причину, или откройте его дерево.",
           "focus_caption": "Всё активное дерево зависимостей выбранного элемента. Клик по узлу делает его корнем, Enter открывает. Пунктир — выведено, зачёркнуто — выполнено.",
           "focus_empty": "Выберите элемент, чтобы построить его дерево зависимостей.",
-          "tree_stat": "дерево {{kind}}-{{number}}: {{nodes}} узлов · {{edges}} активных рёбер",
           "ghost_satisfied": "выполнено",
           "ci_fail": "СБОЙ CI",
           "led_wait": "WAIT",
@@ -3215,7 +3214,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узлов, {{edges}} активных рёбер",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "ПУСТАЯ ПЛАТА",
           "empty_title": "Зависимостей пока нет",
@@ -3228,7 +3226,19 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab не ответил по большинству задач (сбой или ограничение частоты). Подожди немного и повтори.",
           "empty_unavailable_issue_scope": "Графу зависимостей нужен список открытых задач, но он пока недоступен. Открой вкладку «Задачи», чтобы закэшировать его, или посмотри ошибку ниже, затем повтори.",
           "refresh_failed_stale_graph": "Показан последний загруженный граф; последнее обновление не удалось.",
-          "retry": "ПОВТОРИТЬ"
+          "retry": "ПОВТОРИТЬ",
+          "tree_stat_one": "дерево {{kind}}-{{number}}: {{nodes}} узел · {{edges}}",
+          "tree_stat_few": "дерево {{kind}}-{{number}}: {{nodes}} узла · {{edges}}",
+          "tree_stat_many": "дерево {{kind}}-{{number}}: {{nodes}} узлов · {{edges}}",
+          "tree_stat_other": "дерево {{kind}}-{{number}}: {{nodes}} узла · {{edges}}",
+          "aria_tree_one": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узел, {{edges}}",
+          "aria_tree_few": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узла, {{edges}}",
+          "aria_tree_many": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узлов, {{edges}}",
+          "aria_tree_other": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узла, {{edges}}",
+          "live_edges_one": "{{n}} активное ребро",
+          "live_edges_few": "{{n}} активных ребра",
+          "live_edges_many": "{{n}} активных рёбер",
+          "live_edges_other": "{{n}} активного ребра"
         },
         "groupReviewsView": {
           "title": "Запросы на ревью",
@@ -5375,14 +5385,17 @@
         },
         "taskList": {
           "done": "Готово",
-          "done_of_total": "Готово {{done}} из {{total}} задач",
           "no_tasks_yet": "Задач пока нет. После согласования дизайна здесь появится упорядоченный список задач, и вы сможете запускать их по одной.",
           "pause_the_build_first": "Поставьте сборку на паузу, прежде чем запускать отдельную задачу",
           "run": "Запустить",
           "run_only_this_task_and_stop": "Запустить только эту задачу и остановиться",
           "run_task": "Запустить задачу: {{task}}",
           "starting": "Запуск…",
-          "task_progress": "Прогресс по задачам"
+          "task_progress": "Прогресс по задачам",
+          "done_of_total_one": "Готово {{done}} из {{total}} задачи",
+          "done_of_total_few": "Готово {{done}} из {{total}} задач",
+          "done_of_total_many": "Готово {{done}} из {{total}} задач",
+          "done_of_total_other": "Готово {{done}} из {{total}} задачи"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Опишите, что вы хотите создать, ответьте на несколько вопросов и получите проверенный план — требования, дизайн и задачи — который сможет выполнить агент.",
@@ -5849,7 +5862,6 @@
         "costs_refresh_failed": "Последнее чтение счёта не удалось. Показано значение из кеша."
       },
       "page": {
-        "totals_summary": "Аккаунтов: {{accounts}} · Исправных ключей: {{healthy}} из {{keys}}",
         "refresh": "Обновить",
         "health_ok": "Исправно",
         "health_degraded": "Требует внимания",
@@ -5917,7 +5929,15 @@
         "remove_account_error": "Не удалось убрать аккаунт.",
         "remove_account_hint": "В AWS ничего не изменится",
         "forget_key_confirm": "Забыть ключ «{{name}}» этой строки? В AWS и в вашей конфигурации AWS CLI ничего не изменится.",
-        "forget_key_action": "Забыть ключ"
+        "forget_key_action": "Забыть ключ",
+        "totals_summary_one": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_few": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_many": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_other": "Аккаунтов: {{accounts}} · {{keys}}",
+        "keys_healthy_one": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_few": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_many": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_other": "Исправных ключей: {{healthy}} из {{n}}"
       },
       "rail": {
         "accounts": "Аккаунты и учётные данные",
@@ -17108,7 +17128,6 @@
       "resource_network": "Сеть",
       "sandbox_procs": "Sandbox",
       "session_storage": "Хранилище сессий",
-      "session_storage_detail": "{{sessions}} сессий · {{reclaimable}} можно освободить",
       "session_storage_measuring": "Измерение…",
       "threads": "Потоки",
       "total": "Всего",
@@ -17118,7 +17137,11 @@
       "utilization": "Использование",
       "working_directory": "Рабочий каталог",
       "graph_scale_network": "Полная шкала {{max}} · последние {{seconds}}",
-      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}}"
+      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} сессия · {{reclaimable}} можно освободить",
+      "session_storage_detail_few": "{{sessions}} сессии · {{reclaimable}} можно освободить",
+      "session_storage_detail_many": "{{sessions}} сессий · {{reclaimable}} можно освободить",
+      "session_storage_detail_other": "{{sessions}} сессии · {{reclaimable}} можно освободить"
     },
     "popoutFrame": {
       "session": "Сессия",

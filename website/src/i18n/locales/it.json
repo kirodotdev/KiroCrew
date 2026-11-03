@@ -3120,7 +3120,6 @@
           "frontier_caption": "Gli elementi appena sbloccati hanno tutti i bloccanti registrati chiusi o uniti. Apri un elemento per il motivo, oppure apri il suo albero.",
           "focus_caption": "L’intero albero delle dipendenze attivo dell’elemento selezionato. Clicca su un nodo per impostarlo come radice, Invio lo apre. Tratteggiato = dedotto, barrato = soddisfatto.",
           "focus_empty": "Seleziona un elemento per disegnare il suo albero delle dipendenze.",
-          "tree_stat": "albero di {{kind}}-{{number}}: {{nodes}} nodi · {{edges}} archi attivi",
           "ghost_satisfied": "soddisfatto",
           "ci_fail": "CI FALLITA",
           "led_wait": "WAIT",
@@ -3128,7 +3127,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Albero delle dipendenze di {{kind}}-{{number}}: {{nodes}} nodi, {{edges}} archi attivi",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "SCHEDA NON POPOLATA",
           "empty_title": "Ancora nessuna dipendenza",
@@ -3141,7 +3139,16 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab non ha risposto per la maggior parte delle issue (un'interruzione o un limite di frequenza). Attendi un momento, poi riprova.",
           "empty_unavailable_issue_scope": "Il grafo delle dipendenze ha bisogno dell’elenco delle issue aperte, che non è ancora disponibile. Apri la scheda Issue per metterlo in cache, oppure controlla l’errore qui sotto, poi riprova.",
           "refresh_failed_stale_graph": "Mostra l'ultimo grafico caricato; l'aggiornamento più recente non è riuscito.",
-          "retry": "RIPROVA"
+          "retry": "RIPROVA",
+          "tree_stat_one": "albero di {{kind}}-{{number}}: {{nodes}} nodo · {{edges}}",
+          "tree_stat_many": "albero di {{kind}}-{{number}}: {{nodes}} nodi · {{edges}}",
+          "tree_stat_other": "albero di {{kind}}-{{number}}: {{nodes}} nodi · {{edges}}",
+          "aria_tree_one": "Albero delle dipendenze di {{kind}}-{{number}}: {{nodes}} nodo, {{edges}}",
+          "aria_tree_many": "Albero delle dipendenze di {{kind}}-{{number}}: {{nodes}} nodi, {{edges}}",
+          "aria_tree_other": "Albero delle dipendenze di {{kind}}-{{number}}: {{nodes}} nodi, {{edges}}",
+          "live_edges_one": "{{n}} arco attivo",
+          "live_edges_many": "{{n}} archi attivi",
+          "live_edges_other": "{{n}} archi attivi"
         },
         "groupReviewsView": {
           "title": "Richieste di revisione",
@@ -5257,14 +5264,16 @@
         },
         "taskList": {
           "done": "Completata",
-          "done_of_total": "{{done}} di {{total}} attività completate",
           "no_tasks_yet": "Ancora nessuna attività. Dopo l’approvazione della progettazione, l’elenco ordinato delle attività comparirà qui e potrai eseguirle una alla volta.",
           "pause_the_build_first": "Metti in pausa la costruzione prima di eseguire una singola attività",
           "run": "Esegui",
           "run_only_this_task_and_stop": "Esegui solo questa attività, poi fermati",
           "run_task": "Esegui l’attività: {{task}}",
           "starting": "Avvio…",
-          "task_progress": "Avanzamento delle attività"
+          "task_progress": "Avanzamento delle attività",
+          "done_of_total_one": "Attività completate: {{done}}/{{total}}",
+          "done_of_total_many": "Attività completate: {{done}}/{{total}}",
+          "done_of_total_other": "Attività completate: {{done}}/{{total}}"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Descrivi cosa vuoi costruire, rispondi a qualche domanda e ottieni un piano revisionato — requisiti, progettazione e attività — che un agente può realizzare.",
@@ -5723,7 +5732,6 @@
         "costs_refresh_failed": "L'ultima lettura della fattura non è riuscita. Questo è il valore in cache."
       },
       "page": {
-        "totals_summary": "{{accounts}} account · {{healthy}} chiavi su {{keys}} integre",
         "refresh": "Aggiorna",
         "health_ok": "Integro",
         "health_degraded": "Richiede attenzione",
@@ -5786,7 +5794,13 @@
         "remove_account_error": "Impossibile rimuovere l'account.",
         "remove_account_hint": "Nulla cambia in AWS",
         "forget_key_confirm": "Dimenticare la chiave «{{name}}» di questa riga? Nulla cambia in AWS né nella configurazione della CLI AWS.",
-        "forget_key_action": "Dimentica chiave"
+        "forget_key_action": "Dimentica chiave",
+        "totals_summary_one": "{{accounts}} account · {{keys}}",
+        "totals_summary_many": "{{accounts}} account · {{keys}}",
+        "totals_summary_other": "{{accounts}} account · {{keys}}",
+        "keys_healthy_one": "chiavi integre: {{healthy}}/{{n}}",
+        "keys_healthy_many": "chiavi integre: {{healthy}}/{{n}}",
+        "keys_healthy_other": "chiavi integre: {{healthy}}/{{n}}"
       },
       "rail": {
         "accounts": "Account e credenziali",
@@ -16755,7 +16769,6 @@
       "resource_network": "Rete",
       "sandbox_procs": "Sandbox",
       "session_storage": "Archiviazione sessioni",
-      "session_storage_detail": "{{sessions}} sessioni · {{reclaimable}} recuperabili",
       "session_storage_measuring": "Misurazione…",
       "threads": "Thread",
       "total": "Totale",
@@ -16765,7 +16778,10 @@
       "utilization": "Utilizzo",
       "working_directory": "Directory di lavoro",
       "graph_scale_network": "Scala piena {{max}} · ultimi {{seconds}}",
-      "graph_scale_percent": "Scala piena 100% · ultimi {{seconds}}"
+      "graph_scale_percent": "Scala piena 100% · ultimi {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} sessione · {{reclaimable}} recuperabili",
+      "session_storage_detail_many": "{{sessions}} sessioni · {{reclaimable}} recuperabili",
+      "session_storage_detail_other": "{{sessions}} sessioni · {{reclaimable}} recuperabili"
     },
     "popoutFrame": {
       "session": "Sessione",
