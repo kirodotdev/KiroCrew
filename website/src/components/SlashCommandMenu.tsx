@@ -4,6 +4,7 @@ import { OverlayPortal } from './overlayRoot'
 import { usePickerSource } from './dashboardPickerSource'
 import ErrorNotice from './ErrorNotice'
 import { pickerQueryKey, type SlashCommand } from '../chat-core/composer/pickerSource'
+import { SLASH_MENU_QUERY } from '../chat-core/composer/slashQuery'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
@@ -158,7 +159,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     [allCommands, hidden],
   )
 
-  const match = input.match(/^\/([a-z]*)$/)
+  const match = input.match(SLASH_MENU_QUERY)
   const visible = open && !!match
   const filter = match?.[1] ?? ''
 
