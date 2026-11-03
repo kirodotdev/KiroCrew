@@ -113,6 +113,16 @@ def _forget(key: str = _KEY, *, superseded_by: str | None = None) -> None:
     cc._memory_cmd(argparse.Namespace(mem_action="forget", key=key, superseded_by=superseded_by))
 
 
+@pytest.fixture
+def unix_socket_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a runner with no ``socket.AF_UNIX`` (native Windows) one, so a test can
+    drive the verb past its platform refusal. The gateway call is faked or refused
+    in every test that uses this, so no Unix socket is ever opened."""
+    if not hasattr(socket, "AF_UNIX"):
+        monkeypatch.setattr(socket, "AF_UNIX", 1, raising=False)
+
+
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestOwnerTerminal:
     def test_confirmed_forget_deletes_and_passes_the_shown_value(
         self, store_path, gateway, monkeypatch, capsys
@@ -205,6 +215,7 @@ def test_the_parser_routes_forget_with_its_flag(monkeypatch, tmp_path):
     assert [(a.mem_action, a.key, a.superseded_by) for a in seen] == [("forget", _KEY, _WINNER)]
 
 
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestRefusedBeforeAnyStoreOpens:
     """Every refusal here must leave the store unopened and the gateway uncalled."""
 
