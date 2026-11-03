@@ -274,6 +274,7 @@
       "pipeline": {
         "subtitle": "One lane per crew work item, across every phase — see which phase each item is in and where items are piling up.",
         "refresh": "Refresh the pipeline",
+        "refreshing": "Refreshing the pipeline…",
         "aria_diagram": "Crew pipeline: one horizontal lane per work item across the phase columns",
         "and_counting": "{{dwell}} and counting",
         "fence_label": "EDITING PHASES — AT MOST ONE ITEM",
@@ -1258,6 +1259,7 @@
           "issue_one": "{{count}} issue",
           "issue_other": "{{count}} issues",
           "refresh_issues": "Refresh issues",
+          "refreshing_issues": "Refreshing issues…",
           "updated": "Updated"
         },
         "labelPalette": {
@@ -1604,7 +1606,8 @@
           "no_labels_in_use": "No labels in use.",
           "nothing_needs_attention": "Nothing needs attention",
           "recently_updated": "Recently updated",
-          "refresh_issues": "Refresh issues"
+          "refresh_issues": "Refresh issues",
+          "refreshing_issues": "Refreshing issues…"
         },
         "settings": {
           "generalSettings": {
