@@ -358,6 +358,8 @@ class TestAntiDrift:
             "last_failure_hash",
             "approval_mode",
             "memory_store",
+            # Computed by ack_job / unack_job from acked_items; no caller sets it.
+            "acked_item_ids_digest",
         }
     )
 

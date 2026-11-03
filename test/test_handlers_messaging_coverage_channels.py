@@ -76,20 +76,34 @@ class TestNotificationRoutes:
         state = _state(ack_notification=AsyncMock(return_value=False))
         assert _payload(_run(mod.api_notification_ack, _Req(state, {"ts": "1"}))) == {"ok": False}
 
-    def test_unack_of_a_cron_notification_also_unacks_the_job(self) -> None:
+    def test_unack_of_a_cron_acked_notification_also_unacks_the_job(self) -> None:
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock()
         assert _payload(_run(mod.api_notification_unack, _Req(state, {"ts": "1"})))["ok"] is True
-        state.crons.unack_job_async.assert_awaited_once_with("j1")
+        state.crons.unack_job_async.assert_awaited_once_with("j1", "a1")
 
     def test_unack_survives_a_busy_cron_store(self) -> None:
         from kiro_crew.cron import CronStoreBusy
 
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock(side_effect=CronStoreBusy("busy"))
@@ -107,7 +121,14 @@ class TestNotificationRoutes:
         from kiro_crew.cron import CronStoreUnreadable
 
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock(
