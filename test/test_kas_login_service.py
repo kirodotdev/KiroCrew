@@ -145,6 +145,9 @@ async def test_status_unauthenticated(tmp_path, monkeypatch):
         "has_refresh_token": False,
         "refresh_rejected": False,
         "usable": False,
+        "profile_arn": "",
+        "profile_name": "",
+        "profile_region": "",
     }
 
 
@@ -180,6 +183,57 @@ async def test_status_reports_stored_token(tmp_path, monkeypatch):
     assert "access_token" not in status
     assert "refresh_token" not in status
     assert "at" not in status.values()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_active_kiro_profile(tmp_path, monkeypatch):
+    """status() names WHICH Kiro profile is active: arn, human name, and region.
+
+    The region is derived from the ARN, the name read from the token's extra (set
+    at sign-in), so the dashboard can label the signed-in account without a
+    control-plane round trip.
+    """
+    from kiro_crew.auth.whoami import PROFILE_NAME_EXTRA_KEY
+
+    monkeypatch.setenv("KIRO_AUTH_TRANSPORT", "device")
+    store = TokenStore(tmp_path)
+    store.save(
+        KasToken(
+            access_token="at",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            provider="Enterprise",
+            identity="identity_center",
+            profile_arn="arn:aws:codewhisperer:us-east-1:111122223333:profile/XH9XDRDVMMCA",
+            extra={PROFILE_NAME_EXTRA_KEY: "KiroProfile-us-east-1"},
+        )
+    )
+    service = KasLoginService(store, session=_FakeSession())
+    status = await service.status()
+    assert (
+        status["profile_arn"] == "arn:aws:codewhisperer:us-east-1:111122223333:profile/XH9XDRDVMMCA"
+    )
+    assert status["profile_name"] == "KiroProfile-us-east-1"
+    assert status["profile_region"] == "us-east-1"
+
+
+@pytest.mark.asyncio
+async def test_status_profile_fields_blank_without_a_kiro_profile(tmp_path, monkeypatch):
+    """A sign-in with no Kiro profile (Builder ID / social) leaves them ''."""
+    monkeypatch.setenv("KIRO_AUTH_TRANSPORT", "device")
+    store = TokenStore(tmp_path)
+    store.save(
+        KasToken(
+            access_token="at",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            provider="BuilderId",
+            identity="builder_id",
+        )
+    )
+    service = KasLoginService(store, session=_FakeSession())
+    status = await service.status()
+    assert status["profile_arn"] == ""
+    assert status["profile_name"] == ""
+    assert status["profile_region"] == ""
 
 
 @pytest.mark.asyncio
@@ -790,6 +844,10 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
                 200,
                 {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/p1", "profileName": "P1"}]},
             ),
+            # Discovery also probes the other control plane; it has nothing for
+            # this identity, so the single us-east-1 profile is the whole set and
+            # the login auto-completes.
+            _FakeResp(200, {"profiles": []}),
         ],
     )
     begin = await _begin_oidc(
@@ -801,9 +859,9 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
     assert saved is not None
     assert saved.identity == "identity_center"
     assert saved.profile_arn == "arn:aws:kiro:us-east-1:1:profile/p1"
-    # The control-plane call went to the regional CPS (the host kiro-cli itself
-    # uses) with the fresh bearer token and the CodeWhisperer-family target.
-    cp_url, cp_body, cp_headers = session.calls_with_headers[-1]
+    # The first control-plane call went to the login region's own CPS (the host
+    # kiro-cli uses) with the fresh bearer token and the CodeWhisperer target.
+    cp_url, cp_body, cp_headers = session.calls_with_headers[1]
     assert cp_url == "https://management.us-east-1.kiro.dev/"
     assert cp_body == {"maxResults": 10}
     assert cp_headers["X-Amz-Target"] == "AmazonCodeWhispererService.ListAvailableProfiles"
@@ -827,7 +885,14 @@ async def test_poll_idc_with_no_profiles_is_error_and_saves_nothing(tmp_path, mo
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    # 'no_profiles' is distinct from a failed approval: the approval succeeded,
+    # the account just has no entitled profile. 'region' is the probed login
+    # region, for a human-readable hint in the dashboard.
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "no_profiles",
+        "region": "us-east-1",
+    }
     assert TokenStore(tmp_path).resolve() is None
     # Terminal: the entry is dropped, a re-poll is unknown.
     with pytest.raises(UnknownLoginError):
@@ -837,7 +902,7 @@ async def test_poll_idc_with_no_profiles_is_error_and_saves_nothing(tmp_path, mo
 @pytest.mark.asyncio
 async def test_poll_idc_control_plane_failure_is_error(tmp_path, monkeypatch):
     # Every known CPS host errors: nothing was reachable, so resolution fails hard
-    # (one error reply per host, us-east-1 then eu-central-1).
+    # with a code distinct from 'no_profiles' (one error reply per host).
     service, _ = _service(
         tmp_path,
         responses=[
@@ -849,7 +914,10 @@ async def test_poll_idc_control_plane_failure_is_error(tmp_path, monkeypatch):
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "profile_resolution_failed",
+    }
     assert TokenStore(tmp_path).resolve() is None
 
 
@@ -903,17 +971,29 @@ async def test_poll_oidc_expired_token_reports_expired(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poll_oidc_multi_profile_picks_first(tmp_path, monkeypatch):
+async def test_poll_oidc_multi_profile_offers_a_choice(tmp_path, monkeypatch):
+    """Profiles on DIFFERENT control planes are merged, and the poll offers a choice.
+
+    This is the real multi-profile case: ListAvailableProfiles is per-control-plane,
+    so us-east-1 returns only its profile and eu-central-1 only its own. Discovery
+    merges both; because the merged set has two, the poll offers a choice instead
+    of auto-picking. The token is held (nothing persisted) until `select_profile`.
+    """
     service, _ = _service(
         tmp_path,
         responses=[
             _FakeResp(200, {"accessToken": "at-5", "expiresIn": 3600}),
+            # us-east-1 (probed first for the default region): its profile only.
+            _FakeResp(
+                200,
+                {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/us", "profileName": "US"}]},
+            ),
+            # eu-central-1: a DIFFERENT profile the first host knew nothing about.
             _FakeResp(
                 200,
                 {
                     "profiles": [
-                        {"arn": "arn:one", "profileName": "One"},
-                        {"arn": "arn:two", "profileName": "Two"},
+                        {"arn": "arn:aws:kiro:eu-central-1:1:profile/eu", "profileName": "EU"}
                     ]
                 },
             ),
@@ -922,12 +1002,101 @@ async def test_poll_oidc_multi_profile_picks_first(tmp_path, monkeypatch):
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {
-        "status": "authorized",
-        "provider": "Enterprise",
+    poll = await service.poll_device(begin["login_id"])
+    assert poll == {
+        "status": "select_profile",
+        "profiles": [
+            {"arn": "arn:aws:kiro:us-east-1:1:profile/us", "profile_name": "US"},
+            {"arn": "arn:aws:kiro:eu-central-1:1:profile/eu", "profile_name": "EU"},
+        ],
     }
+    # Nothing is persisted while the choice is pending.
+    assert TokenStore(tmp_path).resolve() is None
+    # Choosing the EU profile completes the login and stores that ARN + name.
+    done = await service.select_profile(begin["login_id"], "arn:aws:kiro:eu-central-1:1:profile/eu")
+    assert done == {"status": "authorized", "provider": "Enterprise"}
     saved = TokenStore(tmp_path).resolve()
-    assert saved is not None and saved.profile_arn == "arn:one"
+    assert saved is not None and saved.profile_arn == "arn:aws:kiro:eu-central-1:1:profile/eu"
+    # The human profile name is recorded so the dashboard can show which profile
+    # is active without re-querying the control plane.
+    from kiro_crew.auth.whoami import PROFILE_NAME_EXTRA_KEY
+
+    assert saved.extra.get(PROFILE_NAME_EXTRA_KEY) == "EU"
+
+
+@pytest.mark.asyncio
+async def test_poll_oidc_dedupes_a_profile_seen_on_two_hosts(tmp_path, monkeypatch):
+    """A profile both control planes report is offered once, not twice.
+
+    Discovery merges by ARN, so a profile that appears on more than one host
+    (first-seen order preserved) does not become a duplicate radio option, and a
+    lone profile still auto-completes rather than showing a one-item chooser.
+    """
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-dup", "expiresIn": 3600}),
+            _FakeResp(
+                200,
+                {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/x", "profileName": "X"}]},
+            ),
+            _FakeResp(
+                200,
+                {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/x", "profileName": "X"}]},
+            ),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    # One distinct profile after the merge: auto-completes, no chooser.
+    result = await service.poll_device(begin["login_id"])
+    assert result == {"status": "authorized", "provider": "Enterprise"}
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None and saved.profile_arn == "arn:aws:kiro:us-east-1:1:profile/x"
+
+
+@pytest.mark.asyncio
+async def test_select_profile_rejects_an_unoffered_arn(tmp_path, monkeypatch):
+    """A selection must name one of the offered profiles, nothing else."""
+    from kiro_crew.auth.service import UnknownProfileError
+
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-6", "expiresIn": 3600}),
+            _FakeResp(
+                200,
+                {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/us", "profileName": "US"}]},
+            ),
+            _FakeResp(
+                200,
+                {
+                    "profiles": [
+                        {"arn": "arn:aws:kiro:eu-central-1:1:profile/eu", "profileName": "EU"}
+                    ]
+                },
+            ),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert (await service.poll_device(begin["login_id"]))["status"] == "select_profile"
+    with pytest.raises(UnknownProfileError):
+        await service.select_profile(begin["login_id"], "arn:not-offered")
+    # The login is still pending after a bad choice; a valid one still works.
+    assert TokenStore(tmp_path).resolve() is None
+    done = await service.select_profile(begin["login_id"], "arn:aws:kiro:us-east-1:1:profile/us")
+    assert done == {"status": "authorized", "provider": "Enterprise"}
+
+
+@pytest.mark.asyncio
+async def test_select_profile_on_unknown_login_raises(tmp_path):
+    """A selection for a login that never offered a choice is UnknownLoginError."""
+    service, _ = _service(tmp_path)
+    with pytest.raises(UnknownLoginError):
+        await service.select_profile("no-such-login", "arn:one")
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1203,9 @@ async def test_control_plane_tolerates_amz_json_content_type(tmp_path, monkeypat
     session._responses = [
         _FakeResp(200, {"accessToken": "at-ct", "expiresIn": 3600}),
         _AmzResp(200, {"profiles": [{"arn": "arn:ct", "profileName": "CT"}]}),
+        # Discovery also probes the other control plane (same amz content type);
+        # empty there, so the single profile auto-completes.
+        _AmzResp(200, {"profiles": []}),
     ]
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"

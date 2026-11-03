@@ -90,6 +90,7 @@ export type {
   KasLoginStatus,
   KasLoginDeviceSession,
   KasLoginPollResult,
+  KasLoginProfileChoice,
   KasLoginLoopbackSession,
   AgentImportCategory,
   AgentImportSource,

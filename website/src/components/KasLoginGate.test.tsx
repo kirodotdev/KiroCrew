@@ -24,6 +24,7 @@ vi.mock('../api/client', async importOriginal => {
         expires_at: '2099-01-01T00:00:00Z',
       }),
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
+      kasLoginSelectProfile: vi.fn().mockResolvedValue({ status: 'authorized', provider: 'Enterprise' }),
       kasLoginBeginLoopback: vi.fn().mockResolvedValue({
         login_id: 'lb-1',
         user_code: '',
@@ -66,6 +67,11 @@ describe('KasLoginGate', () => {
     kasLoginCancel.mockClear()
     kasLoginPoll.mockReset()
     kasLoginPoll.mockResolvedValue({ status: 'pending' })
+    vi.mocked(api.kasLoginSelectProfile).mockReset()
+    vi.mocked(api.kasLoginSelectProfile).mockResolvedValue({
+      status: 'authorized',
+      provider: 'Enterprise',
+    })
     openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
   })
 
@@ -478,5 +484,86 @@ describe('KasLoginGate', () => {
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: original })
     }
+  })
+
+  it('offers a profile chooser when the poll returns more than one profile', async () => {
+    kasLoginPoll.mockResolvedValue({
+      status: 'select_profile',
+      profiles: [
+        { arn: 'arn:aws:codewhisperer:us-east-1:111122223333:profile/aaa', profile_name: 'Prod' },
+        { arn: 'arn:aws:codewhisperer:eu-central-1:111122223333:profile/bbb', profile_name: 'EU' },
+      ],
+    })
+    const kasLoginSelectProfile = vi.mocked(api.kasLoginSelectProfile)
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    // Both profiles are offered, each showing its region parsed from the ARN.
+    const list = await screen.findByTestId('kas-login-profile-list')
+    expect(list).toHaveTextContent('Prod')
+    expect(list).toHaveTextContent('us-east-1')
+    expect(list).toHaveTextContent('EU')
+    expect(list).toHaveTextContent('eu-central-1')
+
+    // Pick the EU profile, confirm, and the login completes with that ARN.
+    fireEvent.click(screen.getByRole('radio', { name: /EU/ }))
+    fireEvent.click(screen.getByTestId('kas-login-profile-confirm'))
+    await waitFor(() =>
+      expect(kasLoginSelectProfile).toHaveBeenCalledWith(
+        'login-1',
+        'arn:aws:codewhisperer:eu-central-1:111122223333:profile/bbb',
+      ),
+    )
+    kasLoginPoll.mockResolvedValue({ status: 'pending' })
+  })
+
+  it('the first profile is preselected so a single confirm signs in', async () => {
+    kasLoginPoll.mockResolvedValue({
+      status: 'select_profile',
+      profiles: [
+        { arn: 'arn:aws:codewhisperer:us-east-1:111122223333:profile/aaa', profile_name: 'Prod' },
+        { arn: 'arn:aws:codewhisperer:eu-central-1:111122223333:profile/bbb', profile_name: 'EU' },
+      ],
+    })
+    const kasLoginSelectProfile = vi.mocked(api.kasLoginSelectProfile)
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    fireEvent.click(await screen.findByTestId('kas-login-profile-confirm'))
+    await waitFor(() =>
+      expect(kasLoginSelectProfile).toHaveBeenCalledWith(
+        'login-1',
+        'arn:aws:codewhisperer:us-east-1:111122223333:profile/aaa',
+      ),
+    )
+    kasLoginPoll.mockResolvedValue({ status: 'pending' })
+  })
+
+  it('says the approval succeeded but no profile exists on a no_profiles error', async () => {
+    kasLoginPoll.mockResolvedValue({ status: 'error', code: 'no_profiles', region: 'us-east-1' })
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    // The honest message, NOT the generic "something went wrong while waiting
+    // for approval" that reads as an approval failure.
+    expect(await screen.findByText('This account has no Kiro profile to use')).toBeInTheDocument()
+    expect(screen.getByText(/no Kiro profile is assigned to this account/)).toHaveTextContent(
+      'us-east-1',
+    )
+    expect(
+      screen.queryByText('Something went wrong while waiting for approval'),
+    ).not.toBeInTheDocument()
+    kasLoginPoll.mockResolvedValue({ status: 'pending' })
+  })
+
+  it('keeps the generic failure message for a non-profile terminal error', async () => {
+    kasLoginPoll.mockResolvedValue({ status: 'error', code: 'profile_resolution_failed' })
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    expect(
+      await screen.findByText('Something went wrong while waiting for approval'),
+    ).toBeInTheDocument()
+    kasLoginPoll.mockResolvedValue({ status: 'pending' })
   })
 })

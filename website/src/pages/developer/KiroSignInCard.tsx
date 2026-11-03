@@ -83,6 +83,20 @@ function SignedInSummary({
                   // promising an automatic renewal that will not happen.
                   i18nT('pages.developer.kiroSignInCard.signed_in_body_no_refresh')}
           </p>
+          {/* Which Kiro profile the agents run as. Shown only when the sign-in
+              resolved one (enterprise/IdC); Builder ID and social sign-ins carry
+              no profile and this stays hidden. The name is the human label the
+              control plane returned; the region (parsed from the ARN) is appended
+              so two same-named profiles in different regions are distinguishable. */}
+          {status.profile_name || status.profile_arn ? (
+            <p className="mt-1 text-[12px] text-muted" data-testid="kiro-sign-in-profile">
+              {i18nT('pages.developer.kiroSignInCard.active_profile', {
+                profile:
+                  (status.profile_name || status.profile_arn) +
+                  (status.profile_region ? ` (${status.profile_region})` : ''),
+              })}
+            </p>
+          ) : null}
           {expiryLine ? (
             <p className="mt-1 text-[12px] text-muted" data-testid="kiro-sign-in-expiry">
               {expiryLine}

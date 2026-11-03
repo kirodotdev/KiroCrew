@@ -7390,7 +7390,14 @@
       "cancel_unsettled": "无法取消登录。登录仍在进行中，请再次点击同一选项重试。",
       "card_intro": "仅供 Kiro Agent 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
-      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
+      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。",
+      "choose_profile_eyebrow": "选择一个配置文件",
+      "choose_profile_title": "此账号有多个 Kiro 配置文件",
+      "choose_profile_body": "选择你的智能体运行时所用的配置文件。之后可以通过重新登录来更改。",
+      "choose_profile_confirm": "使用此配置文件",
+      "no_profile_eyebrow": "已登录，但没有配置文件",
+      "no_profile_body": "此账号没有可用的 Kiro 配置文件",
+      "no_profile_region_hint": "登录成功，但此账号未分配 Kiro 配置文件（已从 {{region}} 检查）。请让管理员分配一个 Kiro 配置文件，然后重新登录。"
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "未记录设置完成",
@@ -14070,7 +14077,8 @@
         "keep_current_sign_in": "保留当前登录",
         "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。",
         "search_label": "登出或切换 Kiro 账号",
-        "search_description": "登出 agent 使用的 Kiro 登录，或换一个账号登录。"
+        "search_description": "登出 agent 使用的 Kiro 登录，或换一个账号登录。",
+        "active_profile": "配置文件：{{profile}}"
       },
       "strandsSetup": {
         "cancel": "取消",

@@ -7551,7 +7551,14 @@
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
       "card_intro": "Wird nur vom Backend Kiro Agent verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
-      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
+      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung.",
+      "choose_profile_eyebrow": "Profil auswählen",
+      "choose_profile_title": "Dieses Konto hat mehr als ein Kiro-Profil",
+      "choose_profile_body": "Wähle das Profil, unter dem deine Agenten laufen sollen. Du kannst es später ändern, indem du dich erneut anmeldest.",
+      "choose_profile_confirm": "Dieses Profil verwenden",
+      "no_profile_eyebrow": "Angemeldet, aber kein Profil",
+      "no_profile_body": "Dieses Konto hat kein nutzbares Kiro-Profil",
+      "no_profile_region_hint": "Die Anmeldung hat funktioniert, aber diesem Konto ist kein Kiro-Profil zugewiesen (geprüft von {{region}}). Bitte deinen Administrator, ein Kiro-Profil zuzuweisen, und melde dich dann erneut an."
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "Abschluss der Einrichtung wurde nicht gespeichert",
@@ -14370,7 +14377,8 @@
         "keep_current_sign_in": "Aktuelle Anmeldung behalten",
         "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an.",
         "search_label": "Abmelden oder Kiro-Konto wechseln",
-        "search_description": "Melde dich von der Kiro-Anmeldung ab, die deine Agenten nutzen, oder melde dich mit einem anderen Konto an."
+        "search_description": "Melde dich von der Kiro-Anmeldung ab, die deine Agenten nutzen, oder melde dich mit einem anderen Konto an.",
+        "active_profile": "Profil: {{profile}}"
       },
       "strandsSetup": {
         "cancel": "Abbrechen",

@@ -174,14 +174,19 @@ async def _list_profiles_on_host(
 async def list_available_profiles(
     access_token: str, *, region: str, session: aiohttp.ClientSession
 ) -> list[KiroProfile]:
-    """Discover the caller's Kiro profiles across the known control planes.
+    """Discover the caller's Kiro profiles across ALL known control planes.
 
-    The signed-in profile's control plane is not known at sign-in time (the
-    profile ARN that would name it is what this call resolves), and the login
-    region does not reliably identify it, so this probes every known CPS host --
-    the login region's own first (:func:`_discovery_hosts`) -- and returns the
-    first NON-EMPTY result. This mirrors the Kiro web sign-in, which polls the
-    control planes rather than mapping the IdC region to one of them.
+    ``ListAvailableProfiles`` is a per-control-plane view: each CPS host answers
+    only for the profiles IT serves, so a us-east-1 host returns the us-east-1
+    profile and nothing about an eu-central-1 one, and vice versa. The signed-in
+    profile's control plane is not known at sign-in time (the ARN that would name
+    it is what this call resolves), and the login region does not reliably
+    identify it. So this probes EVERY known CPS host (:func:`_discovery_hosts`,
+    the login region's own first) and MERGES the results, de-duped by ARN with
+    first-seen order preserved -- the same whole-picture the Kiro web sign-in and
+    kiro-cli show. Returning the first non-empty host instead would hide a second
+    profile served from another control plane, and the caller would silently sign
+    in to whichever host answered first rather than letting the user choose.
 
     An empty list means every reachable host returned zero profiles: the identity
     is authenticated but has no entitled Kiro profile anywhere (a provisioning
@@ -193,6 +198,8 @@ async def list_available_profiles(
     """
     last_error: ControlPlaneError | None = None
     reachable = False
+    merged: list[KiroProfile] = []
+    seen: set[str] = set()
     for url in _discovery_hosts(region):
         try:
             profiles = await _list_profiles_on_host(url, access_token, session)
@@ -201,12 +208,15 @@ async def list_available_profiles(
             logger.info("profile discovery: %s did not answer (%s)", url, err)
             continue
         reachable = True
-        if profiles:
-            logger.info("profile discovery: %d profile(s) from %s", len(profiles), url)
-            return profiles
-        logger.info("profile discovery: %s returned no profiles", url)
-    if not reachable and last_error is not None:
+        logger.info("profile discovery: %d profile(s) from %s", len(profiles), url)
+        for profile in profiles:
+            if profile.arn not in seen:
+                seen.add(profile.arn)
+                merged.append(profile)
+    if not merged and not reachable and last_error is not None:
         # Every host errored: nothing was reachable, so this is a hard failure
         # rather than an empty (authenticated-but-unentitled) result.
         raise last_error
-    return []
+    if merged:
+        logger.info("profile discovery: %d profile(s) total across control planes", len(merged))
+    return merged

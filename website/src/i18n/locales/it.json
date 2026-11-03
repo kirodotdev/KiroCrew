@@ -7712,7 +7712,14 @@
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
       "card_intro": "Usato solo dal backend Kiro Agent: i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
-      "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
+      "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui.",
+      "choose_profile_eyebrow": "Scegli un profilo",
+      "choose_profile_title": "Questo account ha più di un profilo Kiro",
+      "choose_profile_body": "Scegli il profilo con cui eseguire i tuoi agenti. Potrai cambiarlo in seguito effettuando di nuovo l'accesso.",
+      "choose_profile_confirm": "Usa questo profilo",
+      "no_profile_eyebrow": "Accesso eseguito, ma nessun profilo",
+      "no_profile_body": "Questo account non ha un profilo Kiro da usare",
+      "no_profile_region_hint": "L'accesso è riuscito, ma a questo account non è assegnato alcun profilo Kiro (verificato da {{region}}). Chiedi al tuo amministratore di assegnare un profilo Kiro, poi accedi di nuovo."
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "Il completamento della configurazione non è stato registrato",
@@ -14670,7 +14677,8 @@
         "keep_current_sign_in": "Mantieni l’accesso attuale",
         "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada.",
         "search_label": "Esci o cambia account Kiro",
-        "search_description": "Esci dall’accesso a Kiro usato dai tuoi agenti, oppure accedi con un altro account."
+        "search_description": "Esci dall’accesso a Kiro usato dai tuoi agenti, oppure accedi con un altro account.",
+        "active_profile": "Profilo: {{profile}}"
       },
       "strandsSetup": {
         "cancel": "Annulla",

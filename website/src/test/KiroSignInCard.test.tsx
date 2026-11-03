@@ -157,6 +157,28 @@ describe('KiroSignInCard', () => {
     expect(summary).not.toHaveTextContent('renewed automatically')
   })
 
+  it('signed in with a Kiro profile: names which profile is active, with its region', async () => {
+    kasLoginStatus.mockResolvedValue({
+      ...SIGNED_IN,
+      provider: 'Enterprise',
+      identity: 'identity_center',
+      profile_arn: 'arn:aws:codewhisperer:us-east-1:111122223333:profile/XH9XDRDVMMCA',
+      profile_name: 'KiroProfile-us-east-1',
+      profile_region: 'us-east-1',
+    })
+    renderWithProviders(<KiroSignInCard />)
+    const line = await screen.findByTestId('kiro-sign-in-profile')
+    expect(line).toHaveTextContent('KiroProfile-us-east-1')
+    expect(line).toHaveTextContent('us-east-1')
+  })
+
+  it('signed in with no Kiro profile (social): shows no active-profile line', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN) // Google, no profile fields
+    renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.queryByTestId('kiro-sign-in-profile')).toBeNull()
+  })
+
   it('lapsed (issuer refused the refresh): says the sign-in expired and offers sign in again, not a silent fallback', async () => {
     kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, refresh_rejected: true })
     renderWithProviders(<KiroSignInCard />)

@@ -7390,7 +7390,14 @@
       "cancel_unsettled": "サインインをキャンセルできませんでした。サインインはまだ有効です。同じ項目をもう一度押して再試行してください。",
       "card_intro": "Kiro Agent バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
-      "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
+      "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。",
+      "choose_profile_eyebrow": "プロファイルを選択",
+      "choose_profile_title": "このアカウントには複数の Kiro プロファイルがあります",
+      "choose_profile_body": "エージェントを実行するプロファイルを選んでください。あとで再度サインインすれば変更できます。",
+      "choose_profile_confirm": "このプロファイルを使う",
+      "no_profile_eyebrow": "サインイン済みですが、プロファイルがありません",
+      "no_profile_body": "このアカウントには使用できる Kiro プロファイルがありません",
+      "no_profile_region_hint": "サインインは成功しましたが、このアカウントには Kiro プロファイルが割り当てられていません（{{region}} から確認）。管理者に Kiro プロファイルの割り当てを依頼し、再度サインインしてください。"
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "セットアップの完了が記録されませんでした",
@@ -14070,7 +14077,8 @@
         "keep_current_sign_in": "現在のサインインを維持",
         "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。",
         "search_label": "サインアウト・Kiro アカウント切り替え",
-        "search_description": "エージェントが使う Kiro サインインからサインアウトするか、別のアカウントでサインインします。"
+        "search_description": "エージェントが使う Kiro サインインからサインアウトするか、別のアカウントでサインインします。",
+        "active_profile": "プロファイル: {{profile}}"
       },
       "strandsSetup": {
         "cancel": "キャンセル",

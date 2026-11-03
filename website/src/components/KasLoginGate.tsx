@@ -16,6 +16,7 @@ import {
   api,
   type KasLoginDeviceSession,
   type KasLoginLoopbackSession,
+  type KasLoginProfileChoice,
   type KasLoginStatus,
 } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -51,6 +52,16 @@ const LOOPBACK_SLOW_HINT_MS = 30_000
 type ActiveSession =
   | ({ kind: 'device'; provider: KasLoginProvider } & KasLoginDeviceSession)
   | ({ kind: 'loopback'; provider: KasLoginProvider } & KasLoginLoopbackSession)
+
+/** The region segment of a Kiro profile ARN
+ *  (`arn:<partition>:codewhisperer:<region>:<account>:profile/<id>`), or '' when
+ *  the ARN does not parse. Shown beside a profile name so a user with the same
+ *  profile in two regions can tell them apart. */
+function profileRegionFromArn(arn: string): string {
+  const parts = arn.split(':')
+  // arn : partition : service : region : account : resource
+  return parts.length >= 4 ? parts[3] : ''
+}
 
 /** True when this page is itself served from a loopback address — the only case
  *  in which a portal redirect to `http://localhost:<port>` reaches the gateway. */
@@ -614,15 +625,129 @@ function DeviceWaiting({
 }
 
 // Terminal poll outcomes (code expired / poll failed) share one recovery shape:
+// The sign-in resolved more than one Kiro profile: the approval is done and the
+// token is held by the gateway, waiting for the user to say which profile the
+// agents should run as. One radio per profile (name + region parsed from the
+// ARN so duplicates across regions are distinguishable), then a confirm that
+// completes the login. No auto-pick: the account is the user's to choose.
+function ProfileChooser({
+  profiles,
+  busy,
+  error,
+  onChoose,
+  onCancel,
+}: {
+  profiles: KasLoginProfileChoice[]
+  busy: boolean
+  error: string
+  onChoose: (arn: string) => void
+  onCancel: () => void
+}) {
+  const chrome = useChrome()
+  const [selected, setSelected] = useState(profiles[0]?.arn ?? '')
+  return (
+    <ViewShell
+      aside={{
+        ariaLabel: i18nT('components.kasLogin.sign_in_to_kiro'),
+        panelHeadline: i18nT('components.kasLogin.aside_headline'),
+        panelBody: i18nT('components.kasLogin.aside_body'),
+        panelFootnote: i18nT('components.kasLogin.aside_footnote'),
+      }}
+    >
+      <div className={`${chrome.tile} bg-accent/10 text-accent`}>
+        <IdCard className="lucide-inline" />
+      </div>
+      <p className={`${chrome.afterTile} ${chrome.eyebrow}`}>
+        {i18nT('components.kasLogin.choose_profile_eyebrow')}
+      </p>
+      <h1 className={chrome.h1}>{i18nT('components.kasLogin.choose_profile_title')}</h1>
+      <p className="mt-2 text-[13px] leading-relaxed text-muted">
+        {i18nT('components.kasLogin.choose_profile_body')}
+      </p>
+      <fieldset className="mt-4 max-w-lg space-y-2" data-testid="kas-login-profile-list">
+        <legend className="sr-only">{i18nT('components.kasLogin.choose_profile_title')}</legend>
+        {profiles.map((p) => {
+          const region = profileRegionFromArn(p.arn)
+          const label = p.profile_name || p.arn
+          const active = selected === p.arn
+          return (
+            <label
+              key={p.arn}
+              className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors focus-within:ring-2 focus-within:ring-accent/40 ${
+                active ? 'border-accent bg-accent/5' : 'border-border hover:border-accent/50'
+              }`}
+              data-testid="kas-login-profile-option"
+              data-arn={p.arn}
+            >
+              <input
+                type="radio"
+                name="kas-profile"
+                value={p.arn}
+                checked={active}
+                disabled={busy}
+                onChange={() => setSelected(p.arn)}
+                aria-label={region ? `${label} (${region})` : label}
+                className="mt-0.5 accent-accent"
+              />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium text-text-strong">{label}</span>
+                {region ? (
+                  <span className="mt-0.5 block font-mono text-[12px] text-muted">{region}</span>
+                ) : null}
+              </span>
+            </label>
+          )
+        })}
+      </fieldset>
+      <ErrorNotice
+        className="mt-3 max-w-lg"
+        message={error || null}
+        testId="kas-login-profile-error"
+      />
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <Btn
+          type="button"
+          primary
+          disabled={busy || !selected}
+          onClick={() => onChoose(selected)}
+          data-testid="kas-login-profile-confirm"
+        >
+          {busy ? (
+            <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+          ) : (
+            <Check className="lucide-inline" aria-hidden="true" />
+          )}
+          {i18nT('components.kasLogin.choose_profile_confirm')}
+        </Btn>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="cursor-pointer text-[13px] text-muted underline-offset-2 hover:text-text hover:underline focus-ring disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid="kas-login-profile-cancel"
+        >
+          {i18nT('components.kasLogin.start_over')}
+        </button>
+      </div>
+    </ViewShell>
+  )
+}
+
 // name what happened, then offer exactly one action — back to the chooser for a
 // fresh code. Detail text is shown verbatim when the backend sent one.
+// `code` lets an empty-profile outcome say the approval SUCCEEDED but no Kiro
+// profile is entitled (issue #28904), instead of the generic "approval failed".
 function SignInProblem({
   expired,
   detail,
+  code,
+  region,
   onStartOver,
 }: {
   expired: boolean
   detail: string
+  code?: string
+  region?: string
   onStartOver: () => void
 }) {
   const chrome = useChrome()
@@ -635,19 +760,41 @@ function SignInProblem({
         panelFootnote: i18nT('components.kasLogin.aside_footnote'),
       }}
     >
-      <div className={`${chrome.tile} bg-danger/10 text-danger-text`}>
-        <AlertTriangle className="lucide-inline" />
-      </div>
-      <p className={`${chrome.afterTile} ${chrome.eyebrow.replace('text-accent', 'text-danger')}`}>
-        {expired
-          ? i18nT('components.kasLogin.the_code_expired')
-          : i18nT('components.kasLogin.sign_in_failed')}
-      </p>
-      <h1 className={chrome.h1}>
-        {expired
-          ? i18nT('components.kasLogin.the_code_expired_body')
-          : i18nT('components.kasLogin.sign_in_failed_body')}
-      </h1>
+      {/* 'no_profiles' is not a failure: the browser approval SUCCEEDED, the
+          account just has no entitled Kiro profile. Say that, and do not colour
+          the tile/eyebrow as an error. Every other terminal code is a genuine
+          failure and keeps the danger styling. */}
+      {(() => {
+        const noProfiles = !expired && code === 'no_profiles'
+        const tileTone = noProfiles ? 'bg-warn/15 text-warn-text' : 'bg-danger/10 text-danger-text'
+        const eyebrow = noProfiles
+          ? i18nT('components.kasLogin.no_profile_eyebrow')
+          : expired
+            ? i18nT('components.kasLogin.the_code_expired')
+            : i18nT('components.kasLogin.sign_in_failed')
+        const headline = noProfiles
+          ? i18nT('components.kasLogin.no_profile_body')
+          : expired
+            ? i18nT('components.kasLogin.the_code_expired_body')
+            : i18nT('components.kasLogin.sign_in_failed_body')
+        const eyebrowTone = noProfiles ? 'text-warn-text' : 'text-danger'
+        return (
+          <>
+            <div className={`${chrome.tile} ${tileTone}`}>
+              <AlertTriangle className="lucide-inline" />
+            </div>
+            <p className={`${chrome.afterTile} ${chrome.eyebrow.replace('text-accent', eyebrowTone)}`}>
+              {eyebrow}
+            </p>
+            <h1 className={chrome.h1}>{headline}</h1>
+            {noProfiles && region ? (
+              <p className="mt-2 max-w-lg text-[13px] leading-relaxed text-muted">
+                {i18nT('components.kasLogin.no_profile_region_hint', { region })}
+              </p>
+            ) : null}
+          </>
+        )
+      })()}
       {/* Hand-off per chrome. Gate: none -- the chat the hand-off would open
           sits behind it, and without a signed-in account there is no agent to
           hand the failure to; Start over is the remedy. Card: the dashboard
@@ -851,6 +998,25 @@ function KasLoginFlow({
     void queryClient.resetQueries({ queryKey: ['available-models'] })
   }, [queryClient])
 
+  // A multi-profile sign-in: the poll answered 'select_profile' and the user
+  // picks one. The mutation completes the login server-side; its 'authorized'
+  // answer flows through the SAME observed-success path as a plain poll — re-read
+  // status (the authority on `authenticated`), forget the old model list, drop
+  // the session. A held error (e.g. an unoffered ARN) stays on the chooser.
+  const selectProfile = useMutation({
+    // `session!` is safe: the chooser only renders while a session exists.
+    mutationFn: (arn: string) => api.kasLoginSelectProfile(session!.login_id, arn),
+    onSuccess: (result) => {
+      if (result.status !== 'authorized') return
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+      forgetModelList()
+      setReplaceWarning(result.code === 'previous_identity_not_removed')
+      setSession(null)
+      setFellBack(false)
+      setReauth(false)
+    },
+  })
+
   const authorized = pollQuery.data?.status === 'authorized'
   const authorizedCode = pollQuery.data?.code
   useEffect(() => {
@@ -1032,6 +1198,20 @@ function KasLoginFlow({
 
   if (session) {
     const effective = pollQuery.error ? 'error' : (pollQuery.data?.status ?? 'pending')
+    // More than one Kiro profile: the approval is done and the token is held;
+    // the user chooses which profile the agents run as. Rendered before the
+    // terminal check because this is a non-terminal waypoint, not a failure.
+    if (effective === 'select_profile' && pollQuery.data?.profiles?.length) {
+      return (
+        <ProfileChooser
+          profiles={pollQuery.data.profiles}
+          busy={selectProfile.isPending}
+          error={selectProfile.error?.message ?? ''}
+          onChoose={(arn) => selectProfile.mutate(arn)}
+          onCancel={reset}
+        />
+      )
+    }
     const terminal = effective === 'expired' || effective === 'error'
     // A loopback terminal state is handled by the degradation effect above (it
     // restarts on the device flow); only a token-store failure — or a transport
@@ -1042,7 +1222,15 @@ function KasLoginFlow({
       (pollQuery.error != null || pollQuery.data?.code === 'token_store_failed')
     if ((session.kind === 'device' && terminal) || loopbackDeadEnd) {
       const detail = pollQuery.error?.message || pollQuery.data?.error || ''
-      return <SignInProblem expired={effective === 'expired'} detail={detail} onStartOver={reset} />
+      return (
+        <SignInProblem
+          expired={effective === 'expired'}
+          detail={detail}
+          code={pollQuery.data?.code}
+          region={pollQuery.data?.region}
+          onStartOver={reset}
+        />
+      )
     }
     if (session.kind === 'loopback') {
       return (
