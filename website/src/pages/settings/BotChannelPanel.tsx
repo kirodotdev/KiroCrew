@@ -518,13 +518,13 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `spec` is excluded on purpose: the owning panel rebuilds it on every render (a module const cannot hold localised copy), and the fields read here are the channel's CAPABILITY flags, which are the same shape on every rebuild for a mounted panel. Listing it would recreate this handler every render while changing nothing it computes, and the spec's contract is that it appears in no dependency array.
   }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading')} {spec.name} {i18nT('pages.settings.botChannelPanel.config')}</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading_channel_config', { channel: spec.name })}</p>
   // Nothing to lose here: the form is not mounted in this branch.
   if (isError || !data || !draft) {
     return (
       <ErrorNotice
         className="m-4"
-        message={`${i18nT('pages.settings.botChannelPanel.cannot_load')} ${spec.name} ${i18nT('pages.settings.botChannelPanel.config_is_the_gateway_running')}`}
+        message={i18nT('pages.settings.botChannelPanel.cannot_load_channel_config', { channel: spec.name })}
         askAgent
       />
     )
@@ -567,7 +567,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            {spec.name} {i18nT('pages.settings.botChannelPanel.settings_are_managed_on_the_machine_running_kiro')}
+            {i18nT('pages.settings.botChannelPanel.channel_settings_read_only', { channel: spec.name })}
           </span>
         </div>
       )}
