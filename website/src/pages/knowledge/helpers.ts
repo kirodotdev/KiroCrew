@@ -48,6 +48,40 @@ export function useCopy() {
 // compared server-side, so the literals must stay verbatim in every locale.
 export const ITEM_TYPES = ['design_doc', 'runbook', 'meeting_notes', 'code_doc', 'presentation', 'report', 'policy', 'personal_notes', 'external_reference', 'document']
 export const STATUSES = ['active', 'archived']
+
+/**
+ * Visible label per knowledge item type and status. FULL literal keys so the
+ * key-reference gate can verify each one; a type outside the list keeps its
+ * own name with underscores shown as spaces.
+ */
+const ITEM_TYPE_LABEL_KEY: Record<string, string> = {
+  design_doc: 'pages.knowledge.index.type_design_doc',
+  runbook: 'pages.knowledge.index.type_runbook',
+  meeting_notes: 'pages.knowledge.index.type_meeting_notes',
+  code_doc: 'pages.knowledge.index.type_code_doc',
+  presentation: 'pages.knowledge.index.type_presentation',
+  report: 'pages.knowledge.index.type_report',
+  policy: 'pages.knowledge.index.type_policy',
+  personal_notes: 'pages.knowledge.index.type_personal_notes',
+  external_reference: 'pages.knowledge.index.type_external_reference',
+  document: 'pages.knowledge.index.type_document',
+}
+
+// Singular, for one item's badge; the list filter keeps its own plural labels.
+const ITEM_STATUS_LABEL_KEY: Record<string, string> = {
+  active: 'pages.knowledge.detailView.status_active',
+  archived: 'pages.knowledge.detailView.status_archived',
+}
+
+// Own keys only: a stored type such as `toString` must not reach an inherited
+// Object.prototype member and hand a function to i18nT.
+export function itemTypeLabel(t: string): string {
+  return Object.hasOwn(ITEM_TYPE_LABEL_KEY, t) ? i18nT(ITEM_TYPE_LABEL_KEY[t]) : t.replace(/_/g, ' ')
+}
+
+export function itemStatusLabel(s: string): string {
+  return Object.hasOwn(ITEM_STATUS_LABEL_KEY, s) ? i18nT(ITEM_STATUS_LABEL_KEY[s]) : s
+}
 // Status the list view opens on. This is the default view, NOT user narrowing,
 // so the onboarding empty state treats this value as "no filter applied".
 export const DEFAULT_STATUS_FILTER = 'active'

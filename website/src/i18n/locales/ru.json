@@ -4242,7 +4242,6 @@
         "working": "Работает"
       },
       "stats": {
-        "busiest_day": "Самый болтливый день: {{date}} ({{count}} сообщ.)",
         "companion_days": "Вместе уже {{time}}",
         "drags_one": "Перетащен {{n}} раз",
         "drags_few": "Перетащен {{n}} раза",
@@ -4271,7 +4270,11 @@
         "walks_one": "{{n}} шаг",
         "walks_few": "{{n}} шага",
         "walks_many": "{{n}} шагов",
-        "walks_other": "{{n}} шага"
+        "walks_other": "{{n}} шага",
+        "busiest_day_one": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_few": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_many": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_other": "Самый болтливый день: {{date}} ({{n}} сообщ.)"
       },
       "tip": {
         "bedtime": "Попробуйте: \"скажи мне сбавить темп в 23:00\"",
@@ -9519,7 +9522,9 @@
       "sounds": "Звуки",
       "overlays": "Оверлеи",
       "persona": "Персона",
-      "save_failed_storage": "Не удалось сохранить. Хранилище браузера заполнено или отключено."
+      "save_failed_storage": "Не удалось сохранить. Хранилище браузера заполнено или отключено.",
+      "theme_topbar_dark": "верхняя панель темы, тёмный режим",
+      "theme_topbar_light": "верхняя панель темы, светлый режим"
     },
     "timezoneSelect": {
       "render_timezone": "Часовой пояс отображения"
@@ -15311,11 +15316,16 @@
         "related_load_failed": "Не удалось загрузить связанные элементы",
         "relations_count": "Связи ({{count}})",
         "save": "сохранить",
-        "shared": "общий",
         "summary": "Сводка",
         "tag1_tag2_tag3": "тег1, тег2, тег3",
         "tags_save_failed": "Не удалось сохранить теги",
-        "unarchive": "Из архива"
+        "unarchive": "Из архива",
+        "shared_count_one": "общих: {{n}}",
+        "shared_count_few": "общих: {{n}}",
+        "shared_count_many": "общих: {{n}}",
+        "shared_count_other": "общих: {{n}}",
+        "status_active": "Активно",
+        "status_archived": "В архиве"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} векторизовано ({{pct}}%)",
@@ -15417,7 +15427,17 @@
         "selected_count_one": "выбрано: {{count}}",
         "selected_count_few": "выбрано: {{count}}",
         "selected_count_many": "выбрано: {{count}}",
-        "selected_count_other": "выбрано: {{count}}"
+        "selected_count_other": "выбрано: {{count}}",
+        "type_design_doc": "проектный документ",
+        "type_runbook": "инструкция по эксплуатации",
+        "type_meeting_notes": "заметки встречи",
+        "type_code_doc": "документация кода",
+        "type_presentation": "презентация",
+        "type_report": "отчёт",
+        "type_policy": "политика",
+        "type_personal_notes": "личные заметки",
+        "type_external_reference": "внешняя ссылка",
+        "type_document": "документ"
       },
       "itemCard": {
         "copied": "Скопировано!",
@@ -20194,7 +20214,6 @@
       "credits_col": "Кредиты",
       "credits_this_period": "Последние {{days}} дн.",
       "daily_p50_trend": "p50 по дням — холодный сверху, тёплый снизу",
-      "daily_trend_point": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{count}}",
       "detail_col": "Детали",
       "distribution_col": "Распределение",
       "duration_col": "Длительность",
@@ -20308,7 +20327,11 @@
       "window_footer_shards_one": "Разделы OTEL · период: {{period}} · {{n}} шард · источник: <dir/> · только локально, без передачи наружу",
       "window_footer_shards_few": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу",
       "window_footer_shards_many": "Разделы OTEL · период: {{period}} · {{n}} шардов · источник: <dir/> · только локально, без передачи наружу",
-      "window_footer_shards_other": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу"
+      "window_footer_shards_other": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу",
+      "daily_trend_point_one": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_few": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_many": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_other": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}"
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",
@@ -20615,7 +20638,6 @@
       "filter_source_mine_description": "Команды, созданные вами в менеджере команд",
       "filter_source_builtin_description": "Команды, входящие в {{productName}}",
       "filter_source_package_description": "Команды, установленные пакетами возможностей",
-      "member_count_filtered": "{{shown}} из {{count}} товарищей по команде",
       "webview_rendering": "Отображение опубликованного представления...",
       "webview_retry": "Повторить",
       "deploy_title": "Твоя команда в облаке",
@@ -21019,7 +21041,11 @@
       "profile_harness_cannot_start": "Здесь не может запуститься.",
       "profile_harness_saved": "Сохранено. Со следующего сообщения {{name}} работает в этой оболочке.",
       "profile_harness_unavailable": "{{name}} настроен на {{harness}}, а здесь её нельзя запустить, поэтому его чаты и воркеры тоже не запускаются. Выбери другую оболочку агента или «Наследуется».",
-      "profile_harness_choose": "Выбрать оболочку агента"
+      "profile_harness_choose": "Выбрать оболочку агента",
+      "member_count_filtered_one": "{{shown}} из {{n}} товарища по команде",
+      "member_count_filtered_few": "{{shown}} из {{n}} товарищей по команде",
+      "member_count_filtered_many": "{{shown}} из {{n}} товарищей по команде",
+      "member_count_filtered_other": "{{shown}} из {{n}} товарища по команде"
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

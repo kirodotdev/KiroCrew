@@ -936,7 +936,8 @@ const MemoriesSection: React.FC<{
       Icon: Flame,
       text: i18nT('apps.mochi.stats.busiest_day', {
         date: formatDate(stats.busiestDay.date),
-        count: fmtNumber(stats.busiestDay.messages),
+        count: stats.busiestDay.messages,
+        n: fmtNumber(stats.busiestDay.messages),
       }),
     })
   }

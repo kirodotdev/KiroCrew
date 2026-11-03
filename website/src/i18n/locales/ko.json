@@ -4054,7 +4054,6 @@
         "working": "작업 중"
       },
       "stats": {
-        "busiest_day": "가장 많이 대화한 날: {{date}} (메시지 {{count}}개)",
         "companion_days": "함께한 시간 {{time}}",
         "drags_other": "{{n}}번 끌었습니다",
         "earliest_time": "가장 이른 시각: {{time}}에 기상",
@@ -4068,7 +4067,8 @@
         "streak": "({{streak}}일 연속)",
         "thinking_time": "{{time}} 동안 생각했습니다",
         "title": "추억",
-        "walks_other": "{{n}}걸음"
+        "walks_other": "{{n}}걸음",
+        "busiest_day_other": "가장 많이 대화한 날: {{date}} (메시지 {{n}}개)"
       },
       "tip": {
         "bedtime": "이렇게 말해 보세요: ‘11시에 이제 쉬라고 알려 줘’",
@@ -8991,7 +8991,9 @@
       "sounds": "사운드",
       "overlays": "오버레이",
       "persona": "페르소나",
-      "save_failed_storage": "저장할 수 없습니다. 브라우저 저장소가 가득 찼거나 꺼져 있습니다."
+      "save_failed_storage": "저장할 수 없습니다. 브라우저 저장소가 가득 찼거나 꺼져 있습니다.",
+      "theme_topbar_dark": "테마 상단 바, 다크 모드",
+      "theme_topbar_light": "테마 상단 바, 라이트 모드"
     },
     "timezoneSelect": {
       "render_timezone": "표시 시간대"
@@ -14408,11 +14410,13 @@
         "related_load_failed": "관련 항목을 불러올 수 없습니다",
         "relations_count": "관계({{count}})",
         "save": "저장",
-        "shared": "공유",
         "summary": "요약",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "태그를 저장할 수 없습니다",
-        "unarchive": "보관 해제"
+        "unarchive": "보관 해제",
+        "shared_count_other": "공통 {{n}}개",
+        "status_active": "활성",
+        "status_archived": "보관됨"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 임베딩됨({{pct}}%)",
@@ -14496,7 +14500,17 @@
         "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
         "error_no_reason": "이유 없이 요청이 실패했습니다.",
         "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?",
-        "selected_count_other": "{{count}}개 선택됨"
+        "selected_count_other": "{{count}}개 선택됨",
+        "type_design_doc": "설계 문서",
+        "type_runbook": "런북",
+        "type_meeting_notes": "회의록",
+        "type_code_doc": "코드 문서",
+        "type_presentation": "프레젠테이션",
+        "type_report": "보고서",
+        "type_policy": "정책",
+        "type_personal_notes": "개인 메모",
+        "type_external_reference": "외부 참조",
+        "type_document": "문서"
       },
       "itemCard": {
         "copied": "복사했습니다!",
@@ -19024,7 +19038,6 @@
       "credits_col": "크레딧",
       "credits_this_period": "최근 {{days}}일",
       "daily_p50_trend": "일별 p50 — 위가 콜드, 아래가 웜",
-      "daily_trend_point": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{count}}회",
       "detail_col": "상세",
       "distribution_col": "분포",
       "duration_col": "소요 시간",
@@ -19123,7 +19136,8 @@
       "range_to": "종료 날짜",
       "no_telemetry_in_window": "이 기간({{period}})에 기록된 텔레메트리가 없습니다.",
       "otel_retention_cap": "턴, 지연 시간, 시작 수치는 최근 {{days}}일만 포함합니다. 이전 메트릭은 삭제됩니다(<settingRef/>).",
-      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음"
+      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음",
+      "daily_trend_point_other": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{n}}회"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",
@@ -19394,7 +19408,6 @@
       "filter_source_mine_description": "크루 관리자에서 직접 만든 크루",
       "filter_source_builtin_description": "{{productName}}에 기본 포함된 크루",
       "filter_source_package_description": "기능 패키지로 설치된 크루",
-      "member_count_filtered": "크루메이트 {{count}}명 중 {{shown}}명",
       "webview_rendering": "게시된 보기 표시 중…",
       "webview_retry": "다시 시도",
       "deploy_title": "클라우드의 내 크루",
@@ -19777,7 +19790,8 @@
       "profile_harness_cannot_start": "여기서는 시작할 수 없습니다.",
       "profile_harness_saved": "저장했습니다. 다음 메시지부터 {{name}}이(가) 이 하네스에서 실행됩니다.",
       "profile_harness_unavailable": "{{name}}은(는) {{harness}}에서 실행되도록 설정되어 있지만 여기서는 시작할 수 없어 채팅과 워커도 시작되지 않습니다. 다른 에이전트 하네스나 상속됨을 선택하세요.",
-      "profile_harness_choose": "에이전트 하네스 선택"
+      "profile_harness_choose": "에이전트 하네스 선택",
+      "member_count_filtered_other": "크루메이트 {{n}}명 중 {{shown}}명"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

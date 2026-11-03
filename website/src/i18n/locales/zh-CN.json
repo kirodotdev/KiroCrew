@@ -3966,7 +3966,6 @@
         "working": "工作中"
       },
       "stats": {
-        "busiest_day": "最话多的一天：{{date}}（{{count}} 句）",
         "companion_days": "陪伴了 {{time}}",
         "drags_other": "被拽了 {{n}} 次",
         "earliest_time": "最早 {{time}} 就起来了",
@@ -3980,7 +3979,8 @@
         "streak": "（连续 {{streak}} 天）",
         "thinking_time": "想了 {{time}}",
         "title": "回忆",
-        "walks_other": "走了 {{n}} 步"
+        "walks_other": "走了 {{n}} 步",
+        "busiest_day_other": "最话多的一天：{{date}}（{{n}} 句）"
       },
       "tip": {
         "bedtime": "试试：“11点提醒我该睡了”",
@@ -8991,7 +8991,9 @@
       "sounds": "音效",
       "overlays": "叠加层",
       "persona": "角色设定",
-      "save_failed_storage": "无法保存。浏览器存储已满或已关闭。"
+      "save_failed_storage": "无法保存。浏览器存储已满或已关闭。",
+      "theme_topbar_dark": "主题顶栏（深色模式）",
+      "theme_topbar_light": "主题顶栏（浅色模式）"
     },
     "timezoneSelect": {
       "render_timezone": "显示时区"
@@ -14408,11 +14410,13 @@
         "related_load_failed": "无法加载相关条目",
         "relations_count": "关系（{{count}}）",
         "save": "保存",
-        "shared": "共享",
         "summary": "摘要",
         "tag1_tag2_tag3": "标签 1, 标签 2, 标签 3",
         "tags_save_failed": "无法保存标签",
-        "unarchive": "取消归档"
+        "unarchive": "取消归档",
+        "shared_count_other": "{{n}} 个共有",
+        "status_active": "使用中",
+        "status_archived": "已归档"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 已嵌入 ({{pct}}%)",
@@ -14496,7 +14500,17 @@
         "entity_items_load_failed": "无法加载此实体的条目",
         "error_no_reason": "请求失败，未给出原因。",
         "delete_items_permanently_other": "永久删除 {{count}} 个条目？",
-        "selected_count_other": "已选 {{count}} 项"
+        "selected_count_other": "已选 {{count}} 项",
+        "type_design_doc": "设计文档",
+        "type_runbook": "运行手册",
+        "type_meeting_notes": "会议记录",
+        "type_code_doc": "代码文档",
+        "type_presentation": "演示文稿",
+        "type_report": "报告",
+        "type_policy": "策略",
+        "type_personal_notes": "个人笔记",
+        "type_external_reference": "外部参考",
+        "type_document": "文档"
       },
       "itemCard": {
         "copied": "已复制！",
@@ -19024,7 +19038,6 @@
       "credits_col": "额度",
       "credits_this_period": "最近 {{days}} 天",
       "daily_p50_trend": "每日 p50 — 上为冷启动，下为热启动",
-      "daily_trend_point": "{{date}} · 冷启动 {{cold}} · 热启动 {{warm}} · {{count}} 次启动",
       "detail_col": "明细",
       "distribution_col": "分布",
       "duration_col": "用时",
@@ -19123,7 +19136,8 @@
       "range_to": "结束日期",
       "no_telemetry_in_window": "此时间范围内（{{period}}）没有记录遥测数据。",
       "otel_retention_cap": "轮次、延迟和启动数据仅涵盖最近 {{days}} 天；更早的指标会被删除（<settingRef/>）。",
-      "window_footer_shards_other": "OTEL 部分 · 时间范围：{{period}} · {{n}} 个分片 · 来源：<dir/> · 仅本地，无外发"
+      "window_footer_shards_other": "OTEL 部分 · 时间范围：{{period}} · {{n}} 个分片 · 来源：<dir/> · 仅本地，无外发",
+      "daily_trend_point_other": "{{date}} · 冷启动 {{cold}} · 热启动 {{warm}} · {{n}} 次启动"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",
@@ -19394,7 +19408,6 @@
       "filter_source_mine_description": "你在 Crew 管理器里创建的成员",
       "filter_source_builtin_description": "{{productName}} 自带的成员",
       "filter_source_package_description": "由能力安装包安装的成员",
-      "member_count_filtered": "显示 {{shown}} / {{count}} 位队友",
       "webview_rendering": "正在显示已发布视图…",
       "webview_retry": "重试",
       "deploy_title": "你的团队在云端",
@@ -19777,7 +19790,8 @@
       "profile_harness_cannot_start": "无法在此启动。",
       "profile_harness_saved": "已保存。从下一条消息起，{{name}} 在此运行框架上运行。",
       "profile_harness_unavailable": "{{name}} 设置为使用 {{harness}}，但它在这里无法启动，因此其聊天和工作会话也不会启动。请选择其他代理运行框架，或选择“继承”。",
-      "profile_harness_choose": "选择代理运行框架"
+      "profile_harness_choose": "选择代理运行框架",
+      "member_count_filtered_other": "显示 {{shown}} / {{n}} 位队友"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

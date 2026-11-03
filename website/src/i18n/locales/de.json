@@ -4147,7 +4147,6 @@
         "working": "Arbeitet"
       },
       "stats": {
-        "busiest_day": "Gesprächigster Tag: {{date}} ({{count}} Nachr.)",
         "companion_days": "Zusammen seit {{time}}",
         "drags_one": "{{n}}-mal gezogen",
         "drags_other": "{{n}}-mal gezogen",
@@ -4166,7 +4165,9 @@
         "thinking_time": "{{time}} nachgedacht",
         "title": "Erinnerungen",
         "walks_one": "{{n}} Schritt",
-        "walks_other": "{{n}} Schritte"
+        "walks_other": "{{n}} Schritte",
+        "busiest_day_one": "Gesprächigster Tag: {{date}} ({{n}} Nachr.)",
+        "busiest_day_other": "Gesprächigster Tag: {{date}} ({{n}} Nachr.)"
       },
       "tip": {
         "bedtime": "Versuch: \"sag mir, dass ich um 11 runterfahren soll\"",
@@ -9167,7 +9168,9 @@
       "sounds": "Sounds",
       "overlays": "Overlays",
       "persona": "Persona",
-      "save_failed_storage": "Speichern nicht möglich. Der Browserspeicher ist voll oder deaktiviert."
+      "save_failed_storage": "Speichern nicht möglich. Der Browserspeicher ist voll oder deaktiviert.",
+      "theme_topbar_dark": "Theme-Kopfleiste, dunkler Modus",
+      "theme_topbar_light": "Theme-Kopfleiste, heller Modus"
     },
     "timezoneSelect": {
       "render_timezone": "Zeitzone für die Darstellung"
@@ -14709,11 +14712,14 @@
         "related_load_failed": "Verwandte Elemente konnten nicht geladen werden",
         "relations_count": "Beziehungen ({{count}})",
         "save": "speichern",
-        "shared": "gemeinsam",
         "summary": "Zusammenfassung",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "Tags konnten nicht gespeichert werden",
-        "unarchive": "Aus dem Archiv holen"
+        "unarchive": "Aus dem Archiv holen",
+        "shared_count_one": "{{n}} gemeinsam",
+        "shared_count_other": "{{n}} gemeinsam",
+        "status_active": "Aktiv",
+        "status_archived": "Archiviert"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} eingebettet ({{pct}}%)",
@@ -14803,7 +14809,17 @@
         "delete_items_permanently_one": "{{count}} Element endgültig löschen?",
         "delete_items_permanently_other": "{{count}} Elemente endgültig löschen?",
         "selected_count_one": "{{count}} ausgewählt",
-        "selected_count_other": "{{count}} ausgewählt"
+        "selected_count_other": "{{count}} ausgewählt",
+        "type_design_doc": "Designdokument",
+        "type_runbook": "Betriebshandbuch",
+        "type_meeting_notes": "Besprechungsnotizen",
+        "type_code_doc": "Code-Dokumentation",
+        "type_presentation": "Präsentation",
+        "type_report": "Bericht",
+        "type_policy": "Richtlinie",
+        "type_personal_notes": "persönliche Notizen",
+        "type_external_reference": "externe Referenz",
+        "type_document": "Dokument"
       },
       "itemCard": {
         "copied": "Kopiert!",
@@ -19414,7 +19430,6 @@
       "credits_col": "Guthaben",
       "credits_this_period": "Letzte {{days}} T",
       "daily_p50_trend": "Täglicher p50 — kalt oben, warm unten",
-      "daily_trend_point": "{{date}} · kalt {{cold}} · warm {{warm}} · {{count}} Starts",
       "detail_col": "Details",
       "distribution_col": "Verteilung",
       "duration_col": "Dauer",
@@ -19518,7 +19533,9 @@
       "no_telemetry_in_window": "In diesem Zeitraum ({{period}}) wurde keine Telemetrie aufgezeichnet.",
       "otel_retention_cap": "Turn-, Latenz- und Startwerte decken nur die letzten {{days}} T ab; ältere Metriken werden gelöscht (<settingRef/>).",
       "window_footer_shards_one": "OTEL-Abschnitte · Zeitraum: {{period}} · {{n}} Shard · Quelle: <dir/> · nur lokal, kein Datenausgang",
-      "window_footer_shards_other": "OTEL-Abschnitte · Zeitraum: {{period}} · {{n}} Shards · Quelle: <dir/> · nur lokal, kein Datenausgang"
+      "window_footer_shards_other": "OTEL-Abschnitte · Zeitraum: {{period}} · {{n}} Shards · Quelle: <dir/> · nur lokal, kein Datenausgang",
+      "daily_trend_point_one": "{{date}} · kalt {{cold}} · warm {{warm}} · {{n}} Start",
+      "daily_trend_point_other": "{{date}} · kalt {{cold}} · warm {{warm}} · {{n}} Starts"
     },
     "terminalPopoutFrame": {
       "return": "Zurück zum Dock",
@@ -19801,7 +19818,6 @@
       "filter_source_mine_description": "Crews, die du im Crew-Manager erstellt hast",
       "filter_source_builtin_description": "Crews, die mit {{productName}} ausgeliefert werden",
       "filter_source_package_description": "Crews, die von Capability-Paketen installiert wurden",
-      "member_count_filtered": "{{shown}} von {{count}} Crew-Kameraden",
       "webview_rendering": "Veröffentlichte Ansicht wird angezeigt…",
       "webview_retry": "Erneut versuchen",
       "deploy_title": "Deine Crew in der Cloud",
@@ -20191,7 +20207,9 @@
       "profile_harness_cannot_start": "Kann hier nicht starten.",
       "profile_harness_saved": "Gespeichert. {{name}} läuft ab der nächsten Nachricht auf diesem Harness.",
       "profile_harness_unavailable": "{{name}} soll auf {{harness}} laufen, das hier nicht starten kann, daher starten auch seine Chats und Worker nicht. Wähle ein anderes Agent-Harness oder „Geerbt“.",
-      "profile_harness_choose": "Agent-Harness wählen"
+      "profile_harness_choose": "Agent-Harness wählen",
+      "member_count_filtered_one": "{{shown}} von {{n}} Crew-Kamerad",
+      "member_count_filtered_other": "{{shown}} von {{n}} Crew-Kameraden"
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

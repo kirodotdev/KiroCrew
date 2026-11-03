@@ -2722,7 +2722,6 @@
         "working": "Working"
       },
       "stats": {
-        "busiest_day": "Chattiest day: {{date}} ({{count}} msgs)",
         "companion_days": "Together for {{time}}",
         "drags_one": "Dragged {{n}} time",
         "drags_other": "Dragged {{n}} times",
@@ -2741,7 +2740,9 @@
         "thinking_time": "Thought for {{time}}",
         "title": "Memories",
         "walks_one": "{{n}} step",
-        "walks_other": "{{n}} steps"
+        "walks_other": "{{n}} steps",
+        "busiest_day_one": "Chattiest day: {{date}} ({{n}} msg)",
+        "busiest_day_other": "Chattiest day: {{date}} ({{n}} msgs)"
       },
       "tip": {
         "bedtime": "Try: \"tell me to wind down at 11\"",
@@ -5725,7 +5726,9 @@
       "sounds": "Sounds",
       "overlays": "Overlays",
       "persona": "Persona",
-      "save_failed_storage": "Couldn't save. Browser storage is full or turned off."
+      "save_failed_storage": "Couldn't save. Browser storage is full or turned off.",
+      "theme_topbar_dark": "theme top bar, dark mode",
+      "theme_topbar_light": "theme top bar, light mode"
     },
     "timezoneSelect": {
       "render_timezone": "Render timezone"
@@ -8047,11 +8050,14 @@
         "permanently_delete_this_item": "Permanently delete this item?",
         "related_load_failed": "Couldn't load related items",
         "save": "save",
-        "shared": "shared",
         "summary": "Summary",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "Couldn't save the tags",
-        "unarchive": "Unarchive"
+        "unarchive": "Unarchive",
+        "shared_count_one": "{{n}} shared",
+        "shared_count_other": "{{n}} shared",
+        "status_active": "Active",
+        "status_archived": "Archived"
       },
       "embeddingStatus": {
         "embedding_engine_ready_knowledge_items_need_embe": "Embedding engine ready — knowledge items need embedding.",
@@ -8107,7 +8113,17 @@
         "delete_items_permanently_one": "Delete {{count}} item permanently?",
         "delete_items_permanently_other": "Delete {{count}} items permanently?",
         "selected_count_one": "{{count}} selected",
-        "selected_count_other": "{{count}} selected"
+        "selected_count_other": "{{count}} selected",
+        "type_design_doc": "design doc",
+        "type_runbook": "runbook",
+        "type_meeting_notes": "meeting notes",
+        "type_code_doc": "code doc",
+        "type_presentation": "presentation",
+        "type_report": "report",
+        "type_policy": "policy",
+        "type_personal_notes": "personal notes",
+        "type_external_reference": "external reference",
+        "type_document": "document"
       },
       "knowledgeGraph": {
         "edges": "edges",
@@ -8335,7 +8351,6 @@
       "filter_source_mine_description": "Crews you created in the crew manager",
       "filter_source_builtin_description": "Crews that ship with {{productName}}",
       "filter_source_package_description": "Crews installed by capability packages",
-      "member_count_filtered": "{{shown}} of {{count}} mates",
       "deploy_title": "Your crew in the cloud",
       "deploy_loading": "Reading your deployments…",
       "deploy_error": "Could not read your deployments.",
@@ -8699,7 +8714,9 @@
       "export_discard_lessons": "Discard the lessons written for this file?",
       "export_discard_lessons_body": "The mate's memory is not changed.",
       "export_discard_lessons_confirm": "Discard text",
-      "export_reason_first_goal_only": "Only the first goal fits in this file"
+      "export_reason_first_goal_only": "Only the first goal fits in this file",
+      "member_count_filtered_one": "{{shown}} of {{n}} mate",
+      "member_count_filtered_other": "{{shown}} of {{n}} mates"
     },
     "migrationPage": {
       "app_migration": "App Migration",
@@ -10820,7 +10837,6 @@
       "credits_col": "Credits",
       "credits_this_period": "Last {{days}}d",
       "daily_p50_trend": "Daily p50 — cold above, warm below",
-      "daily_trend_point": "{{date}} · cold {{cold}} · warm {{warm}} · {{count}} starts",
       "detail_col": "Detail",
       "distribution_col": "Distribution",
       "duration_col": "Duration",
@@ -10922,7 +10938,9 @@
       "range_from": "Start date",
       "range_to": "End date",
       "no_telemetry_in_window": "No telemetry recorded in this period ({{period}}).",
-      "otel_retention_cap": "Turn, latency and startup figures cover only the last {{days}}d; older metrics are deleted (<settingRef/>)."
+      "otel_retention_cap": "Turn, latency and startup figures cover only the last {{days}}d; older metrics are deleted (<settingRef/>).",
+      "daily_trend_point_one": "{{date}} · cold {{cold}} · warm {{warm}} · {{n}} start",
+      "daily_trend_point_other": "{{date}} · cold {{cold}} · warm {{warm}} · {{n}} starts"
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",

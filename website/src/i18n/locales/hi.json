@@ -4058,7 +4058,6 @@
         "working": "काम कर रहा है"
       },
       "stats": {
-        "busiest_day": "सबसे बातूनी दिन: {{date}} ({{count}} संदेश)",
         "companion_days": "{{time}} से साथ",
         "drags_one": "{{n}} बार खींचा गया",
         "drags_other": "{{n}} बार खींचा गया",
@@ -4077,7 +4076,9 @@
         "thinking_time": "{{time}} तक सोचा",
         "title": "यादें",
         "walks_one": "{{n}} कदम",
-        "walks_other": "{{n}} कदम"
+        "walks_other": "{{n}} कदम",
+        "busiest_day_one": "सबसे बातूनी दिन: {{date}} ({{n}} संदेश)",
+        "busiest_day_other": "सबसे बातूनी दिन: {{date}} ({{n}} संदेश)"
       },
       "tip": {
         "bedtime": "आज़माएँ: \"मुझे 11 बजे धीमा होने को कहो\"",
@@ -9167,7 +9168,9 @@
       "sounds": "ध्वनियाँ",
       "overlays": "ओवरले",
       "persona": "पर्सोना",
-      "save_failed_storage": "सहेजा नहीं जा सका। ब्राउज़र स्टोरेज भरा हुआ है या बंद है।"
+      "save_failed_storage": "सहेजा नहीं जा सका। ब्राउज़र स्टोरेज भरा हुआ है या बंद है।",
+      "theme_topbar_dark": "थीम शीर्ष बार, डार्क मोड",
+      "theme_topbar_light": "थीम शीर्ष बार, लाइट मोड"
     },
     "timezoneSelect": {
       "render_timezone": "प्रदर्शन समय-क्षेत्र"
@@ -14709,11 +14712,14 @@
         "related_load_failed": "संबंधित आइटम लोड नहीं हो सके",
         "relations_count": "संबंध ({{count}})",
         "save": "सहेजें",
-        "shared": "साझा",
         "summary": "सारांश",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "टैग सहेजे नहीं जा सके",
-        "unarchive": "संग्रह से हटाएं"
+        "unarchive": "संग्रह से हटाएं",
+        "shared_count_one": "{{n}} साझा",
+        "shared_count_other": "{{n}} साझा",
+        "status_active": "सक्रिय",
+        "status_archived": "संग्रहित"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} एम्बेड किए गए ({{pct}}%)",
@@ -14803,7 +14809,17 @@
         "delete_items_permanently_one": "{{count}} आइटम हमेशा के लिए हटाओ?",
         "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?",
         "selected_count_one": "{{count}} चुना गया",
-        "selected_count_other": "{{count}} चुने गए"
+        "selected_count_other": "{{count}} चुने गए",
+        "type_design_doc": "डिज़ाइन दस्तावेज़",
+        "type_runbook": "रनबुक",
+        "type_meeting_notes": "मीटिंग नोट्स",
+        "type_code_doc": "कोड दस्तावेज़",
+        "type_presentation": "प्रस्तुति",
+        "type_report": "रिपोर्ट",
+        "type_policy": "नीति",
+        "type_personal_notes": "निजी नोट्स",
+        "type_external_reference": "बाहरी संदर्भ",
+        "type_document": "दस्तावेज़"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",
@@ -19414,7 +19430,6 @@
       "credits_col": "क्रेडिट",
       "credits_this_period": "पिछले {{days}} दिन",
       "daily_p50_trend": "दैनिक p50 — ऊपर कोल्ड, नीचे वार्म",
-      "daily_trend_point": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{count}} स्टार्ट",
       "detail_col": "विवरण",
       "distribution_col": "वितरण",
       "duration_col": "अवधि",
@@ -19518,7 +19533,9 @@
       "no_telemetry_in_window": "इस अवधि ({{period}}) में कोई टेलीमेट्री दर्ज नहीं हुई।",
       "otel_retention_cap": "टर्न, लेटेंसी और स्टार्टअप के आँकड़े केवल पिछले {{days}} दिन के हैं; पुराने मेट्रिक हटा दिए जाते हैं (<settingRef/>)।",
       "window_footer_shards_one": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
-      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं"
+      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
+      "daily_trend_point_one": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{n}} स्टार्ट",
+      "daily_trend_point_other": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{n}} स्टार्ट"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",
@@ -19801,7 +19818,6 @@
       "filter_source_mine_description": "क्रू मैनेजर में तुम्हारे बनाए क्रू",
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
-      "member_count_filtered": "{{count}} में से {{shown}} क्रूमेट",
       "webview_rendering": "प्रकाशित दृश्य दिखाया जा रहा है…",
       "webview_retry": "पुन: प्रयास करें",
       "deploy_title": "क्लाउड में तुम्हारा क्रू",
@@ -20191,7 +20207,9 @@
       "profile_harness_cannot_start": "यहाँ शुरू नहीं हो सकता।",
       "profile_harness_saved": "सेव हो गया। अगले संदेश से {{name}} इसी हार्नेस पर चलेगा।",
       "profile_harness_unavailable": "{{name}} को {{harness}} पर चलने के लिए सेट किया गया है, जो यहाँ शुरू नहीं हो सकता, इसलिए उसकी चैट और वर्कर भी शुरू नहीं होते। कोई दूसरा एजेंट हार्नेस चुनो, या विरासत में मिला।",
-      "profile_harness_choose": "एजेंट हार्नेस चुनो"
+      "profile_harness_choose": "एजेंट हार्नेस चुनो",
+      "member_count_filtered_one": "{{n}} में से {{shown}} क्रूमेट",
+      "member_count_filtered_other": "{{n}} में से {{shown}} क्रूमेट"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

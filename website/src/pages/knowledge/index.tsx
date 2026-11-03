@@ -18,6 +18,7 @@ import { SettingsTab } from './SettingsTab'
 import { useIngestionJobs } from './useIngestionJobs'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
 import { fmtNumber } from '../../i18n/format'
+import { itemTypeLabel } from './helpers'
 
 /**
  * Visible label per knowledge status. FULL literal keys, resolved at render —
@@ -574,7 +575,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
           takes its visible label from the matching `optionLabels` slot. */}
       <SimpleSelect
         options={['', ...ITEM_TYPES]}
-        optionLabels={[i18nT('pages.knowledge.index.all_types'), ...ITEM_TYPES.map(t => t.replace(/_/g, ' '))]}
+        optionLabels={[i18nT('pages.knowledge.index.all_types'), ...ITEM_TYPES.map(itemTypeLabel)]}
         value={typeFilter}
         onChange={v => { setTypeFilter(v); setPage(1) }}
         aria-label={i18nT('pages.knowledge.index.filter_by_type')}
