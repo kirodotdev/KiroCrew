@@ -46,7 +46,7 @@ export const MAX_SESSION_REFS_RECOVERY = MAX_SESSION_REFS * 2
 
 /**
  * Memory modes whose sessions may never be referenced from another session.
- * Mirrors the backend's `INCOGNITO_MEMORY_MODES` (history.py), documented there
+ * Mirrors the backend's `INCOGNITO_MEMORY_MODES` (history_derivation.py), documented there
  * as "never searchable/listable/summarizable".
  *
  * The link alone carries no transcript, and `get_chat_session` refuses these

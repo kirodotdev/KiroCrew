@@ -31,7 +31,7 @@ const KIROCREW_MODULE_RE = /^(?:kiro_crew|kirocrew_[a-z0-9][a-z0-9_]*)$/;
 // gates `kirocrew stop` on. Without this the module name alone would authorize a
 // SIGKILL of any process that merely imports a `kirocrew_*` module on our port.
 // Both constants are pinned to their Python twins by
-// `test/test_cli.py::TestDesktopGatewayIdentityParity`; change them together.
+// `test/test_cli_stop.py::TestDesktopGatewayIdentityParity`; change them together.
 const KIROCREW_SERVER_SUBCOMMANDS = new Set(["gateway", "dashboard", "start"]);
 
 // The code the updater's pre-swap stop rejects with when a gateway running from
