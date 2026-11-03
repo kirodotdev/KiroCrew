@@ -7433,7 +7433,6 @@
       "show_folder": "Show folder",
       "show_only_sessions_tagged": "Show only sessions tagged {{name}}",
       "show_the_folder_list": "Show the folder list",
-      "skip": "Skip",
       "sort_and_filter_sessions": "Sort and filter sessions",
       "sort_by": "Sort by",
       "sort_filter_sessions": "Sort & filter sessions",
@@ -7457,7 +7456,6 @@
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
       "untagged": "+ untagged",
       "untagged_only": "Untagged only",
-      "will_be_moved_to_older_sessions": "will be moved to older sessions.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} remote session is not shown in board view — board columns manage local sessions only.",
       "remote_sessions_not_shown_in_board_view_other": "{{count}} remote sessions are not shown in board view — board columns manage local sessions only.",
       "sessions_from_instance_unavailable": "Sessions from {{names}} are unavailable right now.",
@@ -7553,7 +7551,15 @@
       "broadcast_open_unknown": "Not confirmed · open",
       "broadcast_delivery_hint": "No running work is interrupted: a running turn reads it after its current tool call; an idle session starts a new turn.",
       "broadcast_retry": "Retry {{n}} failed",
-      "folder_renamed_to": "Folder renamed to {{name}}"
+      "folder_renamed_to": "Folder renamed to {{name}}",
+      "skip_running_sessions_one": "Skip {{n}} running session",
+      "skip_running_sessions_other": "Skip {{n}} running sessions",
+      "cleanup_move_count_one": "{{n}} session will be moved to older sessions.",
+      "cleanup_move_count_other": "{{n}} sessions will be moved to older sessions.",
+      "show_sessions_count_one": "Show {{n}} session",
+      "show_sessions_count_other": "Show {{n}} sessions",
+      "hide_sessions_count_one": "Hide {{n}} session",
+      "hide_sessions_count_other": "Hide {{n}} sessions"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",

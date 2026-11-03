@@ -13012,7 +13012,6 @@
       "goal_loop_cycle_no_cap": "목표 루프 · 사이클 {{count}} (상한 없음)",
       "goal_loop_interrupted_title": "목표 루프 대기 중 — 이전 턴이 중단되었습니다. 채팅을 재개하거나 다음 주기를 기다리세요",
       "hidden_because_parent_hidden": "상위 폴더가 숨겨져 있어 {{name}}도 숨겨집니다",
-      "hide": "숨기기",
       "hide_folder": "폴더 숨기기",
       "hide_when_empty": "비어 있으면 숨기기",
       "hiding_named_filter": "{{filter}} 숨김 중",
@@ -13108,7 +13107,6 @@
       "show_hidden_folder_other": "숨긴 폴더 {{count}}개 표시",
       "show_only_sessions_tagged": "{{name}} 태그가 지정된 세션만 표시",
       "show_the_folder_list": "폴더 목록 표시",
-      "skip": "건너뛰기",
       "sort_and_filter_sessions": "세션 정렬 및 필터",
       "sort_by": "정렬 기준",
       "sort_created_newest": "생성일 (최신순)",
@@ -13164,7 +13162,6 @@
       "untagged": "+ 태그 없음",
       "untagged_2": "태그 없음",
       "untagged_only": "태그 없음만",
-      "will_be_moved_to_older_sessions": "이전 세션으로 이동됩니다.",
       "yesterday": "어제",
       "new_incognito_chat": "새 시크릿 채팅",
       "new_temporary_chat": "새 임시 채팅",
@@ -13335,7 +13332,11 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "일반",
       "kind_section_mate": "크루메이트에서",
-      "filter_crew_description": "Ultra Mode 채팅만 보기"
+      "filter_crew_description": "Ultra Mode 채팅만 보기",
+      "skip_running_sessions_other": "실행 중인 세션 {{n}}개 건너뛰기",
+      "cleanup_move_count_other": "세션 {{n}}개가 이전 세션으로 이동됩니다.",
+      "show_sessions_count_other": "세션 {{n}}개 표시",
+      "hide_sessions_count_other": "세션 {{n}}개 숨기기"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

@@ -13012,7 +13012,6 @@
       "goal_loop_cycle_no_cap": "目标循环 · 第 {{count}} 轮（无上限）",
       "goal_loop_interrupted_title": "目标循环待命 — 上一轮被中断；恢复聊天或等待下一轮",
       "hidden_because_parent_hidden": "{{name}} 已隐藏，因为上级文件夹处于隐藏状态",
-      "hide": "隐藏",
       "hide_folder": "隐藏文件夹",
       "hide_when_empty": "为空时隐藏",
       "hiding_named_filter": "正在隐藏“{{filter}}”",
@@ -13108,7 +13107,6 @@
       "show_hidden_folder_other": "显示 {{count}} 个隐藏的文件夹",
       "show_only_sessions_tagged": "仅显示带有 {{name}} 标签的会话",
       "show_the_folder_list": "展开文件夹列表",
-      "skip": "跳过",
       "sort_and_filter_sessions": "排序和筛选会话",
       "sort_by": "排序方式",
       "sort_created_newest": "创建时间（最新）",
@@ -13164,7 +13162,6 @@
       "untagged": "+ 无标签",
       "untagged_2": "未标记",
       "untagged_only": "仅无标签",
-      "will_be_moved_to_older_sessions": "将被移至较早的会话。",
       "yesterday": "昨天",
       "new_incognito_chat": "新建隐身对话",
       "new_temporary_chat": "新建临时对话",
@@ -13335,7 +13332,11 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "普通",
       "kind_section_mate": "来自队友",
-      "filter_crew_description": "只显示 Ultra Mode 对话"
+      "filter_crew_description": "只显示 Ultra Mode 对话",
+      "skip_running_sessions_other": "跳过 {{n}} 个运行中的会话",
+      "cleanup_move_count_other": "{{n}} 个会话将被移至较早的会话。",
+      "show_sessions_count_other": "显示 {{n}} 个会话",
+      "hide_sessions_count_other": "隐藏 {{n}} 个会话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
