@@ -293,7 +293,7 @@ agent the sweep before had left inside its window.
 When the memory floor is enabled, admission also reserves memory for the next
 start, for claimed starts awaiting registration, and for workers the reaper has
 not measured twice yet, each in full at the price it was admitted at (a row no
-sweep can measure, on macOS or Windows, settles two sweep intervals after its
+sweep can measure, on Windows, settles two sweep intervals after its
 session first answered); a settled worker owes nothing, because its memory is
 already in the free-memory reading. A dedicated start is priced at what such a runtime
 settles at: the learned settled RSS of its agent once three runs have measured

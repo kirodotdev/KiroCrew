@@ -302,7 +302,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         GATEWAY_MALLOC_ARENA_MAX MALLOC_ARENA_MAX_ENV _glibc_mallopt MallocArenaCap
         limit_malloc_arenas log_malloc_arena_cap trim_heap_if_needed HeapTrimMaintainer
         proc_peak_rss_bytes _FD_DIRS count_open_fds proc_rss_bytes_for_pid _SUBTREE_MAX_PROCS
-        proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
+        proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb _darwin_subtree_sample proc_subtree_sample
         proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib

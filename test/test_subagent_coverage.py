@@ -446,6 +446,7 @@ class TestCpuJiffies:
     """
 
     def test_subtree_skips_already_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False)  # the /proc path
         monkeypatch.setattr(sa.platform_compat, "_proc_cpu_jiffies", lambda pid: 5)
         monkeypatch.setattr(
             sa.platform_compat, "_proc_children", lambda pid: [1] if pid == 1 else []

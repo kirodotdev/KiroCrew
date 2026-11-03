@@ -879,6 +879,7 @@ class TestSubtreeCpuJiffies:
         # tree: 1 -> [2, 3]; 2 -> [4]
         children = {1: [2, 3], 2: [4], 3: [], 4: []}
         jiffies = {1: 100, 2: 50, 3: 25, 4: 10}
+        monkeypatch.setattr(sub.platform_compat, "IS_MACOS", False)  # the /proc path
         monkeypatch.setattr(
             sub.platform_compat, "_proc_children", lambda pid: children.get(pid, [])
         )
