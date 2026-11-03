@@ -22,7 +22,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import shutdown_event
+from kiro_crew import host_timezone, shutdown_event
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.schedule import _TIMER_POLL_SECS, next_wake_secs
 from kiro_crew.cron_service.store import CronStoreBusy
@@ -164,6 +164,10 @@ def _tick_scan_locked(self: CronService) -> list[CronJob]:
     the (re)arm back to the bound event loop thread-safely (see
     :meth:`_arm_timer`) — no caller-side drain is required.
     """
+    # A laptop that travels changes zone under a running gateway; this re-read
+    # is what a "local" schedule follows. Here because this is the tick's one
+    # worker-thread hop: the read is filesystem (or registry) I/O.
+    host_timezone.refresh_host_timezone()
     drained: list[str] = []
     try:
         with self._file_lock():

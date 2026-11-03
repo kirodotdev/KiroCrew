@@ -169,9 +169,17 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
     job that way (no replace-in-place), so a run in flight only removes a dead
     one.
     """
-    from kiro_crew.cron_service.schedule import get_local_tz
+    from kiro_crew.cron_service.schedule import LOCAL_TIMEZONE, default_timezone_name
 
-    tz = schedules.get("timezone") or get_local_tz()[0]
+    # Every cadence takes the zone the record names, else the default zone's NAME
+    # ("local" unless one is configured), so it keeps following the computer when
+    # it travels. One exception: while that default is "local", an untouched
+    # cadence saved before "local" became the default (on UTC, or with no zone)
+    # keeps that zone, id and run history. A cadence explicitly set to UTC and
+    # then cleared looks the same, so it stays on UTC until its time changes.
+    named_tz = schedules.get("timezone") or ""
+    tz = named_tz or default_timezone_name()
+    keeps_legacy_zone = not named_tz and tz == LOCAL_TIMEZONE
     for cadence in member_goals.CADENCES:
         jobs = await reminder_jobs(crons, slug, cadence)
         wanted = bool(schedules.get(cadence))
@@ -183,7 +191,10 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
             and jobs[0].enabled
             and jobs[0].schedule.kind == "cron"
             and jobs[0].schedule.cron_expr == expr
-            and jobs[0].timezone == tz
+            and (
+                jobs[0].timezone == tz
+                or (keeps_legacy_zone and (jobs[0].timezone or "") in ("UTC", ""))
+            )
             and jobs[0].name == name
         ):
             continue

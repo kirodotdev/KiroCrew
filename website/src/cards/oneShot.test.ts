@@ -3,7 +3,8 @@
  * run time reads in the schedule's own zone.
  */
 import { describe, it, expect } from 'vitest'
-import { fmtOneShot, isOneShot, oneShotRunAt, oneShotWhen, wallTimeIn } from './oneShot'
+import { cardTimezone, fmtOneShot, isOneShot, oneShotRunAt, oneShotWhen, wallTimeIn } from './oneShot'
+import { cronZonesQuery } from '../api/cronZonesQuery'
 import { cardChanges } from './cardRegistry'
 
 const NOW = Date.parse('2026-10-03T15:05:00Z') // Sat Oct 3, 8:05 AM PDT
@@ -90,3 +91,20 @@ describe('a bare wall time is read in the card zone, not the reader\'s', () => {
   })
 })
 
+
+describe('cardTimezone', () => {
+  it('prefers the zone the gateway resolved', () => {
+    expect(cardTimezone({ kind: 'schedule.create', params: { timezone: 'local' }, timezone: 'Asia/Shanghai' })).toBe('Asia/Shanghai')
+  })
+
+  it("never hands 'local' to Intl, which cannot format in it", () => {
+    expect(cardTimezone({ kind: 'schedule.create', params: { timezone: 'local' } })).toBeUndefined()
+    expect(cardTimezone({ kind: 'schedule.create', params: { timezone: LA } })).toBe(LA)
+  })
+})
+
+describe('cronZonesQuery', () => {
+  it("lives under ['crons'], so a cron refresh frame invalidates it", () => {
+    expect(cronZonesQuery.queryKey[0]).toBe('crons')
+  })
+})

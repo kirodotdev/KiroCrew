@@ -7644,7 +7644,11 @@
       "runs_as_custom_agent_hint": "S’exécute dans un chat à part, avec la mémoire partagée.",
       "runs_as_crewmate_hint": "S’exécute dans le chat de {{name}}, avec la mémoire et les fichiers de {{name}}. Aussi listé sur sa page Coéquipiers.",
       "runs_as_fixed": "Une tâche ne peut pas passer d’agent personnalisé à coéquipier, ni l’inverse, après sa création.",
-      "runs_as_no_crewmates": "Aucun coéquipier pour le moment. Ajoutes-en un sur la page Coéquipiers."
+      "runs_as_no_crewmates": "Aucun coéquipier pour le moment. Ajoutes-en un sur la page Coéquipiers.",
+      "timezone_local": "Heure locale (suit cet ordinateur, actuellement {{zone}})",
+      "timezone_local_undetected": "Heure locale (fuseau non détecté, UTC utilisé)",
+      "timezone_default": "Fuseau par défaut",
+      "timezone_default_unavailable": "Impossible de charger le fuseau horaire par défaut. Une tâche laissée sur Fuseau par défaut l’utilise quand même."
     },
     "jobLogsView": {
       "cancel": "Annuler",
@@ -21040,6 +21044,9 @@
       "too_many_pixels": "{{name}} fait {{width}} × {{height}} pixels, au-delà de la limite de {{max}} mégapixels pour convertir une photo HEIC ici. Exporte un JPEG plus petit et joins plutôt ce fichier.",
       "convert_failed": "Ce navigateur n'a pas pu convertir {{name}} en JPEG. Recharge la page et réessaie, ou exporte-la en JPEG et joins plutôt ce fichier.",
       "cannot_fit": "Impossible de réduire {{name}} sous {{max}} en JPEG. Exporte un JPEG plus petit et joins plutôt ce fichier."
+    },
+    "tz": {
+      "local_zone_caption": "Heure locale · {{zone}}"
     }
   },
   "memoryV2": {

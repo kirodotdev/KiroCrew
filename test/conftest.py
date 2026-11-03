@@ -951,6 +951,24 @@ def _reset_overlay_refresher():
 
 
 @pytest.fixture(autouse=True)
+def _undetected_host_timezone():
+    """Give every test a host zone that was never detected (``kiro_crew.host_timezone``).
+
+    An unset cron or config zone follows the host's zone, which is the zone of
+    whichever machine runs the suite. Undetected, it resolves to UTC on every
+    machine, as an unset zone did before ``local`` existed. A test about the
+    host zone publishes one (``publish_host_timezone``) or detects it
+    (``detect_host_timezone``, which this does not touch).
+    """
+    from kiro_crew import host_timezone
+
+    host_timezone.reset_host_timezone()
+    host_timezone.freeze_host_timezone("")
+    yield
+    host_timezone.reset_host_timezone()
+
+
+@pytest.fixture(autouse=True)
 def _reset_creator_titles():
     """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
 

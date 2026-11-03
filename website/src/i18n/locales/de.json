@@ -7483,7 +7483,11 @@
       "runs_as_custom_agent_hint": "Läuft in einem eigenen Chat, mit gemeinsamem Gedächtnis.",
       "runs_as_crewmate_hint": "Läuft im Chat von {{name}}, mit dem eigenen Gedächtnis und den eigenen Dateien von {{name}}. Auch auf der Crewmates-Seite aufgeführt.",
       "runs_as_fixed": "Ein Job kann nach dem Erstellen nicht zwischen eigenem Agenten und Crew-Kamerad wechseln.",
-      "runs_as_no_crewmates": "Noch keine Crew-Kameraden. Füge einen auf der Crewmates-Seite hinzu."
+      "runs_as_no_crewmates": "Noch keine Crew-Kameraden. Füge einen auf der Crewmates-Seite hinzu.",
+      "timezone_local": "Lokal (folgt diesem Computer, aktuell {{zone}})",
+      "timezone_local_undetected": "Lokal (Zone nicht erkannt, läuft in UTC)",
+      "timezone_default": "Standardzone",
+      "timezone_default_unavailable": "Die Standardzeitzone konnte nicht geladen werden. Ein Auftrag mit Standardzone verwendet sie trotzdem."
     },
     "jobLogsView": {
       "cancel": "Abbrechen",
@@ -20625,6 +20629,9 @@
       "too_many_pixels": "{{name}} hat {{width}} × {{height}} Pixel und liegt damit über der Grenze von {{max}} Megapixeln für die Umwandlung eines HEIC-Fotos hier. Exportiere ein kleineres JPEG und hänge stattdessen das an.",
       "convert_failed": "Dieser Browser konnte {{name}} nicht in JPEG umwandeln. Lade die Seite neu und versuche es noch einmal, oder exportiere es als JPEG und hänge stattdessen das an.",
       "cannot_fit": "{{name}} ließ sich als JPEG nicht unter {{max}} verkleinern. Exportiere ein kleineres JPEG und hänge stattdessen das an."
+    },
+    "tz": {
+      "local_zone_caption": "Lokal · {{zone}}"
     }
   },
   "memoryV2": {

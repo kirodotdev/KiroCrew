@@ -7644,7 +7644,11 @@
       "runs_as_custom_agent_hint": "Roda em um chat próprio, com a memória compartilhada.",
       "runs_as_crewmate_hint": "Roda no chat de {{name}}, com a memória e os arquivos de {{name}}. Também aparece na página de Colegas.",
       "runs_as_fixed": "Uma tarefa não pode trocar entre agente personalizado e colega depois de criada.",
-      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas."
+      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas.",
+      "timezone_local": "Hora local (segue este computador, agora {{zone}})",
+      "timezone_local_undetected": "Hora local (fuso não detectado, usa UTC)",
+      "timezone_default": "Fuso padrão",
+      "timezone_default_unavailable": "Não foi possível carregar o fuso horário padrão. Uma tarefa deixada em Fuso padrão continua a usá-lo."
     },
     "jobLogsView": {
       "cancel": "Cancelar",
@@ -21040,6 +21044,9 @@
       "too_many_pixels": "{{name}} tem {{width}} × {{height}} pixels, acima do limite de {{max}} megapixels para converter uma foto HEIC aqui. Exporte um JPEG menor e anexe esse arquivo no lugar.",
       "convert_failed": "Este navegador não conseguiu converter {{name}} para JPEG. Recarregue a página e tente de novo, ou exporte-a como JPEG e anexe esse arquivo no lugar.",
       "cannot_fit": "Não foi possível reduzir {{name}} para menos de {{max}} como JPEG. Exporte um JPEG menor e anexe esse arquivo no lugar."
+    },
+    "tz": {
+      "local_zone_caption": "Hora local · {{zone}}"
     }
   },
   "memoryV2": {

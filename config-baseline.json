@@ -11094,7 +11094,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Timezone",
-      "help": "IANA timezone name (e.g. 'America/Los_Angeles'). Used to display cron schedules in local time.",
+      "help": "IANA timezone name (e.g. 'America/Los_Angeles'), or 'local' to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none and for the agent's sense of 'now'. Empty means 'local'.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

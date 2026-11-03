@@ -63,13 +63,16 @@ from kiro_crew.validation import (
 
 def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     """Human-readable schedule description (CLI shows full date for 'at' jobs)."""
+    from kiro_crew.cron import resolve_timezone_name
 
     if not isinstance(schedule, CronSchedule):
         return str(schedule)
     if schedule.kind == "at" and schedule.at_ts:
         try:
             if tz_name:
-                dt = datetime.fromtimestamp(schedule.at_ts, ZoneInfo(tz_name))
+                dt = datetime.fromtimestamp(
+                    schedule.at_ts, ZoneInfo(resolve_timezone_name(tz_name) or "UTC")
+                )
                 return f"at {dt:%Y-%m-%d %H:%M %Z}"
             _, configured_tz = get_local_tz()
             dt = datetime.fromtimestamp(schedule.at_ts, configured_tz)
@@ -188,6 +191,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     guard: a job that would be refused at every wake is refused once, here,
     with a non-zero exit, instead of being stored and silently never running.
     """
+    from kiro_crew.cron import resolve_timezone_name
+
     every = getattr(args, "every", None)
     cron_expr = (getattr(args, "cron_expr", None) or "").strip() or None
     at_raw = str(getattr(args, "at", None) or "").strip()
@@ -310,7 +315,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             if at_ts < _time.time():
                 # Render in the zone parse_time_string resolved the value in,
                 # so the refusal echoes a wall clock the operator recognises.
-                shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+                shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
                 local = datetime.fromtimestamp(at_ts, shown_tz)
                 _cron_add_fail(
                     f"resolved time {local.strftime('%Y-%m-%d %I:%M %p %Z')} is in the past"
@@ -535,6 +540,7 @@ def _cron(args: argparse.Namespace) -> None:
 
 def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
+    from kiro_crew.cron import job_zone_name
 
     svc = CronService(base_dir=config_dir())
 
@@ -546,7 +552,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             return
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
-            sched = _format_schedule(j.schedule, tz_name=j.timezone or "")
+            sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             print(f"  {status} {j.id}  {j.name}  ({sched})  {j.message[:60]}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat

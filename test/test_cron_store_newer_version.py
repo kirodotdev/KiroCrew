@@ -73,7 +73,7 @@ def test_a_store_from_this_version_round_trips_unchanged(tmp_path, monkeypatch):
     before = path.read_bytes()
     CronService(base_dir=tmp_path).enable_job(a, enabled=True)
     assert path.read_bytes() == before
-    assert json.loads(before)["version"] == 2
+    assert json.loads(before)["version"] == 3
 
 
 def test_a_known_field_this_build_changes_is_written_with_its_new_value(tmp_path, monkeypatch):

@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from kiro_crew.config.loader import read_local_secret
-from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz
+from kiro_crew.cron import compute_next_run_ts, format_schedule, get_local_tz, job_zone_name
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -250,7 +250,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             "name": _sanitize(job.name or "")[:_MSG_PREVIEW_LEN],
             "mode": _job_kind(job),
             "enabled": bool(getattr(job, "enabled", True)),
-            "schedule": format_schedule(job.schedule, tz_name=job.timezone or ""),
+            "schedule": format_schedule(job.schedule, tz_name=job_zone_name(job)),
             "every_secs": getattr(job.schedule, "every_secs", None),
             "minimal_context": bool(job.minimal_context),
             "persistent_session": bool(job.persistent_session),
@@ -313,7 +313,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
     tz_name, local_tz = get_local_tz()
     for j in jobs:
         status = "✅ active" if j.enabled else "⏸️ paused"
-        sched = format_schedule(j.schedule, tz_name=j.timezone or tz_name)
+        sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
         san_msg = _sanitize(j.message)
@@ -365,7 +365,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
     tz_name, local_tz = get_local_tz()
     for j in jobs:
         status = "✅" if j.enabled else "⏸️"
-        sched = format_schedule(j.schedule, tz_name=j.timezone or tz_name)
+        sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
         san_sched = _sanitize(sched)

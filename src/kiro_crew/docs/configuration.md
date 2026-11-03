@@ -754,7 +754,7 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `auto_update` | Where the install can apply updates, `true` installs them and restarts the gateway; `false` only notifies. When work is running, a checkout waits before applying, while the `cli.sh` managed venv builds the new version alongside and waits only to restart. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
-| `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
+| `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"`, or `"local"` to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none, and for the agent's "now" | `""` (same as `"local"`) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
 ## Running a custom speech-to-text model

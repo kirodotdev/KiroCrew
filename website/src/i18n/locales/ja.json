@@ -7322,7 +7322,11 @@
       "runs_as_custom_agent_hint": "専用のチャットで、共有メモリを使って実行されます。",
       "runs_as_crewmate_hint": "{{name}} のチャットで、{{name}} 自身のメモリとファイルを使って実行されます。クルーメイトページにも表示されます。",
       "runs_as_fixed": "ジョブは作成後にカスタムエージェントとクルーメイトを切り替えられません。",
-      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。"
+      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。",
+      "timezone_local": "ローカル（このコンピューターに追従、現在 {{zone}}）",
+      "timezone_local_undetected": "ローカル（タイムゾーン未検出のため UTC）",
+      "timezone_default": "既定のタイムゾーン",
+      "timezone_default_unavailable": "既定のタイムゾーンを読み込めませんでした。「既定のタイムゾーン」のままのジョブは、それを使います。"
     },
     "jobLogsView": {
       "cancel": "キャンセル",
@@ -20210,6 +20214,9 @@
       "too_many_pixels": "{{name}} は {{width}} × {{height}} ピクセルで、ここで HEIC 写真を変換できる上限 {{max}} メガピクセルを超えています。より小さい JPEG を書き出して添付してください。",
       "convert_failed": "このブラウザーでは {{name}} を JPEG に変換できませんでした。ページを再読み込みしてもう一度試すか、JPEG として書き出してそのファイルを添付してください。",
       "cannot_fit": "{{name}} を JPEG で {{max}} 未満に縮小できませんでした。より小さい JPEG を書き出して添付してください。"
+    },
+    "tz": {
+      "local_zone_caption": "ローカル · {{zone}}"
     }
   },
   "memoryV2": {
