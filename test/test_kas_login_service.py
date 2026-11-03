@@ -8,6 +8,7 @@ scripted fake aiohttp session, so no test touches the real auth service.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -965,6 +966,156 @@ async def test_poll_oidc_multi_profile_picks_first(tmp_path, monkeypatch):
     }
     saved = TokenStore(tmp_path).resolve()
     assert saved is not None and saved.profile_arn == "arn:one"
+
+
+_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:305277579777:profile/W9XPAPWM3D77"
+
+
+def _page(profiles: list[dict], next_token=None) -> _FakeResp:
+    payload: dict = {"profiles": profiles}
+    if next_token is not None:
+        payload["nextToken"] = next_token
+    return _FakeResp(200, payload)
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_follows_next_token_past_an_empty_first_page(tmp_path, monkeypatch):
+    """A first page with no profiles but a nextToken is not "no profiles".
+
+    kiro-cli follows the paginator to the end, so an account whose profile only
+    appears on page 2 signs in there; Crew must store that profile, not fail.
+    """
+    service, session = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-pg", "refreshToken": "rt-pg", "expiresIn": 3600}),
+            _page([], next_token="tok-1"),
+            _page([{"arn": _PROFILE_ARN, "profileName": "Kiro"}]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://d-90675371ec.awsapps.com/start"
+    )
+    result = await service.poll_device(begin["login_id"])
+    assert result == {"status": "authorized", "provider": "Enterprise"}
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None and saved.profile_arn == _PROFILE_ARN
+    first, second = session.calls_with_headers[-2:]
+    assert first[0] == second[0] == "https://management.us-east-1.kiro.dev/"
+    assert first[1] == {"maxResults": 10}
+    assert second[1] == {"maxResults": 10, "nextToken": "tok-1"}
+    assert second[2]["Authorization"] == "Bearer at-pg"
+
+
+@pytest.mark.asyncio
+async def test_list_available_profiles_merges_every_page():
+    session = _FakeSession(
+        [
+            _page([{"arn": "arn:a", "profileName": "A"}], next_token="t1"),
+            _page([], next_token="t2"),
+            _page([{"arn": "arn:b", "profileName": "B"}, {"arn": "arn:c"}]),
+        ]
+    )
+    listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert [p.arn for p in listing.profiles] == ["arn:a", "arn:b", "arn:c"]
+    assert listing.pages == 3
+    assert listing.url == "https://management.us-east-1.kiro.dev/"
+
+
+@pytest.mark.asyncio
+async def test_list_available_profiles_single_page_reads_one_page():
+    session = _FakeSession([_page([{"arn": "arn:a", "profileName": "A"}])])
+    listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert [p.arn for p in listing.profiles] == ["arn:a"]
+    assert listing.pages == 1
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_available_profiles_page_cap_stops_a_token_loop():
+    """A service that never stops handing out fresh tokens cannot hang sign-in."""
+    cap = control_plane._MAX_PAGES
+    # The other control plane refuses, so every host failed and the cap error is raised.
+    session = _FakeSession(
+        [_page([], next_token=f"t{i}") for i in range(cap)] + [_FakeResp(403, {"m": "no"})]
+    )
+    with pytest.raises(control_plane.ControlPlaneError, match=f"within {cap} pages"):
+        await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert len(session.calls) == cap + 1
+
+
+@pytest.mark.asyncio
+async def test_list_available_profiles_refuses_a_repeated_token():
+    session = _FakeSession(
+        [_page([], next_token="t1"), _page([], next_token="t2"), _page([], next_token="t1")]
+        + [_FakeResp(403, {"m": "no"})]
+    )
+    with pytest.raises(control_plane.ControlPlaneError, match="repeated a page token"):
+        await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert len(session.calls) == 4
+
+
+@pytest.mark.parametrize(
+    "second_page",
+    [
+        _FakeResp(500, {"message": "boom"}),
+        _FakeResp(200, {"nextToken": "t2"}),
+        _FakeResp(200, ["not", "an", "object"]),
+        _FakeResp(200, {"profiles": [], "nextToken": 7}),
+    ],
+    ids=["non-200", "no-profiles-list", "non-object", "non-string-token"],
+)
+@pytest.mark.asyncio
+async def test_poll_idc_bad_later_page_is_error_and_saves_nothing(
+    tmp_path, monkeypatch, second_page
+):
+    """A failure on page 2 fails the sign-in even though page 1 had a profile:
+    a partial listing is not trusted to be the caller's whole profile set."""
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-bad", "expiresIn": 3600}),
+            _page([{"arn": "arn:a", "profileName": "A"}], next_token="t1"),
+            second_page,
+            # The other control plane lists nothing, so the sign-in still ends in error.
+            _page([]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_zero_profiles_warning_names_region_host_pages_and_start_url(
+    tmp_path, monkeypatch, caplog
+):
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "secret-at", "refreshToken": "rt", "expiresIn": 3600}),
+            _page([], next_token="tok-1"),
+            _page([]),
+            # The other control plane, asked next, lists nothing either.
+            _page([]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.auth.service"):
+        assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    [record] = [r for r in caplog.records if "no available Kiro profiles" in r.getMessage()]
+    message = record.getMessage()
+    assert "IdC region us-east-1" in message
+    assert "control plane https://management.us-east-1.kiro.dev/" in message
+    assert "https://management.eu-central-1.kiro.dev/" in message
+    assert "3 page(s) read" in message
+    assert "start URL https://acme.awsapps.com/start" in message
+    assert "secret-at" not in caplog.text
+    assert "Bearer" not in caplog.text
 
 
 @pytest.mark.asyncio

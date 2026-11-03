@@ -11,7 +11,7 @@ pointed at ``Endpoint::cps_for_region``, AWS JSON 1.0 protocol, bearer auth):
     Content-Type: application/x-amz-json-1.0
     X-Amz-Target: AmazonCodeWhispererService.ListAvailableProfiles
     Authorization: Bearer <accessToken>
-    body: {"maxResults": ...}
+    body: {"maxResults": ..., "nextToken": <from the previous page, if any>}
   -> {"profiles": [{"arn": ..., "profileName": ...}, ...], "nextToken": ...}
 
 The host is the CPS deployment name under ``kiro.dev``, NOT the service id of the
@@ -36,9 +36,13 @@ from kiro_crew.auth.login.endpoints import USER_AGENT
 
 logger = logging.getLogger(__name__)
 
-# One page is plenty: the common enterprise case is a single profile, and callers
-# that see several pick the first (multi-profile selection is a documented follow-up).
+# Page size per request. The listing follows ``nextToken`` to the end like kiro-cli's
+# paginator does: the service may answer a page with no profiles and a token, and
+# stopping there would report zero profiles for an account that has one.
 _MAX_RESULTS = 10
+# Bound on pages per listing, so a service that keeps handing out fresh tokens
+# cannot hold a sign-in open. 20 pages of 10 is far beyond any real account.
+_MAX_PAGES = 20
 _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 
 # Control-plane (CPS) endpoints per region, mirroring kiro-cli's
@@ -68,6 +72,19 @@ class ControlPlaneError(Exception):
 class KiroProfile:
     arn: str
     profile_name: str
+
+
+@dataclass
+class ProfileListing:
+    """Every profile one listing returned, plus where and how it was read.
+
+    ``url`` and ``pages`` exist for diagnostics: an empty listing is reported with
+    the host that answered and how many pages it took to say so.
+    """
+
+    profiles: list[KiroProfile]
+    url: str
+    pages: int
 
 
 def control_plane_url(region: str) -> str:
@@ -105,46 +122,20 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
     return headers
 
 
-async def list_available_profiles(
-    access_token: str, *, region: str, session: aiohttp.ClientSession
-) -> list[KiroProfile]:
-    """Return the caller's Kiro profiles from the first control plane that has any.
+async def _profiles_page(
+    url: str, body: dict[str, object], headers: dict[str, str], session: aiohttp.ClientSession
+) -> tuple[list[KiroProfile], str | None]:
+    """One ``ListAvailableProfiles`` page: its profiles and the next page's token.
 
-    Every CPS host is asked, *region*'s own first, because the Identity Center region
-    does not name the control plane serving the profile (a us-east-1 instance can
-    hold an eu-central-1 profile). A host that refuses or answers malformed is skipped;
-    ControlPlaneError is raised only when every host did, since an IdC login without a
-    resolvable profile ARN is unusable. A transport error is not caught here.
+    The token is ``None`` when the listing is complete. Raises ControlPlaneError on
+    a non-200, an undecodable or malformed body, or a ``nextToken`` that is not a
+    string.
     """
-    urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
-    errors: list[ControlPlaneError] = []
-    for url in urls:
-        try:
-            profiles = await _list_profiles_at(url, access_token, session)
-        except ControlPlaneError as err:
-            logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
-            errors.append(err)
-            continue
-        if profiles:
-            return profiles
-    if len(errors) == len(urls):
-        raise errors[0]
-    return []
-
-
-async def _list_profiles_at(
-    url: str, access_token: str, session: aiohttp.ClientSession
-) -> list[KiroProfile]:
-    """One ``ListAvailableProfiles`` call to the CPS host *url*, first page only.
-
-    Raises ControlPlaneError on any non-200 or malformed body.
-    """
-    headers = cps_headers(_TARGET, access_token)
-    async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
+    async with session.post(url, json=body, headers=headers) as resp:
         if resp.status != 200:
-            body = await resp.text()
+            text = await resp.text()
             raise ControlPlaneError(
-                f"ListAvailableProfiles failed: HTTP {resp.status} {body[:500]}"
+                f"ListAvailableProfiles failed: HTTP {resp.status} {text[:500]}"
             )
         try:
             # content_type=None: AWS JSON 1.0 replies carry
@@ -158,6 +149,9 @@ async def _list_profiles_at(
     raw = data.get("profiles")
     if not isinstance(raw, list):
         raise ControlPlaneError("ListAvailableProfiles response has no 'profiles' list")
+    next_token = data.get("nextToken")
+    if next_token is not None and not isinstance(next_token, str):
+        raise ControlPlaneError("ListAvailableProfiles response has a non-string 'nextToken'")
     profiles: list[KiroProfile] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -165,4 +159,69 @@ async def _list_profiles_at(
         arn = entry.get("arn")
         if isinstance(arn, str) and arn:
             profiles.append(KiroProfile(arn=arn, profile_name=str(entry.get("profileName") or "")))
-    return profiles
+    return profiles, next_token or None
+
+
+async def list_available_profiles(
+    access_token: str, *, region: str, session: aiohttp.ClientSession
+) -> ProfileListing:
+    """Return the caller's Kiro profiles from the first control plane that has any.
+
+    Every CPS host is asked, *region*'s own first, because the Identity Center region
+    does not name the control plane serving the profile (a us-east-1 instance can
+    hold an eu-central-1 profile). Each host's listing follows ``nextToken`` to the
+    end (:func:`_list_profiles_at`). A host that refuses, answers malformed or does
+    not finish its pages is skipped; ControlPlaneError is raised only when every host
+    did, since an IdC login without a resolvable profile ARN is unusable. A transport
+    error is not caught here. When every answering host listed none, the empty result
+    names those hosts and the pages they took, for the diagnostic log.
+    """
+    urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
+    errors: list[ControlPlaneError] = []
+    empty: list[ProfileListing] = []
+    for url in urls:
+        try:
+            listing = await _list_profiles_at(url, access_token, session)
+        except ControlPlaneError as err:
+            logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
+            errors.append(err)
+            continue
+        if listing.profiles:
+            return listing
+        empty.append(listing)
+    if len(errors) == len(urls):
+        raise errors[0]
+    return ProfileListing(
+        profiles=[],
+        url=", ".join(listing.url for listing in empty),
+        pages=sum(listing.pages for listing in empty),
+    )
+
+
+async def _list_profiles_at(
+    url: str, access_token: str, session: aiohttp.ClientSession
+) -> ProfileListing:
+    """Every Kiro profile the CPS host *url* lists, following ``nextToken`` to the end.
+
+    Raises ControlPlaneError on any non-200 or malformed page, on a token the
+    service already handed out (a loop), and after :data:`_MAX_PAGES` pages: a
+    partial listing is never taken for the caller's whole profile set.
+    """
+    headers = cps_headers(_TARGET, access_token)
+    profiles: list[KiroProfile] = []
+    seen_tokens: set[str] = set()
+    next_token: str | None = None
+    for page in range(1, _MAX_PAGES + 1):
+        body: dict[str, object] = {"maxResults": _MAX_RESULTS}
+        if next_token is not None:
+            body["nextToken"] = next_token
+        page_profiles, next_token = await _profiles_page(url, body, headers, session)
+        profiles.extend(page_profiles)
+        if next_token is None:
+            return ProfileListing(profiles=profiles, url=url, pages=page)
+        if next_token in seen_tokens:
+            raise ControlPlaneError(
+                f"ListAvailableProfiles repeated a page token after {page} page(s)"
+            )
+        seen_tokens.add(next_token)
+    raise ControlPlaneError(f"ListAvailableProfiles did not finish within {_MAX_PAGES} pages")
