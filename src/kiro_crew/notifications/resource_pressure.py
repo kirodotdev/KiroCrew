@@ -58,7 +58,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew.notifications.bus import NotificationPayload
+from kiro_crew.notifications.bus import _MAX_BODY_LEN, NotificationPayload
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
     POSTURE_CRITICAL,
@@ -96,6 +96,10 @@ CRITICAL_REALERT_SECS = 1800.0
 # this is already pathological and forfeits its sample.
 PROBE_TIMEOUT_SECS = 2.0
 
+# The most slice OOM reports held for the loop. Older ones are counted, not
+# kept, so probes that keep finishing late cannot grow the stash without end.
+MAX_PENDING_OOM_REPORTS = 50
+
 
 def _fmt_load(status: ResourceStatus) -> str:
     if status.load_per_cpu is None:
@@ -130,9 +134,12 @@ class ResourcePressureNotifier:
         self._critical_alerted = False
         self._tight_alerted = False
         self._last_critical_push = 0.0
-        # Slice OOM report captured by the worker thread, consumed (and
+        # Slice OOM reports captured by the worker thread, consumed (and
         # cleared) on the loop side so the bus is only touched from the loop.
-        self._slice_oom_msg: str | None = None
+        # The loop takes them only after a probe returned in time, when no
+        # worker is running, so the two sides never touch the list at once.
+        self._slice_oom_reports: list[str] = []
+        self._slice_oom_dropped = 0
 
     async def maybe_sample(self) -> None:
         """Probe (off-loop, bounded) and evaluate if the interval elapsed.
@@ -166,9 +173,8 @@ class ResourcePressureNotifier:
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug("resource-pressure probe timed out; sample skipped")
                 return
-            oom_msg, self._slice_oom_msg = self._slice_oom_msg, None
-            if oom_msg:
-                self._push_slice_oom(oom_msg)
+            if self._slice_oom_reports or self._slice_oom_dropped:
+                self._deliver_slice_oom()
             self.observe(status, now)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
@@ -183,11 +189,22 @@ class ResourcePressureNotifier:
             # the bus — "a random subagent died" must be diagnosable from the
             # dashboard, not just the log file. Never raises; reads a handful
             # of cgroup files.
+            #
+            # A report is only ever added to, never replaced: the check
+            # reports each kill once, and a probe that timed out leaves its
+            # report here unread, so the next tick's (usually empty) result
+            # must not overwrite it before the loop pushes it.
             try:
-                self._slice_oom_msg = check_agents_slice_pressure()
+                msg = check_agents_slice_pressure()
             except Exception:
-                self._slice_oom_msg = None
+                msg = None
                 logger.debug("agents-slice OOM check failed", exc_info=True)
+            if msg:
+                self._slice_oom_reports.append(msg)
+                excess = len(self._slice_oom_reports) - MAX_PENDING_OOM_REPORTS
+                if excess > 0:
+                    del self._slice_oom_reports[:excess]
+                    self._slice_oom_dropped += excess
             # Same tick: drop clean page cache on the agents slice before it
             # holds the slice at memory.high. The decision is a few file
             # reads; the writes run in their own thread, so this returns at
@@ -242,6 +259,42 @@ class ResourcePressureNotifier:
 
     # ── note builders ────────────────────────────────────────────────────
 
+    def _deliver_slice_oom(self) -> None:
+        """Push the waiting OOM reports as notes that each fit the body limit.
+
+        A report leaves the stash only once the note carrying it was pushed:
+        a push that fails leaves it and every later one for the next tick.
+        """
+        reports, self._slice_oom_reports = self._slice_oom_reports, []
+        dropped, self._slice_oom_dropped = self._slice_oom_dropped, 0
+        lines = [r[:_MAX_BODY_LEN] for r in reports]
+        if dropped:
+            lines.insert(0, f"{dropped} earlier OOM report(s) were not kept.")
+        batches: list[list[str]] = []
+        for line in lines:
+            if batches and len("\n".join([*batches[-1], line])) <= _MAX_BODY_LEN:
+                batches[-1].append(line)
+            else:
+                batches.append([line])
+        sent = 0
+        try:
+            for batch in batches:
+                self._push_slice_oom("\n".join(batch))
+                sent += len(batch)
+        except Exception:
+            # The dropped-count line is first in the first batch, so it is
+            # either sent or put back with the rest.
+            unsent = lines[sent:]
+            if dropped and sent == 0:
+                unsent = unsent[1:]
+                self._slice_oom_dropped += dropped
+            self._slice_oom_reports[:0] = unsent
+            excess = len(self._slice_oom_reports) - MAX_PENDING_OOM_REPORTS
+            if excess > 0:
+                del self._slice_oom_reports[:excess]
+                self._slice_oom_dropped += excess
+            raise
+
     def _push_slice_oom(self, message: str) -> None:
         """One note per detected OOM batch inside the agents slice.
 
@@ -262,11 +315,7 @@ class ResourcePressureNotifier:
         )
 
     def _push_critical(self, status: ResourceStatus, *, realert: bool = False) -> None:
-        title = (
-            "Host memory still critically low"
-            if realert
-            else "Host memory critically low"
-        )
+        title = "Host memory still critically low" if realert else "Host memory critically low"
         self._bus.push(
             NotificationPayload(
                 source="system",
