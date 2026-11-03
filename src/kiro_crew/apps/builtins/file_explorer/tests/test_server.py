@@ -901,6 +901,45 @@ class TestHTTPHandler:
         assert responses[0][1]["binary"] is True
         assert responses[0][1]["content"] == ""
 
+    def test_read_text_file_over_safe_read_cap_returns_truncated_prefix(self, tmp_tree):
+        """A text file larger than the 50 MB whole-file read cap must come back
+        as its first max_bytes bytes with truncated=True, not a 500."""
+        from kiro_crew.hooks import MAX_FILE_BYTES
+
+        line = b"2026-11-03 INFO an ordinary log line\n"
+        big = tmp_tree / "huge.log"
+        big.write_bytes(line * (MAX_FILE_BYTES // len(line) + 10))
+        # Go through do_GET so an escaping exception surfaces as the route's
+        # real reply (its catch-all answers 500) rather than a test error.
+        handler: Any = server.FileExplorerHandler.__new__(server.FileExplorerHandler)
+        handler.path = f"/read?path={big}&max_bytes=1024"
+        handler.headers = {}
+        responses: list = []
+        handler._json = lambda code, payload: responses.append((code, payload))
+        with patch.object(server, "verify_proxy_request", lambda *a, **k: True):
+            handler.do_GET()
+        assert len(responses) == 1
+        code, body = responses[0]
+        assert code == 200, (code, body)
+        assert body["binary"] is False
+        assert body["truncated"] is True
+        assert body["content"] == (line * (1024 // len(line) + 1))[:1024].decode()
+
+    def test_search_python_skips_file_over_safe_read_cap(self, tmp_tree):
+        """The python search engine skips a file over the 50 MB read cap and
+        still returns matches from the other files."""
+        from kiro_crew.hooks import MAX_FILE_BYTES, FileTooLargeError
+
+        line = b"hello from a huge log\n"
+        (tmp_tree / "huge.log").write_bytes(line * (MAX_FILE_BYTES // len(line) + 10))
+        found: object
+        try:
+            results = server._search_python(tmp_tree, "hello", "", "")
+            found = [Path(r["file"]).name for r in results]
+        except FileTooLargeError as exc:  # the escaping error is the wrong value under test
+            found = exc
+        assert found == ["file.txt"]
+
 
 class TestKirocrewGranularSensitive:
     """Regression tests for .kirocrew granular sensitive path policy.
