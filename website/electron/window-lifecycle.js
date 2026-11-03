@@ -138,6 +138,9 @@ function createWindowLifecycle(options) {
   if (typeof mintLocalToken !== "function") {
     throw new Error("createWindowLifecycle: mintLocalToken is required");
   }
+  // Shared by every window, and kept in memory only, so a "Don't ask again"
+  // ends when the app quits.
+  const rememberedEditorTargets = new Set();
   if (typeof fetchRemoteToken !== "function") {
     throw new Error("createWindowLifecycle: fetchRemoteToken is required");
   }
@@ -575,6 +578,19 @@ function createWindowLifecycle(options) {
     const windowOpenHandler = createWindowOpenHandler({
       openExternal: (url) => shell.openExternal(url),
       getAppOrigin: () => windowBackendUrl,
+      confirmOpen: async (url) => {
+        const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+          type: "question",
+          buttons: ["Open", "Cancel"],
+          defaultId: 0,
+          cancelId: 1,
+          message: "Open this link in your editor?",
+          detail: url,
+          checkboxLabel: "Don't ask again for this machine until Kiro Crew quits",
+        });
+        return { open: response === 0, remember: checkboxChecked === true };
+      },
+      rememberedEditorTargets,
       log: glog,
     });
     // An allowed same-origin window.open (the session pop-out) is a child window

@@ -12,6 +12,7 @@ import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLin
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { kindsRequestCount, kindsRequestPaths, kindsResponse, probedPaths, stubPathKinds } from './pathKindStub'
 import { api } from '../api/client'
+import { setHostElectronReader } from '../lib/hostRelay'
 
 // The chip's reveal hint is gated on the shared reveal gate (branding.directLocal
 // AND branding.desktopLauncher): where no reveal can land, shift+click copies the
@@ -208,6 +209,53 @@ describe('MarkdownRenderer XSS sanitization', () => {
       const a = container.querySelector('a')
       expect(a).not.toBeNull()
       expect(a!.getAttribute('href')).toBe(url)
+    })
+  })
+
+  describe('editor link clicks', () => {
+    const url = 'vscode://vscode-remote/ssh-remote+dev-box/home/me/a.ts:10'
+    let openSpy: ReturnType<typeof vi.spyOn>
+    const asPane = (desktop: boolean) => {
+      vi.stubGlobal('top', {})
+      setHostElectronReader(() => desktop)
+    }
+
+    beforeEach(() => {
+      openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    })
+    afterEach(() => {
+      openSpy.mockRestore()
+      vi.unstubAllGlobals()
+      setHostElectronReader(null)
+    })
+
+    it('navigates in place on a top-level page', () => {
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      const a = container.querySelector('a')!
+      expect(fireEvent.click(a)).toBe(true)
+      expect(openSpy).not.toHaveBeenCalled()
+      expect(a.getAttribute('target')).toBeNull()
+    })
+
+    it('navigates in place in a pane a browser hub frames', () => {
+      asPane(false)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      expect(fireEvent.click(container.querySelector('a')!)).toBe(true)
+      expect(openSpy).not.toHaveBeenCalled()
+    })
+
+    it('opens through window.open in a desktop-app pane, where in-place navigation is blocked', () => {
+      asPane(true)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      expect(fireEvent.click(container.querySelector('a')!)).toBe(false)
+      expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
+    })
+
+    it('leaves a modified click to the browser in a desktop-app pane', () => {
+      asPane(true)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      fireEvent.click(container.querySelector('a')!, { metaKey: true })
+      expect(openSpy).not.toHaveBeenCalled()
     })
   })
 
