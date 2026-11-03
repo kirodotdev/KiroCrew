@@ -11866,7 +11866,7 @@
         "wants_browser": "{{productName}} {{browser}} इस्तेमाल करना चाहता है",
         "you_are_in_control": "नियंत्रण तुम्हारे पास है",
         "recording_load_failed": "इस टर्न की रिकॉर्डिंग लोड नहीं हो सकी।",
-        "recording_retry": "पुन: प्रयास करें"
+        "recording_retry": "फिर से कोशिश करो"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
