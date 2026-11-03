@@ -1717,7 +1717,9 @@ class TestSendMessageToolChannelType:
         """Unchanged: the notification-only path leaves over no transport, so the
         per-transport allowlist has nothing to rule on."""
         with _tool_mcp_core(
-            strict="", lenient="dashboard:chat-1-1", post={"ok": True, "delivered_to": "notification"}
+            strict="",
+            lenient="dashboard:chat-1-1",
+            post={"ok": True, "delivered_to": "notification"},
         ) as m:
             out = _call_tool({"text": "hi"})
             assert out == "Notification delivered."
