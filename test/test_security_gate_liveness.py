@@ -679,7 +679,9 @@ def _url_payload_command(n: int) -> str:
 #: owner-gated reader, plus the optional ``reveal_id`` record key in
 #: ``credential_sources``. Nothing is relaxed: redaction still replaces every
 #: value in every saved copy, channel, log and model replay.
-_PACKAGE_LINE_BUDGET = 34_522
+#: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
+#: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_523
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
