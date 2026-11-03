@@ -62,7 +62,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Bundled defaults.json (fallback when no project-dir)
@@ -73,7 +73,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(bundled.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Installed agent config (always check for mcpServers)
