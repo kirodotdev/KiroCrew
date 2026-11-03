@@ -3,7 +3,7 @@ refusal.
 """
 
 import json
-import time
+import threading
 import types
 from unittest.mock import AsyncMock
 
@@ -88,21 +88,31 @@ class TestAcpClientToolAudit:
         assert reached == [True]
 
     @pytest.mark.asyncio
-    async def test_hung_backend_times_out_and_is_swallowed(self, monkeypatch):
+    async def test_hung_backend_times_out_and_is_swallowed(self, monkeypatch, caplog):
         # A wedged SEL backend must not stall tool dispatch: the wait_for bound
         # raises TimeoutError (caught) so the coroutine returns promptly.
+        release = threading.Event()
+
         class _Sel:
             def log_tool_invocation(self, **kw):
-                # flake-ok: the stubbed SEL backend hangs 5 s on purpose so the patched 50 ms wait_for bound returns
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed SEL backend's own hang, which the wait_for bound cuts short; not a barrier
-                time.sleep(5)  # simulate a hung backend, well past the timeout
+                # The stubbed backend holds its executor thread until the test
+                # releases it; the 30 s ceiling frees the thread if no release comes.
+                release.wait(timeout=30)
 
         monkeypatch.setattr(acp_client, "sel", lambda: _Sel())
         monkeypatch.setattr(acp_client, "_SEL_AUDIT_TIMEOUT_SECONDS", 0.05)
         client = AcpClient(session_key="sk", audit_source="subagent")
-        start = time.monotonic()
-        await client._maybe_audit_tool_call(self._ev())  # must not raise / hang
-        assert time.monotonic() - start < 4  # returned via timeout, not the 5s sleep
+        try:
+            with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                await client._maybe_audit_tool_call(self._ev())  # must not raise / hang
+            # Returned via the wait_for bound, not the release: the swallowed
+            # failure is the bound's TimeoutError.
+            failed = [r for r in caplog.records if r.getMessage() == "ACP-layer SEL audit failed"]
+            assert len(failed) == 1
+            assert failed[0].exc_info is not None
+            assert issubclass(failed[0].exc_info[0], TimeoutError)
+        finally:
+            release.set()
 
 
 class TestAcpClientUnaskedClaudeAutoAudit:
