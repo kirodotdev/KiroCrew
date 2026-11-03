@@ -215,29 +215,30 @@ claim is restated (`docs/guides/remote-and-mobile.md`; `website/index.html` only
 points back here) — an unqualified version points a low-vision user at a control
 that is not there.
 
-**Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
-back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
-FIELD's computed size, so a `text-sm` field can leave the user zoomed in — and with
-page zoom off there is no pinch-out to undo it. **There is deliberately no app-wide
-floor for this, and adding one needs evidence from a real device first**, because CSS
-cannot express a floor at all: it can only SET a
-size, so the two available shapes are wrong in opposite directions. A rule broad
-enough to reach every field SHRINKS the ones that are deliberately larger — measured,
-not hypothetical: `input:not([type=…]):not([type=…])` is (0,2,1) and beat the artifact
-rename field's `text-2xl`, snapping a 24px title to 16px on a phone. A narrower
-selector list misses fields instead, because a size can arrive as a named utility, an
-arbitrary value (`text-[13px]`), an `!important` modifier or an inline style, and no
-list contains the next one. A guard test rescues neither shape: ~120 of this app's
-fields are routed through the `<Input>` primitive or the `useAutoGrowTextarea`
-hook rather than a native tag, so a source sweep for `<input>` cannot see them and
-reports green.
+**Focus zoom is off, so no field needs a 16px floor.** WebKit zooms the viewport when
+a field below 16px takes focus, by `clampTo(16 / fontSize, minimumScale, maximumScale)`
+from the FIELD's computed size. The authored `maximum-scale=1` clamps that scale to 1:
+on an iPhone a 14px field (the Settings search) takes focus without zooming. Fields
+therefore keep their authored size on touch, and the composer uses the message font
+setting on every device. One size for the composer's typed text and its placeholder
+is also what keeps an empty composer one line tall: its auto-size measures the
+placeholder at the field's font size, so a field held at 16px over a 14px hint
+measured the hint a line too tall on a 375px phone (#28843).
 
-Two things make withholding the floor the safer side of that trade. The focus zoom is
-**pre-existing** — it is not introduced by suppressing pinch, which removes only the
-recovery gesture — and whether it can fire at all once `maximum-scale=1` is authored
-depends on the same engine path that decides whether WebKit honours the viewport keys,
-which is not answerable from source. Settle it on a device; if it does fire, the fix
-belongs in the field components, where a real `max(16px, authored)` is expressible.
+**There is deliberately no app-wide 16px field rule either**, because CSS cannot
+express a floor at all: it can only SET a size, so the two available shapes are wrong
+in opposite directions. A rule broad enough to reach every field SHRINKS the ones that
+are deliberately larger — measured, not hypothetical: `input:not([type=…]):not([type=…])`
+is (0,2,1) and beat the artifact rename field's `text-2xl`, snapping a 24px title to
+16px on a phone. A narrower selector list misses fields instead, because a size can
+arrive as a named utility, an arbitrary value (`text-[13px]`), an `!important`
+modifier or an inline style, and no list contains the next one. A guard test rescues
+neither shape: ~120 of this app's fields are routed through the `<Input>` primitive or
+the `useAutoGrowTextarea` hook rather than a native tag, so a source sweep for
+`<input>` cannot see them and reports green. If focus zoom ever comes back (the
+viewport key dropped, or an engine that stops honouring it), the fix belongs in the
+field components, where a real `max(16px, authored)` is expressible, and the
+composer's placeholder has to move with its field.
 
 **The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
 every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.

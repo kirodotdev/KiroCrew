@@ -1474,9 +1474,10 @@ function ChatInput({
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the
             single row's column width (see `textFitsOneRow`). Never painted.
-            `data-composer-typo` gives it the textarea's touch font floor
-            (16px): without it the probe measured at 14px, the textarea
-            wrapped first, and the pill grew tall before the box changed shape. */}
+            `data-composer-typo` gives it every rule the textarea's hook gets, so
+            the probe wraps exactly where the textarea does; otherwise the
+            textarea could wrap first and the pill grow tall before the box
+            changed shape. */}
         {inlineToolbarWhileFits && (
           <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
         )}
