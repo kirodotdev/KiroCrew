@@ -254,6 +254,13 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
+    # A Slack code channel's session is moved into its workspace before the
+    # turn's bindings are read (a move after that would read as a binding
+    # change and refuse the turn), and the reset the move arms is consumed
+    # below, before the session is acquired: THIS turn starts there.
+    from kiro_crew.slack.code_channels.binding import notify_turn_prepare
+
+    await notify_turn_prepare(state, slot)
 
     # A new turn supersedes whatever question the previous one ended on, so
     # any OPTIONS control still live in this session's Slack thread stops

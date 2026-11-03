@@ -498,6 +498,31 @@ def mirror_post_thread(channel_id: str | None, thread_ts: str | None) -> str | N
     return thread_ts
 
 
+async def notify_turn_prepare(state: Any, slot: Any) -> None:
+    """Fire turn-preparation hooks before a DASHBOARD turn reads its bindings.
+
+    Admission reads the session's project for the runtime it starts before the
+    turn-start hooks run; a subscriber that moves the project (the workspace,
+    into the channel's worktree) must do it here, so THIS turn starts there. Any
+    session that is not a code channel's costs one link lookup. Never raises
+    (``CancelledError`` propagates).
+    """
+    try:
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+        key = effective_session_key(slot)
+        thread_ts, channel_id = state.sessions.get_slack_link(key)
+        binding = active_binding(channel_id, thread_ts) if channel_id and thread_ts else None
+    except Exception:
+        logger.debug("code channel: no binding lookup for a dashboard turn", exc_info=True)
+        return
+    if binding is None:
+        return
+    from kiro_crew.slack.code_channels.hooks import TurnEvent, fire_turn_prepare
+
+    await fire_turn_prepare(binding, TurnEvent(binding.channel_id, key, source="dashboard"))
+
+
 async def notify_turn_start(
     channel_id: str | None,
     thread_ts: str | None,

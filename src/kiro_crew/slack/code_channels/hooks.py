@@ -63,6 +63,16 @@ Hook = Callable[[Binding, TurnEvent], Awaitable[None]]
 
 _START_HOOKS: list[Hook] = []
 _END_HOOKS: list[Hook] = []
+#: Run before a dashboard turn's session bindings are read: a subscriber may
+#: still change the session's project for this turn (the workspace's worktree).
+_PREPARE_HOOKS: list[Hook] = []
+
+
+def on_turn_prepare(hook: Hook) -> Hook:
+    """Subscribe *hook* to turn preparation (idempotent). Usable as a decorator."""
+    if hook not in _PREPARE_HOOKS:
+        _PREPARE_HOOKS.append(hook)
+    return hook
 
 
 def on_turn_start(hook: Hook) -> Hook:
@@ -81,7 +91,7 @@ def on_turn_end(hook: Hook) -> Hook:
 
 def remove_hook(hook: Hook) -> None:
     """Unsubscribe *hook* from both lists (tests, reloads)."""
-    for hooks in (_START_HOOKS, _END_HOOKS):
+    for hooks in (_PREPARE_HOOKS, _START_HOOKS, _END_HOOKS):
         while hook in hooks:
             hooks.remove(hook)
 
@@ -99,6 +109,10 @@ async def _run(hooks: list[Hook], binding: Binding, event: TurnEvent) -> None:
                 binding.channel_id,
                 exc_info=True,
             )
+
+
+async def fire_turn_prepare(binding: Binding, event: TurnEvent) -> None:
+    await _run(_PREPARE_HOOKS, binding, event)
 
 
 async def fire_turn_start(binding: Binding, event: TurnEvent) -> None:
