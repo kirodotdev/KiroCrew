@@ -25,6 +25,7 @@ from kiro_crew.platform.interfaces import (
     RemoteProvisioner,
     RemoteProvisionerProvider,
 )
+from kiro_crew.sandbox import SandboxCeilingUnsealable
 
 
 class TestFargateLane:
@@ -680,7 +681,7 @@ class TestTheAliasRefusalSitsWhereTheFileIsConsumed:
         )
         (home / "cloud.json").symlink_to(real)
 
-        with _pytest.raises(Exception) as exc:
+        with _pytest.raises(SandboxCeilingUnsealable) as exc:
             DefaultRemoteProvisionerProvider().engine_for(FARGATE_PROVISIONER_ID)
 
         assert "cloud.json" in str(exc.value)

@@ -27,6 +27,7 @@ from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.coder import remote_worker
+from kiro_crew.coder.client import CoderClientError
 from kiro_crew.remote_session import link as link_mod
 from kiro_crew.remote_session import workspace_tools
 from kiro_crew.remote_session.link import RemoteLink
@@ -333,7 +334,7 @@ def test_hostile_values_are_rejected_or_quoted():
         remote_worker._start_command("x; rm -rf ~", ["kiro-cli"], 60)
     command = remote_worker._start_command("ok", ["kiro-cli", "$(touch /tmp/p)"], 60)
     assert "'$(touch /tmp/p)'" in command
-    with pytest.raises(Exception):
+    with pytest.raises(CoderClientError):
         remote_worker.CoderShell("coder", "bad name; id", "https://coder.example")
 
 
