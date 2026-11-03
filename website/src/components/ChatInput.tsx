@@ -20,6 +20,7 @@ import { ToolDetails } from '../pages/chat/ToolDetails'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
+import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
@@ -531,7 +532,7 @@ function ChatInput({
   const midTurnProjectNote = useMemo(() => {
     if (!isRunning) return ''
     const name = turnStartProject
-      ? turnStartProject.split('/').filter(Boolean).pop() || turnStartProject
+      ? pathBasename(stripTrailingSeparators(turnStartProject)) || turnStartProject
       : i18nT('components.chatInput.project')
     return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
   }, [isRunning, turnStartProject])
@@ -1023,7 +1024,7 @@ function ChatInput({
             <span className="min-w-0 [overflow-wrap:anywhere]" title={terminalValidation ? undefined : project || undefined}>
               {terminalValidation || (project && onProjectClick && !shelfCompact
                 ? i18nT('components.chatInput.terminal_panel')
-                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.terminal_default_directory') }))}
+                : i18nT('components.chatInput.terminal_hint', { workspace: project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.terminal_default_directory') }))}
             </span>
           </div>
           {!showGhost && !composerCollapsed && (
@@ -1913,7 +1914,7 @@ function ChatInput({
             <span className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted px-2.5" title={projectChipTitle} data-testid="composer-project-readonly">
               <FolderOpen size={13} className="shrink-0 opacity-70" aria-hidden="true" />
               {/* Compact, the name stays for screen readers: the icon alone names nothing. */}
-              <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{projectProp.split('/').filter(Boolean).pop() || projectProp}</span>
+              <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{pathBasename(stripTrailingSeparators(projectProp)) || projectProp}</span>
             </span>
           )}
           {onProjectClick && !remoteEnvironment && (
@@ -1952,7 +1953,7 @@ function ChatInput({
                 the ambiguity this label exists to remove. The enclosing shelf
                 group is flex-1/min-w-0, so both segments still shrink below
                 these caps on a narrow window. */}
-            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.project')}</span>}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
