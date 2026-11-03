@@ -150,6 +150,10 @@ class _FakeResp:
         return None
 
 
+#: Every variable the bot's proxy rule reads, cleared so the host's own cannot leak in.
+_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+
+
 class _FakeSession:
     """Records every request; only ``get`` exists, so a write would AttributeError."""
 
@@ -157,9 +161,13 @@ class _FakeSession:
         self._resp = resp
         self._get_error = get_error
         self.calls: list[tuple[str, dict[str, str]]] = []
+        self.proxies: list[str | None] = []
 
-    def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResp:
+    def get(
+        self, url: str, headers: dict[str, str] | None = None, proxy: str | None = None
+    ) -> _FakeResp:
         self.calls.append((url, dict(headers or {})))
+        self.proxies.append(proxy)
         if self._get_error is not None:
             raise self._get_error
         assert self._resp is not None
@@ -217,6 +225,32 @@ class TestProbeIntentGrants:
         # else: this must not be able to change the install it reports on.
         assert session.calls == [(intent_probe.APPLICATION_URL, {"Authorization": f"Bot {_TOKEN}"})]
         assert seen["total"] == intent_probe.PROBE_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_goes_through_the_bots_https_proxy(self, monkeypatch) -> None:
+        # A host that reaches Discord only through a proxy: the bot uses
+        # HTTPS_PROXY, so the probe must too, or doctor reports "unknown".
+        for var in _PROXY_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+        session = _FakeSession(_FakeResp(200, {"id": _APP_ID, "flags": 0}))
+        _install_fake_aiohttp(monkeypatch, session)
+
+        grants = await intent_probe.probe_intent_grants(_TOKEN)
+
+        assert grants.error == ""
+        assert session.proxies == ["http://proxy.example:3128"]
+
+    @pytest.mark.asyncio
+    async def test_goes_direct_with_no_proxy_set(self, monkeypatch) -> None:
+        for var in _PROXY_VARS:
+            monkeypatch.delenv(var, raising=False)
+        session = _FakeSession(_FakeResp(200, {"id": _APP_ID, "flags": 0}))
+        _install_fake_aiohttp(monkeypatch, session)
+
+        await intent_probe.probe_intent_grants(_TOKEN)
+
+        assert session.proxies == [None]
 
     @pytest.mark.asyncio
     async def test_honours_a_caller_supplied_timeout(self, monkeypatch) -> None:
