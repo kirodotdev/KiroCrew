@@ -2804,6 +2804,13 @@ Subagent results are routed back to the **originating session** via
 `_subagent_done` in `slack/gateway_runtime/subagent_wiring.py`. The `parent_session_key` on `SubagentInfo`
 tracks which session spawned the subagent.
 
+The parent's tab is looked up first (`_parent_tab`); a tab restored as a
+sidebar row loads its window off the loop before the completion lands. When
+that lookup or load raises (an unreadable stored window), `_subagent_done`
+logs it and treats the tab as closed: the completion takes the parent's own
+route now, as a parked completion does, instead of escaping before any route
+and waiting for the next start's re-announce.
+
 ### Two-Level Timeout
 
 | Timeout | Location | Duration | Scope |

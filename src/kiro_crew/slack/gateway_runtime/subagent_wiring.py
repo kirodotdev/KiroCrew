@@ -209,9 +209,23 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # bump would invent an agent that never ran.
         _flush_only = getattr(info, "_digest_flush_only", False) is True
         parent_key = info.parent_session_key
-        _parent_slot_name, _injection_slot, _injection_slot_name = await self._parent_tab(
-            parent_key
-        )
+        try:
+            _parent_slot_name, _injection_slot, _injection_slot_name = await self._parent_tab(
+                parent_key
+            )
+        except Exception:
+            # A restored tab whose window cannot be read is treated as closed:
+            # the parent's own route delivers the completion now, rather than
+            # leaving it to the next start's re-announce.
+            logger.warning(
+                "Subagent %s: the tab showing %s could not be read; "
+                "delivering its completion through the parent's own route",
+                info.id,
+                parent_key,
+                exc_info=True,
+            )
+            _parent_slot_name, _injection_slot = "", None
+            _injection_slot_name = subagent_event_slot(parent_key)
 
         if not _flush_only:
             await _broadcast_subagent_status(info, "done", _injection_slot_name)
