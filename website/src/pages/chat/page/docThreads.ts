@@ -8,6 +8,8 @@
 import type { ChatMessage } from '../../../types'
 import { splitReply, type DocActions, type ThreadMsg } from './docConductor'
 import { overlaySlug } from './docOverlay'
+import { isGoalWake } from './goalLoop'
+import { goalThread } from './docGoals'
 
 const HEADER_RE = /^\[Doc ask ([A-Za-z0-9_-]+)\]\n([\s\S]*?)(?:\n\n---\n|$)/
 
@@ -18,7 +20,13 @@ export function buildAskTurn(o: { id: string; request: string; quote: string; do
 ${o.request}
 
 ---
-You are the conductor of the document "${o.title || 'Untitled doc'}". The person writes in it and talks to you only by highlighting text; there is no chat. ${o.quote.trim()
+You are the conductor of the document "${o.title || 'Untitled doc'}". The person writes in it and talks to you only by highlighting text; there is no chat. ${o.id.startsWith('goal-')
+    ? `This is a reply on the pin of the goal ${o.id.slice(5)}: the goal set on a heading, which your goal checks report on. It is about that heading's section, as it stands now:
+
+"""
+${o.quote}
+"""`
+    : o.quote.trim()
     ? `${o.followUp ? 'This continues their thread on' : 'They highlighted'} the text between <!-- ask:${o.id} --> and <!-- /ask:${o.id} --> and wrote the request above.
 
 Highlighted text:
@@ -46,7 +54,7 @@ How to answer:
   - Inherit the page's font (font: inherit), and keep the page's rhythm: 14 to 15px text, quiet borders, no drop shadows, no big rounded cards around the whole thing.
   - Fill the width it is given (width: 100%, no fixed pixel widths); its height follows its content.
   - Self-contained: inline styles or one <style> element, and an inline <script> if it needs to move or respond. Nothing is fetched, so no remote images, fonts or scripts, and pass every value it shows inside the HTML.
-- Do not do the work yourself when it is real work. Start workers with session_create, seed each with session_send (what to do, the text it needs, and that you, not the document, get its result), record each on the work ledger (work_ledger_record create, then bind it to the worker), and arm monitor_start with watch="work-ledger" so you are woken when a worker reports. When results come back, update the overlay, and write them into the document when the person asked for that. Tell the person in one line what you started.
+- Do not do the work yourself when it is real work. Start workers with session_create, seed each with session_send (what to do, the text it needs, and that you, not the document, get its result), record each on the work ledger (work_ledger_record create, then bind it to the worker), and arm monitor_start with watch="work-ledger" so you are woken when a worker reports. When the goal loop is already armed on you, arm and change nothing: it wakes you at the goal rate, and each goal check reads your work ledger. When results come back, update the overlay, and write them into the document when the person asked for that. Tell the person in one line what you started.
 
 The status overlay: show the person what is going on by drawing on top of the document. It is one HTML artifact you own: create it once with artifact_save (slug "${slug}", kind "html", name "Overlay: ${o.title || 'Untitled doc'}") and replace its content with artifact_update (slug "${slug}") whenever the picture changes. Each top-level element is one overlay item:
 - data-anchor="<exact text from the document>" pins the item to those words; it follows them as the person edits. Leave it out for a status about the whole document.
@@ -71,12 +79,47 @@ export interface ThreadRead {
   awaiting: boolean
 }
 
+/** The thread every goal check's reply goes into. Not an ask id: no marker names it. */
+export const GOALS_THREAD = '__goals__'
+
+const GOAL_BLOCK = /^\[goal ([A-Za-z0-9_-]+)\][ \t]*$/m
+
+/** A goal check's reply, cut at its `[goal <id>]` lines into one report per goal. */
+export function splitGoalBlocks(prose: string): { blocks: { id: string; text: string }[]; rest: string } {
+  const parts = prose.split(new RegExp(GOAL_BLOCK.source, 'gm'))
+  const rest = parts[0].trim()
+  const blocks: { id: string; text: string }[] = []
+  for (let i = 1; i + 1 < parts.length; i += 2) {
+    const text = parts[i + 1].trim()
+    if (text) blocks.push({ id: parts[i], text })
+  }
+  return { blocks, rest }
+}
+
+/** What the latest check said about goal *goalId*, or null before it has said anything. */
+export function latestGoalReport(threads: Record<string, ThreadRead>, goalId: string): string | null {
+  const t = threads[goalThread(goalId)]
+  const last = t ? [...t.messages].reverse().find(m => m.who === 'conductor') : undefined
+  return last ? last.text : null
+}
+
+/** Whether a goal check is waiting on its reply: every goal's pin shows it working. */
+export const goalCheckPending = (threads: Record<string, ThreadRead>) => !!threads[GOALS_THREAD]?.awaiting
+
 /** Read the doc slot's transcript into one thread per highlight id. */
 export function deriveThreads(messages: ChatMessage[]): Record<string, ThreadRead> {
   const threads: Record<string, ThreadRead> = {}
   let current: string | null = null
   messages.forEach((m, i) => {
     if (m.role === 'user') {
+      // A goal check: its own thread, so its reply's writes land and the goals can
+      // show what it said. The person never typed it, so it adds no message of theirs.
+      if (isGoalWake(m.content ?? '')) {
+        current = GOALS_THREAD
+        const t = (threads[current] ??= { messages: [], actions: [], awaiting: false })
+        t.awaiting = true
+        return
+      }
       const h = HEADER_RE.exec(m.content ?? '')
       if (!h) { current = null; return }
       current = h[1]
@@ -88,6 +131,20 @@ export function deriveThreads(messages: ChatMessage[]): Record<string, ThreadRea
     if (m.role !== 'assistant' || !current) return
     const t = threads[current]
     const { prose, actions } = splitReply(m.content ?? '')
+    if (current === GOALS_THREAD) {
+      // One check answers every goal: each `[goal <id>]` block goes to that goal's
+      // own thread, and only what no block claimed stays in the shared one.
+      const { blocks, rest } = splitGoalBlocks(prose)
+      for (const b of blocks) {
+        const g = (threads[goalThread(b.id)] ??= { messages: [], actions: [], awaiting: false })
+        g.messages.push({ who: 'conductor', text: b.text })
+        g.awaiting = false
+      }
+      if (rest) t.messages.push({ who: 'conductor', text: rest })
+      if (prose) t.awaiting = false
+      if (actions) t.actions.push({ key: String((m.meta as { mid?: unknown } | undefined)?.mid ?? `${m.ts ?? ''}#${i}`), actions })
+      return
+    }
     if (prose) {
       const last = t.messages[t.messages.length - 1]
       if (last?.who === 'conductor') last.text = `${last.text}\n\n${prose}`

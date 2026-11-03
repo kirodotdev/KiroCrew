@@ -26,7 +26,7 @@ function firstLine(text: string): string {
 }
 
 export default function DocAnswer({
-  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, active = false, focusSignal = 0, onActivate,
+  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, lift, emptyLabel = 'No reply yet', active = false, focusSignal = 0, onActivate,
 }: {
   thread: ThreadView | undefined
   onOpen: () => void
@@ -42,6 +42,11 @@ export default function DocAnswer({
   stack?: number
   /** With *gutter*: the line above is a table, so the pin rises to its last row. */
   onTable?: boolean
+  /** With *gutter*: how far above the widget the pin's top sits, for a line of
+   *  another height than body text (a heading). */
+  lift?: number
+  /** What the pin says before anyone has answered: a goal says it is not checked yet. */
+  emptyLabel?: string
   /** The page's current conversation: another becoming current collapses this one. */
   active?: boolean
   /** Changes when the conversation bar or its shortcut moves focus here: open,
@@ -75,14 +80,14 @@ export default function DocAnswer({
   const pending = thread ? thread.pending : true
   const latest = [...messages].reverse().find(m => m.who === 'conductor')
   const running = workers.filter(w => w.state === 'working').length
-  const summary = pending ? 'Thinking…' : latest ? firstLine(latest.text) : 'No reply yet'
+  const summary = pending ? 'Thinking…' : latest ? firstLine(latest.text) : emptyLabel
   const dotState = pending ? 'pending' : thread?.unread ? 'unread' : 'read'
   const pinLabel = pending ? 'Thinking…' : thread?.unread ? 'New reply' : latest ? 'Reply' : 'No reply'
   const [hover, setHover] = useState(false)
   const toggle = () => { setHover(false); setOpen(o => !o); if (!open) { onOpen(); onActivate?.() } }
   // The pin centres on the line above the widget: a text line, or a table's last
   // row (the grid's footer and padding sit between that row and the widget).
-  const pinTop = onTable ? -80 : -27
+  const pinTop = lift !== undefined ? -lift : onTable ? -80 : -27
   const workerCount = workers.length > 0 ? `${running}/${workers.length} working` : ''
   const replies = messages.filter(m => m.who === 'conductor').length
 

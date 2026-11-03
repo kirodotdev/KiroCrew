@@ -12,15 +12,21 @@ import { PANEL } from './SwatchPicker'
 
 const RING = '#9747FF'
 
-export default function GoalPopover({ goal, onGoal }: { goal?: SectionGoal; onGoal: (g: SectionGoal | undefined) => void }) {
+export default function GoalPopover({ goal, onGoal, every = DEFAULT_GOAL_INTERVAL, onEvery, latest = null }: {
+  goal?: SectionGoal
+  onGoal: (g: SectionGoal | undefined) => void
+  /** The board's one rate, shared by every section goal on it. */
+  every?: number
+  onEvery?: (minutes: number) => void
+  /** What the latest goal check said. */
+  latest?: string | null
+}) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState(goal?.text ?? '')
-  const [every, setEvery] = useState(goal?.every ?? DEFAULT_GOAL_INTERVAL)
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     setText(goal?.text ?? '')
-    setEvery(goal?.every ?? DEFAULT_GOAL_INTERVAL)
     const away = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false) }
     document.addEventListener('pointerdown', away)
     return () => document.removeEventListener('pointerdown', away)
@@ -61,15 +67,23 @@ export default function GoalPopover({ goal, onGoal }: { goal?: SectionGoal; onGo
             className="resize-none rounded-lg border-0 p-2 text-[13px] outline-none"
             style={{ background: 'rgba(255,255,255,.1)', color: '#FFFFFF' }}
           />
-          <div role="radiogroup" aria-label="Check every" className="flex items-center gap-1 text-[12px]">
-            <span style={{ opacity: 0.7 }}>Check every</span>
+          {/* One rate for the board: every section goal is checked on the same wake. */}
+          <div role="radiogroup" aria-label="Check every goal on this board every" className="flex items-center gap-1 text-[12px]">
+            <span style={{ opacity: 0.7 }}>Check all goals every</span>
             {GOAL_INTERVALS.map(m => (
-              <button key={m} type="button" role="radio" aria-checked={every === m} onClick={() => setEvery(m)}
+              <button key={m} type="button" role="radio" aria-checked={every === m} onClick={() => onEvery?.(m)}
                 className="rounded-lg px-2 py-1" style={{ color: '#FFFFFF', background: every === m ? RING : 'rgba(255,255,255,.1)' }}>
                 {m < 60 ? `${m} min` : '1 hr'}
               </button>
             ))}
           </div>
+          {goal && (
+            <div data-testid="section-goal-latest" className="flex max-h-[120px] flex-col gap-0.5 overflow-y-auto whitespace-pre-wrap rounded-lg p-2 text-[12px]"
+              style={{ background: 'rgba(255,255,255,.08)', color: '#FFFFFF' }}>
+              <span className="text-[11px]" style={{ opacity: 0.6 }}>Latest check</span>
+              {latest ?? 'Not checked yet.'}
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2">
             {goal ? (
               <button type="button" data-testid="section-goal-clear" onClick={() => { onGoal(undefined); setOpen(false) }}

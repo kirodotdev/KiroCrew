@@ -18,6 +18,8 @@ import { slashExtension } from './docSlash'
 import { mentionExtension, setMentionSessions } from './docMentions'
 import type { SessionRef } from './SessionMention'
 import { htmlExtension, setEmbedTheme } from './docHtml'
+import { goalExtension, setGoalState, type GoalHost } from './docGoals'
+import { DEFAULT_GOAL_EVERY } from './goalLoop'
 import type { EmbedTheme } from './DocHtmlFrame'
 
 const markdownStyle = HighlightStyle.define([
@@ -59,6 +61,8 @@ export default function DocEditor({
   sessions,
   selfKey,
   embedTheme,
+  goalEvery,
+  onGoalEvery,
 }: {
   initial: string
   onChange: (next: string) => void
@@ -77,12 +81,18 @@ export default function DocEditor({
   selfKey?: string
   /** The theme HTML blocks draw with: the editor cannot read the app's theme itself. */
   embedTheme?: EmbedTheme
+  /** The page's goal rate, for the heading goal controls. */
+  goalEvery?: number
+  /** Where a change to the goal rate goes: the pane keeps it in the front matter. */
+  onGoalEvery?: (minutes: number) => void
 }) {
   const parent = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
   // Read through a ref, so a new callback identity never rebuilds the editor.
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const goalHost = useRef<GoalHost>({ setEvery: () => {} })
+  goalHost.current = { setEvery: m => onGoalEvery?.(m) }
 
   useEffect(() => {
     if (!parent.current) return
@@ -99,6 +109,7 @@ export default function DocEditor({
         slashExtension(),
         mentionExtension(host),
         htmlExtension(),
+        goalExtension(goalHost),
         overlayExtension(host),
         syntaxHighlighting(markdownStyle),
         EditorView.lineWrapping,
@@ -135,6 +146,10 @@ export default function DocEditor({
   useEffect(() => {
     if (embedTheme) view.current?.dispatch({ effects: setEmbedTheme.of(embedTheme) })
   }, [embedTheme])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: setGoalState.of({ every: goalEvery ?? DEFAULT_GOAL_EVERY }) })
+  }, [goalEvery])
 
   return <div ref={parent} data-testid="doc-editor" />
 }

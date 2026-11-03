@@ -17,7 +17,8 @@ import SpaceAskCard from './SpaceAskCard'
 
 export interface Block { from: number; to: number }
 
-const MARKERS_ONLY = /^(\s*<!-- \/?(?:ask|work):[A-Za-z0-9_.:-]+ -->\s*)+$/
+// A goal's marker line is hidden too, so it is no block to ask about either.
+const MARKERS_ONLY = /^(\s*<!-- \/?(?:ask|work):[A-Za-z0-9_.:-]+ -->\s*|\s*<!-- goal(?: g[a-z0-9]{3,16})?(?: every=\d+)?: .* -->\s*)+$/
 
 /** The document's top-level blocks (paragraphs, headings, lists, tables, code) ending before *pos*, nearest first. */
 export function blocksAbove(state: EditorState, pos: number): Block[] {

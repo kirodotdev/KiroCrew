@@ -92,6 +92,10 @@ interface Props {
   onBorderHex: (hex: string, final: boolean) => void
   /** Set or clear the goal of the one selected section. */
   onGoal: (g: SectionGoal | undefined) => void
+  /** The board's one goal rate, its setter, and what the latest goal check said. */
+  goalEvery?: number
+  onGoalEvery?: (minutes: number) => void
+  goalLatest?: string | null
   /** Whether the conductor may change the one selected section, and the switch for it. */
   access: ConductorAccess
   onAccess: () => void
@@ -101,7 +105,7 @@ interface Props {
   onOpen?: () => void
 }
 
-export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onGoal, access, onAccess, onAsk, onDelete, onOpen }: Props) {
+export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onGoal, goalEvery, onGoalEvery, goalLatest, access, onAccess, onAsk, onDelete, onOpen }: Props) {
   // A session card draws its own look, so it takes no colour or border.
   const painted = shapes.filter(s => s.kind !== 'text' && s.kind !== 'session')
   const card = shapes.length === 1 && shapes[0].kind === 'session' ? shapes[0] : null
@@ -166,7 +170,7 @@ export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight
       )}
       {shapes.length === 1 && shapes[0].kind === 'section' && (
         <>
-          <GoalPopover goal={shapes[0].goal} onGoal={onGoal} />
+          <GoalPopover goal={shapes[0].goal} onGoal={onGoal} every={goalEvery} onEvery={onGoalEvery} latest={goalLatest} />
           <button type="button" data-testid="section-access-button" aria-pressed={access === 'deny'}
             aria-label={access === 'deny' ? 'Protected from the conductor' : 'Open to the conductor'}
             title={access === 'deny' ? 'The conductor cannot change this section or anything in it. Click to open it.' : 'The conductor can change this section. Click to protect it and everything in it.'}

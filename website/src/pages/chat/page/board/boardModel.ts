@@ -121,6 +121,8 @@ export interface Board {
   asks: BoardAsk[]
   /** Unset, the conductor may change anything not protected; `closed`, only what a section has been opened for. */
   conductorDefault?: 'closed'
+  /** Minutes between checks of every section goal on the board; unset is the default. */
+  goalEvery?: number
 }
 
 /** The strong row of FigJam's colour picker, then its light row. */
@@ -274,8 +276,18 @@ export function parseBoard(raw: string): Board {
       if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) ask.at = { x: at.x as number, y: at.y as number }
       return ask
     })
-  return { kind: 'kirocrew-board', version: 1, shapes, connectors, asks, ...(data.conductorDefault === 'closed' ? { conductorDefault: 'closed' as const } : {}) }
+  return {
+    kind: 'kirocrew-board', version: 1, shapes, connectors, asks,
+    ...(data.conductorDefault === 'closed' ? { conductorDefault: 'closed' as const } : {}),
+    ...(GOAL_INTERVALS.includes(data.goalEvery as number) ? { goalEvery: data.goalEvery as number } : {}),
+  }
 }
+
+/** The board's one goal rate, in minutes: every section goal is checked on the same wake. */
+export const boardGoalEvery = (b: Pick<Board, 'goalEvery'>) => b.goalEvery ?? DEFAULT_GOAL_INTERVAL
+
+/** Whether any section on the board has a goal: what the conductor's goal loop follows. */
+export const boardHasGoals = (b: Pick<Board, 'shapes'>) => b.shapes.some(s => s.kind === 'section' && !!s.goal?.text.trim())
 
 export const serializeBoard = (b: Board) => JSON.stringify(b, null, 1)
 

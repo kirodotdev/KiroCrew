@@ -21,7 +21,7 @@ import type { ThreadView } from '../docConductor'
 import type { OverlayItem } from '../docOverlay'
 import { placeAround } from '../overlayPlace'
 import {
-  CONN_INK, DEFAULT_SIZE, SECTION_TITLE_H, SWATCH_STYLE, askSurvives, askTarget, boardAccess, boundsOf, conductorAccessOf, labelScale, newId, sectionMembers, shapeAt, wheelPanStep, wheelZoomFactor, zOrdered,
+  CONN_INK, DEFAULT_SIZE, SECTION_TITLE_H, SWATCH_STYLE, askSurvives, askTarget, boardAccess, boardGoalEvery, boundsOf, conductorAccessOf, labelScale, newId, sectionMembers, shapeAt, wheelPanStep, wheelZoomFactor, zOrdered,
   type Board, type Connector, type Pt, type Shape, type ShapeKind, type Swatch,
 } from './boardModel'
 import BoardContextMenu, { type MenuAction } from './BoardContextMenu'
@@ -161,10 +161,12 @@ export interface BoardCanvasProps {
   sessions?: SessionRef[]
   /** The board's own session, which the "@" picker leaves out. */
   selfKey?: string
+  /** What the latest goal check said about one section's goal, for its popover. */
+  goalReport?: (sectionId: string) => string | null
 }
 
 
-export default function BoardCanvas({ board, onChange, overlay, threads, onAsk, onFollowUp, onOpenSession, onReadAsk, apiRef, sessions, selfKey }: BoardCanvasProps) {
+export default function BoardCanvas({ board, onChange, overlay, threads, onAsk, onFollowUp, onOpenSession, onReadAsk, apiRef, sessions, selfKey, goalReport }: BoardCanvasProps) {
   const root = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<View>({ x: 120, y: 100, zoom: 1 })
   const [tool, setTool] = useState<Tool>('select')
@@ -1114,6 +1116,8 @@ export default function BoardCanvas({ board, onChange, overlay, threads, onAsk, 
                 onHex={(hex, final) => restyleLive({ hex }, final)} onBorderHex={(borderHex, final) => restyleLive({ borderHex }, final)}
                 onOpen={selShapes.length === 1 && selShapes[0].kind === 'session' ? () => openCard(selShapes[0]) : undefined}
                 onGoal={goal => { const b = boardRef.current; commit({ ...b, shapes: b.shapes.map(s => (selected.has(s.id) && s.kind === 'section' ? { ...s, goal } : s)) }) }}
+                goalEvery={boardGoalEvery(board)} goalLatest={selShapes.length === 1 ? goalReport?.(selShapes[0].id) ?? null : null}
+                onGoalEvery={m => commit({ ...boardRef.current, goalEvery: m })}
                 access={selShapes.length === 1 ? conductorAccessOf(board, selShapes[0]) : 'allow'}
                 onAccess={() => {
                   const b = boardRef.current

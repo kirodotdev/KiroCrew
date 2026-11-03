@@ -26,6 +26,7 @@ import {
 import { isRow } from './docTables'
 import { askRows, closeDraft, requestRowAsk } from './docAskRows'
 import DocAnswer from './DocAnswer'
+import { goalIdOf, goalThread, headingSections } from './docGoals'
 import type { StyleSpec } from './styleSpec'
 
 // ---- markers -----------------------------------------------------------------
@@ -104,6 +105,8 @@ export interface DocData {
   workers: Record<string, WorkerView>
   /** The page's current conversation, and a counter that moves focus to it. */
   active?: { id: string; focus: number } | null
+  /** A goal check is running: a goal with no report of its own yet shows it working. */
+  goalsPending?: boolean
 }
 
 export interface ConductorHost {
@@ -184,15 +187,23 @@ class HiddenLine extends WidgetType {
 
 const roots = new WeakMap<HTMLElement, Root>()
 
+/** How far above its widget a goal pin sits, by heading level, so it is level with
+ *  the heading's taller line: half the line (font size x 1.7) plus half the pin.
+ *  Index 0 is any level with body-size text. */
+const GOAL_PIN_LIFT = [27, 38, 33, 30, 27, 27, 27]
+
 /** The answer under a highlight: a React island inside a block widget. */
 class AnswerWidget extends WidgetType {
   constructor(
     readonly id: string, readonly thread: ThreadView | undefined, readonly host: { current: ConductorHost },
     readonly active = false, readonly focus = 0, readonly stack = 0, readonly onTable = false,
+    /** A heading goal's pin: its heading level (the pin sits level with a taller line)
+     *  and the goal id whose section a reply quotes. */
+    readonly goal: { level: number; goalId: string } | null = null,
   ) { super() }
   eq(o: AnswerWidget) {
     return o.id === this.id && o.active === this.active && o.focus === this.focus && o.stack === this.stack && o.onTable === this.onTable
-      && JSON.stringify(o.thread) === JSON.stringify(this.thread)
+      && o.goal?.level === this.goal?.level && JSON.stringify(o.thread) === JSON.stringify(this.thread)
   }
   toDOM(view: EditorView) {
     const dom = document.createElement('div')
@@ -220,8 +231,17 @@ class AnswerWidget extends WidgetType {
       onActivate: () => host.current.activate?.(id),
       onOpen: () => host.current.markRead(id),
       onOpenSession: (key: string) => host.current.openSession(key),
+      ...(this.goal ? { lift: GOAL_PIN_LIFT[this.goal.level] ?? GOAL_PIN_LIFT[0], emptyLabel: 'Not checked yet' } : {}),
       onSend: (text: string) => {
         const doc = view.state.doc.toString()
+        if (this.goal) {
+          // A reply on a goal's pin is about its section as it stands now.
+          const { goalId } = this.goal
+          const sec = headingSections(view.state).find(s => s.goal && goalIdOf(s) === goalId)
+          const quote = sec ? view.state.doc.sliceString(view.state.doc.line(sec.line).from, view.state.doc.line(sec.endLine).to) : ''
+          host.current.send(id, text, quote, doc, true)
+          return
+        }
         const marker = parseMarkers(doc).find(m => m.kind === 'ask' && m.id === id)
         host.current.send(id, text, marker ? markerContent(doc, marker) : '', doc, true)
       },
@@ -301,6 +321,21 @@ function build(state: EditorState, host: { current: ConductorHost }): { decos: D
       decos.push(Decoration.widget({ widget: answer, block: true, side: 1 }).range(state.doc.lineAt(m.close.to).to))
     }
     if (content) decos.push(Decoration.mark({ class: `cm-ask cm-ask-${tint(thread)}${isActive ? ' cm-ask-active' : ''}` }).range(content.from, content.to))
+  }
+  // A heading with a goal carries that goal's pin: its checks' reports and the
+  // person's replies, in the goal's own thread. Drawn by the page, so it is there
+  // whether or not the conductor ever draws anything.
+  for (const s of headingSections(state)) {
+    if (!s.goal) continue
+    const goalId = goalIdOf(s)
+    const id = goalThread(goalId)
+    const isActive = data.active?.id === id
+    const i = onLine.get(s.line) ?? 0
+    onLine.set(s.line, i + 1)
+    // A goal no check has reported on yet still has a pin: quiet, or working while one runs.
+    const thread = data.threads[id] ?? { messages: [], pending: !!data.goalsPending, unread: false }
+    const widget = new AnswerWidget(id, thread, host, isActive, isActive ? data.active!.focus : 0, i, false, { level: s.level, goalId })
+    decos.push(Decoration.widget({ widget, block: true, side: 1 }).range(state.doc.line(s.line).to))
   }
   return { decos: Decoration.set(decos, true), atomic: Decoration.set(atomic, true) }
 }

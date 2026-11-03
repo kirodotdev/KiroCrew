@@ -16,6 +16,8 @@ export interface DocMeta {
   icon?: string
   /** `gradient:<n>`, `color:<n>`, or an https image address. */
   cover?: string
+  /** Minutes between checks of the doc's heading goals, all of them; unset is the default. */
+  'goal-every'?: string
 }
 
 export interface SplitDoc {
@@ -33,7 +35,7 @@ export function splitDoc(text: string): SplitDoc {
   const meta: DocMeta = {}
   const other: string[] = []
   for (const line of m[1].split('\n')) {
-    const kv = /^(icon|cover):\s*(.*)$/.exec(line)
+    const kv = /^(icon|cover|goal-every):\s*(.*)$/.exec(line)
     if (kv && kv[2].trim()) meta[kv[1] as keyof DocMeta] = kv[2].trim()
     else if (!kv) other.push(line)
   }
@@ -44,6 +46,7 @@ export function joinDoc({ meta, other, body }: SplitDoc): string {
   const lines = [
     ...(meta.icon ? [`icon: ${meta.icon}`] : []),
     ...(meta.cover ? [`cover: ${meta.cover}`] : []),
+    ...(meta['goal-every'] ? [`goal-every: ${meta['goal-every']}`] : []),
     ...other,
   ]
   return lines.length ? `---\n${lines.join('\n')}\n---\n${body}` : body

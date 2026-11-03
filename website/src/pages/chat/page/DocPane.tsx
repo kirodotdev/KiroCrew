@@ -27,6 +27,9 @@ import DocEditor from './DocEditor'
 import DocHeader from './DocHeader'
 import { joinDoc, splitDoc, type DocMeta } from './docMeta'
 import { useSessionRefs } from './SessionMention'
+import { docHasGoals } from './docGoals'
+import { DEFAULT_GOAL_EVERY, syncGoalLoop } from './goalLoop'
+import { GOAL_INTERVALS } from './board/boardModel'
 import type { EmbedTheme } from './DocHtmlFrame'
 import { useOptionalTheme } from '../../../hooks/useTheme'
 import { readThemeVars } from '../../../lib/widgetSrcdoc'
@@ -34,7 +37,7 @@ import ConversationBar, { cycleDirection, shortLabel, stepId, type ConversationI
 import { changeForWrite, markerContent, parseMarkers, type ConductorHost, type DocData } from './docConductor'
 import { rowQuoteLabel } from './docAskRows'
 import { OVERLAY_KEYFRAMES, findAnchor, overlaySlug, parseOverlay, type OverlayItem } from './docOverlay'
-import { buildAskTurn, deriveThreads } from './docThreads'
+import { buildAskTurn, deriveThreads, goalCheckPending } from './docThreads'
 
 /** Quiet time after the last edit before it is written. */
 const SAVE_DEBOUNCE_MS = 600
@@ -147,8 +150,13 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     timerRef.current = setTimeout(() => { void save() }, SAVE_DEBOUNCE_MS)
   }, [save])
 
+  // Whether any heading has a goal: what the conductor's goal loop follows. State
+  // only when it flips, so typing does not re-render the pane.
+  const [hasGoals, setHasGoals] = useState(false)
+
   const edit = useCallback((next: string) => {
     trackAsks(next)
+    setHasGoals(docHasGoals(next))
     bodyRef.current = next
     markDirty()
   }, [markDirty, trackAsks])
@@ -172,6 +180,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       const body = adopt(doc.content)
       setSeed(s => ({ text: body, generation: s.generation + 1 }))
       trackAsks(body)
+      setHasGoals(docHasGoals(body))
       setLoad({ state: 'ready' })
     }, err => {
       if (!cancelled) setLoad({ state: 'failed', message: err instanceof Error ? err.message : String(err) })
@@ -191,6 +200,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     const body = adopt(conflict.content)
     setSeed(s => ({ text: body, generation: s.generation + 1 }))
     trackAsks(body)
+    setHasGoals(docHasGoals(body))
     setConflict(null)
   }, [conflict, trackAsks, adopt])
   const keepMine = useCallback(() => {
@@ -238,9 +248,11 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     const views: DocData['threads'] = {}
     for (const [id, t] of Object.entries(threads)) {
       const replies = t.messages.filter(m => m.who === 'conductor').length
-      views[id] = { messages: t.messages, pending: t.awaiting && running, unread: replies > (readCounts[id] ?? 0), topic: rowLabels[id] }
+      // A goal's pin also shows the check every goal is waiting on.
+      const waiting = t.awaiting || (id.startsWith('goal-') && goalCheckPending(threads))
+      views[id] = { messages: t.messages, pending: waiting && running, unread: replies > (readCounts[id] ?? 0), topic: rowLabels[id] }
     }
-    return { threads: views, workers: {}, active }
+    return { threads: views, workers: {}, active, goalsPending: goalCheckPending(threads) && running }
   }, [threads, running, readCounts, active, rowLabels])
 
   const conversations = useMemo<ConversationItem[]>(() => asks.map(a => {
@@ -342,6 +354,25 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     if (fresh.length) setApplied({ keys: [...applied.keys, ...fresh] })
   }, [threads, running, load.state, applied, setApplied, seed.generation])
 
+  // ---- heading goals: one loop on the conductor, at one rate for the doc ----------
+  const goalEvery = GOAL_INTERVALS.includes(Number(meta['goal-every'])) ? Number(meta['goal-every']) : DEFAULT_GOAL_EVERY
+  const setGoalEvery = useCallback((m: number) => changeMeta({ ...headRef.current.meta, 'goal-every': String(m) }), [changeMeta])
+  const [goalError, setGoalError] = useState('')
+  // What the loop was last brought to; null before the first sync, so a doc without
+  // goals asks nothing of the loop until it gains one.
+  const goalSynced = useRef<string | null>(null)
+  useEffect(() => {
+    if (load.state !== 'ready') return
+    const want = `${hasGoals}:${goalEvery}`
+    if (goalSynced.current === want || (goalSynced.current === null && !hasGoals)) return
+    goalSynced.current = want
+    syncGoalLoop({ slotKey, kind: 'doc', docId, title, every: goalEvery, active: hasGoals })
+      .then(() => setGoalError(''), err => {
+        goalSynced.current = null
+        setGoalError(err instanceof Error ? err.message : String(err))
+      })
+  }, [load.state, hasGoals, goalEvery, slotKey, docId, title])
+
   // The conductor's tool approvals: there is no chat to answer them in.
   const approvals = messages.filter(m => m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id)
 
@@ -401,6 +432,8 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
         )}
         <ErrorNotice title={i18nT('pages.chat.docPane.save_failed')} message={saveError} className="mb-3" />
         <ErrorNotice title={i18nT('pages.chat.docPane.send_failed')} message={sendError} className="mb-3" />
+        {/* No hand-off: the goals are already saved in the doc; the next change retries the loop. */}
+        <ErrorNotice title="Goal checks could not be scheduled" message={goalError} className="mb-3" />
         {load.state === 'ready' && (
           <DocEditor
             key={seed.generation}
@@ -414,6 +447,8 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
             sessions={sessionRefs}
             selfKey={slotKey}
             embedTheme={embedTheme}
+            goalEvery={goalEvery}
+            onGoalEvery={setGoalEvery}
           />
         )}
       </div>
