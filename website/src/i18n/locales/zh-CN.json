@@ -8315,6 +8315,7 @@
       "title_md": "中等宽度"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "推理强度在 Auto 下不生效：由后端选择模型，在你于上方选择具体模型之前，它不接受任何强度级别。",
       "default_with_level": "默认 · {{level}}",
       "effort": "强度",
       "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。关闭会话级覆盖后，会回退到“设置 → 聊天”中的默认值，或在未设置默认值时交由模型自行决定。只有支持推理强度的模型才提供此设置。",
@@ -16975,6 +16976,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "在上下文进度条旁显示已用和总令牌数",
         "e_g_solutions_architect_sre_founder": "例如：解决方案架构师、SRE、创始人",
         "effort_default_needs_reasoning_model": "模型默认在回答前思考的时长。仅对具备推理能力的模型生效，因此对上面选择的模型没有影响。",
+        "effort_default_off_on_auto": "模型回答前默认思考的时长。默认模型为 Auto 时不生效，因为由后端选择模型，在选定具体模型之前它不接受任何强度级别。",
         "effort_needs_reasoning_model": "仅对具备推理能力的模型生效，因此对上面选择的模型没有影响。",
         "enter_for_newline": "Enter 换行",
         "enter_sends": "Enter 发送",

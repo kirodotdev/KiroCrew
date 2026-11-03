@@ -104,6 +104,28 @@ export function modelSupportsEffort(model: string | undefined): boolean {
 }
 
 /**
+ * Should the model picker say that effort does not apply because the session is
+ * on `auto` (issue #11546)?
+ *
+ * On `auto` the backend picks the model, and kiro-cli refuses an effort level
+ * ("Effort configuration is currently not available on auto") until a specific
+ * model is selected. The picker then has no effort control, and without a note
+ * the configured Default Reasoning Effort looks like it is in force. True only
+ * when the provider takes effort at all, the capability read did not fail (that
+ * case has its own notice), no effort control is offered, and the model shown
+ * is `auto`.
+ */
+export function effortOffOnAuto(
+  providerTakesEffort: boolean,
+  effortSupported: boolean,
+  capabilitiesFailed: boolean,
+  shownModel: string | undefined,
+): boolean {
+  return providerTakesEffort && !capabilitiesFailed && !effortSupported
+    && (shownModel || '').trim().toLowerCase() === 'auto'
+}
+
+/**
  * Did the slot's selection-capability read actually FAIL?
  *
  * A 404 is not a failure: the gateway answers `slot_not_found` while a new chat's

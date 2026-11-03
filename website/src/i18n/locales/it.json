@@ -8627,6 +8627,7 @@
       "title_md": "Larghezza media"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Il livello di ragionamento non si applica con Auto: il backend sceglie il modello e non accetta alcun livello finché non scegli un modello specifico qui sopra.",
       "default_with_level": "Predefinito · {{level}}",
       "effort": "Impegno",
       "effort_help": "Il livello di ragionamento determina quanto tempo il modello riflette prima di rispondere. Un valore più alto significa più tempo per ragionare sui problemi difficili (risposte più lente ma migliori); uno più basso è più veloce. Se disattivi la sostituzione per sessione, si torna al valore predefinito in Impostazioni → Chat, oppure alla scelta del modello stesso quando non è impostato alcun valore predefinito. Solo i modelli che supportano il livello di ragionamento offrono questa impostazione.",
@@ -17687,6 +17688,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Mostra i token usati e totali accanto alla barra di avanzamento del contesto",
         "e_g_solutions_architect_sre_founder": "es. solutions architect, SRE, fondatore",
         "effort_default_needs_reasoning_model": "Quanto tempo i modelli riflettono prima di rispondere, per impostazione predefinita. Si applica solo ai modelli capaci di ragionamento, quindi non ha effetto sul modello selezionato sopra.",
+        "effort_default_off_on_auto": "Quanto tempo i modelli riflettono prima di rispondere, per impostazione predefinita. Non si applica finché il modello predefinito è Auto, perché il backend sceglie il modello e non accetta alcun livello finché non viene selezionato un modello specifico.",
         "effort_needs_reasoning_model": "Si applica solo ai modelli capaci di ragionamento, quindi non ha effetto sul modello selezionato sopra.",
         "enter_for_newline": "Enter per andare a capo",
         "enter_sends": "Enter invia",

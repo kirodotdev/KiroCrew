@@ -8471,6 +8471,7 @@
       "title_md": "Mittlere Breite"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Der Denkaufwand gilt nicht bei Auto: Das Backend wählt das Modell selbst und nimmt keinen Aufwand an, bis du oben ein bestimmtes Modell auswählst.",
       "default_with_level": "Standard · {{level}}",
       "effort": "Aufwand",
       "effort_help": "Der Denkaufwand legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit zum Durchdenken schwieriger Probleme (langsamer, bessere Antworten); niedriger ist schneller. Wird die Übersteuerung pro Sitzung deaktiviert, fällt der Denkaufwand auf den Standard unter Einstellungen → Chat zurück oder, wenn kein Standard gesetzt ist, auf die Wahl des Modells selbst. Nur Modelle, die Denkaufwand unterstützen, bieten diese Einstellung an.",
@@ -17331,6 +17332,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Verwendete und gesamte Token neben dem Kontext-Fortschrittsbalken anzeigen",
         "e_g_solutions_architect_sre_founder": "z. B. Solutions Architect, SRE, Gründer",
         "effort_default_needs_reasoning_model": "Wie lange Modelle standardmäßig nachdenken, bevor sie antworten. Gilt nur für Modelle mit Reasoning und hat daher keine Wirkung auf das oben gewählte Modell.",
+        "effort_default_off_on_auto": "Wie lange Modelle standardmäßig nachdenken, bevor sie antworten. Gilt nicht, solange das Standardmodell Auto ist, denn das Backend wählt das Modell selbst und nimmt keinen Aufwand an, bis ein bestimmtes Modell ausgewählt ist.",
         "effort_needs_reasoning_model": "Gilt nur für Modelle mit Reasoning und hat daher keine Wirkung auf das oben gewählte Modell.",
         "enter_for_newline": "Enter für Zeilenumbruch",
         "enter_sends": "Enter sendet",

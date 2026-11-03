@@ -8627,6 +8627,7 @@
       "title_md": "Largura média"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "O esforço de raciocínio não se aplica no Auto: o backend escolhe o modelo e não aceita nenhum nível de esforço até você escolher um modelo específico acima.",
       "default_with_level": "Padrão · {{level}}",
       "effort": "Esforço",
       "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido. Apenas os modelos compatíveis com esforço de raciocínio oferecem esta configuração.",
@@ -17687,6 +17688,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Exibir os tokens usados e totais ao lado da barra de progresso do contexto",
         "e_g_solutions_architect_sre_founder": "ex.: arquiteto de soluções, SRE, fundador",
         "effort_default_needs_reasoning_model": "Por quanto tempo os modelos pensam antes de responder, por padrão. Aplica-se apenas a modelos com raciocínio, portanto não afeta o modelo selecionado acima.",
+        "effort_default_off_on_auto": "Quanto tempo os modelos pensam antes de responder, por padrão. Não se aplica enquanto o modelo padrão for Auto, porque o backend escolhe o modelo e não aceita nenhum nível de esforço até que um modelo específico seja selecionado.",
         "effort_needs_reasoning_model": "Aplica-se apenas a modelos com raciocínio, portanto não afeta o modelo selecionado acima.",
         "enter_for_newline": "Enter para nova linha",
         "enter_sends": "Enter envia",

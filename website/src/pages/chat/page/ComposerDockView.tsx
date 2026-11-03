@@ -232,6 +232,8 @@ interface ComposerDockViewProps {
   effectiveEffort: string
   effortLevelsOverride: string[] | undefined
   effortSupported: boolean
+  /** The picker says effort does not apply on `auto` (#11546). */
+  effortAutoNote?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -317,7 +319,7 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
   composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
@@ -842,6 +844,7 @@ export default function ComposerDockView({
                 // the static model-name heuristic, and its level list replaces
                 // this machine's when it reports one.
                 hasEffort={!!(activeSlot && effortSupported)}
+                effortOffOnAuto={effortAutoNote}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)}
                 defaultEffort={defaultEffort}
