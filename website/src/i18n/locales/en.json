@@ -7270,6 +7270,7 @@
         "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
         "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
+        "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue."
       },

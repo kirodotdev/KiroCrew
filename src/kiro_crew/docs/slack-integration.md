@@ -282,7 +282,7 @@ exactly as with the switch off, and the page says why under the switch.
   switch an app back from the agent view to the older assistant view, so the update
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
-  coding work: one channel per task, where the conversation runs without @mentions.
+  coding work: one channel per task, with a context bar, a diff tab and channel commands.
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
   `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
   Slack code channels enabled.
