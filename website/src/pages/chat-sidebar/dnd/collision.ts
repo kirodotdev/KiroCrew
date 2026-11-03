@@ -135,7 +135,14 @@ function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers
 // Exported for a call-site unit test (ChatSidebar.folderNestBandCallSite.test.tsx):
 // asserts the collision uses the MEASURED header height, not
 // FOLDER_HEADER_DROP_BAND — the specific regression codex flagged in review.
-export const sidebarCollision: CollisionDetection = (args) => {
+export const sidebarCollision: CollisionDetection = (input) => {
+  // Nothing inside a closed folder body is a target, for any drag (#28543). A
+  // collapsed folder keeps its body mounted and hides it, but dnd-kit picks
+  // targets from measured boxes and ignores visibility, and the hidden boxes lie
+  // over the rows painted below the collapsed header. Without this a drop aimed
+  // at the gap below a collapsed folder could land in a subfolder (its
+  // `folder-drop`, its sortable row, its parent cue) that no one can see.
+  const args = { ...input, droppableContainers: input.droppableContainers.filter(c => !insideHiddenSubtree(c)) }
   const activeData = args.active?.data?.current as {
     type?: string
     nested?: boolean
@@ -295,6 +302,13 @@ export const sidebarCollision: CollisionDetection = (args) => {
   // height from its center, so closestCenter would hand the drop to a small
   // sibling instead.
   return closestEdge({ ...args, droppableContainers: sidebarContainers })
+}
+
+/** True when the droppable's node sits under an `[inert]` ancestor, the
+ *  sidebar's marker for a hidden row: a closed `FolderBody` sets it. */
+function insideHiddenSubtree(container: DroppableContainer): boolean {
+  const node = container.node?.current as HTMLElement | null | undefined
+  return !!node?.closest?.('[inert]')
 }
 
 /** Droppable `type` for the chat-pane target that stages a session reference in
