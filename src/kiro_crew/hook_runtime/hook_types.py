@@ -140,9 +140,11 @@ class ToolHookResult:
             logger.debug("approval decision counter failed", exc_info=True)
 
     @staticmethod
-    def allow() -> ToolHookResult:
+    def allow(note: str = "") -> ToolHookResult:
+        """No verdict: the call asks. *note*, when set, says why for the person
+        answering the prompt; it decides nothing."""
         ToolHookResult._count(TOOL_ALLOW, False)
-        return ToolHookResult(action=TOOL_ALLOW)
+        return ToolHookResult(action=TOOL_ALLOW, reason=note)
 
     @staticmethod
     def auto_approve(*, identity_grant: bool = False, read_only: bool = False) -> ToolHookResult:
