@@ -63,6 +63,18 @@ Hook = Callable[[Binding, TurnEvent], Awaitable[None]]
 
 _START_HOOKS: list[Hook] = []
 _END_HOOKS: list[Hook] = []
+#: What a dashboard turn awaits before its session bindings are read: it may
+#: still change the session's project for this turn (the workspace's worktree).
+#: It answers whether the turn may run. One owner, and no hook timeout: it is
+#: an admission barrier, bounded by git's own per-call timeouts, not
+#: decoration a slow subscriber may skip.
+Preparer = Callable[[Binding], Awaitable[bool]]
+_PREPARER: list[Preparer] = []
+
+
+def set_turn_preparer(preparer: Preparer | None) -> None:
+    """Install (or, with None, remove) the turn preparer."""
+    _PREPARER[:] = [preparer] if preparer is not None else []
 
 
 def on_turn_start(hook: Hook) -> Hook:
@@ -99,6 +111,25 @@ async def _run(hooks: list[Hook], binding: Binding, event: TurnEvent) -> None:
                 binding.channel_id,
                 exc_info=True,
             )
+
+
+async def prepare_turn(binding: Binding) -> bool:
+    """Await the turn preparer; True when the turn may run (also with none set).
+
+    An error in the preparer refuses the turn: it could not confirm the session
+    is where its turn must run. ``CancelledError`` propagates.
+    """
+    if not _PREPARER:
+        return True
+    try:
+        return bool(await _PREPARER[0](binding))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "code channel %s: turn preparation failed", binding.channel_id, exc_info=True
+        )
+        return False
 
 
 async def fire_turn_start(binding: Binding, event: TurnEvent) -> None:
