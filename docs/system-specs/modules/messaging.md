@@ -4371,7 +4371,9 @@ screen's grammar: the shared `constants.md_link_destination` url pattern (one
 level of balanced parentheses, a backslash escape read as one token, a `[label](`
 inside the url ending the link), an `https?://` scheme, no whitespace in the url,
 and a label holding no `[`, `]` or line break, so the HTML and plaintext branches
-link exactly what the screen collapsed. An emitted form is rendered and redacted
+link exactly what the screen collapsed. The HTML translation links before its emphasis
+passes, as the screen's rendered form does, with each `<a>` tag stashed, so emphasis
+formats a link's label and never its url. An emitted form is rendered and redacted
 again until the text stops changing, at most `DISPLAY_SETTLING_PASSES` (4)
 times; past that, every markup character outside a redaction tag is removed
 before the final redaction.
