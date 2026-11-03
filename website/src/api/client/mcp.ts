@@ -111,9 +111,10 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without
-     *  hitting any provider — a cheap availability probe. */
-    mcpDiscover: (query: string, opts?: { provider?: string; limit?: number }) =>
-      get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../../types').McpDiscoverResponse>,
+     *  hitting any provider — a cheap availability probe. An empty query
+     *  with `featured` returns the bundled featured servers instead. */
+    mcpDiscover: (query: string, opts?: { provider?: string; limit?: number; featured?: boolean }) =>
+      get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}${opts?.featured ? '&featured=1' : ''}`).then(j) as Promise<import('../../types').McpDiscoverResponse>,
     /** Full description + install-plan preview for one discovered server. */
     mcpDiscoverDetail: (provider: string, id: string) =>
       get(`/api/mcp/discover/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../../types').McpDiscoverDetail>,

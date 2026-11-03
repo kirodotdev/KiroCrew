@@ -12,6 +12,7 @@ import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTrian
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -104,10 +105,13 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
     inputRef.current?.focus()
   }, [])
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['discover-skills', debouncedQuery],
-    queryFn: () => api.discoverSkills(debouncedQuery),
-    enabled: open && debouncedQuery.length >= 2,
+  const searching = debouncedQuery.length >= 2
+  const { data, isLoading, isFetching, error: discoverError } = useQuery({
+    // Below 2 characters the modal shows the bundled featured list instead of
+    // an empty "type to search" screen; typing still searches.
+    queryKey: ['discover-skills', searching ? debouncedQuery : ''],
+    queryFn: () => (searching ? api.discoverSkills(debouncedQuery) : api.discoverSkills('', { featured: true })),
+    enabled: open,
     retry: false,
     staleTime: 30_000,
   })
@@ -219,7 +223,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
           inputProps={ime.bindComposition()}
         />
 
-        {!isLoading && debouncedQuery.length >= 2 && failureLines.length > 0 && (
+        {!isLoading && searching && failureLines.length > 0 && (
           <div className="mb-3 space-y-2">
             {failureLines.map(line => (
               <ErrorNotice
@@ -234,8 +238,19 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
           </div>
         )}
 
-        {!nothingAnswered && (
-          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="skills" />
+        {/* A request that failed is not an empty list: say so instead of
+            falling back to the type-to-search hint. */}
+        {discoverError ? (
+          <div className="py-6 px-4">
+            <ErrorNotice
+              message={errMessage(discoverError) || i18nT('components.skillBrowserModal.search_failed')}
+              askAgent
+              onHandoff={onClose}
+              testId="skill-browser-search-error"
+            />
+          </div>
+        ) : !nothingAnswered && (
+          <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="skills" featuredLabel={i18nT('components.skillBrowserModal.popular_skills')} />
         )}
 
         {/* Two-pane on md+: results list (left) + detail preview (right).

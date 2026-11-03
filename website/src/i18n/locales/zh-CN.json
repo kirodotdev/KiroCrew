@@ -6834,7 +6834,8 @@
       "search_across_providers": "跨平台搜索 {{subject}}…",
       "searching": "搜索中…",
       "searching_2": "正在搜索：{{name}}",
-      "type_at_least_2_characters_to_search": "至少输入 2 个字符以搜索"
+      "type_at_least_2_characters_to_search": "至少输入 2 个字符以搜索",
+      "type_to_search_for_more": "输入关键词搜索更多"
     },
     "embedTabStrip": {
       "close_tab": "关闭标签页",
@@ -7794,7 +7795,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "正在等待安装计划加载",
       "detail_load_failed": "无法加载此服务器的详细信息。",
-      "search_failed": "无法搜索注册表。请重试。"
+      "search_failed": "无法搜索注册表。请重试。",
+      "popular_mcp_servers": "热门 MCP 服务器"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "添加自定义服务器",
@@ -8691,6 +8693,8 @@
       "license": "许可证：",
       "loading_preview": "正在加载预览…",
       "no_preview_available": "无可用预览。",
+      "popular_skills": "热门技能",
+      "search_failed": "无法加载技能，请重试。",
       "overwrite": "覆盖",
       "provider_could_not_search": "无法搜索 {{provider}}：{{reason}}",
       "provider_did_not_answer": "{{provider}} 没有响应。",

@@ -154,11 +154,70 @@ describe('SkillBrowserModal', () => {
 
   it('gates the provider query until two characters are typed', async () => {
     renderModal()
-    expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
-
     await search('w')
-    expect(mockApi.discoverSkills).not.toHaveBeenCalled()
-    expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
+    // Only the featured list was asked for: a 1-char query never searches.
+    expect(mockApi.discoverSkills).toHaveBeenCalledTimes(1)
+    expect(mockApi.discoverSkills).toHaveBeenCalledWith('', { featured: true })
+  })
+
+  describe('featured list before a search', () => {
+    const featuredSkill = aSkill({ id: 'anthropics/skills/pdf', name: 'pdf', installs: 0, description: '' })
+    const searchHit = aSkill()
+
+    beforeEach(() => {
+      mockApi.discoverSkills.mockImplementation((query: string, opts?: { featured?: boolean }) =>
+        Promise.resolve(opts?.featured
+          ? { results: [featuredSkill], providers: ['skillsh'], provider_outcomes: [] }
+          : { results: query === 'zz' ? [] : [searchHit], providers: ['skillsh'], provider_outcomes: [] }))
+    })
+
+    it('opens on the popular skills instead of an empty type-to-search screen', async () => {
+      renderModal()
+      expect(await screen.findByRole('option', { name: 'pdf' })).toBeInTheDocument()
+      expect(screen.getByText('Popular skills')).toBeInTheDocument()
+      expect(screen.getByText('Type to search for more')).toBeInTheDocument()
+      // No provider is searched for the bundled list, so the meta line names none.
+      expect(screen.queryByText(/^Searching:/)).not.toBeInTheDocument()
+      expect(screen.queryByText('Type at least 2 characters to search')).not.toBeInTheDocument()
+    })
+
+    it('keeps the featured list at one character, searches at two, and returns on clear', async () => {
+      renderModal()
+      await screen.findByRole('option', { name: 'pdf' })
+
+      await search('w')
+      expect(screen.getByRole('option', { name: 'pdf' })).toBeInTheDocument()
+
+      await search('wi')
+      expect(await screen.findByRole('option', { name: 'widget-wrangler' })).toBeInTheDocument()
+      expect(mockApi.discoverSkills).toHaveBeenCalledWith('wi')
+      expect(screen.queryByRole('option', { name: 'pdf' })).not.toBeInTheDocument()
+      expect(screen.queryByText('Popular skills')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+      expect(await screen.findByRole('option', { name: 'pdf' })).toBeInTheDocument()
+      expect(screen.getByText('Popular skills')).toBeInTheDocument()
+    })
+
+    it('a search with no hits still says so', async () => {
+      renderModal()
+      await screen.findByRole('option', { name: 'pdf' })
+      await search('zz')
+      expect(await screen.findByText(/No skills found for/)).toBeInTheDocument()
+    })
+
+    it('falls back to the type-to-search hint when there is no featured list', async () => {
+      mockApi.discoverSkills.mockResolvedValue({ results: [], providers: [] })
+      renderModal()
+      expect(await screen.findByText('Type at least 2 characters to search')).toBeInTheDocument()
+    })
+
+    it('a failed featured request shows an error, not the type-to-search hint', async () => {
+      mockApi.discoverSkills.mockRejectedValue(new Error('gateway down'))
+      renderModal()
+      expect(await screen.findByTestId('skill-browser-search-error')).toHaveTextContent('gateway down')
+      expect(screen.queryByText('Type at least 2 characters to search')).not.toBeInTheDocument()
+    })
   })
 
   it('renders debounced results with provider badge, install count and description', async () => {
@@ -268,7 +327,9 @@ describe('SkillBrowserModal', () => {
   })
 
   it('clearing the search drops the results and the selection', async () => {
-    mockApi.discoverSkills.mockResolvedValue({ results: [aSkill()], providers: ['skillsh'] })
+    // No featured rows here, so clearing lands on the type-to-search hint.
+    mockApi.discoverSkills.mockImplementation((_q: string, opts?: { featured?: boolean }) =>
+      Promise.resolve({ results: opts?.featured ? [] : [aSkill()], providers: ['skillsh'] }))
     renderModal()
     await search('widget')
     fireEvent.click(await screen.findByRole('option', { name: 'widget-wrangler' }))
@@ -589,6 +650,7 @@ describe('SkillBrowserModal', () => {
     })
     unmount()
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-    expect(mockApi.discoverSkills).not.toHaveBeenCalled()
+    // The featured list may have been asked for on open; the typed query never is.
+    expect(mockApi.discoverSkills).not.toHaveBeenCalledWith('widget')
   })
 })

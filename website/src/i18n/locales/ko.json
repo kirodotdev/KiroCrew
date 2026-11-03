@@ -6834,7 +6834,8 @@
       "search_across_providers": "여러 공급자에서 {{subject}} 검색…",
       "searching": "검색 중…",
       "searching_2": "검색 중: {{name}}",
-      "type_at_least_2_characters_to_search": "검색하려면 2자 이상 입력하세요"
+      "type_at_least_2_characters_to_search": "검색하려면 2자 이상 입력하세요",
+      "type_to_search_for_more": "입력하면 더 검색할 수 있습니다"
     },
     "embedTabStrip": {
       "close_tab": "탭 닫기",
@@ -7794,7 +7795,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "설치 계획이 로드되기를 기다리는 중",
       "detail_load_failed": "이 서버의 세부 정보를 불러올 수 없습니다.",
-      "search_failed": "레지스트리를 검색할 수 없습니다. 다시 시도하세요."
+      "search_failed": "레지스트리를 검색할 수 없습니다. 다시 시도하세요.",
+      "popular_mcp_servers": "인기 MCP 서버"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "사용자 지정 서버 추가",
@@ -8691,6 +8693,8 @@
       "license": "라이선스:",
       "loading_preview": "미리 보기를 불러오는 중…",
       "no_preview_available": "미리 보기가 없습니다.",
+      "popular_skills": "인기 스킬",
+      "search_failed": "스킬을 불러오지 못했습니다. 다시 시도하세요.",
       "overwrite": "덮어쓰기",
       "provider_could_not_search": "{{provider}}에서 검색할 수 없습니다: {{reason}}",
       "provider_did_not_answer": "{{provider}}이(가) 응답하지 않았습니다.",
