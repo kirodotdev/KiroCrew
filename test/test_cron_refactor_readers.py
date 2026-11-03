@@ -35,7 +35,10 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def write(records: Any) -> Path:
         path = tmp_path / "crons.json"
-        path.write_text(json.dumps(records if isinstance(records, dict) else {"jobs": records}))
+        path.write_text(
+            json.dumps(records if isinstance(records, dict) else {"jobs": records}),
+            encoding="utf-8",
+        )
         return path
 
     return write
