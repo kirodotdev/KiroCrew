@@ -507,11 +507,13 @@ def test_ring_trim_skips_a_file_removed_concurrently(spool: Path, monkeypatch: p
     # where pytest's own tmp_path cleanup calls unlink with dir_fd=.
     def _racy(path, **kwargs):
         real_unlink(path, **kwargs)
-        raise FileNotFoundError(path)
+        if os.path.basename(path).startswith(f"{SCREENSHOT_FILE_PREFIX}1000"):
+            raise FileNotFoundError(path)
 
     monkeypatch.setattr(capture_macos.os, "unlink", _racy)
     # Must not raise; the count it reports simply excludes the racy one.
-    capture_macos.trim_shots_dir(keep=1)
+    assert capture_macos.trim_shots_dir(keep=1) == 1
+    assert _spooled(spool) == [f"{SCREENSHOT_FILE_PREFIX}3000{SCREENSHOT_FILE_SUFFIX}"]
 
 
 # ── the secure-field floor ──

@@ -1593,6 +1593,13 @@ async def test_a_rejected_gateway_login_is_republished_at_once(monkeypatch):
         valid.clear()  # the stored login stops working
         link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
         await async_wait_until(
+            lambda: any(f["id"] == 1 and f["t"] == "err" for f in link.frames),
+            describe=lambda: f"frames: {link.frames}",
+        )
+        # The refused value is remembered and the cached login dropped.
+        assert channel._refused == {"github.com": HEADER}
+        assert "github.com" not in channel._credentials
+        await async_wait_until(
             lambda: [f for f in link.frames if f["t"] == "lend"][-1]["hosts"] == [],
             describe=lambda: f"frames: {link.frames}",
         )
@@ -1633,10 +1640,17 @@ async def test_a_revoked_login_its_source_still_returns_stops_being_lent(monkeyp
         link.guest({"t": "lend", "id": 0})
         await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "lent")
         link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
+        await async_wait_until(
+            lambda: any(f["id"] == 1 and f["t"] == "err" for f in link.frames),
+            describe=lambda: f"{link.frames}",
+        )
+        assert channel._refused == {"github.com": HEADER}
         await async_wait_until(lambda: last_lend() == [], describe=lambda: f"{link.frames}")
+        assert "github.com" not in channel._credentials
         token["value"] = "Basic " + base64.b64encode(b"x-access-token:fresh").decode()
         channel._lend_stale.set()
         await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "re-lent")
+        assert channel._credentials["github.com"][0] == token["value"]
     finally:
         link.stdout.feed_eof()
         await await_until(serve, what="gateway channel closed")
