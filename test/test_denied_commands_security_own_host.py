@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-import time
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -18,6 +17,7 @@ from denied_commands_security_helpers import _REAL_RESOLVED_HOST_VERDICT, _denie
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor as _argv_floor
+from kiro_crew.security import argv_floor_hosts as _argv_floor_hosts
 from kiro_crew.testing.wait import async_wait_until, wait_until
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
@@ -347,9 +347,8 @@ class TestSandboxEscapeSshSelfOwnHost:
         _server, app = self._hook(monkeypatch, _warm)
 
         async def _run():
-            start = time.monotonic()
             await app.on_startup[0](app)
-            elapsed = time.monotonic() - start
+            scheduled = len(_server._OWN_HOST_WARM_TASKS)
             started_before_release = not done.is_set()
             release.set()
             # Let the scheduled worker finish while the loop is still alive.
@@ -357,12 +356,11 @@ class TestSandboxEscapeSshSelfOwnHost:
                 lambda: done.is_set() and not _server._OWN_HOST_WARM_TASKS,
                 describe=lambda: f"done={done.is_set()} tasks={_server._OWN_HOST_WARM_TASKS}",
             )
-            return elapsed, started_before_release
+            return scheduled, started_before_release
 
-        elapsed, started_before_release = asyncio.run(_run())
-        # flake-ok: pre-existing 0.5 s ceiling against a read held for up to 5 s, so it only fails when the hook awaits the read; moved verbatim, tracked for a de-flake pass
-        assert elapsed < 0.5, "the startup hook waited on the own-address read"
-        assert started_before_release
+        scheduled, started_before_release = asyncio.run(_run())
+        assert started_before_release, "the startup hook waited on the own-address read"
+        assert scheduled == 1, "the startup hook did not schedule the own-address read"
         assert done.is_set(), "the scheduled own-address read never ran"
         assert not _server._OWN_HOST_WARM_TASKS, "the finished task was not released"
 
@@ -519,16 +517,14 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _denied_by("ssh self.attacker.example id") == self._RULE
         assert len(started) == 1, "resolution scheduling must be single-flight"
 
-    def test_negative_dns_verdict_is_revalidated_after_ttl(self, monkeypatch):
+    def test_negative_dns_verdict_is_revalidated_after_ttl(self, monkeypatch, manual_clock):
         # a cached ALLOW verdict is not reused unbounded -- a name
         # that later rebinds to loopback is caught at the next revalidation.
         # Deny verdicts stay permanent (over-blocking is the safe direction).
         assert _REAL_RESOLVED_HOST_VERDICT is not None
         monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        now = 1_000_000.0
-        # flake-ok: pre-existing frozen clock on the floor module's time binding, restored by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing clock pin on the floor module's time binding, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(_argv_floor.time, "monotonic", lambda: now)
+        manual_clock.install(monkeypatch, _argv_floor_hosts)
+        now = manual_clock.monotonic()
         stale = now - _argv_floor._HOST_VERDICT_ALLOW_TTL - 1
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {"a.example": False})
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {"a.example": stale})
@@ -795,18 +791,10 @@ class TestSandboxEscapeSshSelfOwnHost:
 
         monkeypatch.setattr(security, "_resolve_own_host_names", _hang)
 
-        def _poll_until(pred, timeout=1.0, step=0.01):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if pred():
-                    return True
-                # flake-ok: pre-existing 10 ms step of a deadline-bounded poll helper, moved verbatim; tracked for a de-flake pass
-                time.sleep(step)
-            return pred()
-
         try:
             security._own_host_names()
-            assert _poll_until(lambda: len(spawned) == 1), "first worker did not start"
+            wait_until(lambda: len(spawned) == 1, describe=lambda: f"spawned={spawned!r}")
+            assert len(spawned) == 1, "first worker did not start"
             # Backoff expired again, worker still hung: no new thread may spawn.
             for _ in range(2):
                 monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
@@ -818,15 +806,21 @@ class TestSandboxEscapeSshSelfOwnHost:
                 t.join(timeout=10)
 
         # The latch clears when the worker exits, so the retry can spawn again.
-        cleared = _poll_until(lambda: _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False)
-        assert cleared, "single-flight latch was not cleared on worker exit"
+        wait_until(
+            lambda: _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False,
+            describe=lambda: f"in_flight={_argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT!r}",
+        )
+        assert (
+            _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False
+        ), "single-flight latch was not cleared on worker exit"
         # A fresh call after the worker exited spawns the retry (hang is set, so
         # this worker returns at once).
         spawned.clear()
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         security._own_host_names()
         try:
-            assert _poll_until(lambda: len(spawned) == 1), "retry did not spawn after exit"
+            wait_until(lambda: len(spawned) == 1, describe=lambda: f"spawned={spawned!r}")
+            assert len(spawned) == 1, "retry did not spawn after exit"
         finally:
             for t in spawned:
                 t.join(timeout=10)

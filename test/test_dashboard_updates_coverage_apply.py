@@ -33,7 +33,7 @@ from dashboard_updates_coverage_helpers import (  # noqa: F401 -- the autouse fi
 )
 
 from kiro_crew.dashboard.handlers import updates
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestPipInstallFailureReport:
@@ -57,8 +57,10 @@ class TestPipInstallFailureReport:
         # The executor thread hands the message to the loop with
         # call_soon_threadsafe, so it lands on the NEXT loop iteration -- reading
         # call_args before yielding once raced it and read the "Installing" step.
-        # flake-ok: pre-existing one-iteration yield for the executor's call_soon_threadsafe callback, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: any(c.args[0] == "error" for c in state.push_update_progress.call_args_list),
+            describe=lambda: "the error progress event",
+        )
 
         step, detail = state.push_update_progress.call_args[0]
         assert step == "error"
@@ -69,6 +71,14 @@ class TestPipInstallFailureReport:
 
 #: The commit the pre-apply pin resolves `@{u}` to in the apply tests.
 _UPSTREAM_OID = b"0123456789abcdef0123456789abcdef01234567"
+
+
+async def _worker_settled(state) -> None:
+    """Wait for the scheduled update worker to finish, then re-raise what it raised."""
+    done, pending = await asyncio.wait(list(state._background_tasks), timeout=30)
+    assert not pending, "the update worker did not finish within 30 s"
+    for task in done:
+        task.result()
 
 
 class TestApplyRefusals:
@@ -107,8 +117,7 @@ class TestApplyRefusals:
         async def _installer_running() -> bool | None:
             started.set()
             try:
-                # flake-ok: pre-existing installer stand-in that only the test's cancel ends, moved verbatim; tracked for a de-flake pass
-                await hold.wait()
+                await await_until(hold, what="the installer stand-in to be cancelled")
             except asyncio.CancelledError:
                 stopped.append("installer")
                 raise
@@ -416,8 +425,7 @@ class TestApplyRefusals:
         # The worker is registered on the state so it cannot be garbage collected
         # mid-flight; awaiting it here is what makes the test deterministic.
         assert len(state._background_tasks) == 1
-        # flake-ok: pre-existing unbounded gather of the scheduled update worker, moved verbatim; tracked for a de-flake pass
-        await asyncio.gather(*list(state._background_tasks))
+        await _worker_settled(state)
         return state
 
     def _progress(self, state) -> list[tuple[str, str]]:
@@ -731,8 +739,7 @@ class TestApplyRefusals:
         req = _request({})
         state = req.app["state"]
         await updates.api_update_apply(req)
-        # flake-ok: pre-existing unbounded gather of the scheduled update worker, moved verbatim; tracked for a de-flake pass
-        await asyncio.gather(*list(state._background_tasks))
+        await _worker_settled(state)
 
         assert ("failed", "Update failed — check logs") in self._progress(state)
         state.push_refresh.assert_any_call("update_failed")

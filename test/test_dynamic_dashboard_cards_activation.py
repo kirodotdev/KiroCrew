@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 from dynamic_dashboard_cards_helpers import _seeded_session_tree  # noqa: F401
 from dynamic_dashboard_cards_helpers import lifecycle_fixture  # noqa: F401
-from dynamic_dashboard_cards_helpers import _parked, _worker_done
+from dynamic_dashboard_cards_helpers import _worker_done
 
 from kiro_crew.dashboard.dynamic_cards import CardBudget, CardPublisher
 from kiro_crew.testing.wait import await_until
@@ -71,24 +71,26 @@ async def test_disable_cancels_inflight_without_refunding_budget(lifecycle, monk
     from kiro_crew.dashboard import card_lifecycle
 
     service, slot, state = lifecycle
-    entered, cancelled = asyncio.Event(), asyncio.Event()
+    entered, cancelled, never = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def generate(*args, **kwargs):
         entered.set()
         try:
-            # flake-ok: pre-existing unbounded park of the fake generation until the disable cancels it, moved verbatim; tracked for a de-flake pass
-            await _parked()
+            # Parked until the disable cancels it; the test only sets `never` in its cleanup.
+            await never.wait()
         finally:
             cancelled.set()
 
     monkeypatch.setattr(card_lifecycle, "run_bg_oneliner", generate)
     service.notify(slot, "done")
-    await await_until(entered, what="the generation starting")
-    service.set_enabled(False)
-    await await_until(cancelled, what="the cancellation reaching the generator")
-    with pytest.raises(asyncio.CancelledError):
-        # flake-ok: pre-existing await with no timeout of the worker task the disable above cancels, moved verbatim; tracked for a de-flake pass
-        await service.worker
+    try:
+        await await_until(entered, what="the generation starting")
+        service.set_enabled(False)
+        await await_until(cancelled, what="the cancellation reaching the generator")
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(service.worker, what="the cancelled worker settling")
+    finally:
+        never.set()
     assert len(service.publisher.attempts) == 1
     assert service.publisher.active is None
     assert (await service.read(slot))["card"] is None
@@ -151,19 +153,44 @@ async def test_eviction_or_toggle_cannot_reset_session_cooldown():
     assert len(publisher.last_attempt) == 1
 
 
-@pytest.mark.asyncio
-async def test_timeout_releases_the_only_permit_and_keeps_last_good_card():
-    async def blocked(entry):
-        # flake-ok: pre-existing unbounded park of the stub generation that the publisher's timeout cuts off, moved verbatim; tracked for a de-flake pass
-        await _parked()
+#: The generation allowance the timeout case hands the publisher: a backstop for a hang
+#: that is never reached, never what ends it. The hang expires the real bound itself.
+_TIMEOUT_BACKSTOP_SECS = 30.0
 
-    # flake-ok: pre-existing 10 ms publisher timeout, which is the behaviour under test, moved verbatim; tracked for a de-flake pass
+
+@pytest.mark.asyncio
+async def test_timeout_releases_the_only_permit_and_keeps_last_good_card(monkeypatch):
+    never = asyncio.Event()
+    bounds: list[asyncio.Timeout] = []
+    real_timeout = asyncio.timeouts.timeout
+
+    def recording_timeout(delay):
+        bound = real_timeout(delay)
+        if delay == _TIMEOUT_BACKSTOP_SECS:
+            bounds.append(bound)
+        return bound
+
+    monkeypatch.setattr(asyncio.timeouts, "timeout", recording_timeout)
+
+    async def blocked(entry):
+        # The publisher's own wait_for bound expires as the generation parks, so its
+        # real timeout path runs and only the moment it fires is chosen by the test.
+        bounds[-1].reschedule(asyncio.get_running_loop().time())
+        await never.wait()
+
     publisher = CardPublisher(
-        blocked, lambda entry: True, lambda key: None, budget=CardBudget(debounce=0, timeout=0.01)
+        blocked,
+        lambda entry: True,
+        lambda key: None,
+        budget=CardBudget(debounce=0, timeout=_TIMEOUT_BACKSTOP_SECS),
     )
     publisher.notify("one", object(), "session-one", "done")
     publisher.entries["one"].payload = {"html": "<p>last good</p>", "data": {}}
-    assert await publisher.run_ready() == 1
+    try:
+        assert await publisher.run_ready() == 1
+    finally:
+        never.set()
+    assert bounds and bounds[-1].expired(), "the publisher's own bound did not end the generation"
     assert publisher.active is None
     assert publisher.read("one")["status"] == "failed"
     assert publisher.read("one")["card"]["html"] == "<p>last good</p>"
@@ -235,14 +262,15 @@ async def test_rapid_toggle_waits_for_cancel_and_shutdown_does_not_respawn(lifec
 
     service, slot, state = lifecycle
     entered, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    never = asyncio.Event()
     calls = []
 
     async def generate(*args, **kwargs):
         calls.append(1)
         entered.set()
         try:
-            # flake-ok: pre-existing unbounded park of the fake generation until the disable cancels it, moved verbatim; tracked for a de-flake pass
-            await _parked()
+            # Parked until the disable cancels it; the test only sets `never` in its cleanup.
+            await never.wait()
         finally:
             cancelling.set()
             await await_until(release, what="the test's release gate")
@@ -258,6 +286,7 @@ async def test_rapid_toggle_waits_for_cancel_and_shutdown_does_not_respawn(lifec
         assert service.worker is old_worker
         assert service.restart_after_cancel
     finally:
+        never.set()
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await await_until(old_worker, what="the cancelled worker settling")
@@ -330,7 +359,9 @@ def test_registering_routes_and_config_never_imports_card_producer(
     monkeypatch, enabled, registration
 ):
     import builtins
-    import importlib
+    import importlib.util
+    import sys
+    import threading
 
     from aiohttp import web
 
@@ -340,12 +371,15 @@ def test_registering_routes_and_config_never_imports_card_producer(
     from kiro_crew.dashboard.server import _register_config_watch
 
     original_import = builtins.__import__
+    test_thread = threading.get_ident()
 
     def guarded_import(name, *args, **kwargs):
-        assert name != "kiro_crew.dashboard.card_lifecycle", "producer imported before bind"
+        # The hook is process-wide while it is installed, so it raises only for imports
+        # made on this test's own thread: another thread's import is none of its business.
+        if threading.get_ident() == test_thread:
+            assert name != "kiro_crew.dashboard.card_lifecycle", "producer imported before bind"
         return original_import(name, *args, **kwargs)
 
-    # flake-ok: pre-existing builtins.__import__ guard, scoped to this test by monkeypatch, moved verbatim; tracked for a de-flake pass
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     monkeypatch.setattr(live, "watch", lambda: watcher)
     watcher = live.ConfigWatch()
@@ -354,10 +388,15 @@ def test_registering_routes_and_config_never_imports_card_producer(
     state = SimpleNamespace(set_dynamic_cards_enabled=lambda value: None)
     app = web.Application()
     if registration == "routes":
-        # flake-ok: pre-existing reload of the chat routes module under the import guard, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-in-process-reload -- pre-existing reload of the chat routes module under the import guard, moved verbatim; tracked for a de-flake pass
-        importlib.reload(chat)
-        chat.register(app)
+        # A private copy of the routes module, registered under its own name, runs the
+        # module's imports and register() under the guard. Reloading the shared module in
+        # place would swap its functions under every other test.
+        spec = importlib.util.spec_from_file_location("kc_test_chat_routes_guarded", chat.__file__)
+        assert spec is not None and spec.loader is not None
+        routes = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, routes)
+        spec.loader.exec_module(routes)
+        routes.register(app)
     else:
         _register_config_watch(app, state, initial)
 
@@ -416,8 +455,10 @@ async def test_initial_enabled_activation_is_deferred_and_seeds_restored_session
     assert len(service.publisher.attempts) == 1
     assert len(constructions) == 1
     state.set_dynamic_cards_enabled(False)
-    # flake-ok: pre-existing gather with no timeout of the background tasks the final disable leaves, moved verbatim; tracked for a de-flake pass
-    await asyncio.gather(*state._background_tasks, return_exceptions=True)
+    await await_until(
+        asyncio.gather(*state._background_tasks, return_exceptions=True),
+        what="the background tasks the final disable leaves finishing",
+    )
 
 
 def test_both_server_entrypoints_defer_card_activation_until_after_listening():
@@ -482,20 +523,23 @@ async def test_config_cleanup_cancels_card_worker_without_respawning(lifecycle, 
     state.set_dynamic_cards_enabled = service.set_enabled
     watcher = live.ConfigWatch()
     monkeypatch.setattr(live, "watch", lambda: watcher)
-    entered = asyncio.Event()
+    entered, never = asyncio.Event(), asyncio.Event()
 
     async def generate(*args, **kwargs):
         entered.set()
-        # flake-ok: pre-existing unbounded park of the fake generation until the config-watch shutdown cancels it, moved verbatim; tracked for a de-flake pass
-        await _parked()
+        # Parked until the config-watch shutdown cancels it; the test only sets `never` in its cleanup.
+        await never.wait()
 
     monkeypatch.setattr(card_lifecycle, "run_bg_oneliner", generate)
     app = web.Application()
     _register_config_watch(app, state, None)
     service.notify(slot, "done")
-    await await_until(entered, what="the generation starting")
-    shutdown = next(cb for cb in app.on_cleanup if cb.__name__ == "_config_watch_shutdown")
-    await await_until(asyncio.ensure_future(shutdown(app)), what="the config-watch shutdown")
+    try:
+        await await_until(entered, what="the generation starting")
+        shutdown = next(cb for cb in app.on_cleanup if cb.__name__ == "_config_watch_shutdown")
+        await await_until(asyncio.ensure_future(shutdown(app)), what="the config-watch shutdown")
+    finally:
+        never.set()
     assert not service.enabled
     assert service.worker.done()
     assert not state._background_tasks
