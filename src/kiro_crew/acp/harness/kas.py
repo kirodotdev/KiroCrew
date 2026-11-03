@@ -288,6 +288,25 @@ def mate_worker_projection(
     return worker_session_spec(literal, session_key)
 
 
+def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> frozenset[str]:
+    """The names in *stub_names* whose server *spec* does not mount unmuted.
+
+    *spec* is the governed worker spec the KAS payload is built from. A stub
+    whose server it drops, or mutes (``mcp_cleanup.mcp_entry_is_muted``), is
+    withdrawn, so a mute saved after the stubs were selected still takes effect.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return frozenset(stub_names)
+    return frozenset(
+        name
+        for name in stub_names
+        if not isinstance(servers.get(name), dict) or mcp_entry_is_muted(servers[name])
+    )
+
+
 def _missing_agent_reason(agent: str, session_key: str) -> str:
     """The reason a session cannot start on *agent*, which has no spec, for the user.
 
@@ -558,6 +577,7 @@ class KasHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -577,7 +597,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, dict[str, Any]]]:
+        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, dict[str, Any]], frozenset[str]]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -667,6 +687,18 @@ class KasHarness(MembershipHarness):
                     exc_info=True,
                 )
                 stubbed = frozenset()
+            withdrawn: frozenset[str] = frozenset()
+            if worker_stub_names is not None and agent == MATE_WORKER_AGENT:
+                # A crewmate's worker: the names of the stubs its session/new
+                # carries, from the caller's one overlay lookup
+                # (``runtime_session_setup._kas_worker_stub_names``). Asking the
+                # overlay again, by name or by session, could answer differently
+                # and leave a server on neither side.
+                stubbed = worker_stub_names
+                # The worker spec above was read AFTER those stubs were picked,
+                # so a server muted or removed in between is withdrawn from the
+                # session-level array too: this payload is the later reading.
+                withdrawn = withdrawn_worker_stubs(spec, worker_stub_names)
             if member_dispatch:
                 # The member's dashboard server arrives as a session-level entry
                 # too, so it joins the subtraction set for the same reason: an
@@ -697,14 +729,15 @@ class KasHarness(MembershipHarness):
             apps = resolve_app_identity_launches(
                 custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
             )
-            return custom_agents, snapshot, apps
+            return custom_agents, snapshot, apps, withdrawn
 
         try:
-            built, built_from, app_launches = await asyncio.to_thread(_build)
+            built, built_from, app_launches, withdrawn_stubs = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,
                 app_launches=app_launches,
+                withdrawn_stub_names=withdrawn_stubs,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

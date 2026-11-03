@@ -55,6 +55,8 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
         "pooling_enabled",
         # Fingerprinted through ``LaunchApprovals.digest``.
         "approvals",
+        # Fingerprinted as the ``mate_sources`` input.
+        "mate_source_dir",
     }
 
 

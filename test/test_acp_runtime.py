@@ -281,6 +281,48 @@ def kas_readiness_wire(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_a_withdrawn_worker_stub_never_reaches_the_wire(
+    kas_readiness_wire, monkeypatch, tmp_path, resume
+):
+    """A stub the payload withdrew (its server muted between the two reads of the
+    worker spec) is not in the ``session/new`` or ``session/load`` array."""
+    import kiro_crew.acp.runtime as runtime_mod
+
+    wire = kas_readiness_wire
+    rt = wire.runtime
+    monkeypatch.setattr(
+        rt,
+        "_kas_custom_agents",
+        AsyncMock(
+            return_value=SessionExtras(
+                custom_agents=[{"id": "worker", "tools": []}],
+                withdrawn_stub_names=frozenset({"jira"}),
+            )
+        ),
+    )
+    servers = [{"name": "kirocrew-dashboard"}, {"name": "jira"}]
+    kwargs = {"cwd": tmp_path, "agent": "worker", "session_key": ""}
+    if resume:
+        monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_, **_kw: servers)
+        start = rt.load_session("", "ready-session", **kwargs)
+    else:
+        start = rt.create_session(mcp_servers=servers, **kwargs)
+    reader_task = await _start_reader(rt)
+    task = asyncio.create_task(start)
+    try:
+        request = await wire.take(wire.sent)
+        assert request["method"] == (METHOD_SESSION_LOAD if resume else METHOD_SESSION_NEW)
+        names = {entry["name"] for entry in request["params"]["mcpServers"]}
+        assert "jira" not in names
+        assert "kirocrew-dashboard" in names
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
 async def test_kas_readiness_wire_stdout_reads_on_the_running_loop(kas_readiness_wire):
     """A consumer that reads ``rt._process.stdout`` directly must not hit the
     cross-loop error the fixture once needed ``_start_reader`` to paper over.
