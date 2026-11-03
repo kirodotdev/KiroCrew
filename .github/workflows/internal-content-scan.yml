@@ -62,8 +62,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Both ends of the range have to be present to diff them.
-          fetch-depth: 0
+          # The checked-out commit and its parent. The diff below is two-dot
+          # (`git diff BASE HEAD`), so it reads two trees and nothing else: no
+          # merge-base, no history between them. The step fetches whichever
+          # end is not already here, with all of its files. A full clone
+          # (`fetch-depth: 0`) downloads every branch and every blob ever
+          # committed, about 3 GB, and on a slow runner that alone outlasts
+          # this job's 10-minute budget.
+          fetch-depth: 2
 
       - name: Compute the diff
         env:
@@ -74,6 +80,9 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_HEAD: ${{ github.sha }}
+          # contents: read only. Used for the one fetch below, so a private
+          # calling repository can still reach its own commits.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -n "${MG_BASE:-}" ]; then
@@ -94,6 +103,33 @@ jobs:
             0000000000000000000000000000000000000000|'') BASE="$HEAD^" ;;
           esac
           echo "range $BASE...$HEAD"
+          # Fetch an end the checkout did not bring, with its whole tree and
+          # no partial-clone filter, so the diff never fetches an object on
+          # demand. The
+          # `HEAD^` fallback is the checked-out commit's parent, which
+          # `fetch-depth: 2` already has.
+          if [ -n "${GH_TOKEN:-}" ]; then
+            auth_b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth_b64"
+            set -- -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_b64"
+          else
+            set --
+          fi
+          for end in "$BASE" "$HEAD"; do
+            git cat-file -e "$end^{commit}" 2>/dev/null && continue
+            if ! [[ "$end" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$end is not in this checkout and is not a commit id to fetch; failing closed."
+              exit 1
+            fi
+            for attempt in 1 2 3; do
+              git "$@" fetch --no-tags --no-recurse-submodules --quiet --depth=1 origin "$end" && break
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+            done
+            if ! git cat-file -e "$end^{commit}" 2>/dev/null; then
+              echo "::error::could not fetch $end; failing closed."
+              exit 1
+            fi
+          done
           git diff --unified=0 "$BASE" "$HEAD" > "$RUNNER_TEMP/change.diff"
           wc -l < "$RUNNER_TEMP/change.diff" | xargs echo "diff lines:"
 
