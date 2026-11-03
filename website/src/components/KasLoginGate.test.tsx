@@ -225,6 +225,22 @@ describe('KasLoginGate', () => {
     })
   })
 
+  it('company SSO sends a start URL pasted without https:// for the gateway to complete', async () => {
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    const field = screen.getByLabelText('Company sign-in URL') as HTMLInputElement
+    fireEvent.change(field, { target: { value: 'acme.awsapps.com/start' } })
+    // The browser's own URL check must not refuse the paste before the gateway
+    // can add the scheme.
+    expect(field.checkValidity()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(kasLoginBeginDevice).toHaveBeenCalledWith('idc', {
+      start_url: 'acme.awsapps.com/start',
+    })
+  })
+
   it('company SSO form sends a supplied region and can be cancelled back to the chooser', async () => {
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
