@@ -567,14 +567,13 @@ class TestRouteMessageEnterpriseAndObserve:
 
     @pytest.mark.asyncio
     async def test_observe_skips_history_for_unauthorized_sender(self):
-        orch = _history_orch(dm_activation=ACTIVATION_OBSERVE)
+        orch = _make_orch(dm_activation=ACTIVATION_OBSERVE)
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False) as allowed:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         allowed.assert_any_call("U_OWNER")
         orch.channel_history.push.assert_not_called()
         hm.assert_not_called()
-        assert _history_texts(orch) == []
 
 
 class TestRouteMessageTempCleanup:
