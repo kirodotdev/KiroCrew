@@ -9423,10 +9423,10 @@
       "render_timezone": "Fuso horário de exibição"
     },
     "tipCard": {
+      "collapse_tip": "Recolher dica",
       "dismiss_tip": "Descartar dica",
       "feature_tip": "Dica de recurso",
       "learn_more": "Saiba mais",
-      "tip_settings": "Configurações de dicas",
       "turn_off_tips": "Desativar dicas"
     },
     "toolInputPreview": {

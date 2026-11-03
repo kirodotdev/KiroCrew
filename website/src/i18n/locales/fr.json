@@ -9423,10 +9423,10 @@
       "render_timezone": "Fuseau horaire d'affichage"
     },
     "tipCard": {
+      "collapse_tip": "Réduire l’astuce",
       "dismiss_tip": "Ignorer l'astuce",
       "feature_tip": "Astuce fonctionnalité",
       "learn_more": "En savoir plus",
-      "tip_settings": "Paramètres des astuces",
       "turn_off_tips": "Désactiver les astuces"
     },
     "toolInputPreview": {

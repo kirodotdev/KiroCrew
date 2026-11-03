@@ -9226,10 +9226,10 @@
       "render_timezone": "প্রদর্শনের টাইমজোন"
     },
     "tipCard": {
+      "collapse_tip": "টিপ ছোট করো",
       "dismiss_tip": "টিপ বন্ধ করুন",
       "feature_tip": "ফিচার টিপ",
       "learn_more": "আরও জানুন",
-      "tip_settings": "টিপ সেটিংস",
       "turn_off_tips": "টিপস বন্ধ করুন"
     },
     "toolInputPreview": {

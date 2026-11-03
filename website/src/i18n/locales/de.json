@@ -9226,10 +9226,10 @@
       "render_timezone": "Zeitzone für die Darstellung"
     },
     "tipCard": {
+      "collapse_tip": "Tipp einklappen",
       "dismiss_tip": "Tipp schließen",
       "feature_tip": "Funktionstipp",
       "learn_more": "Mehr erfahren",
-      "tip_settings": "Tipp-Einstellungen",
       "turn_off_tips": "Tipps deaktivieren"
     },
     "toolInputPreview": {

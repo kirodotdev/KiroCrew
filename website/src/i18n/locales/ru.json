@@ -9620,10 +9620,10 @@
       "render_timezone": "Часовой пояс отображения"
     },
     "tipCard": {
+      "collapse_tip": "Свернуть совет",
       "dismiss_tip": "Скрыть подсказку",
       "feature_tip": "Подсказка о функции",
       "learn_more": "Подробнее",
-      "tip_settings": "Настройки подсказок",
       "turn_off_tips": "Отключить подсказки"
     },
     "toolInputPreview": {
