@@ -627,7 +627,8 @@ installed one.
   deregisters the app's resources, then re-clones, rebuilds, and re-runs
   `onInstall`. If that install fails, the old version is restored: an enabled app
   is re-registered and restarted, while a disabled app stays stopped and
-  unregistered.
+  unregistered. `kirocrew app update <name>` runs the same request from a
+  terminal through a running gateway.
 
 ## 14. Review checklist
 
