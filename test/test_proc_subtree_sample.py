@@ -35,6 +35,17 @@ from kiro_crew.mcp_gateway import pool as pool_mod
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 
+
+@pytest.fixture(autouse=True)
+def _proc_path(monkeypatch):
+    """Pin the ``/proc`` path: every fake here describes ``/proc`` reads.
+
+    On a Mac the walker takes its ``libproc`` branch instead, which these fakes
+    never reach; that branch is covered in ``test_darwin_subtree_sample.py``.
+    """
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+
+
 #: 1 root + 3 children, two of which match the caller's needles.
 TREE = {10: [11, 12, 13], 11: [], 12: [], 13: []}
 RSS = {10: 1000, 11: 200, 12: 30, 13: 4}

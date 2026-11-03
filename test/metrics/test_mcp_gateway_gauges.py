@@ -103,8 +103,8 @@ def test_two_sessions_on_one_backend():
     )
     rss = got[gauges.GAUGE_BACKENDS_RSS]
     assert rss["first_party"] == 0
-    # The pool's subtree probe reads /proc: Linux only, a gap elsewhere.
-    if sys.platform == "linux":
+    # The pool's subtree probe reads /proc on Linux and libproc on macOS: a gap elsewhere.
+    if sys.platform in ("linux", "darwin"):
         assert rss["third_party"] > 0
     else:
         assert "third_party" not in rss
@@ -128,7 +128,7 @@ def test_attributes_are_closed_and_carry_no_name():
         "other": 1,
     }
     # The pid-less backend gave no RSS reading, so its class is a gap, not 0.
-    # Off Linux no class has a reading, so the metric publishes no point at all.
+    # On Windows no class has a reading, so the metric publishes no point at all.
     assert "other" not in got.get(gauges.GAUGE_BACKENDS_RSS, {})
 
 
