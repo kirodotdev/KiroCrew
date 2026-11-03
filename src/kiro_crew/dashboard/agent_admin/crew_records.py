@@ -200,10 +200,18 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         when the pin cannot start; ``inherited_harness`` is what clearing the pin
         would run; ``model`` is re-resolved for that harness, so an
         inherited model reads as the one the pinned harness will get.
+        ``harness_model`` is the model resolved on the harness a crew with a
+        ``member_id`` starts its DM sessions on, pinned or not, so an Inherited
+        crewmate on a member route of another harness is judged by the model its
+        own sessions start with. It is absent for every other crew, whose readers
+        fall back to ``model``. An enrolled crew that is also the default agent is
+        judged by its DM, the member route.
         """
+        from kiro_crew import members as members_mod
         from kiro_crew.acp_backends import backend_to_stored, resolve_selected_backend
         from kiro_crew.crewmate_harness import (
             CrewmateHarnessUnavailable,
+            crewmate_backend_pin,
             crewmate_pin_for,
             selectable_harnesses,
             worker_harnesses,
@@ -219,11 +227,28 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             "harnesses": selectable_harnesses(),
             "worker_harnesses": worker_harnesses(),
         }
+        key: str | None = None
+        if getattr(cfg.agents[crew], "member_id", ""):
+            try:
+                key = members_mod.member_thread_session_alias(members_mod.member_slug(crew, cfg))
+            except ValueError:
+                key = None
         try:
             runtime = (
                 pin.resolve()
                 if pin is not None
                 else resolve_selected_backend(cfg.agent.member_acp_backend)
+            )
+            # The backend session start picks for the crewmate's DM key, through the same gate.
+            session_backend = (
+                members_mod.select_provider_backend(
+                    key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    crew_backend=crewmate_backend_pin(cfg, key),
+                )
+                if key is not None
+                else None
             )
         except CrewmateHarnessUnavailable as exc:
             out.update({"harness": "", "harness_error": str(exc)})
@@ -231,6 +256,10 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         out["harness"] = backend_to_stored(runtime)
         if pin is not None:
             out["model"] = resolve_effective_model(cfg, crew, backend=runtime, **app_kw)
+        if session_backend is not None:
+            out["harness_model"] = resolve_effective_model(
+                cfg, crew, backend=session_backend, **app_kw
+            )
         return out
 
     if alias and alias in cfg.agents and owner:
