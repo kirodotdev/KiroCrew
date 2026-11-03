@@ -82,8 +82,9 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Boot (~4 min: npm ci + build) + every shipped scenario at ~2-4 min each
     # with one retry apiece, plus model-latency tail. The USD budget below is
-    # the real stop; this is the backstop for a hung target.
-    timeout-minutes: 90
+    # the real stop; this is the backstop for a hung target. The last 20 min
+    # are room for the gh wrapper to wait out a spent API rate limit.
+    timeout-minutes: 110
     env:
       GUI_DISPLAY: ":99"
       GUI_SCREEN: "1600x1000x24"
@@ -285,6 +286,21 @@ jobs:
           [ -f "$summary" ] && summary_args=(--summary "$summary")
           python test/gui_user/report.py --format features --run-url "$RUN_URL" ${summary_args[@]+"${summary_args[@]}"} \
             > "$GUI_OUT/results/features.md"
+
+      # The night's paid run ends in `gh` calls: the ledger lookup and
+      # download, and the report issue. One of them failing on a spent API rate
+      # limit costs the night's friction record and report, so every `gh` call
+      # from here on, the ones friction.py runs included, goes through the
+      # rate-limit-aware wrapper (.github/actions/gh-rate-limit). It is
+      # installed after the target is torn down, so the wrapper file did not
+      # exist while anything the scenarios started was running, and it trusts
+      # the checkout no more than friction.py already does. `always()` so it
+      # covers the same steps that run when the scenarios fail.
+      - name: Install rate-limit-aware gh
+        if: always()
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
 
       # New-user friction: what confused the tester persona, carried across
       # nights. `merge` writes this run's friction.json (ledger-aware rows:
