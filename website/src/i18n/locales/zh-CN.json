@@ -14605,6 +14605,7 @@
       "by_category": "按类别",
       "clear": "清除",
       "clear_old_caches": "清除滚动缓存",
+      "delete_all_keys_other": "删除全部 {{count}} 个键",
       "delete_cached_scroll_positions_from_old_sessions": "删除所有会话缓存的行高和保存的阅读位置（安全 — 滚动时会自动重建）",
       "delete_key": "删除键",
       "export": "导出",

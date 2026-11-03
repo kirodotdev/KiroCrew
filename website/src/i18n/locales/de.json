@@ -14891,6 +14891,8 @@
       "by_category": "Nach Kategorie",
       "clear": "Leeren",
       "clear_old_caches": "Scroll-Caches leeren",
+      "delete_all_keys_one": "{{count}} Schlüssel löschen",
+      "delete_all_keys_other": "Alle {{count}} Schlüssel löschen",
       "delete_cached_scroll_positions_from_old_sessions": "Zwischengespeicherte Zeilenhöhen und gespeicherte Lesepositionen aller Sitzungen löschen (sicher — wird beim Scrollen neu aufgebaut)",
       "delete_key": "Schlüssel löschen",
       "export": "Exportieren",

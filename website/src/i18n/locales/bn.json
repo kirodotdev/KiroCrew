@@ -14891,6 +14891,8 @@
       "by_category": "বিভাগ অনুযায়ী",
       "clear": "সাফ করুন",
       "clear_old_caches": "স্ক্রল ক্যাশ সাফ করো",
+      "delete_all_keys_one": "{{count}}টি কী মুছে ফেলুন",
+      "delete_all_keys_other": "সব {{count}}টি কী মুছে ফেলুন",
       "delete_cached_scroll_positions_from_old_sessions": "সব সেশনের ক্যাশ করা সারির উচ্চতা এবং সংরক্ষিত পড়ার অবস্থান মুছে ফেলুন (নিরাপদ — স্ক্রল করলে আবার তৈরি হয়)",
       "delete_key": "কী মুছে ফেলুন",
       "export": "এক্সপোর্ট",

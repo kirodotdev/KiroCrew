@@ -8146,6 +8146,8 @@
       "by_category": "By Category",
       "clear": "Clear",
       "clear_old_caches": "Clear Scroll Caches",
+      "delete_all_keys_one": "Delete {{count}} key",
+      "delete_all_keys_other": "Delete all {{count}} keys",
       "delete_cached_scroll_positions_from_old_sessions": "Delete cached row heights and saved reading positions for all sessions (safe — rebuilt as you scroll)",
       "delete_key": "Delete key",
       "export": "Export",

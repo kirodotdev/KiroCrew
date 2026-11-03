@@ -14605,6 +14605,7 @@
       "by_category": "カテゴリ別",
       "clear": "クリア",
       "clear_old_caches": "スクロールキャッシュをクリア",
+      "delete_all_keys_other": "{{count}} 件のキーをすべて削除",
       "delete_cached_scroll_positions_from_old_sessions": "すべてのセッションのキャッシュされた行の高さと保存された読書位置を削除します (安全 — スクロール時に再構築されます)",
       "delete_key": "キーを削除",
       "export": "エクスポート",
