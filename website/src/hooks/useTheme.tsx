@@ -1490,7 +1490,7 @@ function useThemeState(): ThemeContextValue {
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
     const res = await api.createTheme(data)
-    if (!res.ok) throw new Error(res.error || 'Failed to create theme')
+    if (!res.ok) throw new Error(res.error || i18nT('components.themeEditor.failed_to_save_theme'))
     const theme: CustomThemeData = res.theme
     injectCustomThemeCSS(theme)
     if (!(await loadCustomThemes())) {
