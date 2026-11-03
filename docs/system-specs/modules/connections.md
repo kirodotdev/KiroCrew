@@ -35,7 +35,7 @@ from that boundary. The credential-boundary detail lives in
 
 One thing that looks like an exception is not one. A provider whose MCP server
 refuses dynamic client registration (`auth.mode: "preregistered"` in the
-registry — GitHub and Asana today) needs an OAuth **app** an operator registered
+registry — GitHub, Asana and the six Google Workspace entries today) needs an OAuth **app** an operator registered
 in the vendor console, and a confidential app comes with a `client_secret`. That
 secret is the operator's *application* credential, not any user's grant: the
 grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
@@ -1011,6 +1011,12 @@ mounts or gates on it.
 | Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
 | Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 | Todoist | project-management | 2 | yes / yes | none — the server lists only `data:read_write`; the entry adds `data:delete` and leaves out `project:delete` | gated | manual launch-gate check, including two sessions held past the one-hour token expiry (refresh tokens rotate on every use) |
+| Gmail | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `gmail.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/gmail.md)) |
+| Google Drive | file-storage | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `drive.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-drive.md)) |
+| Google Calendar | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request the three documented read-only scopes | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-calendar.md)) |
+| Google Sheets | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `spreadsheets.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-sheets.md)) |
+| Google Docs | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `documents.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-docs.md)) |
+| Google Slides | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `presentations.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-slides.md)) |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -1091,7 +1097,8 @@ until the triangle is hovered.
 
 The triangle's copy comes from two places. A provider-side prerequisite is the
 registry's `prerequisite_copy` (English fallback) rendered through the
-slug-keyed `prerequisite_<slug>` catalog entries, kept in lockstep by a test;
+slug-keyed `prerequisite_<slug>` catalog entries (a slug's hyphens spelled as
+underscores, `google-drive` → `prerequisite_google_drive`), kept in lockstep by a test;
 a state-level caveat, like the setup explanation, is an ordinary catalog key
 (`needs_configuration_help`). Both ride under the one `before_you_connect`
 heading with the `prerequisites_for_provider` accessible name — a new state
@@ -1127,7 +1134,17 @@ registered that exact URI in a vendor console Kiro Crew cannot reach, so changin
 it silently breaks each of their apps until they re-register. Retire a port by
 adding a provider, never by renumbering one;
 `test_connections_registry_auth.py` pins the shipped values so a change fails
-loudly.
+loudly. Shipped ports: GitHub 48101, Asana 48102, Google Drive 48103, Gmail
+48104, Google Calendar 48105, Google Sheets 48109, Google Docs 48110, Google
+Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
+
+**Google Workspace.** The six Google entries (Gmail, Drive, Calendar, Sheets,
+Docs, Slides) are ordinary pre-registered entries, one card and one stored
+client each. Google lets one OAuth client carry many redirect URIs, so one
+user-owned Google client can serve all six: the user registers every card's
+redirect URI on it and pastes the same Client ID and secret into each card
+(the runbook index lists the URIs). Nothing in `oauth_clients.py` links the
+six; a shared Google client card is a separate, not-yet-decided change.
 
 **Where the client lives.** `connections/oauth_clients.py` resolves it with a
 fixed precedence — environment

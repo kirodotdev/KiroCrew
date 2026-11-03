@@ -97,7 +97,18 @@ def test_managed_secret_names_cover_every_shipped_preregistered_provider():
     names = managed_client_secret_names()
     assert names["CONNECTIONS_GITHUB_CLIENT_SECRET"] == "github"
     assert names["CONNECTIONS_ASANA_CLIENT_SECRET"] == "asana"
-    assert set(names.values()) == {"github", "asana"}
+    # Google Drive is the hyphenated case: the vault name upper-cases the slug.
+    assert names["CONNECTIONS_GOOGLE_DRIVE_CLIENT_SECRET"] == "google-drive"
+    assert set(names.values()) == {
+        "github",
+        "asana",
+        "gmail",
+        "google-drive",
+        "google-calendar",
+        "google-sheets",
+        "google-docs",
+        "google-slides",
+    }
 
 
 # ── validators ──

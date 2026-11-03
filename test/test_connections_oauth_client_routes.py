@@ -18,6 +18,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
+from kiro_crew.connections.oauth_clients import client_id_env_name, client_secret_env_name
+from kiro_crew.connections.registry import get_preregistered_providers
 from kiro_crew.dashboard.handlers import connections
 from kiro_crew.secrets import SecretVault
 
@@ -40,13 +42,12 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     scratch = tmp_path / "home"
     scratch.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(scratch))
-    for name in (
-        GITHUB_ENV_ID,
-        GITHUB_ENV_SECRET,
-        "KIROCREW_CONNECTIONS_ASANA_CLIENT_ID",
-        "KIROCREW_CONNECTIONS_ASANA_CLIENT_SECRET",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    # Every pre-registered provider, so an operator's own override for any of
+    # them (Gmail, Drive, ...) cannot turn an "unconfigured" record configured.
+    for provider in get_preregistered_providers():
+        slug = str(provider["slug"])
+        monkeypatch.delenv(client_id_env_name(slug), raising=False)
+        monkeypatch.delenv(client_secret_env_name(slug), raising=False)
     return scratch
 
 
@@ -107,8 +108,18 @@ async def test_get_lists_every_preregistered_provider_unconfigured(home):
 
     assert body["schema_version"] == 1
     by_slug = {c["slug"]: c for c in body["clients"]}
-    assert set(by_slug) == {"github", "asana"}
-    for slug, port in (("github", 48101), ("asana", 48102)):
+    shipped = (
+        ("github", 48101),
+        ("asana", 48102),
+        ("google-drive", 48103),
+        ("gmail", 48104),
+        ("google-calendar", 48105),
+        ("google-sheets", 48109),
+        ("google-docs", 48110),
+        ("google-slides", 48111),
+    )
+    assert set(by_slug) == {slug for slug, _ in shipped}
+    for slug, port in shipped:
         record = by_slug[slug]
         assert record["configured"] is False
         assert record["confidential"] is True

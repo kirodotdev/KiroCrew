@@ -733,7 +733,8 @@ describe('a connected provider', () => {
     // documents — so equality is pinned here for every provider that warns.
     for (const provider of CONNECTION_PROVIDERS) {
       if (!provider.prerequisite_copy) continue
-      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug}`)).toBe(provider.prerequisite_copy)
+      // Catalog keys spell a slug's hyphens as underscores (google-drive -> google_drive).
+      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug.replace(/-/g, '_')}`)).toBe(provider.prerequisite_copy)
     }
   })
 

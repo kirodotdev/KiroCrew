@@ -286,7 +286,7 @@ def test_duplicate_redirect_port_across_two_providers_is_rejected_at_load(tmp_pa
 def test_two_preregistered_providers_on_distinct_ports_both_load(tmp_path):
     loaded = _load(tmp_path, _payload_with_auth("notion", dict(VALID_AUTH)))
     ports = {slug: p["auth"]["redirect_port"] for slug, p in loaded.items() if is_preregistered(p)}
-    assert ports == {"github": 48101, "asana": 48102, "notion": 48200}
+    assert ports == {**dict(SHIPPED_PORTS), "notion": 48200}
 
 
 def test_a_dcr_provider_does_not_occupy_a_port(tmp_path):
@@ -349,10 +349,25 @@ def test_visible_providers_are_copies():
 # ── the shipped registry ──
 
 
-def test_shipped_registry_preregisters_github_and_asana_on_pinned_ports():
+# Ports are permanent once shipped: each one is a redirect URI a user registered
+# in a vendor console. 48106-48108 are reserved by the Slack, HubSpot and Box
+# runbooks, so Google Sheets, Docs and Slides start at 48109.
+SHIPPED_PORTS = (
+    ("github", 48101),
+    ("asana", 48102),
+    ("google-drive", 48103),
+    ("gmail", 48104),
+    ("google-calendar", 48105),
+    ("google-sheets", 48109),
+    ("google-docs", 48110),
+    ("google-slides", 48111),
+)
+
+
+def test_shipped_registry_preregisters_providers_on_pinned_ports():
     by_slug = {p["slug"]: p for p in get_preregistered_providers()}
-    assert set(by_slug) == {"github", "asana"}
-    for slug, port in (("github", 48101), ("asana", 48102)):
+    assert set(by_slug) == {slug for slug, _ in SHIPPED_PORTS}
+    for slug, port in SHIPPED_PORTS:
         auth = by_slug[slug]["auth"]
         assert auth["mode"] == AUTH_MODE_PREREGISTERED
         assert auth["confidential"] is True

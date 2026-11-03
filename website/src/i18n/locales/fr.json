@@ -13999,7 +13999,13 @@
       "chat_use_lacks_oauth": "Enregistrée pour les discussions qui la prennent en charge. Certaines discussions ne peuvent pas encore utiliser ce type de connexion.",
       "configure_oauth_app": "Configurer l’application OAuth",
       "prerequisite_github": "GitHub ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth GitHub enregistrée sous Paramètres → Apps OAuth. La page de consentement GitHub nomme cette app ; approuvez-la pour continuer.",
-      "prerequisite_asana": "Asana ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app MCP Asana enregistrée sous Paramètres → Apps OAuth. La page de consentement Asana nomme cette app ; approuvez-la pour continuer."
+      "prerequisite_asana": "Asana ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app MCP Asana enregistrée sous Paramètres → Apps OAuth. La page de consentement Asana nomme cette app ; approuvez-la pour continuer.",
+      "prerequisite_gmail": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer.",
+      "prerequisite_google_drive": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer.",
+      "prerequisite_google_calendar": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer.",
+      "prerequisite_google_sheets": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer.",
+      "prerequisite_google_docs": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer.",
+      "prerequisite_google_slides": "Google ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth Google enregistrée sous Paramètres → Apps OAuth. La page de consentement Google nomme cette app ; approuve-la pour continuer."
     },
     "contextBreakdown": {
       "axis_turn_n": "Tour {{n}}",

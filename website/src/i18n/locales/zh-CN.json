@@ -13423,7 +13423,13 @@
       "chat_use_lacks_oauth": "已为支持它的聊天保存。部分聊天暂时无法使用这类登录。",
       "configure_oauth_app": "配置 OAuth 应用",
       "prerequisite_github": "GitHub 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 GitHub OAuth 应用。GitHub 授权页面显示的是此应用；同意后即可继续。",
-      "prerequisite_asana": "Asana 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Asana MCP 应用。Asana 授权页面显示的是此应用；同意后即可继续。"
+      "prerequisite_asana": "Asana 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Asana MCP 应用。Asana 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_gmail": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_google_drive": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_google_calendar": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_google_sheets": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_google_docs": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。",
+      "prerequisite_google_slides": "Google 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Google OAuth 应用。Google 授权页面显示的是此应用；同意后即可继续。"
     },
     "contextBreakdown": {
       "axis_turn_n": "第 {{n}} 轮",

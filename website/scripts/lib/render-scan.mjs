@@ -126,6 +126,9 @@ export const ALWAYS_LATIN = [
   // Asana joins because its pre-registered entry is now visible in the gallery
   // regardless of the launch gate, so its brand renders on `capabilities-mcp`.
   'Asana', 'Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel',
+  // The six Google Workspace entries are pre-registered too, so their names render
+  // there for the same reason.
+  'Gmail', 'Google Drive', 'Google Calendar', 'Google Sheets', 'Google Docs', 'Google Slides',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
   'Telegram', 'TypeScript', 'Webex', 'WhatsApp', 'YAML', 'iMessage', 'npm',
   // `WeCom` and `WeChat` are deliberately ABSENT despite rendering from the same

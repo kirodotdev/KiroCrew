@@ -13999,7 +13999,13 @@
       "chat_use_lacks_oauth": "Guardado para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión.",
       "configure_oauth_app": "Configurar aplicación OAuth",
       "prerequisite_github": "GitHub no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de GitHub registrada en Ajustes → Apps OAuth. La página de consentimiento de GitHub muestra esa app; apruébala para continuar.",
-      "prerequisite_asana": "Asana no admite el registro dinámico de clientes, así que Conectar usa la app MCP de Asana registrada en Ajustes → Apps OAuth. La página de consentimiento de Asana muestra esa app; apruébala para continuar."
+      "prerequisite_asana": "Asana no admite el registro dinámico de clientes, así que Conectar usa la app MCP de Asana registrada en Ajustes → Apps OAuth. La página de consentimiento de Asana muestra esa app; apruébala para continuar.",
+      "prerequisite_gmail": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_drive": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_calendar": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_sheets": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_docs": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_slides": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",

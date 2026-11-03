@@ -382,6 +382,8 @@ export interface McpCustomSpec {
   url?: string
   /** Authorable on remote (url) specs; read responses redact every stored value. */
   headers?: Record<string, string>
+  /** OAuth scopes a remote spec requests; the backend writes them as `oauthScopes`. */
+  scopes?: string[]
 }
 
 /** GET /api/mcp/custom/{name} — editable spec; header values are redacted. */

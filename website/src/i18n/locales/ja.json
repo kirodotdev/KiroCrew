@@ -13423,7 +13423,13 @@
       "chat_use_lacks_oauth": "対応しているチャット用に保存されています。一部のチャットはまだこの種類のサインインを使えません。",
       "configure_oauth_app": "OAuth アプリを設定",
       "prerequisite_github": "GitHub は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した GitHub のOAuth アプリを使います。GitHub の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
-      "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
+      "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_gmail": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_drive": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_calendar": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_sheets": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_docs": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_slides": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}} ターン目",
