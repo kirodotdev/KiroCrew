@@ -703,3 +703,66 @@ test("WALKER_SOURCE is a self-contained IIFE string", () => {
   assert.ok(typeof WALKER_SOURCE === "string" && WALKER_SOURCE.startsWith("(()"));
   assert.ok(WALKER_SOURCE.includes("__kcRefs"));
 });
+
+// ── WALKER_SOURCE: display: contents (#23390) ──
+
+// A minimal fake DOM: enough for the walker's visible/role/name/ref logic.
+function fakeEl(tag, { style = {}, box = true, attrs = {}, text = "", children = [] } = {}) {
+  const el = {
+    nodeType: 1,
+    tagName: tag.toUpperCase(),
+    id: attrs.id || "",
+    children,
+    textContent: text,
+    isConnected: true,
+    isContentEditable: attrs.contenteditable === "true",
+    _style: { display: "block", visibility: "visible", position: "static", ...style },
+    getAttribute(n) { return Object.prototype.hasOwnProperty.call(attrs, n) ? attrs[n] : null; },
+    hasAttribute(n) { return Object.prototype.hasOwnProperty.call(attrs, n); },
+    getBoundingClientRect() { return box ? { width: 10, height: 10, left: 0, top: 0 } : { width: 0, height: 0, left: 0, top: 0 }; },
+    closest() { return null; },
+  };
+  el.offsetParent = box ? {} : null;
+  return el;
+}
+
+function runWalker(body) {
+  const vm = require("node:vm");
+  const doc = { body, documentElement: body, title: "t", getElementById: () => null, querySelector: () => null };
+  const win = { getComputedStyle: (el) => el._style, CSS: { escape: (s) => s } };
+  win.window = win;
+  const ctx = vm.createContext({ window: win, document: doc, location: { href: "about:blank" }, Map, Object, String });
+  win.document = doc;
+  return vm.runInContext(WALKER_SOURCE, ctx);
+}
+
+test("walker: children of a display:contents element are walked (#23390)", () => {
+  const textbox = fakeEl("div", { attrs: { role: "textbox", contenteditable: "true", "aria-label": "Message" } });
+  const send = fakeEl("button", { text: "Send" });
+  // display: contents generates no box: 0x0 rect and a null offsetParent.
+  const wrapper = fakeEl("div", { style: { display: "contents" }, box: false, children: [textbox, send] });
+  const side = fakeEl("a", { attrs: { href: "/x" }, text: "Side" });
+  const body = fakeEl("body", { children: [side, wrapper] });
+  const res = runWalker(body);
+  assert.ok(!res.error, res.error);
+  // res comes from another vm realm; copy into this realm before deepStrictEqual.
+  const nodes = Array.from(res.nodes);
+  assert.deepStrictEqual(Array.from(nodes, (n) => `${n.role}:${n.name}`), ["link:Side", "textbox:Message", "button:Send"]);
+  // The transparent wrapper adds no depth level.
+  assert.deepStrictEqual(Array.from(nodes, (n) => n.depth), [0, 0, 0]);
+  // The interactive children get refs the other ops can use.
+  assert.ok(nodes.slice(1).every((n) => /^e\d+$/.test(n.ref)));
+});
+
+test("walker: display:none and boxless non-contents subtrees stay skipped", () => {
+  const hiddenBtn = fakeEl("button", { text: "Hidden" });
+  const none = fakeEl("div", { style: { display: "none" }, box: false, children: [hiddenBtn] });
+  const zeroBtn = fakeEl("button", { text: "Zero" });
+  const zero = fakeEl("div", { box: false, children: [zeroBtn] });
+  const invisChild = fakeEl("button", { text: "Inherited", style: { visibility: "hidden" } });
+  const contentsHidden = fakeEl("div", { style: { display: "contents", visibility: "hidden" }, box: false, children: [invisChild] });
+  const body = fakeEl("body", { children: [none, zero, contentsHidden] });
+  const res = runWalker(body);
+  assert.ok(!res.error, res.error);
+  assert.strictEqual(res.nodes.length, 0);
+});
