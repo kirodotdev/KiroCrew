@@ -151,6 +151,8 @@ class TestLifecycle:
                 await q.flip_answering_locked("s", s, ["a", "b"], owner="alice")  # raises too
 
         asyncio.run(go())  # must not raise
+        # The refused flip was published as a fresh record, so nothing stays owed.
+        assert "s" not in q._receipts
 
     def test_a_send_that_returns_no_id_records_no_receipt(self) -> None:
         """No id means no bubble to edit later -- storing one would 404 forever."""

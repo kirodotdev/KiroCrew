@@ -261,14 +261,18 @@ class TestInitializeAndPause:
         assert slept == [MAX_DELAY_SECS]
 
     @pytest.mark.asyncio
-    async def test_pause_before_never_raises_into_boot(self, monkeypatch):
+    async def test_pause_before_never_raises_into_boot(self, monkeypatch, caplog):
         """The pause is best-effort: even a pathological sleep failure must not
         propagate into (and abort) gateway startup — asyncio.sleep only raises
         CancelledError in practice, which must propagate; anything else is a
         no-op guarantee provided by reading an immutable decision."""
         cautious_boot._decision = CautiousBootDecision(True, 0.0, "recent dump")
-        # Zero delay: still logs + sleeps(0) — just verify it completes.
-        await pause_before("session restore")
+        # Zero delay: still logs + sleeps(0).
+        with caplog.at_level(logging.INFO, logger=cautious_boot.logger.name):
+            await pause_before("session restore")
+        name = cautious_boot.logger.name
+        messages = [r.getMessage() for r in caplog.records if r.name == name]
+        assert messages == ["cautious boot: pausing 0s before starting session restore"]
 
 
 # ---------------------------------------------------------------------------

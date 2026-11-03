@@ -402,8 +402,11 @@ async def test_a_later_outage_warns_again_after_recovery() -> None:
             await agents.api_models(signed_out)  # outage 1 -> WARNING
             await agents.api_models(signed_out)  # same outage -> DEBUG
             assert warn.call_count == 1
+            assert kiro_readiness._refusal_warned_at is not None
 
             await kiro_readiness.reject_if_kiro_unverified(ready)  # recovered
+            # The observed recovery forgot the reported outage.
+            assert kiro_readiness._refusal_warned_at is None
             await agents.api_models(signed_out)  # outage 2 -> WARNING again
 
     assert warn.call_count == 2
@@ -440,6 +443,8 @@ async def test_an_unobserved_recovery_does_not_silence_the_next_outage(
             # Floor elapsed, and NO authorized call ever happened in between.
             fake_now[0] += 2
             await agents.api_models(request)
+            # The refusal past the floor was reported anew, at its own time.
+            assert kiro_readiness._refusal_warned_at == fake_now[0]
 
     assert warn.call_count == 2
 
