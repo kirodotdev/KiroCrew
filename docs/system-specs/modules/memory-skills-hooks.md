@@ -4128,6 +4128,16 @@ pins the surface, the seams and the `skill_runtime` placement rules, and
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
+**Agent Plugin skills.** Each skill of an Agent Plugin the owner turned `on` is in
+the catalog as `plugin-<name>/<skill>`, enumerated after the skills dir and before
+`extra_paths` (`_iter_uncached`, `_plugin_skill_files`) and served by that key in
+`load_skill`, so `skill_search`, the startup index and every harness's native view
+reach it the way they reach an app skill. `_trusted_skill_roots()` admits that
+plugin's resolved `skills/` directory and nothing else of the powers home, so a
+link into an `off` plugin's skills is refused. The roots come from
+`agent_plugins.skill_roots.on_plugin_skill_roots()`; contract:
+[agent-plugins.md](agent-plugins.md) §12.
+
 **The Context-budget switch survives updates.** `inject_on_trigger: false` is the
 one user-mutable setting on a built-in skill, written into the installed
 `SKILL.md` by `set_inject_on_trigger`. A packaged `SKILL.md` never carries it, so

@@ -28,7 +28,11 @@ from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, vali
 from kiro_crew.metrics.feature_usage import SKILL_LAZY_LOAD_COUNT, skill_label
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
-from kiro_crew.skills_discovery import _installed_package_bytes_match, _within_any
+from kiro_crew.skills_discovery import (
+    _installed_package_bytes_match,
+    _plugin_skill_files,
+    _within_any,
+)
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
 logger = logging.getLogger("kiro_crew.skills")
@@ -510,6 +514,9 @@ def load_skill(
 ) -> str | None:
     """Load a single skill's content by name (supports nested paths).
 
+    An ``on`` Agent Plugin's skill is served by its ``plugin-<name>/<skill>`` key,
+    after the skills dir and before the extra paths, the enumeration's order.
+
     *project_dir* additionally allows a body to come from that project's own
     trusted ``<project>/.kiro/skills``. It is probed LAST so precedence
     matches enumeration: a repository cannot serve the body for a name the
@@ -526,6 +533,22 @@ def load_skill(
     if skill_file.exists():
         content = self._read_global_skill_text(
             skill_file, max_bytes, refusal_reasons=refusal_reasons
+        )
+        if content is None:
+            return None
+        self._emit_lazy_load_metric(_t0, hit=True, skill=name)
+        return content
+    # An ``on`` plugin's skill, by its ``plugin-<name>/<skill>`` key: the path
+    # comes from the plugin's own validated listing, never built from *name*.
+    plugin_file = next((path for key, path in _plugin_skill_files() if key == name), None)
+    if plugin_file is not None:
+        resolved = validate_file_path(str(plugin_file))
+        if resolved is None:
+            if refusal_reasons is not None:
+                refusal_reasons.append("sensitive_path")
+            return None
+        content = self._read_global_skill_text(
+            Path(resolved), max_bytes, refusal_reasons=refusal_reasons
         )
         if content is None:
             return None

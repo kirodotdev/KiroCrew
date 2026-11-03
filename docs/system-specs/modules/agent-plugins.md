@@ -6,7 +6,8 @@ Owner: `kiro_crew.agent_plugins`. Tests: `test/test_agent_plugins_discovery.py`,
 vendored in `test/fixtures/agent_plugins_conformance/`),
 `test/test_agent_plugins_install.py`, `test/test_agent_plugins_consent.py`,
 `test/test_agent_plugins_routes.py`, `test/test_agent_plugins_launch.py`,
-`test/test_agent_plugins_mcp_source.py` and `test/test_agent_plugins_include_powers.py`.
+`test/test_agent_plugins_mcp_source.py`, `test/test_agent_plugins_include_powers.py`
+and `test/test_agent_plugins_skills_catalog.py`.
 Design:
 [rfc-agent-plugins-standard.md](../../request-for-change/rfc-agent-plugins-standard.md).
 
@@ -14,7 +15,7 @@ Kiro Crew's client for the [Agent Plugins](https://agent-plugins.org/) 1.0.0
 standard. This module discovers, validates, converts and installs plugins, keeps
 the owner's on/off record, and starts the stdio servers of plugins the owner
 turned on. A plugin's MCP servers reach sessions through the plugin MCP source
-(§9). Skills are not handed to sessions yet.
+(§9), and its skills through the skill catalog (§12).
 
 ## 1. Where plugins come from
 
@@ -324,3 +325,29 @@ and `apps/bridges_agents._register_agents` sets it on every app agent. KAS's own
 plugin loader therefore never runs beside Crew's, and no server is registered
 twice. `acp/kas_agents.to_client_custom_agent` forwards the bool, and
 `client_mcp_array.spec_is_toolless` still treats a `false` value as toolless.
+
+## 12. Skills (`agent_plugins.skill_roots`)
+
+`on_plugin_skill_roots()` gives the skill catalog one `PluginSkillRoot` per `on`
+plugin: the plugin's resolved `skills/` directory and the skills discovery
+validated in it (§3), each keyed `plugin-<name>/<skill>`, so two plugins with a
+skill of the same name never collide.
+
+- **Trust.** `skills_discovery._trusted_skill_roots()` adds each root's
+  directory, one per `on` plugin, never `installed/` or a plugin root as a
+  whole. An `off`, `invalid` or `not-a-plugin` plugin adds none, so a
+  link placed in the skills dir that points into its skills is refused.
+- **Catalog.** `_iter_uncached` lists every root's skills after the skills dir
+  and before `extra_paths`, vetted through `validate_file_path`, and `load_skill`
+  serves them by key in the same order. `skill_search`, the startup index and the
+  native skill view of every harness read the same catalog, so there is no
+  per-harness branch. A skill folder that links elsewhere inside the plugin
+  resolves outside the trusted directory and is left out.
+- **Freshness.** The answer is re-derived from discovery. It is kept while the
+  owner's record and `installed.json` are unchanged, for at most 60 seconds, the
+  catalog's own revalidation period. Turning a plugin off or uninstalling it
+  rewrites one of those files, so the next catalog refresh drops its skills. A
+  skill added to or removed from an `on` plugin is seen within the 60 seconds,
+  and an edit to a skill's text keeps it served.
+- **Failures.** It never raises: a discovery failure contributes no root, and a
+  failure on one plugin skips only that plugin.

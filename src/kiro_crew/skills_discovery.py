@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from kiro_crew import skill_trust
+from kiro_crew.agent_plugins.skill_roots import on_plugin_skill_roots
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
@@ -146,7 +147,11 @@ def _trusted_skill_roots() -> tuple[str, ...]:
 
     * the installed ``kiro_crew`` package — built-in apps keep their skills
       under ``apps/builtins/<app>/skills/``;
-    * ``<data home>/apps`` — externally installed apps.
+    * ``<data home>/apps`` — externally installed apps;
+    * the resolved ``skills/`` directory of each Agent Plugin the owner turned
+      on (:func:`kiro_crew.agent_plugins.skill_roots.on_plugin_skill_roots`), one
+      directory per plugin, never the plugins folder as a whole. A plugin that is
+      off adds none, so a link into its skills stays rejected.
 
     A symlink resolving anywhere else stays rejected: an arbitrary target would
     admit unvetted ``SKILL.md`` prose into the agent's context.
@@ -156,7 +161,18 @@ def _trusted_skill_roots() -> tuple[str, ...]:
         roots.append(os.path.realpath(config_dir() / "apps"))
     except Exception:  # noqa: BLE001 — an unresolvable data home must not stop scanning
         pass
+    roots.extend(root.directory for root in on_plugin_skill_roots())
     return tuple(roots)
+
+
+def _plugin_skill_files() -> list[tuple[str, Path]]:
+    """``(plugin-<name>/<skill>, SKILL.md)`` for every skill of every ``on`` plugin.
+
+    Re-derived on every call (the plugin side bounds how often it re-reads), so a
+    plugin turned off is gone from the next walk. Each path sits inside a
+    directory :func:`_trusted_skill_roots` admits for as long as the plugin is on.
+    """
+    return [(key, Path(path)) for root in on_plugin_skill_roots() for key, path in root.skills]
 
 
 _package_record_lock = threading.Lock()

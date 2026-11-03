@@ -1163,7 +1163,7 @@ def _scoped_entries(
 def _iter_uncached(
     loader: SkillsLoader, project_key: str | None = None
 ) -> list[tuple[str, Path, str | None]]:
-    """Walk the skills dir, extra paths, and an already-canonical project root.
+    """Walk the skills dir, ``on`` plugins' skills, extra paths, and a canonical project root.
 
     This function performs no trust check of its own. The loading path passes
     a key confirmed by ``_trusted_project_key``; the catalog path uses it only
@@ -1190,6 +1190,18 @@ def _iter_uncached(
         )
     ]
     seen = {name for name, _, _ in results}
+    # The skills of every ``on`` Agent Plugin, under ``plugin-<name>/<skill>``.
+    # Each sits in that plugin's resolved ``skills/`` directory, which
+    # ``_trusted_skill_roots`` admits while the plugin is on; the path is vetted
+    # here exactly as an extra-path file is.
+    for name, skill_file in sk._plugin_skill_files():
+        if name in seen:
+            continue
+        resolved = sk.validate_file_path(str(skill_file))
+        if resolved is None:
+            continue
+        results.append((name, Path(resolved), None))
+        seen.add(name)
     # (root, confine_to): only the project root is confined — see
     # _iter_skill_files. Extra paths keep the provider-root allowance.
     roots: list[tuple[Path, tuple[str, ...] | None]] = [
