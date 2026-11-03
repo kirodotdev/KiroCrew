@@ -15,6 +15,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, coerce_config_field, data_home, read_config_text
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _pipeline,
@@ -267,7 +268,9 @@ async def remote_search(request: web.Request) -> web.Response:
         )
     query = str(body.get("query") or "").strip()
     try:
-        limit = max(1, min(int(body.get("limit") or 5), 20))
+        # body_int: JSON ``1e999`` parses as infinity, and plain ``int()`` of it
+        # raises OverflowError past this clause; body_int raises ValueError.
+        limit = max(1, min(body_int(body.get("limit") or 5), 20))
     except (TypeError, ValueError):
         limit = 5
     source_id = body.get("source_id")
