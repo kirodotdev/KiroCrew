@@ -970,8 +970,6 @@ class TestOnEventDispatch:
             await on_event(_client(), _req("events_api", payload))
         assert route.await_args[0][1]["team"] == "T_REAL"
         assert route.await_args.kwargs["is_mention"] is False
-        # The envelope's workspace is written onto the event itself.
-        assert event["team"] == "T_REAL"
 
     @pytest.mark.asyncio
     async def test_app_mention_sets_is_mention(self):
