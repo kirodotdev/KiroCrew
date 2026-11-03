@@ -48,6 +48,7 @@ from kiro_crew.browser_cli.install_browsers import (
     _DEFAULT_BROWSER_ENGINE,
     BROWSER_ENGINES,
     _browser_present,
+    _full_browser_status,
     browser_status,
     browsers_present,
 )
@@ -224,19 +225,24 @@ def detect() -> dict[str, Any]:
     major = _node_major(node_version)
     command = cli_command(path) if path is not None else None
     cli_version = installed_cli_version(command)
-    status = browser_status()
+    # ``browser_ok`` and ``browsers`` describe the full Chromium build that
+    # ``attach``/``--extension`` drives; ``browser_status`` also counts the
+    # headless shell a headless launch runs, so the panel offers the download
+    # when only that shell is missing.
+    full = _full_browser_status()
+    status = browser_status(full)
     return {
         "installed": command is not None,
         "cli_path": path if command is not None else None,
         "cli_version": cli_version,
         "node_ok": major is not None and major >= MIN_NODE_MAJOR,
         "node_version": node_version,
-        "browser_ok": _browser_present(status),
+        "browser_ok": _browser_present(full),
         # Per-engine, so the panel can offer each download rather than
         # implying "browser" means only the one attach needs. ``browsers`` is
         # the boolean projection older dashboards read; ``browser_status``
         # keeps "could not read" apart from "not downloaded".
-        "browsers": browsers_present(status),
+        "browsers": browsers_present(full),
         "browser_status": status,
         # What to run when THIS install cannot proceed. Composed here rather than
         # in the dashboard for three reasons: only the gateway knows which OS it
@@ -682,6 +688,8 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.browser_cli.install_browsers import (  # noqa: F401
         _BROWSERS_CACHE_ENV,
+        _HEADLESS_SHELL_DIR_ENGINE,
+        _HEADLESS_SHELL_MANIFEST_NAME,
         _INSTALLATION_MARKER,
         STATUS_DOWNLOADED,
         STATUS_MISSING,
@@ -693,10 +701,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _default_cache_root,
         _download_complete,
         _has_complete_special_build,
+        _headless_shell_status,
         _is_special_build_name,
         _playwright_arch,
         _playwright_env,
         _playwright_host_platform,
+        _required_build_status,
         _required_revisions,
         _revision_overrides,
         _status_of,

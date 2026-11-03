@@ -343,9 +343,23 @@ Per-engine readiness is reported as `browser_status`:
 | `missing` | the cache was read and holds no complete build, including one an interrupted download left behind |
 | `unknown` | the cache or marker could not be read, the platform has no known cache location, or the expected directory is absent or incomplete while a complete build the ported host-platform key did not predict exists: a `<engine>_*_special-*` build when the plain one was expected, or the plain required-revision build when a `_special` one was (only playwright-core's own platform logic picks the directory, so the ported key may be stale against the installed CLI) |
 
-`browsers[engine]` is true only for `downloaded`, and `browser_ok` is
-`browser_status.chromium == "downloaded"`. "Downloaded" is filesystem evidence;
-whether the build launches is a separate fact the panel does not claim.
+**Chromium also needs its headless shell.** A headless launch runs Playwright's
+separate `chromium_headless_shell-<rev>` build, not the full `chromium-<rev>` one.
+A cache made with `install --no-shell`, or one whose shell directory alone was
+removed, keeps the full build and fails every headless launch. So when the manifest
+names a `chromium-headless-shell` revision, `browser_status.chromium` is
+`downloaded` only when that shell is complete too (matched the same way: exact
+revision, its `_special` override directory on a host the override names, and
+`unknown` for an unreadable marker or an unpredicted special build). A missing
+shell reads `missing`, and the panel offers the Chromium download, which restores
+both builds. With no shell revision in the manifest (none attributable, or a CLI
+that predates the separate shell) the full-build reading stands.
+
+`browsers[engine]` is true only for a `downloaded` full build, and `browser_ok`
+is `browsers.chromium`: `attach`/`--extension` drives the full build, never the
+headless shell, so a missing shell leaves the attach gate as it was. "Downloaded"
+is filesystem evidence; whether the build launches is a separate fact the panel
+does not claim.
 
 The cache location follows playwright-core's registry, so detection looks where
 the installer writes:
