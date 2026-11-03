@@ -664,10 +664,9 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if len(name) > _MAX_NAME_LEN:
             # NOT a competing identity rule -- `app_name_error` owns admissibility,
-            # and it does not bound length. This is a bound on the name AS A DIRECTORY
-            # COMPONENT, kept local because raising it into the shared contract would
-            # change every admission path in the product, which this change is not
-            # scoped to do.
+            # including its own APP_NAME_MAX_LENGTH bound. The official catalog keeps
+            # this tighter bound for its own entries; a name between the two limits
+            # is a valid app name that this catalog does not list.
             logger.warning("dropping catalog entry with an over-long name %r", name)
             continue
         if name in seen:
