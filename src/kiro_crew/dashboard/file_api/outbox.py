@@ -431,15 +431,16 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     # The range is cut from bytes the checks above already cleared, so a partial
     # response never carries content the full one would refuse.
     range_header = request.headers.get("Range")
-    if range_header:
-        size = len(raw)
-        parsed = _parse_range_header(range_header, size)
-        if parsed is None:
-            return web.json_response(
-                {"error": "range not satisfiable", "code": "bad_range"},
-                status=416,
-                headers={"Content-Range": f"bytes */{size}"},
-            )
+    size = len(raw)
+    parsed = _parse_range_header(range_header, size) if range_header else "ignore"
+    if parsed is None:
+        return web.json_response(
+            {"error": "range not satisfiable", "code": "bad_range"},
+            status=416,
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    if parsed != "ignore":
+        # A malformed Range is ignored, not refused: the whole body, 200.
         start, end = parsed
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return web.Response(status=206, body=raw[start : end + 1], headers=headers)
