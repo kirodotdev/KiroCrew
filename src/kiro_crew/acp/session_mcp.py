@@ -84,6 +84,7 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
+from kiro_crew import kiro_cli as _kiro_cli
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
@@ -1737,9 +1738,10 @@ def _native_restriction(
     # rebuild has not yet removed or a line someone wrote, and a settings file is
     # never stamped by any Crew writer -- so mounting the element for it would
     # launch a server kiro-cli refuses, and the declaration stays native. The
-    # mount itself answers registry mode before it reaches this predicate, so
-    # from the mount the flag is only ever off; the projection, which judges the
-    # spec at preparation, is the reader the exemption is for.
+    # mount reaches this predicate with the flag on only when no admin registry
+    # can govern the sign-in (``kiro_control_plane_servers``); a marker still on
+    # the spec there is Crew's own, so the exemption applies. The projection,
+    # which judges the spec at preparation, is the other reader it is for.
     transports = ("stdio", _KIRO_REGISTRY_TYPE) if crews_registry_marker else ("stdio",)
     if transport not in transports:
         return (
@@ -1838,7 +1840,9 @@ def kiro_control_plane_servers(
 
     Only an existing managed stdio declaration can be overridden. Native-only
     restrictions stay in the native declaration instead of being discarded by
-    ACP shaping. Registry entries remain the enterprise catalog's responsibility.
+    ACP shaping. Registry entries remain the enterprise catalog's responsibility,
+    except the control plane when it is known that no admin registry can govern
+    this sign-in (:func:`kiro_crew.kiro_cli.registry_governance_known_unreachable`).
     The element's ``env`` is owned by :func:`_managed_element_env`, which holds it to
     the rule the disk-writing consumer applies to this same population.
 
@@ -1869,7 +1873,11 @@ def kiro_control_plane_servers(
     would be the window in which a toggle undone in between answers ``None``
     and the session falls back to a guard that names the wrong file.
     """
-    if not agent or _registry_mode():
+    # Under a declared registry the catalog owns every launch, except when no
+    # registry can govern this sign-in: the spec then carries the control plane
+    # unmarked (``managed_mcp._registry_marker_for``), so it gets its element too.
+    registry_declared = _registry_mode()
+    if not agent or (registry_declared and not _kiro_cli.registry_governance_known_unreachable()):
         return NativeControlPlaneMount([], {})
     spec = spec_override if spec_override is not None else _agent_spec_for(agent, work_dir)
     if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
@@ -1902,10 +1910,10 @@ def kiro_control_plane_servers(
     # the env its pinned launch needs (PYTHONPATH and KIROCREW_HOME).
     candidates: list[tuple[str, dict[str, Any] | None, dict[str, str]]] = [
         (name, managed_mcp_spec_entry(name, include_opt_in=True), {})
-        for name in IDENTITY_BOUND_SERVERS
+        for name in (CONTROL_PLANE_SERVERS if registry_declared else IDENTITY_BOUND_SERVERS)
         if allow.grants(name)
     ]
-    app_launches = builtin_app_identity_launches()
+    app_launches = {} if registry_declared else builtin_app_identity_launches()
     candidates.extend(
         (name, launch, dict(launch.get("env") or {}))
         for name, launch in app_launches.items()

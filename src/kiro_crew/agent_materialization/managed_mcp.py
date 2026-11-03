@@ -19,7 +19,9 @@ import math
 from typing import Any
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import kiro_cli
 from kiro_crew.env import sanitize_spec_env
+from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.platform.governance import CU_MCP_SERVER
 
 
@@ -58,6 +60,25 @@ def _managed_mcp_env() -> dict[str, str]:
 # NOT a transport: a `registry` entry is a POINTER into the admin's catalog,
 # carrying only env/headers/timeout overrides, and its command/url are ignored.
 _MCP_REGISTRY_TYPE = "registry"
+
+
+def _registry_marker_for(name: str, registry_mode: bool) -> bool:
+    """Whether managed server *name*'s entry carries the registry marker.
+
+    The declaration decides it, with one exception: the control plane
+    (``kirocrew-core``, ``kirocrew-cron``) stays a plain local server when it is
+    known that no admin registry can govern this sign-in. kiro-cli is then not in
+    registry mode and drops every marked entry, so marking the control plane
+    would remove ``spawn_run``, ``cron_add`` and ``learn_add`` from every session
+    while no registry is in force. Any doubt about the sign-in keeps the marker,
+    which is what a governed account needs.
+    """
+    if not registry_mode:
+        return False
+    if name not in CONTROL_PLANE_SERVERS:
+        return True
+    return not kiro_cli.registry_governance_known_unreachable()
+
 
 # Every key a managed MCP server's entry may carry. Derived from kiro-cli's
 # documented local-server schema rather than assembled by hand, so it can be
@@ -635,7 +656,9 @@ def managed_member_transport(name: str) -> dict[str, Any] | None:
     entry = managed_mcp_spec_entry(name)
     if entry is None or not isinstance(spec, dict):
         return None
-    _enforce_managed_mcp_ownership(entry, spec, _mcp_registry_mode(), auto_approve="own")
+    _enforce_managed_mcp_ownership(
+        entry, spec, _registry_marker_for(name, _mcp_registry_mode()), auto_approve="own"
+    )
     entry.pop("autoApprove", None)
     return entry
 
@@ -676,7 +699,9 @@ def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode:
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
         entry["args"] = args
-        _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
+        _enforce_managed_mcp_ownership(
+            entry, spec, _registry_marker_for(name, registry_mode), auto_approve="own"
+        )
         mcp[name] = entry
 
 
@@ -740,7 +765,10 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
         # genuinely new entry — all via the same helper the fresh-build loop
         # uses, so the two ownership rules cannot hand-drift.
         _enforce_managed_mcp_ownership(
-            entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
+            entry,
+            spec,
+            _registry_marker_for(name, registry_mode),
+            auto_approve="seed" if is_new else "preserve",
         )
 
 

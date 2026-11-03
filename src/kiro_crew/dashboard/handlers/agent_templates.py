@@ -1102,7 +1102,12 @@ def control_plane_declarations(tools: Any, servers: Any) -> dict[str, dict[str, 
     answer to the spec as re-read under the spec lock, beside whatever a
     concurrent writer saved to ``mcpServers`` in the meantime.
     """
-    from kiro_crew.agent import _MCP_REGISTRY_TYPE, _mcp_registry_mode, managed_mcp_spec_entry
+    from kiro_crew.agent import (
+        _MCP_REGISTRY_TYPE,
+        _mcp_registry_mode,
+        _registry_marker_for,
+        managed_mcp_spec_entry,
+    )
     from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
     from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 
@@ -1133,7 +1138,7 @@ def control_plane_declarations(tools: Any, servers: Any) -> dict[str, dict[str, 
                 f"Could not add {name}: Kiro Crew cannot find how to start it on this "
                 "install, so the tool would never load. The Logs panel in a chat shows why.",
             )
-        if registry_mode:
+        if _registry_marker_for(name, registry_mode):
             entry["type"] = _MCP_REGISTRY_TYPE
         out[name] = entry
     return out

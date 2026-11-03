@@ -7,6 +7,8 @@ import re
 import stat
 import subprocess
 import sys
+import threading
+import time
 import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
@@ -394,7 +396,9 @@ def api_key_configured(environ: Mapping[str, str] | None = None) -> bool:
     configured host.
 
     Reads the process environment, which by this point also carries anything the
-    credential loader lifted out of Kiro Crew's ``.env``.
+    credential loader lifted out of Kiro Crew's ``.env`` -- except under the
+    Docker scrub (``_KIROCREW_CREDS_SCRUBBED``), where the key stays only in
+    ``.env``; :func:`_data_home_api_key_may_be_set` reads that file.
     """
     env = environ if environ is not None else os.environ
     return bool((env.get(_API_KEY_ENV) or "").strip())
@@ -416,6 +420,102 @@ def mcp_governance_may_apply(
     it does not check is what turns a diagnostic into bad advice.
     """
     return signed_in_via_idc(platform_name, home, environ) or api_key_configured(environ)
+
+
+def _data_home_api_key_may_be_set() -> bool:
+    """Whether the data home's ``.env`` holds ``KIRO_API_KEY``, or cannot be read.
+
+    The Docker entrypoint moves the key into ``.env`` and scrubs it from the
+    process environment (``_KIROCREW_CREDS_SCRUBBED``), and kiro-cli sessions
+    get it back from there, so :func:`api_key_configured` alone misses the key
+    those sessions sign in with. Only presence is inspected. An unreadable file
+    proves nothing and answers True, the same rule
+    :func:`kiro_crew.acp.kas_route.kiro_cli_signed_out` applies.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    definitive: list[bool] = []
+    try:
+        if read_env_file_credential(CRED_KIRO_API_KEY, definitive=definitive).strip():
+            return True
+    except Exception:  # noqa: BLE001 - an unreadable answer proves nothing
+        return True
+    return definitive != [True]
+
+
+# How long a "no admin registry can govern this sign-in" answer is reused. It is
+# asked on every spec write and every kiro-cli session start while registry mode
+# is declared, and the confirming ``whoami`` is a subprocess that can take
+# seconds. The answer is also keyed on the sign-in's own traces (see
+# :func:`_sign_in_fingerprint`), so a sign-in that touches kiro-cli's store or
+# the API-key variable is seen at once rather than at the end of the window.
+_GOVERNANCE_UNREACHABLE_TTL_SECS = 300.0
+_governance_unreachable_cache: tuple[float, object, bool] | None = None
+_governance_unreachable_lock = threading.Lock()
+
+
+def _sign_in_fingerprint(
+    home: Path | None = None, environ: Mapping[str, str] | None = None
+) -> tuple[tuple[tuple[str, int, int] | None, ...], bool, bool]:
+    """What changes when kiro-cli signs in or out: its store files and the API key.
+
+    Only ``stat`` data and the key's presence, in the environment and in the
+    data home's ``.env``, never a value. A sign-in writes
+    ``data.sqlite3`` or its WAL, so a cached answer from before it does not
+    match. Unreadable paths count as absent.
+    """
+    env = environ if environ is not None else os.environ
+    stamps: list[tuple[str, int, int] | None] = []
+    for db in kiro_cli_state_dbs(sys.platform, home if home is not None else Path.home(), env):
+        for path in (db, db.with_name(db.name + "-wal")):
+            try:
+                st = os.stat(path)
+            except OSError:
+                stamps.append(None)
+                continue
+            stamps.append((str(path), st.st_mtime_ns, st.st_size))
+    return (tuple(stamps), api_key_configured(env), _data_home_api_key_may_be_set())
+
+
+def registry_governance_known_unreachable() -> bool:
+    """True only when it is KNOWN that no admin MCP registry can govern this sign-in.
+
+    Both signals must agree: :func:`mcp_governance_may_apply` finds no Identity
+    Center rows and no API key, the data home's ``.env`` holds no API key either
+    (:func:`_data_home_api_key_may_be_set`), AND ``kiro-cli whoami`` names a Builder ID or
+    social account type. The store probe alone cannot decide it, because some
+    kiro-cli builds sign an Identity Center user in without writing the rows it
+    counts. Any doubt answers ``False``: a caller that drops the registry marker
+    on this answer must never drop it on a governed account, where kiro-cli keeps
+    only marked entries.
+    """
+    global _governance_unreachable_cache
+    with _governance_unreachable_lock:
+        now = time.monotonic()
+        fingerprint: object
+        try:
+            fingerprint = _sign_in_fingerprint()
+        except Exception:  # noqa: BLE001 - no fingerprint means no reuse
+            fingerprint = object()
+        cached = _governance_unreachable_cache
+        if (
+            cached is not None
+            and cached[1] == fingerprint
+            and now - cached[0] < _GOVERNANCE_UNREACHABLE_TTL_SECS
+        ):
+            return cached[2]
+        try:
+            if mcp_governance_may_apply() or _data_home_api_key_may_be_set():
+                verdict = False
+            else:
+                # Function-local: login_target imports this module at its top.
+                from kiro_crew.cloud.login_target import whoami_names_personal_account
+
+                verdict = whoami_names_personal_account()
+        except Exception:  # noqa: BLE001 - a probe failure is "cannot tell"
+            verdict = False
+        _governance_unreachable_cache = (now, fingerprint, verdict)
+        return verdict
 
 
 def signed_in_via_idc(
