@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, FileText, Folder, FolderOpen, AlertCircle } from 'lucide-react'
 import { api } from '../api/client'
@@ -6,6 +6,8 @@ import MarkdownRenderer from './MarkdownRenderer'
 import { CodeBlock } from './CodeBlock'
 import { parseFrontmatter } from './SkillForm'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 import type { Skill, SkillTreeEntry } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -208,6 +210,10 @@ export default function SkillDirectoryBrowser({
   const [selected, setSelected] = useState<string>('SKILL.md')
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))  // root open by default
   const isMobile = useIsMobile()
+  const [attachTreeList, treeListEdges, remeasureTreeList] = useScrollEdgesY<HTMLDivElement>()
+  // Loading, a new tree or opening a folder changes the rows, not the
+  // scroller's own box, so no observer on the scroller sees it.
+  useEffect(() => { remeasureTreeList() }, [root, expanded, treeLoading, treeErr, remeasureTreeList])
 
   const toggle = (path: string) => {
     setExpanded(prev => {
@@ -274,20 +280,25 @@ export default function SkillDirectoryBrowser({
        * the pane's bottom edge instead of scrolling away.
        *
        * `overscroll-contain` stops a swipe that reaches the end of either pane
-       * from chaining into the page scroll behind it. */}
-      <div className={`${isMobile ? 'w-full order-last max-h-32' : 'w-[200px]'} shrink-0 overflow-y-auto overscroll-contain border border-border rounded-md bg-bg-elevated/50 p-1`}>
-        {treeLoading && <div className="text-muted text-[12px] p-2 animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_tree')}</div>}
-        {treeErr && <div className="text-danger text-[12px] p-2 flex items-start gap-1.5"><AlertCircle size={14} className="shrink-0" />{i18nT('components.skillDirectoryBrowser.failed_to_load_tree')}</div>}
-        {!treeLoading && !treeErr && root.children.length === 0 && (
-          <div className="text-muted/70 text-[12px] italic p-2">{i18nT('components.skillDirectoryBrowser.empty_skill_folder')}</div>
-        )}
-        {!treeLoading && root.children.map(c => (
-          <TreeRow
-            key={c.path} node={c} depth={0}
-            expanded={expanded} selected={selected}
-            onToggle={toggle} onSelect={select}
-          />
-        ))}
+       * from chaining into the page scroll behind it.
+       *
+       * The rows scroll in an inner box so the bottom fade (MORE_BELOW_MASK)
+       * that says more files sit below does not also fade the pane's border. */}
+      <div className={`${isMobile ? 'w-full order-last max-h-32' : 'w-[200px]'} shrink-0 flex flex-col border border-border rounded-md bg-bg-elevated/50`}>
+        <div ref={attachTreeList} data-testid="skill-tree-list" className={`flex-1 min-h-0 overflow-y-auto overscroll-contain p-1 ${treeListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
+          {treeLoading && <div className="text-muted text-[12px] p-2 animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_tree')}</div>}
+          {treeErr && <div className="text-danger text-[12px] p-2 flex items-start gap-1.5"><AlertCircle size={14} className="shrink-0" />{i18nT('components.skillDirectoryBrowser.failed_to_load_tree')}</div>}
+          {!treeLoading && !treeErr && root.children.length === 0 && (
+            <div className="text-muted/70 text-[12px] italic p-2">{i18nT('components.skillDirectoryBrowser.empty_skill_folder')}</div>
+          )}
+          {!treeLoading && root.children.map(c => (
+            <TreeRow
+              key={c.path} node={c} depth={0}
+              expanded={expanded} selected={selected}
+              onToggle={toggle} onSelect={select}
+            />
+          ))}
+        </div>
       </div>
 
       {/* File viewer pane */}
