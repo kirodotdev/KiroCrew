@@ -77,7 +77,8 @@ class KasToken:
     ``provider`` is the governance classification KAS keys off — one of
     ``BuilderId`` / ``Google`` / ``Github`` / ``Enterprise`` / ``ExternalIdp`` /
     ``Internal``. ``profile_arn`` is mandatory for enterprise/IdC identities and feeds
-    the ``X-Kiro-Profile-Arn`` header; social/Builder ID may omit it.
+    the ``X-Kiro-Profile-Arn`` header. Builder ID stores none (it has no profile to
+    look up); the engine is given a fixed one, :func:`kiro_crew.auth.provider.kas_profile_arn`.
     """
 
     access_token: str

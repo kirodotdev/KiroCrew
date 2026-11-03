@@ -314,6 +314,19 @@ transient. The retry budget bounds that misclassification — three retries, ~15
 — and the formatted message closes with the terminal "refresh your AWS
 credentials" guidance rather than asserting the propagation diagnosis as fact.
 
+The engine's **model-list refusal** is checked before the connection and 5xx
+families. KAS answers `session/prompt` with `-32000` "Kiro could not load the
+available models. Please try again." and `data.errorType`
+`ModelRegistryUnavailableError` when every fetch of the model list failed for a
+reason other than a rejected or denied credential. The frame keeps no HTTP status
+and none of the service's answer, and its cause may persist (a sign-in that sends
+no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
+never worded as an HTTP 5xx: `acp/model_registry_errors.py` matches the token in
+`data` and words it as a model list that could not load, with the sign-in as the
+fix when it repeats. Only the wording changes: the frame's "Please try again"
+still gives it the retryable verdict and the `http_5xx` classifier kind, which
+match the engine's own `SERVER_ERROR`, bounded by the ladder.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
