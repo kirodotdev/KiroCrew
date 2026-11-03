@@ -167,6 +167,7 @@ def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 
     The rule lives in :func:`kiro_crew.acp.kas_route.is_operator_override`, which
     the route decision reads too, so the two cannot disagree about one binary.
+    Blocking on Windows.
     """
     return kas_route_mod.is_operator_override(binary, environ)
 
@@ -474,7 +475,13 @@ class KasHarness(MembershipHarness):
         # leaves kiro-cli (``kas_route`` rule 2).
         host_auth: bool | None = None
         switch_allowed = await asyncio.to_thread(kas_route_mod.automatic_switch_allowed)
-        if switch_allowed and kas_bin and kas_route_mod.is_operator_override(kas_bin, ctx.environ):
+        # Off the loop: on Windows the comparison resolves the override's real path.
+        operator_override = False
+        if kas_bin:
+            operator_override = await asyncio.to_thread(
+                kas_route_mod.is_operator_override, kas_bin, ctx.environ
+            )
+        if switch_allowed and operator_override:
             # The operator's binary is never second-guessed (``kas_route`` rule 4).
             switch_allowed = False
         if switch_allowed:
@@ -543,7 +550,7 @@ class KasHarness(MembershipHarness):
             # An operator's KIROCREW_KIRO_BIN is exactly what they asked for --
             # a wrapper of theirs named `kiro-cli` is never swapped out from
             # under them.
-            if not _is_operator_override(kas_bin, ctx.environ):
+            if not operator_override:
                 chat_bin = await asyncio.to_thread(chat_sibling, kas_bin)
                 if chat_bin:
                     kas_bin = chat_bin

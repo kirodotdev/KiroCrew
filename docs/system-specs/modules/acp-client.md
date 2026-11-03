@@ -4041,7 +4041,10 @@ identity, or no `kiro-cli-chat` entry that skips the launcher's own sign-in
 check, `crew_entry_skips_launcher`): the bundle route; (5) otherwise the relay.
 Every unknown -- an unreadable store, a relocated store, a login the reader cannot
 identify, a kiro-cli lookup that raised -- keeps the relay, whose own error names
-the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed. A kiro-cli
+the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed
+(`kas_route.is_operator_override`), and it is recognised in every spelling the
+resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
+short name such as `RUNNER~1` into the long one. A kiro-cli
 that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
 Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
 not a mate's own pin; both are tracked in issue 26629.
