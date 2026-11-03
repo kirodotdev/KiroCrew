@@ -22,7 +22,7 @@ vi.mock('../providers', () => ({
 vi.mock('../components/McpBrowserModal', () => ({ default: () => null }))
 
 import McpTab from '../pages/overview/McpTab'
-import { MCP_STAGED_CHANGES_KEY } from '../pages/overview/mcpStagedChangesMemory'
+import { MCP_STAGED_CHANGES_KEY } from '../hooks/useMcpStagedChangesMemory'
 
 const server = (name: string) => ({
   name,
@@ -37,11 +37,11 @@ const server = (name: string) => ({
 
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-  return render(
+  return Object.assign(render(
     <MemoryRouter>
       <QueryClientProvider client={qc}><McpTab /></QueryClientProvider>
     </MemoryRouter>,
-  )
+  ), { qc })
 }
 
 const row = (name: string) => screen.getByText(name, { selector: 'code' }).closest('tr')!
@@ -86,6 +86,62 @@ describe('McpTab — staged changes survive leaving the page (#25962)', () => {
 
     renderTab()
     expect(await within(await waitFor(() => row('beta'))).findByRole('button', { name: 'Uninstall' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull()
+  })
+
+  it('does not bring back changes an Apply finished writing after the page unmounted', async () => {
+    let finish: (v: { applied: number }) => void = () => {}
+    mockApi.mcpApply.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const first = renderTab()
+    fireEvent.click(await within(await waitFor(() => row('alpha'))).findByRole('switch', { name: /Kiro:/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Apply/ }))
+    await waitFor(() => expect(mockApi.mcpApply).toHaveBeenCalled())
+    first.unmount()
+    finish({ applied: 1 })
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(MCP_STAGED_CHANGES_KEY) || '{}')).toEqual({}))
+
+    renderTab()
+    await waitFor(() => expect(row('alpha')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull()
+  })
+
+  it('keeps a change staged on a later visit when an earlier Apply finishes', async () => {
+    let finish: (v: { applied: number }) => void = () => {}
+    mockApi.mcpApply.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const first = renderTab()
+    const settled = vi.spyOn(first.qc, 'invalidateQueries')
+    fireEvent.click(await within(await waitFor(() => row('alpha'))).findByRole('switch', { name: /Kiro:/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Apply/ }))
+    await waitFor(() => expect(mockApi.mcpApply).toHaveBeenCalled())
+    first.unmount()
+
+    // Back while the Apply is still running: stage beta's uninstall, leave again.
+    const second = renderTab()
+    fireEvent.click(await within(await waitFor(() => row('beta'))).findByRole('button', { name: 'Uninstall' }))
+    expect(await within(row('beta')).findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+    second.unmount()
+    finish({ applied: 1 })
+    // The first mount's success handler has run once it invalidates the list.
+    await waitFor(() => expect(settled).toHaveBeenCalled())
+
+    // The Apply wrote alpha's Kiro global scope, so the list now carries it.
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('alpha'), presence: { kirocrew: true, kiroGlobal: true } },
+      server('beta'),
+    ])
+    renderTab()
+    expect(await within(await waitFor(() => row('beta'))).findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(MCP_STAGED_CHANGES_KEY) || '{}').pending).toEqual({ beta: { uninstall: true } }))
+  })
+
+  it('drops restored entries the saved config already matches or whose server is gone', async () => {
+    sessionStorage.setItem(MCP_STAGED_CHANGES_KEY, JSON.stringify({
+      pending: { gone: { uninstall: true }, alpha: { scopes: { kiroGlobal: false } } },
+      pendingTools: { beta: { send: true } },
+    }))
+    renderTab()
+    await waitFor(() => expect(row('alpha')).toBeInTheDocument())
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(MCP_STAGED_CHANGES_KEY) || '{}')).toEqual({ pending: {}, pendingTools: {} }))
     expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull()
   })
 

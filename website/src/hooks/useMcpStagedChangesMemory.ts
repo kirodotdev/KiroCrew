@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
-import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
+import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 /**
  * The MCP Servers changes staged for the next Apply, kept for the browser tab
@@ -58,6 +58,28 @@ export function loadStagedChanges(): StagedChanges | null {
 }
 
 /**
+ * Empty the stored copy. Apply and Discard call this directly rather than
+ * relying on the save effect: an Apply that finishes after the page unmounted
+ * clears only the unmounted component's state, and its save effect never runs
+ * again, so the applied changes would come back as staged on the next mount.
+ *
+ * Apply passes the `stagedChangesSnapshot` it submitted, and the stored copy is
+ * emptied only while it still holds exactly that draft. A later mount may have
+ * saved newer changes on top while the request was in flight; those stay, and
+ * the entries the Apply already wrote are pruned once that mount's list reloads.
+ * Discard passes nothing: it always empties.
+ */
+export function clearStagedChanges(onlyIf?: string) {
+  if (onlyIf !== undefined && safeGetSessionItem(MCP_STAGED_CHANGES_KEY) !== onlyIf) return
+  safeSetSessionItem(MCP_STAGED_CHANGES_KEY, '{}')
+}
+
+/** The stored form of a draft; what the save effect writes. */
+export function stagedChangesSnapshot({ pending, pendingTools }: StagedChanges): string {
+  return JSON.stringify({ pending, pendingTools })
+}
+
+/**
  * Restore the staged changes once on mount, then keep the stored copy in step.
  *
  * The restore runs in a layout effect so the restored rows are what first
@@ -76,6 +98,6 @@ export function useStagedChangesMemory(current: StagedChanges, restore: (saved: 
   const { pending, pendingTools } = current
   useEffect(() => {
     if (!restored) return
-    safeSetSessionItem(MCP_STAGED_CHANGES_KEY, JSON.stringify({ pending, pendingTools }))
+    safeSetSessionItem(MCP_STAGED_CHANGES_KEY, stagedChangesSnapshot({ pending, pendingTools }))
   }, [restored, pending, pendingTools])
 }
