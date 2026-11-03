@@ -26,6 +26,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -1103,6 +1104,8 @@ class Brief:
     waiting: tuple[tuple[str, str], ...] = ()
     # How many items wait in all; above ``len(waiting)`` only past the bound.
     waiting_total: int = 0
+    # The gateway's link row: one per pull request it read live (3.9.3).
+    links: tuple[inputs.PrRef, ...] = ()
 
     def as_meta(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -1120,6 +1123,8 @@ class Brief:
         if self.waiting_total:
             meta["waiting"] = [{"title": title, "ask": ask} for title, ask in self.waiting]
             meta["waiting_total"] = self.waiting_total
+        if self.links:
+            meta["links"] = [ref.url for ref in self.links]
         return meta
 
     def model_text(self) -> str:
@@ -1477,7 +1482,7 @@ def _posted_text(brief: "Brief", content: str) -> str:
     """Every string the result row posts: its ``content`` and each field of
     ``meta.brief`` as stored. The secret scan reads this, after every
     transform has run, so no later step can rejoin what it would catch."""
-    return content + "\n" + brief.model_text()
+    return "\n".join([content, brief.model_text(), *(ref.url for ref in brief.links)])
 
 
 def _posted_model_text(brief: "Brief") -> str:
@@ -1557,6 +1562,7 @@ def _gateway_only(brief: "Brief", language: str) -> "Brief":
         next=(),
         extra=(),
         body="",
+        links=(),
     )
 
 
@@ -1589,6 +1595,19 @@ def _inert_body(body: str) -> str:
     return _defang_markers(text)
 
 
+def _live_links(live: Iterable[Mapping[str, Any]]) -> tuple[inputs.PrRef, ...]:
+    """The link row (section 3.9.3): each pull request read live, once, its
+    URL built from the read's own repo. Model text never adds to it."""
+    refs: list[inputs.PrRef] = []
+    for entry in live:
+        repo, number = entry.get("repo"), str(entry.get("pr", "")).lstrip("#")
+        if entry.get("checked") is True and isinstance(repo, str) and number.isdigit():
+            ref = inputs.PrRef(repo, int(number))
+            if ref not in refs:
+                refs.append(ref)
+    return tuple(refs)
+
+
 def _brief_text(brief: Brief, language: str) -> str:
     """The brief as plain text, for every reader of ``content`` rather than the card."""
     labels = _TEXT_LABELS[language]
@@ -1612,6 +1631,8 @@ def _brief_text(brief: Brief, language: str) -> str:
     section(labels["next"], brief.next, numbered=True)
     for title, items in brief.extra:
         section(title, items)
+    if brief.links:
+        lines.append(" · ".join(f"{ref.repo}#{ref.number}" for ref in brief.links))
     return "\n".join(lines)
 
 
@@ -1820,6 +1841,8 @@ async def _run_warm_task_brief(
     # go; the gateway's waiting cards and the failure line post, and the row
     # is marked so the next return is not read as already caught up.
     # The scans run last, on the exact strings the row would post.
+    # The gateway's own link row; the checks below read the text with it.
+    brief = replace(brief, links=_live_links(live))
     content = _brief_text(brief, language)
     miss = _grounding_miss(brief, content, inputs.pr_numbers(source), grounding, clocks)
     if miss:
