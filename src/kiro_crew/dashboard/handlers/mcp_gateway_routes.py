@@ -126,7 +126,7 @@ def _local_overlay_section() -> dict:
         return {}
     try:
         raw = json.loads(read_config_text(path))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         # Unreadable overlay: treat as absent. The loader logs and ignores it
         # too, so behaving otherwise here would diverge from the runtime.
         return {}

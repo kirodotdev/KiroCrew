@@ -466,7 +466,7 @@ def _read_config_strict() -> dict:
         return {}
     try:
         data = json.loads(read_config_text(path))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
     if not isinstance(data, dict):
         raise StateCorruptError("config.json top level is not a JSON object")
