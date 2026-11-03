@@ -1367,7 +1367,12 @@ prefix. Enumerating the OTHER installs' prefixes is opt-in
 `backup.MAX_OTHER_INSTALLS`) because it costs a list call and a label read per
 install; it exists because a replacement machine owns no archives, so a view
 limited to its own prefix would show it nothing on the one occasion the bucket
-holds the only surviving copy.
+holds the only surviving copy. Each of these file listings follows `nextToken`
+(`_section_files`, at most `_MAX_LISTING_PAGES` pages of 500): archive names sort
+oldest first, so a prefix read one page deep loses exactly its newest archives. A
+kind whose walk stops at the cap with keys left is named in the answer's
+`archives_truncated` list, beside `truncated` and `max` for the install roster,
+so a capped listing never reads as complete.
 
 An install also publishes a human-readable label beside its own archives at
 `<kind>/<install>/_label.json`, written from the upload path and under BOTH kind
@@ -1746,7 +1751,7 @@ per responsibility, lowest layer first:
 | `backup_parts/layer_b.py` | the Layer B grant and its scope marker, `set_sessions_layer_b`, and both Layer B audits |
 | `backup_parts/nightly.py` | the `nightly` and `nightly_sessions` grants, `_NIGHTLY_CONSENT_READERS`, the failure record and its witness, the backoff, both due checks, and the `scheduled_sessions_blocked_code` / `scheduled_snapshot_blocked_code` reporting predicates |
 | `backup_parts/uploads.py` | `_authorize_upload`, `_refuse_upload`, `_authorize_recovery_read`, the teardown stop, and `_unchanged_baseline` |
-| `backup_parts/catalog.py` | `list_remote_backups`, `other_install_ids`, `_install_folders` and `read_remote_label` |
+| `backup_parts/catalog.py` | `list_remote_backups`, `_section_files`, `other_install_ids`, `_install_folders` and `read_remote_label` |
 | `backup_parts/retention.py` | the keep count and its writer, `_delete_under_the_retention_gate`, `_prune_remote_archives`, its audits and measurements |
 | `backup_parts/archive_inputs.py` | `_open_pinned_archive_fd`, the pinned staged archive both builders fingerprint and upload, and `_add_tree`, the screened walk of one session tree |
 | `backup_parts/conversations.py` | the terminal conversation export: the store lookup `_kiro_cli_conversation_db`, the scratch directory `_conversation_scratch_parent`, the table-scoped copy (`_copy_table`, `_redacted_row`) and `_export_cli_conversations` |
