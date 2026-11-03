@@ -155,7 +155,11 @@ class TestApprovalAuditReallyLandsOnDisk:
 
         logs = [p for p in tmp_path.rglob("security_events.jsonl") if p.is_file()]
         assert logs, "the unattended approval left no audit trail on disk"
-        lines = [ln for ln in logs[0].read_text(errors="replace").splitlines() if ln.strip()]
+        lines = [
+            ln
+            for ln in logs[0].read_text(errors="replace", encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
         assert lines, "the audit file exists but is empty"
         event = json.loads(lines[-1])
         assert event.get("operation") == "fs_write"

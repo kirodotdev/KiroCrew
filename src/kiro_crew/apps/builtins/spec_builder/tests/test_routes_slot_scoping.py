@@ -761,7 +761,7 @@ async def test_working_dir_absent_and_invalid_refuse_identically(tmp_path, monke
     """Both arms of the same class, so a future edit cannot re-split them."""
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "s").mkdir(parents=True)
-    (base / "s" / "requirements.md").write_text("# r")
+    (base / "s" / "requirements.md").write_text("# r", encoding="utf-8")
     common = {
         "spec_dir": str(base / "s"),
         "spec_type": "feature",

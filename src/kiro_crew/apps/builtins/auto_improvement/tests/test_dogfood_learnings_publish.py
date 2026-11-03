@@ -446,7 +446,7 @@ class TestWinnerIsInTheTreeBeforeDrafting:
         subprocess.run(["git", "init", "-q", str(tmp_path)], cwd=tmp_path, check=True)
         for k, v in (("user.email", "t@e"), ("user.name", "t")):
             subprocess.run(["git", "-C", str(tmp_path), "config", k, v], cwd=tmp_path, check=True)
-        (tmp_path / "a.txt").write_text("x")
+        (tmp_path / "a.txt").write_text("x", encoding="utf-8")
         subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], cwd=tmp_path, check=True)
         subprocess.run(
             ["git", "-C", str(tmp_path), "commit", "-qm", "init"], cwd=tmp_path, check=True
