@@ -1193,10 +1193,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
         title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
       : null
-    // The row's tail line when no state claims it: the last message, led by the
-    // unread dot. A crew card shows it too until its workers summary has an answer.
-    // Hidden when the user turned message previews off; the unread dot then moves
-    // to the trailing meta group instead.
+    // Tail line when no state claims it: last message led by the unread dot (off: dot moves to meta).
     const lastMessageLine = showMessagePreview && (s.last_message || unreadDot) ? (
       <div className={cardLines.preview > 1 ? `${ROW_STATUS_LINE_MUTED_CLS} !items-start` : ROW_STATUS_LINE_MUTED_CLS}>
         {unreadDot}
@@ -1915,12 +1912,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot
-                lands when previews are enabled. A row that is unread with nothing
-                said yet still renders the line, because the dot IS the content then.
-                With previews hidden, the unread dot sits in the trailing meta group,
-                distinct from the live dot leading the title, and leaves no empty
-                preview line. A crew card's workers summary takes the tail's place:
-                still ONE line, below the row's own state. */}
+                lands when previews are on (off: it sits in the trailing meta group,
+                leaving no empty line). An unread row with nothing said yet still
+                renders the line, because the dot IS the content then. A crew card's
+                workers summary takes the tail's place: still ONE line, below. */}
             {crewRoot
               // An Ultra Mode row shows only what needs attention; the full counts
               // are in the tooltip.
