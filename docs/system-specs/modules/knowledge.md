@@ -1196,7 +1196,9 @@ Two properties make the numbers auditable:
   bucket is never one of them.
 
 `kirocrew knowledge stats` prints the totals line plus a `SOURCE / DOCS / ITEMS`
-table; `--json` emits `{sources, documents, items, per_source:[{id, name,
+table, its name column padded by `messaging.tables.display_width` so a CJK or
+accented source name keeps the count columns aligned; `--json` emits
+`{sources, documents, items, per_source:[{id, name,
 documents, items}]}` with `id: null` for the bucket. A missing DB is reported
 (SEL `not_configured`), as JSON under `--json` so a script parses one shape
 either way; every call emits an SEL event under tool name `knowledge_stats`.

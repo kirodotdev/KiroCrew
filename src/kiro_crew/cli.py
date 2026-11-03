@@ -1273,3 +1273,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
     )
+    from kiro_crew.messaging.tables import display_width  # noqa: F401

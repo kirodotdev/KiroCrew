@@ -24,6 +24,7 @@ from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.tables import display_width
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
@@ -104,11 +105,14 @@ def _knowledge_stats(args) -> None:
     )
     if not stats.per_source:
         return
-    # Width from the data, so a long source name does not wrap the count columns.
-    name_width = max(len(s.name) for s in stats.per_source)
-    print(f"\n  {'SOURCE'.ljust(name_width)}  {'DOCS':>6}  {'ITEMS':>6}")
+    # Width from the data, so a long source name does not wrap the count columns,
+    # measured in display columns so a CJK or accented name keeps them aligned.
+    name_width = max(display_width("SOURCE"), *(display_width(s.name) for s in stats.per_source))
+    header_pad = " " * (name_width - display_width("SOURCE"))
+    print(f"\n  SOURCE{header_pad}  {'DOCS':>6}  {'ITEMS':>6}")
     for s in stats.per_source:
-        print(f"  {s.name.ljust(name_width)}  {s.documents:>6}  {s.items:>6}")
+        name_pad = " " * (name_width - display_width(s.name))
+        print(f"  {s.name}{name_pad}  {s.documents:>6}  {s.items:>6}")
 
 
 def _knowledge(args) -> None:
