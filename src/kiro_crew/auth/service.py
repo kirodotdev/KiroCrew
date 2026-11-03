@@ -640,15 +640,25 @@ class KasLoginService:
             # already redeemed, so a later poll cannot re-obtain the token, and
             # answering "pending" would only loop the dashboard until expiry.
             try:
-                profiles = await control_plane.list_available_profiles(
+                listing = await control_plane.list_available_profiles(
                     token.access_token, region=pending.region, session=session
                 )
             except control_plane.ControlPlaneError as err:
                 logger.warning("could not resolve IdC profile ARN: %s", err)
                 await self._forget(login_id)
                 return {"status": "error"}
+            profiles = listing.profiles
             if not profiles:
-                logger.warning("IdC login has no available Kiro profiles")
+                # Everything needed to tell a wrong host or region from a real
+                # provisioning gap. None of it is a credential.
+                logger.warning(
+                    "IdC login has no available Kiro profiles "
+                    "(IdC region %s, control plane %s, %d page(s) read, start URL %s)",
+                    pending.region,
+                    listing.url,
+                    listing.pages,
+                    pending.start_url,
+                )
                 await self._forget(login_id)
                 return {"status": "error"}
             if len(profiles) > 1:
