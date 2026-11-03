@@ -18850,7 +18850,7 @@
           "agent_sessions_note": "L’activer ne change encore rien dans Slack. Cela complète seulement le manifeste de l’application, le texte de configuration que tu copies dans Slack aux étapes ci-dessous.",
           "update_keeps_working": "Slack continue de fonctionner comme avant jusqu’à la mise à jour.",
           "code_channels": "Canaux de code",
-          "code_channels_desc": "Activé: l’agent peut ouvrir un canal Slack par tâche de développement, t’y inviter, et y publier et tenir des notes sous son propre nom. Pour cela, ton application Slack reçoit 5 autorisations. Désactivé: rien ne change, et tu peux retirer les autorisations dans Slack plus tard. Slack déploie les canaux de code progressivement, ton espace de travail ne les a donc peut-être pas encore.",
+          "code_channels_desc": "Activé: l’agent peut ouvrir un canal Slack par tâche de développement, avec une barre de contexte et un onglet de diff, t’y inviter, et y publier et tenir des notes sous son propre nom. Pour cela, ton application Slack reçoit 5 autorisations. Désactivé: rien ne change, et tu peux retirer les autorisations dans Slack plus tard. Slack déploie les canaux de code progressivement, ton espace de travail ne les a donc peut-être pas encore.",
           "stage_tag": "Aperçu",
           "defaults_title": "Les nouveaux canaux de code démarrent avec",
           "defaults_desc": "Choisis un dossier, un agent ou les deux. Ce que tu laisses vide reprend le réglage du dossier ou de Slack, donc un canal de code fonctionne toujours.",

@@ -201,6 +201,26 @@ def record_granted_scopes(scopes: Iterable[str] | None) -> None:
             for feature, error in list(_CAPS.latched.items()):
                 if error == "missing_scope" and REQUIRED_SCOPE.get(feature, "") in granted:
                     del _CAPS.latched[feature]
+        listeners = list(_SCOPE_LISTENERS) if granted is not None else []
+    for listener in listeners:
+        try:
+            listener()
+        except Exception:
+            logger.debug("scope listener failed", exc_info=True)
+
+
+#: Called (outside the lock) each time the granted scopes are recorded as known.
+_SCOPE_LISTENERS: list[Callable[[], None]] = []
+
+
+def on_scopes_recorded(listener: Callable[[], None]) -> None:
+    """Call *listener* whenever the connect probe records the app's scopes.
+
+    For work that waited on the gate (which reads shut while the scopes are
+    unknown) and must run once it can open. *listener* must be cheap and must
+    not block: it may run on any thread.
+    """
+    _SCOPE_LISTENERS.append(listener)
 
 
 def granted_scopes() -> frozenset[str] | None:

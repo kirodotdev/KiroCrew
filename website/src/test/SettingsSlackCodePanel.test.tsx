@@ -192,11 +192,10 @@ describe('Code channels card', () => {
     // One message for the row: what on and off do, all in the switch's own
     // description, with no promise of a later release: the runtime is live.
     // What turning it on lets the app do, in plain words, before the count.
-    expect(section).toHaveTextContent(/On: lets the agent open a Slack channel for each coding task, invite you to it, and post and keep notes there under its own name\. Your Slack app gets 5 permissions for this\./)
+    // The channel's context bar and diff tab are named with it.
+    expect(section).toHaveTextContent(/On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name\. Your Slack app gets 5 permissions for this\./)
     expect(section).not.toHaveTextContent(/adds 5 permissions/)
     expect(section).not.toHaveTextContent('later release')
-    // Only what this build turns on: the diff tab and context bar ship separately.
-    expect(section).not.toHaveTextContent(/context bar|diff tab/)
     expect(section).toHaveTextContent('Off: nothing changes, and you can remove the permissions in Slack later.')
     expect(section).toHaveTextContent('You can turn code channels off and remove their permissions later.')
     expect(section).not.toHaveTextContent("changes your Slack app's manifest")

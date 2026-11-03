@@ -8128,7 +8128,7 @@
           "agent_sessions_note": "Turning this on changes nothing in Slack yet. It only adds to the app manifest, the setup text you copy into Slack in the steps below.",
           "update_keeps_working": "Slack keeps working as before until you update.",
           "code_channels": "Code channels",
-          "code_channels_desc": "On: lets the agent open a Slack channel for each coding task, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+          "code_channels_desc": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
           "stage_tag": "Preview",
           "defaults_title": "New code channels start with",
           "defaults_desc": "Pick a folder, an agent, or both. Anything left empty uses the folder's or Slack's setting, so a code channel always works.",
