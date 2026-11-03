@@ -1230,7 +1230,7 @@ export default function AppDetailPage() {
             inside the dialog (AppStoreDialog). */}
         {showUninstallConfirm && app && (
           <AppStoreDialog
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
             onClose={() => { setShowUninstallConfirm(false); uninstallOpenerRef.current = null }}
             returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}

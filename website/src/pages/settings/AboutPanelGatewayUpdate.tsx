@@ -504,7 +504,7 @@ export function AboutPanelUpdateConfirm({
   useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener in AboutPanel.tsx plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
-    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
          role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
          onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}

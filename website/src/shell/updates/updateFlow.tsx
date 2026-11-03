@@ -170,7 +170,7 @@ function ChangelogDialog({ flow, updateAvailable }: { flow: ReturnType<typeof us
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocusTrap(dialogRef, close)
   return (
-    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
+    <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe" onClick={e => { if (e && e.target === e.currentTarget) close() }}>
       {/* Sized for a real release, not a patch note: a minor's section runs
           to hundreds of lines, and the old max-w-md / max-h-56 box showed a
           dozen of them. The dialog is bounded by the viewport and laid out as
@@ -272,7 +272,7 @@ export function UpdateErrorDialogFrame({ setError, children }: { setError: (msg:
   useDialogFocusTrap(dialogRef, dismiss)
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts; it performs no action, so there is nothing for a keyboard user to reach
-    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')} onKeyDown={isolateKeys}>
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')} onKeyDown={isolateKeys}>
       {children}
     </div>
   )

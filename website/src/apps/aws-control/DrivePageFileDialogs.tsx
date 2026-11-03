@@ -209,7 +209,7 @@ export function PreviewDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-8"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4 sm:p-safe-or-8"
       data-testid="drive-preview-dialog"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
@@ -382,7 +382,7 @@ export function MoveDialog({ fileKey, currentPath, folders, pending, error, askA
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
       onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) onClose(); backdropDown.current = false }}
@@ -493,7 +493,7 @@ export function ShareDialog({ account, section, fileKey, onClose }: { account: s
     // press that starts AND ends on it), the panel is the dialog. Same shape
     // as `AddFromArtifactsDialog`, the Library picker.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-safe-or-4"
       role="presentation"
       onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
       onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) close(); backdropDown.current = false }}

@@ -396,7 +396,7 @@ export default function LibraryPage() {
             bubble to the backdrop-close — it is not a user interaction. */}
         {uninstallTarget && (
           <AppStoreDialog
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
             onClose={() => { setUninstallTarget(null); setUninstallPreview(null) }}
             returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appsPage.confirm_uninstall')}

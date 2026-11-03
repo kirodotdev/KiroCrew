@@ -862,8 +862,9 @@ files own it:
   the same rule through `hooks/useTouchReplay.ts`: spread its `pointerProps` on
   the anchor and return early while `fromTouch()` is true, as `useNavTip`,
   `useHoverIntent`, `RefLink` and `MarkdownToc` do), and
-  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
-  `@utility` blocks. Adding a utility for a new token means adding one
+  emits the iOS safe-area utilities (`p-safe`, `p-safe-or-*`, `top-safe-offset-*`, …) as
+  `@utility` blocks; `--safe-area-x` in `src/styles/design-tokens.css` is the wider
+  side inset, for a width taken from the viewport. Adding a utility for a new token means adding one
   `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
   compiles against this file to catch a utility whose token was never declared.
 - `src/index.css` — the entry, read top to bottom in cascade order. First the
