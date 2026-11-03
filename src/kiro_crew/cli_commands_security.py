@@ -441,7 +441,14 @@ def _print_policy_source() -> None:
         print(
             f"   Set {POLICY_URL_ENV}, or add a 'distribution' block to the policy, to enable it."
         )
-        print(f"   Transports available: {', '.join(registered_policy_schemes())}")
+        from kiro_crew import platform_compat
+
+        # file:// is registered everywhere but refused on Windows (no ACL read yet).
+        schemes = [
+            "file (not on Windows)" if s == "file" and not platform_compat.IS_POSIX else s
+            for s in registered_policy_schemes()
+        ]
+        print(f"   Transports available: {', '.join(schemes)}")
         return
 
     interval = posture.get("refresh_interval_seconds") or 0
