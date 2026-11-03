@@ -3394,6 +3394,7 @@
         "view_list": "Liste simple"
       },
       "preview": {
+        "detailsSummaryFallback": "Détails",
         "mermaidError": "Diagramme Mermaid invalide — sa source est affichée."
       },
       "row": {

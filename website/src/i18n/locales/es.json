@@ -3304,6 +3304,7 @@
         "view_list": "Lista plana"
       },
       "preview": {
+        "detailsSummaryFallback": "Detalles",
         "mermaidError": "Diagrama Mermaid no válido: se muestra su código fuente."
       },
       "row": {

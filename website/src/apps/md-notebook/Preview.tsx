@@ -27,14 +27,17 @@ import {
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
 import { CodeFenceBlock } from './CodeFenceBlock'
+import { DetailsBlock } from './DetailsBlock'
 import { MermaidBlock } from './MermaidBlock'
 import { NoteImage } from './NoteImage'
 import { VaultRootCtx } from './vaultRootContext'
+import { detailsSummaryFallbackLabel } from './labels'
 import {
   FM_RE,
   LIST_MARKER_RE,
   fenceLang,
   indentPx,
+  parseDetailsBlock,
   parseMermaidBlock,
   parseTable,
   resolveNoteImageSrc,
@@ -212,6 +215,54 @@ function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
       </table>
     </div>
   )
+}
+
+/**
+ * Render a `<details>` body as read-only blocks.
+ *
+ * The body is not individually click-to-edit (clicking the disclosure opens the
+ * whole block's source), so this needs no line-indexed editor machinery — but it
+ * MUST keep block-level markdown readable: a fenced code run renders as a
+ * `CodeFenceBlock` (monospace, indentation and backticks preserved) rather than
+ * flattened through `inline()` line by line, which would turn ` ```py `, `*args`
+ * and leading spaces into literal text, italics and collapsed whitespace. Every
+ * non-fenced line still renders inline (escaped by React), and a blank line is a
+ * small gap. Nested `<details>`, tables and lists are out of scope here: the
+ * body is a disclosure's contents, not a second notebook.
+ */
+function detailsBodyNodes(body: string[], key: number, noteDir?: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let i = 0
+  while (i < body.length) {
+    const line = body[i]
+    if (line.startsWith('```')) {
+      // Gather the fenced run up to the closing fence (or the body's end, for a
+      // fence left open — its lines still read best as code).
+      const lang = fenceLang(line)
+      const code: string[] = []
+      let j = i + 1
+      for (; j < body.length; j++) {
+        if (body[j].startsWith('```')) break
+        code.push(body[j])
+      }
+      nodes.push(
+        <div key={`${key}-d-${i}`} style={{ margin: '4px 0' }}>
+          <CodeFenceBlock code={code.join('\n')} lang={lang} />
+        </div>,
+      )
+      i = j < body.length ? j + 1 : j
+      continue
+    }
+    nodes.push(
+      line.trim() === '' ? (
+        <div key={`${key}-d-${i}`} style={{ height: '8px' }} />
+      ) : (
+        <div key={`${key}-d-${i}`}>{inline(line, `${key}-d-${i}`, noteDir)}</div>
+      ),
+    )
+    i++
+  }
+  return nodes
 }
 
 export interface PreviewProps {
@@ -416,6 +467,27 @@ export function Preview({
           { fontFamily: FONT_MONO },
           { split: false },
         ),
+      )
+      return
+    }
+
+    // The third multi-line block: a <details> disclosure. Clicking it opens the
+    // whole source (open tag, optional <summary>, body, close), because editing
+    // one line of an HTML block in isolation is not a useful gesture — the same
+    // reason code and tables use {split: false}. The summary and every body line
+    // render through inline(), so the content is escaped by React: no raw HTML
+    // passes through, matching the "escape all content" contract.
+    const details = parseDetailsBlock(lines, idx)
+    if (details) {
+      skipTo = details.end
+      const summaryNode = details.summary
+        ? inline(details.summary, `${idx}-summary`, noteDir)
+        : detailsSummaryFallbackLabel()
+      const bodyNode = detailsBodyNodes(details.body, idx, noteDir)
+      out.push(
+        blk(idx, details.end, <DetailsBlock summary={summaryNode} body={bodyNode} />, undefined, {
+          split: false,
+        }),
       )
       return
     }
