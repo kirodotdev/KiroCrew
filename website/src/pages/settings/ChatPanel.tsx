@@ -226,13 +226,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
   const budgetMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.soft_stop_budget_secs', n),
+    // The failure banner is scoped to this row's path, so a retry clears it.
+    onMutate: () => clearOwnPathError('agent.soft_stop_budget_secs'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    // A failed save keeps the typed number on screen beside the failure, so it
+    // can be retried rather than retyped. budgetSeeded stays true, so the
+    // render-phase seed does not overwrite it on a later refetch.
     onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_soft_stop_budget'))
-      // Revert the input to the last-known server value so the user isn't
-      // left looking at an unpersisted number. budgetSeeded stays true,
-      // so the render-phase seed will not clobber this on future query updates.
-      setLocalBudget(String(mcCfg?.agent?.soft_stop_budget_secs ?? SOFT_STOP_DEFAULT))
+      setPathSaveError('agent.soft_stop_budget_secs', i18nT('pages.settings.chatPanel.failed_to_save_soft_stop_budget'))
     },
   })
 
@@ -249,7 +250,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
     keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
     compactClampNotice, compactPctMut,
-  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg })
+  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ })
 
   const {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
