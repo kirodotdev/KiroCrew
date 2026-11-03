@@ -33,16 +33,16 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Callable
+from typing import Any
 from unittest import mock
 
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, make_mocked_request
+from aiohttp.test_utils import make_mocked_request
+from pptx_maker_routes_helpers import _await_detached, _enabled, _RoutesFixture
 
 from conftest import make_dir_link
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision, routes
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 # An AKIA-shaped access key ID. The canonical AWS documentation example, so it is
 # a real pattern match without being a live secret.
@@ -64,60 +64,6 @@ def _raster_body(size: int) -> bytes:
     outcome on every host.
     """
     return random.Random(_RASTER_SEED).randbytes(size)
-
-
-_OWNER = "owner-user"
-
-
-@web.middleware
-async def _as_owner(request: web.Request, handler):
-    """Stamp the dashboard owner's identity, as the auth middleware would.
-
-    The mutating routes are owner only, so every request in these tests arrives
-    as the configured owner (``user == owner_id`` with an empty app claim).
-    """
-    request["user"] = _OWNER
-    request["app"] = ""
-    return await handler(request)
-
-
-def _enabled(value: bool):
-    """Patch the app-enablement gate the ``_require_enabled`` wrapper consults."""
-    return mock.patch.object(routes, "is_app_enabled", return_value=value)
-
-
-class _RoutesFixture(AioHTTPTestCase):
-    """A live aiohttp app with the real routes and a temp deck root."""
-
-    async def get_application(self) -> web.Application:
-        app = web.Application(middlewares=[_as_owner])
-        app["state"] = SimpleNamespace(owner_id=_OWNER)
-        routes.register_routes(app)
-        return app
-
-    async def asyncSetUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.root = self.tmp / "decks"
-        self.deck = self.root / "20260101-demo"
-        (self.deck / "specs").mkdir(parents=True)
-        (self.deck / "specs" / "brief.md").write_text("the brief", encoding="utf-8")
-        (self.deck / "compose").mkdir()
-        (self.deck / "compose" / "intro_1.json").write_text("{}", encoding="utf-8")
-        (self.deck / "output.pptx").write_bytes(b"PK\x03\x04")
-        self._prev_root = os.environ.get(paths.DECK_ROOT_ENV)
-        os.environ[paths.DECK_ROOT_ENV] = str(self.root)
-        await super().asyncSetUp()
-
-    async def asyncTearDown(self) -> None:
-        await super().asyncTearDown()
-        if self._prev_root is None:
-            os.environ.pop(paths.DECK_ROOT_ENV, None)
-        else:
-            os.environ[paths.DECK_ROOT_ENV] = self._prev_root
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def url(self, path: str) -> str:
-        return f"{routes.API_PREFIX}{path}"
 
 
 class TestDenyByDefault(_RoutesFixture):
@@ -918,6 +864,192 @@ class TestConfigRoutes(_RoutesFixture):
         # shard, which is a worse outcome than either.
         self.assertEqual(saved["output_dir"], str(Path("/new").expanduser().resolve()))
 
+    async def test_put_refreshes_agent_registration_after_a_successful_write(self) -> None:
+        target = self.tmp / "cfg-refresh" / "config.json"
+        refresh = mock.AsyncMock()
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", refresh),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 200)
+        refresh.assert_awaited_once_with()
+
+    async def test_put_rolls_back_when_the_agent_cannot_pick_up_the_new_root(self) -> None:
+        """The agent bakes the deck root into its env, so a save it did not pick
+        up would split where chats write decks from where this page reads them."""
+        target = self.tmp / "cfg-rollback" / "config.json"
+        target.parent.mkdir(parents=True)
+        original = json.dumps({"theme": "dark", "output_dir": "/old"}) + "\n"
+        target.write_text(original, encoding="utf-8")
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 503)
+        self.assertEqual((await resp.json())["code"], "agent_refresh_failed")
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    async def test_put_reports_a_failed_rollback_instead_of_claiming_no_change(self) -> None:
+        target = self.tmp / "cfg-rollback-fail" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+            mock.patch.object(routes, "_restore_engine_config", return_value=False),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 500)
+        self.assertEqual((await resp.json())["code"], "agent_refresh_rollback_failed")
+
+    async def test_an_overlapping_rollback_cannot_undo_another_save(self) -> None:
+        """Without serialization the first PUT's rollback restores its stale
+        snapshot after the second PUT has already saved and registered."""
+        target = self.tmp / "cfg-overlap" / "config.json"
+        first_root = str(self.tmp / "first")
+        second_root = str(self.tmp / "second")
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = 0
+
+        async def _register() -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_entered.set()
+                await await_until(release_first, what="the test releasing the first PUT")
+                return False
+            return True
+
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", _register),
+        ):
+            first = asyncio.ensure_future(
+                self.client.put(self.url("/config"), json={"deckRoot": first_root})
+            )
+            second: asyncio.Future[Any] | None = None
+            try:
+                await await_until(first_entered, what="the first PUT reaching registration")
+                second = asyncio.ensure_future(
+                    self.client.put(self.url("/config"), json={"deckRoot": second_root})
+                )
+                await until_parked(routes._config_lock)
+                release_first.set()
+                first_resp, second_resp = await await_until(
+                    asyncio.gather(first, second), what="both PUTs answering"
+                )
+            finally:
+                release_first.set()
+                for pending in (first, second):
+                    if pending is not None and not pending.done():
+                        pending.cancel()
+        self.assertEqual(first_resp.status, 503)
+        self.assertEqual(second_resp.status, 200)
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(saved["output_dir"], str(Path(second_root).resolve()))
+
+    async def test_provisioning_registration_waits_for_a_put_rollback(self) -> None:
+        """A provisioning job's registration must not land between a PUT's failed
+        registration and its rollback (it would register the root being undone)."""
+        target = self.tmp / "cfg-provision" / "config.json"
+        put_registering = asyncio.Event()
+        release_put = asyncio.Event()
+        order: list[str] = []
+
+        async def _register() -> bool:
+            if not put_registering.is_set():
+                put_registering.set()
+                await await_until(release_put, what="the test releasing the PUT")
+                order.append("put-register")
+                return False
+            order.append("provision-register")
+            return True
+
+        real_restore = routes._restore_engine_config
+
+        def _restore(snapshot: bytes | None) -> bool:
+            order.append("put-rollback")
+            return real_restore(snapshot)
+
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(routes, "_register_current_engine_locked", _register),
+            mock.patch.object(routes, "_restore_engine_config", _restore),
+        ):
+            put = asyncio.ensure_future(
+                self.client.put(self.url("/config"), json={"deckRoot": str(self.tmp / "new")})
+            )
+            provision: asyncio.Future[Any] | None = None
+            try:
+                await await_until(put_registering, what="the PUT reaching registration")
+                provision = asyncio.ensure_future(routes._register_current_engine_if_enabled())
+                await until_parked(routes.app_lifecycle_lock(routes.APP_NAME))
+                release_put.set()
+                put_resp = await await_until(put, what="the PUT answering")
+                await await_until(provision, what="the provisioning registration")
+            finally:
+                release_put.set()
+                for pending in (put, provision):
+                    if pending is not None and not pending.done():
+                        pending.cancel()
+        self.assertEqual(put_resp.status, 503)
+        self.assertEqual(order, ["put-register", "put-rollback", "provision-register"])
+
+    async def test_put_rollback_removes_a_config_it_created(self) -> None:
+        target = self.tmp / "cfg-rollback-new" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=False),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 503)
+        self.assertFalse(target.exists())
+
+    async def test_put_keeps_the_save_when_registration_is_skipped(self) -> None:
+        """None means disabled or engine not ready: nothing to keep in sync yet."""
+        target = self.tmp / "cfg-skip" / "config.json"
+        with (
+            _enabled(True),
+            mock.patch.object(paths, "engine_config_path", return_value=target),
+            mock.patch.object(
+                routes,
+                "_register_current_engine_locked",
+                mock.AsyncMock(return_value=None),
+            ),
+        ):
+            resp = await self.client.put(
+                self.url("/config"), json={"deckRoot": str(self.tmp / "new-decks")}
+            )
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(target.is_file())
+
     async def test_put_refuses_a_corrupt_engine_config(self) -> None:
         target = self.tmp / "cfg3" / "config.json"
         target.parent.mkdir(parents=True)
@@ -958,6 +1090,137 @@ class TestEngineRoutes(_RoutesFixture):
             finally:
                 routes._engine_state.state = "idle"
 
+    async def test_successful_provision_refreshes_registration(self) -> None:
+        refresh = mock.AsyncMock(return_value=True)
+        routes._engine_state.state = "running"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(routes, "_register_current_engine_if_enabled", refresh),
+            ):
+                await routes._provision_job()
+            refresh.assert_awaited_once_with()
+            self.assertEqual(routes._engine_state.state, "done")
+        finally:
+            routes._engine_state.state = "idle"
+
+    async def test_a_build_whose_agent_cannot_be_registered_ends_in_error(self) -> None:
+        # Otherwise the page would read a ready engine and start a chat on an
+        # agent that does not exist.
+        routes._engine_state.state = "running"
+        routes._engine_state.log = "engine ready at v0.10.1"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(
+                    routes,
+                    "_register_current_engine_if_enabled",
+                    mock.AsyncMock(return_value=False),
+                ),
+            ):
+                await routes._provision_job()
+            self.assertEqual(routes._engine_state.state, "error")
+            self.assertIn("could not be registered", routes._engine_state.log)
+        finally:
+            routes._engine_state.state = "idle"
+            routes._engine_state.log = ""
+
+    async def test_a_build_while_disabled_is_done_without_registering(self) -> None:
+        routes._engine_state.state = "running"
+        try:
+            with (
+                mock.patch.object(routes, "_run_provision", return_value=True),
+                mock.patch.object(
+                    routes, "_register_current_engine_if_enabled", mock.AsyncMock(return_value=None)
+                ),
+            ):
+                await routes._provision_job()
+            self.assertEqual(routes._engine_state.state, "done")
+        finally:
+            routes._engine_state.state = "idle"
+
+    def test_a_successful_build_is_not_reported_done_before_registration(self) -> None:
+        outcome = provision.ProvisionOutcome(ok=True, log="built", engine_tag="v0.10.1")
+        try:
+            with mock.patch.object(provision, "provision", return_value=outcome):
+                self.assertTrue(routes._run_provision())
+            self.assertEqual(routes._engine_state.state, "running")
+        finally:
+            routes._engine_state.state = "idle"
+            routes._engine_state.log = ""
+
+    async def test_failed_provision_does_not_refresh_registration(self) -> None:
+        refresh = mock.AsyncMock()
+        with (
+            mock.patch.object(routes, "_run_provision", return_value=False),
+            mock.patch.object(routes, "_register_current_engine_if_enabled", refresh),
+        ):
+            await routes._provision_job()
+        refresh.assert_not_awaited()
+
+    async def test_registration_rechecks_enabled_state_inside_the_lifecycle_lock(self) -> None:
+        inside = False
+        registered: list[str] = []
+
+        class _Lock:
+            async def __aenter__(self):
+                nonlocal inside
+                inside = True
+
+            async def __aexit__(self, *exc):
+                nonlocal inside
+                inside = False
+
+        def _enabled_inside(_name: str) -> bool:
+            self.assertTrue(inside)
+            return True
+
+        def _register(name: str):
+            self.assertTrue(inside)
+            registered.append(name)
+            return mock.Mock(errors=[], agents=[f"{routes.APP_NAME}/{routes.AGENT_NAME}"])
+
+        with (
+            mock.patch.object(routes, "app_lifecycle_lock", return_value=_Lock()),
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", side_effect=_enabled_inside),
+            mock.patch("kiro_crew.apps.bridges.register_app", side_effect=_register),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertEqual(registered, [routes.APP_NAME])
+        self.assertIs(outcome, True)
+
+    async def test_disable_winning_the_lock_prevents_registration(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=False),
+            mock.patch("kiro_crew.apps.bridges.register_app") as register,
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        register.assert_not_called()
+        self.assertIsNone(outcome)
+
+    async def test_registration_failure_is_reported_without_escaping(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=True),
+            mock.patch("kiro_crew.apps.bridges.register_app", side_effect=OSError("read-only")),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertIs(outcome, False)
+
+    async def test_a_registration_without_the_agent_is_a_failure(self) -> None:
+        with (
+            mock.patch.object(routes.engine, "engine_status", return_value={"ready": True}),
+            mock.patch.object(routes, "is_app_enabled", return_value=True),
+            mock.patch(
+                "kiro_crew.apps.bridges.register_app",
+                return_value=mock.Mock(errors=["render failed"], agents=[]),
+            ),
+        ):
+            outcome = await routes._register_current_engine_if_enabled()
+        self.assertIs(outcome, False)
+
     async def test_deps_reports_optional_binaries(self) -> None:
         with _enabled(True):
             resp = await self.client.get(self.url("/deps"))
@@ -976,17 +1239,6 @@ class TestEngineRoutes(_RoutesFixture):
 
     async def _await_tick(self) -> None:
         await asyncio.sleep(0)
-
-
-async def _await_detached(predicate: Callable[[], bool]) -> None:
-    """Wait for detached work that runs in a THREAD, not just on the loop.
-
-    ``asyncio.sleep(0)`` only yields to the event loop, so it cannot wait for anything
-    handed to ``run_in_executor``: the executor thread may not have been scheduled at
-    all yet. The polled wait yields real time between reads, so the thread gets
-    somewhere to run, and a genuinely broken detach fails by name rather than hanging.
-    """
-    await async_wait_until(predicate)
 
 
 class TestLibraryRoutes(_RoutesFixture):
@@ -1126,9 +1378,9 @@ class TestLibraryRoutes(_RoutesFixture):
         self.assertEqual((await resp.json())["styles"][0]["coverHtml"], "")
 
     async def test_style_html_is_redacted(self) -> None:
-        """A style is an HTML document written by the `pptx-maker-style` AGENT, so it is
-        model output on its way to the dashboard and gets the same pass a textual
-        deck artifact does."""
+        """A style is an HTML document written by the `pptx-maker` AGENT in its style
+        role, so it is model output on its way to the dashboard and gets the same pass
+        a textual deck artifact does."""
         styled = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "style_html", return_value=styled
@@ -1391,327 +1643,6 @@ class TestJsonBodyCatchWidth(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(body)
         assert err is not None
         self.assertEqual(err.status, 400)
-
-
-class TestIconProvisionedMarker(unittest.TestCase):
-    """Icon packs are keyed on the engine tag and gated on the pack's manifest
-    actually existing, so an interrupted download cannot read as 'done'."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def _marker(self, data: object) -> None:
-        (self.tmp / engine.ICON_MARKER_FILENAME).write_text(
-            json.dumps(data), encoding="utf-8"
-        )
-
-    def _pack(self, source: str) -> None:
-        (self.tmp / source).mkdir(parents=True, exist_ok=True)
-        (self.tmp / source / "manifest.json").write_text("{}", encoding="utf-8")
-
-    def test_no_marker_means_nothing_is_provisioned(self) -> None:
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_corrupt_marker_means_nothing_is_provisioned(self) -> None:
-        (self.tmp / engine.ICON_MARKER_FILENAME).write_text("{not json", encoding="utf-8")
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_marker_from_another_engine_version_is_ignored(self) -> None:
-        """Icon sets ship WITH the engine version, so an upgrade must
-        re-provision rather than trust the old pack."""
-        for source, _ in engine.ICON_SOURCES:
-            self._pack(source)
-        self._marker({"tag": "v0.0.1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v0.3.8"), {})
-
-    def test_a_marker_without_the_pack_on_disk_is_not_done(self) -> None:
-        """The exact interrupted-download case: the marker claims success but the
-        manifest never landed, so the pack must be re-downloaded."""
-        self._marker({"tag": "v1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_matching_marker_with_the_pack_present_is_done(self) -> None:
-        for source, _ in engine.ICON_SOURCES:
-            self._pack(source)
-        self._marker({"tag": "v1", "sources": {s: True for s, _ in engine.ICON_SOURCES}})
-        done = routes._icon_provisioned(self.tmp, "v1")
-        self.assertEqual(set(done), {s for s, _ in engine.ICON_SOURCES})
-
-    def test_a_non_object_marker_is_ignored(self) -> None:
-        self._marker([1, 2])
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-    def test_a_marker_whose_sources_are_not_an_object_is_ignored(self) -> None:
-        self._marker({"tag": "v1", "sources": "all"})
-        self.assertEqual(routes._icon_provisioned(self.tmp, "v1"), {})
-
-
-class TestRelocatePack(unittest.TestCase):
-    """Packs are moved OUT of the engine checkout because that checkout is
-    replaced on every app update; the user config dir survives."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def test_moves_the_generated_pack_into_place(self) -> None:
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        destination = self.tmp / "assets" / "aws"
-        destination.parent.mkdir(parents=True)
-        routes._relocate_pack(generated, destination)
-        self.assertTrue((destination / "manifest.json").is_file())
-        self.assertFalse(generated.exists())
-
-    def test_replaces_a_previous_pack(self) -> None:
-        """A re-download must not merge into the old pack — a renamed icon would
-        otherwise linger forever."""
-        destination = self.tmp / "aws"
-        destination.mkdir()
-        (destination / "stale-icon.svg").write_text("old", encoding="utf-8")
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        routes._relocate_pack(generated, destination)
-        self.assertFalse((destination / "stale-icon.svg").exists())
-        self.assertTrue((destination / "manifest.json").is_file())
-
-    def test_a_leftover_staging_dir_is_cleared_first(self) -> None:
-        """An interrupted previous relocate leaves `<name>.new` behind; without
-        clearing it the move would nest inside it."""
-        destination = self.tmp / "aws"
-        staging = self.tmp / "aws.new"
-        staging.mkdir()
-        (staging / "junk").write_text("x", encoding="utf-8")
-        generated = self.tmp / "generated"
-        generated.mkdir()
-        (generated / "manifest.json").write_text("{}", encoding="utf-8")
-        routes._relocate_pack(generated, destination)
-        self.assertFalse(staging.exists())
-        self.assertTrue((destination / "manifest.json").is_file())
-        self.assertFalse((destination / "junk").exists())
-
-
-class TestProvisionAssetsWorker(unittest.TestCase):
-    """The icon-pack download worker. Runs on a worker thread, so its only
-    channel to the user is the provisioning state — it must never raise, and it
-    must not report success for a pack that did not land."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.config_dir = self.tmp / "sdpm"
-        self.config_dir.mkdir(parents=True)
-        routes._assets_state = engine.ProvisionState()
-        self.addCleanup(setattr, routes, "_assets_state", engine.ProvisionState())
-
-    def _run(self, *, force: bool = False, script_result=None, generate_manifest: bool = True):
-        """Drive the worker with the engine's script runner faked out."""
-        result = script_result or engine.EngineResult(returncode=0)
-
-        def _fake_script(source: str, script: str):
-            if result.returncode == 0:
-                # Always produce the output DIRECTORY so a relocate would
-                # succeed; only the manifest distinguishes a real download from
-                # a script that exited 0 having written nothing.
-                vendor = self.tmp / "vendor" / source
-                vendor.mkdir(parents=True, exist_ok=True)
-                if generate_manifest:
-                    (vendor / "manifest.json").write_text("{}", encoding="utf-8")
-            return result
-
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script", side_effect=_fake_script
-        ), mock.patch.object(
-            routes.engine,
-            "icon_vendor_output",
-            side_effect=lambda source: self.tmp / "vendor" / source,
-        ):
-            routes._provision_assets(force)
-
-    def test_a_not_ready_engine_is_an_error_state_not_a_crash(self) -> None:
-        with mock.patch.object(routes.engine, "user_config_dir", return_value=None):
-            routes._provision_assets(False)
-        self.assertEqual(routes._assets_state.state, "error")
-        self.assertIn("not ready", routes._assets_state.log)
-
-    def test_a_successful_run_installs_every_pack_and_writes_the_marker(self) -> None:
-        self._run()
-        self.assertEqual(routes._assets_state.state, "done")
-        target = self.config_dir / "assets"
-        for source, _ in engine.ICON_SOURCES:
-            self.assertTrue((target / source / "manifest.json").is_file(), source)
-        marker = json.loads(
-            (target / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
-        )
-        self.assertEqual(marker["tag"], "v0.3.8")
-        self.assertTrue(all(marker["sources"].values()))
-
-    def test_a_failed_download_is_recorded_per_source_and_not_marked_done(self) -> None:
-        """Presentations work without icon packs, so a failure is reported rather
-        than fatal — but it must never be recorded as provisioned."""
-        self._run(script_result=engine.EngineResult(returncode=1, stderr="404"))
-        self.assertEqual(routes._assets_state.state, "error")
-        for source, _ in engine.ICON_SOURCES:
-            self.assertEqual(routes._assets_state.per_source[source], "error")
-        marker = json.loads(
-            (self.config_dir / "assets" / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
-        )
-        self.assertFalse(any(marker["sources"].values()))
-
-    def test_a_zero_exit_without_a_manifest_is_still_a_failure(self) -> None:
-        """The script can exit 0 having written an output dir but no manifest;
-        only the manifest proves the pack actually landed, so the run must NOT be
-        recorded as provisioned (otherwise it never self-heals on a retry)."""
-        self._run(generate_manifest=False)
-        self.assertEqual(routes._assets_state.state, "error")
-        for source, _ in engine.ICON_SOURCES:
-            self.assertEqual(routes._assets_state.per_source[source], "error")
-        marker = json.loads(
-            (self.config_dir / "assets" / engine.ICON_MARKER_FILENAME).read_text(encoding="utf-8")
-        )
-        self.assertFalse(any(marker["sources"].values()))
-
-    def test_an_already_provisioned_pack_is_skipped(self) -> None:
-        """Idempotence: the packs are large, so a re-run at the same engine tag
-        must not re-download them."""
-        self._run()
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script"
-        ) as script:
-            routes._provision_assets(False)
-        script.assert_not_called()
-        self.assertEqual(routes._assets_state.state, "done")
-
-    def test_force_re_downloads_an_already_provisioned_pack(self) -> None:
-        self._run()
-        calls: list[str] = []
-
-        def _record(source: str, script: str):
-            calls.append(source)
-            vendor = self.tmp / "vendor" / source
-            vendor.mkdir(parents=True, exist_ok=True)
-            (vendor / "manifest.json").write_text("{}", encoding="utf-8")
-            return engine.EngineResult(returncode=0)
-
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            routes.engine, "run_icon_script", side_effect=_record
-        ), mock.patch.object(
-            routes.engine,
-            "icon_vendor_output",
-            side_effect=lambda source: self.tmp / "vendor" / source,
-        ):
-            routes._provision_assets(True)
-        self.assertEqual(calls, [s for s, _ in engine.ICON_SOURCES])
-
-    def test_an_install_failure_is_reported_and_does_not_abort_the_run(self) -> None:
-        """One pack failing to move must not prevent the other from installing."""
-        with mock.patch.object(routes, "_relocate_pack", side_effect=OSError("cross-device")):
-            self._run()
-        self.assertEqual(routes._assets_state.state, "error")
-        self.assertIn("could not be installed", routes._assets_state.log)
-
-    def test_an_uncreatable_assets_dir_is_an_error_state(self) -> None:
-        """A read-only config dir must become a reported error, not an unhandled
-        exception on the worker thread."""
-        real_mkdir = Path.mkdir
-        target = self.config_dir / "assets"
-
-        def _deny(self_path, *args, **kwargs):
-            if self_path == target:
-                raise OSError("read-only")
-            return real_mkdir(self_path, *args, **kwargs)
-
-        with mock.patch.object(
-            routes.engine, "user_config_dir", return_value=self.config_dir
-        ), mock.patch.object(
-            routes.engine, "engine_tag", return_value="v0.3.8"
-        ), mock.patch.object(
-            Path, "mkdir", _deny
-        ):
-            routes._provision_assets(False)
-        self.assertEqual(routes._assets_state.state, "error")
-        self.assertIn("cannot create", routes._assets_state.log)
-
-
-class TestAssetsLogTail(unittest.TestCase):
-    def test_the_log_is_bounded_so_a_long_run_cannot_grow_without_limit(self) -> None:
-        """The UI polls this state; an unbounded list would grow for the whole
-        download and be re-joined on every append."""
-        lines: list[str] = []
-        for i in range(900):
-            routes._record_assets_log(lines, f"line {i}")
-        self.assertEqual(len(lines), 400)
-        self.assertEqual(lines[-1], "line 899")
-
-
-class TestAssetsStatusRoute(_RoutesFixture):
-    async def test_status_reports_every_source_and_the_engine_tag(self) -> None:
-        with (
-            _enabled(True),
-            mock.patch.object(routes.engine, "user_config_dir", return_value=None),
-            mock.patch.object(routes.engine, "engine_tag", return_value="v0.3.8"),
-        ):
-            resp = await self.client.get(self.url("/assets"))
-        self.assertEqual(resp.status, 200)
-        body = await resp.json()
-        self.assertEqual(body["sources"], [s for s, _ in engine.ICON_SOURCES])
-        self.assertEqual(body["tag"], "v0.3.8")
-        # A not-ready engine must report every pack as unprovisioned, not ready.
-        self.assertFalse(body["ready"])
-        self.assertFalse(any(body["provisioned"].values()))
-
-    async def test_provision_refuses_to_start_twice(self) -> None:
-        """One job at a time: a second POST while running must not spawn a
-        parallel download over the same target directory."""
-        with _enabled(True):
-            routes._assets_state.state = "running"
-            try:
-                with mock.patch.object(routes, "_provision_assets") as worker:
-                    resp = await self.client.post(self.url("/assets/provision"))
-                self.assertEqual(resp.status, 202)
-                self.assertEqual((await resp.json())["state"], "running")
-                worker.assert_not_called()
-            finally:
-                routes._assets_state.state = "idle"
-
-    async def test_provision_forwards_the_force_flag(self) -> None:
-        """``?force=true`` is what re-downloads an already-provisioned pack; if it
-        were dropped the endpoint would silently no-op for those users."""
-        seen: list[bool] = []
-        with _enabled(True), mock.patch.object(
-            routes, "_provision_assets", side_effect=seen.append
-        ):
-            resp = await self.client.post(self.url("/assets/provision?force=true"))
-            self.assertEqual(resp.status, 202)
-            await _await_detached(lambda: bool(seen))
-        routes._assets_state.state = "idle"
-        self.assertEqual(seen, [True])
-
-    async def test_provision_defaults_to_not_forcing(self) -> None:
-        seen: list[bool] = []
-        with _enabled(True), mock.patch.object(
-            routes, "_provision_assets", side_effect=seen.append
-        ):
-            resp = await self.client.post(self.url("/assets/provision"))
-            self.assertEqual(resp.status, 202)
-            await _await_detached(lambda: bool(seen))
-        routes._assets_state.state = "idle"
-        self.assertEqual(seen, [False])
 
 
 class TestAuditRedaction(unittest.TestCase):

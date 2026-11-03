@@ -1,0 +1,29 @@
+{
+  "name": "pptx-maker",
+  "description": "Builds presentations with the spec-driven-presentation-maker engine. Its role comes from the engine's start_* tools; it delegates slide composition to copies of itself.",
+  "mcpServers": {
+    "sdpm": {
+      "command": "{UV_BIN}",
+      "args": ["run", "--no-sync", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
+      "env": { "PYTHONPATH": "", "PATH": "{TOOLS_PATH}", "SDPM_DECK_ROOT": "{DECK_ROOT}" },
+      "timeout": 120000
+    }
+  },
+  "tools": [
+    "@sdpm/start_presentation", "@sdpm/start_composing", "@sdpm/start_style", "@sdpm/start_translation",
+    "@sdpm/init_deck_workspace", "@sdpm/check_specs", "@sdpm/analyze_template", "@sdpm/apply_style",
+    "@sdpm/generate_pptx", "@sdpm/search_assets", "@sdpm/list_styles", "@sdpm/list_templates",
+    "@sdpm/read_guides", "@sdpm/code_to_slide", "@sdpm/grid", "@sdpm/arch_diagram",
+    "@sdpm/read_attachment", "@sdpm/import_attachment", "@sdpm/run_python", "@sdpm/run_style_python",
+    "@kirocrew-core/ask_question",
+    "use_subagent", "read", "glob", "grep", "web_search", "web_fetch"
+  ],
+  "toolsSettings": {
+    "subagent": { "availableAgents": ["pptx-maker"], "trustedAgents": ["pptx-maker"] }
+  },
+  "managedToolPolicy": {
+    "exclude": ["spawn_run", "spawn_sub_agents", "spawn_continue", "task_run"]
+  },
+  "welcomeMessage": "What presentation would you like to create?",
+  "model": "auto"
+}

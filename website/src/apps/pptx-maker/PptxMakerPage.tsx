@@ -14,11 +14,12 @@
  * - **Library** — styles and .pptx templates (import, rename, pin, delete).
  * - **Settings** — the deck output directory.
  *
- * Deck GENERATION happens in chat, not here: the app ships four agents
- * (`pptx-maker-spec`, `pptx-maker-vibe`, `pptx-maker-composer`, `pptx-maker-style`) and the page links
- * into a chat session on one of them. Keeping generation in the real chat surface
- * means the user gets the full native chat (follow-up chips, question cards, tool
- * groups, steer-send) rather than a reduced embed.
+ * Deck GENERATION happens in chat, not here: the app ships one `pptx-maker`
+ * agent and passes the selected Spec / Vibe / Style role as silent context before
+ * opening its chat. The engine's `start_*` tools then supply the role instructions.
+ * Keeping generation in the real chat surface means the user gets the full native
+ * chat (follow-up chips, question cards, tool groups, steer-send) rather than a
+ * reduced embed.
  */
 
 import { useMemo, useState } from 'react'
@@ -51,6 +52,7 @@ import { SearchInput } from '../../components/ui'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { pptxMakerApi } from './api'
+import { MODE_CONTEXT } from './modeContext.prompt'
 import DeckViewer from './DeckViewer'
 import LibraryPanel from './LibraryPanel'
 import { POLL_DECKS_MS, POLL_IDLE_MS, POLL_PROVISION_MS, filterDecks } from './lib'
@@ -58,52 +60,30 @@ import { POLL_DECKS_MS, POLL_IDLE_MS, POLL_PROVISION_MS, filterDecks } from './l
 type MainView = 'decks' | 'library' | 'settings'
 type LibraryKind = 'styles' | 'templates'
 
+const CHAT_MODES = ['spec', 'vibe', 'style'] as const
+type ChatMode = (typeof CHAT_MODES)[number]
+
 /**
- * The agents this app ships, in the order they are offered.
+ * The three roles offered by the page, in display order. They all dispatch the
+ * single declared `pptx-maker` agent; the mode is a server-consumed hint rather
+ * than an agent identifier.
  *
  * The catalog keys are FULL literals rather than a suffix interpolated at the call
  * site: a key assembled from parts exists nowhere in the source, so the extractor
  * and the unused-key tooling cannot see it and it renders as the raw dotted string
  * if it ever goes missing (`dynamicKeys.test.ts`).
  */
-const CHAT_AGENT_LABEL_KEY = {
-  'pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec',
-  'pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe',
-  'pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style',
+const CHAT_MODE_LABEL_KEY = {
+  spec: 'apps.pptxMaker.pptxMakerPage.mode_spec',
+  vibe: 'apps.pptxMaker.pptxMakerPage.mode_vibe',
+  style: 'apps.pptxMaker.pptxMakerPage.mode_style',
 } as const
 
-const CHAT_AGENT_HINT_KEY = {
-  'pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec_hint',
-  'pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe_hint',
-  'pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style_hint',
+const CHAT_MODE_HINT_KEY = {
+  spec: 'apps.pptxMaker.pptxMakerPage.mode_spec_hint',
+  vibe: 'apps.pptxMaker.pptxMakerPage.mode_vibe_hint',
+  style: 'apps.pptxMaker.pptxMakerPage.mode_style_hint',
 } as const
-
-/**
- * Display order. Keyed MAPS above rather than a list of `{agent, labelKey}` records,
- * because `check-i18n-keys.mjs` resolves an index into an object literal but not a
- * field read off an array element — so the record form left both keys unverifiable
- * (`i18nT(entry.labelKey)` widens to `string`) and exempted them from every catalog
- * check. Indexing a keyed map is the pattern that gate names.
- */
-/**
- * The DECLARED agent name is the dispatchable identifier.
- *
- * These values reach `api.createChatSlot(...)` and from there dispatch runs
- * `config.loader.resolve_agent_bindings` -> `_materialized_kiro_agent`, whose
- * snapshot is built by `_scan_materialized_agents` from each registered config's
- * `name` field. `bridges._register_agents` writes the FILE as
- * `{app}--{agent}.json`, but that double-hyphen stem is only the on-disk
- * filename — it is not in the dispatchable set (the stem is used only when a
- * config declares no name), so sending it makes resolution fall through to the
- * default agent silently. Same for the slash namespace form.
- * `test_pptx_maker_agents.py` pins these to the declared names in the app's
- * shipped agent JSONs so the two cannot drift.
- */
-const CHAT_AGENTS = [
-  'pptx-maker-spec',
-  'pptx-maker-vibe',
-  'pptx-maker-style',
-] as const
 
 /** Banner shown until the presentation engine has been provisioned. */
 function EngineBanner() {
@@ -301,15 +281,32 @@ export default function PptxMakerPage() {
     [decks],
   )
 
-  // Deck generation is a chat activity, so "New deck" opens a session on one of
-  // this app's agents rather than embedding a reduced chat here.
+  // A slot whose mode context did not arrive. The next start reuses it, so a
+  // retry delivers the context to that slot instead of leaving an empty one behind.
+  const [undeliveredSlot, setUndeliveredSlot] = useState<string | null>(null)
+
+  // Deck generation is a chat activity, so "New deck" opens the single app agent
+  // and silently supplies the selected role before entering the full chat surface.
+  // Navigation waits for the context: a failure keeps the user here with an error,
+  // and choosing a mode again retries on the same slot.
   const startChat = useMutation({
-    mutationFn: async (agent: string) => {
-      const result = await api.createChatSlot(
-        undefined, agent, undefined, undefined, 'persistent',
-        undefined, undefined, undefined, undefined, true,
-      )
-      return result as { key?: string }
+    mutationFn: async (mode: ChatMode) => {
+      let key = undeliveredSlot
+      if (!key) {
+        const result = await api.createChatSlot(
+          undefined, 'pptx-maker', undefined, undefined, 'persistent',
+          undefined, undefined, undefined, undefined, true,
+        ) as { key?: string }
+        if (!result.key) return result
+        key = result.key
+        setUndeliveredSlot(key)
+      }
+      await api.chatSlotContext(key, MODE_CONTEXT[mode], {
+        source: 'pptx-maker',
+        ephemeral: true,
+      })
+      setUndeliveredSlot(null)
+      return { key }
     },
     onSuccess: (result) => {
       navigate(result.key ? `/chat?sid=${encodeURIComponent(result.key)}` : '/chat')
@@ -373,28 +370,37 @@ export default function PptxMakerPage() {
                 <InfoTip text={i18nT('apps.pptxMaker.pptxMakerPage.start_a_deck_tip')} />
               </CardTitle>
               <div className="flex items-start gap-3 flex-wrap">
-                {CHAT_AGENTS.map((agent) => (
-                  <div key={agent} className="flex flex-col gap-1 max-w-[230px]">
+                {CHAT_MODES.map((mode) => (
+                  <div key={mode} className="flex flex-col gap-1 max-w-[230px]">
                     <SendBtn
-                      onClick={() => startChat.mutate(agent)}
+                      onClick={() => startChat.mutate(mode)}
                       disabled={startChat.isPending}
                     >
-                      {agent === 'pptx-maker-style' ? (
+                      {mode === 'style' ? (
                         <Sparkles className="lucide-inline" />
                       ) : (
                         <MessageSquarePlus className="lucide-inline" />
                       )}
-                      {i18nT(CHAT_AGENT_LABEL_KEY[agent])}
+                      {i18nT(CHAT_MODE_LABEL_KEY[mode])}
                     </SendBtn>
                     <span className="text-[12px] text-muted">
-                      {i18nT(CHAT_AGENT_HINT_KEY[agent])}
+                      {i18nT(CHAT_MODE_HINT_KEY[mode])}
                     </span>
                   </div>
                 ))}
               </div>
               {/* The decks view holds no draft (the search box is a filter). */}
               {startChat.isError && (
-                <ErrorNotice className="mt-3" message={(startChat.error as Error).message} askAgent />
+                <ErrorNotice
+                  className="mt-3"
+                  title={
+                    undeliveredSlot
+                      ? i18nT('apps.pptxMaker.pptxMakerPage.mode_context_failed')
+                      : undefined
+                  }
+                  message={(startChat.error as Error).message}
+                  askAgent
+                />
               )}
             </Card>
 

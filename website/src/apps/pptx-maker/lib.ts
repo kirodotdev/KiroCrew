@@ -240,3 +240,18 @@ export function templateAccents(colors: Record<string, string> | undefined): str
     .map((n) => colors[`accent${n}`])
     .filter((c): c is string => Boolean(c))
 }
+
+/**
+ * Build an SDPM-standard style/template mention for chat.
+ *
+ * The ASCII prefixes are protocol tokens, not translatable copy. SDPM's mention
+ * grammar requires quotes when the library name contains whitespace.
+ */
+export function libraryChatToken(
+  kind: 'styles' | 'templates',
+  name: string,
+): string {
+  const prefix = kind === 'styles' ? 'style' : 'template'
+  const operand = /\s/.test(name) ? `"${name}"` : name
+  return `@${prefix}:${operand}`
+}

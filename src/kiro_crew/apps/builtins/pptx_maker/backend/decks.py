@@ -53,7 +53,7 @@ MAX_DECKS = 500
 # Deck-directory filename grammar (the engine's, matched not built).
 _EPOCH_RE = re.compile(r"_(\d+)\.json$")
 _SLUG_EPOCH_RE = re.compile(r"^(.+)_(\d+)\.json$")
-_PAGE_RE = re.compile(r"^page(\d+)[-.]")
+_PAGE_RE = re.compile(r"^page[-_]?(\d+)(?:[-.]|$)")
 _OUTLINE_SLUG_RE = re.compile(r"^-\s*\[([a-z0-9-]+)\]")
 
 # Deliverable docs surfaced as viewer tabs, in the order the engine produces
@@ -193,6 +193,34 @@ def _read_deck_text(path: Path, deck_dir: Path) -> str | None:
     return raw.decode("utf-8", errors="replace")
 
 
+#: The first non-blank outline line, when it is a level-1 heading.
+#: `\s+` then a non-space anchor and no trailing `\s*$`, so the match is linear in
+#: the line length (a lazy group followed by `\s*$` backtracks quadratically).
+_OUTLINE_TITLE_RE = re.compile(r"^#\s+(\S.*)")
+#: Bounds the title the Deck list shows; a heading is one line of prose.
+_MAX_TITLE_CHARS = 200
+
+
+def _outline_title(deck_dir: Path) -> str:
+    """The deck title from `specs/outline.md`'s leading `# Title`, or ``""``.
+
+    Read through :func:`_read_deck_text` like every other deck file, so a symlinked
+    or hardlinked outline is refused rather than followed.
+    """
+    outline = paths.contained_deck_file(deck_dir, "specs", "outline.md")
+    if outline is None:
+        return ""
+    text = _read_deck_text(outline, deck_dir)
+    if not text:
+        return ""
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = _OUTLINE_TITLE_RE.match(line)
+        return match.group(1).rstrip() if match else ""
+    return ""
+
+
 def _deck_name(deck_dir: Path) -> str:
     """The deck's display name from its own metadata, else the directory name.
 
@@ -219,6 +247,13 @@ def _deck_name(deck_dir: Path) -> str:
             # output on its way to the dashboard: redact before it leaves
             # (AUTOSDE `backend-security-controls`).
             return redact(str(data["name"]))
+    # The engine's v0.9+ `deck.json` carries no name; the deck title is the
+    # outline's leading `# Title` line (the engine's own Web UI reads it there).
+    title = _outline_title(deck_dir)
+    if title:
+        # Redact BEFORE bounding: slicing first can cut a credential so that
+        # neither half matches a pattern, and the tail would reach the Deck list.
+        return redact(title)[:_MAX_TITLE_CHARS]
     # The FALLBACK is agent-controlled too, and needs the same pass. The engine
     # creates these directories from the model's own name for the deck, so a deck
     # with no `deck.json` yet — every specs-only deck in progress — surfaced its
@@ -251,17 +286,22 @@ def _read_brief(deck_dir: Path) -> str:
     return redact(raw)[:BRIEF_PREVIEW_CHARS]
 
 
+def _slug_preview_name(deck_dir: Path, slug: str) -> str | None:
+    """The v0.10 ``preview/<slug>.png`` filename when safely contained."""
+    preview = paths.contained_deck_file(deck_dir, "preview", f"{slug}.png")
+    return preview.name if preview is not None else None
+
+
 def _first_thumbnail(deck_dir: Path) -> str | None:
-    preview_dir = paths.contained_deck_dir(deck_dir, "preview")
-    if preview_dir is None:
+    slugs = _slide_order(deck_dir)
+    if slugs:
+        current = _slug_preview_name(deck_dir, slugs[0])
+        if current is not None:
+            return _preview_url(deck_dir.name, "preview", current)
+    legacy = _previews_by_page(deck_dir)
+    if not legacy:
         return None
-    try:
-        pngs = sorted(preview_dir.glob("*.png"))
-    except OSError:
-        return None
-    if not pngs:
-        return None
-    return _preview_url(deck_dir.name, "preview", pngs[0].name)
+    return _preview_url(deck_dir.name, "preview", legacy[min(legacy)])
 
 
 def list_decks() -> list[dict]:
@@ -451,7 +491,7 @@ def deck_detail(deck_id: str) -> dict | None:
             continue
         page += 1
         compose_name = compose_by_slug.get(slug)
-        preview_name = previews.get(page)
+        preview_name = _slug_preview_name(deck_dir, slug) or previews.get(page)
         # The slug is screened HERE as well as in `_preview_url`, because it is not
         # only a URL segment — it is also the slide's rendered LABEL, so a
         # credential-shaped slug leaks through the `slug` field even when both URLs

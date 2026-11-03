@@ -151,7 +151,14 @@ class TestAgentRegistration:
         assert "@ghost/summon" in warning
         assert "my-agent" in warning
 
-    @pytest.mark.parametrize("managed_ref", ["@kirocrew-core", "@kirocrew-core/memory_recall"])
+    @pytest.mark.parametrize(
+        "managed_ref",
+        [
+            "@kirocrew-core",
+            "@kirocrew-core/memory_recall",
+            "@kirocrew-core/ask_question",
+        ],
+    )
     def test_resolvable_at_grants_log_no_dangling_warning(
         self, tmp_path, app_env, monkeypatch, caplog, managed_ref
     ):

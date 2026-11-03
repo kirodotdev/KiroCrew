@@ -5,10 +5,10 @@
 **PPTX Maker** was written by **sktok**, as a standalone KiroCrew-family app
 (`app-pptx-maker`, MIT-0). This directory is that app ported into the KiroCrew
 open-source repository as a first-party builtin. The design is the original
-author's: the Spec / Vibe / Style agent split, the deck-plus-library studio
-layout, the animated SVG slide preview, the tabbed deliverable viewer that
-follows whichever artifact the agent just wrote, and the style-versus-template
-distinction all come from the upstream app.
+author's: the Spec / Vibe / Style ways of working (now modes of one agent), the
+deck-plus-library studio layout, the animated SVG slide preview, the tabbed
+deliverable viewer that follows whichever artifact the agent just wrote, and the
+style-versus-template distinction all come from the upstream app.
 
 What changed in the port is the plumbing, not the product:
 
@@ -16,8 +16,9 @@ What changed in the port is the plumbing, not the product:
   `/api/apps/pptx-maker/*`;
 - the hand-written ESM UI became a normal React + TypeScript page using the
   dashboard's shared components and i18n catalog;
-- the install-time patch of the engine's own prompt file was dropped in favour of
-  an app-owned prompt resource, so the engine checkout stays unmodified.
+- the install-time patch of the engine's own prompt file was dropped: the engine
+  serves its role and procedure text through its own entry tools, so the app
+  ships no prompt and the engine checkout stays unmodified.
 
 `"author": "sktok"` in `app.json` reflects the original authorship and should
 stay as it is.

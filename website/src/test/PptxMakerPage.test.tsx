@@ -24,6 +24,7 @@ import {
   countBoardSlides,
   filterDecks,
   fuzzyMatch,
+  libraryChatToken,
   nameFromFilename,
   prepareBoardHtml,
   tabAvailable,
@@ -136,6 +137,15 @@ describe('nameFromFilename', () => {
 
   it('bounds the length', () => {
     expect(nameFromFilename(`${'a'.repeat(200)}.html`).length).toBeLessThanOrEqual(64)
+  })
+})
+
+describe('library chat tokens', () => {
+  it('uses SDPM mention syntax and quotes names containing whitespace', () => {
+    expect(libraryChatToken('styles', 'brand')).toBe('@style:brand')
+    expect(libraryChatToken('styles', 'Brand Guide')).toBe('@style:"Brand Guide"')
+    expect(libraryChatToken('templates', 'corp')).toBe('@template:corp')
+    expect(libraryChatToken('templates', 'Company Theme')).toBe('@template:"Company Theme"')
   })
 })
 
@@ -360,7 +370,11 @@ vi.mock('../apps/pptx-maker/api', async () => {
 })
 
 vi.mock('../api/client', () => ({
-  api: { createChatSlot: vi.fn(async () => ({ key: 'pptx-1' })), revealPath: vi.fn(async () => ({})) },
+  api: {
+    createChatSlot: vi.fn(async () => ({ key: 'pptx-1' })),
+    chatSlotContext: vi.fn(async () => ({})),
+    revealPath: vi.fn(async () => ({})),
+  },
 }))
 
 // Keep the real router (MemoryRouter, the route hooks the page relies on) but
@@ -566,22 +580,48 @@ describe('PptxMakerPage', () => {
     expect(screen.getByText('Style creator')).toBeTruthy()
   })
 
-  it('creates a chat session on the app agent when a mode is chosen', async () => {
+  it.each([
+    ['Spec mode', 'Interaction mode: dialogue'],
+    ['Vibe mode', 'Interaction mode: fast'],
+    ['Style creator', 'The user wants to create a reusable style. Call start_style() first.'],
+  ])('opens a chat on the app agent with %s context', async (label, context) => {
     const { api } = await import('../api/client')
     await renderPage()
-    await userEvent.click(await screen.findByText('Spec mode'))
-    await waitFor(() =>
-      // The DECLARED agent name: dispatch resolves the value against each
-      // registered config's `name` field (`_scan_materialized_agents`), not the
-      // `pptx-maker--pptx-maker-spec.json` filename stem the registrar writes.
-      // The stem (and the slash namespace form) match nothing in that set, and
-      // resolution falls back to the default agent instead of failing, so
-      // pinning a wrong spelling here would let a silently agent-less chat pass.
-      expect(api.createChatSlot).toHaveBeenCalledWith(
-        undefined, 'pptx-maker-spec', undefined, undefined, 'persistent',
-        undefined, undefined, undefined, undefined, true,
-      ),
+    await userEvent.click(await screen.findByText(label))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat?sid=pptx-1'))
+    // The DECLARED agent name: dispatch resolves the value against each
+    // registered config's `name` field (`_scan_materialized_agents`), not the
+    // `pptx-maker--pptx-maker.json` filename stem the registrar writes.
+    expect(api.createChatSlot).toHaveBeenCalledWith(
+      undefined, 'pptx-maker', undefined, undefined, 'persistent',
+      undefined, undefined, undefined, undefined, true,
     )
+    expect(api.chatSlotContext).toHaveBeenCalledWith('pptx-1', context, {
+      source: 'pptx-maker',
+      ephemeral: true,
+    })
+  })
+
+  it('stays on the page and retries on the same slot when the mode context fails', async () => {
+    const { api } = await import('../api/client')
+    ;(api.chatSlotContext as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('context refused'),
+    )
+    await renderPage()
+    await userEvent.click(await screen.findByText('Spec mode'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('The selected mode could not be sent to the chat.')
+    expect(alert.textContent).toContain('context refused')
+    expect(navigateSpy).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByText('Spec mode'))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat?sid=pptx-1'))
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(api.chatSlotContext).toHaveBeenCalledTimes(2)
+    expect(api.chatSlotContext).toHaveBeenLastCalledWith('pptx-1', 'Interaction mode: dialogue', {
+      source: 'pptx-maker',
+      ephemeral: true,
+    })
   })
 
   it('surfaces a visible error and does not navigate when the deck-start create fails', async () => {

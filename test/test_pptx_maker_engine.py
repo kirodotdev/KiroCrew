@@ -315,25 +315,13 @@ class TestLoadLists:
         ):
             assert engine.load_lists() == {"styles": [], "templates": [], "stylesDirs": []}
 
-    def test_passes_the_bundled_dirs_so_builtin_assets_resolve(self):
-        """The bundled styles/templates only resolve if these argv entries are
-        handed over — without them the builtin library silently lists empty."""
-        with (
-            mock.patch.object(
-                engine, "run_engine_snippet", return_value=engine.EngineResult(0, "{}")
-            ) as snippet,
-            mock.patch.object(engine.paths, "engine_skill_dir", return_value=Path("/skill")),
-        ):
+    def test_resource_dirs_come_from_the_engine_api_without_host_paths(self):
+        """The editable SDPM package owns its bundled style/template paths."""
+        with mock.patch.object(
+            engine, "run_engine_snippet", return_value=engine.EngineResult(0, "{}")
+        ) as snippet:
             engine.load_lists()
-        argv = snippet.call_args.args[1]
-        # Compared as Paths: `load_lists` builds these with pathlib, so the
-        # separator is the host's and a literal "/" assertion fails on Windows
-        # for an argv that is entirely correct.
-        skill = Path("/skill")
-        assert [Path(a) for a in argv] == [
-            skill / "references" / "examples" / "styles",
-            skill / "templates",
-        ]
+        assert snippet.call_args.args == (engine._LISTS_SNIPPET,)
 
 
 class TestAnalyzeTemplate:
@@ -394,41 +382,31 @@ class TestScanNewTemplates:
             assert engine.scan_new_templates() == ["1", "2"]
 
 
-class TestIconScripts:
-    def test_refuses_to_run_without_the_venv_or_the_script(self, tmp_path: Path):
-        """Naming which of the two is missing is the difference between an
-        actionable message and a bare non-zero exit."""
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "absent"),
-            mock.patch.object(engine, "_spawn") as spawn,
-        ):
-            result = engine.run_icon_script("aws", "download_aws_icons.py")
+class TestAssetInstallApi:
+    def test_calls_the_sdpm_download_api_with_source_and_destination(self, tmp_path: Path):
+        result = engine.EngineResult(returncode=0, stdout='{"sources": []}')
+        with mock.patch.object(engine, "run_engine_snippet", return_value=result) as snippet:
+            assert engine.install_asset_source("aws", tmp_path) is result
+        assert snippet.call_args.args == (
+            engine._INSTALL_ASSETS_SNIPPET,
+            ["aws", str(tmp_path)],
+        )
+        assert snippet.call_args.kwargs["timeout"] == engine.ICON_DOWNLOAD_TIMEOUT
+
+    def test_refuses_an_unknown_source_without_spawning(self, tmp_path: Path):
+        with mock.patch.object(engine, "run_engine_snippet") as snippet:
+            result = engine.install_asset_source("unknown", tmp_path)
         assert result.returncode == 1
-        assert "missing" in result.stderr
-        assert not spawn.called
+        assert not snippet.called
 
-    def test_runs_the_script_in_its_own_directory(self, tmp_path: Path):
-        """The engine's icon scripts resolve their output relative to their own
-        location, so the cwd is load-bearing."""
-        python = tmp_path / "python"
-        python.write_text("#!/bin/sh", encoding="utf-8")
-        script = tmp_path / "scripts" / "download_aws_icons.py"
-        script.parent.mkdir(parents=True)
-        script.write_text("print()", encoding="utf-8")
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=python),
-            mock.patch.object(engine, "icon_script_path", return_value=script),
-            mock.patch.object(engine, "_spawn", return_value=engine.EngineResult(0, "")) as spawn,
-        ):
-            engine.run_icon_script("aws", "download_aws_icons.py")
-        assert spawn.call_args.args[0] == [str(python), str(script)]
-        assert spawn.call_args.kwargs["cwd"] == str(script.parent)
+    def test_not_ready_is_a_failed_result(self, tmp_path: Path):
+        with mock.patch.object(engine, "run_engine_snippet", return_value=None):
+            result = engine.install_asset_source("material", tmp_path)
+        assert result.returncode == 1
+        assert "venv" in result.stderr
 
-    def test_every_declared_icon_source_names_a_script(self):
-        """A source with no script would report a permanent provisioning error
-        the user could do nothing about."""
-        for source, script in engine.ICON_SOURCES:
-            assert source and script.endswith(".py")
+    def test_declared_sources_match_the_engine_api(self):
+        assert engine.ICON_SOURCES == ("aws", "material")
 
 
 class TestMissingOptionalDeps:

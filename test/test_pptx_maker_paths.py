@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from kiro_crew.apps.builtins.pptx_maker.backend import paths
 
@@ -150,6 +151,18 @@ class TestResolveLibraryFile(unittest.TestCase):
     def test_rejects_traversal_names(self) -> None:
         for name in ("..", "../evil", "a/b", "", ".hidden"):
             self.assertIsNone(paths.resolve_library_file(self.lib, name, ".html"), name)
+
+
+class TestEngineLayout(unittest.TestCase):
+    def test_v010_runtime_roots_are_centralized_in_paths(self) -> None:
+        root = Path("/engine")
+        self.assertEqual(paths.engine_mcp_dir_for(root), root / "servers" / "local")
+        self.assertEqual(paths.engine_sdpm_dir_for(root), root / "sdpm")
+        self.assertEqual(paths.engine_sdpm_package_dir_for(root), root / "sdpm" / "sdpm")
+        self.assertEqual(paths.engine_shared_dir_for(root), root / "shared")
+        with mock.patch.object(paths, "engine_root", return_value=root):
+            self.assertEqual(paths.engine_mcp_dir(), root / "servers" / "local")
+            self.assertEqual(paths.engine_sdpm_dir(), root / "sdpm")
 
 
 class TestDeckRootResolution(_DeckRootFixture):

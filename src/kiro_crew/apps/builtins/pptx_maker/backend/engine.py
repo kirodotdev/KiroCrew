@@ -82,14 +82,8 @@ _SOFFICE_WINDOWS_DIRS: tuple[str, ...] = (
     r"C:\Program Files (x86)\LibreOffice\program",
 )
 
-# Icon asset packs the engine can download with its own bundled scripts. Run
-# once per engine version into the engine's user config dir, so the packs
-# survive an app update (which replaces the vendored checkout).
-ICON_SOURCES: tuple[tuple[str, str], ...] = (
-    ("aws", "download_aws_icons.py"),
-    ("material", "download_material_icons.py"),
-)
-ICON_MARKER_FILENAME = ".pptx-maker-provisioned.json"
+# Icon asset packs supported by the engine's public download API.
+ICON_SOURCES: tuple[str, ...] = ("aws", "material")
 ICON_DOWNLOAD_TIMEOUT = 600
 
 # Cap on captured subprocess log text handed to the UI.
@@ -100,22 +94,13 @@ LOG_TAIL_CHARS = 4000
 _USER_DIR_SNIPPET = "from sdpm.config import get_user_config_dir; print(get_user_config_dir())"
 
 _LISTS_SNIPPET = (
-    "import json, sys\n"
-    "from pathlib import Path\n"
+    "import json\n"
     "from sdpm.api import (get_styles_dirs, list_styles_filtered,\n"
     "                      get_templates_dirs, list_templates_with_metadata)\n"
     "from sdpm.config import get_state\n"
-    "bundled_styles, bundled_templates = Path(sys.argv[1]), Path(sys.argv[2])\n"
-    # Append the vendored skill tree as the authoritative builtin dir (last wins
-    # for the 'builtin' label) so bundled styles/templates resolve regardless of
-    # whether the engine was installed editable.
-    "def merge(dirs, bundled):\n"
-    "    out = [Path(d) for d in dirs if Path(d) != bundled]\n"
-    "    if bundled.is_dir(): out.append(bundled)\n"
-    "    return out\n"
     "state = get_state()\n"
-    "style_dirs = merge(get_styles_dirs(), bundled_styles)\n"
-    "template_dirs = merge(get_templates_dirs(), bundled_templates)\n"
+    "style_dirs = get_styles_dirs()\n"
+    "template_dirs = get_templates_dirs()\n"
     "styles = list_styles_filtered(style_dirs, state.get('pinned_styles', []), include_all=True)\n"
     "templates = list_templates_with_metadata(template_dirs,\n"
     "                                        state.get('template_metadata', {}))\n"
@@ -135,14 +120,18 @@ _ANALYZE_SNIPPET = (
     "print(json.dumps(meta, ensure_ascii=False))\n"
 )
 
-_SCAN_TEMPLATES_SNIPPET = (
-    "import sys, json\n"
+_INSTALL_ASSETS_SNIPPET = (
+    "import json, sys\n"
     "from pathlib import Path\n"
+    "from sdpm.knowledge.assets.download import install_assets\n"
+    "print(json.dumps(install_assets([sys.argv[1]], Path(sys.argv[2]))))\n"
+)
+
+_SCAN_TEMPLATES_SNIPPET = (
+    "import json\n"
     "from sdpm.api import get_templates_dirs, analyze_and_store_template\n"
     "from sdpm.config import get_state, update_state\n"
-    "bundled = Path(sys.argv[1])\n"
-    "dirs = [Path(d) for d in get_templates_dirs() if Path(d) != bundled]\n"
-    "if bundled.is_dir(): dirs.append(bundled)\n"
+    "dirs = get_templates_dirs()\n"
     "state = get_state()\n"
     "known = state.get('template_metadata', {})\n"
     "added = []\n"
@@ -225,8 +214,8 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
     # credential-dir hiding, so the engine venv and the deck tree stay visible and
     # uv's network access is unaffected.
     # No preview-tool PATH is injected here on purpose: these children run only the
-    # metadata snippets and the icon scripts. `pdftoppm`/`soffice` are shelled out to
-    # from `skill/sdpm/api.py` inside the engine's MCP server, which kiro-cli spawns
+    # engine snippets. `pdftoppm`/`soffice` are shelled out to from `sdpm.api`
+    # inside the engine's MCP server, which kiro-cli spawns
     # from the rendered agent config — so the managed tool dir belongs on THAT
     # process's PATH (`provision.mcp_tools_path`), and putting it here would only
     # look like a fix.
@@ -445,13 +434,7 @@ def load_lists() -> dict:
 
     BLOCKING — call through ``off_loop``.
     """
-    result = run_engine_snippet(
-        _LISTS_SNIPPET,
-        [
-            str(paths.engine_skill_dir() / "references" / "examples" / "styles"),
-            str(paths.engine_skill_dir() / "templates"),
-        ],
-    )
+    result = run_engine_snippet(_LISTS_SNIPPET)
     data = result.json() if result is not None else None
     if isinstance(data, dict):
         return {
@@ -487,34 +470,22 @@ def scan_new_templates() -> list[str]:
     """
     result = run_engine_snippet(
         _SCAN_TEMPLATES_SNIPPET,
-        [str(paths.engine_skill_dir() / "templates")],
         timeout=ENGINE_ANALYZE_TIMEOUT,
     )
     data = result.json() if result is not None else None
     return [str(name) for name in data] if isinstance(data, list) else []
 
 
-def icon_script_path(script: str) -> Path:
-    """Path to one of the engine's bundled icon-download scripts."""
-    return paths.engine_skill_dir() / "scripts" / script
-
-
-def icon_vendor_output(source: str) -> Path:
-    """Where an icon script writes its output inside the engine checkout."""
-    return paths.engine_skill_dir() / "assets" / source
-
-
-def run_icon_script(source: str, script: str) -> EngineResult:
-    """Run one bundled icon-download script in the engine venv.
+def install_asset_source(source: str, destination: Path) -> EngineResult:
+    """Install one icon catalog through SDPM's public download API.
 
     BLOCKING — call through ``off_loop``.
     """
-    python = paths.engine_python()
-    script_path = icon_script_path(script)
-    if not python.is_file() or not script_path.is_file():
-        return EngineResult(returncode=1, stderr=f"[{source}] script or venv missing")
-    return _spawn(
-        [str(python), str(script_path)],
-        cwd=str(script_path.parent),
+    if source not in ICON_SOURCES:
+        return EngineResult(returncode=1, stderr=f"unsupported asset source: {source}")
+    result = run_engine_snippet(
+        _INSTALL_ASSETS_SNIPPET,
+        [source, str(destination)],
         timeout=ICON_DOWNLOAD_TIMEOUT,
     )
+    return result or EngineResult(returncode=1, stderr="engine venv missing")
