@@ -472,6 +472,14 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
                 "sandbox error. Remove the key to accept this platform's "
                 "default, or set it to true to allow unconfined execution."
             )
+            stale_note = cli_doctor.sandbox.stale_windows_false_note()
+            if stale_note and _stale_false_refuses_kas_sessions():
+                # Every KAS session on this host is refused at spawn, so this is
+                # an outage, not a posture: count it, and name the likely origin
+                # of the value so the operator does not defend a choice nobody made.
+                print("  sessions:    ❌ KAS sessions are refused by this stored false")
+                render._print_wrapped(stale_note)
+                issues.append("sandbox exec refused (stale sandbox_allow_unsandboxed_exec=false)")
         else:
             # Undeclared AND fail-closed: a platform with no backend whose default
             # is still refuse (a macOS build without sandbox-exec). Telling this
@@ -484,6 +492,43 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
                 "allow unconfined execution, or run `kirocrew setup` to be walked "
                 "through the decision."
             )
+
+
+def _stale_false_refuses_kas_sessions() -> bool:
+    """Whether a declared ``false`` is what refuses this host's KAS sessions.
+
+    Needs a KAS harness, a sandbox tier that is not ``off`` (``wrap_argv``
+    returns before the no-backend gate on ``off``), and no governance floor (a
+    floor refuses these spawns whatever the key says, so deleting it would not
+    help). Any read that fails answers ``False``: the row then keeps its plain
+    posture wording instead of claiming an outage it cannot confirm.
+    """
+    sb = cli_doctor.sandbox
+    try:
+        if sb._governance_sandbox_floor():
+            return False
+        if sb.effective_sandbox_mode(sb.configured_sandbox_mode()) == "off":
+            return False
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken probe
+        return False
+    return _selected_harness_is_kas()
+
+
+def _selected_harness_is_kas() -> bool:
+    """Whether the main or crewmate harness resolves to KAS on this host.
+
+    Both fields arrive resolved by the loader, so a stored Kiro CLI pick that the
+    loader moved onto KAS reads as KAS here too. KAS spawns are not handed to
+    kiro-cli's sandbox on Windows, which is why a declared ``false`` refuses them
+    there. An unreadable config answers ``False``: the row then keeps its plain
+    posture wording instead of claiming an outage it cannot see.
+    """
+    try:
+        agent = cli_doctor.KiroCrewConfig.load().agent
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken config
+        return False
+    kas = cli_doctor.ACP_BACKEND_KAS
+    return kas in (agent.acp_backend, agent.member_acp_backend)
 
 
 def _doctor_live_target_pointer(issues: list[str]) -> None:

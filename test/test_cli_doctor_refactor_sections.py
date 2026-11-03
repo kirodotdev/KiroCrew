@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew import cli_doctor, platform_compat
+from kiro_crew.doctor_checks import confinement
 
 EXPECTED: dict[str, str] = {
     "aliases:accounted-confined": (
@@ -354,11 +356,81 @@ def test_the_no_backend_posture_rows(monkeypatch, capsys, key, permitted_by, dec
     value = getattr(sb, permitted_by) if permitted_by else ""
     monkeypatch.setattr(sb, "unsandboxed_exec_permitted_by", lambda: value)
     monkeypatch.setattr(cli_doctor, "unsandboxed_exec_declared", lambda: declared)
+    monkeypatch.setattr(confinement, "_stale_false_refuses_kas_sessions", lambda: False)
     issues: list[str] = []
 
     cli_doctor._doctor_sandbox_backend(issues)
 
     _check(f"posture:{key}", capsys.readouterr().out)
+    assert issues == []
+
+
+def _stale_false_host(
+    monkeypatch, *, platform="win32", acp="kas", member="kas", mode="auto", floor=None
+):
+    """A backend-less host whose config declares the opt-in false."""
+    _backend(monkeypatch, kind="permanent", remedy="none", platform=platform)
+    sb = cli_doctor.sandbox
+    monkeypatch.setattr(sb, "unsandboxed_exec_permitted_by", lambda: "")
+    monkeypatch.setattr(sb, "configured_sandbox_mode", lambda: mode)
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: floor)
+    monkeypatch.setattr(cli_doctor, "unsandboxed_exec_declared", lambda: True)
+    agent = SimpleNamespace(acp_backend=acp, member_acp_backend=member)
+    monkeypatch.setattr(
+        cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace(agent=agent))
+    )
+
+
+@pytest.mark.parametrize(("acp", "member"), [("kas", "kas"), ("", "kas"), ("kas", "")])
+def test_a_declared_false_on_windows_with_kas_is_flagged_as_stale(
+    monkeypatch, capsys, acp, member
+) -> None:
+    _stale_false_host(monkeypatch, acp=acp, member=member)
+    issues: list[str] = []
+
+    cli_doctor._doctor_sandbox_backend(issues)
+
+    out = capsys.readouterr().out
+    assert out.startswith(EXPECTED["posture:refused-declared"])
+    assert "sessions:    ❌ KAS sessions are refused by this stored false" in out
+    flat = " ".join(out.split())
+    assert "older than 0.6.0" in flat
+    assert "Since 0.11, sessions run on KAS" in flat
+    assert " ".join(cli_doctor.sandbox.stale_windows_false_note().split()) in flat
+    assert issues == ["sandbox exec refused (stale sandbox_allow_unsandboxed_exec=false)"]
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        {"acp": "", "member": ""},  # Kiro CLI spawns are handed to kiro-cli on Windows
+        {"platform": "darwin"},  # no permitting default to fall back to
+        {"mode": "off"},  # wrap_argv returns before the no-backend gate
+        {"floor": "standard"},  # the floor refuses whatever the key says
+    ],
+)
+def test_the_stale_false_row_stays_out_of_other_cases(monkeypatch, capsys, host) -> None:
+    _stale_false_host(monkeypatch, **host)
+    issues: list[str] = []
+
+    cli_doctor._doctor_sandbox_backend(issues)
+
+    assert capsys.readouterr().out == EXPECTED["posture:refused-declared"]
+    assert issues == []
+
+
+def test_an_unreadable_config_does_not_claim_a_kas_outage(monkeypatch, capsys) -> None:
+    _stale_false_host(monkeypatch)
+
+    def boom(cls):
+        raise ValueError("corrupt config")
+
+    monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(boom))
+    issues: list[str] = []
+
+    cli_doctor._doctor_sandbox_backend(issues)
+
+    assert capsys.readouterr().out == EXPECTED["posture:refused-declared"]
     assert issues == []
 
 

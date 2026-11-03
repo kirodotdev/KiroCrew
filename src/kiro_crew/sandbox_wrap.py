@@ -73,6 +73,7 @@ from kiro_crew.sandbox_unavailable import (
     _unsandboxed_grant_source,
     _warn_mode_off_unconfined,
     refuse_unaudited_on_dead_fs,
+    stale_windows_false_note,
 )
 
 # Logged under the sandbox's name, which operator log filters, level settings
@@ -1212,6 +1213,14 @@ def wrap_argv(
                     "refused. Change that key to true (or remove it to accept this "
                     "platform's default) if you want these spawns to run unconfined. "
                 )
+                # On Windows that false is usually a pre-0.6.0 auto-write rather
+                # than a decision; say so, or the operator defends a lockdown they
+                # never chose. Same sentence as `kirocrew doctor`.
+                # Withheld under a governance floor: the floor refuses these
+                # spawns whatever the key says, so deleting it would not help.
+                stale_note = "" if floor_mandates_sandbox else stale_windows_false_note()
+                if stale_note:
+                    refusal += stale_note + " "
             else:
                 sel_reason = "No sandbox backend available and allow_unsandboxed_exec is not set"
                 refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "

@@ -754,6 +754,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         launcher_refusal,
         refuse_unaudited_on_dead_fs,
         ssh_auth_sock_consent_notice,
+        stale_windows_false_note,
         unsandboxed_exec_permitted_by,
     )
     from kiro_crew.sandbox_workspace import (  # noqa: F401

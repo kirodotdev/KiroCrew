@@ -20,6 +20,7 @@ the same thing on Linux CI and on a Windows dev box.
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -274,6 +275,67 @@ class TestWrapArgvOnABackendlessHost:
                 wrap_argv(list(_ARGV), mode="standard")
         assert "is set to false" in str(excinfo.value)
         assert "allow_unsandboxed_exec is not set" not in str(excinfo.value)
+
+    def test_declared_false_on_windows_names_the_stale_pre_060_write(
+        self, no_backend, monkeypatch
+    ) -> None:
+        """A Windows host usually holds this false from a pre-0.6.0 auto-write, and
+        0.11's KAS default is what made it bite; the refusal says both and how to
+        get the platform default back, without changing the verdict."""
+        _pin_config(monkeypatch, value=False, declared=True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        message = str(excinfo.value)
+        assert "is set to false" in message
+        assert sandbox_mod.stale_windows_false_note() in message
+        assert "older than 0.6.0" in message
+        assert "sessions run on KAS" in message
+        assert "config.json" in message
+        assert "config.local.json" in message
+
+    def test_the_windows_note_names_the_files_this_process_reads(self, monkeypatch) -> None:
+        """``KIROCREW_HOME`` moves the config, so the remedy names the resolved files."""
+        from kiro_crew.config import loader
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(loader, "config_path", lambda: "D:/crew/config.json")
+        monkeypatch.setattr(loader, "config_local_path", lambda: "D:/crew/config.local.json")
+        note = sandbox_mod.stale_windows_false_note()
+        assert "D:/crew/config.json" in note
+        assert "D:/crew/config.local.json" in note
+        assert "~/.kiro" not in note
+
+    def test_a_governance_floor_withholds_the_windows_note(self, no_backend, monkeypatch) -> None:
+        """Under a floor, deleting the key would not unblock these spawns."""
+        _pin_config(monkeypatch, value=False, declared=True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_mod, "_governance_sandbox_floor", lambda: "standard")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        assert "older than 0.6.0" not in str(excinfo.value)
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin"])
+    def test_declared_false_elsewhere_omits_the_windows_note(
+        self, no_backend, monkeypatch, platform
+    ) -> None:
+        _pin_config(monkeypatch, value=False, declared=True)
+        monkeypatch.setattr(sys, "platform", platform)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        assert "older than 0.6.0" not in str(excinfo.value)
+
+    def test_undeclared_refusal_on_windows_omits_the_note(self, no_backend, monkeypatch) -> None:
+        """No stored key means nothing stale to delete."""
+        _pin_config(monkeypatch, value=False, declared=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as excinfo:
+                wrap_argv(list(_ARGV), mode="standard")
+        assert "older than 0.6.0" not in str(excinfo.value)
 
     def test_governance_floor_outranks_the_platform_default(self, no_backend, monkeypatch) -> None:
         """``config.json`` is not policy, and neither is the platform: a managed

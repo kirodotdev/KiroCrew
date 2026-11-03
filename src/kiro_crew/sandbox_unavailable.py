@@ -64,6 +64,48 @@ UNSANDBOXED_BY_OPERATOR = "operator"
 UNSANDBOXED_BY_PLATFORM = "platform"
 
 
+def stale_windows_false_note() -> str:
+    """Why a Windows host most likely holds a declared ``false`` it never chose.
+
+    Builds before 0.6.0 saved ``"sandbox_allow_unsandboxed_exec": false`` into
+    ``config.json`` on every host, and a stored key counts as declared. While
+    Windows sessions ran on the Kiro CLI harness, ``wrap_argv`` handed them to
+    kiro-cli's own sandbox and the value was never consulted; KAS spawns are not
+    handed off on Windows, so since 0.11 made KAS the default they reach the
+    no-backend gate and the stale value refuses them. One sentence shared by the
+    refusal and ``kirocrew doctor``, so an operator who reads both gets one
+    diagnosis. Wording only: nothing here changes the gate.
+
+    ``""`` off Windows: the pre-0.6.0 write happened everywhere, but only Windows
+    has a permitting default to fall back to, so elsewhere deleting the key would
+    not unblock spawns. Callers also withhold it under a governance floor, which
+    refuses these spawns whatever the key says.
+
+    Names the files this process actually reads (``KIROCREW_HOME`` moves them),
+    falling back to the default location when they cannot be resolved.
+    """
+    if sys.platform != "win32":
+        return ""
+    try:
+        from kiro_crew.config.loader_locations import (  # circular import: low-level dep
+            config_local_path,
+            config_path,
+        )
+
+        main, local = str(config_path()), str(config_local_path())
+    except Exception:
+        main, local = "~/.kiro/crew/config.json", "~/.kiro/crew/config.local.json"
+    return (
+        "On Windows this false was most likely written automatically by a Kiro Crew "
+        "build older than 0.6.0, which saved it into config.json on every host, so it "
+        "may not be a choice anyone made. Since 0.11, sessions run on KAS, whose "
+        "Windows spawns are not handed to kiro-cli's own sandbox and so reach this "
+        f"check. Deleting the key from {main} (and from {local} if it is there too) "
+        "restores the Windows default, which runs these spawns unconfined and audits "
+        "each one."
+    )
+
+
 def _allow_unsandboxed_exec() -> bool:
     """Whether execution is permitted when NO sandbox backend is available.
 
