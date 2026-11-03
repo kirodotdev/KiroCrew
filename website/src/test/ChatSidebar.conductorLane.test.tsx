@@ -322,17 +322,17 @@ describe('chat sidebar — conductor lane', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
-      // A question sits with the conductor: it counts as working, never as needs you.
+      // A question sits with the conductor: it counts as waiting, never as running or needs you.
       { key: 'k-w2', title: 'W2', messages: 2, running: false, needs_input: true, modified: 2900, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-w3', title: 'W3', messages: 2, running: false, modified: 2800, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-w4', title: 'W4', messages: 2, running: false, pending_approval: true, modified: 2700, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId, queryByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '4 sessions, 1 needs you, 2 working, and 1 waiting'))
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '4 sessions, 1 needs you, 1 working, and 2 waiting'))
     // Needs you first, then running; idle work is not drawn. Each glyph has its own shape.
     const parts = within(getByTestId('crew-root-attention')).getAllByTestId('crew-root-count')
     expect(parts.map(p => [p.getAttribute('data-bucket'), p.textContent, p.querySelector('svg')?.getAttribute('class')?.match(/lucide-(hand|circle|pause)\b/)?.[1]])).toEqual([
-      ['needs_you', '1 needs you', 'hand'], ['running', '2 running', 'circle'],
+      ['needs_you', '1 needs you', 'hand'], ['running', '1 running', 'circle'],
     ])
     expect(parts.map(p => p.querySelector('svg')?.getAttribute('width'))).toEqual(['11', '11'])
     expect(parts[0].className).toContain('crew-tone-warn')
@@ -340,14 +340,18 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('crew-root-counts')).toBeNull()
   })
 
-  it('reads a worker whose question sits with its conductor as running, not needs you', async () => {
+  it('never counts a worker whose question sits with its conductor as running or needs you', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
-      { key: 'k-w1', title: 'W1', messages: 2, running: false, needs_input: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      // Idle with a question for the conductor, and mid-turn blocked on one: neither moves.
+      { key: 'k-w2', title: 'W2', messages: 2, running: false, needs_input: true, modified: 2900, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-w3', title: 'W3', messages: 2, running: true, needs_input: true, modified: 2800, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 running$/))
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '3 sessions, 1 working, and 2 waiting'))
+    expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 running$/)
   })
 
   it('drops a part that does not fit whole and shows an ellipsis, never a cut word', async () => {
