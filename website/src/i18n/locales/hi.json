@@ -6030,7 +6030,6 @@
       "credentials_remain_with_their_source_rules_hooks": "क्रेडेंशियल अपने स्रोत के साथ ही रहते हैं। बातचीत का इतिहास, हुक, एजेंट परिभाषाएँ और किसी स्रोत की पर्सोना पहचान इंपोर्ट नहीं की जाती। आपके लिखे नियम और निर्देश उच्च-प्राथमिकता मेमोरी के रूप में इंपोर्ट किए जाते हैं।",
       "deduplicated": "डुप्लीकेट हटाए गए",
       "existing_kirocrew_setup_is_never_overwritten_mat": "मौजूदा {{productName}} सेटअप डिफ़ॉल्ट रूप से कभी ओवरराइट नहीं होता। मेल खाने वाले आइटम के डुप्लीकेट हटा दिए जाते हैं, और टकराव वाला आइटम आपका वर्तमान संस्करण ही रखता है, जब तक आप इंपोर्ट के बाद कुछ और न चुनें।",
-      "found": "मिले",
       "import_agent_setup": "एजेंट सेटअप इंपोर्ट करें",
       "import_all_your_supported_work_or_handpick_what": "अपना सारा समर्थित काम इम्पोर्ट करें या चुनें कि क्या लाना है।",
       "import_another": "दूसरा इंपोर्ट करें",
@@ -6040,7 +6039,6 @@
       "imported": "इंपोर्ट किया गया",
       "importing": "इंपोर्ट हो रहा है",
       "items_already_exist_with_different_content": "आइटम अलग सामग्री के साथ पहले से मौजूद हैं।",
-      "items_selected": "आइटम चुने गए",
       "keep_both": "दोनों रखें",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} को इस गेटवे होस्ट पर एजेंट सेटअप मिला। समीक्षा के लिए स्रोत चुनें।",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} को इस गेटवे होस्ट पर इंपोर्ट करने योग्य कोई समर्थित सेटअप नहीं मिला।",
@@ -6072,7 +6070,14 @@
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।",
       "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}",
       "source_item_count_one": "{{name}}, {{count}} आइटम",
-      "source_item_count_other": "{{name}}, {{count}} आइटम"
+      "source_item_count_other": "{{name}}, {{count}} आइटम",
+      "category_count_one": "{{count}} श्रेणी",
+      "category_count_other": "{{count}} श्रेणियाँ",
+      "source_categories": "{{name}} की श्रेणियाँ",
+      "items_selected_count_one": "{{count}} आइटम चुना गया",
+      "items_selected_count_other": "{{count}} आइटम चुने गए",
+      "found_count_one": "{{count}} मिला",
+      "found_count_other": "{{count}} मिले"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "सहेजा गया, लेकिन यह {{productName}} एजेंट कॉन्फ़िगरेशन अपडेट नहीं कर सका, इसलिए नई चैट पुरानी सेटिंग ही रखेंगी। कारण जानने के लिए 'लॉग' पेज खोलें।"
@@ -14687,7 +14692,6 @@
         "search_explore_and_manage_your_knowledge_base": "अपने ज्ञान आधार को खोजें, देखें और प्रबंधित करें",
         "search_knowledge_press_enter_to_search": "ज्ञान खोजें... (खोजने के लिए Enter दबाएं)",
         "select_all": "सभी चुनें",
-        "selected": "चयनित",
         "sources_tab": "स्रोत",
         "status_active": "सक्रिय",
         "status_archived": "संग्रहित",
@@ -14710,7 +14714,9 @@
         "entity_items_load_failed": "इस एंटिटी के आइटम लोड नहीं हो सके",
         "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।",
         "delete_items_permanently_one": "{{count}} आइटम हमेशा के लिए हटाओ?",
-        "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?"
+        "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?",
+        "selected_count_one": "{{count}} चुना गया",
+        "selected_count_other": "{{count}} चुने गए"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",

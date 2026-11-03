@@ -4270,14 +4270,12 @@
       "credentials_remain_with_their_source_rules_hooks": "Credentials remain with their source. Conversation history, hooks, agent definitions, and a source's persona identity are not imported. Your written rules and instructions are imported as high-priority memory.",
       "deduplicated": "Deduplicated",
       "existing_kirocrew_setup_is_never_overwritten_mat": "Existing {{productName}} setup is never overwritten by default. Matching items are deduplicated, and a conflicting item keeps your current version unless you choose otherwise after the import.",
-      "found": "found",
       "import_agent_setup": "Import agent setup",
       "import_another": "Import another",
       "import_setup": "Import setup",
       "imported": "Imported",
       "importing": "Importing",
       "items_already_exist_with_different_content": "items already exist with different content.",
-      "items_selected": "items selected",
       "keep_both": "Keep both",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} did not find supported setup to import on this gateway host.",
       "merge_only": "Merge only",
@@ -4302,7 +4300,14 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected.",
       "import_setup_stage": "Import setup · {{stage}} of {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} item",
-      "source_item_count_other": "{{name}}, {{count}} items"
+      "source_item_count_other": "{{name}}, {{count}} items",
+      "category_count_one": "{{count}} category",
+      "category_count_other": "{{count}} categories",
+      "source_categories": "{{name}} categories",
+      "items_selected_count_one": "{{count}} item selected",
+      "items_selected_count_other": "{{count}} items selected",
+      "found_count_one": "{{count}} found",
+      "found_count_other": "{{count}} found"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Saved, but this copy of {{productName}} could not update the agent config, so new chats keep the old setup. Open the Logs page to see why."
@@ -8047,12 +8052,13 @@
         "search_explore_and_manage_your_knowledge_base": "Search, explore, and manage your knowledge base",
         "search_knowledge_press_enter_to_search": "Search knowledge... (press Enter to search)",
         "select_all": "Select all",
-        "selected": "selected",
         "to_search_esc_to_back_to_page": "/ to search, Esc to back, ←→ to page",
         "try_a_different_type_status_or_namespace": "Try a different type, status, or namespace",
         "try_different_keywords_or_filters": "Try different keywords or filters",
         "delete_items_permanently_one": "Delete {{count}} item permanently?",
-        "delete_items_permanently_other": "Delete {{count}} items permanently?"
+        "delete_items_permanently_other": "Delete {{count}} items permanently?",
+        "selected_count_one": "{{count}} selected",
+        "selected_count_other": "{{count}} selected"
       },
       "knowledgeGraph": {
         "edges": "edges",

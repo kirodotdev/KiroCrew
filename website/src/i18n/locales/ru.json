@@ -6266,7 +6266,6 @@
       "credentials_remain_with_their_source_rules_hooks": "Учётные данные остаются у своего источника. История переписки, хуки, определения агентов и персона источника не импортируются. Ваши записанные правила и инструкции импортируются как память с высоким приоритетом.",
       "deduplicated": "Дубликаты удалены",
       "existing_kirocrew_setup_is_never_overwritten_mat": "Существующая конфигурация {{productName}} по умолчанию никогда не перезаписывается. Совпадающие элементы дедуплицируются, а при конфликте сохраняется ваша текущая версия, если после импорта вы не выберете иное.",
-      "found": "найдено",
       "import_agent_setup": "Импорт конфигурации агента",
       "import_all_your_supported_work_or_handpick_what": "Импортируй всю поддерживаемую конфигурацию или выбери вручную, что перенести.",
       "import_another": "Импортировать ещё",
@@ -6276,7 +6275,6 @@
       "imported": "Импортировано",
       "importing": "Импорт",
       "items_already_exist_with_different_content": "элементов уже существуют с другим содержимым.",
-      "items_selected": "элементов выбрано",
       "keep_both": "Оставить оба",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} нашёл конфигурацию агентов на этом хосте шлюза. Выбери источники для проверки.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} не нашёл поддерживаемой конфигурации для импорта на этом хосте шлюза.",
@@ -6310,7 +6308,20 @@
       "source_item_count_one": "{{name}}, {{count}} элемент",
       "source_item_count_few": "{{name}}, {{count}} элемента",
       "source_item_count_many": "{{name}}, {{count}} элементов",
-      "source_item_count_other": "{{name}}, {{count}} элемента"
+      "source_item_count_other": "{{name}}, {{count}} элемента",
+      "category_count_one": "{{count}} категория",
+      "category_count_few": "{{count}} категории",
+      "category_count_many": "{{count}} категорий",
+      "category_count_other": "{{count}} категории",
+      "source_categories": "Категории: {{name}}",
+      "items_selected_count_one": "выбран {{count}} элемент",
+      "items_selected_count_few": "выбрано {{count}} элемента",
+      "items_selected_count_many": "выбрано {{count}} элементов",
+      "items_selected_count_other": "выбрано {{count}} элемента",
+      "found_count_one": "найдено: {{count}}",
+      "found_count_few": "найдено: {{count}}",
+      "found_count_many": "найдено: {{count}}",
+      "found_count_other": "найдено: {{count}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Сохранено, но эта копия {{productName}} не смогла обновить конфигурацию агента, поэтому новые чаты используют прежние настройки. Причину смотри на странице «Логи»."
@@ -15245,7 +15256,6 @@
         "search_explore_and_manage_your_knowledge_base": "Поиск, изучение и управление базой знаний",
         "search_knowledge_press_enter_to_search": "Поиск по знаниям... (нажмите Enter для поиска)",
         "select_all": "Выбрать все",
-        "selected": "выбрано",
         "sources_tab": "Источники",
         "status_active": "Активно",
         "status_archived": "В архиве",
@@ -15278,7 +15288,11 @@
         "delete_items_permanently_one": "Удалить {{count}} элемент навсегда?",
         "delete_items_permanently_few": "Удалить {{count}} элемента навсегда?",
         "delete_items_permanently_many": "Удалить {{count}} элементов навсегда?",
-        "delete_items_permanently_other": "Удалить {{count}} элемента навсегда?"
+        "delete_items_permanently_other": "Удалить {{count}} элемента навсегда?",
+        "selected_count_one": "выбрано: {{count}}",
+        "selected_count_few": "выбрано: {{count}}",
+        "selected_count_many": "выбрано: {{count}}",
+        "selected_count_other": "выбрано: {{count}}"
       },
       "itemCard": {
         "copied": "Скопировано!",

@@ -6030,7 +6030,6 @@
       "credentials_remain_with_their_source_rules_hooks": "Anmeldedaten verbleiben bei ihrer Quelle. Gesprächsverlauf, Hooks, Agentendefinitionen und die Persona-Identität einer Quelle werden nicht importiert. Ihre schriftlichen Regeln und Anweisungen werden als Erinnerung mit hoher Priorität importiert.",
       "deduplicated": "Dedupliziert",
       "existing_kirocrew_setup_is_never_overwritten_mat": "Eine bestehende {{productName}}-Einrichtung wird standardmäßig niemals überschrieben. Übereinstimmende Elemente werden dedupliziert, und bei einem Konflikt bleibt Ihre aktuelle Version erhalten, sofern Sie nach dem Import nichts anderes wählen.",
-      "found": "gefunden",
       "import_agent_setup": "Agenten-Einrichtung importieren",
       "import_all_your_supported_work_or_handpick_what": "Importiere alle unterstützten Inhalte oder wähle gezielt aus, was übernommen wird.",
       "import_another": "Weitere importieren",
@@ -6040,7 +6039,6 @@
       "imported": "Importiert",
       "importing": "Wird importiert",
       "items_already_exist_with_different_content": "Elemente existieren bereits mit anderem Inhalt.",
-      "items_selected": "Elemente ausgewählt",
       "keep_both": "Beide behalten",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} hat auf diesem Gateway-Host eine Agentenkonfiguration gefunden. Wähle die Quellen zur Prüfung aus.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} hat auf diesem Gateway-Host keine unterstützte Einrichtung zum Importieren gefunden.",
@@ -6072,7 +6070,14 @@
       "your_selected_setup_is_ready_in_kiro_crew": "Deine ausgewählte Konfiguration ist in {{productName}} bereit.",
       "import_setup_stage": "Einrichtung importieren · {{stage}} von {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} Element",
-      "source_item_count_other": "{{name}}, {{count}} Elemente"
+      "source_item_count_other": "{{name}}, {{count}} Elemente",
+      "category_count_one": "{{count}} Kategorie",
+      "category_count_other": "{{count}} Kategorien",
+      "source_categories": "Kategorien von {{name}}",
+      "items_selected_count_one": "{{count}} Element ausgewählt",
+      "items_selected_count_other": "{{count}} Elemente ausgewählt",
+      "found_count_one": "{{count}} gefunden",
+      "found_count_other": "{{count}} gefunden"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Gespeichert, aber diese {{productName}}-Instanz konnte die Agent-Konfiguration nicht aktualisieren, daher behalten neue Chats die alte Einrichtung. Den Grund findest du auf der Seite „Protokolle“."
@@ -14687,7 +14692,6 @@
         "search_explore_and_manage_your_knowledge_base": "Ihre Wissensbasis durchsuchen, erkunden und verwalten",
         "search_knowledge_press_enter_to_search": "Wissen durchsuchen… (Enter drücken zum Suchen)",
         "select_all": "Alle auswählen",
-        "selected": "ausgewählt",
         "sources_tab": "Quellen",
         "status_active": "Aktiv",
         "status_archived": "Archiviert",
@@ -14710,7 +14714,9 @@
         "entity_items_load_failed": "Elemente dieser Entität konnten nicht geladen werden",
         "error_no_reason": "Die Anfrage ist ohne Angabe eines Grundes fehlgeschlagen.",
         "delete_items_permanently_one": "{{count}} Element endgültig löschen?",
-        "delete_items_permanently_other": "{{count}} Elemente endgültig löschen?"
+        "delete_items_permanently_other": "{{count}} Elemente endgültig löschen?",
+        "selected_count_one": "{{count}} ausgewählt",
+        "selected_count_other": "{{count}} ausgewählt"
       },
       "itemCard": {
         "copied": "Kopiert!",
