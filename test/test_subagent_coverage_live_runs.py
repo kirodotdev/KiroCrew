@@ -210,16 +210,15 @@ class TestSteerRun:
         info = _info("a")
         mgr._agents["a"] = info
 
-        async def _finish() -> None:
-            # flake-ok: pre-existing 20 ms delay before the finisher flips done while steer_run polls; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms delay inside the finisher task, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+        def _finish_on_first_lookup(_key: object) -> None:
+            # steer_run asks the session manager for a provider once, before its
+            # grace poll starts. The run finishes at that lookup, so the first
+            # poll after the wait sees done and must answer not_running.
             info.done = True
+            return None
 
-        finisher = asyncio.ensure_future(_finish())
+        mgr._sessions.get_provider.side_effect = _finish_on_first_lookup
         ok, detail = await mgr.steer_run("a", "hi")
-        # flake-ok: awaits the finisher task, which ends after its own 20 ms sleep; moved verbatim
-        await finisher
         assert ok is False
         assert detail.startswith("not_running")
 
