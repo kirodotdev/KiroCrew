@@ -173,6 +173,7 @@ from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     _validate_dashboard_path,
     _write_file_restricted,
+    api_browse_create_dir,
     api_browse_dirs,
     api_browse_files,
     api_channel_upload_file,
