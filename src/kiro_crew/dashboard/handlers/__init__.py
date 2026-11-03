@@ -361,6 +361,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_notifications_ack_all,
     api_notifications_clear,
     api_send_message,
+    api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest,

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED,
         _RECIPIENT_LOGGED_CAP,
         SLACK_NAMESPACE,
+        code_channel_post_thread,
         logger,
         mirror_is_paused,
         sel,
@@ -600,7 +601,10 @@ async def _deliver_linked_slack_message(
     if not (thread_ts and channel_id):
         return
     try:
-        await slack_client.post_message(channel_id, message, thread_ts)
+        # Top-level in a code channel, like every other post its session makes.
+        await slack_client.post_message(
+            channel_id, message, code_channel_post_thread(channel_id, thread_ts)
+        )
     except Exception:
         logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
 

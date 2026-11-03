@@ -17,7 +17,7 @@ payload themselves. Sharing the procedure — not just the template file — is 
 makes that drift impossible.
 
 The manifest is TOGGLE-AWARE: template lines ending in ``#@<feature>`` render
-only when that Slack Code switch is on. The set of switches
+only when that Slack Code switch is on (``#@a|b`` = either). The set of switches
 is finite (:data:`FEATURES`), so the validator rebuilds every combination
 (:func:`feature_sets`) instead of loosening its pattern, and
 :func:`requirements` / :func:`diff_requirements` give the settings page the
@@ -97,6 +97,8 @@ def slash_command(alias: str) -> str:
 #: Slack Code switch: the app is a Slack agent (``features.agent_view``): threads
 #: run as agent sessions with a live status, a title and Slack's native Stop.
 AGENT_SESSIONS = "agent_sessions"
+#: Slack Code switch: the app may open code channels (``features.code_channels``).
+CODE_CHANNELS = "code_channels"
 #: The Slack Code switch REGISTRY: switch name -> the bot scope it cannot run
 #: without. The name is also the switch's ``slack.<name>`` config key and the
 #: template's ``#@<name>`` gate. Registering a switch is one entry here, its
@@ -106,12 +108,13 @@ AGENT_SESSIONS = "agent_sessions"
 #: page's update panel all follow from this mapping.
 FEATURE_SCOPES: dict[str, str] = {
     AGENT_SESSIONS: "assistant:write",
+    CODE_CHANNELS: "code_channels:manage",
 }
 #: Every registered switch, in a fixed (display) order.
 FEATURES: tuple[str, ...] = tuple(FEATURE_SCOPES)
 
-#: A gated template line: ``<content>  #@flag`` at line end.
-_GATE_RE = re.compile(r"\s+#@(?P<flag>[a-z_]+)\s*$")
+#: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end.
+_GATE_RE = re.compile(r"\s+#@(?P<flags>[a-z_]+(?:\|[a-z_]+)*)\s*$")
 
 
 def normalize_features(features: Iterable[str] | None) -> frozenset[str]:
@@ -149,7 +152,7 @@ def template(features: Iterable[str] | None = None) -> str:
         gate = _GATE_RE.search(line)
         if gate is None:
             out.append(line)
-        elif gate["flag"] in enabled:
+        elif enabled.intersection(gate["flags"].split("|")):
             out.append(line[: gate.start()])
     return "\n".join(out) + "\n"
 
@@ -230,7 +233,7 @@ class ManifestRequirements:
 
     bot_scopes: frozenset[str] = field(default_factory=frozenset)
     bot_events: frozenset[str] = field(default_factory=frozenset)
-    #: ``features.*`` blocks the manifest declares (``agent_view``…).
+    #: ``features.*`` blocks the manifest declares (``code_channels``…).
     features: frozenset[str] = field(default_factory=frozenset)
 
 

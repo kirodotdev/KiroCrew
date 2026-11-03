@@ -512,7 +512,6 @@ async def _consume_pending_reset(
 async def _turn_release_session(turn: _ChatTurn) -> None:
     """Hand the session back: OPTIONS expiry, mirror close, reset or discard, permit."""
     _acquired = turn._acquired
-    _code_channel_turn = turn._code_channel_turn
     _deferred_options_expiry = turn._deferred_options_expiry
     _mirror_active_task = turn._mirror_active_task
     _mirror_active_task_title = turn._mirror_active_task_title
@@ -538,13 +537,12 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
     # clears it. The nested try/finally makes the release unconditional
     # while preserving the reset-then-release ordering.
     try:
-        if _code_channel_turn:
+        if turn._code_channel_turn:
             # Exactly one end per start, on every exit path: the channel's
             # status goes back to ready and subscribers settle the turn.
             # First in this block and shielded, so a cancel landing in the
             # cleanup below still lets it finish.
-            _code_channel_turn = False
-            turn._code_channel_turn = _code_channel_turn
+            turn._code_channel_turn = False
             try:
                 await asyncio.shield(
                     notify_code_channel_turn_end(
