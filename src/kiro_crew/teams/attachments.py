@@ -49,6 +49,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.attachments import (
+    IMAGE_MIMETYPES,
     Attachment,
     IngestResult,
     append_attachment_context,
@@ -247,6 +248,15 @@ def _inline_image(raw: dict[str, Any], content_type: str) -> tuple[Attachment, b
         # non-https one must never see a credential.
         return None
     name = _attachment_name(raw, "image")
+    if content_type.partition("/")[2] in ("", "*"):
+        # Teams posts a pasted image as ``image/*``, which names no type, so the
+        # shared classifier would read it as an unknown file and the model would
+        # never see it. Take the type from the name, else a placeholder: the
+        # ingest pipeline sniffs the downloaded bytes, renames the file to its
+        # true type, and refuses bytes that are not an image, so the declared
+        # type decides nothing here.
+        guessed = mimetypes.guess_type(name)[0] or ""
+        content_type = guessed if guessed in IMAGE_MIMETYPES else "image/png"
     suffix = name.rsplit(".", 1)[-1] if "." in name else content_type.partition("/")[2]
     return Attachment(name=name, mimetype=content_type, size=0, url=url, suffix_hint=suffix), True
 
