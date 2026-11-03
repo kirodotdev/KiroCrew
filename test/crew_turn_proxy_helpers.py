@@ -11,6 +11,8 @@ mocked request and ``_code`` the refusal code of a JSON response. ``_REAL_NODE``
 
 from __future__ import annotations
 
+import aiohttp
+
 from kiro_crew.dashboard import handlers_crew_turn as mod
 
 #: Node ids of the shape the registry really validates: ``mi-`` and 8 to 17 hex
@@ -134,13 +136,30 @@ class _CapturingStream:
 _REAL = object()
 
 
+class _AiohttpWithFakeSession:
+    """The real ``aiohttp`` package for every name except ``ClientSession``."""
+
+    def __init__(self, factory):
+        self.ClientSession = factory
+
+    def __getattr__(self, name):
+        return getattr(aiohttp, name)
+
+
 def _install_session(monkeypatch, calls, **kwargs):
-    """Replace the module's ``aiohttp.ClientSession`` with the recording fake."""
+    """Make the handler module's ``aiohttp.ClientSession`` the recording fake.
+
+    Only the handler's own ``aiohttp`` name is replaced, never the package. A patch
+    of the package attribute leaks: a module imported for the first time while it is
+    live (``_turn_request`` imports ``aiohttp.test_utils``) keeps the fake under its
+    own ``ClientSession`` name after the undo, and every aiohttp test client built
+    later in the same process gets it.
+    """
 
     def _factory(*args, **_kwargs):
         return _FakeSession(calls, **kwargs)
 
-    monkeypatch.setattr(mod.aiohttp, "ClientSession", _factory)
+    monkeypatch.setattr(mod, "aiohttp", _AiohttpWithFakeSession(_factory))
 
 
 def _capture_stream(monkeypatch):
