@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { Brain, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
 import { api } from '../../api/client'
@@ -247,6 +247,21 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const [enabling, setEnabling] = useState(false)
   const [view, setView] = useState<'semantic'|'episodic'|'audit'|'inspector'>(diagnosticsOnly ? 'audit' : 'semantic')
   const [editKey, setEditKey] = useState<string|null>(null); const [editVal, setEditVal] = useState('')
+  // Each semantic value renders as a button so the inline editor opens from the
+  // keyboard. Closing the editor unmounts the control that had focus and the
+  // browser drops focus to document.body, so every close hands focus back to
+  // that row's button once it has remounted (the pattern in MeetingTitle). Only
+  // focus the unmount dropped is taken back: a save can resolve after the user
+  // has moved on, and the control they moved to keeps it.
+  const editTriggers = useRef(new Map<string, HTMLButtonElement>())
+  const semValueIdPrefix = useId()
+  const closeEdit = (key: string) => {
+    setEditKey(null)
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) editTriggers.current.get(key)?.focus({ preventScroll: true })
+    })
+  }
   const [eventFilter, setEventFilter] = useState<string>('all')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const audit = useInfiniteQuery({
@@ -627,7 +642,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             '',
           ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map(e => {
+          {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map((e, i) => {
             const valStr = semanticValueText(e)
             const isEditing = editKey === e.key
             return (
@@ -640,13 +655,25 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
-                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => setEditKey(null) })}
+                        aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
                         autoFocus />
-                      <Btn onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
-                      <Btn onClick={() => setEditKey(null)}><X className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.cancel_edit')} onClick={() => closeEdit(e.key)}><X className="lucide-inline" /></Btn>
                     </div>
                   ) : (
-                    <span className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{esc(valStr)}</span>
+                    // The cell's own onClick opens the editor; a click or an
+                    // Enter/Space on this button bubbles to it. The value text is
+                    // the button's description, so a screen reader hears both.
+                    // Btn keeps the shared pressed feedback; the overrides keep the
+                    // value looking like plain cell text.
+                    <Btn type="button"
+                      ref={el => { if (el) editTriggers.current.set(e.key, el); else editTriggers.current.delete(e.key) }}
+                      aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
+                      aria-describedby={`${semValueIdPrefix}-${i}`}
+                      className="flex w-full justify-start text-left p-0 border-none rounded-none text-sm hover:bg-transparent">
+                      <span id={`${semValueIdPrefix}-${i}`} className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{esc(valStr)}</span>
+                    </Btn>
                   )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.confidence)}</td>

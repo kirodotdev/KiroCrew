@@ -16530,7 +16530,10 @@
         "column_source": "উৎস",
         "column_event": "ইভেন্ট",
         "column_key_type": "কী/ধরন",
-        "column_details": "বিবরণ"
+        "column_details": "বিবরণ",
+        "edit_value_label": "“{{key}}”-এর মান সম্পাদনা করো",
+        "save_edit": "সংরক্ষণ করো",
+        "cancel_edit": "বাতিল করো"
       },
       "wakatimeTab": {
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",

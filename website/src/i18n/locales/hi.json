@@ -16530,7 +16530,10 @@
         "column_source": "स्रोत",
         "column_event": "इवेंट",
         "column_key_type": "कुंजी/प्रकार",
-        "column_details": "विवरण"
+        "column_details": "विवरण",
+        "edit_value_label": "“{{key}}” का मान संपादित करो",
+        "save_edit": "सहेजो",
+        "cancel_edit": "रद्द करो"
       },
       "wakatimeTab": {
         "active_projects": "जिन परियोजनाओं पर तुमने काम किया",

@@ -16130,7 +16130,10 @@
         "column_source": "ソース",
         "column_event": "イベント",
         "column_key_type": "キー/種類",
-        "column_details": "詳細"
+        "column_details": "詳細",
+        "edit_value_label": "「{{key}}」の値を編集",
+        "save_edit": "保存",
+        "cancel_edit": "キャンセル"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",

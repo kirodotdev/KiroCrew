@@ -16130,7 +16130,10 @@
         "column_source": "来源",
         "column_event": "事件",
         "column_key_type": "键/类型",
-        "column_details": "详情"
+        "column_details": "详情",
+        "edit_value_label": "编辑“{{key}}”的值",
+        "save_edit": "保存",
+        "cancel_edit": "取消"
       },
       "wakatimeTab": {
         "active_projects": "你参与的项目",
