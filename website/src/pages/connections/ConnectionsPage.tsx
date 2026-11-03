@@ -763,6 +763,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     grantPresent={confirmedGrantPresent(status)}
                     grantSharedWith={status?.grantSharedWith}
                     grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
+                    backendLacksOauth={status?.backendLacksOauth === true}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}

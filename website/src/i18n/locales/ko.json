@@ -13376,6 +13376,9 @@
       "waiting_for_approval_address": "승인 주소를 기다리는 중… 에이전트가 다음에 연결할 때 여기에 표시됩니다 — 지금 인증을 시작하려면 아무 채팅 메시지나 보내세요.",
       "needs_configuration": "설정 필요",
       "needs_configuration_help": "{{provider}}은(는) 최초 한 번만 설정하면 됩니다. \"OAuth 앱 구성\"을 누르면 안내형 설정 페이지가 열립니다. 거기서 저장하기 전까지는 아무것도 바뀌지 않으며, 나중에 제거할 수도 있습니다. {{provider}}에 앱을 등록하고 클라이언트 ID와 시크릿을 입력하는 과정을 안내합니다.",
+      "backend_oauth_caveat": "Connect는 그대로 완료되며, {{provider}} 로그인은 이를 지원하는 채팅을 위해 저장됩니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없어서 그곳에서는 도구가 작동하지 않을 수 있습니다.",
+      "chat_use_label": "채팅에서",
+      "chat_use_lacks_oauth": "지원하는 채팅을 위해 저장되었습니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없습니다.",
       "configure_oauth_app": "OAuth 앱 설정",
       "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
       "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."

@@ -13376,6 +13376,9 @@
       "waiting_for_approval_address": "正在等待授权地址……代理下次连接时将在此显示——发送任意聊天消息即可立即开始授权。",
       "needs_configuration": "需要配置",
       "needs_configuration_help": "{{provider}} 需要一次性设置。点击“配置 OAuth 应用”会打开引导式设置页面；在那里保存之前不会有任何变化，之后也可以随时移除。页面会引导你在 {{provider}} 注册应用并填写客户端 ID 和密钥。",
+      "backend_oauth_caveat": "Connect 仍会完成，{{provider}} 登录会为支持它的聊天保存。部分聊天暂时无法使用这类登录，因此其工具在那里可能无法工作。",
+      "chat_use_label": "在聊天中",
+      "chat_use_lacks_oauth": "已为支持它的聊天保存。部分聊天暂时无法使用这类登录。",
       "configure_oauth_app": "配置 OAuth 应用",
       "prerequisite_github": "GitHub 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 GitHub OAuth 应用。GitHub 授权页面显示的是此应用；同意后即可继续。",
       "prerequisite_asana": "Asana 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Asana MCP 应用。Asana 授权页面显示的是此应用；同意后即可继续。"
