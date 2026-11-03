@@ -635,3 +635,35 @@ async def test_upload_html_under_an_image_extension_is_still_refused(
     assert "not really a .png image" in body["error"]
     assert "re-export" in body["error"]
     assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename",
+    ["a" * 230 + ".txt", "文件名" * 27 + ".md"],
+    ids=["ascii-230", "cjk-243-bytes"],
+)
+async def test_upload_with_a_name_past_the_file_system_limit_is_stored_shortened(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """A long name is shortened to fit, keeping its extension, instead of a 500."""
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename=filename, content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert len(stored_name.encode("utf-8")) <= 255
+    assert stored_name.endswith(Path(filename).suffix)
+    assert Path(stored).read_bytes() == b"body\n"
+
+
+def test_a_short_name_is_kept_as_it_is() -> None:
+    from kiro_crew.dashboard.file_api.uploads import _fit_stored_name
+
+    assert _fit_stored_name("notes.md") == "notes.md"
+    assert _fit_stored_name("é" * 150 + ".txt") == "é" * 98 + ".txt"
