@@ -34,6 +34,7 @@ from kiro_crew import model_registry as mr
 from kiro_crew import sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
+from kiro_crew.testing.wait import await_until
 
 
 def _attribute_calls(node: ast.AST, name: str) -> list[ast.Attribute]:
@@ -569,8 +570,7 @@ class TestTheGrantIsATransaction:
                 await asyncio.to_thread(entered.wait, 5)
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
-                    await task
+                    await await_until(task, what="the cancelled teardown task ending")
             finally:
                 cancel_landed.set()
 
@@ -606,8 +606,7 @@ class TestTheGrantIsATransaction:
             assert await asyncio.to_thread(persist_entered.wait, 5)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
-                await task
+                await await_until(task, what="the cancelled sharer discard task ending")
             sibling._reset_state()
             finish_persist.set()
 

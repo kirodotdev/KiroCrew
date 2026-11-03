@@ -19,7 +19,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.chat_handlers import _slot_switch_session_lock
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.testing.wait import finished
+from kiro_crew.testing.wait import await_until, finished, until_parked
 
 _LINKED_KEY = "slack:8442.001"
 
@@ -65,8 +65,7 @@ class TestAliasSlotSwitchSerialization:
             seen_at_reset.append((slot_a.model, slot_b.model))
             if len(seen_at_reset) == 1:
                 first_reset_started.set()
-                # flake-ok: pre-existing unbounded wait inside the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-                await release_first_reset.wait()
+                await await_until(release_first_reset, what="the test's release gate")
             return True
 
         state.sessions.reset = AsyncMock(side_effect=_reset)
@@ -74,25 +73,24 @@ class TestAliasSlotSwitchSerialization:
             first = asyncio.create_task(
                 client.post("/api/chat/slots/alias-a/model", json={"model": _MODEL_A})
             )
-            # flake-ok: pre-existing unbounded wait for the stubbed reset to start, moved verbatim; tracked for a de-flake pass
-            await first_reset_started.wait()
-            second = asyncio.create_task(
-                client.post("/api/chat/slots/alias-b/model", json={"model": _MODEL_B})
-            )
-            # Give the second request time to run as far as it can. Per-slot
-            # locks are DISJOINT across aliases, so without a session-keyed
-            # lock it runs to completion right here: it commits its model and
-            # resets the very session the first request is still resetting.
-            # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
-            assert slot_b.model == ""
-            assert state.sessions.reset.await_count == 1
-            release_first_reset.set()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp1 = await first
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp2 = await second
+            try:
+                await await_until(first_reset_started, what="the first switch reaching its reset")
+                second = asyncio.create_task(
+                    client.post("/api/chat/slots/alias-b/model", json={"model": _MODEL_B})
+                )
+                # Wait until the second request is queued on the session lock the first
+                # one holds. Per-slot locks are DISJOINT across aliases, so without a
+                # session-keyed lock it never queues: it runs to completion, commits its
+                # model and resets the very session the first request is still resetting.
+                await until_parked(
+                    _slot_switch_session_lock(_LINKED_KEY), describe=lambda: repr(second)
+                )
+                assert slot_b.model == ""
+                assert state.sessions.reset.await_count == 1
+            finally:
+                release_first_reset.set()
+            resp1 = await await_until(first, what="the first alias's model switch")
+            resp2 = await await_until(second, what="the second alias's model switch")
             assert resp1.status == 200
             assert resp2.status == 200
             # Each reset observed exactly the state its own request committed.
@@ -118,18 +116,17 @@ class TestAliasSlotSwitchSerialization:
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         state.conversation_log = MagicMock()
+        session_lock = _slot_switch_session_lock(_LINKED_KEY)
         async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
-            async with _slot_switch_session_lock(_LINKED_KEY):
+            async with session_lock:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/alias-a/agent", json={"agent": "new-agent"})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the racing request is queued on the held lock.
+                await until_parked(session_lock, describe=lambda: repr(task))
                 assert slot.agent == "old-agent"
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the agent switch")
             assert resp.status == 200
             assert slot.agent == "new-agent"
 
@@ -140,18 +137,17 @@ class TestAliasSlotSwitchSerialization:
         slot.linked_session_key = _LINKED_KEY
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
+        session_lock = _slot_switch_session_lock(_LINKED_KEY)
         async with TestClient(TestServer(_make_app(state))) as client:
-            async with _slot_switch_session_lock(_LINKED_KEY):
+            async with session_lock:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/alias-a/model", json={"model": _MODEL_B})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the racing request is queued on the held lock.
+                await until_parked(session_lock, describe=lambda: repr(task))
                 assert slot.model == _MODEL_A
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the model switch")
             assert resp.status == 200
             assert slot.model == _MODEL_B
 
@@ -163,21 +159,20 @@ class TestAliasSlotSwitchSerialization:
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         state.conversation_log = MagicMock()
+        session_lock = _slot_switch_session_lock(_LINKED_KEY)
         async with TestClient(TestServer(_make_app(state))) as client:
-            async with _slot_switch_session_lock(_LINKED_KEY):
+            async with session_lock:
                 task = asyncio.create_task(
                     client.post(
                         "/api/chat/slots/alias-a/reasoning-effort",
                         json={"reasoning_effort": "high"},
                     )
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the racing request is queued on the held lock.
+                await until_parked(session_lock, describe=lambda: repr(task))
                 assert slot.reasoning_effort == ""
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the effort switch")
             assert resp.status == 200
             assert slot.reasoning_effort == "high"
 
@@ -193,18 +188,17 @@ class TestAliasSlotSwitchSerialization:
         slot.linked_session_key = _LINKED_KEY
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
+        session_lock = _slot_switch_session_lock(_LINKED_KEY)
         async with TestClient(TestServer(_make_app(state))) as client:
-            async with _slot_switch_session_lock(_LINKED_KEY):
+            async with session_lock:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/alias-a/workspace", json={"workspace": "new-ws"})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the racing request is queued on the held lock.
+                await until_parked(session_lock, describe=lambda: repr(task))
                 assert slot.workspace == "old-ws"
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the workspace switch")
             assert resp.status == 200
             assert slot.workspace == "new-ws"
 
@@ -215,18 +209,17 @@ class TestAliasSlotSwitchSerialization:
         slot.linked_session_key = _LINKED_KEY
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
+        session_lock = _slot_switch_session_lock(_LINKED_KEY)
         async with TestClient(TestServer(_make_app(state))) as client:
-            async with _slot_switch_session_lock(_LINKED_KEY):
+            async with session_lock:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/model", json={"model": _MODEL_B})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the racing request is queued on the held lock.
+                await until_parked(session_lock, describe=lambda: repr(task))
                 assert slot.model == _MODEL_A
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the bulk model switch")
             data = await resp.json()
             assert resp.status == 200
             assert data["switched"] == ["alias-a"]
@@ -254,31 +247,23 @@ class TestAliasSlotSwitchSerialization:
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         async with TestClient(TestServer(_make_app(state))) as client:
-            # flake-ok: pre-existing acquire of a permit no other task holds, so it returns at once; moved verbatim
-            await s2_lock.acquire()
-            try:
+            async with s2_lock:
                 async with slot._lock:
                     task = asyncio.create_task(
                         client.post("/api/chat/slots/alias-a/model", json={"model": _MODEL_B})
                     )
-                    # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(0.05)
+                    # Wait until the request is queued on slot._lock.
+                    await until_parked(slot._lock, describe=lambda: repr(task))
                     # Rebind while it is queued on slot._lock.
                     slot.linked_session_key = s2
                 # slot._lock is free now, so the handler resolves s2 and must
                 # queue on L(s2) -- which this test holds. Keyed on the stale
                 # pre-lock read it would instead sail through holding L(S1).
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                await until_parked(s2_lock, describe=lambda: repr(task))
                 assert not task.done()
                 assert slot.model == _MODEL_A
                 state.sessions.reset.assert_not_awaited()
-            finally:
-                s2_lock.release()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the model switch")
             assert resp.status == 200
             # The binding that landed is still the one switched.
             assert slot.model == _MODEL_B
@@ -337,13 +322,10 @@ class TestSlotProjectSwitchAtomicity:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/test/project", json={"project": new_dir})
                 )
-                # Let the request pass validation and block on the slot lock.
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the request has passed validation and is queued on the slot lock.
+                await until_parked(slot._lock, describe=lambda: repr(task))
                 assert slot.project == "/workspace/old-ws"
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the project set")
             assert resp.status == 200
             assert slot.project == new_dir
 
@@ -362,14 +344,11 @@ class TestBulkModelSwitchAtomicity:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/model", json={"model": _MODEL_B})
                 )
-                # Let the request reach (and block on) the slot lock.
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the request has reached (and is queued on) the slot lock.
+                await until_parked(slot._lock, describe=lambda: repr(task))
                 assert slot.model == _MODEL_A
                 state.sessions.reset.assert_not_awaited()
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the bulk model switch")
             data = await resp.json()
             assert resp.status == 200
             assert data["switched"] == ["test"]
@@ -390,16 +369,13 @@ class TestBulkModelSwitchAtomicity:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/model", json={"model": _MODEL_B})
                 )
-                # Let the request pass the unlocked pre-check and block on the
-                # lock, then start a turn before releasing it.
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Wait until the request has passed the unlocked pre-check and is
+                # queued on the lock, then start a turn before releasing it.
+                await until_parked(slot._lock, describe=lambda: repr(task))
                 running_task = MagicMock()
                 running_task.done.return_value = False
                 slot.task = running_task
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, what="the bulk model switch")
             data = await resp.json()
             assert resp.status == 200
             assert data["skipped_running"] == ["test"]
