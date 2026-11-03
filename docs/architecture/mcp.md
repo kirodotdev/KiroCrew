@@ -296,6 +296,12 @@ Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
 maintained rather than preserved because it tracks the account the gateway is
 signed in to, not a user preference, and because the client's filter is
 symmetric: outside registry mode a marked entry is the one that gets dropped.
+The control plane (`kirocrew-core`, `kirocrew-cron`) is left unmarked, and gets
+its per-session identity element on kiro-cli, when
+`kiro_cli.registry_governance_known_unreachable()` says no admin registry can
+govern the sign-in (no Identity Center rows, no API key in the environment or
+the data home's `.env`, and `kiro-cli whoami`
+names a personal account); any doubt keeps the marker.
 `command`/`args` stay either way, since the registry path is not the only
 consumer of this spec (doctor's handshake probe and the CC sidecar sync both
 launch from it — though doctor skips the probe for a server whose spec gate is

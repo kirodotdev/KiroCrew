@@ -81,6 +81,15 @@ distinguishes a governed account from an ungoverned one. Leave the setting
 `false` on a personal account — there the filter inverts and the marked entries
 are the ones dropped.
 
+`kirocrew-core` and `kirocrew-cron` are the one exception. When no API key is
+set (in the environment or in the data home's `.env`, where the Docker image
+keeps it) and both the local store and `kiro-cli whoami` say the sign-in is
+Builder ID or social, so no admin
+registry can apply, Kiro Crew writes these two without the marker even with the
+declaration on, and they keep loading. If any check is unsure, they keep the
+marker. After you switch this machine to an Identity Center or API-key sign-in,
+run `kirocrew restart` so the spec is written again with the marker.
+
 Verify with `kirocrew doctor`, which grows an `MCP Governance (enterprise)`
 section when the local identity is one an administrator's registry can govern
 (an IAM Identity Center or API-key sign-in), when `agent.mcp_registry_mode` is

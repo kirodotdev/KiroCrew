@@ -575,6 +575,22 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _registry_governance_reachability_unknown(_floor_monkeypatch):
+    """Answer "governance may reach this sign-in" unless a test says otherwise.
+
+    The real answer reads the runner's kiro-cli store and runs ``kiro-cli
+    whoami``, so registry-mode tests would depend on who is signed in on the host.
+    "May reach" keeps the registry marker on every managed server, which is what
+    a registry-mode spec carried before the control-plane exception. The tests of
+    that exception and of the probe set their own answer with ``monkeypatch``.
+    """
+    from kiro_crew import kiro_cli
+
+    _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
+    _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
+
+
 @pytest.fixture
 def fresh_darwin_libc_handles(_floor_monkeypatch):
     """Start the test with both macOS libc handle caches unbuilt, and put them back after.

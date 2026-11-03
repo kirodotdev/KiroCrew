@@ -418,28 +418,12 @@ def _doctor_whoami_governance() -> bool | None:
     Center user in without writing them: the sign-in then lives only in
     ``auth_kv``, under the same ``kirocli:odic:`` key names a Builder ID sign-in
     uses, so no key-name check can tell the two apart. ``kiro-cli whoami``
-    names the account type directly and no store value is read here.
-
-    ``True`` for Identity Center or an API key, ``False`` for Builder ID, a
-    social sign-in or no sign-in at all, and ``None`` when nothing is known
-    (whoami would not run or answer, or named a type this code does not know).
+    names the account type directly and no store value is read here. The
+    answers are :func:`~kiro_crew.cloud.login_target.whoami_governance`'s.
     """
-    from kiro_crew.cloud.login_target import (
-        ACCOUNT_TYPE_API_KEY,
-        ACCOUNT_TYPE_IDENTITY_CENTER,
-        discover_local_identity,
-        is_personal_account_type,
-    )
+    from kiro_crew.cloud.login_target import whoami_governance
 
-    identity = discover_local_identity()
-    if identity is None:
-        return None
-    account_type = str(identity.get("account_type") or "")
-    if account_type in (ACCOUNT_TYPE_IDENTITY_CENTER, ACCOUNT_TYPE_API_KEY):
-        return True
-    if not account_type or is_personal_account_type(account_type):
-        return False
-    return None
+    return whoami_governance()
 
 
 def _doctor_mcp_governance(
