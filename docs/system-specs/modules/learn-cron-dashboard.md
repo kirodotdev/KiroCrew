@@ -312,7 +312,7 @@ The downstream `_is_restricted_session` check can still reject the call with HTT
 | `cron_service/service/service_lifecycle.py` | starting and stopping the service: `create`, `_quarantine_unreadable_locked`, `start`, `stop` |
 | `cron_service/service/run_teardown.py` | ending a run: `start_reaper`, `_reaper_loop` (one of the two run-deadline sums), `_force_reap`, `cancel` |
 | `cron_service/service/run_kill.py` | ending a run's processes and sessions: the ending fence, one reset per key, the `ProcessHandle` kill, the bounded rounds |
-| `cron_service/service/job_writes.py` | adding and changing jobs (`add_job` and its if-absent, managed and `_async` forms, `update_job`, `enable_job`, `ack_job`, `unack_job`) |
+| `cron_service/service/job_writes.py` | adding and changing jobs (`add_job` and its if-absent, managed and `_async` forms, `update_job`, `enable_job`, `ack_job`, `unack_job`; an ack may carry an entry id, kept in `acked_item_ids` beside `acked_items`, and `unack_job` with that id removes only that entry) |
 | `cron_service/service/job_removal.py` | removing jobs: one, a batch, every job an owner holds, the deferred one-shot drain, grant epochs, the child release |
 | `cron_service/service/job_ownership.py` | who owns a job: `adopt_job`, `release_jobs_owned_by`, the strict owner-key and chat-folder reads |
 | `cron_service/service/run_registry.py` | the runs in flight: active session keys, the claim doors, `run_job` |

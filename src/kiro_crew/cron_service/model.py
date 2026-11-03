@@ -226,6 +226,14 @@ class CronJob:
     execution_context: dict[str, Any] | None = None
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
     acked_items: list[str] = field(default_factory=list)
+    # One id per ``acked_items`` entry, aligned by position ("" for an entry
+    # added without one), so an unack can take back exactly the entry its ack
+    # added even when an equal summary was acknowledged again later.
+    acked_item_ids: list[str] = field(default_factory=list)
+    # Digest of the ``acked_items`` the ids above were written against. A
+    # writer that changed the items without the ids (an older build) leaves a
+    # digest that does not match them, so the ids then name no entry.
+    acked_item_ids_digest: str = ""
     created_by: str = ""  # Slack user ID of the creator (for DM fallback)
     # Provenance of a job seeded from a Schedule-page template. Curated
     # template prompts are COPIED into the job at save time (the user owns and
