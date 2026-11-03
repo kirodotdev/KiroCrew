@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+import re
 import subprocess
 from typing import Any, Sequence
 
@@ -27,6 +28,10 @@ from kiro_crew.platform_compat_trust import trusted_system_bin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
+
+#: The characters a process signature may hold. Each signature is written into
+#: PowerShell source, so anything PowerShell or WQL could read as syntax is out.
+_SIGNATURE_SHAPE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 def _wql_literal(text: str) -> str:
@@ -48,13 +53,15 @@ def windows_process_command_lines(signatures: Sequence[str]) -> list[tuple[int, 
     """
     if not signatures:
         return []
+    if not all(_SIGNATURE_SHAPE.fullmatch(sig) for sig in signatures):
+        raise ValueError("a process signature must be letters, digits, '_', '.' or '-'")
     powershell_bin = trusted_system_bin("powershell")
     if powershell_bin is None:
         return None
     wql = " OR ".join(f"CommandLine LIKE '{_wql_literal(sig)}'" for sig in signatures)
-    # The WQL filter sits inside a double-quoted PowerShell string, so a ``"`` or
-    # a ``$`` in a signature would end it or expand a variable; the signatures
-    # are fixed literals and none holds either. The querying PowerShell carries
+    # The WQL filter sits inside a double-quoted PowerShell string, so a ``"``,
+    # a ``$`` or a backtick in a signature would end it or expand into code;
+    # ``_SIGNATURE_SHAPE`` admits none of them. The querying PowerShell carries
     # every signature in its own command line, so ``$PID`` (its own pid) is
     # dropped from the rows.
     command = (

@@ -175,6 +175,16 @@ class TestProcessQuery:
         # The query's own PowerShell holds the signature in its command line.
         assert "Where-Object { $_.ProcessId -ne $PID }" in seen["argv"][-1]
 
+    @pytest.mark.parametrize("signature", ["x$(whoami)", 'a"b', "a`b", "a'b", "a%b", "a b", ""])
+    def test_refuses_a_signature_powershell_could_read_as_syntax(self, signature: str) -> None:
+        with (
+            patch.object(system_windows_probes, "trusted_system_bin", return_value="PS.EXE"),
+            patch.object(system_windows_probes.subprocess, "check_output") as spawn,
+            pytest.raises(ValueError),
+        ):
+            system_windows_probes.windows_process_command_lines(("kiro-cli", signature))
+        spawn.assert_not_called()
+
     def test_missing_powershell_is_unreadable(self) -> None:
         with patch.object(system_windows_probes, "trusted_system_bin", return_value=None):
             assert system_windows_probes.windows_process_command_lines(("kiro-cli",)) is None

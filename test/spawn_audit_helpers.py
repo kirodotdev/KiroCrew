@@ -839,6 +839,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # timeout, no shell, no cwd, no agent-influenced arguments.
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
+        # The Windows half of _scan_mcp_processes: PowerShell pinned via
+        # trusted_system_bin, list argv with no shell and no cwd. The query's
+        # only inputs are signature strings, which the function itself refuses
+        # unless they are [A-Za-z0-9_.-]+ (no quote, $, backtick or WQL
+        # wildcard), and its one caller passes two hard-coded literals. Reads
+        # the same Win32_Process data as process_command_line.
+        "dashboard/system_windows_probes.py::windows_process_command_lines",
         "dashboard/port_reclaim.py::_listeners_on_port",
         # Bundle-freshness startup probe: fixed `git rev-parse HEAD:website`
         # list-argv (no shell=True) with git PINNED via trusted_git_bin (fixed
