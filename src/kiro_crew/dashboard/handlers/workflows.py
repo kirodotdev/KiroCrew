@@ -683,9 +683,10 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run")
     if refusal is not None:
         return refusal
@@ -771,9 +772,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run_intent")
     if refusal is not None:
         return refusal
