@@ -426,6 +426,34 @@ describe('crew editor — reasoning effort pin', () => {
   })
 })
 
+describe('crew editor — an Inherited model on another harness\'s member route (#25821)', () => {
+  // `model` is resolved on the configured backend; the crew's own sessions run the
+  // member route, so the effort control is judged by `harness_model`.
+  it.each(['claude', 'goose', 'pi'])('offers effort when the model the %s route resolves takes it', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4.5', harness_model: 'claude-opus-5', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByRole('combobox', { name: 'Edit reasoning effort' }, PIN_CHAIN)).toBeInTheDocument()
+    // The line names the same model the effort control was judged by.
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Uses claude-opus-5.')
+  })
+
+  it.each(['claude', 'goose', 'pi'])('hides effort when the %s route leaves the model to the harness', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', harness_model: '', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByText('Pick a model to set a reasoning effort.', {}, PIN_CHAIN)).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' })).toBeNull()
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Picked automatically.')
+  })
+})
+
 describe('crew editor — model list', () => {
   it('offers the models of the harness that judges the crew pin, not the configured one', async () => {
     // A crewmate DM thread on Claude Code under a kiro-cli default: kiro ids are not its choices.

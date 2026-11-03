@@ -408,6 +408,18 @@ describe('CrewProfileSettings model and effort', () => {
     await waitFor(() => expect(within(p).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Medium'))
   })
 
+  it.each(['claude', 'goose', 'pi'])('names and judges an Inherited model by what the %s route resolves (#25821)', async (harness) => {
+    // `model` is the configured backend's answer; the crewmate's sessions run `harness_model`.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4', harness_model: 'claude-opus-5', harness, acp_backend: '',
+    })
+    setup(member())
+    await waitFor(() => expect(within(group()).getByTestId('crew-profile-setting-reasoning_effort')).toBeInTheDocument())
+    const inherit = within(open('model')).getByRole('radio', { name: /Inherited/ })
+    expect(inherit).toHaveTextContent('Using claude-opus-5')
+    expect(inherit).not.toHaveTextContent('claude-haiku-4')
+  })
+
   it('shows a failed resolve instead of silently hiding effort', async () => {
     mockApi.agentResolvedModel.mockRejectedValue(new Error('resolver down'))
     setup(member())

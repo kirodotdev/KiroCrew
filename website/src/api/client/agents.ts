@@ -157,6 +157,8 @@ export interface AgentResolvedModel {
   inherited_harness?: string
   /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
   harness?: string
+  /** The model a crew with a `member_id` starts its DM on (`''` when the harness picks); absent otherwise. */
+  harness_model?: string
   /** Why the pinned harness cannot start, when it cannot. */
   harness_error?: string
   /** Every harness a crewmate may be pinned to. */
