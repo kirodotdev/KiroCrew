@@ -205,34 +205,20 @@ def _stalled_campaign_verdict(
 ) -> tuple[CampaignStatus, str | None]:
     """Classify an idle-deadline expiry — not every silence is a failure.
 
-    The watchdog only marks COMPLETE when a NEW cycle file arrives carrying
-    ``verification.passed=true`` (or the cycle cap is hit). A worker that ends
-    its run deliberately via ``autonudge_stop`` — goal met, nothing more to
-    write — produces no further findings, so silence up to the unresponsive
-    deadline is not evidence of a stall: stamping FAILED ("research stalled")
-    would contradict a finished report on disk. Distinguish the cases from durable
-    evidence:
+    A worker that ends via ``autonudge_stop`` writes nothing more, so silence is
+    not proof of a stall. Decided from durable evidence, in this order:
 
     - Latest finding has ``verification.passed=true`` → COMPLETE. Also heals a
-      completed campaign whose status was later reset to RUNNING (resume paths
-      allow terminal→RUNNING): with no new files the count never advances, so
-      the count>prev COMPLETE branch can never re-fire.
-    - An AutoNudge failure stand-down (``consecutive_failures`` or
-      ``session_start_failures``) → FAILED, "Resume to try again". It ranks
-      below a verified finding and above the tombstone and the marker: a
-      ``worker_done.json`` left by an earlier turn does not turn a worker that
-      kept failing into a deliberate finish.
-    - A source-owned ``autonudge_stop`` tombstone, or as a fallback the
-      worker-written ``worker_done.json`` marker, plus a READABLE latest
-      finding → the worker ended the run on purpose → STOPPED. The tombstone
-      wins without reading the LLM-written marker. Same terminal affordances
-      as a user Stop (fork / export / add-to-knowledge), no red failure banner.
-      A stop signal alongside only unreadable findings is NOT a deliberate
-      finish — STOPPED's "findings are preserved" promise would be false — so
-      it falls through to FAILED. Mere ABSENCE of the autonudge loop is
-      deliberately NOT used as the signal: the nudge fire path also removes
-      loops for unreachable (deleted/closed) worker sessions, which is a
-      failure, not a finish.
+      campaign resumed from terminal to RUNNING, where the count>prev branch
+      cannot fire again.
+    - AutoNudge failure stand-down (``consecutive_failures`` or
+      ``session_start_failures``) → FAILED, "Resume to try again"; a stale
+      ``worker_done.json`` must not turn repeated failure into a finish.
+    - ``autonudge_stop`` tombstone (preferred over the LLM-written
+      ``worker_done.json``) plus a READABLE latest finding → STOPPED, like a
+      user Stop. With only unreadable findings it is FAILED, since STOPPED
+      promises preserved findings. A missing autonudge loop is NOT a signal:
+      loops are also removed for deleted/closed worker sessions.
     - Otherwise → FAILED (genuine stall).
     """
     if cycle_files:
