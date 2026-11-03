@@ -865,7 +865,17 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   not reap; signal numbers come from `platform_compat` (**never** `signal.SIGKILL`,
   which is undefined on Windows — naming it inside the escalation's own
   `except Exception` swallows the `AttributeError` and skips `proc.kill()`
-  entirely, on the very platform that reaches that path). Every
+  entirely, on the very platform that reaches that path). The plugin can
+  **outlive the wrapper** — exiting on its own first, or dying on SIGTERM while
+  the plugin ignores it — and `os.getpgid` of the reaped wrapper names nothing.
+  So on POSIX `open_port_forward` records the group the wrapper leads
+  (`proc.ssm_pgid`, read while it is un-reaped) and `kill_port_forward` signals
+  that recorded group through `platform_compat.kill_process_group`: whenever
+  members remain after the wrapper is gone, already-exited wrapper included, they
+  get SIGTERM (unless the teardown already sent one), then SIGKILL, each followed
+  by a bounded wait for the group to empty (`platform_compat.pgroup_exists`). Only
+  that one group is signalled, so another forward's plugin is never touched; a
+  Popen-like object without the record keeps the pid-resolved group signal. Every
   no-URL exit reaps its tunnel too: `connect()` folds a mint failure — whether
   `mint_token` returns `""` **or raises** — into a `ready=False` Connection after
   `_terminate`; and the **social-login** paths close their callback tunnel on the
