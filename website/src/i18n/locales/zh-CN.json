@@ -10506,6 +10506,30 @@
       "offer_open": "打开 {{host}}",
       "copy_failed": "无法复制。请在应用中选中文字后自行复制。",
       "more_actions": "更多操作"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "应用",
+      "apps_hint": "把选中的文字发给一个应用",
+      "menu_label": "处理选中文字的应用",
+      "close": "关闭",
+      "copy": "复制",
+      "copied": "已复制",
+      "open": "打开 {{host}}",
+      "no_response": "{{app}} 没有响应。",
+      "revoked": "{{app}} 已不能再使用此项。它已被关闭，或其批准已被收回。",
+      "failed": "{{app}} 出错了：{{message}}",
+      "too_short": "“{{title}}”至少需要 {{min}} 个字符，你选了 {{count}} 个。",
+      "copy_failed": "无法复制到剪贴板。",
+      "load_failed": "无法加载处理选中文字的应用。",
+      "loading": "正在加载应用…",
+      "none": "没有应用可处理这段文字。",
+      "retry": "重试",
+      "grant_entry": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符",
+      "grant_entry_copy": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个复制按钮",
+      "grant_entry_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个打开链接的按钮",
+      "grant_entry_copy_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及复制和打开按钮"
     }
   },
   "hooks": {
@@ -10910,7 +10934,8 @@
         "keeps_builtin": "它仍是内置应用。",
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
-      "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。"
+      "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
+      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。"
     },
     "appPage": {
       "loading_app": "加载应用…",

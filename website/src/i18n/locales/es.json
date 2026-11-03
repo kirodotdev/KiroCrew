@@ -10898,6 +10898,30 @@
       "offer_open": "Abrir {{host}}",
       "copy_failed": "No se pudo copiar. Selecciona el texto en la app y cópialo tú.",
       "more_actions": "Más acciones"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Enviar el texto seleccionado a una app",
+      "menu_label": "Apps para el texto seleccionado",
+      "close": "Cerrar",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "open": "Abrir {{host}}",
+      "no_response": "{{app}} no respondió.",
+      "revoked": "{{app}} ya no puede usar este elemento. Se desactivó o se retiró su aprobación.",
+      "failed": "{{app}} tuvo un problema: {{message}}",
+      "too_short": "{{title}} necesita al menos {{min}} caracteres. Seleccionaste {{count}}.",
+      "copy_failed": "No se pudo copiar al portapapeles.",
+      "load_failed": "No se pudieron cargar las apps para el texto seleccionado.",
+      "loading": "Cargando apps…",
+      "none": "Ninguna app tiene una acción para este texto.",
+      "retry": "Reintentar",
+      "grant_entry": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat",
+      "grant_entry_copy": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y un botón Copiar",
+      "grant_entry_open": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y un botón para abrir un enlace",
+      "grant_entry_copy_open": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y botones Copiar y Abrir"
     }
   },
   "hooks": {
@@ -11306,7 +11330,8 @@
         "keeps_builtin": "Sigue siendo una app integrada.",
         "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
       },
-      "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo."
+      "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo.",
+      "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir."
     },
     "appPage": {
       "loading_app": "Cargando la app…",

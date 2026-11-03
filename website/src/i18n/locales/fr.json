@@ -10898,6 +10898,30 @@
       "offer_open": "Ouvrir {{host}}",
       "copy_failed": "Copie impossible. Sélectionne le texte dans l'app et copie-le toi-même.",
       "more_actions": "Plus d'actions"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Envoyer le texte sélectionné à une app",
+      "menu_label": "Apps pour le texte sélectionné",
+      "close": "Fermer",
+      "copy": "Copier",
+      "copied": "Copié",
+      "open": "Ouvrir {{host}}",
+      "no_response": "{{app}} n'a pas répondu.",
+      "revoked": "{{app}} ne peut plus utiliser cet élément. Il a été désactivé ou son approbation a été retirée.",
+      "failed": "{{app}} a rencontré un problème : {{message}}",
+      "too_short": "{{title}} demande au moins {{min}} caractères. Tu en as sélectionné {{count}}.",
+      "copy_failed": "Impossible de copier dans le presse-papiers.",
+      "load_failed": "Impossible de charger les apps pour le texte sélectionné.",
+      "loading": "Chargement des apps…",
+      "none": "Aucune app ne propose d’action pour ce texte.",
+      "retry": "Réessayer",
+      "grant_entry": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat",
+      "grant_entry_copy": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton Copier",
+      "grant_entry_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton pour ouvrir un lien",
+      "grant_entry_copy_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et des boutons Copier et Ouvrir"
     }
   },
   "hooks": {
@@ -11306,7 +11330,8 @@
         "keeps_builtin": "Elle reste une app intégrée.",
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
       },
-      "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer."
+      "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer.",
+      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",
@@ -15248,7 +15273,7 @@
         "paused": "En pause",
         "paused_2": "en pause",
         "pending": "en attente",
-        "queried_live_at_search_time_from_your_aws_account": "Interrogée en direct depuis ton compte AWS au moment de la recherche. Rien n'est ingéré ni stocké localement\u202f; les résultats citent les liens des documents d'origine.",
+        "queried_live_at_search_time_from_your_aws_account": "Interrogée en direct depuis ton compte AWS au moment de la recherche. Rien n'est ingéré ni stocké localement ; les résultats citent les liens des documents d'origine.",
         "remove_source": "Supprimer la source",
         "remove_this_source_and_all_its_ingested_items": "Supprimer cette source et tous ses éléments ingérés ?",
         "rename_source": "Renommer la source",
@@ -15301,7 +15326,7 @@
         "confirm_account_to_enable": "Confirme le compte AWS ci-dessus pour ajouter cette source.",
         "enter_region_to_add": "Saisis la région AWS pour ajouter cette source.",
         "profile_blank_uses_default_chain": "Laisse vide pour utiliser les identifiants AWS par défaut.",
-        "remove_this_live_source": "Supprimer cette source de base de connaissances\u202f? Rien n'est stocké localement\u202f; la base de connaissances elle-même n'est pas modifiée.",
+        "remove_this_live_source": "Supprimer cette source de base de connaissances ? Rien n'est stocké localement ; la base de connaissances elle-même n'est pas modifiée.",
         "region_example_placeholder": "ex. us-east-1",
         "word_count_one": "{{n}} mot",
         "word_count_many": "{{n}} mots",

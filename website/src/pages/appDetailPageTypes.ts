@@ -15,6 +15,7 @@ import type {
   LinkPreviewGrantRow,
   MessageActionGrantRow,
   RegistryApp,
+  SelectionActionGrantRow,
 } from '../components/appstore/types'
 
 type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
@@ -71,6 +72,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   messageActionGrant?: MessageActionGrantRow
   linkOpenGrant?: LinkOpenGrantRow
   composerActionGrant?: ComposerActionGrantRow
+  selectionActionGrant?: SelectionActionGrantRow
   managed?: string
   source?: string
   installedAt?: string

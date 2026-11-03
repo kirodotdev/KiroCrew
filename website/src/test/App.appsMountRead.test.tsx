@@ -52,6 +52,12 @@ vi.mock('../pages/ArtifactsPage', () => ({ default: () => null }))
 vi.mock('../pages/ArtifactDetailPage', () => ({ default: () => null }))
 vi.mock('../pages/ArtifactDeployPage', () => ({ default: () => null }))
 vi.mock('../pages/EmbedSettingsPage', () => ({ default: () => null }))
+// The lazy overlay layers observe ['apps'] too. Whether their chunks resolve
+// inside this test's window is import timing, not the shell's nav read that
+// these tests count, so they are left out of the count.
+vi.mock('../linkPreview/LinkPreviewLayer', () => ({ default: () => null }))
+vi.mock('../messageActions/MessageActionLayer', () => ({ default: () => null }))
+vi.mock('../selectionActions/SelectionActionLayer', () => ({ default: () => null }))
 vi.mock('../pages/PopoutFrame', () => ({ default: () => null }))
 vi.mock('../pages/ArtifactPopoutFrame', () => ({ default: () => null }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {}, subscribeSubagents: () => {}, forceReconnect: () => {} }) }))
