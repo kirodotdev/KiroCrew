@@ -1030,12 +1030,12 @@ def test_tombstone_keeps_the_older_grave_when_the_rename_is_refused(agents_dir, 
     def refuse(self, target):  # noqa: ARG001 - Path.rename signature
         raise PermissionError("sharing violation")
 
-    monkeypatch.setattr(Path, "rename", refuse)
-    with pytest.raises(PermissionError):
-        agent_templates._tombstone(spec)
-    assert spec.exists()
-    assert older.read_text(encoding="utf-8") == '{"prompt": "older"}'
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "rename", refuse)
+        with pytest.raises(PermissionError):
+            agent_templates._tombstone(spec)
+        assert spec.exists()
+        assert older.read_text(encoding="utf-8") == '{"prompt": "older"}'
     # Two deletes of the same name within one second still get distinct graves.
     grave = agent_templates._tombstone(spec)
     spec.write_text("{}", encoding="utf-8")

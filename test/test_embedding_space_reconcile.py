@@ -275,11 +275,12 @@ class TestStaleIndexRemovalFailure:
         store.reconcile_embedding_space(_SIG_A)
         store._faiss_path.write_bytes(b"stale-index")
 
-        self._break_unlink(monkeypatch)
-        store.reconcile_embedding_space(_SIG_B)
-        assert store._read_meta("embedding_space_sig") == _SIG_A
+        with monkeypatch.context() as mp:
+            self._break_unlink(mp)
+            store.reconcile_embedding_space(_SIG_B)
+            assert store._read_meta("embedding_space_sig") == _SIG_A
 
-        monkeypatch.undo()  # the next boot can write again
+        # the next boot can write again
         store.reconcile_embedding_space(_SIG_B)
         assert store._read_meta("embedding_space_sig") == _SIG_B
         assert not store._faiss_path.exists()

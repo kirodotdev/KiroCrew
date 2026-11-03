@@ -853,11 +853,11 @@ class TestReplacementTranscriptIsLockedDown:
             order.append("fdopen")
             return real_fdopen(fd, *a, **kw)
 
-        monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", traced_restrict)
-        monkeypatch.setattr(os, "fdopen", traced_fdopen)
+        with monkeypatch.context() as mp:
+            mp.setattr(sir.platform_compat, "restrict_to_owner", traced_restrict)
+            mp.setattr(os, "fdopen", traced_fdopen)
 
-        sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
-        monkeypatch.undo()
+            sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
 
         # The temp is restricted, and restricted before it is opened for writing.
         assert "restrict:tmp" in order
@@ -967,11 +967,11 @@ class TestBackupIsNeverOverwritten:
                 order.append("read")
             return real_read_bytes(self)
 
-        monkeypatch.setattr(os, "open", traced_open)
-        monkeypatch.setattr(Path, "read_bytes", traced_read)
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "open", traced_open)
+            mp.setattr(Path, "read_bytes", traced_read)
 
-        sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
-        monkeypatch.undo()
+            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
 
         assert order == ["open(exclusive=True)", "read"]
 
@@ -1002,31 +1002,31 @@ class TestBackupIsNeverOverwritten:
         def boom(_path):
             raise OSError("icacls failed")
 
-        monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", boom)
+        with monkeypatch.context() as mp:
+            mp.setattr(sir.platform_compat, "restrict_to_owner", boom)
 
-        opened: list[int] = []
-        real_open = os.open
+            opened: list[int] = []
+            real_open = os.open
 
-        def tracking_open(target, *args, **kwargs):
-            fd = real_open(target, *args, **kwargs)
-            if str(target) == str(sidecar):
-                opened.append(fd)
-            return fd
+            def tracking_open(target, *args, **kwargs):
+                fd = real_open(target, *args, **kwargs)
+                if str(target) == str(sidecar):
+                    opened.append(fd)
+                return fd
 
-        monkeypatch.setattr(os, "open", tracking_open)
+            mp.setattr(os, "open", tracking_open)
 
-        with pytest.raises(OSError, match="icacls failed"):
-            sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
+            with pytest.raises(OSError, match="icacls failed"):
+                sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
 
-        assert not sidecar.exists()  # nothing stranded to block the retry
-        assert not list(tmp_path.glob("*.tmp"))
-        assert len(opened) == 1
-        with pytest.raises(OSError) as info:
-            os.fstat(opened[0])
-        assert info.value.errno == errno.EBADF, "the sidecar's descriptor was leaked"
+            assert not sidecar.exists()  # nothing stranded to block the retry
+            assert not list(tmp_path.glob("*.tmp"))
+            assert len(opened) == 1
+            with pytest.raises(OSError) as info:
+                os.fstat(opened[0])
+            assert info.value.errno == errno.EBADF, "the sidecar's descriptor was leaked"
 
         # And the retry it would have blocked now works.
-        monkeypatch.undo()
         report2, lines2 = sir.scan_file(p)
         assert lines2 is not None
         sir.apply_repair(p, lines2, backup=True, expect=report2.source_stat)

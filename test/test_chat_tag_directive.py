@@ -267,9 +267,9 @@ class TestAgentTagPolicy:
                 return (sig[0] + 1,) + tuple(sig[1:]) if sig is not None else None
             return None
 
-        monkeypatch.setattr(chat_tag_grants, "_stat_signature", _stat)
-        chat_tag_grants.refresh_cache()
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(chat_tag_grants, "_stat_signature", _stat)
+            chat_tag_grants.refresh_cache()
         snap = chat_tag_grants.capture_grants_snapshot()
         # The stale healthy row is gone; the store reads as missing/unavailable.
         assert snap.has_row("planned") is False
