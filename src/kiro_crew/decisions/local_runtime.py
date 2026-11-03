@@ -9,10 +9,13 @@ the model itself, so the owner never installs or starts anything by hand:
    pins are already verified, so a restart does not rehash 8 GB.
 2. **Environment.** A uv-managed Python 3.12 virtualenv per preset, built from
    the exact-pin lock shipped in ``local_servers/``. On Linux torch comes from the
-   PyTorch CPU index, which keeps the environment near 1 GB instead of pulling the
-   CUDA build. uv runs under the shared sandbox with a scrubbed environment: it
-   executes third-party build code and is not entitled to the gateway's
-   credentials.
+   PyTorch CPU index, which keeps the environment near 1 GB instead of pulling a
+   CUDA build. Plumb-4B is the exception, and only when the owner turned its GPU
+   switch on and this host's NVIDIA driver can run one of the pinned torch's
+   published CUDA builds: that install takes the matching CUDA index, and the
+   launcher is passed ``--device cuda``. uv runs under the shared sandbox with a
+   scrubbed environment: it executes third-party build code and is not entitled
+   to the gateway's credentials.
 3. **Server.** The preset's launcher runs in that environment, bound to
    127.0.0.1 on the port the provider route chose, sandboxed and in a cgroup
    scope. It is ready when ``GET /kirocrew-attest`` answers with the secret this
@@ -60,8 +63,9 @@ from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import data_home
-from kiro_crew.decisions import capability, gate, local_models
+from kiro_crew.decisions import capability, gate, local_models, local_torch
 from kiro_crew.decisions.local_models import LocalModel
+from kiro_crew.decisions.local_torch import TORCH_CPU_INDEX
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -104,8 +108,6 @@ STOP_GRACE_SECS = 10
 UV_TIMEOUT_SECS = 1800
 #: How often a running install checks whether it has been told to stop.
 RUN_POLL_SECS = 0.5
-#: The PyTorch CPU-only wheel index (Linux); other platforms' PyPI torch is CPU.
-TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 #: Python every lock was resolved and served with.
 ENV_PYTHON = "3.12"
 
@@ -242,6 +244,37 @@ class _Run:
 
 def _requirements_digest(m: LocalModel) -> str:
     return hashlib.sha256((SERVERS_DIR / m.requirements).read_bytes()).hexdigest()
+
+
+#: Module Plumb's launcher imports from its own directory; copied beside it.
+PLUMB_DEVICE_HELPER = "plumb_device.py"
+
+
+def cuda_constraints_name(index: str) -> str:
+    """The shipped pin file for torch's CUDA dependencies on *index*.
+
+    A CUDA torch pulls in ``nvidia-*``, ``cuda-*`` and ``triton`` wheels the CPU
+    lock does not list. Each index in ``_CUDA_INDEXES`` has its own exact pins, so
+    nothing on the CUDA path is resolved at install time.
+    """
+    return f"{local_torch.PLUMB_MODEL_ID}.{index.rstrip('/').rsplit('/', 1)[-1]}.constraints.txt"
+
+
+def _env_stamp(m: LocalModel) -> str:
+    """What ``.kirocrew-ready`` must contain for *m*'s environment to be current.
+
+    The lock digest alone while Plumb is on the CPU wheel, so that environment
+    stays current until the GPU switch selects a CUDA index. The index is
+    appended to the digest; turning the switch off drops it. Either change
+    rebuilds the environment.
+    """
+    digest = _requirements_digest(m)
+    if sys.platform.startswith("linux") and m.id == local_torch.PLUMB_MODEL_ID:
+        index = local_torch.linux_torch_index(m.id)
+        if index != TORCH_CPU_INDEX:
+            pins = (SERVERS_DIR / cuda_constraints_name(index)).read_bytes()
+            return f"{digest}\n{index}\n{hashlib.sha256(pins).hexdigest()}"
+    return digest
 
 
 class LocalModelRuntime:
@@ -510,7 +543,7 @@ class LocalModelRuntime:
             marker = self._env_marker(m).read_text(encoding="utf-8").strip()
         except OSError:
             return False
-        return marker == _requirements_digest(m) and self._env_python(m).exists()
+        return marker == _env_stamp(m) and self._env_python(m).exists()
 
     def _ensure_env(self, run: _Run) -> bool:
         m = run.model
@@ -551,9 +584,20 @@ class LocalModelRuntime:
             str(lock),
         ]
         if sys.platform.startswith("linux"):
+            index = local_torch.linux_torch_index(m.id)
+            if index != TORCH_CPU_INDEX:
+                # Every name the CUDA build adds is pinned exactly, so the
+                # best-match strategy below cannot pick an unpinned version.
+                pins = env / "constraints.txt"
+                pinned = (SERVERS_DIR / cuda_constraints_name(index)).read_bytes()
+                _write_new(self.work, pins, pinned)
+                argv += ["-c", str(pins)]
+            # Best match across both indexes: torch must come from the PyTorch
+            # index while the rest of the lock comes from PyPI. The lock and the
+            # CUDA pins fix every version, so the strategy only picks the index.
             argv += [
                 "--index-url",
-                TORCH_CPU_INDEX,
+                index,
                 "--extra-index-url",
                 "https://pypi.org/simple",
                 "--index-strategy",
@@ -565,7 +609,7 @@ class LocalModelRuntime:
         if code != 0:
             self._fail(run, f"installing the model's dependencies failed:\n{out[-2000:]}")
             return False
-        _write_new(self.work, self._env_marker(m), _requirements_digest(m).encode("utf-8"))
+        _write_new(self.work, self._env_marker(m), _env_stamp(m).encode("utf-8"))
         return not run.stop.is_set()
 
     def _serve(self, run: _Run) -> None:
@@ -583,6 +627,12 @@ class LocalModelRuntime:
             _write_new(
                 self.work, self.env_dir(m) / m.launcher, (SERVERS_DIR / m.launcher).read_bytes()
             )
+            if m.id == local_torch.PLUMB_MODEL_ID:
+                _write_new(
+                    self.work,
+                    self.env_dir(m) / PLUMB_DEVICE_HELPER,
+                    (SERVERS_DIR / PLUMB_DEVICE_HELPER).read_bytes(),
+                )
             argv = [
                 str(self._env_python(m)),
                 "-I",
@@ -592,6 +642,8 @@ class LocalModelRuntime:
                 "--port",
                 str(run.port),
             ]
+            if m.id == local_torch.PLUMB_MODEL_ID:
+                argv += ["--device", "cuda" if local_torch.plumb_use_cuda() else "cpu"]
             try:
                 proc, cleanup = self._spawn(
                     argv, self.log_path(m), self.work / m.id, {ATTEST_ENV: run.nonce}

@@ -151,6 +151,14 @@ export interface DecisionsProviderData {
   sagemaker?: DecisionsSageMakerTarget | null
   /** `boto3` is installed, so a SageMaker endpoint can be used. Absent on an older gateway. */
   sagemaker_available?: boolean
+  /**
+   * Plumb-4B's GPU switch. Absent on a gateway older than the switch.
+   * `available` is false when this host cannot install a CUDA torch; `enabled`
+   * is true only when the owner turned the switch on and a CUDA torch can be
+   * installed. `reason` is `""`, `no_driver`, `driver_too_old`, or
+   * `unsupported_platform`.
+   */
+  plumb_gpu?: DecisionsPlumbGpu
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */
@@ -172,6 +180,13 @@ export interface DecisionsSageMakerTestResult {
 /** The provider body for a SageMaker endpoint: its parts, never an address. */
 function sageMakerBody({ endpoint_name, region, profile }: DecisionsSageMakerTarget) {
   return profile ? { preset: 'sagemaker', endpoint_name, region, profile } : { preset: 'sagemaker', endpoint_name, region }
+}
+
+/** What the Decisions card shows for Plumb's GPU switch. */
+export interface DecisionsPlumbGpu {
+  available: boolean
+  enabled: boolean
+  reason: string
 }
 
 export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTransport) {
@@ -226,6 +241,10 @@ export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTrans
     // One fixed question to the endpoint those parts name; writes nothing.
     testDecisionsSageMaker: (target: DecisionsSageMakerTarget) =>
       post('/api/decisions/provider/sagemaker-test', sageMakerBody(target)).then(j) as Promise<DecisionsSageMakerTestResult>,
+    // Plumb's GPU switch. A boolean only: the gateway refuses it when this host
+    // cannot install a CUDA torch, and restarts Plumb when that preset is in use.
+    saveDecisionsPlumbGpu: (enabled: boolean) =>
+      put('/api/decisions/provider', { gpu: enabled }).then(j) as Promise<DecisionsProviderData>,
     // Delete a downloaded preset that is not in use, to give its disk space back.
     removeDecisionsLocalModel: (id: string) =>
       del(`/api/decisions/local-models/${encodeURIComponent(id)}`).then(j) as Promise<DecisionsProviderData>,

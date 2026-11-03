@@ -6,6 +6,7 @@ import { ApiError, apiErrorCode, isNotFoundError } from '../../api/apiError'
 import type {
   DecisionsLocalModel,
   DecisionsLocalRuntimeData,
+  DecisionsPlumbGpu,
   DecisionsProviderData,
   DecisionsRuntimeStatus,
   DecisionsSageMakerTarget,
@@ -205,6 +206,24 @@ export { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE }
 
 const gigabytes = (bytes: number) => fmtUnit(bytes / 1e9, 'gigabyte', { maximumFractionDigits: 1 })
 
+/** Preset whose launcher can load on a GPU. The gateway's `local_torch.PLUMB_MODEL_ID`. */
+const PLUMB_MODEL_ID = 'plumb-4b'
+
+function plumbGpuHint(gpu: DecisionsPlumbGpu): string {
+  if (!gpu.available) {
+    if (gpu.reason === 'driver_too_old') {
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_driver_old')
+    }
+    if (gpu.reason === 'unsupported_platform') {
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_platform')
+    }
+    return i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_no_driver')
+  }
+  return gpu.enabled
+    ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_on')
+    : i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_off')
+}
+
 /**
  * The preset recommended for a machine with `totalGb` of memory: the first local
  * preset, in the gateway's order, whose threshold the machine meets, else hosted
@@ -379,6 +398,10 @@ export function DecisionsProviderPicker({
   })
   const removeMut = useMutation({
     mutationFn: (id: string) => api.removeDecisionsLocalModel(id),
+    onSettled: () => qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
+  })
+  const gpuMut = useMutation({
+    mutationFn: (enabled: boolean) => api.saveDecisionsPlumbGpu(enabled),
     onSettled: () => qc.invalidateQueries({ queryKey: DECISIONS_PROVIDER_QUERY_KEY }),
   })
 
@@ -598,6 +621,23 @@ export function DecisionsProviderPicker({
               peak: fmtUnit(chosenPreset.peak_ram_gb, 'gigabyte', { maximumFractionDigits: 0 }),
             })}
           </p>
+          {chosenPreset.id === PLUMB_MODEL_ID && data.plumb_gpu && (
+            <label className="flex items-start gap-2 mt-1">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={data.plumb_gpu.enabled}
+                disabled={!data.plumb_gpu.available || frozen || gpuMut.isPending}
+                onChange={event => gpuMut.mutate(event.target.checked)}
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-[12px] font-medium text-text">
+                  {i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_label')}
+                </span>
+                <span className="text-[12px] text-muted">{plumbGpuHint(data.plumb_gpu)}</span>
+              </span>
+            </label>
+          )}
         </div>
       )}
       <p className="text-[11px] text-muted m-0">{i18nT('pages.developer.featurePreviewsTab.decisions_provider_measured')}</p>
@@ -622,6 +662,13 @@ export function DecisionsProviderPicker({
           message={
             sageMakerRefusal(saveMut.error) ?? i18nT('pages.developer.featurePreviewsTab.decisions_provider_save_failed')
           }
+        />
+      )}
+      {gpuMut.isError && (
+        <ErrorNotice
+          variant="inline"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_gpu_save_failed')}
         />
       )}
       {removable.map(p => (

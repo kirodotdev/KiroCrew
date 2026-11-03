@@ -105,7 +105,9 @@ _STUB = _STUB_HEAD + launcher_tether(_LAUNCHERS[0]) + _STUB_BODY
 def test_every_launcher_carries_the_same_stdin_tether():
     """The stand-in runs the first launcher's tether, so it must be every launcher's."""
     tethers = {name: launcher_tether(name) for name in _LAUNCHERS}
-    assert sorted(p.name for p in lr.SERVERS_DIR.glob("*.py")) == sorted(_LAUNCHERS)
+    # plumb_device.py is a helper Plumb's launcher imports, not a launcher.
+    shipped = {p.name for p in lr.SERVERS_DIR.glob("*.py")} - {lr.PLUMB_DEVICE_HELPER}
+    assert sorted(shipped) == sorted(_LAUNCHERS)
     assert len(set(tethers.values())) == 1, "the launchers' stdin tethers differ"
 
 
