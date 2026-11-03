@@ -372,6 +372,22 @@ async def _deliver_result(
             logger.debug("heartbeat default_deliver lookup failed", exc_info=True)
     body = f"{task_summary}\n\n{result_text}"
 
+    # A Reconnect clears ``self.slack`` for its window. Slack-bound delivery
+    # waits for that attempt and reads the client it publishes once, so a
+    # report finishing inside the window is posted instead of skipped; when
+    # the attempt fails, the Slack-only branch keeps it as a notification.
+    slack_lost_to_reconnect = False
+    if self.slack is None and (not deliver or deliver.startswith("slack")):
+        from kiro_crew.slack.reconnect import (
+            client_lost_to_reconnect,
+            reconnect_in_progress,
+            wait_for_reconnect,
+        )
+
+        slack_lost_to_reconnect = reconnect_in_progress(self) or client_lost_to_reconnect(self)
+        await wait_for_reconnect(self)
+    slack = self.slack
+
     # ── silent: log only ──
     if deliver == "silent":
         logger.info("%s (silent): %s", title, task_summary)
@@ -492,14 +508,18 @@ async def _deliver_result(
 
     # ── slack (no thread) → new Slack DM only ──
     if deliver == "slack":
-        if self.slack and self._owner_id:
+        if slack and self._owner_id:
             try:
-                channel = await self.slack.open_dm(self._owner_id)
+                channel = await slack.open_dm(self._owner_id)
                 if channel:
                     for post in _heartbeat_slack_parts(title, result_text):
-                        await self.slack.post_message(channel, post)
+                        await slack.post_message(channel, post)
             except Exception:
                 logger.exception("Heartbeat Slack delivery failed")
+        elif slack_lost_to_reconnect and self.dashboard_state:
+            # The reconnect failed: this branch sends no notification of its
+            # own, so without one the report would be lost silently.
+            self.dashboard_state.notify("heartbeat", title, body)
         return
 
     # ── slack:<channel>[:<thread_ts>] → thread reply, else a new channel post ──
@@ -521,12 +541,12 @@ async def _deliver_result(
             # ``api_send_message``'s tracked-channel allowlist governs.
             allowed = bool(chan and CHANNEL_ID_RE.match(chan) and is_tracked_channel(chan))
             owner_dm: str | None = None
-            if self.slack and not allowed and self._owner_id:
+            if slack and not allowed and self._owner_id:
                 # Resolved only off the allowed path, where it serves twice: as
                 # the fallback target, and to admit a ``slack:D...:<ts>``
                 # origin-thread reply -- the owner's own DM channel is never a
                 # tracked channel, so it cannot clear the check above.
-                owner_dm = await self.slack.open_dm(self._owner_id)
+                owner_dm = await slack.open_dm(self._owner_id)
                 if chan and owner_dm and chan == owner_dm:
                     allowed = True
             # EVERY denied routing decision is audited, including the one with
@@ -535,7 +555,7 @@ async def _deliver_result(
             # with no SEL record at all -- the one shape that leaves no trace is
             # the one an agent can author, so it is the last that should be
             # exempt. `channel=` reads as "none supplied" in the record.
-            if self.slack and not allowed:
+            if slack and not allowed:
                 sel().log_api_access(
                     caller="heartbeat",
                     operation="heartbeat_channel_deliver",
@@ -548,7 +568,7 @@ async def _deliver_result(
                     "falling back to the owner DM",
                     chan,
                 )
-            if self.slack and allowed:
+            if slack and allowed:
                 # An unattended post to an operator-named channel is egress to
                 # a non-owner audience, so it lands on the audit trail like the
                 # sibling dashboard-deliver branches.
@@ -562,11 +582,11 @@ async def _deliver_result(
                 for post in _heartbeat_slack_parts(title, result_text):
                     # A split report threads under its own first part rather
                     # than posting N top-level messages into the channel.
-                    posted_ts = await self.slack.post_message(chan, post, ts)
+                    posted_ts = await slack.post_message(chan, post, ts)
                     ts = ts or posted_ts
-            elif self.slack and owner_dm:
+            elif slack and owner_dm:
                 for post in _heartbeat_slack_parts(title, result_text):
-                    await self.slack.post_message(owner_dm, post)
+                    await slack.post_message(owner_dm, post)
         except Exception:
             logger.exception("Heartbeat Slack delivery failed")
         if self.dashboard_state:
@@ -574,12 +594,12 @@ async def _deliver_result(
         return
 
     # ── default: Slack DM + dashboard notification ──
-    if self.slack and self._owner_id:
+    if slack and self._owner_id:
         try:
-            channel = await self.slack.open_dm(self._owner_id)
+            channel = await slack.open_dm(self._owner_id)
             if channel:
                 for post in _heartbeat_slack_parts(title, result_text):
-                    await self.slack.post_message(channel, post)
+                    await slack.post_message(channel, post)
         except Exception:
             logger.exception("Heartbeat Slack delivery failed")
     if self.dashboard_state:

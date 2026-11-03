@@ -434,17 +434,23 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
+    *,
+    slack: SlackClientOps | None = None,
 ) -> tuple[list[str], list[str]]:
     """Process non-audio file attachments from a Slack message.
+
+    *slack* is the client the route read before ingestion, so a reconnect
+    clearing ``orch.slack`` mid-message cannot drop the attachments. Omitted,
+    ``orch.slack`` is read once.
 
     Returns:
         (attachment_paths, text_blocks) — local paths for images and opaque
         files (caller must clean up), plus prompt-ready text and metadata.
     """
-    if not orch.slack:
+    resolved = slack if slack is not None else orch.slack
+    if not resolved:
         return [], []
-
-    client = orch.slack
+    client: SlackClientOps = resolved
 
     async def _download(url: str, dest: str) -> None:
         # Slack's downloader attaches the bot bearer token; only Slack knows
