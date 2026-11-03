@@ -199,7 +199,9 @@ def govern_spec(
        reads an absent ``includeMcpJson`` as true and merges the global ``mcp.json`` on
        top of the spec, and every filter below reads ``config["mcpServers"]`` and
        nothing else, so a server arriving through the merge would bring its own
-       ``autoApprove`` past all of them.
+       ``autoApprove`` past all of them. ``includePowers`` is pinned ``False`` too, so
+       KAS's own plugin loader never runs beside Crew's (Agent Plugins reach a spec
+       only through the plugin MCP source, after the owner turned them on).
     2. ``allowedTools`` goes through the governance ceiling
        (:func:`_apply_allowed_tools_ceiling`), which audits every withheld grant.
     3. Every ``mcpServers`` entry loses an ``autoApprove`` its own spec does not
@@ -223,6 +225,7 @@ def govern_spec(
     inherited = config.get("permissions")
     config.pop("useLegacyMcpJson", None)
     config["includeMcpJson"] = False
+    config["includePowers"] = False
     _apply_allowed_tools_ceiling(config, source=source)
     servers = config.get("mcpServers")
     if isinstance(servers, dict):

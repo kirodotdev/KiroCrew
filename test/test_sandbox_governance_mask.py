@@ -179,6 +179,9 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # The owner's Agent Plugins on/off record: a writable record would let an
+        # agent turn on a plugin whose stdio servers start outside the gate.
+        "agent-plugins.json",
         # The owner's Shared Crew switch: a writable record would let an agent open
         # the Crew to other people on its next start.
         "shared_crew_preview.json",

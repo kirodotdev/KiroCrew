@@ -621,6 +621,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the only writer and opens the path directly, not through this gate, so it
     # keeps working.
     "aws_service_consent.json",
+    # The owner's Agent Plugins on/off record. Same class of control as
+    # ``aws_service_consent.json`` above: the record is what AUTHORIZES an
+    # installed plugin's stdio servers to start, outside the PreToolUse gate, so
+    # an agent that could write it would turn plugins on for itself. The
+    # owner-only dashboard ``/api/agent-plugins`` handler is the only writer and
+    # opens the path directly, not through this gate.
+    "agent-plugins.json",
     # Recorded consent to send conversation state to the external decision
     # provider (Jev). Same class of control as ``aws_service_consent.json``
     # above: the record is what AUTHORIZES message text and skill descriptions

@@ -695,7 +695,7 @@ _INERT_FIELDS = frozenset({"$schema"})
 #: Crew-owned template. Their bytes are Crew's own output, not a hand edit, so a
 #: projection that reproduced the file (the no-op branch) has vouched for them.
 #: On any other parent they pass through untouched and stay unvouched.
-_REBUILT_FIELDS = frozenset({"hooks", "includeMcpJson"})
+_REBUILT_FIELDS = frozenset({"hooks", "includeMcpJson", "includePowers"})
 
 
 def _parent_is_owned(snap: dict) -> bool:

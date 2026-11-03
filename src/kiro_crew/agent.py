@@ -1380,8 +1380,12 @@ def _refresh_dynamic_fields(
     # Ensure kiro-cli uses agent-level mcpServers exclusively (not global
     # mcp.json).  Existing configs created before this field was added lack
     # it, causing kiro-cli to fall back to the (possibly empty) global file.
+    # ``includePowers`` is pinned off beside it: Agent Plugins reach a session
+    # only through Crew's own loader (the plugin MCP source), so KAS's loader
+    # never runs as a second one.
     config.pop("useLegacyMcpJson", None)
     config["includeMcpJson"] = False
+    config["includePowers"] = False
 
     # Seed workspace-relative resources (steering files, AGENTS.md, etc.)
     # only when the user hasn't customized them.  kiro-cli normalizes

@@ -1401,7 +1401,16 @@ _HEARTBEAT_STRIPPED_FLAGS: tuple[str, ...] = (
 #: ``allowedTools``, a ``toolsSettings``, a ``permissions`` block) holds something the
 #: derivation did not produce, so it is not a current copy.
 _HEARTBEAT_SPEC_KEYS: frozenset[str] = frozenset(
-    {"name", "description", "model", "includeMcpJson", "prompt", "mcpServers", "tools"}
+    {
+        "name",
+        "description",
+        "model",
+        "includeMcpJson",
+        "includePowers",
+        "prompt",
+        "mcpServers",
+        "tools",
+    }
 )
 
 

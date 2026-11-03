@@ -371,6 +371,7 @@ def _mint_spec_body(name: str, servers: dict[str, Any], description: str) -> dic
         "model": "auto",
         # The global mcp.json would re-add every other server behind our back.
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": "",
         "mcpServers": wire_servers,
         # ``tools`` is a CLOSED allowlist (no wildcard) and is what MOUNTS the

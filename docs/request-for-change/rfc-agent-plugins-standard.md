@@ -146,8 +146,7 @@ directory:
 | `invalid` | `plugin.json` failed a fatal rule (§5.2, §5.3, §5.5) or resolves outside the root. Nothing from it is used |
 | `not-a-plugin` | No `plugin.json` (for example a `POWER.md` power) |
 | `off` | Valid, not enabled |
-| `on` | Valid, enabled, content unchanged since it was enabled |
-| `changed` | Was enabled, content changed since; treated as off |
+| `on` | Valid and enabled |
 
 Each record also carries the per-component results the spec asks a client to
 report: skipped skills, a disabled `mcp.json`, skipped server entries,
@@ -162,18 +161,18 @@ process and never adds a skill root.
 ### 2. The on/off switch
 
 The owner turns a plugin on or off from the dashboard. The record is a new
-crew-home leaf, `agent-plugins.json`, holding for each enabled plugin its name
-and a SHA-256 digest of every file in its root. The leaf is added to
+crew-home leaf, `agent-plugins.json`, holding the names of the enabled
+plugins. The leaf is added to
 `_CREW_READONLY_LEAVES` in `src/kiro_crew/sandbox_leaves.py`, so a sandboxed
 agent can read it and cannot write it, and it is written only by an
 owner-authenticated dashboard route. There is no MCP tool and no CLI command
 that turns a plugin on.
 
-The digest closes the gap left by the unsealed plugin tree: an agent can still
-edit an installed plugin, but an edited plugin's digest no longer matches, so it
-drops to `changed` and contributes nothing until the owner turns it on again.
-The check runs at spec rebuild and again in the launcher (§4) immediately before
-a server starts.
+Consent is to a plugin by name, not to a version of its files. Decided by
+@CrysisDeu on 2026-11-02: an update to an enabled plugin, whether by Kiro IDE,
+kiro-cli, Crew's own Replace or a hand edit, keeps it on and does not ask the
+owner again. The launcher (§4) still re-reads the record before a server starts,
+so turning a plugin off stops its next launch.
 
 ### 3. Skills and MCP servers reach every harness
 
@@ -187,7 +186,7 @@ a server starts.
   in `src/kiro_crew/agent_materialization/mcp_sources.py`, keyed
   `plugin-<name>:<server>`, beside `_collect_app_mcp_servers()`. Like
   the app source, it is re-derived on every rebuild and assigned rather than
-  `setdefault`ed, so a plugin turned off or `changed` disappears on the next
+  `setdefault`ed, so a plugin turned off or removed disappears on the next
   rebuild. Its position in the chain is pinned by a test.
 - **KAS.** Crew keeps `includePowers` off for every spec it writes, so KAS's own
   loader never runs beside Crew's and no server is registered twice.
@@ -201,8 +200,8 @@ adds no harness-specific branch, as
 Every plugin stdio server is projected as a call to a small Crew launcher rather
 than the plugin's own command. The launcher:
 
-1. re-checks the plugin's digest against `agent-plugins.json` and exits with a
-   clear message if it no longer matches;
+1. re-reads `agent-plugins.json` and exits with a clear message if the plugin
+   is no longer on or no longer valid;
 2. creates `~/.kiro/powers/data/<name>/` (the path Kiro IDE and KAS use, so a
    plugin keeps its data across clients);
 3. expands `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` in `args`, `env` and `cwd`
@@ -299,10 +298,10 @@ Each phase is one PR, independently shippable, verified on a pod before push.
   leaf, the owner-only route, the MCP source, the launcher, and `includePowers`
   pinned off.
   _Exit criteria:_ an `off` plugin adds nothing to any materialized spec; a write
-  to `agent-plugins.json` from inside the sandbox fails; editing a file in an
-  `on` plugin makes the next rebuild drop its servers and makes the launcher
-  refuse to start; the conformance suite's stdio checks pass on KAS and on one
-  other harness.
+  to `agent-plugins.json` from inside the sandbox fails; turning a plugin off
+  makes the next rebuild drop its servers and makes the launcher refuse to
+  start; an update to an `on` plugin keeps it on; the conformance suite's stdio
+  checks pass on KAS and on one other harness.
 - **Phase 3 — Skills and the dashboard list.** Skill roots for `on` plugins and
   the Plugins list, shown to the owner as real screenshots before the PR opens.
   _Exit criteria:_ an `on` plugin's skill is found by `skill_search` under its
@@ -325,15 +324,21 @@ changes no current behaviour. `kirocrew app import` is untouched.
 
 - **Starting a process is the risk.** A stdio entry runs a program outside the
   PreToolUse gate. That is why nothing starts until the owner turns a plugin on,
-  why the switch is a read-only leaf the agent cannot write, and why the digest
-  is checked both at rebuild and at launch.
-- **Skills are instructions.** Only an `on`, unchanged plugin's own `skills/`
-  directory is trusted, never the parent tree.
+  and why the switch is a read-only leaf the agent cannot write, so the agent
+  can never turn a plugin on.
+- **Accepted risk: edits to an enabled plugin.** `~/.kiro/powers/` is not
+  sealed, so the agent, a prompt injection or another tool can change the files
+  of a plugin the owner already turned on, and the changed code or skill text is
+  used without asking again. The owner chose this on 2026-11-02 over asking
+  again after every update; the control is what the owner turns on, not each
+  version of it.
+- **Skills are instructions.** Only an `on` plugin's own `skills/` directory is
+  trusted, never the parent tree.
 - **Headers and env are public data.** The spec forbids secrets there; Crew does
   not treat them as secrets and never expands environment variables into them.
 - **The sandbox scope is not widened.** One new read-only leaf is added, which
   this RFC names. `~/.kiro/powers/` stays writable, because Kiro IDE and the
-  owner write it; the digest is what makes that safe.
+  owner write it.
 
 ## Alternatives considered
 

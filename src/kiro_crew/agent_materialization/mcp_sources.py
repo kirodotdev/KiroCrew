@@ -1,8 +1,9 @@
 """Projecting the MCP sources a rebuild reads into the default agent spec.
 
-A rebuild merges four sources into ``kirocrew.json`` in a fixed precedence -- app
-manifests, the Kiro global ``mcp.json``, edition-contributed provider globals, and the
-dashboard store ``~/.kiro/crew/mcp.json`` -- then resolves every server's command and
+A rebuild merges five sources into ``kirocrew.json`` in a fixed precedence -- app
+manifests, the owner's ``on`` Agent Plugins, the Kiro global ``mcp.json``,
+edition-contributed provider globals, and the dashboard store
+``~/.kiro/crew/mcp.json`` -- then resolves every server's command and
 syncs the user-installed servers into ``tools`` / ``allowedTools``. The phases here are
 that pipeline, in order; the orchestration, and the command resolver the phases share,
 stay in :func:`kiro_crew.agent.rebuild_agent_config`.
@@ -17,12 +18,13 @@ import functools
 import itertools
 import json
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import user_json
+from kiro_crew import platform_compat, user_json
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, mcp_aliases
 from kiro_crew.env import (
@@ -156,6 +158,97 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
             agent_mod.logger.warning("Skipping MCP servers for app %s (manifest error)", name)
             continue
     return servers
+
+
+#: Keys the plugin source mints: ``plugin-<name>:<server>``. A plugin name is a
+#: §5.5 name (lowercase letters, digits, single hyphens), so the prefix is exact.
+_PLUGIN_KEY_RE = re.compile(r"plugin-[a-z0-9]+(?:-[a-z0-9]+)*:[A-Za-z0-9_.-]+\Z")
+
+
+def plugin_mcp_key(plugin: str, server: str) -> str:
+    """The agent-spec key for *server* of *plugin*.
+
+    Characters outside ``[A-Za-z0-9_.-]`` in the server name become ``-``, so the
+    key never needs an alias and an ``@ref`` to it always resolves.
+    """
+    return f"plugin-{plugin}:{re.sub(r'[^A-Za-z0-9_.-]', '-', server)}"
+
+
+def _plugin_spec(plugin: str, server: Any) -> dict[str, Any] | None:
+    """The agent-spec entry for one valid plugin server, or ``None``."""
+    from kiro_crew.agent_plugins.launch import LAUNCH_MODULE
+    from kiro_crew.agent_plugins.model import RemoteServer, StdioServer
+
+    if isinstance(server, StdioServer):
+        argv = platform_compat.isolated_python_argv("-P", "-m", LAUNCH_MODULE, plugin, server.name)
+        return {"command": argv[0], "args": argv[1:]}
+    if isinstance(server, RemoteServer):
+        spec: dict[str, Any] = {"url": server.url}
+        if server.type == "sse":
+            spec["type"] = "sse"
+        if server.headers:
+            spec["headers"] = dict(server.headers)
+        return spec
+    return None
+
+
+def _collect_plugin_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
+    """MCP servers of every ``on`` Agent Plugin, keyed ``plugin-<name>:<server>``.
+
+    Re-derived from discovery on every rebuild, like the app source, so a plugin
+    turned off, invalid or removed contributes nothing to the next spec. A stdio
+    server is projected as the plugin launcher
+    (:mod:`kiro_crew.agent_plugins.launch`), which re-checks the owner's record
+    and applies the spec's ``cwd`` / ``PLUGIN_ROOT`` / ``PLUGIN_DATA`` rules on every
+    harness; a remote server becomes a URL entry. Never raises.
+    """
+    servers: dict[str, Any] = {}
+    try:
+        from kiro_crew.agent_plugins import discover_plugins
+
+        records = discover_plugins()
+    except Exception:  # noqa: BLE001 — a broken plugin tree must not stop the rebuild
+        agent_mod.logger.warning("Skipping Agent Plugin MCP servers (discovery failed)")
+        return servers
+    for rec in records:
+        if rec.state != "on":
+            continue
+        try:
+            for server in rec.servers:
+                key = plugin_mcp_key(rec.name, server.name)
+                spec = _plugin_spec(rec.name, server)
+                if spec is None or key in servers:
+                    continue
+                servers[key] = auto_approve._ceiling_filtered_spec(key, spec, audit=audit)
+        except Exception:  # noqa: BLE001 — one bad plugin must not poison the rest
+            agent_mod.logger.warning("Skipping MCP servers for plugin %s", rec.name)
+    return servers
+
+
+def _merge_plugin_servers(config: dict, managed_names: set[str], stale: set[str]) -> None:
+    """Project :func:`_collect_plugin_mcp_servers` into *config*, retiring stale keys.
+
+    A ``plugin-<name>:<server>`` key a previous rebuild wrote and this one does
+    not derive is removed with its ``@ref``, so turning a plugin off or removing
+    it drops its servers on the next rebuild. A key an app claimed earlier in
+    this pass keeps the app's entry.
+    """
+    fresh = _collect_plugin_mcp_servers()
+    mcps = config.get("mcpServers")
+    if isinstance(mcps, dict):
+        gone = [k for k in mcps if _PLUGIN_KEY_RE.match(k) and k not in fresh and k in stale]
+        for key in gone:
+            del mcps[key]
+            stale.discard(key)
+        if gone and isinstance(config.get("tools"), list):
+            refs = {f"@{k}" for k in gone}
+            config["tools"] = [t for t in config["tools"] if t not in refs]
+    for key, spec in fresh.items():
+        if key in managed_names or (key not in stale and key in config.get("mcpServers", {})):
+            continue
+        config.setdefault("mcpServers", {})[key] = spec
+        stale.discard(key)
+        config.setdefault("tools", []).append(f"@{key}")
 
 
 def _app_owned_mcp_keys() -> dict[str, bool]:
@@ -431,6 +524,12 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # _collect_app_mcp_servers, and the final allowedTools pass covers the
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
+
+    # Agent Plugin servers come second: after the apps, so an app's same-named
+    # key keeps winning, and before every shared file, so a leftover there
+    # cannot stand in for a plugin entry. Assigned, not setdefault, and
+    # re-derived each pass for the same reason as the app entries above.
+    _merge_plugin_servers(config, managed_names, _stale)
 
     shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
     for name, spec in shared_mcp.items():

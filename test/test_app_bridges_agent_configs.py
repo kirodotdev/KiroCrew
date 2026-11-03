@@ -169,6 +169,9 @@ class TestUserAgentEditsSurviveRefresh:
             "prompt",
             "managedToolPolicy",
             "includeMcpJson",
+            # Pinned off on every Crew-written spec: Agent Plugins reach a session
+            # only through Crew's own loader, never KAS's.
+            "includePowers",
             # A generated `file://` path list into the app's provisioned tree, rendered
             # from `{ENGINE_ROOT}` placeholders by the gateway — CONTAINMENT-shaped like
             # `prompt`: a user-pinned copy would keep pointing at a previous engine root
