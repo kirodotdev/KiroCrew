@@ -274,7 +274,17 @@ def test_no_card_id_names_a_harness() -> None:
     A per-harness id would mean a per-harness label, which is a per-harness edit to
     thirteen locale files -- the cost this projection exists to remove.
     """
-    harness_words = ("kiro", "claude", "kas", "codex", "opencode", "goose", "deepseek", "pi_")
+    harness_words = (
+        "kiro",
+        "claude",
+        "kas",
+        "codex",
+        "opencode",
+        "goose",
+        "deepseek",
+        "pi_",
+        "vibe",
+    )
     for member in Concern:
         for word in harness_words:
             assert word not in mcp_mod.concern_id(member), f"{member.name} names a harness"

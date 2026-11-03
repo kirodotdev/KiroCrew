@@ -25,6 +25,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
@@ -143,7 +144,9 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BAC
 
 # Backends ``AcpClient._spawn`` can construct a session for directly: kiro (the
 # resolve-and-exec branch a backend with no process adapter falls through to)
-# plus the five with an entry in ``kiro_crew.acp.harness._PROCESS_ADAPTERS``.
+# plus the six with an entry in ``kiro_crew.acp.harness._PROCESS_ADAPTERS``
+# (vibe's entry exists because its spawn is fully self-served; it is not
+# selectable, so the arm only matters once routing lands).
 # A POSITIVE allowlist, not "every backend except kas/codex": a future backend
 # added to ``BASELINE_SELECTABLE_BACKENDS`` with no arm here must fail closed
 # (report not-spawnable) rather than silently fall to the kiro-cli branch under
@@ -159,6 +162,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_VIBE,
     }
 )
 

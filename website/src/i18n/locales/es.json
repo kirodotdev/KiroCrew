@@ -14523,7 +14523,8 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "vibe": "Mistral Vibe"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpone al chat un diagnóstico en vivo del desplazamiento y los anclajes",

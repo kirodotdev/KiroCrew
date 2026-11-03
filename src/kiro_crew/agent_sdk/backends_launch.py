@@ -29,6 +29,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -124,6 +125,11 @@ ACP_BACKENDS_RELAY_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KAS})
 # override and a ``$HOME`` relocation reaches nothing the override does not.
 # KAS is excluded although Crew spawns it through ``kiro-cli`` too: where KAS keeps
 # its MCP OAuth grants is not measured, so it stays out under the rule above.
+#
+# vibe is excluded on the same grounds as pi/deepseek, with its own variable: its
+# credential home follows ``VIBE_HOME`` (relocatable), which its auth declaration
+# names, so the floor re-anchors the declared leaf under the override and a
+# ``$HOME`` relocation reaches nothing the override does not.
 ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 
 
@@ -282,6 +288,19 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
             "Install the official Strands CLI; its default --acp-server profile is "
             "not used, Kiro Crew starts it on a Python project it gates."
         ),
+    ),
+    # Dormant: KNOWN but not selectable -- routing is Routing.UNVERIFIED until the
+    # mode pin is captured live (see backends_routing.py). The launch facts are
+    # source-read off mistral-vibe v3.0.2 (vibe-acp, agent-client-protocol 0.11.0,
+    # ACP protocol version 1).
+    ACP_BACKEND_VIBE: SelfServedLaunch(
+        label="Mistral Vibe",
+        binary="vibe-acp",
+        acp_args=(),
+        bin_env_var="VIBE_ACP_BIN",
+        install_command="uv tool install mistral-vibe",
+        protocol_version=1,
+        missing_hint="No adapter package is needed: this harness serves ACP itself.",
     ),
 }
 

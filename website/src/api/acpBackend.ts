@@ -104,6 +104,7 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
     case 'opencode': return i18nT('pages.developer.agentBackendTab.opencode')
     case 'pi': return i18nT('pages.developer.agentBackendTab.pi')
     case 'strands': return i18nT('pages.developer.agentBackendTab.strands')
+    case 'vibe': return i18nT('pages.developer.agentBackendTab.vibe')
     default: return backend.policy_id || backend.id
   }
 }
