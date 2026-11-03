@@ -417,7 +417,9 @@ export function useMembersPageSidePanel({
   }, [openSessionOnChatPage, schedAtStakeRef, schedGuardRef])
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
-    const mine = liveSlots.filter((s) => !!s.created_by && s.created_by === activeMemberKey)
+    // Every session in the mate's tree, by the server's own `mate_root` stamp: an
+    // adopted or released session keeps its birth `created_by` but has left it.
+    const mine = liveSlots.filter((s) => s.key !== activeMemberKey && s.mate_root === activeMemberKey)
     const byKey = new Map(mine.map((s) => [s.key, s]))
     const prev = committedDrivingRef.current
     const sameSet =

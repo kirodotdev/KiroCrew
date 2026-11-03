@@ -453,6 +453,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
     )
+    # One crew member's recap from the ledger and its crew log only (no model call),
+    # for the crewmate Sessions tab's in-place expand. Same gate and tree check.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
+        _deferred("crew_worker_recap", "api_crew_worker_recap"),
+    )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

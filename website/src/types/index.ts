@@ -92,6 +92,7 @@ export type {
   SubagentInfo,
   SessionInfo,
   CrewWorker,
+  CrewWorkerRecap,
   CrewWorkFacts,
   CrewWorkItemFacts,
   CrewTimeline,

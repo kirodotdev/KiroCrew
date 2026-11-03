@@ -857,6 +857,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "before it reaches the browser.",
     ),
     (
+        "One crew member's in-place recap",
+        "dashboard/handlers/crew_worker_recap.py",
+        "The crewmate Sessions tab's recap: the work item's title, report summary, "
+        "decision, artifacts, PR link and pending approval tool names, each passed "
+        "through the work-ledger board's deep redactor before it reaches the browser.",
+    ),
+    (
         "Remote session Git views",
         "coder/session_browse.py",
         "Git status, log and diff output and error text pass the shared "

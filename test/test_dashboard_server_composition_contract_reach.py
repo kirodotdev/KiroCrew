@@ -784,7 +784,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred_instances _deferred_instances _deferred_instances _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
@@ -865,7 +865,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred_instances _deferred_instances _deferred_instances _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
@@ -1110,8 +1110,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 328
-_MCP_TABLE_DIGEST = "42ecd89e9a7e7e569a9f0cad536de2e5a964532c1861a23fdcdf07705f99e2ea"
+_MCP_TABLE_ROWS = 330
+_MCP_TABLE_DIGEST = "65c75a6b5e50f42f4e25a733e0d3aca9cbecc8c27b3a602cdd520709edc468a1"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
