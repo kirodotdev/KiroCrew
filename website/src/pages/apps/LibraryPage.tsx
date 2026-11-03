@@ -206,7 +206,9 @@ export default function LibraryPage() {
     } catch (e) {
       refocusApp.current = null
       if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
-      else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
+      // One whole sentence per verb: an English verb dropped into a translated
+      // frame ("Не удалось enable app") reads as a broken string.
+      else setError((e as Error)?.message || i18nT(action === 'enable' ? 'pages.appsPage.failed_to_enable' : 'pages.appsPage.failed_to_disable', { name }))
     } finally {
       setActionLoading(null)
     }
@@ -257,7 +259,7 @@ export default function LibraryPage() {
               <div className="w-[58px] h-[58px] rounded-[15px] bg-bg-elevated flex items-center justify-center">
                 <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)]" />
               </div>
-              <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{app.manifest?.displayName || app.name}</span>
+              <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{appDisplayName(app)}</span>
               <span className="text-[10.5px] text-muted leading-tight">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
               {/* The crashed tile removed the app's management surface, so the
                   fallback must keep one recovery path: quiet a broken enabled
@@ -303,7 +305,7 @@ export default function LibraryPage() {
                 api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
                   if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
                 }).catch((e: unknown) => {
-                  setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action: 'open', name: app.name }))
+                  setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_open', { name: app.name }))
                 })
                 return
               }
@@ -409,7 +411,7 @@ export default function LibraryPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall')} {uninstallTarget.displayName || uninstallTarget.name}?</div>
+                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall_app_title', { name: appDisplayName(uninstallTarget) })}</div>
                   <div className="text-[12px] text-muted">{i18nT('pages.appsPage.v')}{uninstallTarget.version}</div>
                 </div>
               </div>
@@ -486,7 +488,7 @@ export default function LibraryPage() {
                             <Lock size={12} className="text-muted mt-0.5 shrink-0" />
                             <div>
                               <div className="text-text">{d.id.split('/').pop()}</div>
-                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept')} {d.reason}</div>
+                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept_reason', { reason: d.reason })}</div>
                             </div>
                           </div>
                         ))}

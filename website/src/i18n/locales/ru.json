@@ -11717,7 +11717,6 @@
       "retry": "Повторить"
     },
     "appsPage": {
-      "action_failed": "Не удалось {{action}} {{name}}",
       "add_an_app_source_gear_icon_above_or_install_fro": "Добавьте источник приложений («Источники», справа вверху) или установите из локального пути.",
       "agent_few": "{{count}} агента",
       "agent_many": "{{count}} агентов",
@@ -11740,6 +11739,8 @@
       "cron_job_other": "{{count}} задания cron",
       "dependencies": "Зависимости:",
       "dismiss_message": "Скрыть сообщение",
+      "failed_to_disable": "Не удалось отключить {{name}}",
+      "failed_to_open": "Не удалось открыть {{name}}",
       "failed_to_enable": "Не удалось включить {{name}}",
       "failed_to_load_apps": "Не удалось загрузить приложения",
       "failed_to_load_registry": "Не удалось загрузить реестр",
@@ -11749,7 +11750,7 @@
       "keep_app_data": "Сохранить данные приложения",
       "keep_dependency": "Сохранить зависимость {{name}}",
       "keep_this_dependency": "Сохранить эту зависимость",
-      "kept": "Сохранено —",
+      "kept_reason": "Сохранено — {{reason}}",
       "kept_installed_by_you": "Сохранено — установлено вами",
       "kirocrew_registry": "Реестр {{productName}}",
       "library": "Библиотека",
@@ -11778,6 +11779,7 @@
       "this_will_remove_all_resources_provided_by_this": "Будут удалены все ресурсы, предоставленные этим приложением:",
       "try_a_different_search_or_category": "Попробуйте другой поисковый запрос или категорию.",
       "try_a_different_search_term": "Попробуй другой запрос",
+      "uninstall_app_title": "Удалить «{{name}}»?",
       "uninstall": "Удалить",
       "uninstall_removes_metadata_and_source": "Установлено из раздела «Приложения» — метаданные {{productName}} и загруженный исходный код будут удалены.",
       "uninstall_removes_metadata_secret_and_source": "Установлено из раздела «Приложения» — метаданные {{productName}}, секрет приложения и загруженный исходный код будут удалены.",

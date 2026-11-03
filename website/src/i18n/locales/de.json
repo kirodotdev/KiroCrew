@@ -11255,7 +11255,6 @@
       "retry": "Wiederholen"
     },
     "appsPage": {
-      "action_failed": "{{action}} für {{name}} fehlgeschlagen",
       "add_an_app_source_gear_icon_above_or_install_fro": "Füge eine App-Quelle hinzu (Quellen, oben rechts) oder installiere von einem lokalen Pfad.",
       "agent_one": "{{count}} Agent",
       "agent_other": "{{count}} Agenten",
@@ -11272,6 +11271,8 @@
       "cron_job_other": "{{count}} Cron-Jobs",
       "dependencies": "Abhängigkeiten:",
       "dismiss_message": "Nachricht schließen",
+      "failed_to_disable": "{{name}} konnte nicht deaktiviert werden",
+      "failed_to_open": "{{name}} konnte nicht geöffnet werden",
       "failed_to_enable": "{{name}} konnte nicht aktiviert werden",
       "failed_to_load_apps": "Apps konnten nicht geladen werden",
       "failed_to_load_registry": "Registry konnte nicht geladen werden",
@@ -11281,7 +11282,7 @@
       "keep_app_data": "App-Daten behalten",
       "keep_dependency": "Abhängigkeit {{name}} behalten",
       "keep_this_dependency": "Diese Abhängigkeit behalten",
-      "kept": "Behalten —",
+      "kept_reason": "Behalten — {{reason}}",
       "kept_installed_by_you": "Behalten — von Ihnen installiert",
       "kirocrew_registry": "{{productName}}-Registry",
       "library": "Bibliothek",
@@ -11308,6 +11309,7 @@
       "this_will_remove_all_resources_provided_by_this": "Dies entfernt alle von dieser App bereitgestellten Ressourcen:",
       "try_a_different_search_or_category": "Versuchen Sie eine andere Suche oder Kategorie.",
       "try_a_different_search_term": "Versuche einen anderen Suchbegriff",
+      "uninstall_app_title": "„{{name}}“ deinstallieren?",
       "uninstall": "Deinstallieren",
       "uninstall_removes_metadata_and_source": "Aus Apps installiert — die {{productName}}-Metadaten und der heruntergeladene Quellcode werden entfernt.",
       "uninstall_removes_metadata_secret_and_source": "Aus Apps installiert — die {{productName}}-Metadaten, das App-Secret und der heruntergeladene Quellcode werden entfernt.",

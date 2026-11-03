@@ -11486,7 +11486,6 @@
       "retry": "Reintentar"
     },
     "appsPage": {
-      "action_failed": "No se pudo {{action}} {{name}}",
       "add_an_app_source_gear_icon_above_or_install_fro": "Agrega una fuente de apps (Fuentes, arriba a la derecha) o instala desde una ruta local.",
       "agent_many": "{{count}} agentes",
       "agent_one": "{{count}} agente",
@@ -11506,6 +11505,8 @@
       "cron_job_other": "{{count}} tareas cron",
       "dependencies": "Dependencias:",
       "dismiss_message": "Descartar mensaje",
+      "failed_to_disable": "No se pudo desactivar {{name}}",
+      "failed_to_open": "No se pudo abrir {{name}}",
       "failed_to_enable": "No se pudo activar {{name}}",
       "failed_to_load_apps": "No se pudieron cargar las apps",
       "failed_to_load_registry": "No se pudo cargar el registro",
@@ -11515,7 +11516,7 @@
       "keep_app_data": "Conservar los datos de la app",
       "keep_dependency": "Conservar la dependencia {{name}}",
       "keep_this_dependency": "Conservar esta dependencia",
-      "kept": "Conservada —",
+      "kept_reason": "Conservada — {{reason}}",
       "kept_installed_by_you": "Conservada — instalada por ti",
       "kirocrew_registry": "Registro de {{productName}}",
       "library": "Biblioteca",
@@ -11543,6 +11544,7 @@
       "this_will_remove_all_resources_provided_by_this": "Esto eliminará todos los recursos que proporciona esta app:",
       "try_a_different_search_or_category": "Prueba con otra búsqueda u otra categoría.",
       "try_a_different_search_term": "Prueba con otro término de búsqueda",
+      "uninstall_app_title": "¿Desinstalar “{{name}}”?",
       "uninstall": "Desinstalar",
       "uninstall_removes_metadata_and_source": "Se instaló desde Apps — se eliminarán los metadatos de {{productName}} y el código fuente descargado.",
       "uninstall_removes_metadata_secret_and_source": "Se instaló desde Apps — se eliminarán los metadatos de {{productName}}, el secreto de la app y el código fuente descargado.",
