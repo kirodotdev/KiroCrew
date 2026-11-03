@@ -29,7 +29,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
-import { fmtList } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -650,8 +650,9 @@ export function MembersPageRosterColumn({
                 ? '\u2014'
                 : narrowed
                   ? t('pages.membersPage.member_count_filtered', {
-                      shown: sortedMembers.length,
+                      shown: fmtNumber(sortedMembers.length),
                       count: shownMembers.length,
+                      n: fmtNumber(shownMembers.length),
                     })
                   : t('pages.membersPage.member_count', { count: shownMembers.length })}
             </div>

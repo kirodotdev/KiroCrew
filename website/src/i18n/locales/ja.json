@@ -4060,7 +4060,6 @@
         "working": "作業中"
       },
       "stats": {
-        "busiest_day": "最多チャットの日：{{date}}（{{count}}件のメッセージ）",
         "companion_days": "{{time}}一緒にいます",
         "drags_other": "{{n}}回ドラッグしました",
         "earliest_time": "最早：{{time}}に起床",
@@ -4074,7 +4073,8 @@
         "streak": "（{{streak}}日連続）",
         "thinking_time": "{{time}}考えました",
         "title": "思い出",
-        "walks_other": "{{n}}ステップ"
+        "walks_other": "{{n}}ステップ",
+        "busiest_day_other": "最多チャットの日：{{date}}（{{n}}件のメッセージ）"
       },
       "tip": {
         "bedtime": "試してみてください：「11時に寝るよう教えて」",
@@ -9010,7 +9010,9 @@
       "sounds": "サウンド",
       "overlays": "オーバーレイ",
       "persona": "ペルソナ",
-      "save_failed_storage": "保存できませんでした。ブラウザーのストレージがいっぱいか、オフになっています。"
+      "save_failed_storage": "保存できませんでした。ブラウザーのストレージがいっぱいか、オフになっています。",
+      "theme_topbar_dark": "テーマのトップバー（ダークモード）",
+      "theme_topbar_light": "テーマのトップバー（ライトモード）"
     },
     "timezoneSelect": {
       "render_timezone": "タイムゾーンをレンダリング"
@@ -14462,11 +14464,13 @@
         "related_load_failed": "関連アイテムを読み込めませんでした",
         "relations_count": "関連性（{{count}}）",
         "save": "保存",
-        "shared": "共有",
         "summary": "サマリー",
         "tag1_tag2_tag3": "tag1、tag2、tag3",
         "tags_save_failed": "タグを保存できませんでした",
-        "unarchive": "アーカイブ解除"
+        "unarchive": "アーカイブ解除",
+        "shared_count_other": "共通 {{n}} 件",
+        "status_active": "アクティブ",
+        "status_archived": "アーカイブ済み"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}}埋め込み済み（{{pct}}%）",
@@ -14550,7 +14554,17 @@
         "entity_items_load_failed": "このエンティティのアイテムを読み込めませんでした",
         "error_no_reason": "理由が示されないままリクエストが失敗しました。",
         "delete_items_permanently_other": "{{count}} 件の項目を完全に削除しますか？",
-        "selected_count_other": "{{count}} 件選択済み"
+        "selected_count_other": "{{count}} 件選択済み",
+        "type_design_doc": "設計ドキュメント",
+        "type_runbook": "ランブック",
+        "type_meeting_notes": "議事録",
+        "type_code_doc": "コードドキュメント",
+        "type_presentation": "プレゼンテーション",
+        "type_report": "レポート",
+        "type_policy": "ポリシー",
+        "type_personal_notes": "個人メモ",
+        "type_external_reference": "外部参照",
+        "type_document": "ドキュメント"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -19084,7 +19098,6 @@
       "credits_col": "クレジット",
       "credits_this_period": "直近{{days}}日",
       "daily_p50_trend": "日次 p50 — 上がコールド、下がウォーム",
-      "daily_trend_point": "{{date}} · コールド {{cold}} · ウォーム {{warm}} · 起動 {{count}} 回",
       "detail_col": "詳細",
       "distribution_col": "分布",
       "duration_col": "所要時間",
@@ -19183,7 +19196,8 @@
       "range_to": "終了日",
       "no_telemetry_in_window": "この期間（{{period}}）に記録されたテレメトリはありません。",
       "otel_retention_cap": "ターン・レイテンシ・起動の数値は直近{{days}}日分のみです。古いメトリクスは削除されます（<settingRef/>）。",
-      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし"
+      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし",
+      "daily_trend_point_other": "{{date}} · コールド {{cold}} · ウォーム {{warm}} · 起動 {{n}} 回"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",
@@ -19454,7 +19468,6 @@
       "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",
       "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
       "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
-      "member_count_filtered": "{{count}} 人中 {{shown}} 人のクルーメイト",
       "webview_rendering": "公開済みビューを表示中…",
       "webview_retry": "再試行",
       "deploy_title": "クラウド上のクルー",
@@ -19837,7 +19850,8 @@
       "profile_harness_cannot_start": "ここでは起動できません。",
       "profile_harness_saved": "保存しました。次のメッセージから {{name}} はこのハーネスで動きます。",
       "profile_harness_unavailable": "{{name}} は {{harness}} で動く設定ですが、ここでは起動できないため、チャットもワーカーも起動しません。別のエージェントハーネスか「継承済み」を選んでください。",
-      "profile_harness_choose": "エージェントハーネスを選ぶ"
+      "profile_harness_choose": "エージェントハーネスを選ぶ",
+      "member_count_filtered_other": "{{n}} 人中 {{shown}} 人のクルーメイト"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

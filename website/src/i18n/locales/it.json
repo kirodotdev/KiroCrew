@@ -4158,7 +4158,6 @@
         "working": "Lavora"
       },
       "stats": {
-        "busiest_day": "Giorno più chiacchierone: {{date}} ({{count}} msg)",
         "companion_days": "Insieme da {{time}}",
         "drags_one": "Trascinato {{n}} volta",
         "drags_many": "Trascinato {{n}} volte",
@@ -4182,7 +4181,10 @@
         "title": "Ricordi",
         "walks_one": "{{n}} passo",
         "walks_many": "{{n}} passi",
-        "walks_other": "{{n}} passi"
+        "walks_other": "{{n}} passi",
+        "busiest_day_one": "Giorno più chiacchierone: {{date}} ({{n}} msg)",
+        "busiest_day_many": "Giorno più chiacchierone: {{date}} ({{n}} msg)",
+        "busiest_day_other": "Giorno più chiacchierone: {{date}} ({{n}} msg)"
       },
       "tip": {
         "bedtime": "Prova: \"dimmi di rallentare alle 23\"",
@@ -9364,7 +9366,9 @@
       "sounds": "Suoni",
       "overlays": "Overlay",
       "persona": "Persona",
-      "save_failed_storage": "Impossibile salvare. La memoria del browser è piena o disattivata."
+      "save_failed_storage": "Impossibile salvare. La memoria del browser è piena o disattivata.",
+      "theme_topbar_dark": "barra superiore del tema, modalità scura",
+      "theme_topbar_light": "barra superiore del tema, modalità chiara"
     },
     "timezoneSelect": {
       "render_timezone": "Fuso orario di visualizzazione"
@@ -15078,11 +15082,15 @@
         "related_load_failed": "Impossibile caricare gli elementi correlati",
         "relations_count": "Relazioni ({{count}})",
         "save": "salva",
-        "shared": "condiviso",
         "summary": "Riepilogo",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "Impossibile salvare i tag",
-        "unarchive": "Rimuovi dall'archivio"
+        "unarchive": "Rimuovi dall'archivio",
+        "shared_count_one": "{{n}} in comune",
+        "shared_count_many": "{{n}} in comune",
+        "shared_count_other": "{{n}} in comune",
+        "status_active": "Attivo",
+        "status_archived": "Archiviato"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} incorporato ({{pct}}%)",
@@ -15178,7 +15186,17 @@
         "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?",
         "selected_count_one": "{{count}} selezionato",
         "selected_count_many": "{{count}} selezionati",
-        "selected_count_other": "{{count}} selezionati"
+        "selected_count_other": "{{count}} selezionati",
+        "type_design_doc": "documento di progettazione",
+        "type_runbook": "manuale operativo",
+        "type_meeting_notes": "note della riunione",
+        "type_code_doc": "documentazione del codice",
+        "type_presentation": "presentazione",
+        "type_report": "rapporto",
+        "type_policy": "politica",
+        "type_personal_notes": "note personali",
+        "type_external_reference": "riferimento esterno",
+        "type_document": "documento"
       },
       "itemCard": {
         "copied": "Copiato!",
@@ -19882,7 +19900,6 @@
       "credits_col": "Crediti",
       "credits_this_period": "Ultimi {{days}} g",
       "daily_p50_trend": "p50 giornaliero — a freddo sopra, a caldo sotto",
-      "daily_trend_point": "{{date}} · a freddo {{cold}} · a caldo {{warm}} · {{count}} avvii",
       "detail_col": "Dettaglio",
       "distribution_col": "Distribuzione",
       "duration_col": "Durata",
@@ -19991,7 +20008,10 @@
       "otel_retention_cap": "I dati su turni, latenza e avvio coprono solo gli ultimi {{days}} g; le metriche più vecchie vengono eliminate (<settingRef/>).",
       "window_footer_shards_one": "Sezioni OTEL · periodo: {{period}} · {{n}} frammento · origine: <dir/> · solo locale, nessun traffico in uscita",
       "window_footer_shards_many": "Sezioni OTEL · periodo: {{period}} · {{n}} frammenti · origine: <dir/> · solo locale, nessun traffico in uscita",
-      "window_footer_shards_other": "Sezioni OTEL · periodo: {{period}} · {{n}} frammenti · origine: <dir/> · solo locale, nessun traffico in uscita"
+      "window_footer_shards_other": "Sezioni OTEL · periodo: {{period}} · {{n}} frammenti · origine: <dir/> · solo locale, nessun traffico in uscita",
+      "daily_trend_point_one": "{{date}} · a freddo {{cold}} · a caldo {{warm}} · {{n}} avvio",
+      "daily_trend_point_many": "{{date}} · a freddo {{cold}} · a caldo {{warm}} · {{n}} avvii",
+      "daily_trend_point_other": "{{date}} · a freddo {{cold}} · a caldo {{warm}} · {{n}} avvii"
     },
     "terminalPopoutFrame": {
       "return": "Torna al dock",
@@ -20286,7 +20306,6 @@
       "filter_source_mine_description": "Crew che hai creato nel gestore crew",
       "filter_source_builtin_description": "Crew inclusi in {{productName}}",
       "filter_source_package_description": "Crew installati da pacchetti di capacità",
-      "member_count_filtered": "{{shown}} compagni su {{count}}",
       "webview_rendering": "Visualizzazione della vista pubblicata…",
       "webview_retry": "Riprova",
       "deploy_title": "La tua crew nel cloud",
@@ -20683,7 +20702,10 @@
       "profile_harness_cannot_start": "Non può avviarsi qui.",
       "profile_harness_saved": "Salvato. Dal prossimo messaggio {{name}} gira su questo harness.",
       "profile_harness_unavailable": "{{name}} è impostato per usare {{harness}}, che qui non può avviarsi, quindi non si avviano nemmeno le sue chat e i suoi worker. Scegli un altro harness dell’agente, oppure Ereditato.",
-      "profile_harness_choose": "Scegli un harness dell’agente"
+      "profile_harness_choose": "Scegli un harness dell’agente",
+      "member_count_filtered_one": "compagni: {{shown}}/{{n}}",
+      "member_count_filtered_many": "compagni: {{shown}}/{{n}}",
+      "member_count_filtered_other": "compagni: {{shown}}/{{n}}"
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

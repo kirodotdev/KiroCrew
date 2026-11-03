@@ -4158,7 +4158,6 @@
         "working": "Trabajando"
       },
       "stats": {
-        "busiest_day": "Día más hablador: {{date}} ({{count}} msjs)",
         "companion_days": "Juntos desde hace {{time}}",
         "drags_one": "Arrastrado {{n}} vez",
         "drags_many": "Arrastrado {{n}} veces",
@@ -4182,7 +4181,10 @@
         "title": "Recuerdos",
         "walks_one": "{{n}} paso",
         "walks_many": "{{n}} pasos",
-        "walks_other": "{{n}} pasos"
+        "walks_other": "{{n}} pasos",
+        "busiest_day_one": "Día más hablador: {{date}} ({{n}} msj)",
+        "busiest_day_many": "Día más hablador: {{date}} ({{n}} msjs)",
+        "busiest_day_other": "Día más hablador: {{date}} ({{n}} msjs)"
       },
       "tip": {
         "bedtime": "Prueba: \"dime que vaya bajando el ritmo a las 11\"",
@@ -9364,7 +9366,9 @@
       "sounds": "Sonidos",
       "overlays": "Superposiciones",
       "persona": "Persona",
-      "save_failed_storage": "No se pudo guardar. El almacenamiento del navegador está lleno o desactivado."
+      "save_failed_storage": "No se pudo guardar. El almacenamiento del navegador está lleno o desactivado.",
+      "theme_topbar_dark": "barra superior del tema, modo oscuro",
+      "theme_topbar_light": "barra superior del tema, modo claro"
     },
     "timezoneSelect": {
       "render_timezone": "Zona horaria de visualización"
@@ -15078,11 +15082,15 @@
         "related_load_failed": "No se pudieron cargar los elementos relacionados",
         "relations_count": "Relaciones ({{count}})",
         "save": "guardar",
-        "shared": "compartido",
         "summary": "Resumen",
         "tag1_tag2_tag3": "etiqueta1, etiqueta2, etiqueta3",
         "tags_save_failed": "No se pudieron guardar las etiquetas",
-        "unarchive": "Desarchivar"
+        "unarchive": "Desarchivar",
+        "shared_count_one": "{{n}} en común",
+        "shared_count_many": "{{n}} en común",
+        "shared_count_other": "{{n}} en común",
+        "status_active": "Activo",
+        "status_archived": "Archivado"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} con embeddings ({{pct}}%)",
@@ -15178,7 +15186,17 @@
         "delete_items_permanently_other": "¿Eliminar {{count}} elementos de forma permanente?",
         "selected_count_one": "{{count}} seleccionado",
         "selected_count_many": "{{count}} seleccionados",
-        "selected_count_other": "{{count}} seleccionados"
+        "selected_count_other": "{{count}} seleccionados",
+        "type_design_doc": "documento de diseño",
+        "type_runbook": "manual de operaciones",
+        "type_meeting_notes": "notas de reunión",
+        "type_code_doc": "documentación de código",
+        "type_presentation": "presentación",
+        "type_report": "informe",
+        "type_policy": "política",
+        "type_personal_notes": "notas personales",
+        "type_external_reference": "referencia externa",
+        "type_document": "documento"
       },
       "itemCard": {
         "copied": "¡Copiado!",
@@ -19882,7 +19900,6 @@
       "credits_col": "Créditos",
       "credits_this_period": "Últimos {{days}} d",
       "daily_p50_trend": "p50 diario — en frío arriba, en caliente abajo",
-      "daily_trend_point": "{{date}} · en frío {{cold}} · en caliente {{warm}} · {{count}} inicios",
       "detail_col": "Detalle",
       "distribution_col": "Distribución",
       "duration_col": "Duración",
@@ -19991,7 +20008,10 @@
       "otel_retention_cap": "Las cifras de turnos, latencia e inicio cubren solo los últimos {{days}} d; las métricas anteriores se eliminan (<settingRef/>).",
       "window_footer_shards_one": "Secciones OTEL · periodo: {{period}} · {{n}} fragmento · origen: <dir/> · solo local, sin salida de datos",
       "window_footer_shards_many": "Secciones OTEL · periodo: {{period}} · {{n}} fragmentos · origen: <dir/> · solo local, sin salida de datos",
-      "window_footer_shards_other": "Secciones OTEL · periodo: {{period}} · {{n}} fragmentos · origen: <dir/> · solo local, sin salida de datos"
+      "window_footer_shards_other": "Secciones OTEL · periodo: {{period}} · {{n}} fragmentos · origen: <dir/> · solo local, sin salida de datos",
+      "daily_trend_point_one": "{{date}} · en frío {{cold}} · en caliente {{warm}} · {{n}} inicio",
+      "daily_trend_point_many": "{{date}} · en frío {{cold}} · en caliente {{warm}} · {{n}} inicios",
+      "daily_trend_point_other": "{{date}} · en frío {{cold}} · en caliente {{warm}} · {{n}} inicios"
     },
     "terminalPopoutFrame": {
       "return": "Volver al dock",
@@ -20286,7 +20306,6 @@
       "filter_source_mine_description": "Crews que creaste en el gestor de crews",
       "filter_source_builtin_description": "Crews incluidos con {{productName}}",
       "filter_source_package_description": "Crews instalados por paquetes de capacidades",
-      "member_count_filtered": "{{shown}} de {{count}} compañeros",
       "webview_rendering": "Mostrando la vista publicada…",
       "webview_retry": "Reintentar",
       "deploy_title": "Tu equipo en la nube",
@@ -20683,7 +20702,10 @@
       "profile_harness_cannot_start": "No puede iniciarse aquí.",
       "profile_harness_saved": "Guardado. {{name}} funciona en este harness desde el próximo mensaje.",
       "profile_harness_unavailable": "{{name}} está configurado para usar {{harness}}, que no puede iniciarse aquí, así que sus chats y workers tampoco se inician. Elige otro harness del agente, o Heredado.",
-      "profile_harness_choose": "Elegir un harness del agente"
+      "profile_harness_choose": "Elegir un harness del agente",
+      "member_count_filtered_one": "{{shown}} de {{n}} compañero",
+      "member_count_filtered_many": "{{shown}} de {{n}} compañeros",
+      "member_count_filtered_other": "{{shown}} de {{n}} compañeros"
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",

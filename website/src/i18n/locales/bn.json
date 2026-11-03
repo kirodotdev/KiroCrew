@@ -4065,7 +4065,6 @@
         "working": "কাজ করছে"
       },
       "stats": {
-        "busiest_day": "সবচেয়ে আড্ডাবাজ দিন: {{date}} ({{count}} বার্তা)",
         "companion_days": "একসাথে {{time}} ধরে",
         "drags_one": "{{n}} বার টেনে নেওয়া হয়েছে",
         "drags_other": "{{n}} বার টেনে নেওয়া হয়েছে",
@@ -4084,7 +4083,9 @@
         "thinking_time": "{{time}} ধরে ভেবেছে",
         "title": "স্মৃতি",
         "walks_one": "{{n}} পদক্ষেপ",
-        "walks_other": "{{n}} পদক্ষেপ"
+        "walks_other": "{{n}} পদক্ষেপ",
+        "busiest_day_one": "সবচেয়ে আড্ডাবাজ দিন: {{date}} ({{n}} বার্তা)",
+        "busiest_day_other": "সবচেয়ে আড্ডাবাজ দিন: {{date}} ({{n}} বার্তা)"
       },
       "tip": {
         "bedtime": "চেষ্টা করুন: \"আমাকে 11টায় ধীরে হতে বলো\"",
@@ -9187,7 +9188,9 @@
       "sounds": "সাউন্ড",
       "overlays": "ওভারলে",
       "persona": "পারসোনা",
-      "save_failed_storage": "সংরক্ষণ করা যায়নি। ব্রাউজারের স্টোরেজ পূর্ণ বা বন্ধ আছে।"
+      "save_failed_storage": "সংরক্ষণ করা যায়নি। ব্রাউজারের স্টোরেজ পূর্ণ বা বন্ধ আছে।",
+      "theme_topbar_dark": "থিমের উপরের বার, ডার্ক মোড",
+      "theme_topbar_light": "থিমের উপরের বার, লাইট মোড"
     },
     "timezoneSelect": {
       "render_timezone": "প্রদর্শনের টাইমজোন"
@@ -14770,11 +14773,14 @@
         "related_load_failed": "সম্পর্কিত আইটেম লোড করা যায়নি",
         "relations_count": "সম্পর্ক ({{count}})",
         "save": "সংরক্ষণ করুন",
-        "shared": "শেয়ার করা",
         "summary": "সারসংক্ষেপ",
         "tag1_tag2_tag3": "ট্যাগ1, ট্যাগ2, ট্যাগ3",
         "tags_save_failed": "ট্যাগ সংরক্ষণ করা যায়নি",
-        "unarchive": "আর্কাইভ থেকে সরান"
+        "unarchive": "আর্কাইভ থেকে সরান",
+        "shared_count_one": "{{n}}টি শেয়ার করা",
+        "shared_count_other": "{{n}}টি শেয়ার করা",
+        "status_active": "সক্রিয়",
+        "status_archived": "সংরক্ষণাগারে"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} এমবেড করা ({{pct}}%)",
@@ -14864,7 +14870,17 @@
         "delete_items_permanently_one": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?",
         "delete_items_permanently_other": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?",
         "selected_count_one": "{{count}}টি নির্বাচিত",
-        "selected_count_other": "{{count}}টি নির্বাচিত"
+        "selected_count_other": "{{count}}টি নির্বাচিত",
+        "type_design_doc": "ডিজাইন ডকুমেন্ট",
+        "type_runbook": "রানবুক",
+        "type_meeting_notes": "মিটিং নোট",
+        "type_code_doc": "কোড ডকুমেন্ট",
+        "type_presentation": "প্রেজেন্টেশন",
+        "type_report": "রিপোর্ট",
+        "type_policy": "নীতি",
+        "type_personal_notes": "ব্যক্তিগত নোট",
+        "type_external_reference": "বাহ্যিক রেফারেন্স",
+        "type_document": "ডকুমেন্ট"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
@@ -19483,7 +19499,6 @@
       "credits_col": "ক্রেডিট",
       "credits_this_period": "গত {{days}} দিন",
       "daily_p50_trend": "দৈনিক p50 — উপরে কোল্ড, নিচে ওয়ার্ম",
-      "daily_trend_point": "{{date}} · কোল্ড {{cold}} · ওয়ার্ম {{warm}} · {{count}} স্টার্ট",
       "detail_col": "বিস্তারিত",
       "distribution_col": "বিতরণ",
       "duration_col": "সময়কাল",
@@ -19587,7 +19602,9 @@
       "no_telemetry_in_window": "এই সময়কালে ({{period}}) কোনো টেলিমেট্রি রেকর্ড হয়নি।",
       "otel_retention_cap": "টার্ন, লেটেন্সি ও স্টার্টআপের সংখ্যা কেবল শেষ {{days}} দিনের; পুরোনো মেট্রিক মুছে ফেলা হয় (<settingRef/>)।",
       "window_footer_shards_one": "OTEL বিভাগ · সময়কাল: {{period}} · {{n}}টি শার্ড · সোর্স: <dir/> · শুধু স্থানীয়, কোনো এগ্রেস নেই",
-      "window_footer_shards_other": "OTEL বিভাগ · সময়কাল: {{period}} · {{n}}টি শার্ড · সোর্স: <dir/> · শুধু স্থানীয়, কোনো এগ্রেস নেই"
+      "window_footer_shards_other": "OTEL বিভাগ · সময়কাল: {{period}} · {{n}}টি শার্ড · সোর্স: <dir/> · শুধু স্থানীয়, কোনো এগ্রেস নেই",
+      "daily_trend_point_one": "{{date}} · কোল্ড {{cold}} · ওয়ার্ম {{warm}} · {{n}} স্টার্ট",
+      "daily_trend_point_other": "{{date}} · কোল্ড {{cold}} · ওয়ার্ম {{warm}} · {{n}} স্টার্ট"
     },
     "terminalPopoutFrame": {
       "return": "ডকে ফিরে যান",
@@ -19870,7 +19887,6 @@
       "filter_source_mine_description": "ক্রু ম্যানেজারে আপনার তৈরি করা ক্রু",
       "filter_source_builtin_description": "{{productName}}-এর সাথে আসা ক্রু",
       "filter_source_package_description": "ক্ষমতা প্যাকেজ দ্বারা ইনস্টল করা ক্রু",
-      "member_count_filtered": "{{count}} জনের মধ্যে {{shown}} জন ক্রুমেট",
       "webview_rendering": "প্রকাশিত ভিউ দেখানো হচ্ছে…",
       "webview_retry": "আবার চেষ্টা করো",
       "deploy_title": "ক্লাউডে তোমার ক্রু",
@@ -20260,7 +20276,9 @@
       "profile_harness_cannot_start": "এখানে চালু হতে পারে না।",
       "profile_harness_saved": "সেভ হয়েছে। পরের বার্তা থেকে {{name}} এই হারনেসে চলবে।",
       "profile_harness_unavailable": "{{name}}-কে {{harness}}-এ চালানোর জন্য সেট করা আছে, যেটি এখানে চালু হতে পারে না, তাই তার চ্যাট আর ওয়ার্কাররাও চালু হয় না। অন্য একটি এজেন্ট হারনেস বেছে নাও, অথবা ইনহেরিট করা।",
-      "profile_harness_choose": "একটি এজেন্ট হারনেস বেছে নাও"
+      "profile_harness_choose": "একটি এজেন্ট হারনেস বেছে নাও",
+      "member_count_filtered_one": "{{n}} জনের মধ্যে {{shown}} জন ক্রুমেট",
+      "member_count_filtered_other": "{{n}} জনের মধ্যে {{shown}} জন ক্রুমেট"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",
