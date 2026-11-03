@@ -1075,9 +1075,9 @@ def test_an_unreadable_spool_is_left_untouched(spool_home: Path, monkeypatch) ->
             raise PermissionError(13, "transient")
         return real_open(path)
 
-    monkeypatch.setattr(S, "_open_own_file", _flaky_open)
-    assert peek_next(path=spool_home) is None
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(S, "_open_own_file", _flaky_open)
+        assert peek_next(path=spool_home) is None
 
     assert spool_home.exists(), "the spool was deleted after a read failure"
     assert _texts(spool_home) == ["keep me"]
@@ -1094,12 +1094,12 @@ def test_an_unreadable_spool_refuses_a_write_rather_than_overwriting(
             raise PermissionError(13, "transient")
         return real_open(path)
 
-    monkeypatch.setattr(S, "_open_own_file", _flaky_open)
-    wrote = record_refusal_sync(
-        SpooledInbound(channel_type="telegram", conversation_id="1", text="new"),
-        path=spool_home,
-    )
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(S, "_open_own_file", _flaky_open)
+        wrote = record_refusal_sync(
+            SpooledInbound(channel_type="telegram", conversation_id="1", text="new"),
+            path=spool_home,
+        )
 
     assert wrote is False
     assert _texts(spool_home) == ["keep me"]
