@@ -18,6 +18,7 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_plugins as agent_plugins_handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.edition_locks import local_enable_locked
@@ -189,6 +190,15 @@ def register(app: web.Application) -> None:
 
     app.router.add_get("/api/agent-plugins", agent_plugins_consent.api_agent_plugins_get)
     app.router.add_post("/api/agent-plugins", agent_plugins_consent.api_agent_plugins_post)
+    # Agent Plugins install and uninstall. Browser-called, cookie-authed and
+    # owner-gated in the handler like the consent trio: what lands in the powers
+    # home Kiro IDE shares is the operator's choice, never the agent's.
+    app.router.add_post(
+        "/api/agent-plugins/install", agent_plugins_handlers.api_agent_plugins_install
+    )
+    app.router.add_post(
+        "/api/agent-plugins/uninstall", agent_plugins_handlers.api_agent_plugins_uninstall
+    )
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.
