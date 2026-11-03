@@ -3677,10 +3677,28 @@ binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
 
-This describes today's code. The enterprise edition RFC
-([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md),
-D6, 2026-11-02) makes KAS the floor and the baseline minimal set in an
-enterprise build; that code change is pending. The `oss` floor stays kiro-cli.
+That reasoning holds in an `oss` build. In an enterprise build the floor is KAS
+(`acp_backends.governance_floor_backend()`, the enterprise edition RFC
+[rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+D6), and the baseline minimal set is `kas`, so the Kiro CLI harness needs a
+remote rule there. KAS now has a route of its own, Crew's engine bundle
+(`acp/kas_bundle.py`), which is the "binary of its own" the paragraph above
+waits for. A KAS proven unable to start on the route it would take refuses the
+gateway start when the main backend runs KAS, and otherwise refuses each
+gateway session whose resolved backend is KAS (`enterprise_boot.require_kas_harness`,
+`enterprise_boot.refuse_unstartable_kas`); no session the provider factory builds
+falls back to the Kiro CLI harness. An enterprise build has no automatic
+fallback to the Kiro CLI harness anywhere: the Kiro CLI harness runs only as an
+explicit pick (`agent.acp_backend` `"kiro"`) that the remote policy allows. Two
+runtimes outside the provider factory fall back to it in `oss` when their backend
+cannot serve them: the knowledge model pool, which never spawns KAS
+(`knowledge/llm_pool.py`), and Code Review Sage's shared review runtime for a
+backend it does not serve (`code_review_sage/sage_lib/review_pool.py`). In an
+enterprise build both refuse instead, before any process exists
+(`KnowledgeHarnessUnavailable`, `ReviewHarnessDenied`); Sage with no backend
+configured runs on the governed default, KAS, and refuses a KAS that boot proved
+cannot start. A background runtime whose `agent.acp_backend` cannot be read takes
+the build's floor, and refuses that KAS the same way.
 
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.
