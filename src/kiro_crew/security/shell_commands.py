@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 from contextvars import ContextVar
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from . import shell_normalizer as _shell
 
@@ -260,7 +260,8 @@ def redirect_free_views(command: str) -> "list[str]":
 
 
 #: One gate call's payloads per frame text, shared by its walks; unset outside a call.
-_CALL_VIEWS: "ContextVar[dict[str, list[str]] | None]" = ContextVar("call_views", default=None)
+#: ``shell_normalizer._shell_payload_walk`` keeps its frames here too, under tuple keys.
+_CALL_VIEWS: "ContextVar[dict[Any, Any] | None]" = ContextVar("call_views", default=None)
 
 
 def sharing_views(fn):  # type: ignore[no-untyped-def]  # one view cache per call of fn

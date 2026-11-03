@@ -121,6 +121,7 @@ from .vocabulary import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any
 
 
 # Shell glob metacharacters, and the concrete spellings a glob could expand to.  A
@@ -1575,7 +1576,45 @@ def _nested_shell_payloads(
 # ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.
 
 
+def _payload_walk_memo() -> "dict[object, Any] | None":
+    """The open gate call's cache (``shell_commands.sharing_views``), or ``None`` outside one.
+
+    Every floor of one deny decision -- the git-publish sources, the mint and kill
+    predicates, each self-subcommand predicate -- asks for the same walk, and the walk
+    is a function of its text alone, so sharing one result gives no floor a different
+    view. The walk keeps its frames in the one per-call scope ``is_denied`` already
+    opens, so nothing carries from one decision to the next.
+    """
+    from .shell_commands import _CALL_VIEWS  # the reader imports this module
+
+    return _CALL_VIEWS.get()
+
+
+#: Tags a walk's key in the shared per-call cache, whose redirect-view keys are plain str.
+_WALK_KEY = "shell_payload_walk"
+
+
 def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """:func:`_shell_payload_walk_uncached`, shared inside one ``sharing_views`` call.
+
+    Every call hands out fresh lists, remembered or not, so a consumer that edits
+    the argv it was given cannot change what the next consumer reads. A walk that
+    raises is not remembered: the next caller walks again and meets the same
+    exception it would have met without the memo.
+    """
+    memo = _payload_walk_memo()
+    if memo is None:
+        return _shell_payload_walk_uncached(text_lower)
+    key = (_WALK_KEY, text_lower)
+    frames = memo.get(key)
+    if frames is None:
+        walked = _shell_payload_walk_uncached(text_lower)
+        memo[key] = tuple((source, tuple(tokens)) for source, tokens in walked)
+        return walked
+    return [(source, list(tokens)) for source, tokens in frames]
+
+
+def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``

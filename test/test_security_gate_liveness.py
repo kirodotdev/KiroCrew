@@ -636,6 +636,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
 _PACKAGE_LINE_BUDGET = 33_723
+#: Raised again, from 33,723, for the per-decision payload-walk memo: a
+#: ``ContextVar``-scoped memo in ``shell_normalizer`` and the decorator that opens it
+#: around ``is_denied``, so every floor of one decision shares a single walk of each
+#: distinct text instead of re-tokenizing the command once per floor.
+_PACKAGE_LINE_BUDGET = 33_753
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
