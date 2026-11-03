@@ -2569,6 +2569,14 @@ refuses on an evaluation error. Edits and stream appends are checked too, so a
 channel withdrawn mid-turn gets no further content, and each refused write is
 audited (`slack.write`). A pure `!stop` stays exempt from the inbound check so a
 withdrawn channel can still halt its turn; its notices are withheld there.
+A code channel's id is unknown until Slack creates it, so before opening one the
+code-channel routing asks `channel_policy.new_channel_refusal`, which admits it
+only when the policy's patterns admit any id (`*`, `C*`); a list of explicit ids
+keeps the request in its thread (audited as a denied `slack.code_channel.create`),
+and the created id is checked again before the channel is bound. Every
+`agents.conversations.*` write that names a channel (`CodeChannelsClient._call`;
+the code-channel workspace's views and context bar) asks `channel_refusal`
+before it is sent, as the real client's posts do.
 
 `channels.posture.slack.allowed_enterprise_ids` (policy-only) is enforced in
 `slack.enterprise.validate_enterprise`: a workspace must satisfy the governance

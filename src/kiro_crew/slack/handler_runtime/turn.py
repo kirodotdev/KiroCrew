@@ -148,6 +148,7 @@ class _SlackTurn:
     spool_attachments: "int"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
+    user_meta: "dict[str, Any] | None"
 
     # Bound by ``handle_message`` before the first phase.
     _t0: "float"
@@ -214,6 +215,7 @@ class _SlackTurn:
         spool_attachments: "int",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
+        user_meta: "dict[str, Any] | None" = None,
         _t0: "float",
         reply_ts: "str",
         session_key: "str",
@@ -248,6 +250,7 @@ class _SlackTurn:
         # Set by ``_run_turn``; none until a turn has run its hooks.
         self._hook_turn = None
         self.start_priority = start_priority
+        self.user_meta = user_meta
         self._turn_scope = None
         self._t0 = _t0
         self.reply_ts = reply_ts
@@ -611,6 +614,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 spool_attachments=turn.spool_attachments,
                 _compaction_replay=replay,
                 start_priority=start_priority,
+                user_meta=turn.user_meta,
             )
         finally:
             # The replay has settled and released its permit (or never got

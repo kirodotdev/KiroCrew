@@ -525,14 +525,20 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         _mirror_post_ts = code_channel_post_thread(_mirror_chan, _mirror_thread)
         turn._mirror_post_ts = _mirror_post_ts
         if _mirror_thread and _mirror_chan:
+
+            def _owe_code_channel_turn_end() -> None:
+                # Recorded before the start subscribers run, so a cancel that
+                # lands inside them still gets its end in the session hand-back.
+                turn._code_channel_turn = True
+
             try:
-                _code_channel_turn = await notify_code_channel_turn_start(
+                turn._code_channel_turn = await notify_code_channel_turn_start(
                     _mirror_chan,
                     _mirror_thread,
                     session_key,
                     source="slack" if slot._turn_channel_origin else "dashboard",
+                    on_bound=_owe_code_channel_turn_end,
                 )
-                turn._code_channel_turn = _code_channel_turn
             except Exception:
                 logger.debug("code channel turn-start hooks failed", exc_info=True)
             try:
