@@ -107,7 +107,11 @@ honestly:
   depends on it. It runs inside the provision step, not behind an endpoint, so no
   browser request installs anything. The launcher names the interpreter and the
   shim FILE directly — never a venv console script, whose shebangs point at the
-  staging dir the install swapped away and are therefore unrunnable.
+  staging dir the install swapped away and are therefore unrunnable. The `.cmd`
+  form is written in the console's OEM code page, the one `cmd.exe` reads a batch
+  file in, and a path that page cannot spell makes the install fail with a named
+  error and removes any earlier launcher, instead of reporting a launcher that
+  cannot run.
 - **`soffice` — reported, never installed.** LibreOffice publishes only OS
   installers, one per platform and none of them an unpack-and-run tree: a ~283MB
   `.dmg` (needs `hdiutil`), a ~207MB tarball that is really **42 `.deb`
