@@ -99,14 +99,18 @@ class TestCounting:
         assert m.load()["counters"]["turns-sent"]["count"] == 5
 
     def test_a_write_failure_never_raises_into_the_caller(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         def boom(_st: object) -> None:
             raise OSError("disk full")
 
         monkeypatch.setattr(m, "_save", boom)
-        m.record("widgets")  # must not raise
-        m.record_user_turn(mate_thread=True, crew_mode=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.milestones"):
+            m.record("widgets")  # must not raise
+            m.record_user_turn(mate_thread=True, crew_mode=True)
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.milestones"]
+        # One record per failed flush; each call above flushes at least once.
+        assert sorted(set(logged)) == ["milestones state write failed"]
 
     def test_a_policy_denial_drops_hook_ops_with_no_write_and_no_metric(
         self, monkeypatch: pytest.MonkeyPatch, metrics: list

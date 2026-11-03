@@ -462,19 +462,30 @@ async def test_the_latch_is_dropped_once_the_park_ends():
 
 
 @pytest.mark.asyncio
-async def test_stuck_turn_survives_a_raising_callback():
+async def test_stuck_turn_survives_a_raising_callback(caplog):
     """An observer must never break the cleanup pass it rides on."""
     manager = _make_manager()
-    handle = _make_handle()
-    handle._parked_since = time.monotonic() - 600.0
-    _registered(manager, handle, busy=True)
+    for key in ("dashboard:a", "dashboard:b"):
+        handle = _make_handle()
+        handle._parked_since = time.monotonic() - 600.0
+        _registered(manager, handle, busy=True)
+        manager._sessions[key] = manager._sessions.pop("dashboard:1")
 
     def _boom(key: str, parked: float) -> None:
         raise RuntimeError("consumer blew up")
 
     manager.on_stuck_turn = _boom
 
-    await manager._stuck_turn_check()  # must not raise
+    with caplog.at_level("WARNING", logger="kiro_crew.session"):
+        await manager._stuck_turn_check()  # must not raise
+
+    # The first raising callback must not cost the second parked turn its report.
+    reported = [
+        r.args[0]
+        for r in caplog.records
+        if r.name == "kiro_crew.session" and "has not been pulled" in r.getMessage()
+    ]
+    assert reported == ["dashboard:a", "dashboard:b"]
 
 
 @pytest.mark.asyncio

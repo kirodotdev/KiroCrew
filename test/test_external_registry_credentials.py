@@ -508,16 +508,20 @@ class TestSameRepoCredentialCarveOut:
         assert kwargs["outcome"] == "granted"
         assert "ssh://git.example.com/team/MyRegistry" in kwargs["resources"]
 
-    def test_credential_grant_audit_is_best_effort(self):
+    def test_credential_grant_audit_is_best_effort(self, caplog):
         """A failing (or absent) SEL backend never breaks the clone path."""
         from kiro_crew.apps import registry as reg
 
         broken = MagicMock()
         broken.log_api_access.side_effect = RuntimeError("sel down")
-        with patch.object(reg, "_sel_fn", return_value=broken):
-            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
-        with patch.object(reg, "_sel_fn", None):
-            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.apps.registry"):
+            with patch.object(reg, "_sel_fn", return_value=broken):
+                reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+            with patch.object(reg, "_sel_fn", None):
+                reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+        # The lost audit record is still written down; an absent backend logs nothing.
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert logged == ["SEL audit log failed for install_from_registry: sel down"]
 
     def test_is_owner_designated_repo_exact_match(self):
         """Predicate returns True only for byte-identical match to config repo."""
