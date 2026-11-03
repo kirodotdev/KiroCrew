@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_auto  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import api_update_auto_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_channel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_revalidate  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import logger  # noqa: F401

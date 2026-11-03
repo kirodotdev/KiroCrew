@@ -18,7 +18,7 @@
 // - available + self_updatable     -> the Update button, unchanged
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
@@ -32,9 +32,11 @@ type Answer = { status: number; body: unknown }
 /** Route the component's requests; /api/update/check answers with `check`. */
 function stubFetch(
   check: Record<string, unknown>,
-  { config = () => Promise.resolve({ status: 200, body: { auto_update: true } }), autoUpdateSave }: {
+  { config = () => Promise.resolve({ status: 200, body: { auto_update: true } }), autoUpdateSave, autoUpdatePin }: {
     config?: () => Promise<Answer>
     autoUpdateSave?: (body: Record<string, unknown>) => Answer
+    /** GET /api/update/auto; unpinned when absent. */
+    autoUpdatePin?: () => Answer
   } = {},
 ) {
   const json = ({ status, body }: Answer) => ({
@@ -48,6 +50,9 @@ function stubFetch(
     const url = String(input)
     if (url.includes('/api/update/check')) return json({ status: 200, body: check })
     if (url.includes('/api/config/kirocrew')) return json(await config())
+    if (url.includes('/api/update/auto') && (init?.method ?? 'GET').toUpperCase() === 'GET') {
+      return json(autoUpdatePin ? autoUpdatePin() : { status: 200, body: { overlay_override: false } })
+    }
     if (url.includes('/api/update/auto')) {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       return json(autoUpdateSave ? autoUpdateSave(body) : { status: 200, body: { ok: true, auto_update: body.enabled } })
@@ -59,9 +64,9 @@ function stubFetch(
   return spy
 }
 
-function mountWeb() {
+function mountWeb({ staleTime }: { staleTime?: number } = {}) {
   // No window.updateAPI => isDesktop false => the gateway branch renders.
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, ...(staleTime === undefined ? {} : { staleTime }) } } })
   return { qc, ...render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
@@ -782,27 +787,60 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('reports a write config.local.json refused, and notes the pin until a save says it is gone', async () => {
-    let pinned = true
+  it('reports a write config.local.json refused, holds the switch, and frees it once a read says the pin is gone', async () => {
+    // The pin landed after the page read it: only the refusal can say so.
+    let pinned = false
     stubFetch({}, {
-      autoUpdateSave: body => pinned
-        ? { status: 409, body: { error: 'auto_update is set in config.local.json', code: 'auto_update_overlay_owned', overlay_override: true } }
-        : { status: 200, body: { ok: true, auto_update: body.enabled, overlay_override: false } },
+      autoUpdatePin: () => ({ status: 200, body: { overlay_override: pinned } }),
+      autoUpdateSave: () => ({ status: 409, body: { error: 'auto_update is set in config.local.json', code: 'auto_update_overlay_owned', overlay_override: true } }),
     })
     pushStatus({ update_auto_effect: 'install' })
-    mountWeb()
+    // The dashboard client's default: nothing goes stale on its own.
+    mountWeb({ staleTime: Infinity })
     await waitFor(live)
     const pinText = i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')
 
+    pinned = true
     fireEvent.click(screen.getByRole('switch', { name: LABEL }))
     expect(await screen.findByTestId('auto-update-save-error')).toHaveTextContent(pinText)
     await waitFor(() => expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'true'))
-    // Still usable: a click is how a removed override is noticed.
-    live()
+    // Held: another click would only be refused again.
+    held()
 
+    // The entry is removed by hand in an editor; coming back to the tab frees it.
     pinned = false
-    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
-    await waitFor(() => expect(screen.queryByTestId('auto-update-save-error')).toBeNull())
+    act(() => { focusManager.setFocused(false) })
+    act(() => { focusManager.setFocused(true) })
+    await waitFor(live)
+    act(() => { focusManager.setFocused(undefined) })
+    expect(screen.queryByTestId('auto-update-pin-note')).toBeNull()
+  })
+
+  it('holds the switch with its note from the first read when config.local.json pins it, before any click', async () => {
+    const fetchSpy = stubFetch({}, {
+      autoUpdatePin: () => ({ status: 200, body: { overlay_override: true } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+
+    const pin = await screen.findByTestId('auto-update-pin-note')
+    expect(pin).toHaveTextContent(i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned'))
+    await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL }).closest('[aria-describedby]')?.getAttribute('aria-describedby') ?? '')
+      .toContain(pin.id)
+    // Read on its own: no update check ran to learn it, and nothing was saved.
+    const calls = fetchSpy.mock.calls.map(([u, init]) => `${(init as RequestInit | undefined)?.method ?? 'GET'} ${String(u)}`)
+    expect(calls.some(c => c.includes('/api/update/check'))).toBe(false)
+    expect(calls.some(c => c.startsWith('POST') && c.includes('/api/update/auto'))).toBe(false)
+  })
+
+  it('leaves the switch usable when the pin cannot be read', async () => {
+    const fetchSpy = stubFetch({}, { autoUpdatePin: () => ({ status: 500, body: { error: 'zzq' } }) })
+    pushStatus({ update_auto_effect: 'install' })
+    const { qc } = mountWeb()
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([u, init]) => String(u).includes('/api/update/auto') && ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'GET')).toBe(true))
+    await waitFor(() => expect(qc.getQueryState(['update.auto_update.overlay'])?.status).toBe('error'))
+    live()
     expect(screen.queryByTestId('auto-update-pin-note')).toBeNull()
   })
 

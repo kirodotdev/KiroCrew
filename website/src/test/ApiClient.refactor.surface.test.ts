@@ -152,7 +152,7 @@ const API_KEY_ORDER = [
   'planTask', 'cancelPlan', 'updatePlan', 'executePlan',
   'planFromChat', 'planContext', 'exportPlanYaml', 'checkUpdate',
   'changelog', 'releases', 'applyUpdate', 'setAutoUpdate',
-  'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
+  'autoUpdatePin', 'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
   'dismissUpdateArm', 'cancelUpdate', 'simulateUpdate', 'pickFiles',
   'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',
   'screenshot', 'themes', 'dashboardConfig', 'featureVideoLibrary',

@@ -278,7 +278,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
         checked={gw.checked}
-        disabled={copy.disabled || gw.held}
+        disabled={copy.disabled || gw.held || gw.overlayPinned}
         onChange={gw.set}
         configKey="auto_update"
         describedBy={describedBy}
