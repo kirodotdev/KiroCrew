@@ -137,7 +137,7 @@ def run(ctx):
     raise Report("Result recorded; keep this cron scheduled")
 ```
 
-`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool. `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
+`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool and returns every text block of its result, in order, joined by newlines (a tool that puts a notice ahead of its JSON returns both, the notice first). `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
 
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
