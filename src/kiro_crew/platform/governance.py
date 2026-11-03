@@ -1165,8 +1165,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.platform.governance_parts.baseline import (  # noqa: F401
         _CAPABILITY_OFF,
-        _DEFAULT_WORKSPACE_ROOTS,
         _OFF,
+        _OPEN,
         _PUBLISH_LISTS_OFF,
         BASELINE_CONTROLS,
         BASELINE_INNER_LISTS,
