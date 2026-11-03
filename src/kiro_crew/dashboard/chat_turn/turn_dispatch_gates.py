@@ -354,57 +354,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
 
     # Slash commands use _kiro.dev/commands/execute for full native output;
     # regular messages use session/prompt.
-    # Attribute the FINAL prompt back to the blocks that produced it, after every
-    # prefix from _turn_build_prompt's context build and this phase is applied. Classifying
-    # the OUTPUT rather than counting at each of the ~30 append sites means the
-    # breakdown cannot drift from what was actually sent, and an unrecognised
-    # block surfaces as `unclassified` instead of being folded into a neighbour.
-    ctx_len = len(full_message) - len(message)
-    if ctx_len > 0:
-        # Re-derive the user span against the FINAL prompt: everything added
-        # after build_message is a pure prepend, so the whole shift is the
-        # length delta. Accept it only when the shifted slice still holds the
-        # same text — otherwise fall back to the reconstruction below.
-        _span_arg: tuple[int, int] | None = None
-        if len(_user_span) == 2 and _span_base_len >= 0:
-            _shift = len(full_message) - _span_base_len
-            _s, _e = _user_span[0] + _shift, _user_span[1] + _shift
-            if 0 <= _s <= _e <= len(full_message) and full_message[_s:_e] == _span_probe:
-                _span_arg = (_s, _e)
-            else:
-                logger.warning(
-                    "context breakdown: user span did not survive post-assembly "
-                    "prefixes (shift=%d); falling back to reconstruction",
-                    _shift,
-                )
-        slot_ctx_blocks = split_blocks(
-            full_message,
-            user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
-            user_offset=_user_prepend_offset,
-            user_span=_span_arg,
-        )
-        turn.slot_ctx_blocks = slot_ctx_blocks
-        slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
-        turn.slot_ctx_phase = slot_ctx_phase
-        # Named rather than counted: naming only four blocks by hand
-        # under-describes most of the bytes being reported.
-        _named = ", ".join(
-            label.replace("_", " ")
-            for label, _ in sorted(slot_ctx_blocks.items(), key=lambda kv: -kv[1])
-            if label != USER_LABEL
-        )
-        state.broadcast_ws(
-            "activity_event",
-            {
-                "slot": slot.key,
-                "kind": "context",
-                "text": (
-                    f"Injected {ctx_len:,} chars of context ({_named})"
-                    if _named
-                    else f"Injected {ctx_len:,} chars of context"
-                ),
-            },
-        )
+    # The prompt was assembled on the model serving before this probe and the Jev
+    # routing below, and either can move the session; its [ACTIVE MODEL] line is
+    # restated after both, before the prompt is attributed. Only build_message's
+    # own segments can carry the line.
+    from kiro_crew.llm_helpers import ActiveModelLine
+    from kiro_crew.prompt_segments import SegmentedPrompt, segments_of
+
+    _assembled = getattr(turn, "_prompt_segments", ())
+    _assembled_line = ActiveModelLine(SegmentedPrompt(_assembled), client) if _assembled else None
 
     # ── Model-fallback restore probe (agent.fallback_model) ──
     # A prior turn's throttle fallback is sticky for the session; at the
@@ -480,6 +438,68 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             session_key,
             prompt=full_message,
             retried=bool(regenerate_hint),
+        )
+
+    if _assembled_line is not None:
+        # Every step after build_message is a pure prepend, so the assembled
+        # prompt is the sent tail, and the runner re-applies its segments.
+        _restated = _assembled_line.restate_tail(full_message)
+        if _restated is not None:
+            full_message = _restated[0]
+            turn.full_message = full_message
+            _prompt_segments = segments_of(_restated[1])
+            turn._prompt_segments = _prompt_segments
+
+    # Attribute the FINAL prompt back to the blocks that produced it, after every
+    # prefix from _turn_build_prompt's context build and this phase is applied. Classifying
+    # the OUTPUT rather than counting at each of the ~30 append sites means the
+    # breakdown cannot drift from what was actually sent, and an unrecognised
+    # block surfaces as `unclassified` instead of being folded into a neighbour.
+    ctx_len = len(full_message) - len(message)
+    if ctx_len > 0:
+        # Re-derive the user span against the FINAL prompt: everything added
+        # after build_message is a pure prepend, so the whole shift is the
+        # length delta. Accept it only when the shifted slice still holds the
+        # same text — otherwise fall back to the reconstruction below.
+        _span_arg: tuple[int, int] | None = None
+        if len(_user_span) == 2 and _span_base_len >= 0:
+            _shift = len(full_message) - _span_base_len
+            _s, _e = _user_span[0] + _shift, _user_span[1] + _shift
+            if 0 <= _s <= _e <= len(full_message) and full_message[_s:_e] == _span_probe:
+                _span_arg = (_s, _e)
+            else:
+                logger.warning(
+                    "context breakdown: user span did not survive post-assembly "
+                    "prefixes (shift=%d); falling back to reconstruction",
+                    _shift,
+                )
+        slot_ctx_blocks = split_blocks(
+            full_message,
+            user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
+            user_offset=_user_prepend_offset,
+            user_span=_span_arg,
+        )
+        turn.slot_ctx_blocks = slot_ctx_blocks
+        slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
+        turn.slot_ctx_phase = slot_ctx_phase
+        # Named rather than counted: naming only four blocks by hand
+        # under-describes most of the bytes being reported.
+        _named = ", ".join(
+            label.replace("_", " ")
+            for label, _ in sorted(slot_ctx_blocks.items(), key=lambda kv: -kv[1])
+            if label != USER_LABEL
+        )
+        state.broadcast_ws(
+            "activity_event",
+            {
+                "slot": slot.key,
+                "kind": "context",
+                "text": (
+                    f"Injected {ctx_len:,} chars of context ({_named})"
+                    if _named
+                    else f"Injected {ctx_len:,} chars of context"
+                ),
+            },
         )
 
     state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
