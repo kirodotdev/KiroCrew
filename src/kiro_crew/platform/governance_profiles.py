@@ -1367,6 +1367,25 @@ def governance_floor_ordinal(
         return None
 
 
+def resolve_task_bound_profile(agent: str) -> Optional[Profile]:
+    """The profile a ``task`` bind names for *agent*, or ``None``.
+
+    Only that one bind: no app or surface fallback. A caller that already
+    resolved the session's active profile with :func:`resolve_active_scope` uses
+    this to narrow it by a second agent's own profile without re-applying the
+    surface default, which would override a task profile that won the first
+    resolution. An unloaded store denies, as in :func:`resolve_active_scope`.
+    """
+    if not agent:
+        return None
+    if not _STORE.resolved():
+        logger.warning("profile store not yet loaded; denying task bind %r this call", agent)
+        return deny_all_profile(f"_deny_all_unloaded:task:{agent}")
+    snap = _STORE.snapshot()
+    name = snap.by_bind.get(("task", agent))
+    return snap.by_name.get(name) if name else None
+
+
 def resolve_active_scope(
     session_key: str,
     *,
