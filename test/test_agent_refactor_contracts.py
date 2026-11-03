@@ -513,11 +513,12 @@ _RUNTIME_STATE = frozenset(
 )
 
 #: Values compiled per platform at import, pinned for each platform they are built on:
-#: the hook path allowlist admits ``\`` and ``:`` on Windows only.
+#: the hook path allowlist admits ``\``, ``:`` and Unicode letters and digits on
+#: Windows only.
 _PER_PLATFORM: dict[str, dict[str, str]] = {
     "_SAFE_PATH_RE": {
         "posix": "value Pattern 0d1f4584e517d253",
-        "windows": "value Pattern 92e93b93e927a8a7",
+        "windows": "value Pattern 87efde2f8558ca88",
     },
 }
 
