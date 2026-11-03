@@ -1861,7 +1861,9 @@ Cost is the app's to bound: an app that spawns on a timer needs its own budget
 the platform does not rate-limit spawns per app today.
 
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
-`build_continue_impl`, `SpawnError`. The calls are described in
+`build_success_probe`, `build_continue_impl`, `SpawnError`. `SpawnSDK.is_done` is
+True on any finish; `SpawnSDK.succeeded` is True only for a run the host reports
+completed. The calls are described in
 [api-reference](api-reference.md#background-agents-ctxspawn).
 
 #### `permissions.memberThreads` — A Bot's own thread
