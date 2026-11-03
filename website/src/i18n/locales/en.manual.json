@@ -7155,6 +7155,7 @@
         "name": "Name",
         "new_workflow": "New workflow",
         "request_failed": "Workflow request failed",
+        "retry": "Retry",
         "revision": "Revision {{revision}}",
         "run": "Run workflow",
         "run_input": "Input (available as ctx.args.input)",

@@ -14960,6 +14960,7 @@
         "name": "名称",
         "new_workflow": "新建工作流",
         "request_failed": "工作流请求失败",
+        "retry": "重试",
         "revision": "修订版 {{revision}}",
         "run": "运行工作流",
         "run_input": "输入（可通过 ctx.args.input 使用）",

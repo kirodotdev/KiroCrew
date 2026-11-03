@@ -14960,6 +14960,7 @@
         "name": "名前",
         "new_workflow": "新しいワークフロー",
         "request_failed": "ワークフローのリクエストに失敗しました",
+        "retry": "再試行",
         "revision": "リビジョン {{revision}}",
         "run": "ワークフローを実行",
         "run_input": "入力（ctx.args.input として利用可能）",
