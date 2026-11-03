@@ -32,7 +32,6 @@ def fake_kirocrew_home(tmp_path):
     }
     (mc / "config.json").write_text(json.dumps(config, indent=2))
 
-    # hooks.json
     (mc / "hooks.json").write_text(json.dumps({"hooks": [{"id": "h1", "cmd": "echo hi"}]}))
 
     # crons.json
@@ -52,7 +51,6 @@ def fake_kirocrew_home(tmp_path):
     }
     (mc / "crons.json").write_text(json.dumps(crons, indent=2))
 
-    # notifications.jsonl
     (mc / "notifications.jsonl").write_text(
         json.dumps({"ts": "1700000000", "title": "test", "body": "notification"}) + "\n"
     )
@@ -93,7 +91,6 @@ def fake_kirocrew_home(tmp_path):
     conn.commit()
     conn.close()
 
-    # workspace/memory/
     mem_dir = mc / "workspace" / "memory"
     mem_dir.mkdir(parents=True)
     (mem_dir / "preferences.md").write_text(
@@ -111,12 +108,10 @@ def fake_kirocrew_home(tmp_path):
         "# 2026-05-18\n\n#### 10:00 PDT\nImplemented export feature\n"
     )
 
-    # plan_memory/
     pm_dir = mc / "plan_memory"
     pm_dir.mkdir()
     (pm_dir / "current_plan.md").write_text("# Plan\n\nStep 1: Export\nStep 2: Import\n")
 
-    # skills/
     sk_dir = mc / "skills" / "my-skill"
     sk_dir.mkdir(parents=True)
     (sk_dir / "SKILL.md").write_text(

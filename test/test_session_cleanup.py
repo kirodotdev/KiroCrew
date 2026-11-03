@@ -125,7 +125,6 @@ class TestIsSafePathTraversal:
         assert not _is_safe_path(target, root)
 
     def test_dotdot_traversal_blocked(self, tmp_path):
-        """../.. traversal is blocked."""
         root = tmp_path / "sessions"
         root.mkdir()
         target = root / ".." / ".." / "etc" / "passwd"

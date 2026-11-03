@@ -206,13 +206,11 @@ def test_lessons_create_and_list(gateway):
 
 def test_chat_slot_lifecycle(gateway):
     """Create a slot, get its detail, then delete it."""
-    # Create
     create_data = _api_post(gateway, "/api/chat/slots", {})
     slot_key = create_data["key"]
     assert slot_key
 
     try:
-        # Detail
         detail = _api_get(gateway, f"/api/chat/slots/{slot_key}")
         assert detail["key"] == slot_key
         assert "messages" in detail

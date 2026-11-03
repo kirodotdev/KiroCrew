@@ -436,7 +436,7 @@ async def test_ui_file_no_cache_revalidation(tmp_path, monkeypatch):
         assert resp.headers.get("Cache-Control") == "no-cache"
         assert "max-age" not in resp.headers.get("Cache-Control", "")
         last_modified = resp.headers.get("Last-Modified")
-        assert last_modified  # descriptor-derived validator (see _read_ui_file)
+        assert last_modified  # descriptor-derived validator
 
         # A revalidation request with the validator must yield 304 (no body).
         resp304 = await client.get(

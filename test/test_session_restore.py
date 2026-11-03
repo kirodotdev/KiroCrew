@@ -543,7 +543,6 @@ class TestDashboardConfigAPI:
 
     @pytest.mark.asyncio
     async def test_put_invalid_json(self, tmp_path, monkeypatch):
-        """PUT with invalid JSON returns 400."""
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         with patch("kiro_crew.sel.sel") as mock_sel:

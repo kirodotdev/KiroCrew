@@ -375,7 +375,7 @@ class TestBackfillFormatting:
         slot = state.get_or_create_slot("s1")
         secret = "AKIAIOSFODNN7EXAMPLE"
         # An ANSI reset dropped into the middle of the key: invisible to the
-        # credential regex, removed entirely by _strip_ansi.
+        # credential regex, removed entirely by the ANSI strip.
         split_secret = secret[:4] + "\x1b[0m" + secret[4:]
         _seed(slot, [("user", "paste"), ("assistant", f"key is {split_secret}")])
 

@@ -999,7 +999,6 @@ async def test_containment_refuses_uncontained_fresh_head(caplog):
     assert result["ok"] is False
     assert "not contained" in result["error"]
     assert "reused branch" in result["error"]
-    # Audit
     audit_lines = [r for r in caplog.records if "worktree_removal_audit" in r.message]
     assert len(audit_lines) == 1
     msg = audit_lines[0].message
@@ -1067,10 +1066,8 @@ async def test_containment_pin_falsy_refuses_unpinnable(caplog):
     """Regression: cached MERGED + dirty + force=True, the
     verdict_oid rev-parse returns falsy (None/empty) — a transient git
     failure — must REFUSE the forced removal with refused_unpinnable audit
-    rather than silently skip containment and let the later removal proceed.
-
-    At 3ca2ac3a this failed open: `if pinned_oid and not _head_contained()`
-    skipped containment when pinned_oid was falsy."""
+    rather than silently skip containment and let the later removal proceed:
+    a falsy pinned_oid must not skip the containment check."""
     import logging
 
     import kiro_crew.apps.builtins.dev_fleet.server as mod

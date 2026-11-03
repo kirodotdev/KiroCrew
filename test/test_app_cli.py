@@ -67,11 +67,9 @@ class TestHandleApp:
 
         src = _make_app_source(tmp_path)
 
-        # Install
         ns = argparse.Namespace(app_action="install", source=str(src))
         _handle_app(ns)  # should not raise
 
-        # List
         from kiro_crew.apps.manager import list_apps
         apps = list_apps()
         assert len(apps) == 1
@@ -85,7 +83,6 @@ class TestHandleApp:
         src = _make_app_source(tmp_path)
         install_app(src)
 
-        # Enable
         ns = argparse.Namespace(app_action="enable", name="cli-test-app")
         _handle_app(ns)
         from kiro_crew.apps.manager import _read_installed
@@ -93,7 +90,6 @@ class TestHandleApp:
         assert meta is not None
         assert meta.enabled is True
 
-        # Disable
         ns = argparse.Namespace(app_action="disable", name="cli-test-app")
         _handle_app(ns)
         meta = _read_installed("cli-test-app")

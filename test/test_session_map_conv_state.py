@@ -955,34 +955,21 @@ class TestPrivacyRowsAcrossARestart:
     """A privacy-flagged channel row across a restart: kept, and the thread
     restricted for every reader, in all six cells.
 
-    Two row shapes. ``!incognito`` as a thread's first message writes the map
-    flag (and, since the modifier stamps headers, a metadata-only transcript
-    header) before the thread has run a turn: no ``sid``, no ``discarded_sid``.
-    A thread that ran turns and whose provider session was since reclaimed
-    carries a ``sid`` with no session file behind it. Each in three transcript states:
-    (a) no transcript on disk, (b) a transcript whose header lacks the mode, (c)
-    a transcript whose header carries it. The restart runs the real startup
-    path -- ``SessionManager.start_pool()``: ``prune()`` on the loop,
-    ``stamp_privacy_headers()`` off it -- and the question is what the thread's
-    readers resolve AFTERWARDS.
+    Two row shapes: ``!incognito`` as a thread's first message (no ``sid``, no
+    ``discarded_sid``), and a thread whose ``sid`` has no session file behind it.
+    Each in three transcript states: (a) none on disk, (b) a header without the
+    mode, (c) a header carrying it. The restart runs the real
+    ``SessionManager.start_pool()`` (``prune()`` on the loop,
+    ``stamp_privacy_headers()`` off it).
 
     Two readers, two records. The channel's inbound gate
-    (``upload_gate.session_is_restricted`` for a non-``dashboard:`` key -- the
-    same ``privacy_mode.hydrate`` the Slack and Telegram handlers call per
-    message, and ``_is_restricted_session`` behind every memory-mutation route)
-    reads the SESSION MAP through the process-local trackers and never the
-    header. ``execution_context.capture_session_execution`` (the hooks handler,
-    the MCP control tool, the task runner, workflow memory) and the memory
-    readers (``transcript_withholds_derivation``, the contract behind the
-    consolidator's snapshot) read the HEADER. So the row must stay in every
-    cell; a header is ensured wherever a transcript exists and never created
-    where none does. Observed before the fix, ``sid``-bearing rows in (b) and
-    (c): the startup step stamped the header and removed the row, the header
-    and the consolidator read ``incognito``, and the channel gate read
-    the thread as PERSISTENT after the restart -- turns persisted, agent memory
-    writes admitted. Mutation: remove a row once its header records the mode --
-    those two cells go red on the gate assertion with
-    ``channel_gate_restricted: False``.
+    (``upload_gate.session_is_restricted``, ``privacy_mode.hydrate``,
+    ``_is_restricted_session``) reads the SESSION MAP and never the header.
+    ``execution_context.capture_session_execution`` and the memory readers
+    (``transcript_withholds_derivation``) read the HEADER. So the row must stay in
+    every cell; a header is ensured wherever a transcript exists and never created
+    where none does. Mutation: remove a row once its header records the mode --
+    cells (b) and (c) go red with ``channel_gate_restricted: False``.
     """
 
     KEY = "telegram:kirocrew:direct:5150"

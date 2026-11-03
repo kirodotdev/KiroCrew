@@ -545,7 +545,6 @@ class TestSlackProfile:
 
     @pytest.mark.asyncio
     async def test_non_string_user_returns_400(self, mock_sel):
-        """Non-string user returns 400."""
         state = _mock_state(slack_client=MagicMock())
         app = _make_app(state)
 
@@ -575,7 +574,6 @@ class TestSlackProfile:
 
     @pytest.mark.asyncio
     async def test_slack_not_connected_returns_503(self, mock_sel):
-        """Slack not connected returns 503."""
         state = _mock_state(slack_client=None)
         app = _make_app(state)
 

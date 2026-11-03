@@ -374,7 +374,8 @@ class TestProviderShape:
         assert p.api_base == "https://api.github.com"
         # Always available: unauthenticated, so nothing can be unconfigured. The
         # discovery policy gate in _build_registry is what disables the provider,
-        # and test_a_refused_policy_keeps_the_provider_unregistered covers that.
+        # and test_skill_discovery_seam.py's
+        # test_a_refused_policy_keeps_the_github_provider_unregistered covers that.
         assert p.is_available()
 
 

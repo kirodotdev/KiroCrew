@@ -889,30 +889,18 @@ def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():
 def test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move(monkeypatch):
     """A fold's stored state is pinned to ITS OWN version, per fold.
 
-    ``state_version`` and ``_state_matches_fold`` both guard the payload's SHAPE, and
-    the case neither can see is a fold whose meaning changes while its keys do not -- a
-    counting fix in ``usage`` or ``status`` being the likely one. A savepoint written by
-    the old build then resumes onto the new logic, so the long sessions this module
-    exists to speed up are exactly the ones that keep serving pre-fix numbers, for the
-    life of the unit.
+    ``state_version`` and ``_state_matches_fold`` guard the payload's SHAPE; neither
+    sees a fold whose meaning changes while its keys do not (a counting fix in
+    ``usage`` or ``status``). An old savepoint would then resume onto the new logic
+    and keep serving pre-fix numbers for the life of the unit.
 
-    The obligation is therefore recorded as a test rather than as a sentence: prose
-    cannot fail, and a rule nothing enforces is one a future fix forgets. The digest is
-    over each fold's STATE, which is what a savepoint stores, so editing a comment or
-    renaming a local does not move it and a changed number does. ``render`` is
-    deliberately outside it: a rendering change moves the cold fold and the resumed fold
-    together, so an old savepoint stays valid.
+    The digest is over each fold's STATE, which is what a savepoint stores, so a
+    comment edit or a renamed local does not move it and a changed number does.
+    ``render`` is outside it: a rendering change moves the cold and resumed folds
+    together. The pin is PER FOLD so a bump retires only that fold's savepoints.
 
-    The pin is PER FOLD because the retirement is. A file carries the version of the
-    fold it holds, so a fold that changed meaning is the only one whose savepoints must
-    go -- and pinning the digests against one shared number would demand a bump that
-    retires five valid savepoints to retire one stale one, which is the cost this
-    change removed.
-
-    The clock is frozen because four of the five folds retain an entry's ``ts``,
-    which would otherwise move every digest on every run. ``store.now_ms`` is the
-    one clock the log stamps entries from, so pinning it is what makes the state
-    a function of the script alone.
+    The clock is frozen because four of the five folds retain an entry's ``ts``;
+    ``store.now_ms`` is the one clock the log stamps entries from.
     """
     monkeypatch.setattr(store, "now_ms", lambda: 1_700_000_000_000)
 

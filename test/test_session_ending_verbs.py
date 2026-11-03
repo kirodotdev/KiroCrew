@@ -344,7 +344,6 @@ class TestResetWithPid:
 
     @pytest.mark.asyncio
     async def test_reset_with_pid_survives_shutdown_force_kills(self, cfg):
-        """reset() force-kills when PID survives shutdown."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
