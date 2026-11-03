@@ -265,6 +265,10 @@ async def _cron_run_sequence(
                     full_message,
                     job_name=job.name,
                     on_resume=lambda: settle_turn(self.sessions, agent_session_key),
+                    # The gate resolves this session's governance profile, as it
+                    # does for a chat turn, and refuses when it cannot evaluate.
+                    session_key=agent_session_key,
+                    unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
                         if job.approval_mode == "auto"
@@ -677,6 +681,10 @@ async def _cron_run_single(
             full_message,
             job_name=job.name,
             on_resume=lambda: settle_turn(self.sessions, session_key),
+            # The gate resolves this session's governance profile, as it does
+            # for a chat turn, and refuses when it cannot evaluate.
+            session_key=session_key,
+            unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
                 if job.approval_mode == "auto"
