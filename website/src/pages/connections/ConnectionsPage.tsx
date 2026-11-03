@@ -13,6 +13,7 @@ import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { findReport } from '../../utils/errorReport'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import McpTab from '../overview/McpTab'
 import { McpStagedEditsProvider } from './mcpStagedEditsContext'
 import {
@@ -43,6 +44,9 @@ export type { ConnectionCardState, Feedback, MintOutcome, OAuthState, PendingCon
 /** Mint poll cadence. A cold mint takes seconds, so this is tuned to surface the
  *  URL promptly without spinning on a request that mostly answers `minting`. */
 const MINT_POLL_MS = 2_000
+
+/** The Services search text, kept in `sessionStorage` for the browser tab. */
+const SERVICES_SEARCH_KEY = 'kirocrew:connections-services-search'
 
 /** Authorization-status poll cadence. A grant changes rarely and the read is a
  *  local stat, so this is slow relative to the mint poll — it only has to notice
@@ -75,7 +79,12 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useConnectionsSubTab()
   const { hash, key: navKey } = useLocation()
-  const [search, setSearch] = useState('')
+  // Kept for the browser tab: opening a chat unmounts this page, and the
+  // search must still be there on the way back (#25962).
+  const [search, setSearch] = useState(() => safeGetSessionItem(SERVICES_SEARCH_KEY) ?? '')
+  useEffect(() => {
+    safeSetSessionItem(SERVICES_SEARCH_KEY, search)
+  }, [search])
   /** Pending connect attempts. `kind` decides Cancel semantics (only a
    *  cancelled *new* connect uninstalls the entry it just created); `sinceTs`
    *  fences off stale `mcp_oauth` banners left over from an earlier grant of

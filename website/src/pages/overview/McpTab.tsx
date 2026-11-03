@@ -12,6 +12,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenNotice'
 import McpShareRefusedNotice from './McpShareRefusedNotice'
+import { useStagedChangesMemory } from './mcpStagedChangesMemory'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
 import { useSetMcpStagedEdits } from '../connections/mcpStagedEditsContext'
@@ -476,6 +477,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const [applyMsg, setApplyMsg] = useState('')
   // The last apply saved but its agent-spec rebuild did not write.
   const [specNotRewritten, setSpecNotRewritten] = useState(false)
+  // Staged changes outlive a trip to a chat and back in this tab (#25962).
+  useStagedChangesMemory({ pending, pendingTools }, saved => {
+    setPending(saved.pending as Record<string, PendingChange>)
+    setPendingTools(saved.pendingTools)
+  })
 
   // Auto-dismiss timers for the success banners. Held in refs and cleared on
   // unmount so a pending setTimeout never fires a state update after the
@@ -735,8 +741,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     <Card>
       {apply.error && <div className="mb-3 text-[13px] text-danger">{(apply.error as Error).message}</div>}
       {applyMsg && <div className="mb-3 text-[13px] text-ok animate-rise"><Check className="lucide-inline" /> {applyMsg}</div>}
-      {/* No hand-off while changes are staged: opening the chat unmounts this tab
-          and drops the pending MCP changes it holds. */}
+      {/* No hand-off while changes are staged: they are not applied yet, so an
+          agent in the chat would work from the saved config, not from them. */}
       {specNotRewritten && <AgentSpecNotRewrittenNotice className="mb-3" askAgent={pendingCount === 0} />}
       {/* Staged changes live only in this tab: with any pending, the notice keeps
           its chat hand-off off and opens MCP Management in a new tab. */}
