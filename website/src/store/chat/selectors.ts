@@ -10,6 +10,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import type { InjectKind } from '../../pages/chat/RecoveryCard'
 import type { SlotState } from './state'
 import { safeKey } from './wire'
+import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 import { selectSlotSubagentsActive } from './subagents'
 import { slotRowByKey } from '../slotIndex'
 
@@ -62,16 +63,20 @@ export const selectSlotToolLog = (state: RootState, slot: string | null): ToolAc
 
 /** Per-slot pending tool-approval (unresolved permission after the slot's last
  *  user message) — slot-aware version of ChatInput's old selectPendingApproval,
- *  so each grid pane's approval bar reflects ITS slot, not the global active one. */
+ *  so each grid pane's approval bar reflects ITS slot, not the global active one.
+ *  A coordinator-registry card counts wherever it sits: it waits on the
+ *  registry, not on the chat's turn, so a later send does not end it. */
 export const selectSlotPendingApproval = (state: RootState, slot: string | null): ChatMessage | null => {
   const msgs = slot ? selectSlotMessages(state, slot) : state.chat.messages
   // Find the last NON-steer user message — steered messages don't start a new
   // turn, so they must not hide a pending approval bar (#1667).
   let lastUserIdx = -1
   for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer && !msgs[i].meta?.responsiveSend) { lastUserIdx = i; break } }
-  for (let i = msgs.length - 1; i > lastUserIdx; i--) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
-    if (m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id) return m
+    if (i > lastUserIdx
+      ? m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id
+      : isPendingCoordinatorApproval(m)) return m
   }
   return null
 }
