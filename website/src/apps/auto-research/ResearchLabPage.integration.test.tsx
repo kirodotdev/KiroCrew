@@ -1,5 +1,5 @@
 /**
- * Integration test for src/apps/auto-research/ResearchLabPage.tsx.
+ * Integration test for ResearchLabPage.tsx.
  *
  * Exercises the major rendering paths end-to-end with a mocked api client.
  * Breadth over depth:
@@ -14,9 +14,9 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { store } from '../store'
+import { store } from '../../store'
 
-vi.mock('../api/client', () => ({
+vi.mock('../../api/client', () => ({
   api: {
     researchCampaigns: vi.fn(),
     researchCampaign: vi.fn(),
@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
 // Mock the hook module (same pattern as IssueRadarCrewEditor.test.tsx): the
 // real hook fetches through the provider context, which this harness does not
 // stand up. Non-vendor test ids only.
-vi.mock('../hooks/useAvailableModels', () => ({
+vi.mock('../../hooks/useAvailableModels', () => ({
   useAvailableModels: () => [
     { name: 'auto', description: '' },
     { name: 'test-model-x', description: 'Test model X' },
@@ -47,8 +47,8 @@ vi.mock('../hooks/useAvailableModels', () => ({
   ],
 }))
 
-import { api } from '../api/client'
-import ResearchLabPage from '../apps/auto-research/ResearchLabPage'
+import { api } from '../../api/client'
+import ResearchLabPage from './ResearchLabPage'
 
 function renderPage() {
   const queryClient = new QueryClient({

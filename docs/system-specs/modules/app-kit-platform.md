@@ -5144,6 +5144,7 @@ this repository without core changing.
 | `crew_runtime` | `CrewRuntime`: `runtime_dir`, `bundle_digest(dir)` | `cloud/microvm/recipe.py` | `RecipeRefused` (see `cloud.md`, "What the lane borrows from an app") |
 | `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
 | `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
+| `stopped_loop_tombstone` | `StoppedLoopTombstone`: `keeps_stopped_loop(slot_key, app_id)` | `dashboard/session_directive_apply_monitor.py` `_keeps_stopped_loop` (the stop of a legacy autonudge loop) | the loop row is removed, as for every other legacy loop (see `knowledge.md`, "Repository boundary") |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
 seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so

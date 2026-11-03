@@ -9,7 +9,7 @@ import {
   suggestedMaxCycles,
   type GrillNode,
   type GrillAction,
-} from '../apps/auto-research/grillTreeModel'
+} from './grillTreeModel'
 
 function node(over: Partial<GrillNode> & { id: string }): GrillNode {
   return {
