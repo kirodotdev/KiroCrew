@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     EnvFileWideEncodingError,
     _default_workspace_base,
+    _read_saved_workspace_dir,
     _workspace_dir_file,
     coerce_config_field,
     config_path,
@@ -564,11 +565,10 @@ def _setup_workspace_dir() -> None:
     platform_default = _default_workspace_base() / _WORKSPACE_DIR_NAME
     default = platform_default
     label = "Default"
-    if _workspace_dir_file().is_file():
-        configured = _workspace_dir_file().read_text(encoding="utf-8").strip()
-        if configured:
-            default = normalize_workspace_path(configured)
-            label = "Configured"
+    configured = _read_saved_workspace_dir(_workspace_dir_file())
+    if configured:
+        default = normalize_workspace_path(configured)
+        label = "Configured"
     print("── Workspace Directory ──\n")
     print("  LLM sessions and task output are stored in a workspace directory.")
     print(f"  {label}: {default}\n")

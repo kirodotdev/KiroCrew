@@ -126,15 +126,39 @@ def workspace_root(*, create: bool = True) -> Path:
     override = os.environ.get("KIROCREW_WORKSPACE")
     if override:
         return _resolve_workspace_root(normalize_workspace_path(override), create=create)
-    if _workspace_dir_file().is_file():
+    saved = _read_saved_workspace_dir(_workspace_dir_file())
+    if saved:
         try:
-            saved = _workspace_dir_file().read_text(encoding="utf-8").strip()
-            if saved:
-                return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
+            return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
         except OSError:
+            # A saved root that cannot be resolved or created (a component is a
+            # file, a permission refusal) falls back to the default, so a bad
+            # saved path never stops the gateway from starting.
             pass
     base = _default_workspace_base()
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME, create=create)
+
+
+def _read_saved_workspace_dir(path: Path) -> str:
+    """The path saved in *path* (``config_dir()/workspace_dir``), or ``""`` when there is none.
+
+    The file is one hand-editable line, so a leading UTF-8 BOM (an editor's "UTF-8
+    with BOM") is dropped: left in, ``str.strip`` keeps it and the path reads as
+    relative, which moves the workspace. A file that is not UTF-8 reads as no saved
+    path, with a warning, as an unreadable one does, rather than raising out of
+    every caller of :func:`workspace_root`. Each caller passes its own
+    ``_workspace_dir_file()``, so a test patching that name where it is used still
+    reaches the read.
+    """
+    if not path.is_file():
+        return ""
+    try:
+        return strip_utf8_bom(path.read_text(encoding="utf-8")).strip()
+    except UnicodeDecodeError:
+        logger.warning("%s is not UTF-8; using the default workspace", path)
+    except OSError:
+        pass
+    return ""
 
 
 def _session_work_dir(session_key: str | None) -> Path:
