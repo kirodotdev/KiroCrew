@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -8,6 +8,7 @@ import { PageHeader, StatCard, Card, CardTitle, EmptyState } from '../components
 import InfoTip from '../components/InfoTip'
 import NotificationFeed from '../components/notifications/NotificationFeed'
 import NotificationDetailPanel from '../components/notifications/NotificationDetailPanel'
+import { useFeedFocusOnDetailClose } from '../components/notifications/feedFocus'
 import type { Notification } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -81,12 +82,20 @@ export default function NotificationsPage() {
       openedTs.current = shownDetailTs
       return
     }
-    const ts = openedTs.current
     openedTs.current = null
-    if (!ts) return
-    const row = feedRef.current?.querySelector<HTMLElement>(`[data-ts="${CSS.escape(ts)}"] [role="button"]`)
-    row?.focus({ preventScroll: true })
   }, [shownDetailTs])
+  // Narrow layout only: Back, or a detail whose note is gone (Approve, Reject,
+  // a delete from another tab), returns focus to the opened row, else the
+  // first row, else the feed's first control. The wide layout's side detail
+  // is #29175.
+  const liveTs = useMemo(() => items.map(n => n.ts), [items])
+  useFeedFocusOnDetailClose(
+    shownDetailTs,
+    liveTs,
+    feedRef,
+    () => feedRef.current?.querySelector<HTMLElement>('input, button') ?? null,
+    () => true,
+  )
 
   // Auto-ack on select. Also disarms any still-pending deep link: an explicit
   // user tap outranks the URL, so a deep-link target that shows up later must
