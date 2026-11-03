@@ -671,13 +671,15 @@ class TestFormatAcpError:
         assert absent not in out
 
     @pytest.mark.parametrize(
-        ("message", "data", "request_id"),
+        ("message", "data", "request_id", "card"),
         [
-            # DispatchFailure / connection-reset shapes are transient too.
+            # DispatchFailure / connection-reset shapes are transient too, and
+            # take the connection card: the request never got a provider answer.
             pytest.param(
                 "x",
                 "DispatchFailure: ConnectionReset (request_id: bbbb2222-cccc-3333-dddd-444455556666)",
                 "bbbb2222-cccc-3333-dddd-444455556666",
+                "could not reach the model backend",
                 id="dispatch_failure_rewrite",
             ),
             # An HTTP/status-anchored 50x token IS a genuine transient signal.
@@ -685,14 +687,15 @@ class TestFormatAcpError:
                 "Internal error",
                 "upstream returned HTTP 503 (request_id: aaaa1111-bbbb-2222-cccc-333344445555)",
                 "aaaa1111-bbbb-2222-cccc-333344445555",
+                "transient error",
                 id="http_500_status_context_still_classifies_transient",
             ),
         ],
     )
-    def test_transient_rewrite_keeps_the_request_id(self, message, data, request_id):
+    def test_transient_rewrite_keeps_the_request_id(self, message, data, request_id, card):
         err = {"code": -32603, "message": message, "data": data}
         out = _format_acp_error(err)
-        assert "transient error" in out.lower()
+        assert card in out.lower()
         assert request_id in out
 
     def test_transient_branch_does_not_leak_credentials(self):

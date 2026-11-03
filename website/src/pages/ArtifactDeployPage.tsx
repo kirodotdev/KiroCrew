@@ -18,6 +18,7 @@ import { copyToClipboard, copyCode } from '../utils/clipboard'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 import { ApiError, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
@@ -607,7 +608,7 @@ export default function ArtifactDeployPage() {
                 <Plus size={10} /> {n}
               </Btn>
             ))}
-            {availableProfiles.length > 8 && <span>+{availableProfiles.length - 8} {i18nT('pages.artifactDeployPage.more')}</span>}
+            {availableProfiles.length > 8 && <span>{i18nT('pages.artifactDeployPage.more_count', { count: availableProfiles.length - 8, n: fmtNumber(availableProfiles.length - 8) })}</span>}
           </div>
         )}
         {showNewProfile && (

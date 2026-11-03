@@ -6030,7 +6030,6 @@
       "credentials_remain_with_their_source_rules_hooks": "क्रेडेंशियल अपने स्रोत के साथ ही रहते हैं। बातचीत का इतिहास, हुक, एजेंट परिभाषाएँ और किसी स्रोत की पर्सोना पहचान इंपोर्ट नहीं की जाती। आपके लिखे नियम और निर्देश उच्च-प्राथमिकता मेमोरी के रूप में इंपोर्ट किए जाते हैं।",
       "deduplicated": "डुप्लीकेट हटाए गए",
       "existing_kirocrew_setup_is_never_overwritten_mat": "मौजूदा {{productName}} सेटअप डिफ़ॉल्ट रूप से कभी ओवरराइट नहीं होता। मेल खाने वाले आइटम के डुप्लीकेट हटा दिए जाते हैं, और टकराव वाला आइटम आपका वर्तमान संस्करण ही रखता है, जब तक आप इंपोर्ट के बाद कुछ और न चुनें।",
-      "found": "मिले",
       "import_agent_setup": "एजेंट सेटअप इंपोर्ट करें",
       "import_all_your_supported_work_or_handpick_what": "अपना सारा समर्थित काम इम्पोर्ट करें या चुनें कि क्या लाना है।",
       "import_another": "दूसरा इंपोर्ट करें",
@@ -6040,7 +6039,6 @@
       "imported": "इंपोर्ट किया गया",
       "importing": "इंपोर्ट हो रहा है",
       "items_already_exist_with_different_content": "आइटम अलग सामग्री के साथ पहले से मौजूद हैं।",
-      "items_selected": "आइटम चुने गए",
       "keep_both": "दोनों रखें",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} को इस गेटवे होस्ट पर एजेंट सेटअप मिला। समीक्षा के लिए स्रोत चुनें।",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} को इस गेटवे होस्ट पर इंपोर्ट करने योग्य कोई समर्थित सेटअप नहीं मिला।",
@@ -6072,7 +6070,14 @@
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।",
       "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}",
       "source_item_count_one": "{{name}}, {{count}} आइटम",
-      "source_item_count_other": "{{name}}, {{count}} आइटम"
+      "source_item_count_other": "{{name}}, {{count}} आइटम",
+      "category_count_one": "{{count}} श्रेणी",
+      "category_count_other": "{{count}} श्रेणियाँ",
+      "source_categories": "{{name}} की श्रेणियाँ",
+      "items_selected_count_one": "{{count}} आइटम चुना गया",
+      "items_selected_count_other": "{{count}} आइटम चुने गए",
+      "found_count_one": "{{count}} मिला",
+      "found_count_other": "{{count}} मिले"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "सहेजा गया, लेकिन यह {{productName}} एजेंट कॉन्फ़िगरेशन अपडेट नहीं कर सका, इसलिए नई चैट पुरानी सेटिंग ही रखेंगी। कारण जानने के लिए 'लॉग' पेज खोलें।"
@@ -8466,6 +8471,7 @@
       "title_md": "मध्यम चौड़ाई"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Auto पर रीज़निंग प्रयास लागू नहीं होता: बैकएंड खुद मॉडल चुनता है और जब तक तुम ऊपर कोई खास मॉडल नहीं चुनते, कोई प्रयास स्तर नहीं लेता।",
       "default_with_level": "डिफ़ॉल्ट · {{level}}",
       "effort": "प्रयास",
       "effort_help": "रीज़निंग प्रयास तय करता है कि मॉडल उत्तर देने से पहले कितनी देर सोचेगा। उच्च प्रयास यानी कठिन समस्याओं पर ज़्यादा देर तक सोचना (धीमा, पर बेहतर उत्तर); कम प्रयास तेज़ रहता है। प्रति-सत्र ओवरराइड बंद करने पर सेटिंग्स → चैट में सेट किया गया डिफ़ॉल्ट लागू होता है, या डिफ़ॉल्ट सेट न होने पर मॉडल अपना चुनाव करता है। यह सेटिंग केवल उन्हीं मॉडलों में मिलती है जो रीज़निंग प्रयास का समर्थन करते हैं।",
@@ -10618,6 +10624,20 @@
       "grant_role_user": "{{title}}: तुम्हारे अपने संदेश भी, केवल जवाब नहीं",
       "grant_role_assistant": "{{title}}: असिस्टेंट के जवाब",
       "grant_format_markdown": "{{title}}: संदेश का Markdown, लिंक पतों सहित"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} के लिंक {{app}} में खोलो?",
+      "ask_body": "{{app}} को केवल नीचे दिखाया गया लिंक मिलेगा।",
+      "always": "{{host}} के लिए हमेशा ऐसा करो",
+      "open_in_app": "{{app}} में खोलो",
+      "open_in_browser": "ब्राउज़र में खोलो",
+      "opening": "{{app}} में खुल रहा है…",
+      "failed": "{{app}} यह लिंक नहीं खोल सका।",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "कॉपी करो",
+      "offer_open": "{{host}} खोलो",
+      "copy_failed": "कॉपी नहीं हो सका। ऐप में टेक्स्ट चुनो और खुद कॉपी करो।",
+      "more_actions": "और कार्रवाइयाँ"
     }
   },
   "hooks": {
@@ -10940,6 +10960,7 @@
       "install_on_your_mac": "अपने Mac पर इंस्टॉल करें",
       "installed": "इंस्टॉल किया गया:",
       "installed_version": "इंस्टॉल किया गया (v{{version}})",
+      "more_actions": "{{name}} के लिए और एक्शन",
       "installing": "इंस्टॉल हो रहा है…",
       "keep_app_data": "ऐप डेटा रखें",
       "lifecycle": "| लाइफ़साइकल:",
@@ -11002,7 +11023,13 @@
       "grants_reconsent_link_patterns": "टेक्स्ट पैटर्न: ऐप के होवर कार्ड को चैट का वह टेक्स्ट देखने देते हैं जो इन पैटर्न से मेल खाता है।",
       "grants_reconsent_link_full_url": "पूरे लिंक पते: ऐप के होवर कार्ड लिंक में ? या # के बाद का हिस्सा भी देखते हैं, जिसमें साइन-इन कोड हो सकता है।",
       "grants_reconsent_message_actions": "संदेश कार्रवाइयाँ: चैट संदेशों पर ऐप के मेनू आइटम क्या पढ़ सकते हैं।",
-      "grants_approved": "मंज़ूर: {{entries}}। ऐप अब इनका उपयोग कर सकता है।"
+      "grants_approved": "मंज़ूर: {{entries}}। ऐप अब इनका उपयोग कर सकता है।",
+      "grants_reconsent_link_open_hosts": "खोले गए लिंक: चैट संदेश में इन साइटों के किसी लिंक पर क्लिक करने पर ऐप को उसे खोलने देता है।",
+      "grants_reconsent_link_open_full_url": "खोले गए लिंक के पूरे पते: ऐप लिंक में ? या # के बाद का भाग भी देखता है, जिसमें साइन-इन कोड हो सकता है।",
+      "link_open_remembered": "याद रखे गए लिंक विकल्प",
+      "link_open_choice_app": "{{name}} में खुलता है",
+      "link_open_choice_browser": "तुम्हारे ब्राउज़र में खुलता है",
+      "link_open_forget": "भूल जाओ"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",
@@ -11166,7 +11193,6 @@
       "make_sure_the_gateway_s": "। सुनिश्चित करें कि gateway का",
       "make_the_default_profile": "{{name}} को डिफ़ॉल्ट प्रोफ़ाइल बनाएँ",
       "missing_sso_start_url_sso_region": "अनुपलब्ध … sso_start_url, sso_region",
-      "more": "अन्य",
       "never_boto3_so_credential_resolution_stays_in_yo": "(कभी boto3 नहीं),\n              ताकि क्रेडेंशियल का समाधान आपके OS क्रेडेंशियल स्टोर में ही रहे। {{productName}} कभी IAM नहीं लिखता और\n              खातों, उपयोगकर्ताओं या भूमिकाओं का प्रबंधन कभी नहीं करता — जनरेट की गई न्यूनतम-विशेषाधिकार पॉलिसी आप स्वयं लागू करते हैं।",
       "never_credentials": "— क्रेडेंशियल कभी नहीं)",
       "new_profile": "नई प्रोफ़ाइल",
@@ -11262,7 +11288,9 @@
       "col_actions": "कार्रवाइयाँ",
       "col_type": "प्रकार",
       "col_url": "लिंक",
-      "col_cost": "लागत"
+      "col_cost": "लागत",
+      "more_count_one": "+{{n}} अन्य",
+      "more_count_other": "+{{n}} अन्य"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} पर प्रकाशित",
@@ -12279,7 +12307,6 @@
         "aria_collapse_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची समेटें",
         "aria_expand_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची विस्तृत करें",
         "current_task": "मौजूदा टास्क",
-        "more": "और…",
         "task_completion": "कार्य पूर्णता",
         "aria_mark_done": "पूर्ण चिह्नित करो: {{task}}। एजेंट इसे दोबारा नहीं करेगा। पलटने के लिए फिर क्लिक करो।",
         "aria_mark_not_done": "अपूर्ण चिह्नित करो: {{task}}। एजेंट इसे अभी बाकी मानेगा। पलटने के लिए फिर क्लिक करो।",
@@ -12293,7 +12320,9 @@
         "set_by_you_done": "तुमने इसे हो गया चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "set_by_you_open": "तुमने इसे नहीं हुआ चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "sending": "भेजा जा रहा है",
-        "done_of_total": "{{total}} में से {{done}}"
+        "done_of_total": "{{total}} में से {{done}}",
+        "more_count_one": "+ {{n}} और…",
+        "more_count_other": "+ {{n}} और…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "मॉडल की रीज़निंग समेटें",
@@ -12508,7 +12537,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "स्नैपशॉट लोड नहीं हो सका:",
-        "events": "इवेंट"
+        "events_count_one": "{{n}} इवेंट",
+        "events_count_other": "{{n}} इवेंट"
       },
       "pins": {
         "pinned_messages": "पिन किए गए संदेश",
@@ -13822,6 +13852,9 @@
       "waiting_for_approval_address": "मंज़ूरी के पते की प्रतीक्षा… एजेंट के अगली बार कनेक्ट होने पर यह यहाँ दिखेगा — अभी प्राधिकरण शुरू करने के लिए चैट में कोई संदेश भेजें।",
       "needs_configuration": "कॉन्फ़िगरेशन ज़रूरी",
       "needs_configuration_help": "{{provider}} को एक बार सेटअप की ज़रूरत है। \"OAuth ऐप कॉन्फ़िगर करें\" एक गाइडेड सेटिंग्स पेज खोलता है; वहाँ सेव करने तक कुछ नहीं बदलता, और तुम इसे बाद में हटा भी सकते हो। यह {{provider}} पर ऐप रजिस्टर करने और उसकी client ID व secret भरने में तुम्हारा मार्गदर्शन करता है।",
+      "backend_oauth_caveat": "Connect फिर भी पूरा होता है, और {{provider}} साइन-इन उन चैट के लिए सहेजा जाता है जो इसे सपोर्ट करती हैं। कुछ चैट अभी इस तरह का साइन-इन इस्तेमाल नहीं कर सकतीं, इसलिए वहाँ इसके टूल शायद न चलें।",
+      "chat_use_label": "चैट में",
+      "chat_use_lacks_oauth": "उन चैट के लिए सहेजा गया जो इसे सपोर्ट करती हैं। कुछ चैट अभी इस तरह का साइन-इन इस्तेमाल नहीं कर सकतीं।",
       "configure_oauth_app": "OAuth ऐप कॉन्फ़िगर करो",
       "prerequisite_github": "GitHub डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए GitHub OAuth ऐप का उपयोग करता है। GitHub का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
       "prerequisite_asana": "Asana डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Asana MCP ऐप का उपयोग करता है। Asana का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।"
@@ -14873,7 +14906,6 @@
         "search_explore_and_manage_your_knowledge_base": "अपने ज्ञान आधार को खोजें, देखें और प्रबंधित करें",
         "search_knowledge_press_enter_to_search": "ज्ञान खोजें... (खोजने के लिए Enter दबाएं)",
         "select_all": "सभी चुनें",
-        "selected": "चयनित",
         "sources_tab": "स्रोत",
         "status_active": "सक्रिय",
         "status_archived": "संग्रहित",
@@ -14896,7 +14928,9 @@
         "entity_items_load_failed": "इस एंटिटी के आइटम लोड नहीं हो सके",
         "error_no_reason": "अनुरोध बिना किसी कारण के विफल हुआ।",
         "delete_items_permanently_one": "{{count}} आइटम हमेशा के लिए हटाओ?",
-        "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?"
+        "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?",
+        "selected_count_one": "{{count}} चुना गया",
+        "selected_count_other": "{{count}} चुने गए"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",
@@ -14977,7 +15011,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "अनदेखा करने के पैटर्न (हर लाइन में एक, उदा. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "सबडायरेक्टरी शामिल करें (रिकर्सिव)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "इंडेक्सिंग स्रोत के आकार के अनुपात में Kiro अनुरोध खर्च करती है, और नज़र रखे जा रहे फ़ोल्डर में फ़ाइलें आते रहने पर खर्च एक ही बार में नहीं, समय के साथ फैलकर लगता रहता है।",
-        "items": "आइटम",
         "kb_ids_comma_separated_id_or_arn": "अल्पविराम से अलग, उदा. KXABC12345 या arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "पूरा करने में ~{{calls}} Kiro अनुरोध और लगेंगे",
         "knowledge_base_ids": "नॉलेज बेस ID",
@@ -15048,7 +15081,9 @@
         "enter_region_to_add": "यह स्रोत जोड़ने के लिए AWS Region दर्ज करो।",
         "profile_blank_uses_default_chain": "डिफ़ॉल्ट AWS क्रेडेंशियल उपयोग करने के लिए खाली छोड़ें।",
         "remove_this_live_source": "क्या इस नॉलेज बेस स्रोत को हटाना है? स्थानीय रूप से कुछ भी संग्रहीत नहीं है; नॉलेज बेस स्वयं अप्रभावित रहेगा।",
-        "region_example_placeholder": "उदा. us-east-1"
+        "region_example_placeholder": "उदा. us-east-1",
+        "items_count_one": "{{n}} आइटम",
+        "items_count_other": "{{n}} आइटम"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15077,6 +15112,8 @@
       "by_category": "श्रेणी के अनुसार",
       "clear": "साफ़ करें",
       "clear_old_caches": "स्क्रॉल कैश साफ़ करो",
+      "delete_all_keys_one": "{{count}} कुंजी हटाओ",
+      "delete_all_keys_other": "सभी {{count}} कुंजियां हटाओ",
       "delete_cached_scroll_positions_from_old_sessions": "सभी सत्रों की कैश की गई पंक्ति ऊंचाइयां और सहेजी गई पठन स्थितियां हटाओ (सुरक्षित — स्क्रॉल करने पर फिर बन जाती हैं)",
       "delete_key": "कुंजी हटाएं",
       "export": "एक्सपोर्ट करें",
@@ -15569,7 +15606,6 @@
         "status": "स्थिति",
         "tool_list_read_from_the_package_s_declaration_th": "टूल सूची पैकेज की घोषणा से पढ़ी गई है; सर्वर के शुरू होने की पुष्टि के लिए उसे चलाया नहीं गया।",
         "tools": "टूल",
-        "tools_2": "टूल",
         "undo": "अनडू",
         "uninstall": "अनइंस्टॉल करें",
         "unknown": "अज्ञात",
@@ -15618,7 +15654,9 @@
         "temp_refusal_sealed": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि यह केवल-पढ़ने योग्य रनटाइम फ़ोल्डर के अंदर है। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
         "temp_refusal_unclassifiable": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि इसके वास्तविक स्थान की पुष्टि नहीं हो सकी। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
         "temp_refusal_check_failed": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि स्थान की जाँच विफल रही। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
-        "mcp_deny_spared": "यह {{productName}} का अपना सर्वर है, इसलिए {{name}} पर यहाँ एक टूल बंद करने से सिर्फ़ वही टूल रुकता है।"
+        "mcp_deny_spared": "यह {{productName}} का अपना सर्वर है, इसलिए {{name}} पर यहाँ एक टूल बंद करने से सिर्फ़ वही टूल रुकता है।",
+        "tools_count_one": "{{n}} टूल",
+        "tools_count_other": "{{n}} टूल"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",
@@ -17481,6 +17519,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "कॉन्टेक्स्ट प्रोग्रेस बार के आगे उपयोग किए गए और कुल टोकन दिखाएँ",
         "e_g_solutions_architect_sre_founder": "जैसे सॉल्यूशंस आर्किटेक्ट, SRE, फ़ाउंडर",
         "effort_default_needs_reasoning_model": "डिफ़ॉल्ट रूप से मॉडल उत्तर देने से पहले कितनी देर सोचते हैं। सिर्फ़ रीज़निंग-सक्षम मॉडल पर लागू होता है, इसलिए ऊपर चुने गए मॉडल पर इसका कोई असर नहीं है।",
+        "effort_default_off_on_auto": "डिफ़ॉल्ट रूप से मॉडल उत्तर देने से पहले कितनी देर सोचते हैं। जब तक डिफ़ॉल्ट मॉडल Auto है, यह लागू नहीं होता, क्योंकि बैकएंड खुद मॉडल चुनता है और कोई खास मॉडल चुने जाने तक कोई प्रयास स्तर नहीं लेता।",
         "effort_needs_reasoning_model": "सिर्फ़ रीज़निंग-सक्षम मॉडल पर लागू होता है, इसलिए ऊपर चुने गए मॉडल पर इसका कोई असर नहीं है।",
         "enter_for_newline": "नई लाइन के लिए Enter",
         "enter_sends": "Enter भेजता है",
@@ -18304,7 +18343,6 @@
         "block_list_rules": "ब्लॉक-सूची · {{rules}}",
         "built_in_rules_enforced_note": "तुम्हारे ऑप्ट-आउट और किसी भी नीति पिन के बाद, अभी {{total}} में से {{enabled}} अंतर्निहित नियम लागू हैं।",
         "cancel": "रद्द करें",
-        "categories": "श्रेणियाँ ·",
         "click_any_control_to_see_exactly_what_it_covers": "यह देखने के लिए कि कोई नियंत्रण ठीक क्या कवर करता है, उस पर क्लिक करें।",
         "collapse_all": "सभी संक्षिप्त करें",
         "collapse_category_rules": "{{category}} नियम समेटें",
@@ -18440,7 +18478,6 @@
         "rail_until_restart": "रीस्टार्ट तक",
         "rail_until_time": "{{time}} तक",
         "resolved_as_your_organization_s_policy_intersect": ", जो आपके संगठन की नीति और होस्ट प्रोफ़ाइल के प्रतिच्छेदन के रूप में हल किया गया है। किसी विशिष्ट सरफ़ेस, ऐप या टास्क (cron, Slack, सबएजेंट) से बंधी संकरी प्रोफ़ाइलें रनटाइम पर किसी स्कोप को और कड़ा कर सकती हैं। केवल-पठनीय — सीमा इसमें लिखी जाती है:",
-        "rules": "नियम",
         "search_rules_placeholder": "नियम, पैटर्न, श्रेणियाँ खोजें…",
         "section_group_enforced": "अनिवार्य",
         "section_group_reference": "संदर्भ",
@@ -18577,7 +18614,13 @@
         "redaction_revoke_failed": "वह होस्ट रद्द नहीं हो सका। वह अब भी अनुमत है।",
         "redaction_no_allowed_hosts": "कोई होस्ट अनुमत नहीं है। हर लिंक हर जाँच से गुज़रता है।",
         "redaction_workspace": "वर्कस्पेस: {{workspace}}",
-        "redaction_revoke": "रद्द करो"
+        "redaction_revoke": "रद्द करो",
+        "rules_matched_one": "{{matched}} / {{n}} नियम",
+        "rules_matched_other": "{{matched}} / {{n}} नियम",
+        "categories_count_one": "{{n}} श्रेणी ·",
+        "categories_count_other": "{{n}} श्रेणियाँ ·",
+        "rules_count_one": "{{n}} नियम",
+        "rules_count_other": "{{n}} नियम"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "चैट-टैब स्विचिंग को Option+अंक के बजाय Ctrl+अंक से बाइंड करें। जब किसी टेक्स्ट फ़ील्ड पर फ़ोकस हो, तब Option+अंक चैट नहीं बदलता।",
@@ -19761,19 +19804,19 @@
       "written_by_the": "लिखा गया"
     },
     "worldsPage": {
-      "active": "सक्रिय,",
-      "agent_one": "{{count}} एजेंट",
-      "agent_other": "{{count}} एजेंट",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "पॉपआउट पर फ़ोकस करें",
       "hide_controls": "नियंत्रण छिपाएँ",
-      "open": "खाली",
       "playing_in_popout_window": "पॉपआउट विंडो में चल रहा है",
       "pop_out_to_separate_window": "अलग विंडो में पॉप आउट करें",
-      "present": "मौजूद,",
       "show_controls": "नियंत्रण दिखाएँ",
-      "slot_one": "{{count}} स्लॉट",
-      "slot_other": "{{count}} स्लॉट"
+      "agents_present_one": "{{n}} एजेंट मौजूद",
+      "agents_present_other": "{{n}} एजेंट मौजूद",
+      "agents_active_one": "{{n}} सक्रिय",
+      "agents_active_other": "{{n}} सक्रिय",
+      "slots_open_one": "{{n}} स्लॉट खाली",
+      "slots_open_other": "{{n}} स्लॉट खाली",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",

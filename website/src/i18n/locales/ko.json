@@ -5879,7 +5879,6 @@
       "credentials_remain_with_their_source_rules_hooks": "자격 증명은 원래 소스에 남습니다. 대화 기록·훅·에이전트 정의·소스의 페르소나 신원은 가져오지 않습니다. 작성한 규칙과 지침은 우선순위가 높은 메모리로 가져옵니다.",
       "deduplicated": "중복 제거됨",
       "existing_kirocrew_setup_is_never_overwritten_mat": "기존 {{productName}} 설정은 기본적으로 덮어쓰지 않습니다. 일치하는 항목은 중복 제거되며, 충돌하는 항목은 가져온 뒤 달리 선택하지 않는 한 현재 버전을 유지합니다.",
-      "found": "발견됨",
       "import_agent_setup": "에이전트 설정 가져오기",
       "import_all_your_supported_work_or_handpick_what": "지원되는 작업을 모두 가져오거나 가져올 항목을 직접 고르세요.",
       "import_another": "다른 항목 가져오기",
@@ -5889,7 +5888,6 @@
       "imported": "가져옴",
       "importing": "가져오는 중",
       "items_already_exist_with_different_content": "개 항목이 다른 콘텐츠로 이미 존재합니다.",
-      "items_selected": "개 항목 선택됨",
       "keep_both": "둘 다 유지",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}}이(가) 이 게이트웨이 호스트에서 에이전트 설정을 찾았습니다. 검토할 소스를 선택하세요.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}}은(는) 이 게이트웨이 호스트에서 가져올 지원되는 설정을 찾지 못했습니다.",
@@ -5920,7 +5918,11 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 {{productName}} 설정은 영향을 받지 않습니다.",
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다.",
       "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계",
-      "source_item_count_other": "{{name}}, 항목 {{count}}개"
+      "source_item_count_other": "{{name}}, 항목 {{count}}개",
+      "category_count_other": "카테고리 {{count}}개",
+      "source_categories": "{{name}} 카테고리",
+      "items_selected_count_other": "항목 {{count}}개 선택됨",
+      "found_count_other": "{{count}}개 발견됨"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "저장했지만 이 {{productName}}에서 에이전트 구성을 업데이트하지 못해 새 채팅은 이전 설정을 사용합니다. 이유는 '로그' 페이지에서 확인하세요."
@@ -8313,6 +8315,7 @@
       "title_md": "중간 너비"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Auto에서는 추론 강도가 적용되지 않습니다. 백엔드가 모델을 고르며, 위에서 특정 모델을 고를 때까지 강도 수준을 받지 않습니다.",
       "default_with_level": "기본값 · {{level}}",
       "effort": "강도",
       "effort_help": "추론 강도는 모델이 답변하기 전에 생각하는 시간을 정합니다. 높을수록 어려운 문제를 더 오래 추론하므로 느리지만 답변 품질이 좋아지고, 낮을수록 빠릅니다. 세션별 재정의를 끄면 설정 → 채팅의 기본값으로 돌아가며, 기본값이 없으면 모델 자체의 선택을 사용합니다. 추론 강도를 지원하는 모델에서만 이 설정을 제공합니다.",
@@ -10443,6 +10446,20 @@
       "grant_role_user": "{{title}}: 답장뿐 아니라 내 메시지도",
       "grant_role_assistant": "{{title}}: 어시스턴트 답장",
       "grant_format_markdown": "{{title}}: 링크 주소를 포함한 메시지의 Markdown"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} 링크를 {{app}}에서 열까요?",
+      "ask_body": "{{app}}은(는) 아래에 표시된 링크만 받습니다.",
+      "always": "{{host}}에 대해 항상 이렇게 하기",
+      "open_in_app": "{{app}}에서 열기",
+      "open_in_browser": "브라우저에서 열기",
+      "opening": "{{app}}에서 여는 중…",
+      "failed": "{{app}}이(가) 이 링크를 열지 못했습니다.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "복사",
+      "offer_open": "{{host}} 열기",
+      "copy_failed": "복사하지 못했습니다. 앱에서 텍스트를 선택해 직접 복사하세요.",
+      "more_actions": "작업 더 보기"
     }
   },
   "hooks": {
@@ -10763,6 +10780,7 @@
       "install_on_your_mac": "Mac에 설치",
       "installed": "설치됨:",
       "installed_version": "설치됨(v{{version}})",
+      "more_actions": "{{name}}의 추가 작업",
       "installing": "설치 중…",
       "keep_app_data": "앱 데이터 유지",
       "lifecycle": "| 수명 주기:",
@@ -10825,7 +10843,13 @@
       "grants_reconsent_link_patterns": "텍스트 패턴: 앱의 호버 카드가 이 패턴과 일치하는 채팅 텍스트를 볼 수 있게 합니다.",
       "grants_reconsent_link_full_url": "전체 링크 주소: 앱의 호버 카드가 링크에서 ? 또는 # 뒤의 부분도 봅니다. 이 부분에는 로그인 코드가 들어 있을 수 있습니다.",
       "grants_reconsent_message_actions": "메시지 작업: 채팅 메시지에 있는 앱 메뉴 항목이 읽을 수 있는 내용.",
-      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
+      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
+      "grants_reconsent_link_open_hosts": "여는 링크: 채팅 메시지에서 이 사이트로 가는 링크를 클릭하면 앱이 그 링크를 열 수 있습니다.",
+      "grants_reconsent_link_open_full_url": "여는 링크의 전체 주소: 앱이 링크의 ? 또는 # 뒤 부분도 봅니다. 여기에 로그인 코드가 들어 있을 수 있습니다.",
+      "link_open_remembered": "기억된 링크 선택",
+      "link_open_choice_app": "{{name}}에서 열림",
+      "link_open_choice_browser": "브라우저에서 열림",
+      "link_open_forget": "지우기"
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -10982,7 +11006,6 @@
       "make_sure_the_gateway_s": ". 게이트웨이의",
       "make_the_default_profile": "{{name}}을(를) 기본 프로필로 설정",
       "missing_sso_start_url_sso_region": "누락 … sso_start_url, sso_region",
-      "more": "더 보기",
       "never_boto3_so_credential_resolution_stays_in_yo": "(boto3는 사용하지 않습니다).\n 따라서 자격 증명 확인은 OS 자격 증명 저장소 안에서만 이루어집니다. {{productName}}은(는) IAM을 쓰지 않으며\n 계정, 사용자, 역할을 관리하지 않습니다 — 생성된 최소 권한 정책은 직접 적용하세요.",
       "never_credentials": "— 자격 증명은 저장하지 않음)",
       "new_profile": "새 프로필",
@@ -11076,7 +11099,8 @@
       "col_actions": "작업",
       "col_type": "유형",
       "col_url": "링크",
-      "col_cost": "비용"
+      "col_cost": "비용",
+      "more_count_other": "+{{n}}개 더"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}에 게시됨",
@@ -12055,7 +12079,6 @@
         "aria_collapse_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 접기",
         "aria_expand_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 펼치기",
         "current_task": "현재 작업",
-        "more": "개 더…",
         "task_completion": "작업 완료 현황",
         "aria_mark_done": "완료로 표시: {{task}}. 에이전트는 다시 하지 않습니다. 다시 클릭하면 되돌립니다.",
         "aria_mark_not_done": "미완료로 표시: {{task}}. 에이전트는 아직 남은 일로 봅니다. 다시 클릭하면 되돌립니다.",
@@ -12069,7 +12092,8 @@
         "set_by_you_done": "당신이 완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
         "set_by_you_open": "당신이 미완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
         "sending": "전송 중",
-        "done_of_total": "{{done}} / {{total}}"
+        "done_of_total": "{{done}} / {{total}}",
+        "more_count_other": "+ {{n}}개 더…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "모델 추론 접기",
@@ -12279,7 +12303,7 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "스냅샷을 불러올 수 없습니다:",
-        "events": "이벤트"
+        "events_count_other": "이벤트 {{n}}개"
       },
       "pins": {
         "pinned_messages": "Pinned messages",
@@ -13550,6 +13574,9 @@
       "waiting_for_approval_address": "승인 주소를 기다리는 중… 에이전트가 다음에 연결할 때 여기에 표시됩니다 — 지금 인증을 시작하려면 아무 채팅 메시지나 보내세요.",
       "needs_configuration": "설정 필요",
       "needs_configuration_help": "{{provider}}은(는) 최초 한 번만 설정하면 됩니다. \"OAuth 앱 구성\"을 누르면 안내형 설정 페이지가 열립니다. 거기서 저장하기 전까지는 아무것도 바뀌지 않으며, 나중에 제거할 수도 있습니다. {{provider}}에 앱을 등록하고 클라이언트 ID와 시크릿을 입력하는 과정을 안내합니다.",
+      "backend_oauth_caveat": "Connect는 그대로 완료되며, {{provider}} 로그인은 이를 지원하는 채팅을 위해 저장됩니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없어서 그곳에서는 도구가 작동하지 않을 수 있습니다.",
+      "chat_use_label": "채팅에서",
+      "chat_use_lacks_oauth": "지원하는 채팅을 위해 저장되었습니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없습니다.",
       "configure_oauth_app": "OAuth 앱 설정",
       "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
       "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
@@ -14588,7 +14615,6 @@
         "search_explore_and_manage_your_knowledge_base": "지식 베이스를 검색하고 탐색하고 관리하세요",
         "search_knowledge_press_enter_to_search": "지식 검색… (Enter로 검색)",
         "select_all": "모두 선택",
-        "selected": "선택됨",
         "sources_tab": "소스",
         "status_active": "활성",
         "status_archived": "보관됨",
@@ -14606,7 +14632,8 @@
         "bulk_delete_failed": "선택한 항목을 삭제할 수 없습니다",
         "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
         "error_no_reason": "이유 없이 요청이 실패했습니다.",
-        "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?"
+        "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?",
+        "selected_count_other": "{{count}}개 선택됨"
       },
       "itemCard": {
         "copied": "복사했습니다!",
@@ -14686,7 +14713,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "무시 패턴 (한 줄에 하나, 예: .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "하위 디렉터리 포함 (재귀)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "인덱싱은 각 소스의 크기에 비례해 Kiro 요청을 사용하며, 감시 중인 폴더는 파일이 추가되는 동안 비용이 한 번에 청구되지 않고 시간에 걸쳐 분산되는 형태로 계속 요청을 소비합니다.",
-        "items": "항목",
         "kb_ids_comma_separated_id_or_arn": "쉼표로 구분, 예: KXABC12345 또는 arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "완료까지 Kiro 요청 약 {{calls}}개",
         "knowledge_base_ids": "지식 기반 ID",
@@ -14756,7 +14782,8 @@
         "enter_region_to_add": "이 소스를 추가하려면 AWS 리전을 입력하세요.",
         "profile_blank_uses_default_chain": "비워 두면 기본 AWS 자격 증명을 사용합니다.",
         "remove_this_live_source": "이 지식 기반 소스를 제거하시겠습니까? 로컬에 저장된 항목은 없으며, 지식 기반 자체는 변경되지 않습니다.",
-        "region_example_placeholder": "예: us-east-1"
+        "region_example_placeholder": "예: us-east-1",
+        "items_count_other": "{{n}}개 항목"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -14785,6 +14812,7 @@
       "by_category": "카테고리별",
       "clear": "지우기",
       "clear_old_caches": "스크롤 캐시 지우기",
+      "delete_all_keys_other": "키 {{count}}개 모두 삭제",
       "delete_cached_scroll_positions_from_old_sessions": "모든 세션의 캐시된 행 높이와 저장된 읽기 위치를 삭제합니다 (안전함 — 스크롤 시 다시 생성됩니다)",
       "delete_key": "키 삭제",
       "export": "내보내기",
@@ -15265,7 +15293,6 @@
         "status": "상태",
         "tool_list_read_from_the_package_s_declaration_th": "도구 목록은 패키지의 선언에서 읽었습니다. 서버가 실제로 시작되는지 확인하지 않았습니다.",
         "tools": "도구",
-        "tools_2": "도구",
         "undo": "실행 취소",
         "uninstall": "제거",
         "unknown": "알 수 없음",
@@ -15313,7 +15340,8 @@
         "temp_refusal_sealed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 읽기 전용 런타임 폴더 안에 있습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
         "temp_refusal_unclassifiable": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 실제 위치를 확인할 수 없습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
         "temp_refusal_check_failed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 위치 확인에 실패했습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
-        "mcp_deny_spared": "이 서버는 {{productName}}의 자체 서버이므로 {{name}}에서 여기의 도구 하나를 끄면 그 도구만 멈춥니다."
+        "mcp_deny_spared": "이 서버는 {{productName}}의 자체 서버이므로 {{name}}에서 여기의 도구 하나를 끄면 그 도구만 멈춥니다.",
+        "tools_count_other": "{{n}}개 도구"
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",
@@ -17128,6 +17156,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "컨텍스트 진행 표시줄 옆에 사용된 토큰과 전체 토큰을 표시합니다",
         "e_g_solutions_architect_sre_founder": "예: 솔루션 아키텍트, SRE, 창업자",
         "effort_default_needs_reasoning_model": "모델이 기본적으로 답변 전에 생각하는 시간입니다. 추론 가능한 모델에만 적용되므로 위에서 선택한 모델에는 영향이 없습니다.",
+        "effort_default_off_on_auto": "모델이 기본적으로 답변 전에 생각하는 시간입니다. 기본 모델이 Auto인 동안에는 적용되지 않습니다. 백엔드가 모델을 고르며, 특정 모델을 선택할 때까지 강도 수준을 받지 않기 때문입니다.",
         "effort_needs_reasoning_model": "추론 가능한 모델에만 적용되므로 위에서 선택한 모델에는 영향이 없습니다.",
         "enter_for_newline": "Enter로 줄바꿈",
         "enter_sends": "Enter로 전송",
@@ -17937,7 +17966,6 @@
         "block_list_rules": "차단 목록 · {{rules}}",
         "built_in_rules_enforced_note": "사용자의 해제 설정과 정책 고정을 반영해 현재 기본 규칙 {{total}}개 중 {{enabled}}개가 적용되고 있습니다.",
         "cancel": "취소",
-        "categories": "카테고리 ·",
         "click_any_control_to_see_exactly_what_it_covers": "각 항목을 클릭하면 어떤 범위를 다루는지 정확히 확인할 수 있습니다.",
         "collapse_all": "모두 접기",
         "collapse_category_rules": "{{category}} 규칙 접기",
@@ -18073,7 +18101,6 @@
         "rail_until_restart": "재시작할 때까지",
         "rail_until_time": "{{time}}까지",
         "resolved_as_your_organization_s_policy_intersect": ", 조직의 정책과 호스트 프로필의 교집합으로 결정됩니다. 특정 표면·앱·작업(cron, Slack, 서브에이전트)에 연결된 더 좁은 프로필은 런타임에 범위를 더 좁힐 수 있습니다. 읽기 전용 — 상한은 다음에서 작성됩니다",
-        "rules": "규칙",
         "search_rules_placeholder": "규칙·패턴·카테고리 검색…",
         "section_group_enforced": "적용 중",
         "section_group_reference": "참고",
@@ -18210,7 +18237,10 @@
         "redaction_revoke_failed": "그 호스트를 취소하지 못했습니다. 여전히 허용된 상태입니다.",
         "redaction_no_allowed_hosts": "허용된 호스트가 없습니다. 모든 링크가 모든 검사를 거칩니다.",
         "redaction_workspace": "워크스페이스: {{workspace}}",
-        "redaction_revoke": "취소"
+        "redaction_revoke": "취소",
+        "rules_matched_other": "{{matched}} / {{n}}개 규칙",
+        "categories_count_other": "{{n}}개 카테고리 ·",
+        "rules_count_other": "{{n}}개 규칙"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "채팅 탭 전환을 Option+숫자 대신 Ctrl+숫자에 할당합니다. 텍스트 필드에 포커스가 있으면 Option+숫자로 채팅이 전환되지 않습니다.",
@@ -19387,17 +19417,16 @@
       "written_by_the": "작성 주체는"
     },
     "worldsPage": {
-      "active": "활동 중,",
-      "agent_other": "에이전트 {{count}}개",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "팝아웃 포커스",
       "hide_controls": "컨트롤 숨기기",
-      "open": "빈 시간",
       "playing_in_popout_window": "팝아웃 창에서 재생 중",
       "pop_out_to_separate_window": "별도 창으로 팝아웃",
-      "present": "참석,",
       "show_controls": "컨트롤 표시",
-      "slot_other": "슬롯 {{count}}개"
+      "agents_present_other": "에이전트 {{n}}개 참석",
+      "agents_active_other": "{{n}}개 활동 중",
+      "slots_open_other": "빈 슬롯 {{n}}개",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "컨트롤 숨기기",

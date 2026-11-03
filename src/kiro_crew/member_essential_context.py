@@ -326,7 +326,11 @@ def _read(path: Path, root: Path) -> str:
                 f"Essential source {path}: missing, unreadable, or outside the admitted "
                 "document root"
             )
-        return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        # utf-8-sig drops one leading byte-order mark ("UTF-8 with BOM" editors).
+        # Left in, the mark sits in front of the frontmatter fence, the column-0
+        # grammar finds no block, and a manual or fileMatch file reads as always.
+        # A file without the mark decodes exactly as with plain utf-8.
+        return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
     except _UnreadableEssentialSourceError:
         raise
     except (OSError, ValueError) as exc:

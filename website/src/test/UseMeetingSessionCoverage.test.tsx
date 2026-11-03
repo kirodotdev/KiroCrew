@@ -1051,7 +1051,7 @@ describe('useMeetingSession leaving with a note', () => {
       leaving = view.result.current.leaveNote()
       void leaving.then(value => { answered = value })
     })
-    await waitFor(() => expect(apiMocks.saveNote).toHaveBeenCalledWith('weekly_sync', 'the last line'))
+    await waitFor(() => expect(apiMocks.saveNote).toHaveBeenCalledWith('weekly_sync', 'the last line', { order: { editor: expect.any(String), seq: expect.any(Number) } }))
     await act(async () => { await Promise.resolve() })
     expect(answered).toBeUndefined()
     expect(view.result.current.note.saving).toBe(true)
@@ -1112,7 +1112,7 @@ describe('useMeetingSession leaving with a note', () => {
     act(() => view.result.current.changeNote('typed after'))
     let answered: boolean | undefined
     await act(async () => { answered = await view.result.current.leaveNote() })
-    expect(apiMocks.saveNote).toHaveBeenCalledWith('weekly_sync', 'typed after')
+    expect(apiMocks.saveNote).toHaveBeenCalledWith('weekly_sync', 'typed after', { order: { editor: expect.any(String), seq: expect.any(Number) } })
     expect(answered).toBe(true)
   })
 

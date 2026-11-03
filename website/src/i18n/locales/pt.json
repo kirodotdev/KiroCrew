@@ -6148,7 +6148,6 @@
       "credentials_remain_with_their_source_rules_hooks": "As credenciais permanecem na origem. Histórico de conversas, hooks, definições de agentes e a identidade de persona de uma origem não são importados. As suas regras e instruções escritas são importadas como memória de alta prioridade.",
       "deduplicated": "Duplicatas removidas",
       "existing_kirocrew_setup_is_never_overwritten_mat": "A configuração existente do {{productName}} nunca é sobrescrita por padrão. Itens equivalentes são desduplicados e um item em conflito mantém a sua versão atual, a menos que você escolha o contrário após a importação.",
-      "found": "encontrados",
       "import_agent_setup": "Importar configuração do agente",
       "import_all_your_supported_work_or_handpick_what": "Importe todo o seu trabalho compatível ou selecione manualmente o que trazer.",
       "import_another": "Importar outra",
@@ -6158,7 +6157,6 @@
       "imported": "Importado",
       "importing": "Importando",
       "items_already_exist_with_different_content": "itens já existem com conteúdo diferente.",
-      "items_selected": "itens selecionados",
       "keep_both": "Manter ambos",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "O {{productName}} encontrou configuração de agente neste host do gateway. Selecione as fontes para revisar.",
       "kirocrew_did_not_find_supported_setup_to_import": "O {{productName}} não encontrou configuração compatível para importar neste host do gateway.",
@@ -6191,7 +6189,17 @@
       "import_setup_stage": "Importar configuração · {{stage}} de {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} item",
       "source_item_count_many": "{{name}}, {{count}} itens",
-      "source_item_count_other": "{{name}}, {{count}} itens"
+      "source_item_count_other": "{{name}}, {{count}} itens",
+      "category_count_one": "{{count}} categoria",
+      "category_count_many": "{{count}} categorias",
+      "category_count_other": "{{count}} categorias",
+      "source_categories": "Categorias de {{name}}",
+      "items_selected_count_one": "{{count}} item selecionado",
+      "items_selected_count_many": "{{count}} itens selecionados",
+      "items_selected_count_other": "{{count}} itens selecionados",
+      "found_count_one": "{{count}} encontrado",
+      "found_count_many": "{{count}} encontrados",
+      "found_count_other": "{{count}} encontrados"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvo, mas esta cópia do {{productName}} não conseguiu atualizar a configuração do agente, então os novos chats mantêm a configuração anterior. Abra a página “Logs” para ver o motivo."
@@ -8619,6 +8627,7 @@
       "title_md": "Largura média"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "O esforço de raciocínio não se aplica no Auto: o backend escolhe o modelo e não aceita nenhum nível de esforço até você escolher um modelo específico acima.",
       "default_with_level": "Padrão · {{level}}",
       "effort": "Esforço",
       "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido. Apenas os modelos compatíveis com esforço de raciocínio oferecem esta configuração.",
@@ -10793,6 +10802,20 @@
       "grant_role_user": "{{title}}: também suas próprias mensagens, não só as respostas",
       "grant_role_assistant": "{{title}}: respostas do assistente",
       "grant_format_markdown": "{{title}}: o Markdown da mensagem, com os endereços dos links"
+    },
+    "linkOpen": {
+      "ask_title": "Abrir links de {{host}} no {{app}}?",
+      "ask_body": "O {{app}} recebe apenas o link mostrado abaixo.",
+      "always": "Fazer sempre isso para {{host}}",
+      "open_in_app": "Abrir no {{app}}",
+      "open_in_browser": "Abrir no navegador",
+      "opening": "Abrindo no {{app}}…",
+      "failed": "O {{app}} não conseguiu abrir este link.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Copiar",
+      "offer_open": "Abrir {{host}}",
+      "copy_failed": "Não foi possível copiar. Selecione o texto no app e copie você mesmo.",
+      "more_actions": "Mais ações"
     }
   },
   "hooks": {
@@ -11117,6 +11140,7 @@
       "install_on_your_mac": "Instalar no seu Mac",
       "installed": "Instalado:",
       "installed_version": "Instalado (v{{version}})",
+      "more_actions": "Mais ações para {{name}}",
       "installing": "Instalando…",
       "keep_app_data": "Manter dados do app",
       "lifecycle": "| Ciclo de vida:",
@@ -11179,7 +11203,13 @@
       "grants_reconsent_link_patterns": "Padrões de texto: permite que os cartões do app vejam o texto do chat que corresponde a estes padrões.",
       "grants_reconsent_link_full_url": "Endereços de link completos: os cartões do app também veem a parte de um link depois de ? ou #, que pode conter um código de login.",
       "grants_reconsent_message_actions": "Ações de mensagem: o que os itens de menu do app nas mensagens do chat podem ler.",
-      "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
+      "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las.",
+      "grants_reconsent_link_open_hosts": "Links abertos: permite que o app abra links para estes sites quando você clica em um deles numa mensagem do chat.",
+      "grants_reconsent_link_open_full_url": "Endereços completos dos links abertos: o app também vê a parte de um link depois de ? ou #, que pode conter um código de login.",
+      "link_open_remembered": "Escolhas de links lembradas",
+      "link_open_choice_app": "Abre no {{name}}",
+      "link_open_choice_browser": "Abre no seu navegador",
+      "link_open_forget": "Esquecer"
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -11350,7 +11380,6 @@
       "make_sure_the_gateway_s": ". Verifique se o",
       "make_the_default_profile": "Definir {{name}} como perfil padrão",
       "missing_sso_start_url_sso_region": "faltando … sso_start_url, sso_region",
-      "more": "mais",
       "never_boto3_so_credential_resolution_stays_in_yo": "(nunca boto3),\n              então a resolução de credenciais permanece no repositório de credenciais do seu SO. O {{productName}} nunca escreve no IAM e\n              nunca gerencia contas, usuários ou funções — você mesmo aplica a política de privilégio mínimo gerada.",
       "never_credentials": "— nunca credenciais)",
       "new_profile": "Novo perfil",
@@ -11448,7 +11477,10 @@
       "col_actions": "Ações",
       "col_type": "Tipo",
       "col_url": "URL",
-      "col_cost": "Custo"
+      "col_cost": "Custo",
+      "more_count_one": "+{{n}} mais",
+      "more_count_many": "+{{n}} mais",
+      "more_count_other": "+{{n}} mais"
     },
     "artifactDetailPage": {
       "published_to_provider": "Publicado em {{provider}}",
@@ -12503,7 +12535,6 @@
         "aria_collapse_task_list": "{{done}} de {{total}} tarefas concluídas. Recolher a lista de tarefas",
         "aria_expand_task_list": "{{done}} de {{total}} tarefas concluídas. Expandir a lista de tarefas",
         "current_task": "Tarefa atual",
-        "more": "mais…",
         "task_completion": "Conclusão das tarefas",
         "aria_mark_done": "Marcar como concluída: {{task}}. O agente não a refará. Clique de novo para desfazer.",
         "aria_mark_not_done": "Marcar como não concluída: {{task}}. O agente a trata como pendente. Clique de novo para desfazer.",
@@ -12517,7 +12548,10 @@
         "set_by_you_done": "Você marcou isto como feito; o agente ainda não confirmou.",
         "set_by_you_open": "Você marcou isto como não feito; o agente ainda não confirmou.",
         "sending": "Enviando",
-        "done_of_total": "{{done}} de {{total}}"
+        "done_of_total": "{{done}} de {{total}}",
+        "more_count_one": "+ {{n}} mais…",
+        "more_count_many": "+ {{n}} mais…",
+        "more_count_other": "+ {{n}} mais…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",
@@ -12737,7 +12771,9 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Não foi possível carregar o snapshot:",
-        "events": "eventos"
+        "events_count_one": "{{n}} evento",
+        "events_count_many": "{{n}} eventos",
+        "events_count_other": "{{n}} eventos"
       },
       "pins": {
         "pinned_messages": "Mensagens fixadas",
@@ -14094,6 +14130,9 @@
       "waiting_for_approval_address": "Aguardando o endereço de aprovação… Ele aparecerá aqui na próxima conexão do agente — envie qualquer mensagem no chat para iniciar a autorização agora.",
       "needs_configuration": "Requer configuração",
       "needs_configuration_help": "{{provider}} precisa de uma configuração única. \"Configurar app OAuth\" abre uma página de definições guiada; nada muda até você salvar lá, e você pode removê-la depois. Ela orienta o registro de um app no {{provider}} e a inserção do client ID e do secret.",
+      "backend_oauth_caveat": "O Connect é concluído mesmo assim, e o login do {{provider}} fica salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login, então as ferramentas podem não funcionar neles.",
+      "chat_use_label": "Nos chats",
+      "chat_use_lacks_oauth": "Salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login.",
       "configure_oauth_app": "Configurar app OAuth",
       "prerequisite_github": "GitHub não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do GitHub registrado em Configurações → Apps OAuth. A página de consentimento do GitHub mostra esse app; aprove-o para continuar.",
       "prerequisite_asana": "Asana não oferece registro dinâmico de clientes, então Conectar usa o app MCP do Asana registrado em Configurações → Apps OAuth. A página de consentimento do Asana mostra esse app; aprove-o para continuar."
@@ -15158,7 +15197,6 @@
         "search_explore_and_manage_your_knowledge_base": "Busque, explore e gerencie sua base de conhecimento",
         "search_knowledge_press_enter_to_search": "Buscar no conhecimento... (pressione Enter para buscar)",
         "select_all": "Selecionar tudo",
-        "selected": "selecionados",
         "sources_tab": "Fontes",
         "status_active": "Ativo",
         "status_archived": "Arquivadas",
@@ -15186,7 +15224,10 @@
         "error_no_reason": "A solicitação falhou sem informar o motivo.",
         "delete_items_permanently_one": "Excluir {{count}} item permanentemente?",
         "delete_items_permanently_many": "Excluir {{count}} itens permanentemente?",
-        "delete_items_permanently_other": "Excluir {{count}} itens permanentemente?"
+        "delete_items_permanently_other": "Excluir {{count}} itens permanentemente?",
+        "selected_count_one": "{{count}} selecionado",
+        "selected_count_many": "{{count}} selecionados",
+        "selected_count_other": "{{count}} selecionados"
       },
       "itemCard": {
         "copied": "Copiado!",
@@ -15268,7 +15309,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Padrões a ignorar (um por linha, ex.: .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Incluir subdiretórios (recursivo)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "A indexação consome requisições Kiro proporcionais ao tamanho de cada fonte, e uma pasta monitorada continua gastando conforme novos arquivos chegam — o custo se distribui ao longo do tempo em vez de ser cobrado de uma só vez.",
-        "items": "itens",
         "kb_ids_comma_separated_id_or_arn": "Separados por vírgulas, ex.: KXABC12345 ou arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "~{{calls}} requisições Kiro para concluir",
         "knowledge_base_ids": "IDs da base de conhecimento",
@@ -15340,7 +15380,10 @@
         "enter_region_to_add": "Informe a região da AWS para adicionar esta fonte.",
         "profile_blank_uses_default_chain": "Deixe em branco para usar as credenciais padrão da AWS.",
         "remove_this_live_source": "Remover esta fonte de base de conhecimento? Nada está armazenado localmente; a base de conhecimento em si não é alterada.",
-        "region_example_placeholder": "ex.: us-east-1"
+        "region_example_placeholder": "ex.: us-east-1",
+        "items_count_one": "{{n}} item",
+        "items_count_many": "{{n}} itens",
+        "items_count_other": "{{n}} itens"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15369,6 +15412,9 @@
       "by_category": "Por categoria",
       "clear": "Limpar",
       "clear_old_caches": "Limpar caches de rolagem",
+      "delete_all_keys_one": "Excluir {{count}} chave",
+      "delete_all_keys_other": "Excluir todas as {{count}} chaves",
+      "delete_all_keys_many": "Excluir todas as {{count}} chaves",
       "delete_cached_scroll_positions_from_old_sessions": "Excluir alturas de linha em cache e posições de leitura salvas de todas as sessões (seguro — são reconstruídas ao rolar)",
       "delete_key": "Excluir chave",
       "export": "Exportar",
@@ -15873,7 +15919,6 @@
         "status": "Status",
         "tool_list_read_from_the_package_s_declaration_th": "A lista de ferramentas foi lida da declaração do pacote; o servidor não foi iniciado para verificar se arranca.",
         "tools": "Ferramentas",
-        "tools_2": "ferramentas",
         "undo": "Desfazer",
         "uninstall": "Desinstalar",
         "unknown": "Desconhecido",
@@ -15923,7 +15968,10 @@
         "temp_refusal_sealed": "O {{key}}={{path}} declarado foi ignorado porque está dentro da pasta de execução somente leitura. A verificação usou a pasta temporária gerenciada no lugar.",
         "temp_refusal_unclassifiable": "O {{key}}={{path}} declarado foi ignorado porque não foi possível confirmar sua localização real. A verificação usou a pasta temporária gerenciada no lugar.",
         "temp_refusal_check_failed": "O {{key}}={{path}} declarado foi ignorado porque a verificação da localização falhou. A verificação usou a pasta temporária gerenciada no lugar.",
-        "mcp_deny_spared": "Este é um dos servidores do próprio {{productName}}, então no {{name}} desativar uma ferramenta aqui para só essa ferramenta."
+        "mcp_deny_spared": "Este é um dos servidores do próprio {{productName}}, então no {{name}} desativar uma ferramenta aqui para só essa ferramenta.",
+        "tools_count_one": "{{n}} ferramenta",
+        "tools_count_many": "{{n}} ferramentas",
+        "tools_count_other": "{{n}} ferramentas"
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",
@@ -17834,6 +17882,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Exibir os tokens usados e totais ao lado da barra de progresso do contexto",
         "e_g_solutions_architect_sre_founder": "ex.: arquiteto de soluções, SRE, fundador",
         "effort_default_needs_reasoning_model": "Por quanto tempo os modelos pensam antes de responder, por padrão. Aplica-se apenas a modelos com raciocínio, portanto não afeta o modelo selecionado acima.",
+        "effort_default_off_on_auto": "Quanto tempo os modelos pensam antes de responder, por padrão. Não se aplica enquanto o modelo padrão for Auto, porque o backend escolhe o modelo e não aceita nenhum nível de esforço até que um modelo específico seja selecionado.",
         "effort_needs_reasoning_model": "Aplica-se apenas a modelos com raciocínio, portanto não afeta o modelo selecionado acima.",
         "enter_for_newline": "Enter para nova linha",
         "enter_sends": "Enter envia",
@@ -18671,7 +18720,6 @@
         "block_list_rules": "Lista de bloqueio · {{rules}}",
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} regras integradas estão em vigor agora, depois das suas exclusões e de eventuais fixações por política.",
         "cancel": "Cancelar",
-        "categories": "categorias ·",
         "click_any_control_to_see_exactly_what_it_covers": "Clique em qualquer controle para ver exatamente o que ele abrange.",
         "collapse_all": "Recolher tudo",
         "collapse_category_rules": "Recolher as regras de {{category}}",
@@ -18807,7 +18855,6 @@
         "rail_until_restart": "Até reiniciar",
         "rail_until_time": "Até {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", resolvido como a política da sua organização interseccionada com o perfil do host. Perfis mais restritos vinculados a uma superfície, app ou tarefa específicos (cron, Slack, subagentes) podem restringir ainda mais um escopo em tempo de execução. Somente leitura — o teto é definido em",
-        "rules": "regras",
         "search_rules_placeholder": "Pesquisar regras, padrões, categorias…",
         "section_group_enforced": "Imposto",
         "section_group_reference": "Referência",
@@ -18944,7 +18991,16 @@
         "redaction_revoke_failed": "Não foi possível revogar esse host. Ele ainda está permitido.",
         "redaction_no_allowed_hosts": "Nenhum host é permitido. Todos os links passam por todas as verificações.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Revogar"
+        "redaction_revoke": "Revogar",
+        "rules_matched_one": "{{matched}} / {{n}} regra",
+        "rules_matched_many": "{{matched}} / {{n}} regras",
+        "rules_matched_other": "{{matched}} / {{n}} regras",
+        "categories_count_one": "{{n}} categoria ·",
+        "categories_count_many": "{{n}} categorias ·",
+        "categories_count_other": "{{n}} categorias ·",
+        "rules_count_one": "{{n}} regra",
+        "rules_count_many": "{{n}} regras",
+        "rules_count_other": "{{n}} regras"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Vincular a alternância de abas de chat a Ctrl+dígito em vez de Option+dígito. Option+dígito não troca de chat enquanto um campo de texto estiver em foco.",
@@ -20135,21 +20191,22 @@
       "written_by_the": "Escrito pela ferramenta"
     },
     "worldsPage": {
-      "active": "ativos,",
-      "agent_many": "{{count}} agentes",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agentes",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Focar janela destacada",
       "hide_controls": "Ocultar controles",
-      "open": "aberto",
       "playing_in_popout_window": "Reproduzindo na janela destacada",
       "pop_out_to_separate_window": "Abrir em janela separada",
-      "present": "presentes,",
       "show_controls": "Mostrar controles",
-      "slot_many": "{{count}} slots",
-      "slot_one": "{{count}} slot",
-      "slot_other": "{{count}} slots"
+      "agents_present_one": "{{n}} agente presente",
+      "agents_present_many": "{{n}} agentes presentes",
+      "agents_present_other": "{{n}} agentes presentes",
+      "agents_active_one": "{{n}} ativo",
+      "agents_active_many": "{{n}} ativos",
+      "agents_active_other": "{{n}} ativos",
+      "slots_open_one": "{{n}} slot livre",
+      "slots_open_many": "{{n}} slots livres",
+      "slots_open_other": "{{n}} slots livres",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar controles",

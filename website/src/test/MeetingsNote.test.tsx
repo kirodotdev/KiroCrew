@@ -360,7 +360,12 @@ describe('note wiring', () => {
     expect(block![0]).toContain('serverContent: noteQuery.data?.content')
     expect(block![0]).toContain('loadFailed: noteLoadFailed')
     // The tab-close save bypasses the serialized mutation, whose queue dies with the page.
-    expect(block![0]).toContain('saveNow: content => meetingsApi.saveNote(meetingId, content, { keepalive: true })')
+    expect(block![0]).toContain(
+      'meetingsApi.saveNote(meetingId, content, { keepalive: true, order: nextNoteOrder() })',
+    )
+    // Both saves are numbered at SEND time, so the server can drop whichever of
+    // the two concurrent PUTs is older.
+    expect(block![0]).toContain('noteMutation.mutateAsync({ content, order: nextNoteOrder() })')
   })
 
   it('hands the GET failure out as a flag, so the panel renders catalog copy for it', () => {

@@ -69,6 +69,18 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
   )
 }
 
+/** Drop the open item from one cached list under the 'knowledge-items' prefix.
+ *  That prefix also holds the source-first view's counts, whose payload has no
+ *  `items` array, so only item-shaped entries are rewritten (as the list page's
+ *  bulk actions do); the counts are corrected by the refetch on success. */
+function dropItemFrom(itemId: string) {
+  return (old: { items: KnowledgeItem[]; total: number } | undefined) => {
+    if (!old || !Array.isArray(old.items)) return old
+    const kept = old.items.filter(i => i.id !== itemId)
+    return { ...old, items: kept, total: old.total - (old.items.length - kept.length) }
+  }
+}
+
 function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: string }) {
   const ime = useImeGuard()
   const queryClient = useQueryClient()
@@ -156,15 +168,15 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     queryFn: () => knowledgeApi<KnowledgeItem>(`/items/${itemId}`),
   })
 
+  const dropFromList = dropItemFrom(itemId)
+
   const archiveMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       knowledgeApi(`/items/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old =>
-        old ? { ...old, items: old.items.filter(i => i.id !== itemId), total: old.total - 1 } : old
-      )
+      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, dropFromList)
       return { prev }
     },
     onError: (_err, _vars, ctx) => {
@@ -182,9 +194,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old =>
-        old ? { ...old, items: old.items.filter(i => i.id !== itemId), total: old.total - 1 } : old
-      )
+      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, dropFromList)
       return { prev }
     },
     onError: (_err, _vars, ctx) => {

@@ -11,6 +11,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
@@ -361,10 +362,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if not new_name:
             return web.json_response({"error": "name required"}, status=400)
         changes["name"] = new_name
+    # A spelled "false"/"0"/"no"/"off" means False; any other value keeps the
+    # truthiness it has always been saved with.
     if "collapsed" in body:
-        changes["collapsed"] = bool(body["collapsed"])
+        changes["collapsed"] = _coerce_bool(body["collapsed"], bool(body["collapsed"]))
     if "hidden" in body:
-        changes["hidden"] = bool(body["hidden"])
+        changes["hidden"] = _coerce_bool(body["hidden"], bool(body["hidden"]))
     if "order" in body:
         # A non-numeric, null, or non-finite order is caller error, not a server
         # fault: int() would raise and surface as a 500 (no middleware maps

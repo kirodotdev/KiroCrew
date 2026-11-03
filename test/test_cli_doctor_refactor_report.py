@@ -53,6 +53,7 @@ _SECTIONS = (
     "_doctor_skill_currency",
     "_doctor_deprecated_agent_specs",
     "_doctor_path_launcher",
+    "_doctor_service_launch",
     "_doctor_trust_root",
     "_doctor_signing_key",
     "_doctor_name_grant_platform_scope",
@@ -93,6 +94,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
     "_doctor_agent_auth",
     "_doctor_data_home",
     "_doctor_path_launcher",
+    "_doctor_service_launch",
     "_doctor_trust_root",
     "_doctor_name_grant_platform_scope",
     "_doctor_strict_identity",
@@ -108,6 +110,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 _FAMILY_ONLY = {
     "_doctor_signing_key": access,
     "_doctor_kiro_chat_delegate": services,
+    "_doctor_service_launch": install,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -408,6 +411,7 @@ Configuration
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
   <<_doctor_path_launcher>>
+  <<_doctor_service_launch>>
   <<_doctor_trust_root>>
   <<_doctor_signing_key>>
   <<_doctor_name_grant_platform_scope>>
@@ -670,6 +674,7 @@ Configuration
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
   <<_doctor_path_launcher>>
+  <<_doctor_service_launch>>
   <<_doctor_trust_root>>
   <<_doctor_signing_key>>
   <<_doctor_name_grant_platform_scope>>

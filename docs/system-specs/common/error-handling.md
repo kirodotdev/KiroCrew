@@ -339,8 +339,10 @@ verdict is transient and `classify_provider_error` names the frame
 `PROVIDER_ERROR_CONNECTION`: connection wording (`_RE_CONNECTION`) or a
 connector dispatch failure, with no throttle, usage limit, auth or
 session-expiry rejection, or model-availability answer outranking it. The
-formatter folds a dispatch failure into the generic 5xx prose, which is why the
-verdict travels as a tag instead of being read back from the message. On an
+formatter checks the same connector patterns before the 5xx family, so a
+dispatch failure shows the "Could not reach the model backend" card rather than
+the generic 5xx prose; the verdict still travels as a tag so the retry layer
+never reads it back from the message. On an
 interactive dashboard turn
 (`chat_runner`'s pre-stream transient branch) a connection failure keeps
 re-prompting the same live session past `TRANSIENT_RETRIES` until

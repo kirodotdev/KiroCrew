@@ -7,8 +7,9 @@ withheld until the next day, although the limit resets within the hour. A
 single REST read such as "Check if issues are enabled" is enough to fail the
 run even when the GraphQL fetch before it succeeded.
 
-The first step installs a wrapper that every later step's ``gh`` resolves to.
-These tests run that step for real against a stub ``gh`` (and a stub
+The shared action .github/actions/gh-rate-limit installs a wrapper that every
+later step's ``gh`` resolves to. These tests run the action's script for real
+against a stub ``gh`` (and a stub
 ``sleep`` that only records how long it was asked to wait), then run the
 workflow's own step scripts through it.
 
@@ -27,7 +28,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ship-report.yml"
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "ship-report.yml"
+ACTION = ROOT / ".github" / "actions" / "gh-rate-limit" / "action.yml"
+ACTION_REF = "./.github/actions/gh-rate-limit"
 INSTALL_STEP = "Install rate-limit-aware gh"
 
 
@@ -45,6 +49,7 @@ def _has_gnu_date() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not WORKFLOW.exists()
+    or not ACTION.exists()
     or os.name == "nt"
     or shutil.which("bash") is None
     or shutil.which("jq") is None
@@ -108,6 +113,16 @@ def _step(key: str) -> dict:
     return next(s for s in _steps() if key in (s.get("id"), s.get("name")))
 
 
+def _action() -> dict:
+    return yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+
+
+def _install_script() -> str:
+    """The shell the shared action runs to put the wrapper on PATH."""
+    (step,) = _action()["runs"]["steps"]
+    return step["run"]
+
+
 class Runner:
     def __init__(self, root: Path) -> None:
         self.fixtures = root / "fixtures"
@@ -155,11 +170,12 @@ class Runner:
     def install(self, budget: str | None = None) -> None:
         """Run the install step, then put what it added to GITHUB_PATH first
         on PATH, as the runner does for every later step."""
-        step = _step(INSTALL_STEP)
-        env = dict(step.get("env", {}))
-        if budget is not None:
-            env["GH_RATE_LIMIT_MAX_WAIT"] = budget
-        done = self.run(step["run"], **env)
+        # The action's `max-wait` input reaches the script as this variable;
+        # resolve it from what ship-report passes, the way the runner does.
+        passed = _step(INSTALL_STEP).get("with", {}).get("max-wait")
+        default = _action()["inputs"]["max-wait"]["default"]
+        wait = budget if budget is not None else str(passed or default)
+        done = self.run(_install_script(), GH_RATE_LIMIT_MAX_WAIT=wait)
         assert done.returncode == 0, done.stderr
         added = [p for p in self.path_file.read_text().splitlines() if p]
         self.env["PATH"] = os.pathsep.join([*added, self.base_path])
@@ -228,9 +244,14 @@ def test_a_rate_limited_read_waits_for_the_reset_and_succeeds(runner: Runner) ->
     assert "::warning::" in step.stderr
 
 
-def test_the_wrapper_is_the_first_step(runner: Runner) -> None:
-    """Every gh call in the job comes after it, so every one is covered."""
-    assert _steps()[0]["name"] == INSTALL_STEP
+def test_the_wrapper_is_installed_before_every_other_step(runner: Runner) -> None:
+    """Every gh call in the job comes after it, so every one is covered.
+    Only the sparse checkout that fetches the action comes first."""
+    checkout, install = _steps()[:2]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["sparse-checkout"] == ACTION_REF.removeprefix("./")
+    assert install["name"] == INSTALL_STEP
+    assert install["uses"] == ACTION_REF
 
 
 def test_a_spent_graphql_bucket_is_waited_out_too(runner: Runner) -> None:

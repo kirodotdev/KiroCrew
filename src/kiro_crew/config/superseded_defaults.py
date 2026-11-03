@@ -23,8 +23,8 @@ them apart -- correcting one necessarily overrides the other.
 So the default stayed REPORT-ONLY, and it still is: an entry rewrites nothing
 unless it says ``auto_adopt``.
 
-Why THREE entries adopt themselves anyway
------------------------------------------
+Why FOUR entries adopt themselves anyway
+----------------------------------------
 Reporting is the right answer only while the two readings of the stored value are
 genuinely indistinguishable AND holding the old value is survivable. On the two
 agent timeout budgets neither holds: an install carrying
@@ -33,7 +33,9 @@ operator sees timeouts instead of results, having never chosen 1800 at all, and
 telling them to run a command they have no reason to know about is not a fix. The
 spawn memory floor is the third: a materialized ``agent.spawn_min_memory_gb: 4.0``
 holds every subagent in the queue on a 16 GB laptop, where 4 GB plus a start
-rarely stays free.
+rarely stays free. The KAS MCP sign-in vault is the fourth: a materialized
+``agent.kas_persist_mcp_sign_in: false`` asks for every remote MCP sign-in again
+in every new session, and false was the default its owner never chose.
 
 The set is deliberately SMALL, and what keeps it small is not a judgment about how
 wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
@@ -553,6 +555,21 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=2,
         new_default="auto",
         changed_in="#17055",
+    ),
+    # A stored false asks for a fresh OAuth sign-in to every remote MCP server in
+    # every new KAS session, and KAS is the backend an install that never chose one
+    # runs, so its owner sees a sign-in that never sticks. auto_adopt: until this
+    # change false WAS the default and the setting read "When false (the default)",
+    # so the one direction an owner had a reason to write was true; a stored false
+    # is the materialized default, with no suite pinning it as a configuration.
+    # One-shot: a false set back after the adoption is the owner's opt-out and is
+    # kept.
+    SupersededDefault(
+        dotted_key="agent.kas_persist_mcp_sign_in",
+        old_default=False,
+        new_default=True,
+        changed_in="#28630",
+        auto_adopt=True,
     ),
 )
 

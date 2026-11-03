@@ -6148,7 +6148,6 @@
       "credentials_remain_with_their_source_rules_hooks": "Le credenziali restano presso la loro origine. Cronologia delle conversazioni, hook, definizioni degli agenti e l'identità della persona di un'origine non vengono importati. Le tue regole e istruzioni scritte vengono importate come memoria ad alta priorità.",
       "deduplicated": "Deduplicato",
       "existing_kirocrew_setup_is_never_overwritten_mat": "La configurazione esistente di {{productName}} non viene mai sovrascritta per impostazione predefinita. Gli elementi corrispondenti vengono deduplicati e, in caso di conflitto, viene mantenuta la tua versione attuale salvo diversa scelta dopo l'importazione.",
-      "found": "trovato",
       "import_agent_setup": "Importa la configurazione dell'agente",
       "import_all_your_supported_work_or_handpick_what": "Importa tutto il lavoro supportato o scegli a mano cosa portare.",
       "import_another": "Importa un altro",
@@ -6158,7 +6157,6 @@
       "imported": "Importato",
       "importing": "Importazione in corso",
       "items_already_exist_with_different_content": "elementi esistono già con contenuto diverso.",
-      "items_selected": "elementi selezionati",
       "keep_both": "Mantieni entrambi",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} ha trovato una configurazione di agenti su questo host gateway. Seleziona le origini da esaminare.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} non ha trovato alcuna configurazione supportata da importare su questo host gateway.",
@@ -6191,7 +6189,17 @@
       "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} elemento",
       "source_item_count_many": "{{name}}, {{count}} elementi",
-      "source_item_count_other": "{{name}}, {{count}} elementi"
+      "source_item_count_other": "{{name}}, {{count}} elementi",
+      "category_count_one": "{{count}} categoria",
+      "category_count_many": "{{count}} categorie",
+      "category_count_other": "{{count}} categorie",
+      "source_categories": "Categorie di {{name}}",
+      "items_selected_count_one": "{{count}} elemento selezionato",
+      "items_selected_count_many": "{{count}} elementi selezionati",
+      "items_selected_count_other": "{{count}} elementi selezionati",
+      "found_count_one": "{{count}} trovato",
+      "found_count_many": "{{count}} trovati",
+      "found_count_other": "{{count}} trovati"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvato, ma questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat mantengono la configurazione precedente. Apri la pagina «Log» per vedere il motivo."
@@ -8619,6 +8627,7 @@
       "title_md": "Larghezza media"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Il livello di ragionamento non si applica con Auto: il backend sceglie il modello e non accetta alcun livello finché non scegli un modello specifico qui sopra.",
       "default_with_level": "Predefinito · {{level}}",
       "effort": "Impegno",
       "effort_help": "Il livello di ragionamento determina quanto tempo il modello riflette prima di rispondere. Un valore più alto significa più tempo per ragionare sui problemi difficili (risposte più lente ma migliori); uno più basso è più veloce. Se disattivi la sostituzione per sessione, si torna al valore predefinito in Impostazioni → Chat, oppure alla scelta del modello stesso quando non è impostato alcun valore predefinito. Solo i modelli che supportano il livello di ragionamento offrono questa impostazione.",
@@ -10793,6 +10802,20 @@
       "grant_role_user": "{{title}}: anche i tuoi messaggi, non solo le risposte",
       "grant_role_assistant": "{{title}}: risposte dell'assistente",
       "grant_format_markdown": "{{title}}: il Markdown del messaggio, con gli indirizzi dei link"
+    },
+    "linkOpen": {
+      "ask_title": "Aprire i link di {{host}} in {{app}}?",
+      "ask_body": "{{app}} riceve solo il link mostrato qui sotto.",
+      "always": "Fai sempre così per {{host}}",
+      "open_in_app": "Apri in {{app}}",
+      "open_in_browser": "Apri nel browser",
+      "opening": "Apertura in {{app}}…",
+      "failed": "{{app}} non è riuscita ad aprire questo link.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Copia",
+      "offer_open": "Apri {{host}}",
+      "copy_failed": "Impossibile copiare. Seleziona il testo nell'app e copialo tu.",
+      "more_actions": "Altre azioni"
     }
   },
   "hooks": {
@@ -11117,6 +11140,7 @@
       "install_on_your_mac": "Installa sul tuo Mac",
       "installed": "Installato:",
       "installed_version": "Installato (v{{version}})",
+      "more_actions": "Altre azioni per {{name}}",
       "installing": "Installazione in corso…",
       "keep_app_data": "Mantieni i dati dell'app",
       "lifecycle": "| Ciclo di vita:",
@@ -11179,7 +11203,13 @@
       "grants_reconsent_link_patterns": "Modelli di testo: consente alle schede dell’app di vedere il testo della chat che corrisponde a questi modelli.",
       "grants_reconsent_link_full_url": "Indirizzi completi dei link: le schede dell’app vedono anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",
       "grants_reconsent_message_actions": "Azioni sui messaggi: cosa possono leggere le voci di menu dell'app sui messaggi della chat.",
-      "grants_approved": "Approvate: {{entries}}. L'app può usarle da ora."
+      "grants_approved": "Approvate: {{entries}}. L'app può usarle da ora.",
+      "grants_reconsent_link_open_hosts": "Link aperti: consente all'app di aprire i link a questi siti quando ne fai clic su uno in un messaggio della chat.",
+      "grants_reconsent_link_open_full_url": "Indirizzi completi dei link aperti: l'app vede anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",
+      "link_open_remembered": "Scelte dei link memorizzate",
+      "link_open_choice_app": "Si apre in {{name}}",
+      "link_open_choice_browser": "Si apre nel browser",
+      "link_open_forget": "Dimentica"
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",
@@ -11350,7 +11380,6 @@
       "make_sure_the_gateway_s": ". Assicurati che il gateway",
       "make_the_default_profile": "Imposta {{name}} come profilo predefinito",
       "missing_sso_start_url_sso_region": "mancante … sso_start_url, sso_region",
-      "more": "altri",
       "never_boto3_so_credential_resolution_stays_in_yo": "(mai boto3),\n              così la risoluzione delle credenziali resta nell'archivio credenziali del tuo sistema operativo. {{productName}} non scrive mai su IAM e\n              non gestisce mai account, utenti o ruoli — la policy con privilegi minimi generata la applichi tu.",
       "never_credentials": "— mai le credenziali)",
       "new_profile": "Nuovo profilo",
@@ -11448,7 +11477,10 @@
       "col_actions": "Azioni",
       "col_type": "Tipo",
       "col_url": "URL",
-      "col_cost": "Costo"
+      "col_cost": "Costo",
+      "more_count_one": "+{{n}} altro",
+      "more_count_many": "+{{n}} altri",
+      "more_count_other": "+{{n}} altri"
     },
     "artifactDetailPage": {
       "published_to_provider": "Pubblicato su {{provider}}",
@@ -12503,7 +12535,6 @@
         "aria_collapse_task_list": "{{done}} di {{total}} attività completate. Comprimi l’elenco delle attività",
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
         "current_task": "Attività corrente",
-        "more": "altri…",
         "task_completion": "Completamento dell'attività",
         "aria_mark_done": "Segna come completata: {{task}}. L'agente non la rifarà. Clicca di nuovo per annullare.",
         "aria_mark_not_done": "Segna come non completata: {{task}}. L'agente la considera ancora aperta. Clicca di nuovo per annullare.",
@@ -12517,7 +12548,10 @@
         "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
         "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
         "sending": "Invio in corso",
-        "done_of_total": "{{done}} di {{total}}"
+        "done_of_total": "{{done}} di {{total}}",
+        "more_count_one": "+ {{n}} altro…",
+        "more_count_many": "+ {{n}} altri…",
+        "more_count_other": "+ {{n}} altri…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",
@@ -12737,7 +12771,9 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossibile caricare lo snapshot:",
-        "events": "eventi"
+        "events_count_one": "{{n}} evento",
+        "events_count_many": "{{n}} eventi",
+        "events_count_other": "{{n}} eventi"
       },
       "pins": {
         "pinned_messages": "Messaggi fissati",
@@ -14094,6 +14130,9 @@
       "waiting_for_approval_address": "In attesa dell’indirizzo di autorizzazione… Comparirà qui alla prossima connessione dell’agente: invia un messaggio in chat per avviare subito l’autorizzazione.",
       "needs_configuration": "Configurazione richiesta",
       "needs_configuration_help": "{{provider}} richiede una configurazione una tantum. \"Configura app OAuth\" apre una pagina di impostazioni guidata; nulla cambia finché non salvi lì, e potrai rimuoverla in seguito. Ti guida nella registrazione di un’app presso {{provider}} e nell’inserimento di client ID e secret.",
+      "backend_oauth_caveat": "Connect si completa comunque e l'accesso {{provider}} viene salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso, quindi i suoi strumenti potrebbero non funzionare lì.",
+      "chat_use_label": "Nelle chat",
+      "chat_use_lacks_oauth": "Salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso.",
       "configure_oauth_app": "Configura l’app OAuth",
       "prerequisite_github": "GitHub non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth GitHub registrata in Impostazioni → App OAuth. La pagina di consenso di GitHub mostra quell’app; approvala per continuare.",
       "prerequisite_asana": "Asana non supporta la registrazione dinamica dei client, quindi Connetti usa l’app MCP Asana registrata in Impostazioni → App OAuth. La pagina di consenso di Asana mostra quell’app; approvala per continuare."
@@ -15158,7 +15197,6 @@
         "search_explore_and_manage_your_knowledge_base": "Cerca, esplora e gestisci la tua base di conoscenze",
         "search_knowledge_press_enter_to_search": "Cerca nelle conoscenze... (premi Invio per cercare)",
         "select_all": "Seleziona tutto",
-        "selected": "selezionati",
         "sources_tab": "Origini",
         "status_active": "Attivo",
         "status_archived": "Archiviate",
@@ -15186,7 +15224,10 @@
         "error_no_reason": "La richiesta non è riuscita senza indicare un motivo.",
         "delete_items_permanently_one": "Eliminare definitivamente {{count}} elemento?",
         "delete_items_permanently_many": "Eliminare definitivamente {{count}} elementi?",
-        "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?"
+        "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?",
+        "selected_count_one": "{{count}} selezionato",
+        "selected_count_many": "{{count}} selezionati",
+        "selected_count_other": "{{count}} selezionati"
       },
       "itemCard": {
         "copied": "Copiato!",
@@ -15268,7 +15309,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Pattern da ignorare (uno per riga, ad es. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Includi le sottodirectory (ricorsivo)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "L’indicizzazione consuma richieste Kiro in proporzione alle dimensioni di ogni origine e una cartella monitorata continua a consumarne man mano che arrivano nuovi file — il costo si distribuisce nel tempo invece di essere addebitato tutto insieme.",
-        "items": "elementi",
         "kb_ids_comma_separated_id_or_arn": "Separati da virgole, es. KXABC12345 o arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "~{{calls}} richieste Kiro per completare",
         "knowledge_base_ids": "ID della base di conoscenza",
@@ -15340,7 +15380,10 @@
         "enter_region_to_add": "Inserisci la regione AWS per aggiungere questa fonte.",
         "profile_blank_uses_default_chain": "Lascia vuoto per usare le credenziali AWS predefinite.",
         "remove_this_live_source": "Rimuovere questa origine della base di conoscenza? Nulla è archiviato in locale; la base di conoscenza stessa non viene modificata.",
-        "region_example_placeholder": "ad es. us-east-1"
+        "region_example_placeholder": "ad es. us-east-1",
+        "items_count_one": "{{n}} elemento",
+        "items_count_many": "{{n}} elementi",
+        "items_count_other": "{{n}} elementi"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15369,6 +15412,9 @@
       "by_category": "Per categoria",
       "clear": "Cancella",
       "clear_old_caches": "Cancella le cache di scorrimento",
+      "delete_all_keys_one": "Elimina {{count}} chiave",
+      "delete_all_keys_other": "Elimina tutte le {{count}} chiavi",
+      "delete_all_keys_many": "Elimina tutte le {{count}} chiavi",
       "delete_cached_scroll_positions_from_old_sessions": "Elimina le altezze di riga memorizzate nella cache e le posizioni di lettura salvate di tutte le sessioni (sicuro — si ricostruiscono durante lo scorrimento)",
       "delete_key": "Elimina chiave",
       "export": "Esporta",
@@ -15873,7 +15919,6 @@
         "status": "Stato",
         "tool_list_read_from_the_package_s_declaration_th": "L'elenco degli strumenti è stato letto dalla dichiarazione del pacchetto; il server non è stato avviato per verificarne l'avvio.",
         "tools": "Strumenti",
-        "tools_2": "strumenti",
         "undo": "Annulla",
         "uninstall": "Disinstalla",
         "unknown": "Sconosciuto",
@@ -15923,7 +15968,10 @@
         "temp_refusal_sealed": "Il {{key}}={{path}} dichiarato è stato ignorato perché si trova nella cartella di runtime di sola lettura. La verifica ha usato invece la cartella temporanea gestita.",
         "temp_refusal_unclassifiable": "Il {{key}}={{path}} dichiarato è stato ignorato perché non è stato possibile confermarne la posizione reale. La verifica ha usato invece la cartella temporanea gestita.",
         "temp_refusal_check_failed": "Il {{key}}={{path}} dichiarato è stato ignorato perché il controllo della posizione non è riuscito. La verifica ha usato invece la cartella temporanea gestita.",
-        "mcp_deny_spared": "Questo è uno dei server di {{productName}}, quindi su {{name}} disattivare uno strumento qui ferma solo quello strumento."
+        "mcp_deny_spared": "Questo è uno dei server di {{productName}}, quindi su {{name}} disattivare uno strumento qui ferma solo quello strumento.",
+        "tools_count_one": "{{n}} strumento",
+        "tools_count_many": "{{n}} strumenti",
+        "tools_count_other": "{{n}} strumenti"
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",
@@ -17834,6 +17882,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Mostra i token usati e totali accanto alla barra di avanzamento del contesto",
         "e_g_solutions_architect_sre_founder": "es. solutions architect, SRE, fondatore",
         "effort_default_needs_reasoning_model": "Quanto tempo i modelli riflettono prima di rispondere, per impostazione predefinita. Si applica solo ai modelli capaci di ragionamento, quindi non ha effetto sul modello selezionato sopra.",
+        "effort_default_off_on_auto": "Quanto tempo i modelli riflettono prima di rispondere, per impostazione predefinita. Non si applica finché il modello predefinito è Auto, perché il backend sceglie il modello e non accetta alcun livello finché non viene selezionato un modello specifico.",
         "effort_needs_reasoning_model": "Si applica solo ai modelli capaci di ragionamento, quindi non ha effetto sul modello selezionato sopra.",
         "enter_for_newline": "Enter per andare a capo",
         "enter_sends": "Enter invia",
@@ -18671,7 +18720,6 @@
         "block_list_rules": "Elenco bloccati · {{rules}}",
         "built_in_rules_enforced_note": "{{enabled}} regole integrate su {{total}} sono attualmente applicate, dopo le tue esclusioni e gli eventuali blocchi da criterio.",
         "cancel": "Annulla",
-        "categories": "categorie ·",
         "click_any_control_to_see_exactly_what_it_covers": "Clicca su qualsiasi controllo per vedere esattamente cosa copre.",
         "collapse_all": "Comprimi tutto",
         "collapse_category_rules": "Comprimi le regole di {{category}}",
@@ -18807,7 +18855,6 @@
         "rail_until_restart": "Fino al riavvio",
         "rail_until_time": "Fino a {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", risolta come l'intersezione tra la policy della tua organizzazione e il profilo dell'host. Profili più restrittivi associati a una superficie, app o attività specifica (cron, Slack, subagenti) possono restringere ulteriormente un ambito a runtime. Sola lettura — il limite massimo è definito in",
-        "rules": "regole",
         "search_rules_placeholder": "Cerca regole, pattern, categorie…",
         "section_group_enforced": "Imposto",
         "section_group_reference": "Riferimenti",
@@ -18944,7 +18991,16 @@
         "redaction_revoke_failed": "Impossibile revocare quell'host. È ancora consentito.",
         "redaction_no_allowed_hosts": "Nessun host è consentito. Ogni link passa attraverso ogni controllo.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Revoca"
+        "redaction_revoke": "Revoca",
+        "rules_matched_one": "{{matched}} / {{n}} regola",
+        "rules_matched_many": "{{matched}} / {{n}} regole",
+        "rules_matched_other": "{{matched}} / {{n}} regole",
+        "categories_count_one": "{{n}} categoria ·",
+        "categories_count_many": "{{n}} categorie ·",
+        "categories_count_other": "{{n}} categorie ·",
+        "rules_count_one": "{{n}} regola",
+        "rules_count_many": "{{n}} regole",
+        "rules_count_other": "{{n}} regole"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associa il cambio di scheda chat a Ctrl+cifra invece di Option+cifra. Option+cifra non cambia chat mentre un campo di testo ha il focus.",
@@ -20135,21 +20191,22 @@
       "written_by_the": "Scritto dallo strumento"
     },
     "worldsPage": {
-      "active": "attivo,",
-      "agent_many": "{{count}} agenti",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agenti",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Metti a fuoco la finestra separata",
       "hide_controls": "Nascondi i controlli",
-      "open": "aperta",
       "playing_in_popout_window": "In riproduzione nella finestra separata",
       "pop_out_to_separate_window": "Apri in una finestra separata",
-      "present": "presente,",
       "show_controls": "Mostra i controlli",
-      "slot_many": "{{count}} slot",
-      "slot_one": "{{count}} slot",
-      "slot_other": "{{count}} slot"
+      "agents_present_one": "{{n}} agente presente",
+      "agents_present_many": "{{n}} agenti presenti",
+      "agents_present_other": "{{n}} agenti presenti",
+      "agents_active_one": "{{n}} attivo",
+      "agents_active_many": "{{n}} attivi",
+      "agents_active_other": "{{n}} attivi",
+      "slots_open_one": "{{n}} slot libero",
+      "slots_open_many": "{{n}} slot liberi",
+      "slots_open_other": "{{n}} slot liberi",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Nascondi i controlli",

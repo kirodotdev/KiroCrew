@@ -289,8 +289,42 @@ class TestIsTransientRawError:
         exc = ei.value
         assert exc.transient is True
         assert acp_error_is_transient(exc) is True
-        # The raw provider text is replaced by the actionable 5xx wording.
-        assert "transient error (HTTP 5xx)" in str(exc)
+        # The raw provider text is replaced by the connection card: a dispatch
+        # failure is the network path dropping, not a provider 5xx answer.
+        assert "Could not reach the model backend" in str(exc)
+        assert "HTTP 5xx" not in str(exc)
+        assert exc.connection_failure is True
+
+    def test_dispatch_failure_card_matches_the_connection_verdict(self):
+        from kiro_crew.acp.transport_errors import _format_acp_error, classify_provider_error
+
+        # The card and the classifier read the same frame: a connector failure
+        # carrying a request_id gets the connection card, keeps the request_id,
+        # and is never told to switch models.
+        for connector in ("dispatch failure", "DispatchFailure", "dispatch_failure"):
+            data = (
+                "Encountered an error in the response stream: "
+                f"{connector} (request_id: 908f5c86-7a02-44a3-a852-9aa64aa90779)"
+            )
+            err = {"code": -32603, "message": "Internal error", "data": data}
+            card = _format_acp_error(err)
+            assert classify_provider_error(f"{data} Internal error", data=data).kind == "connection"
+            assert card.startswith("Could not reach the model backend"), (connector, card)
+            assert "HTTP 5xx" not in card
+            assert "switch to a different model" not in card
+            assert card.endswith("(request_id: 908f5c86-7a02-44a3-a852-9aa64aa90779)")
+
+    def test_provider_5xx_answer_keeps_the_5xx_card(self):
+        from kiro_crew.acp.transport_errors import _format_acp_error
+
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "InternalServerError: please try again (request_id: abc-123)",
+        }
+        assert _format_acp_error(err).startswith(
+            "The model backend hit a transient error (HTTP 5xx)"
+        )
 
     def test_raise_acp_error_carries_transient_flag_and_formatted_message(self):
         import pytest

@@ -892,10 +892,14 @@ spec is not where it would survive: the conductor installers rebuild their map t
 exactly the Crew servers on every pass, and a third-party installer may rewrite its
 own spec. One record keyed by template name.
 
-- **Not for the default agent or the worker.** `kirocrew.json` already holds every
-  server installed through the MCP page, and `kirocrew-worker` mirrors it, so the
-  record refuses both (`DEFAULT_TEMPLATES`, `DEFAULT_REASON`); the request points
-  the user at the MCP page instead. A crewmate's own service templates are refused
+- **Mount-only for the default agent and the worker.** `kirocrew.json` holds every
+  server installed through the MCP page, whose add also approves every tool, and
+  `kirocrew-worker` mirrors it. So the record takes a default-agent addition only
+  with `mount_only: true`, under `kirocrew`, and refuses a plain one and any
+  addition under the worker (`DEFAULT_TEMPLATES`, `DEFAULT_REASON`); a hand-edited
+  default entry without the flag is skipped on read. The rebuild merges it with
+  `reconcile_default_spec` (stamp, Undo removal) and `sync_shared_server_refs`
+  withholds its bare grant (see *Asking for an MCP server mid-chat*). A crewmate's own service templates are refused
   (`CREWMATE_REASON`): a crewmate's servers change through its own capabilities.
   Every other template Kiro Crew writes (`agent_files.OWNED_KIRO_AGENT_FILES`: the
   heartbeat, which copies a fixed server list, and the background agents) is refused
@@ -2795,13 +2799,37 @@ change card, and the server is written to the template's additions record
   route there is no own-thread exemption: a card nobody sees is never raised.
   The template is the caller's execution record's `template_id`; the record
   folds an alias onto its target on every read and write.
-- **The default agent and the worker are refused, with no card.** The default
-  `kirocrew` agent carries every server installed on the MCP page, and the
-  worker mirrors it (`template_mcp_additions.DEFAULT_TEMPLATES`). The MCP page's
-  add would also approve every tool of the server, so a request from either is
-  refused by `template_mcp_additions.addition_support` (`409 unsupported`, its
-  `DEFAULT_REASON` pointing to the MCP page). The card therefore
-  covers only conductors and third-party agents, where nothing auto-approves.
+- **The default agent and the worker get a mount-only card.** Both normally
+  take their servers from the MCP page
+  (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
+  tool of the server; a mid-chat request must not be a second path to that
+  grant. So a
+  request from either is recorded on the default `kirocrew` template with
+  `mount_only: true` (the worker mirrors the default spec, so one record reaches
+  both). The rebuild merges the entry into `mcpServers`, adds the `@server` ref
+  to `tools`, and writes no `allowedTools` grant: its calls still ask. The
+  record keeps that disposition across every rebuild, including one where the
+  same server is also on the MCP page: the bare `@server` grant is withheld,
+  while a per-tool grant the user wrote stays (the card lists it under
+  "Already approved"). Because `kirocrew.json` is rebuilt on top of itself,
+  the merged entry is stamped `x-kirocrew-card-addition`
+  (`template_mcp_additions.reconcile_default_spec`); a stamped entry whose
+  record is gone, after the card's Undo, is removed with its bare `@server`
+  refs on the next rebuild, unless an MCP page scope launches that name (an
+  entry with a `command` or `url`; a page toggle's stub such as `{}` does not
+  count, `page_launched_names`). A per-tool `@server/tool` ref is kept: it
+  reaches nothing without the server, and a failed Undo that puts the record
+  back then returns the server with the grants it had. For the default agent
+  the card reads the outcome from `kirocrew.json` itself
+  (`template_server_request._default_spec_mounts`): Add server succeeded when
+  the spec holds the stamped entry, Undo when it no longer does. A rebuild
+  that reports failure for another reason (a held conductor spec, another
+  installer raising after the default spec was committed) is not rolled back,
+  because restoring the record over a committed spec would land after the
+  rebuild pruned the server's per-tool refs; an Add server whose launcher did
+  not resolve is rolled back instead of shown as applied. The grant pass uses
+  the mount-only set from the same read of the record as the merge. The stamp can only make a
+  rebuild remove an entry, never grant one.
 - **A harness that cannot apply it is refused with the record's reason.**
   `template_mcp_additions.addition_support(template, backend)` answers for the
   caller's backend; a template Crew does not own on a harness that loads its
@@ -4848,7 +4876,10 @@ pinned exactly as registration pins it, never read from the spec, and with
 `PYTHONPATH` and `KIROCREW_HOME` set from that pin over anything the spec
 declares. A user app, a shadowed builtin, or a builtin app that ships its own
 binary is not Kiro Crew's code and gets no element. gatewayd's set stays the
-managed servers: a pooled app server is not handed the token.
+managed servers: a pooled app server is not handed the token. KAS never reaches
+`kiro_control_plane_servers`; its hoist tokens the same app servers from the
+same manifest launch (`acp/kas_app_identity.py`, see
+[acp-client](../system-specs/modules/acp-client.md)).
 
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global

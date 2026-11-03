@@ -497,3 +497,131 @@ class TestBodyCaps:
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status == 413
+
+
+class TestOneEditorsSavesLandInOrder:
+    """A reload during an in-flight autosave must not lose the newest text.
+
+    On ``pagehide`` the page sends its newest text at once, beside the autosave that
+    is still on the wire, and the route runs each PUT on a pool thread. Nothing made
+    them reach the disk in send order, so the older autosave could land LAST and
+    overwrite the reload's newer text. These tests send the two saves in exactly
+    that reversed arrival order.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_older_save_arriving_last_does_not_overwrite_a_newer_one(self, app):
+        async with client_for(app) as client:
+            url = f"{k.API_BASE}/meetings/m1/note"
+            newer = await client.put(url, json={"content": "newest", "editor": "tab-a", "seq": 2})
+            assert newer.status == 200
+            older = await client.put(url, json={"content": "older", "editor": "tab-a", "seq": 1})
+            assert older.status == 200
+            body = await older.json()
+            # The answer is the note as it is on disk, flagged so the page does not
+            # treat the dropped text as confirmed.
+            assert body["superseded"] is True
+            assert body["content"] == "newest"
+            got = await client.get(url)
+            assert (await got.json())["content"] == "newest"
+
+    def test_a_failed_newer_write_does_not_supersede_an_older_save(
+        self, root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The newer save reaches the store first and its write fails (a full disk);
+        # the older save that follows still has to be written, not reported as
+        # superseded by text that never reached the disk.
+        real_write = store.atomic_write
+
+        def full_disk(path, content, **kwargs):
+            if content == "newer but too big":
+                raise OSError(28, "No space left on device")
+            return real_write(path, content, **kwargs)
+
+        monkeypatch.setattr(store, "atomic_write", full_disk)
+        with pytest.raises(OSError):
+            store.write_note("m1", "newer but too big", root, order=store.NoteSaveOrder("e", 2))
+        result = store.write_note("m1", "older, fits", root, order=store.NoteSaveOrder("e", 1))
+        assert "superseded" not in result
+        assert store.read_note("m1", root)["content"] == "older, fits"
+
+    @pytest.mark.asyncio
+    async def test_saves_in_order_all_land(self, app):
+        async with client_for(app) as client:
+            url = f"{k.API_BASE}/meetings/m1/note"
+            for seq, text in enumerate(("a", "ab", "abc"), start=1):
+                resp = await client.put(url, json={"content": text, "editor": "tab-a", "seq": seq})
+                body = await resp.json()
+                assert "superseded" not in body
+                assert body["content"] == text
+
+    @pytest.mark.asyncio
+    async def test_another_editor_is_not_ordered_against_this_one(self, app):
+        # Two tabs (or a page opened after a reload) stay last-write-wins: only one
+        # editor's OWN saves have an order to keep.
+        async with client_for(app) as client:
+            url = f"{k.API_BASE}/meetings/m1/note"
+            await client.put(url, json={"content": "from a", "editor": "tab-a", "seq": 9})
+            resp = await client.put(url, json={"content": "from b", "editor": "tab-b", "seq": 1})
+            assert (await resp.json())["content"] == "from b"
+
+    @pytest.mark.asyncio
+    async def test_the_order_is_per_meeting(self, app):
+        async with client_for(app) as client:
+            await client.put(
+                f"{k.API_BASE}/meetings/m1/note", json={"content": "m1", "editor": "e", "seq": 5}
+            )
+            resp = await client.put(
+                f"{k.API_BASE}/meetings/m2/note", json={"content": "m2", "editor": "e", "seq": 1}
+            )
+            assert (await resp.json())["content"] == "m2"
+
+    @pytest.mark.asyncio
+    async def test_a_save_without_an_order_is_last_write_wins(self, app):
+        async with client_for(app) as client:
+            url = f"{k.API_BASE}/meetings/m1/note"
+            await client.put(url, json={"content": "ordered", "editor": "tab-a", "seq": 3})
+            resp = await client.put(url, json={"content": "plain"})
+            assert (await resp.json())["content"] == "plain"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"editor": "tab-a"},
+            {"seq": 1},
+            {"editor": "", "seq": 1},
+            {"editor": "has space", "seq": 1},
+            {"editor": "x" * 65, "seq": 1},
+            {"editor": "tab-a", "seq": 0},
+            {"editor": "tab-a", "seq": -1},
+            {"editor": "tab-a", "seq": True},
+            {"editor": "tab-a", "seq": 1.5},
+            {"editor": "tab-a", "seq": "1"},
+            {"editor": "tab-a", "seq": 2**53},
+            {"editor": 7, "seq": 1},
+        ],
+    )
+    async def test_a_malformed_order_is_refused_not_ignored(self, app, extra):
+        # Ignoring a bad pair would quietly switch the ordering off.
+        async with client_for(app) as client:
+            url = f"{k.API_BASE}/meetings/m1/note"
+            resp = await client.put(url, json={"content": "x", **extra})
+            assert resp.status == 400
+            got = await client.get(url)
+            assert (await got.json())["content"] == ""
+
+    def test_the_stored_order_is_bounded(self, root: Path):
+        order_map = store._NOTE_SAVE_SEQ
+        before = dict(order_map)
+        try:
+            for i in range(store._NOTE_SAVE_SEQ_EDITORS + 5):
+                store.write_note("m1", "x", root, order=store.NoteSaveOrder(f"e{i}", 1))
+            editors = order_map[str(store.note_path("m1", root))]
+            assert len(editors) == store._NOTE_SAVE_SEQ_EDITORS
+            for i in range(store._NOTE_SAVE_SEQ_NOTES + 5):
+                store._record_note_save(root / f"n{i}", store.NoteSaveOrder("e", 1))
+            assert len(order_map) == store._NOTE_SAVE_SEQ_NOTES
+        finally:
+            order_map.clear()
+            order_map.update(before)

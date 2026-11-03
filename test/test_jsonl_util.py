@@ -669,11 +669,18 @@ _DEFERRED_READERS: set[str] = set()
 # over-cap record either -- its count has to equal the whole-file read's.
 _WHOLE_FILE_PEERS = {"transcript_count.py"}
 
+# Iterates an HTTP response, not a file: the stdio bridge reads the event stream
+# a remote MCP server answers with, from the url in the operator's own agent
+# file. No agent-writable tree is read, and the same response's JSON branch is
+# one whole-body `read()`, so a line of the stream is no larger than that read.
+_NETWORK_STREAM_READERS = {"kas_http_bridge.py"}
+
 _ALLOWED_UNBOUNDED_FILES = (
     {path for path, _ in _KERNEL_PSEUDO_FILE_READERS}
     | _FENCED_READERS
     | _DEFERRED_READERS
     | _WHOLE_FILE_PEERS
+    | _NETWORK_STREAM_READERS
 )
 
 

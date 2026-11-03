@@ -2,13 +2,15 @@
 
 The project directory, the data home and a leftover legacy home, deployed cron
 scripts and installed skills against their sources, the ``kirocrew`` launcher on
-``PATH``, an editable install's source checkout, the Python import path, and the
-timezone data the runtime resolves zones from.
+``PATH``, the program the installed service starts, an editable install's source
+checkout, the Python import path, and the timezone data the runtime resolves zones
+from.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 import zoneinfo
@@ -360,6 +362,130 @@ def _doctor_path_launcher() -> None:
 #: The prefix an earlier version's browser CLI installer wrote under the data
 #: home. Nothing reads it any more; doctor names it and leaves it alone.
 _LEFTOVER_BROWSER_CLI_LEAF = "playwright-cli"
+
+
+def _doctor_service_launch() -> None:
+    """Report which install the installed service starts, and warn on a source checkout.
+
+    The service definition persists the path of the ``kirocrew`` it launches. When
+    that path is, or leads through, the shared ``~/.local/bin/kirocrew`` launcher,
+    a source clone's ``install.sh`` or ``kirocrew setup`` can repoint it, and the
+    service runs the clone from its next restart on. On a host that also has the
+    managed wheel install, updates then run inside that checkout and anything done
+    in it reaches the running service, with nothing else saying so. This follows
+    the definition's own program (the systemd unit's ``ExecStart``, or the launcher
+    the launchd plist runs) to the file it finally executes.
+
+    Dev Fleet's "Make live" pointer is a deliberate checkout, so a service that
+    runs one while the pointer is set is reported, not warned on. A host with no
+    managed wheel install is a development host and runs its checkout on purpose.
+
+    Read-only and advisory: it reads the definition and never rewrites it.
+    """
+    from kiro_crew.service import controller, live_target
+
+    unit = controller.installed_unit_path()
+    if unit is None:
+        return
+    program = _service_program(unit)
+    if program is None:
+        print(f"  service runs: ⚠️  could not read the program the service starts ({unit})")
+        return
+    real = os.path.realpath(program)
+    checkout = _kirocrew_checkout_of(Path(real))
+    # A link target is whatever its writer chose, so a path that carries a
+    # control character is shown escaped; an ordinary one stays copyable.
+    shown = real if real.isprintable() else render._safe_display(real)
+    if checkout is None:
+        print(f"  service runs: ✅ {shown}")
+        return
+    if live_target.read_target() is not None:
+        print(f"  service runs: ℹ️  {shown} (source checkout, Dev Fleet live target is set)")
+        return
+    wheel = _managed_wheel_launcher()
+    if wheel is None:
+        print(f"  service runs: ✅ {shown} (source checkout)")
+        return
+    print("  ⚠️  The installed service runs a source checkout, not the wheel install.")
+    print(f"{render._INDENT}service runs:  {shown}")
+    print(f"{render._INDENT}wheel install: {wheel}")
+    render._print_wrapped(
+        "Updates run inside that checkout, and anything done in it reaches the "
+        "running service. To run the wheel install again, run `service install` "
+        "with the wheel install's kirocrew shown above, then restart the service. "
+        "To run a checkout on purpose, use Dev Fleet's Make live instead."
+    )
+
+
+def _service_program(unit: Path) -> str | None:
+    """The program an installed service definition finally executes, or ``None``.
+
+    A systemd unit names it as the first word of its last ``ExecStart=``; only the
+    unit file is read, not a drop-in an operator added beside it. The launchd
+    plist runs a generated launcher whose ``exec`` line names it.
+    """
+    if unit.suffix == ".plist":
+        from kiro_crew.gateway_restart import _Inconclusive, _launcher_target
+        from kiro_crew.service import macos
+
+        payload = macos._plist_payload(unit)
+        argv = payload.get("ProgramArguments") if payload else None
+        if not isinstance(argv, list) or not argv or not isinstance(argv[0], str):
+            return None
+        if argv[0] != str(macos.LIVE_PROGRAM):
+            return argv[0]
+        try:
+            return _launcher_target(Path(argv[0]))
+        except (_Inconclusive, OSError, ValueError):
+            # ValueError: an ``exec`` line shlex cannot split (an unterminated quote).
+            return None
+    try:
+        text = unit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    program = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or key.strip() != "ExecStart":
+            continue
+        try:
+            words = shlex.split(value)
+        except ValueError:
+            words = []
+        # An empty ``ExecStart=`` resets the list; a leading ``-@:+!`` is a
+        # systemd prefix, not part of the path.
+        program = words[0].lstrip("-@:+!").replace("%%", "%") if words else None
+    return program or None
+
+
+def _kirocrew_checkout_of(path: Path) -> Path | None:
+    """The Kiro Crew source checkout *path* lies in, or ``None``.
+
+    A checkout is a directory holding both a ``.git`` entry (a directory, or the
+    file a linked worktree has) and the ``src/kiro_crew`` package.
+    """
+    for parent in path.parents:
+        try:
+            if (parent / ".git").exists() and (parent / "src" / "kiro_crew").is_dir():
+                return parent
+        except OSError:
+            return None
+    return None
+
+
+def _managed_wheel_launcher() -> Path | None:
+    """The managed wheel install's ``kirocrew``, when this host has one."""
+    from kiro_crew.platform.wheel_engine_layout import managed_venv_layout
+
+    layout = managed_venv_layout()
+    for tree in (layout.stable_link, layout.legacy):
+        launcher = tree / "bin" / "kirocrew"
+        try:
+            if launcher.is_file():
+                return launcher
+        except OSError:
+            continue
+    return None
 
 
 def _doctor_browser_leftover(home: Path) -> None:

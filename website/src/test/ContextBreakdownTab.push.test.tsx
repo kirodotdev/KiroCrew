@@ -270,6 +270,10 @@ describe('Context tab: pushed frames replace the poll', () => {
     capsMock.mockRejectedValue(new Error('Service Unavailable (503)'))
     mount()
     await settle()
+    // The read retries once (`retryThroughRestart`) before it reports the failure.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    await settle()
+    expect(capsMock).toHaveBeenCalledTimes(2)
     expect(screen.getByText('Service Unavailable (503)')).toBeTruthy()
     // The rest row is still drawn, with no tip: neither "switch harness" nor "not yet".
     expect(screen.getByText('Rest of the context')).toBeTruthy()

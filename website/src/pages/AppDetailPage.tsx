@@ -12,8 +12,11 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star, ShieldAlert, ExternalLink,
+  Target, Settings2, Star, ShieldAlert, ExternalLink, MoreHorizontal,
 } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../components/ui/dropdown-menu'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
@@ -30,6 +33,7 @@ import { consentTierFor } from '../components/appstore/registryTier'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
+import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
@@ -38,6 +42,7 @@ import AppStoreDialog from '../components/appstore/AppStoreDialog'
 import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
+import LinkOpenChoices from '../linkOpen/LinkOpenChoices'
 import type { AppContributor } from '../types'
 import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
@@ -95,7 +100,10 @@ export default function AppDetailPage() {
   // Message-action reach an update widened (the user role, markdown, a new action).
   const stagedMessageActions = app?.messageActionGrant?.staged || []
   const declaredMessageActions = (app?.manifest as { contributes?: { messageActions?: unknown } } | undefined)?.contributes?.messageActions
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length > 0 || stagedFullUrl
+  // So do link-open hosts and whole URLs for opened links.
+  const stagedOpenHosts = app?.linkOpenGrant?.stagedHosts || []
+  const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length > 0 || stagedFullUrl || stagedOpenFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -142,6 +150,12 @@ export default function AppDetailPage() {
   const [serverHostname, setServerHostname] = useState('')
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false)
   const [keepData, setKeepData] = useState(true)
+  // The disabled self-managed app's overflow menu opens the uninstall confirm
+  // from a menu item: defer the open past the menu's close, skip its trigger
+  // restore, and have the dialog return focus to the trigger itself.
+  const overflowMenu = useMenuOpensDialog()
+  const overflowTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const uninstallOpenerRef = useRef<HTMLElement | null>(null)
 
   // Contributors row (Details panel). Resolved GitHub repo URL for the app's
   // source, its top contributors, and the fetch's loading state. The row hides
@@ -271,6 +285,7 @@ export default function AppDetailPage() {
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
+            linkOpenGrant: installed.linkOpenGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -398,6 +413,7 @@ export default function AppDetailPage() {
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
+            linkOpenGrant: installed.linkOpenGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -999,6 +1015,19 @@ export default function AppDetailPage() {
                   </ul>
                 </div>
               )}
+              {stagedOpenHosts.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_hosts')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {stagedOpenHosts.map(h => (
+                      <code key={h} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{h}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stagedOpenFullUrl && (
+                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1011,7 +1040,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions))].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : [])].join(', ')
                 try {
                   await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1020,6 +1049,8 @@ export default function AppDetailPage() {
                     linkPreviewTextPatterns: stagedLinkPatterns,
                     linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
                     messageActions: stagedMessageActions,
+                    linkOpenHosts: stagedOpenHosts,
+                    linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
                   })
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
@@ -1042,6 +1073,7 @@ export default function AppDetailPage() {
             <span className="text-ok text-sm block">{grantsApprovedMsg}</span>
           </div>
         )}
+        {app.installed && <LinkOpenChoices appName={app.name} label={appDisplayName(app)} />}
 
         {/* Error. No special execution-policy branch here any more: an untrusted
             third-party app is refused with `app_execution_denied`, and that
@@ -1108,7 +1140,8 @@ export default function AppDetailPage() {
         {showUninstallConfirm && app && (
           <AppStoreDialog
             className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-            onClose={() => setShowUninstallConfirm(false)}
+            onClose={() => { setShowUninstallConfirm(false); uninstallOpenerRef.current = null }}
+            returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
@@ -1218,8 +1251,45 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {app.enabled ? (
+                    <>
+                      {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                      {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                    </>
+                  ) : (
+                    /* A self-managed app can be disabled too (Library's menu, or
+                       the gateway holding it until the owner consents to a new
+                       sessionApproval). Without Enable here the consent notice
+                       above pointed at a control this branch never rendered
+                       (#23336). Same handler, label and dialog as the other
+                       branches. Update and Uninstall move into one overflow
+                       menu so the row stays at two controls. */
+                    <>
+                      <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                      {(app.updateAvailable || canUninstall) && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Btn ref={overflowTriggerRef} aria-label={i18nT('pages.appDetailPage.more_actions', { name: appDisplayName(app) })} disabled={actionBusy}><MoreHorizontal size={14} aria-hidden /></Btn>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" onCloseAutoFocus={overflowMenu.onCloseAutoFocus}>
+                            {app.updateAvailable && (
+                              <DropdownMenuItem disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} onSelect={() => { void handleInstall() }}>
+                                <ArrowUp size={12} aria-hidden /> {i18nT('pages.appDetailPage.update')}
+                              </DropdownMenuItem>
+                            )}
+                            {canUninstall && (
+                              <DropdownMenuItem disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')} onSelect={() => {
+                                uninstallOpenerRef.current = overflowTriggerRef.current
+                                overflowMenu.openLayer(() => { void handleAction('uninstall') })
+                              }}>
+                                <Trash2 size={12} aria-hidden /> {i18nT('pages.appDetailPage.uninstall')}
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </>
+                  )}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (

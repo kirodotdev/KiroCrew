@@ -874,11 +874,12 @@ function ChatInput({
     return () => { ro.disconnect(); forgetAfterSlide(measure) }
   }, [inlineToolbarWhileFits, value, showGhost, composerCollapsed])
   // Every status line the box draws above or below the text is a strip too:
-  // the send-held notice while an upload is in flight, and the voice bar's
-  // idle states (an error, a model download, a cancellable drain, the
-  // mic-held-elsewhere and dictation-landed notices). On the single row each
-  // would be one more flex item beside the text and squeeze it.
-  const inBoxStatusStrip = (holdSend && (composerHasDraft || hasSessionRefs)) ||
+  // the send-held notice while an upload is in flight, the voice bar's
+  // Recording strip (drawn while recording whenever the dictation panel is
+  // not), and its idle states (an error, a model download, a cancellable
+  // drain, the mic-held-elsewhere and dictation-landed notices). On the single
+  // row each would be one more flex item beside the text and squeeze it.
+  const inBoxStatusStrip = (holdSend && (composerHasDraft || hasSessionRefs)) || voiceRecording ||
     !!voiceError || !!voiceDownload || voiceDrainCancellable || micHeldElsewhere || voiceHeldLanded
   const inlineToolbar = inlineToolbarWhileFits && textFitsOneRow && !pendingFiles.length && !pendingDirs.length && !hasQuote && !hasSessionRefs && !inBoxStatusStrip && manualHeight === null &&
     !terminal.active && !voiceHoldMode && !showDictation && !lexicalLoadFailed

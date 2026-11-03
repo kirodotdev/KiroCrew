@@ -150,10 +150,13 @@ with a wrong-but-valid session present, run `kirocrew cloud logout` first.
 ### Port/tunnel mismatch (the common one)
 
 `kirocrew doctor`'s "Remote access" hint and its `dashboard: http://localhost:5476`
-line show the **defaults**. If your service or shell sets `KIROCREW_PORT` (e.g.
-`7777`), the gateway actually listens **there**, not on 5476 — the doctor line just
-didn't see that env var. Your tunnel, browser, and token must all use the **same,
-real** port:
+line pick the port in this order: the `KIROCREW_PORT` of the shell you run `doctor`
+in, then a port written in `dashboard.url`, then 5476. If your service sets
+`KIROCREW_PORT` (e.g. `7777`) but your shell does not, the gateway listens on
+**7777** while `doctor` prints the `dashboard.url` port or 5476.
+Run `doctor` with the service's value (`KIROCREW_PORT=7777 kirocrew doctor`) to see
+the real port. Your tunnel, browser, and token must all use the **same, real**
+port:
 
 ```bash
 # service has KIROCREW_PORT=7777 → tunnel 7777, not 5476:

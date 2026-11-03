@@ -340,6 +340,7 @@ async def create_session(
         mcp_servers,
         session_token=stub_token,
         managed_entries=kas_extras.managed_entries,
+        app_launches=kas_extras.app_launches,
     )
     # The host's last word on its own tool surface. A host that reads an
     # agent spec passes the list straight back; one that has nothing else

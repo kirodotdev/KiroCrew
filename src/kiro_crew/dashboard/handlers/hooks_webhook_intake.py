@@ -15,7 +15,6 @@ never imports the facade.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from aiohttp import web
@@ -159,9 +158,14 @@ def _read_hook_registrations() -> dict[str, dict]:
 
 
 def _read_json_file(path) -> object:
-    """Read JSON from *path*, returning ``None`` when absent or corrupt."""
+    """Read JSON from *path*, returning ``None`` when absent or corrupt.
+
+    One leading UTF-8 byte-order mark is not content (a hand-saved ``hooks.json``).
+    """
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return loads_user_json(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return None
 
@@ -184,10 +188,11 @@ def _load_hook_context(hook_id: str) -> str:
 def _load_hook_execution(session_key: str) -> ExecutionContext:
     """Capture a registration's identity without consulting current member labels."""
     from kiro_crew.execution_context import capture_session_execution, execution_from_record
+    from kiro_crew.user_json import loads_user_json
 
     path = _hook_store_path()
     if path.exists():
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = loads_user_json(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("Hook registration is malformed")
         row = raw.get(session_key.removeprefix(_HOOK_SESSION_PREFIX))

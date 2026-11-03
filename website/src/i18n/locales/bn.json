@@ -6030,7 +6030,6 @@
       "credentials_remain_with_their_source_rules_hooks": "ক্রেডেনশিয়াল তাদের সোর্সেই থেকে যায়। কথোপকথনের ইতিহাস, হুক, এজেন্ট ডেফিনিশন এবং সোর্সের পারসোনা পরিচয় ইমপোর্ট করা হয় না। আপনার লেখা নিয়ম ও নির্দেশনা উচ্চ-প্রাধান্যের মেমরি হিসেবে ইমপোর্ট করা হয়।",
       "deduplicated": "ডুপ্লিকেট বাদ দেওয়া হয়েছে",
       "existing_kirocrew_setup_is_never_overwritten_mat": "ডিফল্টভাবে বিদ্যমান {{productName}} সেটআপ কখনও ওভাররাইট করা হয় না। মিলে যাওয়া আইটেমের ডুপ্লিকেট বাদ দেওয়া হয়, এবং সাংঘর্ষিক আইটেমে আপনার বর্তমান সংস্করণই থাকে—যদি ইমপোর্টের পরে আপনি অন্য কিছু বেছে না নেন।",
-      "found": "পাওয়া গেছে",
       "import_agent_setup": "এজেন্ট সেটআপ ইমপোর্ট করুন",
       "import_all_your_supported_work_or_handpick_what": "তোমার সমর্থিত সব কাজ ইমপোর্ট করো, বা কী আনবে তা বেছে নাও।",
       "import_another": "আরেকটি ইমপোর্ট করুন",
@@ -6040,7 +6039,6 @@
       "imported": "ইমপোর্ট হয়েছে",
       "importing": "ইমপোর্ট করা হচ্ছে",
       "items_already_exist_with_different_content": "আইটেম ভিন্ন কনটেন্ট নিয়ে ইতিমধ্যেই রয়েছে।",
-      "items_selected": "আইটেম নির্বাচিত",
       "keep_both": "দুটোই রাখুন",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} এই গেটওয়ে হোস্টে এজেন্ট সেটআপ পেয়েছে। রিভিউ করার জন্য সোর্স বেছে নাও।",
       "kirocrew_did_not_find_supported_setup_to_import": "এই গেটওয়ে হোস্টে ইমপোর্ট করার মতো সমর্থিত সেটআপ {{productName}} খুঁজে পায়নি।",
@@ -6072,7 +6070,14 @@
       "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।",
       "import_setup_stage": "সেটআপ ইমপোর্ট করো · {{stages}}টির মধ্যে {{stage}}",
       "source_item_count_one": "{{name}}, {{count}}টি আইটেম",
-      "source_item_count_other": "{{name}}, {{count}}টি আইটেম"
+      "source_item_count_other": "{{name}}, {{count}}টি আইটেম",
+      "category_count_one": "{{count}}টি বিভাগ",
+      "category_count_other": "{{count}}টি বিভাগ",
+      "source_categories": "{{name}}-এর বিভাগ",
+      "items_selected_count_one": "{{count}}টি আইটেম নির্বাচিত",
+      "items_selected_count_other": "{{count}}টি আইটেম নির্বাচিত",
+      "found_count_one": "{{count}}টি পাওয়া গেছে",
+      "found_count_other": "{{count}}টি পাওয়া গেছে"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "সংরক্ষিত হয়েছে, কিন্তু এই {{productName}} এজেন্ট কনফিগারেশন আপডেট করতে পারেনি, তাই নতুন চ্যাটগুলো আগের সেটআপ রাখবে। কারণ জানতে 'লগ' পেজ খোলো।"
@@ -8466,6 +8471,7 @@
       "title_md": "মধ্যম প্রস্থ"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Auto-তে রিজনিং প্রচেষ্টা প্রযোজ্য নয়: ব্যাকএন্ড নিজেই মডেল বেছে নেয় এবং তুমি উপরে একটি নির্দিষ্ট মডেল বেছে না নেওয়া পর্যন্ত কোনো প্রচেষ্টার স্তর নেয় না।",
       "default_with_level": "ডিফল্ট · {{level}}",
       "effort": "প্রচেষ্টা",
       "effort_help": "রিজনিং প্রচেষ্টা ঠিক করে দেয় উত্তর দেওয়ার আগে মডেল কতক্ষণ ভাববে। বেশি মানে কঠিন সমস্যা নিয়ে বেশি সময় ধরে রিজনিং (ধীর, কিন্তু ভালো উত্তর); কম মানে দ্রুত। সেশন-ভিত্তিক ওভাররাইড বন্ধ করলে সেটিংস → চ্যাট-এর ডিফল্টে ফিরে যায়, আর কোনো ডিফল্ট সেট না থাকলে মডেলের নিজের পছন্দে। শুধু যে মডেলগুলো রিজনিং প্রচেষ্টা সমর্থন করে সেগুলোতেই এই সেটিং থাকে।",
@@ -10618,6 +10624,20 @@
       "grant_role_user": "{{title}}: তোমার নিজের বার্তাও, শুধু উত্তর নয়",
       "grant_role_assistant": "{{title}}: অ্যাসিস্ট্যান্টের উত্তর",
       "grant_format_markdown": "{{title}}: বার্তার Markdown, লিংকের ঠিকানাসহ"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} লিংক {{app}}-এ খুলবে?",
+      "ask_body": "{{app}} শুধু নিচে দেখানো লিংকটি পাবে।",
+      "always": "{{host}}-এর জন্য সবসময় এটি করো",
+      "open_in_app": "{{app}}-এ খোলো",
+      "open_in_browser": "ব্রাউজারে খোলো",
+      "opening": "{{app}}-এ খোলা হচ্ছে…",
+      "failed": "{{app}} এই লিংকটি খুলতে পারেনি।",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "কপি করো",
+      "offer_open": "{{host}} খোলো",
+      "copy_failed": "কপি করা যায়নি। অ্যাপে লেখাটি নির্বাচন করে নিজে কপি করো।",
+      "more_actions": "আরও কাজ"
     }
   },
   "hooks": {
@@ -10940,6 +10960,7 @@
       "install_on_your_mac": "আপনার Mac-এ ইনস্টল করুন",
       "installed": "ইনস্টল করা হয়েছে:",
       "installed_version": "ইনস্টল করা হয়েছে (v{{version}})",
+      "more_actions": "{{name}}-এর জন্য আরও অ্যাকশন",
       "installing": "ইনস্টল করা হচ্ছে…",
       "keep_app_data": "অ্যাপের ডেটা রাখুন",
       "lifecycle": "| লাইফসাইকেল:",
@@ -11002,7 +11023,13 @@
       "grants_reconsent_link_patterns": "টেক্সট প্যাটার্ন: চ্যাটের যে লেখা এই প্যাটার্নগুলোর সাথে মেলে, তা অ্যাপের হোভার কার্ডকে দেখতে দেয়।",
       "grants_reconsent_link_full_url": "পুরো লিংক ঠিকানা: অ্যাপের হোভার কার্ড লিংকের ? বা # এর পরের অংশও দেখবে, যেখানে সাইন-ইন কোড থাকতে পারে।",
       "grants_reconsent_message_actions": "বার্তা অ্যাকশন: চ্যাট বার্তায় অ্যাপের মেনু আইটেম কী পড়তে পারে।",
-      "grants_approved": "অনুমোদিত: {{entries}}। অ্যাপটি এখন এগুলো ব্যবহার করতে পারে।"
+      "grants_approved": "অনুমোদিত: {{entries}}। অ্যাপটি এখন এগুলো ব্যবহার করতে পারে।",
+      "grants_reconsent_link_open_hosts": "খোলা লিংক: চ্যাট বার্তায় এই সাইটগুলোর কোনো লিংকে ক্লিক করলে অ্যাপটিকে সেটি খুলতে দেয়।",
+      "grants_reconsent_link_open_full_url": "খোলা লিংকের পুরো ঠিকানা: অ্যাপটি লিংকের ? বা # এর পরের অংশও দেখে, যেখানে সাইন-ইন কোড থাকতে পারে।",
+      "link_open_remembered": "মনে রাখা লিংক পছন্দ",
+      "link_open_choice_app": "{{name}}-এ খোলে",
+      "link_open_choice_browser": "তোমার ব্রাউজারে খোলে",
+      "link_open_forget": "ভুলে যাও"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",
@@ -11166,7 +11193,6 @@
       "make_sure_the_gateway_s": ". নিশ্চিত করুন যে গেটওয়ের",
       "make_the_default_profile": "{{name}}-কে ডিফল্ট প্রোফাইল বানাও",
       "missing_sso_start_url_sso_region": "অনুপস্থিত … sso_start_url, sso_region",
-      "more": "আরও",
       "never_boto3_so_credential_resolution_stays_in_yo": "(কখনও boto3 নয়),\n              তাই ক্রেডেনশিয়াল রিজলিউশন আপনার OS ক্রেডেনশিয়াল স্টোরেই থাকে। {{productName}} কখনও IAM লেখে না এবং\n              কখনও অ্যাকাউন্ট, ইউজার বা রোল পরিচালনা করে না — তৈরি হওয়া least-privilege পলিসি আপনি নিজেই প্রয়োগ করেন।",
       "never_credentials": "— কখনও ক্রেডেনশিয়াল নয়)",
       "new_profile": "নতুন প্রোফাইল",
@@ -11262,7 +11288,9 @@
       "col_actions": "অ্যাকশন",
       "col_type": "ধরন",
       "col_url": "লিংক",
-      "col_cost": "খরচ"
+      "col_cost": "খরচ",
+      "more_count_one": "+আরও {{n}}টি",
+      "more_count_other": "+আরও {{n}}টি"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}-এ প্রকাশিত",
@@ -12279,7 +12307,6 @@
         "aria_collapse_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা সংকুচিত করো",
         "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো",
         "current_task": "বর্তমান টাস্ক",
-        "more": "আরও…",
         "task_completion": "টাস্ক সম্পন্নতা",
         "aria_mark_done": "সম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি আবার করবে না। ফিরিয়ে নিতে আবার ক্লিক করো।",
         "aria_mark_not_done": "অসম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি এখনো বাকি ধরবে। ফিরিয়ে নিতে আবার ক্লিক করো।",
@@ -12293,7 +12320,9 @@
         "set_by_you_done": "তুমি এটা সম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "set_by_you_open": "তুমি এটা অসম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "sending": "পাঠানো হচ্ছে",
-        "done_of_total": "{{done}} / {{total}}"
+        "done_of_total": "{{done}} / {{total}}",
+        "more_count_one": "+ আরও {{n}}টি…",
+        "more_count_other": "+ আরও {{n}}টি…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
@@ -12508,7 +12537,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "স্ন্যাপশট লোড করা যায়নি:",
-        "events": "ইভেন্ট"
+        "events_count_one": "{{n}}টি ইভেন্ট",
+        "events_count_other": "{{n}}টি ইভেন্ট"
       },
       "pins": {
         "pinned_messages": "পিন করা বার্তা",
@@ -13822,6 +13852,9 @@
       "waiting_for_approval_address": "অনুমোদনের ঠিকানার অপেক্ষায়… এজেন্ট পরবর্তীবার সংযুক্ত হলে এটি এখানে দেখা যাবে — এখনই অনুমোদন শুরু করতে চ্যাটে যেকোনো বার্তা পাঠান।",
       "needs_configuration": "কনফিগারেশন প্রয়োজন",
       "needs_configuration_help": "{{provider}}-এর জন্য একবার সেটআপ করতে হবে। \"OAuth অ্যাপ কনফিগার করুন\" একটি নির্দেশিত সেটিংস পেজ খোলে; সেখানে সেভ না করা পর্যন্ত কিছুই বদলায় না, এবং পরে আপনি এটি সরিয়ে দিতে পারবেন। এটি {{provider}}-এ অ্যাপ নিবন্ধন করা এবং তার client ID ও secret দেওয়ার ধাপগুলো দেখিয়ে দেয়।",
+      "backend_oauth_caveat": "Connect তবুও শেষ হয়, আর {{provider}} সাইন-ইনটি যেসব চ্যাট এটি সমর্থন করে তাদের জন্য সংরক্ষিত থাকে। কিছু চ্যাট এখনও এই ধরনের সাইন-ইন ব্যবহার করতে পারে না, তাই সেখানে এর টুল কাজ নাও করতে পারে।",
+      "chat_use_label": "চ্যাটে",
+      "chat_use_lacks_oauth": "যেসব চ্যাট এটি সমর্থন করে তাদের জন্য সংরক্ষিত। কিছু চ্যাট এখনও এই ধরনের সাইন-ইন ব্যবহার করতে পারে না।",
       "configure_oauth_app": "OAuth অ্যাপ কনফিগার করো",
       "prerequisite_github": "GitHub ডায়নামিক ক্লায়েন্ট নিবন্ধন সমর্থন করে না, তাই সংযোগ সেটিংস → OAuth অ্যাপে নিবন্ধিত GitHub OAuth অ্যাপ ব্যবহার করে। GitHub-এর সম্মতি পাতায় সেই অ্যাপের নাম দেখানো হয়; চালিয়ে যেতে সেটি অনুমোদন করুন।",
       "prerequisite_asana": "Asana ডায়নামিক ক্লায়েন্ট নিবন্ধন সমর্থন করে না, তাই সংযোগ সেটিংস → OAuth অ্যাপে নিবন্ধিত Asana MCP অ্যাপ ব্যবহার করে। Asana-এর সম্মতি পাতায় সেই অ্যাপের নাম দেখানো হয়; চালিয়ে যেতে সেটি অনুমোদন করুন।"
@@ -14873,7 +14906,6 @@
         "search_explore_and_manage_your_knowledge_base": "আপনার নলেজ বেস সার্চ করুন, অন্বেষণ করুন এবং পরিচালনা করুন",
         "search_knowledge_press_enter_to_search": "নলেজ সার্চ করুন... (সার্চ করতে Enter চাপুন)",
         "select_all": "সব নির্বাচন করুন",
-        "selected": "নির্বাচিত",
         "sources_tab": "উৎস",
         "status_active": "সক্রিয়",
         "status_archived": "সংরক্ষণাগারে",
@@ -14896,7 +14928,9 @@
         "entity_items_load_failed": "এই এন্টিটির আইটেম লোড করা যায়নি",
         "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।",
         "delete_items_permanently_one": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?",
-        "delete_items_permanently_other": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?"
+        "delete_items_permanently_other": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?",
+        "selected_count_one": "{{count}}টি নির্বাচিত",
+        "selected_count_other": "{{count}}টি নির্বাচিত"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
@@ -14977,7 +15011,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "উপেক্ষা করার প্যাটার্ন (প্রতি লাইনে একটি, যেমন .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "সাব-ডিরেক্টরি অন্তর্ভুক্ত করুন (রিকার্সিভ)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "ইনডেক্সিং প্রতিটি সোর্সের আকারের অনুপাতে Kiro অনুরোধ খরচ করে, এবং নজরে রাখা ফোল্ডারে ফাইল এলে খরচ চলতেই থাকে, একবারে না নিয়ে সময়ের সাথে ছড়িয়ে পড়ে।",
-        "items": "আইটেম",
         "kb_ids_comma_separated_id_or_arn": "কমা দিয়ে আলাদা, যেমন KXABC12345 বা arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "শেষ করতে আরও ~{{calls}}টি Kiro অনুরোধ",
         "knowledge_base_ids": "নলেজ বেস ID",
@@ -15048,7 +15081,9 @@
         "enter_region_to_add": "এই উৎস যোগ করতে AWS Region লিখো।",
         "profile_blank_uses_default_chain": "ডিফল্ট AWS ক্রেডেনশিয়াল ব্যবহার করতে খালি রাখো।",
         "remove_this_live_source": "এই নলেজ বেস সোর্সটি সরানো হবে? স্থানীয়ভাবে কিছুই সংরক্ষিত নেই; নলেজ বেসটি নিজে অপরিবর্তিত থাকবে।",
-        "region_example_placeholder": "যেমন us-east-1"
+        "region_example_placeholder": "যেমন us-east-1",
+        "items_count_one": "{{n}}টি আইটেম",
+        "items_count_other": "{{n}}টি আইটেম"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15077,6 +15112,8 @@
       "by_category": "বিভাগ অনুযায়ী",
       "clear": "সাফ করুন",
       "clear_old_caches": "স্ক্রল ক্যাশ সাফ করো",
+      "delete_all_keys_one": "{{count}}টি কী মুছে ফেলুন",
+      "delete_all_keys_other": "সব {{count}}টি কী মুছে ফেলুন",
       "delete_cached_scroll_positions_from_old_sessions": "সব সেশনের ক্যাশ করা সারির উচ্চতা এবং সংরক্ষিত পড়ার অবস্থান মুছে ফেলুন (নিরাপদ — স্ক্রল করলে আবার তৈরি হয়)",
       "delete_key": "কী মুছে ফেলুন",
       "export": "এক্সপোর্ট",
@@ -15569,7 +15606,6 @@
         "status": "স্ট্যাটাস",
         "tool_list_read_from_the_package_s_declaration_th": "টুলের তালিকা প্যাকেজের ঘোষণা থেকে পড়া হয়েছে; সার্ভারটি চালু হয় কিনা যাচাই করতে এটি চালানো হয়নি।",
         "tools": "টুল",
-        "tools_2": "টুল",
         "undo": "আনডু",
         "uninstall": "আনইনস্টল",
         "unknown": "অজানা",
@@ -15618,7 +15654,9 @@
         "temp_refusal_sealed": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ এটি শুধু-পঠনযোগ্য রানটাইম ফোল্ডারের ভিতরে আছে। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
         "temp_refusal_unclassifiable": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ এর আসল অবস্থান নিশ্চিত করা যায়নি। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
         "temp_refusal_check_failed": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ অবস্থান যাচাই ব্যর্থ হয়েছে। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
-        "mcp_deny_spared": "এটি {{productName}}-এর নিজের সার্ভার, তাই {{name}}-এ এখানে একটি টুল বন্ধ করলে শুধু সেই টুলটিই থামে।"
+        "mcp_deny_spared": "এটি {{productName}}-এর নিজের সার্ভার, তাই {{name}}-এ এখানে একটি টুল বন্ধ করলে শুধু সেই টুলটিই থামে।",
+        "tools_count_one": "{{n}}টি টুল",
+        "tools_count_other": "{{n}}টি টুল"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",
@@ -17481,6 +17519,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "কনটেক্সট প্রোগ্রেস বারের পাশে ব্যবহৃত ও মোট টোকেন দেখান",
         "e_g_solutions_architect_sre_founder": "যেমন সলিউশন আর্কিটেক্ট, SRE, প্রতিষ্ঠাতা",
         "effort_default_needs_reasoning_model": "ডিফল্টে উত্তর দেওয়ার আগে মডেল কতক্ষণ ভাবে। শুধু রিজনিং-সক্ষম মডেলেই কাজ করে, তাই উপরে বেছে নেওয়া মডেলে এর কোনো প্রভাব নেই।",
+        "effort_default_off_on_auto": "ডিফল্টে উত্তর দেওয়ার আগে মডেল কতক্ষণ ভাবে। ডিফল্ট মডেল Auto থাকলে এটি প্রযোজ্য নয়, কারণ ব্যাকএন্ড নিজেই মডেল বেছে নেয় এবং একটি নির্দিষ্ট মডেল বেছে না নেওয়া পর্যন্ত কোনো প্রচেষ্টার স্তর নেয় না।",
         "effort_needs_reasoning_model": "শুধু রিজনিং-সক্ষম মডেলেই কাজ করে, তাই উপরে বেছে নেওয়া মডেলে এর কোনো প্রভাব নেই।",
         "enter_for_newline": "নতুন লাইনের জন্য Enter",
         "enter_sends": "Enter পাঠায়",
@@ -18304,7 +18343,6 @@
         "block_list_rules": "নিষিদ্ধ-তালিকা · {{rules}}",
         "built_in_rules_enforced_note": "আপনার অপ্ট-আউট এবং যেকোনো নীতি পিনের পরে, এখন {{total}}টির মধ্যে {{enabled}}টি অন্তর্নির্মিত নিয়ম বলবৎ আছে।",
         "cancel": "বাতিল",
-        "categories": "বিভাগ ·",
         "click_any_control_to_see_exactly_what_it_covers": "কোনো নিয়ন্ত্রণ ঠিক কী কী অন্তর্ভুক্ত করে তা দেখতে সেটিতে ক্লিক করুন।",
         "collapse_all": "সব সংকুচিত করুন",
         "collapse_category_rules": "{{category}} নিয়ম সংকুচিত করো",
@@ -18440,7 +18478,6 @@
         "rail_until_restart": "রিস্টার্ট পর্যন্ত",
         "rail_until_time": "{{time}} পর্যন্ত",
         "resolved_as_your_organization_s_policy_intersect": ", যা আপনার প্রতিষ্ঠানের নীতি ও হোস্ট প্রোফাইলের ছেদ হিসেবে নির্ধারিত। নির্দিষ্ট সারফেস, অ্যাপ বা টাস্কের (cron, Slack, সাবএজেন্ট) সঙ্গে বাঁধা সংকীর্ণতর প্রোফাইল রানটাইমে কোনো স্কোপকে আরও কঠোর করতে পারে। কেবল-পঠনযোগ্য — সিলিং লেখা হয়েছে এখানে:",
-        "rules": "নিয়ম",
         "search_rules_placeholder": "নিয়ম, প্যাটার্ন, বিভাগ খুঁজুন…",
         "section_group_enforced": "বলবৎ",
         "section_group_reference": "রেফারেন্স",
@@ -18577,7 +18614,13 @@
         "redaction_revoke_failed": "সেই হোস্টটা ফিরিয়ে নেওয়া যায়নি। এটা এখনও অনুমোদিত।",
         "redaction_no_allowed_hosts": "কোনো হোস্ট অনুমোদিত নয়। প্রতিটি লিঙ্ক প্রতিটি চেকের মধ্য দিয়ে যায়।",
         "redaction_workspace": "ওয়ার্কস্পেস: {{workspace}}",
-        "redaction_revoke": "ফিরিয়ে নাও"
+        "redaction_revoke": "ফিরিয়ে নাও",
+        "rules_matched_one": "{{matched}} / {{n}}টি নিয়ম",
+        "rules_matched_other": "{{matched}} / {{n}}টি নিয়ম",
+        "categories_count_one": "{{n}}টি বিভাগ ·",
+        "categories_count_other": "{{n}}টি বিভাগ ·",
+        "rules_count_one": "{{n}}টি নিয়ম",
+        "rules_count_other": "{{n}}টি নিয়ম"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "চ্যাট-ট্যাব পরিবর্তনকে Option+সংখ্যার বদলে Ctrl+সংখ্যার সঙ্গে বাঁধুন। কোনো টেক্সট ফিল্ডে ফোকাস থাকলে Option+সংখ্যা চ্যাট পরিবর্তন করে না।",
@@ -19761,19 +19804,19 @@
       "written_by_the": "লিখেছে"
     },
     "worldsPage": {
-      "active": "সক্রিয়,",
-      "agent_one": "{{count}}টি এজেন্ট",
-      "agent_other": "{{count}}টি এজেন্ট",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "পপআউটে ফোকাস করুন",
       "hide_controls": "কন্ট্রোল লুকাও",
-      "open": "খোলা",
       "playing_in_popout_window": "পপআউট উইন্ডোতে চলছে",
       "pop_out_to_separate_window": "আলাদা উইন্ডোতে পপ আউট করুন",
-      "present": "উপস্থিত,",
       "show_controls": "কন্ট্রোল দেখাও",
-      "slot_one": "{{count}}টি slot",
-      "slot_other": "{{count}}টি slot"
+      "agents_present_one": "{{n}}টি এজেন্ট উপস্থিত",
+      "agents_present_other": "{{n}}টি এজেন্ট উপস্থিত",
+      "agents_active_one": "{{n}}টি সক্রিয়",
+      "agents_active_other": "{{n}}টি সক্রিয়",
+      "slots_open_one": "{{n}}টি স্লট খোলা",
+      "slots_open_other": "{{n}}টি স্লট খোলা",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "কন্ট্রোল লুকাও",

@@ -3694,7 +3694,8 @@ runtime enforces owner-only access.
 pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
 `DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
 also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
-the server interval with jitter,
+the server interval with jitter (a missing, non-finite or non-positive interval
+takes Discord's 41.25s; the rest is clamped to 1-300s),
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
 reconnect (every close that means to reconnect — op-7, op-9, a missed or failed
 heartbeat — sends close code `4000`, because Discord ends the session on a
@@ -4371,7 +4372,9 @@ screen's grammar: the shared `constants.md_link_destination` url pattern (one
 level of balanced parentheses, a backslash escape read as one token, a `[label](`
 inside the url ending the link), an `https?://` scheme, no whitespace in the url,
 and a label holding no `[`, `]` or line break, so the HTML and plaintext branches
-link exactly what the screen collapsed. An emitted form is rendered and redacted
+link exactly what the screen collapsed. The HTML translation links before its emphasis
+passes, as the screen's rendered form does, with each `<a>` tag stashed, so emphasis
+formats a link's label and never its url. An emitted form is rendered and redacted
 again until the text stops changing, at most `DISPLAY_SETTLING_PASSES` (4)
 times; past that, every markup character outside a redaction tag is removed
 before the final redaction.

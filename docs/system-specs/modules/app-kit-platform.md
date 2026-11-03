@@ -4395,6 +4395,63 @@ Writers: `apps/app_frame.py` (the point), `apps/message_action_grants.py`,
 `apps/manager_lookup.py` (the row), `website/src/messageActions/*`,
 `website/src/pages/chat/{AssistantMessage,UserMessage}.tsx` (the rows),
 `website/src/pages/AppDetailPage.tsx` (the held-back entries).
+## 18d. A claimed link opens in the app only after the user chooses it
+
+`contributes.linkOpen[]` (`{ id, entry, hosts, fullUrl? }`, one entry per app) lets
+an app open a clicked link in its own frame. It is a point on §18b's shared frame:
+`register_frame_point("linkOpen", resolve_link_open, LINK_OPEN_POINT_SCRIPT)` and
+`register_point_grants(LINK_OPEN_GRANT_FAMILIES, link_open_grant_entries)`; nothing of
+the frame, the capability, the fetch or the invocation contract is its own. The rules:
+
+- **Which clicks.** Only a plain left click (no modifier key, `button === 0`, not
+  already handled) on an `https:` link, on the default port and without userinfo,
+  inside a chat message's root (`data-link-preview-scope`) whose host an enabled app
+  claims and the owner approved. Hosts are normalized and refused by the shared host
+  rule (`app_hosts`; the dashboard reuses `normalizeHost` and `isPublicSuffix` from
+  `linkPreviewRegistry.ts`). Every other click, including a link nobody claims, is
+  not touched and behaves as before. A link whose origin is the dashboard's own
+  (artifact and `?sid=` session links) is never held, even when an approved host
+  covers the dashboard's host: the listener runs in the capture phase, before the
+  renderer's own handlers could mark the click handled.
+- **Host-owned choice.** The first click asks, in a host dialog: open in the app,
+  or in the browser, with an "Always" box. The answer is remembered in
+  `localStorage` per entry key (`<app>:<id>`) and per host, never for every host the
+  app claims. A remembered "browser" makes the link an ordinary link again; a
+  remembered "app" opens it without asking. The app's detail page lists the
+  remembered answers, each with Forget. No app code runs before the user picks the
+  app.
+- **Host-owned open.** Every open in a browser tab is the host's own button
+  (`window.open(url, '_blank', 'noopener,noreferrer')`) run in that button's click,
+  so a popup blocker never refuses it. The app's dialog header has one **More
+  actions** menu beside close, which always holds **Open in browser**; a failed open
+  shows the button too. An app's `offerOpen` / `offerCopy` only adds a host item to
+  that menu (§18b's offer rules), so the header never holds more than two controls.
+- **One invocation per open.** A frame is minted (`POST
+  /api/apps/{name}/frames/linkOpen/{id}`) when the user chooses the app and removed
+  when the dialog closes. The host opens one `HostInvocation` with invoke type
+  `link.open { invocationId, deadlineMs, url, theme }`; the point script accepts
+  each id once, calls the module's `open(link)` with the invocation's frozen
+  controls, and reports the document's size (`invocation.resize`) when it settles
+  or `invocation.error` when it throws. The first size report shows the frame and
+  stops the deadline (`HostInvocation.settle`), so a user reading the page is never
+  cancelled; no report within 10 s of `ready` cancels with `deadline`, and closing
+  the dialog first cancels with `closed`. The URL has no query and no fragment
+  unless the owner approved whole URLs.
+- **Grant.** `linkOpenHosts` (normalized hosts) and `linkOpenFullUrl`
+  (`["fullUrl"]` or empty) are staged families (`apps/link_open_grants.py`), held
+  back on a widening update and approved on the App Detail page. The app row
+  carries `linkOpenGrant { hosts, stagedHosts, fullUrl, stagedFullUrl }`; a row
+  without it opens nothing, and `resolve_link_open` returns no entry while no host
+  is approved, so the mint, the frame and the fetch stop with the grant. Every mint
+  and renewal names the clicked `host` and `url=full|stripped`; `admit_link_open`
+  refuses (403) a host the live grant no longer covers, or a whole URL the owner has
+  not approved, so a tab holding an older app list cannot hand the app what the
+  owner took back.
+- **Manifest.** `hosts` 1 to 64; `entry` contained in the app root; the block is
+  serialized, so it is covered by the signing payload.
+
+Writers: `apps/manifest_contributes.py` (`LinkOpenConfig`), `apps/link_open_grants.py`,
+`apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 

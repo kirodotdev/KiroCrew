@@ -4270,14 +4270,12 @@
       "credentials_remain_with_their_source_rules_hooks": "Credentials remain with their source. Conversation history, hooks, agent definitions, and a source's persona identity are not imported. Your written rules and instructions are imported as high-priority memory.",
       "deduplicated": "Deduplicated",
       "existing_kirocrew_setup_is_never_overwritten_mat": "Existing {{productName}} setup is never overwritten by default. Matching items are deduplicated, and a conflicting item keeps your current version unless you choose otherwise after the import.",
-      "found": "found",
       "import_agent_setup": "Import agent setup",
       "import_another": "Import another",
       "import_setup": "Import setup",
       "imported": "Imported",
       "importing": "Importing",
       "items_already_exist_with_different_content": "items already exist with different content.",
-      "items_selected": "items selected",
       "keep_both": "Keep both",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} did not find supported setup to import on this gateway host.",
       "merge_only": "Merge only",
@@ -4302,7 +4300,14 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected.",
       "import_setup_stage": "Import setup · {{stage}} of {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} item",
-      "source_item_count_other": "{{name}}, {{count}} items"
+      "source_item_count_other": "{{name}}, {{count}} items",
+      "category_count_one": "{{count}} category",
+      "category_count_other": "{{count}} categories",
+      "source_categories": "{{name}} categories",
+      "items_selected_count_one": "{{count}} item selected",
+      "items_selected_count_other": "{{count}} items selected",
+      "found_count_one": "{{count}} found",
+      "found_count_other": "{{count}} found"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Saved, but this copy of {{productName}} could not update the agent config, so new chats keep the old setup. Open the Logs page to see why."
@@ -6240,6 +6245,20 @@
       "grant_role_user": "{{title}}: your own messages, not only replies",
       "grant_role_assistant": "{{title}}: assistant replies",
       "grant_format_markdown": "{{title}}: the message's markdown, with link addresses"
+    },
+    "linkOpen": {
+      "ask_title": "Open {{host}} links in {{app}}?",
+      "ask_body": "{{app}} gets only the link shown below.",
+      "always": "Always do this for {{host}}",
+      "open_in_app": "Open in {{app}}",
+      "open_in_browser": "Open in browser",
+      "opening": "Opening in {{app}}…",
+      "failed": "{{app}} couldn't open this link.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Copy",
+      "offer_open": "Open {{host}}",
+      "copy_failed": "Couldn't copy. Select the text in the app and copy it yourself.",
+      "more_actions": "More actions"
     }
   },
   "hooks": {
@@ -6477,7 +6496,6 @@
       "machine_running_the_gateway": "machine running the gateway",
       "make_sure_the_gateway_s": ". Make sure the gateway's",
       "missing_sso_start_url_sso_region": "missing … sso_start_url, sso_region",
-      "more": "more",
       "never_boto3_so_credential_resolution_stays_in_yo": "(never boto3),\n              so credential resolution stays in your OS credential store. {{productName}} never writes IAM and\n              never manages accounts, users, or roles — you apply the generated least-privilege policy yourself.",
       "never_credentials": "— never credentials)",
       "new_profile": "New profile",
@@ -6539,7 +6557,9 @@
       "4_optional_install_auto_cleanup": "4. Optional: install auto-cleanup",
       "auto_cleanup_explainer": "Only needed for deploys you want to expire on their own.",
       "deploy_publishes_directly_from_this_page": "Deploy publishes from this page after you confirm.",
-      "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here."
+      "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here.",
+      "more_count_one": "+{{n}} more",
+      "more_count_other": "+{{n}} more"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
@@ -7066,8 +7086,9 @@
       },
       "taskProgressBar": {
         "done_of_total": "{{done}} of {{total}}",
-        "more": "more…",
-        "task_completion": "Task completion"
+        "task_completion": "Task completion",
+        "more_count_one": "+ {{n}} more…",
+        "more_count_other": "+ {{n}} more…"
       },
       "thinkingBlock": {
         "thinking": "Thinking",
@@ -7175,7 +7196,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Could not load snapshot:",
-        "events": "events"
+        "events_count_one": "{{n}} event",
+        "events_count_other": "{{n}} events"
       },
       "pins": {
         "pinned_messages": "Pinned messages",
@@ -8159,12 +8181,13 @@
         "search_explore_and_manage_your_knowledge_base": "Search, explore, and manage your knowledge base",
         "search_knowledge_press_enter_to_search": "Search knowledge... (press Enter to search)",
         "select_all": "Select all",
-        "selected": "selected",
         "to_search_esc_to_back_to_page": "/ to search, Esc to back, ←→ to page",
         "try_a_different_type_status_or_namespace": "Try a different type, status, or namespace",
         "try_different_keywords_or_filters": "Try different keywords or filters",
         "delete_items_permanently_one": "Delete {{count}} item permanently?",
-        "delete_items_permanently_other": "Delete {{count}} items permanently?"
+        "delete_items_permanently_other": "Delete {{count}} items permanently?",
+        "selected_count_one": "{{count}} selected",
+        "selected_count_other": "{{count}} selected"
       },
       "knowledgeGraph": {
         "edges": "edges",
@@ -8217,7 +8240,6 @@
         "include_subdirectories_recursive": "Include subdirectories (recursive)",
         "ingest_status_done": "done",
         "ingest_status_uploading": "uploading",
-        "items": "items",
         "manual": "○ manual",
         "name_optional": "Name (optional)",
         "namespace": "Namespace:",
@@ -8250,7 +8272,9 @@
         "web_page_hosts_allowed": "Fetches one page over HTTPS. Allowed sites: {{hosts}}.",
         "web_page_hosts_unavailable": "Couldn't load the allowed sites. Close and reopen this form to try again.",
         "web_page_no_hosts_allowed": "No sites are allowed yet, so nothing can be fetched. To allow a site, type it below, run the command in a terminal, then close and reopen this form.",
-        "web_page_site_not_allowed": "{{site}} isn't an allowed site yet. Allowed sites: {{hosts}}. To allow it, run the command below in a terminal, then close and reopen this form."
+        "web_page_site_not_allowed": "{{site}} isn't an allowed site yet. Allowed sites: {{hosts}}. To allow it, run the command below in a terminal, then close and reopen this form.",
+        "items_count_one": "{{n}} item",
+        "items_count_other": "{{n}} items"
       }
     },
     "localStorageDebug": {
@@ -8258,6 +8282,8 @@
       "by_category": "By Category",
       "clear": "Clear",
       "clear_old_caches": "Clear Scroll Caches",
+      "delete_all_keys_one": "Delete {{count}} key",
+      "delete_all_keys_other": "Delete all {{count}} keys",
       "delete_cached_scroll_positions_from_old_sessions": "Delete cached row heights and saved reading positions for all sessions (safe — rebuilt as you scroll)",
       "delete_key": "Delete key",
       "export": "Export",
@@ -8918,11 +8944,12 @@
         "status": "Status",
         "tool_list_read_from_the_package_s_declaration_th": "Tool list read from the package's declaration; the server was not spawned to verify it starts.",
         "tools": "Tools",
-        "tools_2": "tools",
         "undo": "Undo",
         "uninstall": "Uninstall",
         "declared": "Declared",
-        "mcp_deny_spared": "This is one of {{productName}}'s own servers, so on {{name}} turning off one tool here stops only that tool."
+        "mcp_deny_spared": "This is one of {{productName}}'s own servers, so on {{name}} turning off one tool here stops only that tool.",
+        "tools_count_one": "{{n}} tool",
+        "tools_count_other": "{{n}} tools"
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",
@@ -10245,7 +10272,6 @@
         "and_cannot_be_changed_here": "and cannot be changed here.",
         "and_per_surface": "and per-surface",
         "cancel": "Cancel",
-        "categories": "categories ·",
         "click_any_control_to_see_exactly_what_it_covers": "Click any control to see exactly what it covers.",
         "collapse_all": "Collapse all",
         "custom_deny_note": "Custom deny note",
@@ -10278,7 +10304,6 @@
         "profile": "Profile:",
         "profiles_json": "profiles/*.json",
         "resolved_as_your_organization_s_policy_intersect": ", resolved as your organization's policy intersected with the host profile. Narrower profiles bound to a specific surface, app, or task (cron, Slack, subagents) can tighten a scope further at runtime. Read-only — the ceiling is authored in",
-        "rules": "rules",
         "security_policy_json": "security_policy.json",
         "security_posture_detail_is_temporarily_unavailab": "Security posture detail is temporarily unavailable. Enforcement is unaffected — this view could not resolve the control list for display.",
         "the_strictest_boundary_in_effect_for_each_govern": "The strictest boundary in effect for each governed scope on the",
@@ -10291,7 +10316,13 @@
         "redaction_revoke_failed": "Couldn't revoke that host. It is still allowed.",
         "redaction_no_allowed_hosts": "No hosts are allowed. Every link goes through every check.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Revoke"
+        "redaction_revoke": "Revoke",
+        "rules_matched_one": "{{matched}} / {{n}} rule",
+        "rules_matched_other": "{{matched}} / {{n}} rules",
+        "categories_count_one": "{{n}} category ·",
+        "categories_count_other": "{{n}} categories ·",
+        "rules_count_one": "{{n}} rule",
+        "rules_count_other": "{{n}} rules"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Bind chat-tab switching to Ctrl+digit instead of Option+digit. Option+digit does not switch chats while a text field has focus.",
@@ -11118,17 +11149,17 @@
       "written_by_the": "Written by the"
     },
     "worldsPage": {
-      "active": "active,",
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Focus popout",
-      "open": "open",
       "playing_in_popout_window": "Playing in popout window",
       "pop_out_to_separate_window": "Pop out to separate window",
-      "present": "present,",
-      "slot_one": "{{count}} slot",
-      "slot_other": "{{count}} slots"
+      "agents_present_one": "{{n}} agent present",
+      "agents_present_other": "{{n}} agents present",
+      "agents_active_one": "{{n}} active",
+      "agents_active_other": "{{n}} active",
+      "slots_open_one": "{{n}} slot open",
+      "slots_open_other": "{{n}} slots open",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "layoutEditorHarness": {
       "title": "Layout editor harness",

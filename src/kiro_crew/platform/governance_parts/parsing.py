@@ -11,7 +11,6 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from functools import lru_cache
@@ -717,9 +716,16 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
 
 
 def _read_json_file(path: Path) -> Dict[str, object]:
-    """Read + JSON-parse a governance file.  Raises on any failure (fail-closed)."""
+    """Read + JSON-parse a governance file.  Raises on any failure (fail-closed).
+
+    One leading UTF-8 byte-order mark (Windows editors save "UTF-8 with BOM") is
+    not content and is dropped, as for every hand-edited JSON file. Anything else
+    that is not valid UTF-8 JSON still raises.
+    """
+    from kiro_crew.user_json import loads_user_json
+
     text = path.read_text(encoding="utf-8")
-    data = json.loads(text)
+    data = loads_user_json(text)
     if not isinstance(data, dict):
         raise PlatformCompositionError(f"governance file {path} is not a JSON object")
     return data

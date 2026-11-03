@@ -25,3 +25,15 @@ def test_a_heading_becomes_bold_and_a_bare_hash_run_does_not():
     assert slack_format.to_slack_mrkdwn("#\t\tTabbed") == "*Tabbed*"
     # Only spaces after the hashes: nothing to bold, so the line stays as typed.
     assert slack_format.to_slack_mrkdwn("#   ") == "#   "
+
+
+def test_a_heading_converts_the_links_strike_and_bold_inside_it():
+    assert (
+        slack_format.to_slack_mrkdwn("## See [the docs](https://example.com/a)")
+        == "*See <https://example.com/a|the docs>*"
+    )
+    # The heading is already bold, so its own markers do not stack into ``***``.
+    assert slack_format.to_slack_mrkdwn("## **Summary**") == "*Summary*"
+    assert slack_format.to_slack_mrkdwn("### Step ~~old~~ new") == "*Step ~old~ new*"
+    # Inline code keeps its markers in a heading as it does on any line.
+    assert slack_format.to_slack_mrkdwn("## Call `**kwargs` first") == "*Call `**kwargs` first*"

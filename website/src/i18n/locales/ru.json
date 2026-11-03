@@ -6266,7 +6266,6 @@
       "credentials_remain_with_their_source_rules_hooks": "Учётные данные остаются у своего источника. История переписки, хуки, определения агентов и персона источника не импортируются. Ваши записанные правила и инструкции импортируются как память с высоким приоритетом.",
       "deduplicated": "Дубликаты удалены",
       "existing_kirocrew_setup_is_never_overwritten_mat": "Существующая конфигурация {{productName}} по умолчанию никогда не перезаписывается. Совпадающие элементы дедуплицируются, а при конфликте сохраняется ваша текущая версия, если после импорта вы не выберете иное.",
-      "found": "найдено",
       "import_agent_setup": "Импорт конфигурации агента",
       "import_all_your_supported_work_or_handpick_what": "Импортируй всю поддерживаемую конфигурацию или выбери вручную, что перенести.",
       "import_another": "Импортировать ещё",
@@ -6276,7 +6275,6 @@
       "imported": "Импортировано",
       "importing": "Импорт",
       "items_already_exist_with_different_content": "элементов уже существуют с другим содержимым.",
-      "items_selected": "элементов выбрано",
       "keep_both": "Оставить оба",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} нашёл конфигурацию агентов на этом хосте шлюза. Выбери источники для проверки.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} не нашёл поддерживаемой конфигурации для импорта на этом хосте шлюза.",
@@ -6310,7 +6308,20 @@
       "source_item_count_one": "{{name}}, {{count}} элемент",
       "source_item_count_few": "{{name}}, {{count}} элемента",
       "source_item_count_many": "{{name}}, {{count}} элементов",
-      "source_item_count_other": "{{name}}, {{count}} элемента"
+      "source_item_count_other": "{{name}}, {{count}} элемента",
+      "category_count_one": "{{count}} категория",
+      "category_count_few": "{{count}} категории",
+      "category_count_many": "{{count}} категорий",
+      "category_count_other": "{{count}} категории",
+      "source_categories": "Категории: {{name}}",
+      "items_selected_count_one": "выбран {{count}} элемент",
+      "items_selected_count_few": "выбрано {{count}} элемента",
+      "items_selected_count_many": "выбрано {{count}} элементов",
+      "items_selected_count_other": "выбрано {{count}} элемента",
+      "found_count_one": "найдено: {{count}}",
+      "found_count_few": "найдено: {{count}}",
+      "found_count_many": "найдено: {{count}}",
+      "found_count_other": "найдено: {{count}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Сохранено, но эта копия {{productName}} не смогла обновить конфигурацию агента, поэтому новые чаты используют прежние настройки. Причину смотри на странице «Логи»."
@@ -8772,6 +8783,7 @@
       "title_md": "Средняя ширина"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Глубина размышлений не действует в режиме Auto: бэкенд сам выбирает модель и не принимает её уровень, пока ты не выберешь конкретную модель выше.",
       "default_with_level": "По умолчанию · {{level}}",
       "effort": "Глубина",
       "effort_help": "Глубина размышлений определяет, сколько модель думает перед ответом. Выше — больше времени на обдумывание сложных задач (медленнее, но ответы лучше); ниже — быстрее. Если отключить переопределение для сессии, используется значение по умолчанию из «Настройки → Чат», а если оно не задано — собственный выбор модели. Эта настройка есть только у моделей, которые поддерживают глубину размышлений.",
@@ -10968,6 +10980,20 @@
       "grant_role_user": "{{title}}: и твои собственные сообщения, не только ответы",
       "grant_role_assistant": "{{title}}: ответы ассистента",
       "grant_format_markdown": "{{title}}: Markdown сообщения, с адресами ссылок"
+    },
+    "linkOpen": {
+      "ask_title": "Открывать ссылки {{host}} в {{app}}?",
+      "ask_body": "{{app}} получит только ссылку, показанную ниже.",
+      "always": "Всегда так для {{host}}",
+      "open_in_app": "Открыть в {{app}}",
+      "open_in_browser": "Открыть в браузере",
+      "opening": "Открывается в {{app}}…",
+      "failed": "{{app}} не удалось открыть эту ссылку.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Копировать",
+      "offer_open": "Открыть {{host}}",
+      "copy_failed": "Не удалось скопировать. Выдели текст в приложении и скопируй его вручную.",
+      "more_actions": "Другие действия"
     }
   },
   "hooks": {
@@ -11294,6 +11320,7 @@
       "install_on_your_mac": "Установите на своём Mac",
       "installed": "Установлено:",
       "installed_version": "Установлено (v{{version}})",
+      "more_actions": "Другие действия для {{name}}",
       "installing": "Установка…",
       "keep_app_data": "Сохранить данные приложения",
       "lifecycle": "| Жизненный цикл:",
@@ -11356,7 +11383,13 @@
       "grants_reconsent_link_patterns": "Текстовые шаблоны: позволяют карточкам приложения видеть текст чата, подходящий под эти шаблоны.",
       "grants_reconsent_link_full_url": "Полные адреса ссылок: карточки приложения видят и часть ссылки после ? или #, где может быть код входа.",
       "grants_reconsent_message_actions": "Действия с сообщениями: что могут читать пункты меню приложения в сообщениях чата.",
-      "grants_approved": "Одобрено: {{entries}}. Приложение уже может их использовать."
+      "grants_approved": "Одобрено: {{entries}}. Приложение уже может их использовать.",
+      "grants_reconsent_link_open_hosts": "Открываемые ссылки: позволяет приложению открывать ссылки на эти сайты, когда ты нажимаешь на одну из них в сообщении чата.",
+      "grants_reconsent_link_open_full_url": "Полные адреса открываемых ссылок: приложение видит и часть ссылки после ? или #, где может быть код входа.",
+      "link_open_remembered": "Запомненные решения для ссылок",
+      "link_open_choice_app": "Открывается в {{name}}",
+      "link_open_choice_browser": "Открывается в браузере",
+      "link_open_forget": "Забыть"
     },
     "appPage": {
       "loading_app": "Загрузка приложения…",
@@ -11534,7 +11567,6 @@
       "make_sure_the_gateway_s": ". Убедитесь, что переменная",
       "make_the_default_profile": "Сделать {{name}} профилем по умолчанию",
       "missing_sso_start_url_sso_region": "отсутствует … sso_start_url, sso_region",
-      "more": "ещё",
       "never_boto3_so_credential_resolution_stays_in_yo": "(никогда boto3),\n              поэтому получение учётных данных остаётся в хранилище учётных данных вашей ОС. {{productName}} никогда не изменяет IAM и\n              никогда не управляет аккаунтами, пользователями и ролями — сгенерированную политику минимальных привилегий вы применяете сами.",
       "never_credentials": "— никогда учётные данные)",
       "new_profile": "Новый профиль",
@@ -11634,7 +11666,11 @@
       "col_actions": "Действия",
       "col_type": "Тип",
       "col_url": "Ссылка",
-      "col_cost": "Стоимость"
+      "col_cost": "Стоимость",
+      "more_count_one": "ещё {{n}}",
+      "more_count_few": "ещё {{n}}",
+      "more_count_many": "ещё {{n}}",
+      "more_count_other": "ещё {{n}}"
     },
     "artifactDetailPage": {
       "published_to_provider": "Опубликовано в {{provider}}",
@@ -12727,7 +12763,6 @@
         "aria_collapse_task_list": "Выполнено задач: {{done}} из {{total}}. Свернуть список задач",
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
         "current_task": "Текущая задача",
-        "more": "ещё…",
         "task_completion": "Выполнение задачи",
         "aria_mark_done": "Отметить выполненной: {{task}}. Агент не будет её переделывать. Нажми ещё раз, чтобы отменить.",
         "aria_mark_not_done": "Отметить невыполненной: {{task}}. Агент будет считать её открытой. Нажми ещё раз, чтобы отменить.",
@@ -12741,7 +12776,11 @@
         "set_by_you_done": "Ты отметил это как выполненное; агент ещё не подтвердил.",
         "set_by_you_open": "Ты отметил это как невыполненное; агент ещё не подтвердил.",
         "sending": "Отправка",
-        "done_of_total": "{{done}} из {{total}}"
+        "done_of_total": "{{done}} из {{total}}",
+        "more_count_one": "ещё {{n}}…",
+        "more_count_few": "ещё {{n}}…",
+        "more_count_many": "ещё {{n}}…",
+        "more_count_other": "ещё {{n}}…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Свернуть рассуждения модели",
@@ -12966,7 +13005,10 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Не удалось загрузить снимок:",
-        "events": "событий"
+        "events_count_one": "{{n}} событие",
+        "events_count_few": "{{n}} события",
+        "events_count_many": "{{n}} событий",
+        "events_count_other": "{{n}} события"
       },
       "pins": {
         "pinned_messages": "Закреплённые сообщения",
@@ -14366,6 +14408,9 @@
       "waiting_for_approval_address": "Ожидание адреса подтверждения… Он появится здесь при следующем подключении агента — отправьте любое сообщение в чат, чтобы начать авторизацию.",
       "needs_configuration": "Требуется настройка",
       "needs_configuration_help": "{{provider}} требует однократной настройки. «Настроить OAuth-приложение» открывает пошаговую страницу настроек; ничего не изменится, пока вы там не сохраните, а позже настройку можно удалить. Страница проведёт вас через регистрацию приложения в {{provider}} и ввод client ID и секрета.",
+      "backend_oauth_caveat": "Connect всё равно завершится, а вход в {{provider}} сохранится для чатов, которые его поддерживают. Некоторые чаты пока не могут использовать такой вход, поэтому его инструменты там могут не работать.",
+      "chat_use_label": "В чатах",
+      "chat_use_lacks_oauth": "Сохранён для чатов, которые его поддерживают. Некоторые чаты пока не могут использовать такой вход.",
       "configure_oauth_app": "Настроить приложение OAuth",
       "prerequisite_github": "GitHub не поддерживает динамическую регистрацию клиентов, поэтому «Подключить» использует OAuth-приложение GitHub, зарегистрированное в Настройки → OAuth-приложения. Страница согласия GitHub показывает это приложение; подтвердите его, чтобы продолжить.",
       "prerequisite_asana": "Asana не поддерживает динамическую регистрацию клиентов, поэтому «Подключить» использует MCP-приложение Asana, зарегистрированное в Настройки → OAuth-приложения. Страница согласия Asana показывает это приложение; подтвердите его, чтобы продолжить."
@@ -15443,7 +15488,6 @@
         "search_explore_and_manage_your_knowledge_base": "Поиск, изучение и управление базой знаний",
         "search_knowledge_press_enter_to_search": "Поиск по знаниям... (нажмите Enter для поиска)",
         "select_all": "Выбрать все",
-        "selected": "выбрано",
         "sources_tab": "Источники",
         "status_active": "Активно",
         "status_archived": "В архиве",
@@ -15476,7 +15520,11 @@
         "delete_items_permanently_one": "Удалить {{count}} элемент навсегда?",
         "delete_items_permanently_few": "Удалить {{count}} элемента навсегда?",
         "delete_items_permanently_many": "Удалить {{count}} элементов навсегда?",
-        "delete_items_permanently_other": "Удалить {{count}} элемента навсегда?"
+        "delete_items_permanently_other": "Удалить {{count}} элемента навсегда?",
+        "selected_count_one": "выбрано: {{count}}",
+        "selected_count_few": "выбрано: {{count}}",
+        "selected_count_many": "выбрано: {{count}}",
+        "selected_count_other": "выбрано: {{count}}"
       },
       "itemCard": {
         "copied": "Скопировано!",
@@ -15559,7 +15607,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Шаблоны исключений (по одному в строке, например .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Включать подкаталоги (рекурсивно)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "Индексация расходует запросы Kiro пропорционально размеру каждого источника, а отслеживаемая папка продолжает расходовать их по мере появления файлов — расход распределяется во времени, а не списывается сразу.",
-        "items": "элементов",
         "kb_ids_comma_separated_id_or_arn": "Через запятую, напр. KXABC12345 или arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "~{{calls}} запросов Kiro до завершения",
         "knowledge_base_ids": "Идентификаторы базы знаний",
@@ -15632,7 +15679,11 @@
         "enter_region_to_add": "Укажи регион AWS, чтобы добавить этот источник.",
         "profile_blank_uses_default_chain": "Оставь пустым, чтобы использовать учетные данные AWS по умолчанию.",
         "remove_this_live_source": "Удалить этот источник базы знаний? Локально ничего не хранится; сама база знаний не затрагивается.",
-        "region_example_placeholder": "например, us-east-1"
+        "region_example_placeholder": "например, us-east-1",
+        "items_count_one": "{{n}} элемент",
+        "items_count_few": "{{n}} элемента",
+        "items_count_many": "{{n}} элементов",
+        "items_count_other": "{{n}} элемента"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15661,6 +15712,10 @@
       "by_category": "По категориям",
       "clear": "Очистить",
       "clear_old_caches": "Очистить кеши прокрутки",
+      "delete_all_keys_one": "Удалить {{count}} ключ",
+      "delete_all_keys_few": "Удалить все {{count}} ключа",
+      "delete_all_keys_many": "Удалить все {{count}} ключей",
+      "delete_all_keys_other": "Удалить все {{count}} ключа",
       "delete_cached_scroll_positions_from_old_sessions": "Удалить кэшированные высоты строк и сохранённые позиции чтения для всех сессий (безопасно — восстановятся при прокрутке)",
       "delete_key": "Удалить ключ",
       "export": "Экспорт",
@@ -16177,7 +16232,6 @@
         "status": "Статус",
         "tool_list_read_from_the_package_s_declaration_th": "Список инструментов прочитан из декларации пакета; сервер не запускался для проверки его работоспособности.",
         "tools": "Инструменты",
-        "tools_2": "инструментов",
         "undo": "Отменить",
         "uninstall": "Удалить",
         "unknown": "Неизвестно",
@@ -16228,7 +16282,11 @@
         "temp_refusal_sealed": "Объявленный {{key}}={{path}} проигнорирован, потому что он находится в папке среды выполнения, доступной только для чтения. Вместо него проверка использовала управляемую временную папку.",
         "temp_refusal_unclassifiable": "Объявленный {{key}}={{path}} проигнорирован, потому что не удалось подтвердить его реальное расположение. Вместо него проверка использовала управляемую временную папку.",
         "temp_refusal_check_failed": "Объявленный {{key}}={{path}} проигнорирован, потому что проверка расположения завершилась ошибкой. Вместо него проверка использовала управляемую временную папку.",
-        "mcp_deny_spared": "Это один из собственных серверов {{productName}}, поэтому в {{name}} отключение одного инструмента здесь останавливает только его."
+        "mcp_deny_spared": "Это один из собственных серверов {{productName}}, поэтому в {{name}} отключение одного инструмента здесь останавливает только его.",
+        "tools_count_one": "{{n}} инструмент",
+        "tools_count_few": "{{n}} инструмента",
+        "tools_count_many": "{{n}} инструментов",
+        "tools_count_other": "{{n}} инструмента"
       },
       "memoryGraphTab": {
         "all_count": "Все ({{count}})",
@@ -18187,6 +18245,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "Показывать использованные и общие токены рядом с индикатором контекста",
         "e_g_solutions_architect_sre_founder": "например: архитектор решений, SRE, основатель",
         "effort_default_needs_reasoning_model": "Сколько модели думают перед ответом по умолчанию. Применяется только к моделям с рассуждением, поэтому не влияет на выбранную выше модель.",
+        "effort_default_off_on_auto": "Сколько модели думают перед ответом по умолчанию. Не действует, пока модель по умолчанию — Auto: бэкенд сам выбирает модель и не принимает уровень глубины, пока не выбрана конкретная модель.",
         "effort_needs_reasoning_model": "Применяется только к моделям с рассуждением, поэтому не влияет на выбранную выше модель.",
         "enter_for_newline": "Enter — перенос строки",
         "enter_sends": "Enter отправляет",
@@ -19038,7 +19097,6 @@
         "block_list_rules": "Список запретов · {{rules}}",
         "built_in_rules_enforced_note": "Сейчас применяется {{enabled}} из {{total}} встроенных правил — с учётом ваших отключений и закреплений политикой.",
         "cancel": "Отмена",
-        "categories": "категорий ·",
         "click_any_control_to_see_exactly_what_it_covers": "Нажмите на любой элемент управления, чтобы увидеть, что именно он охватывает.",
         "collapse_all": "Свернуть все",
         "collapse_category_rules": "Свернуть правила «{{category}}»",
@@ -19174,7 +19232,6 @@
         "rail_until_restart": "До перезапуска",
         "rail_until_time": "До {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", вычисленный как пересечение политики вашей организации с профилем хоста. Более узкие профили, привязанные к конкретной поверхности, приложению или задаче (cron, Slack, субагенты), могут дополнительно сузить область во время работы. Только для чтения — предел задаётся в",
-        "rules": "правил",
         "search_rules_placeholder": "Поиск правил, шаблонов, категорий…",
         "section_group_enforced": "Принудительно",
         "section_group_reference": "Справка",
@@ -19311,7 +19368,19 @@
         "redaction_revoke_failed": "Не удалось отозвать этот хост. Он по-прежнему разрешён.",
         "redaction_no_allowed_hosts": "Нет разрешённых хостов. Каждая ссылка проходит все проверки.",
         "redaction_workspace": "Рабочая область: {{workspace}}",
-        "redaction_revoke": "Отозвать"
+        "redaction_revoke": "Отозвать",
+        "rules_matched_one": "{{matched}} / {{n}} правило",
+        "rules_matched_few": "{{matched}} / {{n}} правила",
+        "rules_matched_many": "{{matched}} / {{n}} правил",
+        "rules_matched_other": "{{matched}} / {{n}} правила",
+        "categories_count_one": "{{n}} категория ·",
+        "categories_count_few": "{{n}} категории ·",
+        "categories_count_many": "{{n}} категорий ·",
+        "categories_count_other": "{{n}} категории ·",
+        "rules_count_one": "{{n}} правило",
+        "rules_count_few": "{{n}} правила",
+        "rules_count_many": "{{n}} правил",
+        "rules_count_other": "{{n}} правила"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Назначить переключение вкладок чата на Ctrl+цифра вместо Option+цифра. Option+цифра не переключает чат, пока фокус находится в текстовом поле.",
@@ -20509,23 +20578,25 @@
       "written_by_the": "Записано инструментом"
     },
     "worldsPage": {
-      "active": "активно,",
-      "agent_few": "{{count}} агента",
-      "agent_many": "{{count}} агентов",
-      "agent_one": "{{count}} агент",
-      "agent_other": "{{count}} агента",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Перейти к отдельному окну",
       "hide_controls": "Скрыть управление",
-      "open": "открыто",
       "playing_in_popout_window": "Воспроизводится в отдельном окне",
       "pop_out_to_separate_window": "Открыть в отдельном окне",
-      "present": "присутствует,",
       "show_controls": "Показать управление",
-      "slot_few": "{{count}} слота",
-      "slot_many": "{{count}} слотов",
-      "slot_one": "{{count}} слот",
-      "slot_other": "{{count}} слота"
+      "agents_present_one": "{{n}} агент на месте",
+      "agents_present_few": "{{n}} агента на месте",
+      "agents_present_many": "{{n}} агентов на месте",
+      "agents_present_other": "{{n}} агента на месте",
+      "agents_active_one": "{{n}} активный",
+      "agents_active_few": "{{n}} активных",
+      "agents_active_many": "{{n}} активных",
+      "agents_active_other": "{{n}} активного",
+      "slots_open_one": "{{n}} свободный слот",
+      "slots_open_few": "{{n}} свободных слота",
+      "slots_open_many": "{{n}} свободных слотов",
+      "slots_open_other": "{{n}} свободного слота",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Скрыть управление",

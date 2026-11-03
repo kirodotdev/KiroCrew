@@ -318,6 +318,8 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     if execution.member_id is not None:
         hook_id = f"{execution.store.store_id}:{hook_id}"
     session_key = f"hook:{hook_id}"
+    from kiro_crew.user_json import loads_user_json
+
     # Persist hook registration
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
@@ -331,7 +333,7 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
             hooks = {}
             if hook_file.exists():
                 try:
-                    hooks = json.loads(hook_file.read_text(encoding="utf-8"))
+                    hooks = loads_user_json(hook_file.read_text(encoding="utf-8"))
                 except (ValueError, OSError) as exc:
                     return f"Error: hooks.json is corrupted, fix or delete it: {exc}"
             if not isinstance(hooks, dict):

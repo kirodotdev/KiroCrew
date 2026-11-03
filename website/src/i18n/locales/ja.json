@@ -5879,7 +5879,6 @@
       "credentials_remain_with_their_source_rules_hooks": "認証情報はソースに留まります。会話履歴、フック、エージェント定義、ソースのペルソナ識別情報はインポートされません。書かれたルールと指示は優先度の高いメモリとしてインポートされます。",
       "deduplicated": "重複排除",
       "existing_kirocrew_setup_is_never_overwritten_mat": "既存の {{productName}} セットアップはデフォルトではオーバーライドされません。マッチするアイテムは重複排除され、競合するアイテムはインポート後に選択しない限り、現在のバージョンが保持されます。",
-      "found": "見つかりました",
       "import_agent_setup": "エージェントセットアップをインポート",
       "import_all_your_supported_work_or_handpick_what": "サポートされているすべての作業をインポートするか、持ち込むものを手選択します。",
       "import_another": "別のものをインポート",
@@ -5889,7 +5888,6 @@
       "imported": "インポート済み",
       "importing": "インポート中",
       "items_already_exist_with_different_content": "アイテムは既に異なるコンテンツで存在します。",
-      "items_selected": "アイテムが選択されました",
       "keep_both": "両方を保持",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} はこのゲートウェイホストでエージェントセットアップを見つけました。レビューするソースを選択します。",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} はこのゲートウェイホストでインポートするサポートされているセットアップを見つけませんでした。",
@@ -5920,7 +5918,11 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "既存の {{productName}} セットアップは影響を受けません。",
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。",
       "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}",
-      "source_item_count_other": "{{name}}、{{count}} 件"
+      "source_item_count_other": "{{name}}、{{count}} 件",
+      "category_count_other": "{{count}} 件のカテゴリ",
+      "source_categories": "{{name}} のカテゴリ",
+      "items_selected_count_other": "{{count}} 件のアイテムを選択済み",
+      "found_count_other": "{{count}} 件見つかりました"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "保存しましたが、この {{productName}} ではエージェント設定を更新できなかったため、新しいチャットでは以前の設定が使われます。理由は「ログ」ページで確認してください。"
@@ -8313,6 +8315,7 @@
       "title_md": "中幅"
     },
     "reasoningEffortDropdown": {
+      "effort_off_on_auto": "Auto では推論エフォートは適用されません。バックエンドがモデルを選び、上で特定のモデルを選ぶまでエフォートのレベルを受け付けません。",
       "default_with_level": "デフォルト · {{level}}",
       "effort": "エフォート",
       "effort_help": "推論エフォートは、モデルが回答前に考える時間を設定します。高いほど難しい問題を長く推論するため遅くなりますが、回答品質が向上します。低いほど高速です。セッションごとの上書きをオフにすると、設定 → チャットのデフォルトへフォールバックします。デフォルトがなければモデル自身の選択を使用します。推論エフォートに対応したモデルでのみこの設定を利用できます。",
@@ -10443,6 +10446,20 @@
       "grant_role_user": "{{title}}：返信だけでなく、あなた自身のメッセージも",
       "grant_role_assistant": "{{title}}：アシスタントの返信",
       "grant_format_markdown": "{{title}}：メッセージの Markdown（リンクのアドレスを含む）"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} のリンクを {{app}} で開きますか？",
+      "ask_body": "{{app}} に渡されるのは下のリンクだけです。",
+      "always": "{{host}} では常にこうする",
+      "open_in_app": "{{app}} で開く",
+      "open_in_browser": "ブラウザーで開く",
+      "opening": "{{app}} で開いています…",
+      "failed": "{{app}} はこのリンクを開けませんでした。",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "コピー",
+      "offer_open": "{{host}} を開く",
+      "copy_failed": "コピーできませんでした。アプリ内のテキストを選択して自分でコピーしてください。",
+      "more_actions": "その他の操作"
     }
   },
   "hooks": {
@@ -10763,6 +10780,7 @@
       "install_on_your_mac": "Mac にインストール",
       "installed": "インストール済み:",
       "installed_version": "インストール済み (v{{version}})",
+      "more_actions": "{{name}} のその他の操作",
       "installing": "インストール中…",
       "keep_app_data": "アプリデータを保持",
       "lifecycle": "| ライフサイクル:",
@@ -10825,7 +10843,13 @@
       "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
       "grants_reconsent_message_actions": "メッセージアクション：チャットメッセージ上のアプリのメニュー項目が読み取れる内容。",
-      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
+      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
+      "grants_reconsent_link_open_hosts": "開くリンク: チャットメッセージ内のこれらのサイトへのリンクをクリックしたとき、アプリがそのリンクを開けるようにします。",
+      "grants_reconsent_link_open_full_url": "開くリンクの完全なアドレス: アプリはリンクの ? や # 以降の部分も見ます。ここにはサインインコードが含まれることがあります。",
+      "link_open_remembered": "記憶したリンクの選択",
+      "link_open_choice_app": "{{name}} で開く",
+      "link_open_choice_browser": "ブラウザーで開く",
+      "link_open_forget": "削除"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -10982,7 +11006,6 @@
       "make_sure_the_gateway_s": "。ゲートウェイの",
       "make_the_default_profile": "{{name}} をデフォルトのプロファイルに設定",
       "missing_sso_start_url_sso_region": "不足 … sso_start_url、sso_region",
-      "more": "詳細",
       "never_boto3_so_credential_resolution_stays_in_yo": "を経由します（boto3 は使用しません）。\n              そのため認証情報解決は OS 認証情報ストア内に留まります。{{productName}} は IAM を書き込まず、\n              アカウント、ユーザー、またはロールを管理しません — 生成された最小権限ポリシーを自分で適用してください。",
       "never_credentials": "— 認証情報なし）",
       "new_profile": "新しいプロファイル",
@@ -11076,7 +11099,8 @@
       "col_actions": "アクション",
       "col_type": "タイプ",
       "col_url": "リンク",
-      "col_cost": "コスト"
+      "col_cost": "コスト",
+      "more_count_other": "ほか {{n}} 件"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",
@@ -12055,7 +12079,6 @@
         "aria_collapse_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を折りたたむ",
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
         "current_task": "現在のタスク",
-        "more": "ほか…",
         "task_completion": "タスクの完了状況",
         "aria_mark_done": "完了にする: {{task}}。エージェントはやり直しません。もう一度クリックで元に戻せます。",
         "aria_mark_not_done": "未完了にする: {{task}}。エージェントは未着手として扱います。もう一度クリックで元に戻せます。",
@@ -12069,7 +12092,8 @@
         "set_by_you_done": "あなたが完了にしました。エージェントはまだ確認していません。",
         "set_by_you_open": "あなたが未完了にしました。エージェントはまだ確認していません。",
         "sending": "送信中",
-        "done_of_total": "{{done}} ／ {{total}}"
+        "done_of_total": "{{done}} ／ {{total}}",
+        "more_count_other": "ほか {{n}} 件…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "モデルの推論を折りたたむ",
@@ -12279,7 +12303,7 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",
-        "events": "イベント"
+        "events_count_other": "{{n}} 件のイベント"
       },
       "pins": {
         "pinned_messages": "ピン留めされたメッセージ",
@@ -13550,6 +13574,9 @@
       "waiting_for_approval_address": "承認アドレスを待機中…エージェントが次に接続するときにここに表示されます。チャットメッセージを送信して今すぐ認可を開始してください。",
       "needs_configuration": "設定が必要",
       "needs_configuration_help": "{{provider}} は初回のみ設定が必要です。「OAuth アプリを設定」を押すと案内付きの設定ページが開きます。そこで保存するまで何も変わらず、あとで削除もできます。{{provider}} でアプリを登録し、クライアント ID とシークレットを入力する手順を案内します。",
+      "backend_oauth_caveat": "Connect は完了し、{{provider}} のサインインは対応しているチャット用に保存されます。一部のチャットはまだこの種類のサインインを使えないため、そこではツールが動作しない場合があります。",
+      "chat_use_label": "チャットでの利用",
+      "chat_use_lacks_oauth": "対応しているチャット用に保存されています。一部のチャットはまだこの種類のサインインを使えません。",
       "configure_oauth_app": "OAuth アプリを設定",
       "prerequisite_github": "GitHub は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した GitHub のOAuth アプリを使います。GitHub の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
       "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
@@ -14588,7 +14615,6 @@
         "search_explore_and_manage_your_knowledge_base": "ナレッジベースを検索・探索・管理する",
         "search_knowledge_press_enter_to_search": "ナレッジを検索… (Enterキーで検索)",
         "select_all": "すべて選択",
-        "selected": "選択済み",
         "sources_tab": "ソース",
         "status_active": "アクティブ",
         "status_archived": "アーカイブ済み",
@@ -14606,7 +14632,8 @@
         "bulk_delete_failed": "選択したアイテムを削除できませんでした",
         "entity_items_load_failed": "このエンティティのアイテムを読み込めませんでした",
         "error_no_reason": "理由が示されないままリクエストが失敗しました。",
-        "delete_items_permanently_other": "{{count}} 件の項目を完全に削除しますか？"
+        "delete_items_permanently_other": "{{count}} 件の項目を完全に削除しますか？",
+        "selected_count_other": "{{count}} 件選択済み"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -14686,7 +14713,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "無視パターン (1行1個、例: .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "サブディレクトリを含める (再帰的)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "インデックス作成ではソースのサイズに比例して Kiro リクエストが消費され、監視中のフォルダーではファイルが追加されるたびに、一括ではなく時間をかけて分散する形で消費が続きます。",
-        "items": "アイテム",
         "kb_ids_comma_separated_id_or_arn": "カンマ区切り。例: KXABC12345 または arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "完了まで約 {{calls}} 件の Kiro リクエスト",
         "knowledge_base_ids": "ナレッジベース ID",
@@ -14756,7 +14782,8 @@
         "enter_region_to_add": "このソースを追加するには AWS リージョンを入力してください。",
         "profile_blank_uses_default_chain": "空欄の場合はデフォルトの AWS 認証情報を使用します。",
         "remove_this_live_source": "このナレッジベースのソースを削除しますか？ローカルには何も保存されていません。ナレッジベース自体は変更されません。",
-        "region_example_placeholder": "例: us-east-1"
+        "region_example_placeholder": "例: us-east-1",
+        "items_count_other": "{{n}} 件のアイテム"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -14785,6 +14812,7 @@
       "by_category": "カテゴリ別",
       "clear": "クリア",
       "clear_old_caches": "スクロールキャッシュをクリア",
+      "delete_all_keys_other": "{{count}} 件のキーをすべて削除",
       "delete_cached_scroll_positions_from_old_sessions": "すべてのセッションのキャッシュされた行の高さと保存された読書位置を削除します (安全 — スクロール時に再構築されます)",
       "delete_key": "キーを削除",
       "export": "エクスポート",
@@ -15265,7 +15293,6 @@
         "status": "ステータス",
         "tool_list_read_from_the_package_s_declaration_th": "ツール一覧はパッケージ自身の宣言から読み取ったものです。サーバーを起動して動作確認はしていません。",
         "tools": "ツール",
-        "tools_2": "ツール",
         "undo": "元に戻す",
         "uninstall": "アンインストール",
         "unknown": "不明",
@@ -15313,7 +15340,8 @@
         "temp_refusal_sealed": "宣言された {{key}}={{path}} は無視されました。理由: 読み取り専用のランタイムフォルダー内にあります。プローブは代わりに管理された一時フォルダーを使用しました。",
         "temp_refusal_unclassifiable": "宣言された {{key}}={{path}} は無視されました。理由: 実際の場所を確認できませんでした。プローブは代わりに管理された一時フォルダーを使用しました。",
         "temp_refusal_check_failed": "宣言された {{key}}={{path}} は無視されました。理由: 場所の確認に失敗しました。プローブは代わりに管理された一時フォルダーを使用しました。",
-        "mcp_deny_spared": "これは {{productName}} 自身のサーバーです。{{name}} でここでツールを1つオフにしても、止まるのはそのツールだけです。"
+        "mcp_deny_spared": "これは {{productName}} 自身のサーバーです。{{name}} でここでツールを1つオフにしても、止まるのはそのツールだけです。",
+        "tools_count_other": "{{n}} 個のツール"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",
@@ -17128,6 +17156,7 @@
         "display_used_and_total_tokens_next_to_the_contex": "コンテキストプログレスバーの横に使用済みトークンと合計トークンを表示します",
         "e_g_solutions_architect_sre_founder": "例：ソリューションアーキテクト、SRE、ファウンダー",
         "effort_default_needs_reasoning_model": "モデルがデフォルトで回答する前に考える時間。推論対応モデルにのみ適用されるため、上で選択したモデルには影響しません。",
+        "effort_default_off_on_auto": "モデルがデフォルトで回答する前に考える時間。デフォルトのモデルが Auto の間は適用されません。バックエンドがモデルを選び、特定のモデルが選ばれるまでエフォートのレベルを受け付けないためです。",
         "effort_needs_reasoning_model": "推論対応モデルにのみ適用されるため、上で選択したモデルには影響しません。",
         "enter_for_newline": "Enter で改行",
         "enter_sends": "Enter で送信",
@@ -17937,7 +17966,6 @@
         "block_list_rules": "ブロックリスト · {{rules}}",
         "built_in_rules_enforced_note": "オプトアウトとポリシーの固定を反映した結果、現在 {{total}} 件の組み込みルールのうち {{enabled}} 件が適用されています。",
         "cancel": "キャンセル",
-        "categories": "カテゴリ ·",
         "click_any_control_to_see_exactly_what_it_covers": "任意のコントロールをクリックして、その対象を正確に確認します。",
         "collapse_all": "すべて折りたたむ",
         "collapse_category_rules": "{{category}}ルールを折りたたむ",
@@ -18070,7 +18098,6 @@
         "profile_2": "プロファイル",
         "profiles_json": "profiles/*.json",
         "resolved_as_your_organization_s_policy_intersect": "、組織のポリシーとホストプロファイルの交差として解決されています。特定のサーフェス、アプリ、またはタスク（cron、Slack、サブエージェント）にバインドされたより狭いプロファイルは、実行時にスコープをさらに絞り込むことができます。読み取り専用。上限は以下で作成されます",
-        "rules": "ルール",
         "search_rules_placeholder": "ルール、パターン、カテゴリを検索…",
         "section_group_enforced": "適用中",
         "section_group_reference": "参考",
@@ -18210,7 +18237,10 @@
         "redaction_revoke_failed": "そのホストを取り消せませんでした。まだ許可されています。",
         "redaction_no_allowed_hosts": "許可されたホストはありません。すべてのリンクがすべてのチェックを通過します。",
         "redaction_workspace": "ワークスペース：{{workspace}}",
-        "redaction_revoke": "取り消す"
+        "redaction_revoke": "取り消す",
+        "rules_matched_other": "{{matched}} / {{n}} 件のルール",
+        "categories_count_other": "{{n}} 件のカテゴリ ·",
+        "rules_count_other": "{{n}} 件のルール"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "チャットタブの切り替えを Option+digit ではなく Ctrl+digit にバインドします。テキストフィールドにフォーカスがある間、Option+digit ではチャットは切り替わりません。",
@@ -19387,17 +19417,16 @@
       "written_by_the": "書き込み元は"
     },
     "worldsPage": {
-      "active": "アクティブ、",
-      "agent_other": "{{count}} エージェント",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "ポップアウトをフォーカス",
       "hide_controls": "コントロールを隠す",
-      "open": "空き",
       "playing_in_popout_window": "ポップアウトウィンドウで再生中",
       "pop_out_to_separate_window": "別ウィンドウにポップアウト",
-      "present": "在席、",
       "show_controls": "コントロールを表示",
-      "slot_other": "{{count}} スロット"
+      "agents_present_other": "{{n}} エージェント在席",
+      "agents_active_other": "{{n}} 件アクティブ",
+      "slots_open_other": "空きスロット {{n}} 個",
+      "summary": "{{present}}、{{active}}、{{open}}"
     },
     "worldsPopout": {
       "hide_controls": "コントロールを隠す",

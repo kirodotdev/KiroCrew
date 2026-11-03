@@ -61,6 +61,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_REMOTE_MCP_OAUTH,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -189,6 +190,16 @@ class SessionCapabilities:
     #: resolved backend on.
     acp_client_spawnable: bool
 
+    #: Whether a remote MCP entry's ``oauth`` block reaches the engine, so a
+    #: provider whose OAuth client is pre-registered (no dynamic client
+    #: registration) can sign in on this backend.
+    #:
+    #: False on KAS: its agent schema has no slot for the block, and the engine
+    #: falls back to registering a client the provider refuses. The Connections
+    #: page reads it to mark those providers kiro-cli only rather than offer a
+    #: Connect that cannot finish.
+    honors_remote_mcp_oauth: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -214,6 +225,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
+        honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
     )
 
 
@@ -242,6 +254,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     supports_native_todos=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
+    honors_remote_mcp_oauth=False,
 )
 
 

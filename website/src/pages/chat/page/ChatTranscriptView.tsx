@@ -19,6 +19,7 @@ import TranscriptScrollShell from '../TranscriptScrollShell'
 import TurnNavigationMinimap from '../TurnNavigationMinimap'
 import WelcomeView from '../../../components/WelcomeView'
 import { useMarkTranscriptShown } from '../../../hooks/useAckCronNotesInView'
+import { ChatProjectDirCtx } from '../../../components/markdown/contexts'
 import CrewModeWelcome from '../../../components/CrewModeWelcome'
 import SessionPulseSurveyCard from '../../../components/SessionPulseSurveyCard'
 import { ChatFooter } from '..'
@@ -73,6 +74,8 @@ interface ChatTranscriptViewProps {
   approve: (action: string) => Promise<void>
   dismissApproval: (aid: string, decision?: string) => void
   currentSlot: ChatSlot | undefined
+  /** The project relative transcript paths join to (`useChatProjectDir`), or null. */
+  projectDir?: string | null
   regenerating: boolean
   sendUnconfirmed: boolean
   dockH: number
@@ -100,7 +103,7 @@ interface ChatTranscriptViewProps {
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
-  onScrollPin, pinned, approve, dismissApproval, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
+  onScrollPin, pinned, approve, dismissApproval, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
@@ -109,7 +112,7 @@ export default function ChatTranscriptView({
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
   return (
-    <>
+    <ChatProjectDirCtx.Provider value={projectDir}>
       {isWelcomeState ? (
         <motion.div
           key="welcome-hero"
@@ -356,6 +359,6 @@ export default function ChatTranscriptView({
           ready -- looked like different events. A spinner also says only
           "wait", where a skeleton previews the shape that is coming. */}
       {(slotLoading || virt.restoreGate) && <ChatTranscriptSkeleton />}
-    </>
+    </ChatProjectDirCtx.Provider>
   )
 }

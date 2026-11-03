@@ -734,6 +734,17 @@ const IMG_LINE_RE = new RegExp(`^${IMG_LINE_INNER.source}$`)
  *  newline (an expanded paste). */
 const IMG_BLOCK_RE = new RegExp(`^(?:${IMG_LINE_INNER.source})(?:\n(?:${IMG_LINE_INNER.source}))*(?:\n\n|$)`)
 
+/** Split the producer's leading image block off a sent message: `images` is
+ *  the block's `![image](dest)` lines (no terminator), `body` the rest,
+ *  byte-exact. A message that does not open with the block returns it whole
+ *  as `body`. The inline paste-chip renderer draws plain spans, so it needs
+ *  the images handed to the markdown renderer separately (#22401). */
+export function splitLeadingImageBlock(content: string): { images: string; body: string } {
+  const block = IMG_BLOCK_RE.exec(content)
+  if (!block) return { images: '', body: content }
+  return { images: block[0].replace(/\n+$/, ''), body: content.slice(block[0].length) }
+}
+
 /** A path shape the send path could actually have serialized: absolute POSIX
  *  (which also covers the producer's forward-slashed UNC form) or a Windows
  *  drive-letter path. Upload and picker paths are absolute, so a marker whose

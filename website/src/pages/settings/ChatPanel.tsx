@@ -533,6 +533,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             hint={
               effortSupported
                 ? i18nT('pages.settings.chatPanel.model_default_applies_no_override_the_model_pick')
+                // On `auto` the backend picks the model and refuses an effort
+                // level until a specific one is selected (#11546).
+                : !shownDefaultModel || shownDefaultModel === 'auto'
+                ? i18nT('pages.settings.chatPanel.effort_default_off_on_auto')
                 : i18nT('pages.settings.chatPanel.effort_default_needs_reasoning_model')
             }
             value={shownDefaultEffort}
