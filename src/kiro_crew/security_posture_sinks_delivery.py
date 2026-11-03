@@ -920,4 +920,6 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     ("Slack code-channel classifier", "slack/code_channels/classifier.py", "Its model prompt."),
     ("Slack code-channel diagnostics", "slack/code_channels/client.py", "Logs; credentials only."),
+    ("Slack code-channel bar", "slack/code_channels/workspace/context_bar.py", "Its labels."),
+    ("Slack code-channel diff", "slack/code_channels/workspace/service.py", "Its diff view."),
 )
