@@ -166,6 +166,16 @@ export default function SkillsTab() {
   // runs must not open an editor on the skill the user just left.
   const selectedKeyRef = useRef(selectedKey)
   useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
+  // Gives mutation callbacks a fresh view of detailEditing without capturing
+  // a stale closure value: the deleteSkill onSuccess fires after an await,
+  // by which point the user may have entered edit mode since the mutation
+  // started, so reading detailEditing directly from the closure yields the
+  // value at call time, not the current value. Written during render (not in
+  // an effect) so the ref is current before any passive effects flush — a
+  // useEffect sync would share the same post-commit batch as useMutation's
+  // observer.setOptions and lose the same race this ref is meant to close.
+  const detailEditingRef = useRef(detailEditing)
+  detailEditingRef.current = detailEditing
 
   const createSkill = useMutation({
     mutationFn: ({ name, content }: { name: string; content: string }) => api.createSkill(name, content),
@@ -293,11 +303,14 @@ export default function SkillsTab() {
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
       // typed-but-unsaved draft outright and leaves an in-flight PUT's later
-      // rejection with nothing to render it. `!detailEditing` covers both — a
-      // pending save can only exist while the editor is open, since every
-      // path that leaves it is disabled or no-ops during the save window.
-      // Outside the editor, the original teardown applies.
-      if (!detailEditing) {
+      // rejection with nothing to render it. `!detailEditingRef.current` covers
+      // both — a pending save can only exist while the editor is open, since
+      // every path that leaves it is disabled or no-ops during the save window.
+      // Outside the editor, the original teardown applies. The ref is used
+      // rather than the state variable to avoid a stale closure: onSuccess
+      // executes after an async await, and the user may have entered edit mode
+      // after the mutation was called but before it resolved.
+      if (!detailEditingRef.current) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
