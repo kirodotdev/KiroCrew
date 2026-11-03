@@ -448,7 +448,9 @@ def _install_idle_reader(self: AcpClient) -> None:
 
     # While a claimed reader holds a pending turn's frames (_claiming_stdout),
     # a request from the agent is held with them, in the same list, so a
-    # permission request keeps its place among the turn's chunks. A held frame
+    # permission request keeps its place among the turn's chunks, and so is the
+    # autonomous usage_update that closes the turn, so the turn still ends on
+    # it. A response is never held: it answers that reader. A held frame
     # reads as nothing, so that reader still checks its own deadline. Past
     # _buffer's room a frame is not held, so putting them back pushes none out.
     async def read(
@@ -459,7 +461,10 @@ def _install_idle_reader(self: AcpClient) -> None:
         if (
             held is None
             or msg is None
-            or not _starts_agent_turn(msg)
+            or not (
+                _starts_agent_turn(msg)
+                or (msg.method is not None and _ends_agent_started_turn(msg))
+            )
             or len(held) + len(self._buffer) >= (self._buffer.maxlen or 0)
         ):
             return msg

@@ -2454,7 +2454,8 @@ stdout while no request waits. Design record:
   go back to the front of `_buffer` in arrival order, so the turn still starts
   on its first frame and the hand-off stands. A request from the agent is held
   in the same list, so a permission request keeps its place among the chunks
-  around it. Every other frame gets that reader's own handling: a request wait
+  around it, and so is the autonomous `usage_update` that closes the turn, so
+  the turn still ends on it; a response is never held. Every other frame gets that reader's own handling: a request wait
   still files a `usage_update` or `session_info_update` in
   `_mcp_notifications`. A frame that would not fit in `_buffer` beside the held
   ones gets that handling too, so putting them back pushes none out. A kill or

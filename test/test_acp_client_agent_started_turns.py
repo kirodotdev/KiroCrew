@@ -757,6 +757,24 @@ async def test_a_permission_request_in_the_window_keeps_its_place_among_the_turn
     assert client._mcp_notifications == []
 
 
+@pytest.mark.parametrize("site", _READERS_IN_THE_HAND_OFF_WINDOW)
+@pytest.mark.asyncio
+async def test_a_reader_in_the_window_keeps_the_turns_closing_usage_update(site: str) -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+
+    await _run_reader(client, reader, site, _chunk("two"), _AUTONOMOUS_END)
+
+    # The turn's end is held with its chunks, so the turn still ends on it.
+    assert client._mcp_notifications == []
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        events = [e async for e in stream]
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["one", "two"]
+    assert events[-1].kind == EVENT_COMPLETE
+    assert list(client._buffer) == []
+    await _stop_restarted_reader(client)
+
+
 @pytest.mark.asyncio
 async def test_held_frames_go_back_ahead_of_what_the_reader_left_unread() -> None:
     client, _reader, _proc = _client(on_turn=lambda _c: None)
