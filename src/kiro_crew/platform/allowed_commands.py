@@ -352,6 +352,38 @@ def plain_command(command: object) -> bool:
     )
 
 
+#: What the person is told when an ``allowedCommands`` entry would match a command
+#: but the command's shell composition keeps it from being granted.
+COMPOSITION_NOTICE = (
+    "This command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
+    "or backticks always ask. Run the script alone, or move the pipeline into the script."
+)
+
+#: Characters that end the leading simple command of a composed one.
+_COMPOSITION_BREAK_CHARS = UNGRANTABLE_COMMAND_CHARS | QUOTED_ONLY_COMMAND_CHARS
+
+
+def composition_blocks_match(raw_patterns: object, command: object) -> bool:
+    """Whether *command* is refused a grant only because of its shell composition.
+
+    True when *command* is not :func:`plain_command` because it chains, pipes,
+    redirects, substitutes or groups, and one of *raw_patterns* matches either the
+    whole command or its leading simple command (the text before the first such
+    character, without trailing spaces). Used only to EXPLAIN a prompt: it never
+    grants, and a command it returns True for still asks.
+    """
+    if not isinstance(command, str) or not command or len(command) > MAX_COMMAND_LENGTH:
+        return False
+    if plain_command(command) or not _COMPOSITION_BREAK_CHARS.intersection(command):
+        return False
+    cut = min(command.index(ch) for ch in _COMPOSITION_BREAK_CHARS if ch in command)
+    leading = command[:cut].rstrip(" ")
+    candidates = [leading] if leading and _plain_text(leading) else []
+    if _plain_text(command):
+        candidates.append(command)
+    return any(matches_any(raw_patterns, text) for text in candidates)
+
+
 def _grouping_only_quoted(command: str) -> bool:
     """Whether every ``( ) { }`` of *command* sits inside a closed quoted argument.
 

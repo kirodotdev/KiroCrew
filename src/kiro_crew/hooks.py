@@ -105,6 +105,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _rule_sensitive_bash,
     _rule_sensitive_path,
     _spec_builtin_names,
+    _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
@@ -745,7 +746,7 @@ class HookManager:
                 if not verdict.tier:
                     verdict.tier = tier.name
                 return verdict
-        return ToolHookResult.allow()
+        return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
     def on_tool_call(
