@@ -17,6 +17,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "boxd_session/cli.py::_run",
         # asyncio.run drives the terminal bridge in-process, not a child spawn.
         "sprites_session/terminal.py::main",
+        # Agent Plugins install: fixed git clone argv (https only, hooks off, no
+        # symlinks, depth 1, no submodules) of a URL the dashboard OWNER typed into
+        # the owner-only install route; cwd a fresh system temp folder, stdin
+        # DEVNULL, no shell. No agent tool or CLI verb reaches it.
+        "agent_plugins/install.py::_run_clone",
         # Coder lifecycle: resolved operator CLI, fixed verbs, saved template/preset
         # and validated generated names; cwd the data home, stdin DEVNULL, no shell.
         "coder/client.py::_run",

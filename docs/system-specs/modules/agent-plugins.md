@@ -4,16 +4,17 @@ Owner: `kiro_crew.agent_plugins`. Tests: `test/test_agent_plugins_discovery.py`,
 `test/test_agent_plugins_mcp.py`, `test/test_agent_plugins_conformance.py`
 (which pins the loader's verdict on the official conformance suite's own fixtures,
 vendored in `test/fixtures/agent_plugins_conformance/`),
-`test/test_agent_plugins_consent.py`, `test/test_agent_plugins_routes.py`,
-`test/test_agent_plugins_launch.py`, `test/test_agent_plugins_mcp_source.py` and
-`test/test_agent_plugins_include_powers.py`. Design:
+`test/test_agent_plugins_install.py`, `test/test_agent_plugins_consent.py`,
+`test/test_agent_plugins_routes.py`, `test/test_agent_plugins_launch.py`,
+`test/test_agent_plugins_mcp_source.py` and `test/test_agent_plugins_include_powers.py`.
+Design:
 [rfc-agent-plugins-standard.md](../../request-for-change/rfc-agent-plugins-standard.md).
 
 Kiro Crew's client for the [Agent Plugins](https://agent-plugins.org/) 1.0.0
-standard. This module discovers and validates plugins, keeps the owner's on/off
-record, and starts the stdio servers of plugins the owner turned on. A plugin's
-MCP servers reach sessions through the plugin MCP source (§8). Skills are not
-handed to sessions yet.
+standard. This module discovers, validates, converts and installs plugins, keeps
+the owner's on/off record, and starts the stdio servers of plugins the owner
+turned on. A plugin's MCP servers reach sessions through the plugin MCP source
+(§9). Skills are not handed to sessions yet.
 
 ## 1. Where plugins come from
 
@@ -39,7 +40,7 @@ unreadable index lists nothing.
 | `invalid` | The folder is missing, or `plugin.json` fails a fatal rule. No component of it is used |
 | `not-a-plugin` | No `plugin.json`; a `POWER.md`-only power is named as such in `reason` |
 | `off` | A valid plugin the owner has not turned on. Its skills, servers and per-component issues are filled in |
-| `on` | A valid plugin the owner turned on (§6) |
+| `on` | A valid plugin the owner turned on (§7) |
 
 `on` is computed from the owner's record (`consent.enabled()`), read once per
 call unless the caller passes it. Consent is to a plugin by name: editing or
@@ -98,8 +99,8 @@ directory and belongs to the launcher.
 ## 4. Converting client-specific plugins
 
 `agent_plugins.convert.convert_plugin(src, dest)` turns a Claude Code, Codex or
-Cursor package into a standard plugin, following the spec's migration guide. No
-caller uses it yet; the install flow (RFC Phase 4) will. Tests:
+Cursor package into a standard plugin, following the spec's migration guide. The
+install flow (§5) is its caller. Tests:
 `test/test_agent_plugins_convert.py`.
 
 - **Input.** The first of `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
@@ -159,14 +160,68 @@ caller uses it yet; the install flow (RFC Phase 4) will. Tests:
   is exactly the converted servers, or absent when none convert; a client file
   already at `mcp.json` is never kept, and its removal or replacement is noted.
 
-## 5. Side effects
+## 5. Installing
 
-Conversion writes only under its staging folder and `dest`. Discovery reads files only: it does not create `data/<name>/`, write any
-index or the owner's record, start a process or add a skill root. Each read is
-size-bounded (`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB,
-`installed.json` 1 MiB).
+`agent_plugins.install` puts a plugin into the powers home the way Kiro IDE and
+kiro-cli do, so it also appears in Kiro. Tests: `test/test_agent_plugins_install.py`.
 
-## 6. The owner's on/off record (`agent_plugins.consent`)
+- **`install_from_folder(src, home=, replace=)`.** A folder that
+  `find_client_manifest` calls standard (a root `plugin.json` with an
+  `agent-plugins.org` `$schema`), or that has no manifest at all, is copied with
+  the converter's package copy: links and junctions are neither followed nor
+  copied, `.git` and `node_modules` are skipped, and the 20,000-file and 200 MiB
+  bounds apply. Any other folder goes through `convert_plugin`. The copy is built
+  in a hidden `installed/.installing-*` folder, then validated with the loader
+  against that staging folder as its home; `invalid` and `not-a-plugin` are
+  refused. A source that overlaps `installed/` is refused.
+- **Name and replace.** The install name is the manifest `name`. A name already
+  listed in `installed.json`, or already present as a folder, is refused unless
+  `replace` is set; then the old folder is moved aside and the new one moved in
+  with two `os.replace` calls, and the old one is restored if the second move or
+  the index write fails. `data/<name>/` is never touched. Consent is by name
+  (§7), so replacing a plugin that is `on` keeps it `on`.
+- **Index.** `installed.json` is read (a missing file is an empty index; an
+  unreadable, oversized or non-JSON one is refused, never overwritten), and
+  `{"name": <name>}` is appended unless the name is already listed. Every other
+  entry, every unknown field and the key order are kept. The file is rewritten
+  with `atomic_write` while `.installed.json.lock` in the powers home is held.
+- **Result.** `InstallResult` carries the name, the loader record for
+  `installed/<name>/` (always `off`: installing never turns a plugin on), the
+  conversion report (`None` for a standard source), copy notes and `replaced`.
+  A refused install leaves `installed/` and `installed.json` as they were, and
+  removes any folder the call created.
+- **`install_from_git(url, ref=, subdir=, home=, replace=)`.** Only `https://`
+  URLs with a host and no user information, fragment or whitespace are accepted;
+  `file://`, `ssh://`, `git@host:path`, `<transport>::` addresses and local paths
+  are refused before git runs. `ref` must be a plain branch or tag name; `subdir`
+  must be relative, free of `..`, reached through no link and inside the clone.
+  The clone is `git -c protocol.allow=never -c protocol.https.allow=always -c
+  core.symlinks=false -c core.hooksPath=<devnull> -c core.fsmonitor=false clone
+  --depth 1 --no-recurse-submodules --template= [--branch <ref>] -- <url> <dest>`
+  into a fresh system temp folder, with `GIT_TERMINAL_PROMPT=0`, the
+  repository-redirecting `GIT_*` variables removed, stdin closed, UTF-8 output
+  decoding and a 300-second timeout. The temp folder is removed afterwards.
+- **`uninstall(name, home=)`.** Removes every `installed.json` entry for the
+  name, then moves `installed/<name>/` aside and deletes it (a link is unlinked,
+  never followed). `data/<name>/` is kept. A name neither listed nor present is
+  refused.
+- **Routes.** `POST /api/agent-plugins/install` (`{"path"}` or `{"url", "ref"?,
+  "subdir"?}`, optional `"replace"`) and `POST /api/agent-plugins/uninstall`
+  (`{"name"}`), in `dashboard/handlers/agent_plugins.py`. Only the dashboard
+  owner may call them (`is_owner_dashboard_request`, the AWS consent rule); an
+  app token or an allow-listed messaging user gets 403. Work runs off the event
+  loop. Refusals carry the `InstallError.code` (`agent_plugin_*`); a duplicate is
+  409, an unknown name 404, a failed clone 502, anything else 400. There is no
+  MCP tool or CLI verb for either.
+
+## 6. Side effects
+
+Conversion writes only under its staging folder and `dest`. Install writes only
+`installed/`, `installed.json` and `.installed.json.lock`, and runs only `git clone`. Discovery reads files only: it does not create `data/<name>/`, write any
+index or the owner's record, start a process or add a skill root. Each read is size-bounded
+(`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB, `installed.json` 1 MiB).
+
+## 7. The owner's on/off record (`agent_plugins.consent`)
 
 `agent-plugins.json` in the data home (`config_dir()`):
 
@@ -182,7 +237,7 @@ size-bounded (`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB,
   malformed record, a wrong `version`, or a row that is not an object, means
   that plugin (or every plugin) is not on.
 - **Writes.** `set_enabled(name, on)` is called only by the dashboard
-  handler (§7). It serialises on an in-process lock (every writer runs in the
+  handler (§8). It serialises on an in-process lock (every writer runs in the
   gateway), copies an unparseable record aside as `agent-plugins.json.corrupt-<UTC>`,
   and publishes through `atomic_write` with owner-only permissions. Turning a
   plugin on adds its row; turning one off removes it.
@@ -191,13 +246,13 @@ size-bounded (`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB,
   (pre-created as `{}`, which reads as nothing on), and `security.paths_lists._CREW_SECRET_LEAVES`
   (fenced from the agent's file tools), the placement `aws_service_consent.json`
   has. Unlike that record it is in `_CREW_CHILD_READABLE_LEAVES`, not the
-  enforced-harness withheld list: the launcher (§9) runs as a harness child and
+  enforced-harness withheld list: the launcher (§10) runs as a harness child and
   must read it, it holds only plugin names, and the read-only seal answers
   the write that would turn a plugin on.
 
 There is no MCP tool and no CLI verb that writes the record.
 
-## 7. Dashboard routes (`dashboard/handlers/agent_plugins_consent.py`)
+## 8. Dashboard routes (`dashboard/handlers/agent_plugins_consent.py`)
 
 | Route | Body | Result |
 |---|---|---|
@@ -214,7 +269,7 @@ the Security Event Log (`agent_plugins.enabled` / `agent_plugins.disabled`). The
 routes are registered in `dashboard/routes/system.py` beside the AWS consent
 routes. A change reaches sessions at their next spec rebuild.
 
-## 8. MCP source (`agent_materialization/mcp_sources.py`)
+## 9. MCP source (`agent_materialization/mcp_sources.py`)
 
 `merge_mcp_sources()` projects the servers of every `on` plugin second in the
 chain: after the app servers, before the Kiro global `mcp.json`, the provider
@@ -236,7 +291,7 @@ leftover in a shared file cannot stand in for a plugin entry.
 
 A host with no `on` plugin gets no `plugin-` key.
 
-## 9. The stdio launcher (`agent_plugins.launch`)
+## 10. The stdio launcher (`agent_plugins.launch`)
 
 `python -P -m kiro_crew.agent_plugins.launch <plugin> <server>`. Every harness,
 KAS included (which drops `cwd` from MCP entries), gets the same launch rules
@@ -259,7 +314,7 @@ through it. In order it:
 A refusal prints one stderr line, `kirocrew: plugin MCP server <plugin>:<server>
 was not started: <reason>.`, and exits 78; the server is never started.
 
-## 10. `includePowers`
+## 11. `includePowers`
 
 Every spec Crew writes pins `includePowers: false` wherever it pins
 `includeMcpJson: false` (`agent._refresh_dynamic_fields`,
