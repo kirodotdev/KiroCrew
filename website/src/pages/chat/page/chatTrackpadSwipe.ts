@@ -220,7 +220,9 @@ export function useChatPanelTrackpadSwipe({
     },
   })
 
-  return { deskSlide, deskSpacerW, deskPanelWrapRef }
+  // `retireSlide`: the side panel's health check (sidePanelHealth) drops a
+  // slide it finds still set once the panel should have docked.
+  return { deskSlide, deskSpacerW, deskPanelWrapRef, retireSlide: retire }
 }
 
 export type ChatPanelTrackpadSwipe = ReturnType<typeof useChatPanelTrackpadSwipe>
