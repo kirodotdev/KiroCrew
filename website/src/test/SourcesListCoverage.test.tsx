@@ -295,6 +295,26 @@ describe('SourcesList — row actions', () => {
     expect(await screen.findByText('doc.md')).toBeTruthy()
   })
 
+  it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
+    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let refuse!: (e: Error) => void
+    handler = (path: string, opts?: RequestInit) => {
+      if (path === '/sources') return [src(), src({ id: 's2', name: 'other.md', uri: '/tmp/other.md' })]
+      if (path === '/sources/s1' && opts?.method === 'DELETE') return new Promise((_, reject) => { refuse = reject })
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    await screen.findByText('doc.md')
+    // The rows render in list order, so the first Remove control is doc.md's.
+    fireEvent.click(screen.getAllByLabelText('Remove source')[0])
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
+    // A second delete lands while the first is in flight.
+    act(() => { queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== 's2')) })
+    await act(async () => { refuse(new Error('gateway said no')) })
+    await waitFor(() => expect(queryClient.getQueryData<Source[]>(['knowledge-sources'])?.map(s => s.id)).toEqual(['s1']))
+    expect(screen.queryByText('other.md')).toBeNull()
+  })
+
   it('does not delete when the user declines the prompt', async () => {
     confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     handler = (path: string) => {

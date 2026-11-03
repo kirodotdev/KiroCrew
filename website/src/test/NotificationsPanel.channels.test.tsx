@@ -113,6 +113,48 @@ describe('NotificationsPanel channels section', () => {
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.heartbeat', { muted: false }))
   })
 
+  it('a refused mute rolls back only its own channel, not a mute made while it was in flight', async () => {
+    // The first read serves the list; later reads never answer, so the cache
+    // shows what the rollback left rather than a refetch.
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS }).mockImplementation(() => new Promise(() => {}))
+    let refuse!: (e: Error) => void
+    mockUpdate.mockImplementation((channel: string) =>
+      channel === 'system.cron' ? new Promise((_, reject) => { refuse = reject }) : Promise.resolve({}))
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    const member = screen.getByRole('switch', { name: /system\.member/ })
+    fireEvent.click(cron)
+    fireEvent.click(member)
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.member', { muted: true }))
+    expect(member.getAttribute('aria-checked')).toBe('false')
+    refuse(new Error('cron refused'))
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('true'))
+    expect(member.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('two refused mutes of one channel roll back to the stored value, not to the first optimistic one', async () => {
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS }).mockImplementation(() => new Promise(() => {}))
+    const refusals: ((e: Error) => void)[] = []
+    mockUpdate.mockImplementation(() => new Promise((_, reject) => { refusals.push(reject) }))
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    fireEvent.click(cron)
+    // The first mute shows before the second click, which then unmutes.
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
+    fireEvent.click(cron)
+    await waitFor(() => expect(refusals).toHaveLength(2))
+    expect(mockUpdate.mock.calls.map(c => c[1])).toEqual([{ muted: true }, { muted: false }])
+    refusals[0](new Error('first refused'))
+    refusals[1](new Error('second refused'))
+    // Each failure's settle asks for a refetch (which never answers here), so
+    // the third read means both rollbacks have run. Both saves failed, so the
+    // switch shows what the server holds: unmuted.
+    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(3))
+    expect(cron.getAttribute('aria-checked')).toBe('true')
+  })
+
   it('hides the section when the channels API fails', async () => {
     mockChannels.mockRejectedValue(new Error('boom'))
     renderPanel()
