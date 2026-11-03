@@ -6178,7 +6178,10 @@
       "files_could_not_be_read": "Les fichiers n'ont pas pu être lus",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Votre configuration {{productName}} existante ne sera pas affectée.",
       "your_selected_setup_is_ready_in_kiro_crew": "La configuration sélectionnée est prête dans {{productName}}.",
-      "import_setup_stage": "Importer la configuration · {{stage}} sur {{stages}}"
+      "import_setup_stage": "Importer la configuration · {{stage}} sur {{stages}}",
+      "source_item_count_one": "{{name}}, {{count}} élément",
+      "source_item_count_many": "{{name}}, {{count}} éléments",
+      "source_item_count_other": "{{name}}, {{count}} éléments"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Enregistré, mais cette copie de {{productName}} n’a pas pu mettre à jour la configuration de l’agent : les nouveaux chats gardent l’ancienne configuration. Ouvre la page « Journaux » pour en connaître la raison."
@@ -7946,7 +7949,8 @@
       "knowledge_status_failed": "Impossible de vérifier la bibliothèque de connaissances.",
       "artifact_status_failed": "Impossible de vérifier si ce fichier est un artefact.",
       "diff_status_failed": "Impossible de vérifier les modifications git de ce fichier.",
-      "open_in_app": "Ouvrir dans {{app}}"
+      "open_in_app": "Ouvrir dans {{app}}",
+      "match_position": "{{current}} sur {{total}}"
     },
     "markdownRenderer": {
       "download_failed": "Impossible de télécharger le diagramme. Réessayez.",
@@ -8748,7 +8752,10 @@
       "previous": "Précédent ({{mod}})",
       "previous_match": "Résultat précédent",
       "no_results_loaded_only": "Aucun résultat dans l'historique chargé",
-      "results_loaded_only": "{{current}}/{{total}} résultats dans l’historique chargé"
+      "results_loaded_only": "{{current}}/{{total}} résultats dans l’historique chargé",
+      "result_position_one": "{{current}} sur {{count}} résultat",
+      "result_position_many": "{{current}} sur {{count}} résultats",
+      "result_position_other": "{{current}} sur {{count}} résultats"
     },
     "searchResultsList": {
       "assistant": "Assistant",
@@ -8987,7 +8994,10 @@
       "provider_did_not_answer": "{{provider}} n'a pas répondu.",
       "select_a_skill_to_preview": "Sélectionnez une compétence pour l'aperçu",
       "skill_search_results": "Résultats de recherche de compétences",
-      "source": "Source"
+      "source": "Source",
+      "installed_files_one": "{{count}} fichier installé",
+      "installed_files_many": "{{count}} fichiers installés",
+      "installed_files_other": "{{count}} fichiers installés"
     },
     "skillDirectoryBrowser": {
       "description": "Description",
@@ -14963,7 +14973,10 @@
         "bulk_archive_failed": "Impossible d'archiver les éléments sélectionnés",
         "bulk_delete_failed": "Impossible de supprimer les éléments sélectionnés",
         "entity_items_load_failed": "Impossible de charger les éléments de cette entité",
-        "error_no_reason": "La requête a échoué sans raison indiquée."
+        "error_no_reason": "La requête a échoué sans raison indiquée.",
+        "delete_items_permanently_one": "Supprimer définitivement {{count}} élément ?",
+        "delete_items_permanently_many": "Supprimer définitivement {{count}} éléments ?",
+        "delete_items_permanently_other": "Supprimer définitivement {{count}} éléments ?"
       },
       "itemCard": {
         "copied": "Copié !",

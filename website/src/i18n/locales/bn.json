@@ -6065,7 +6065,9 @@
       "files_could_not_be_read": "ফাইলগুলি পড়া যায়নি",
       "your_existing_kirocrew_setup_will_not_be_affecte": "আপনার বিদ্যমান {{productName}} সেটআপ প্রভাবিত হবে না।",
       "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।",
-      "import_setup_stage": "সেটআপ ইমপোর্ট করো · {{stages}}টির মধ্যে {{stage}}"
+      "import_setup_stage": "সেটআপ ইমপোর্ট করো · {{stages}}টির মধ্যে {{stage}}",
+      "source_item_count_one": "{{name}}, {{count}}টি আইটেম",
+      "source_item_count_other": "{{name}}, {{count}}টি আইটেম"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "সংরক্ষিত হয়েছে, কিন্তু এই {{productName}} এজেন্ট কনফিগারেশন আপডেট করতে পারেনি, তাই নতুন চ্যাটগুলো আগের সেটআপ রাখবে। কারণ জানতে 'লগ' পেজ খোলো।"
@@ -7810,7 +7812,8 @@
       "knowledge_status_failed": "নলেজ লাইব্রেরি পরীক্ষা করা যায়নি।",
       "artifact_status_failed": "এই ফাইলটি আর্টিফ্যাক্ট কি না তা পরীক্ষা করা যায়নি।",
       "diff_status_failed": "এই ফাইলের git পরিবর্তন পরীক্ষা করা যায়নি।",
-      "open_in_app": "{{app}}-এ খোলো"
+      "open_in_app": "{{app}}-এ খোলো",
+      "match_position": "{{total}}টির মধ্যে {{current}}"
     },
     "markdownRenderer": {
       "download_failed": "ডায়াগ্রাম ডাউনলোড করা যায়নি। আবার চেষ্টা করুন।",
@@ -8601,7 +8604,9 @@
       "previous": "পূর্ববর্তী ({{mod}})",
       "previous_match": "পূর্ববর্তী মিল",
       "no_results_loaded_only": "লোড করা ইতিহাসে কোনো ফলাফল নেই",
-      "results_loaded_only": "লোড করা ইতিহাসে {{current}}/{{total}} ফলাফল"
+      "results_loaded_only": "লোড করা ইতিহাসে {{current}}/{{total}} ফলাফল",
+      "result_position_one": "{{count}}টির মধ্যে {{current}}টি ফলাফল",
+      "result_position_other": "{{count}}টির মধ্যে {{current}}টি ফলাফল"
     },
     "searchResultsList": {
       "assistant": "অ্যাসিস্ট্যান্ট",
@@ -8838,7 +8843,9 @@
       "provider_did_not_answer": "{{provider}} সাড়া দেয়নি।",
       "select_a_skill_to_preview": "প্রিভিউ দেখতে একটি স্কিল নির্বাচন করুন",
       "skill_search_results": "স্কিল অনুসন্ধানের ফলাফল",
-      "source": "উৎস"
+      "source": "উৎস",
+      "installed_files_one": "{{count}}টি ফাইল ইনস্টল হয়েছে",
+      "installed_files_other": "{{count}}টি ফাইল ইনস্টল হয়েছে"
     },
     "skillDirectoryBrowser": {
       "description": "বিবরণ",
@@ -14691,7 +14698,9 @@
         "bulk_archive_failed": "নির্বাচিত আইটেম আর্কাইভ করা যায়নি",
         "bulk_delete_failed": "নির্বাচিত আইটেম মুছে ফেলা যায়নি",
         "entity_items_load_failed": "এই এন্টিটির আইটেম লোড করা যায়নি",
-        "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।"
+        "error_no_reason": "কোনো কারণ ছাড়াই অনুরোধ ব্যর্থ হয়েছে।",
+        "delete_items_permanently_one": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?",
+        "delete_items_permanently_other": "{{count}}টি আইটেম স্থায়ীভাবে মুছবে?"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
