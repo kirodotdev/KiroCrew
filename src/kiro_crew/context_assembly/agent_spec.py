@@ -490,15 +490,23 @@ def _load_agent_prompt(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.member_essential_context import (
+        read_template_spec,
         resolve_relative_prompt_path,
-        resolve_template_path,
     )
 
     try:
-        path = spec_path or resolve_template_path(agent, project)
-        if path is None:
+        if spec_path is not None:
+            resolved: tuple[Path, dict | None] | None = (
+                spec_path,
+                _read_agent_spec(spec_path, operation="agent_prompt", source="context"),
+            )
+        else:
+            resolved = read_template_spec(
+                agent, project, operation="agent_prompt", source="context"
+            )
+        if resolved is None:
             return ""
-        data = _read_agent_spec(path, operation="agent_prompt", source="context")
+        path, data = resolved
         if data is None:
             return ""
         prompt = data.get("prompt") or ""

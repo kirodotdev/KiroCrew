@@ -339,11 +339,13 @@ class TestTheSpecReadIsPinnedAndCapped:
 
     @requires_symlinks
     def test_a_link_planted_at_the_resolved_name_is_refused_not_followed(
-        self, tmp_path: Path, caplog
+        self, tmp_path: Path, caplog, monkeypatch
     ) -> None:
         # The reader judged ``real`` while it was a regular file; by the time the
         # open runs the name is a link (the swap a stale realpath cannot see).
-        # ``_read_spec_bytes`` receives the judged name and must refuse.
+        # ``_read_spec_bytes`` receives the judged name and must refuse. On
+        # Windows the link screen judges first, so it is made just as stale.
+        monkeypatch.setattr(hooks, "_screen_windows_links", lambda target, *a, **k: target)
         target = tmp_path / "protected.json"
         target.write_text(json.dumps({"name": "linked", "model": "leaked"}), encoding="utf-8")
         agents = tmp_path / "agents"
@@ -478,6 +480,55 @@ class TestTheUncTrustedRootGateStays:
         # The audit row carries the resolved spelling as the platform spells it
         # (backslashes on Windows), so compare against str(Path), not a literal.
         assert [row["resources"] for row in audited] == [str(share)] * 2
+
+    def test_a_local_link_naming_a_share_is_refused_before_the_resolve_probe(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        audited = self._arm(monkeypatch)
+        from kiro_crew.hook_runtime import windows_paths
+
+        monkeypatch.setattr(windows_paths, "unc_probe_allowed", lambda raw: False)
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        link = agents / "x.json"
+        link.symlink_to("//evil/share/x.json")
+
+        class ProbingPath(type(Path())):
+            """A link whose ``resolve`` is the probe the screen must prevent."""
+
+            def resolve(self, strict: bool = False) -> Path:
+                pytest.fail("resolve followed a link whose target names an untrusted share")
+
+        assert _read_agent_spec(ProbingPath(link), operation="op", source="src") is None
+        assert [row["error"] for row in audited] == ["untrusted link target rejected"]
+        assert audited[0]["resources"] == str(link)
+
+    def test_the_screened_target_is_resolved_not_the_original_links(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ad_mod, "_WINDOWS", True)
+        monkeypatch.setattr(ad_mod, "unc_probe_allowed", lambda raw: False)
+        audited: list[dict[str, str]] = []
+        monkeypatch.setattr(ad_mod, "_audit_denied", lambda **kw: audited.append(kw))
+        vetted = _spec(tmp_path / "vetted")
+        screened: list[str] = []
+
+        def screen(target: str, *args, **kwargs) -> str:
+            screened.append(target)
+            return str(vetted)
+
+        monkeypatch.setattr(hooks, "_screen_windows_links", screen)
+
+        class Retargeted(type(Path())):
+            """A link retargeted after the screen: following it again is the probe."""
+
+            def resolve(self, strict: bool = False) -> Path:
+                pytest.fail("resolve re-followed the original links after the screen")
+
+        original = Retargeted(tmp_path / "agents" / "a.json")
+        assert _read_agent_spec(original, operation="op", source="src") == {"name": "a"}
+        assert screened == [str(original)]
+        assert audited == []
 
     def test_a_trusted_share_and_a_local_path_pass(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(ad_mod, "_WINDOWS", True)

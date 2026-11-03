@@ -7,9 +7,12 @@ import contextvars
 import fnmatch
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
+from kiro_crew import agent as agent_mod
+from kiro_crew.agent_discovery import _read_agent_spec, declared_spec_entry, project_agent_files
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
@@ -17,6 +20,7 @@ from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +155,24 @@ _managed_roots: contextvars.ContextVar[_RootTable | None] = contextvars.ContextV
 )
 
 
-def _managed_root_table() -> _RootTable:
-    """The admin roots, the workspace roots, and their compared spellings, read now."""
+def _managed_root_table(*, refuse_unverifiable: bool = False) -> _RootTable:
+    """The admin roots, the workspace roots, and their compared spellings, read now.
+
+    With *refuse_unverifiable*, a root the path screen cannot admit raises
+    :class:`_ManagedEssentialSourceError` instead of keeping its lexical spelling.
+    """
     cfg = KiroCrewConfig.load()
     roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
     workspaces = [config_dir() / "workspace"]
     workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
-    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
+    resolved_roots = {
+        root: (
+            _comparable_root(root, refuse_unverifiable=True)
+            if refuse_unverifiable
+            else _comparable_root(root)
+        )
+        for root in dict.fromkeys([*roots, *workspaces])
+    }
     return roots, workspaces, resolved_roots
 
 
@@ -202,7 +217,12 @@ def _refuse_managed_source(path: Path) -> None:
     resolved, so those comparisons are exact; ``_read`` additionally re-checks the
     validated path, so the pre-validation call never has to be the deciding one.
     """
-    roots, workspaces, resolved_roots = _managed_roots.get() or _managed_root_table()
+    _refuse_managed_candidate(path, _managed_roots.get() or _managed_root_table())
+
+
+def _refuse_managed_candidate(path: Path, table: _RootTable) -> None:
+    """:func:`_refuse_managed_source` against one already-read root *table*."""
+    roots, workspaces, resolved_roots = table
     candidate = Path(os.path.abspath(path))
     in_workspace = False
     for workspace in workspaces:
@@ -255,16 +275,21 @@ def member_context_identity(member: str, *, member_is_id: bool = True) -> tuple[
     return member_id, configured_member.kiro_agent or "kirocrew"
 
 
-def _comparable_root(root: Path) -> Path:
+def _comparable_root(root: Path, *, refuse_unverifiable: bool = False) -> Path:
     """The spelling a root is compared against in :func:`_refuse_managed_source`.
 
     Resolved through ``validate_file_path`` when that screen admits the root, so
     a symlinked spelling matches resolved candidates. A root the screen refuses
     (a UNC share not on the trusted list, a sensitive path) is never handed to
     ``realpath`` -- on Windows that resolution is itself the network probe --
-    and keeps the lexical ``abspath`` comparison this check always had.
+    and keeps the lexical ``abspath`` comparison this check always had, unless
+    *refuse_unverifiable* asks for :class:`_ManagedEssentialSourceError` instead.
     """
     admitted = _admitted_root(root)
+    if admitted is None and refuse_unverifiable:
+        raise _ManagedEssentialSourceError(
+            f"Essential source {root}: managed root cannot be verified"
+        )
     return admitted if admitted is not None else Path(os.path.abspath(root))
 
 
@@ -713,9 +738,6 @@ def _matches(
 
 def resolve_template_path(template: str, project: str | None = None) -> Path | None:
     """Resolve one template, with a project override ahead of the global copy."""
-    from kiro_crew.agent import agent_spec_path
-    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
-
     spec_path: Path | None = None
     if project:
         admitted = validate_file_path(project)
@@ -735,7 +757,7 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
                 spec_path = path
     if spec_path is None:
         try:
-            spec_path = agent_spec_path(template)
+            spec_path = agent_mod.agent_spec_path(template)
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     if spec_path is None:
@@ -747,10 +769,89 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
         from kiro_crew.config.paths import mate_agents_dir
 
         try:
-            spec_path = agent_spec_path(template, agents_dir=mate_agents_dir())
+            spec_path = agent_mod.agent_spec_path(template, agents_dir=mate_agents_dir())
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     return spec_path
+
+
+def read_template_spec(
+    template: str, project: str | None, *, operation: str, source: str
+) -> tuple[Path, dict[str, Any] | None] | None:
+    """Resolve and parse one template; the spec is ``None`` when it is unusable.
+
+    :func:`resolve_template_path` answers first. A template it does not find is
+    looked up by declared name in the global agents directory through
+    :func:`linked_global_template_spec`, so a linked global spec is read once,
+    behind the managed-state fence.
+    """
+    spec_path = resolve_template_path(template, project)
+    if spec_path is not None:
+        return spec_path, _read_agent_spec(spec_path, operation=operation, source=source)
+    try:
+        return linked_global_template_spec(template, operation=operation, source=source)
+    except ValueError as exc:
+        raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+
+
+def linked_global_template_spec(
+    template: str, *, operation: str, source: str
+) -> tuple[Path, dict[str, Any]] | None:
+    """The global spec declaring *template*, read through links in the agents directory.
+
+    For a template :func:`kiro_crew.agent.agent_spec_path` does not find: that
+    resolver serves spec writers and refuses links. Each entry is read by the
+    hardened reader under :func:`_managed_template_target_refused`, so a target
+    outside the agents directory and inside managed memory or member private
+    state reads as unusable, and a managed root that cannot be verified refuses
+    every such target. Claimants with differing content raise
+    :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`.
+    """
+    if not is_registered_agent_name(template):
+        return None
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return None
+    return declared_spec_entry(
+        agents_dir,
+        template,
+        operation=operation,
+        source=source,
+        fence=_managed_template_target_refused(agents_dir),
+    )
+
+
+def _managed_template_target_refused(agents_dir: Path) -> Callable[[Path], bool]:
+    """A fence that refuses a spec target inside managed memory or member state.
+
+    The fence judges the resolved target and the opened file, so a target inside
+    *agents_dir*, resolved through ``validate_file_path``, is admitted on what is
+    actually read. That covers every regular entry and a link between entries,
+    including when the agents directory itself sits under a managed root, as
+    ``KIRO_HOME`` does under ``KIROCREW_HOME`` in a pod. An agents directory the
+    path screen refuses admits nothing this way.
+    """
+    admitted = validate_file_path(str(agents_dir))
+    agents_root = None if admitted is None else Path(admitted)
+    # Read once for this lookup. A later lookup must observe new configuration
+    # and link targets through the same guarded resolver, never a cached grant.
+    try:
+        table: _RootTable | None = _managed_root_table(refuse_unverifiable=True)
+    except _ManagedEssentialSourceError:
+        table = None
+
+    def refused(path: Path) -> bool:
+        if agents_root is not None and Path(os.path.abspath(path)).is_relative_to(agents_root):
+            return False
+        if table is None:
+            return True
+        try:
+            _refuse_managed_candidate(path, table)
+        except _ManagedEssentialSourceError:
+            return True
+        return False
+
+    return refused
 
 
 def resolve_relative_prompt_path(
@@ -851,9 +952,6 @@ def documents_for_member(
     template under its ``.kiro/agents`` (and anchors that template's relative
     prompt). No guide, steering or resource is read from it.
     """
-    from kiro_crew.agent import is_managed_prompt
-    from kiro_crew.agent_discovery import _read_agent_spec
-
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
     skipped: list[Path] = []
@@ -999,12 +1097,14 @@ def documents_for_member(
                 add(path, project_root, steering=True)
 
     template_root = project or template_dir
-    spec_path = resolve_template_path(template, template_root)
-    if spec_path is None:
+    template_spec = read_template_spec(
+        template, template_root, operation="member_essentials", source="context"
+    )
+    if template_spec is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
         return _finish()
-    spec = _read_agent_spec(spec_path, operation="member_essentials", source="context")
+    spec_path, spec = template_spec
     if spec is None:
         raise MemberEssentialContextError(f"Essential template {spec_path}: cannot be read safely")
     # Native file resources are relative to the project cwd or user home.
@@ -1020,7 +1120,7 @@ def documents_for_member(
     # A fork inherits the managed contract; essentials omit it because the
     # session-start injection delivers it once, regardless of template name or
     # install directory (see is_managed_prompt).
-    if prompt and not is_managed_prompt(prompt):
+    if prompt and not agent_mod.is_managed_prompt(prompt):
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
