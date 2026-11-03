@@ -826,6 +826,15 @@ def _project_mcp_servers(
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
+            projected, bridged = kas_env_launch.relay_withheld_headers(
+                projected,
+                entry.get("headers"),
+                session_key=session_key,
+                agent_id=agent_id,
+                server=name,
+            )
+            if bridged:
+                withheld = [w for w in withheld if w != "headers"]
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "

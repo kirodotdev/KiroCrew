@@ -536,7 +536,11 @@ kiro-cli: Crew keeps it in an owner-only launch snapshot under the data home's
 `kas-mcp-launch/` and hands KAS its own launcher in the server's place, which reads
 the snapshot and starts the real command with those values. Only the launcher, the
 session, agent and server names and a version cross the wire, so `session.json`
-never holds the value. A remote entry's `headers` stay withheld. And
+never holds the value. A remote streamable-HTTP entry's `headers` reach the
+server the same way: the snapshot holds its `url` and `headers`, and KAS starts
+the launcher as a local stdio server that relays each message to that url with
+the headers added and follows no redirect. An `sse` entry's `headers` stay
+withheld. And
 `KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also
