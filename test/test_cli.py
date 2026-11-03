@@ -290,7 +290,7 @@ class TestDoctor:
     @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 22"})
     def test_doctor_remote_shows_ssh_tunnel_hint(self, tmp_path, capsys):
         agent_file = tmp_path / "kirocrew.json"
-        agent_file.write_text("{}")
+        agent_file.write_text("{}", encoding="utf-8")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
             patch(

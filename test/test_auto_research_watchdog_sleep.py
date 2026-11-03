@@ -82,7 +82,7 @@ async def _three_polls(isolate: Path, tmp_path: Path, monkeypatch, *, wall: floa
         findings = isolate / "research" / cid / "findings"
         findings.mkdir(parents=True, exist_ok=True)
         findings.joinpath("cycle_001.json").write_text(
-            json.dumps({"summary": "cycle 1", "verification": None})
+            json.dumps({"summary": "cycle 1", "verification": None}), encoding="utf-8"
         )
         slot_key = f"research-{cid}"
         loop = await svc.add(slot_key=slot_key, message="run", idle_secs=120)
