@@ -20,6 +20,8 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.cron import CronService
 from kiro_crew.llm_helpers import ToolApprovalPolicy
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def _run(value: Any) -> Any:
     """Passthrough for the synchronous CronSDK mutation API.

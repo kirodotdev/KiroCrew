@@ -34,6 +34,8 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.cron import CronService
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 APP = "sync-app"
 KEPT = f"{APP}/digest"
 DROPPED = f"{APP}/weekly"
