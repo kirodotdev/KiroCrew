@@ -349,7 +349,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       refocus.current = null
       el.focus()
     } else if (r.settled) {
+      // A partial clear whose every note was a target has no stored neighbour
+      // (or the neighbour has gone too), yet the clearing control unmounted
+      // when its rows shrank, so focus sits on <body>. Hand it to the first
+      // surviving row rather than dropping it.
       refocus.current = null
+      listRef.current?.querySelector<HTMLElement>('[data-notif-row] [role="button"]')?.focus()
     }
   }, [items, refocusTick])
 
