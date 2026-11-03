@@ -2811,6 +2811,12 @@ logs it and treats the tab as closed: the completion takes the parent's own
 route now, as a parked completion does, instead of escaping before any route
 and waiting for the next start's re-announce.
 
+The failure card (`_subagent_event` on `subagent_injection_failed`) and the
+orphan notice (`_orphan_notify`) load a restored tab the same way and treat an
+unreadable window as no tab too. The failure card then goes out as its
+`subagent_injection_failed` frame only, and `_orphan_notify` returns `False`,
+so the manager sends the notice to the owner instead.
+
 ### Two-Level Timeout
 
 | Timeout | Location | Duration | Scope |
