@@ -754,6 +754,10 @@ async def _synthesize_nonstreaming(
 
 _voices_cache: list[dict] | None = None
 _voices_cache_ts: float = 0.0
+#: The ``(aws_profile, region)`` the cached Polly catalogue was read with. A
+#: different account or region has a different catalogue, so a cache from
+#: another pair is a miss.
+_voices_cache_key: tuple[str, str] | None = None
 _VOICES_CACHE_TTL = 3600  # 1 hour
 
 _system_voices_cache: list[dict[str, str]] | None = None
@@ -802,14 +806,16 @@ async def api_voice_system_voices(request: web.Request) -> web.Response:
 
 async def api_voice_voices(request: web.Request) -> web.Response:
     """GET /api/voice/voices — list available Polly voices (cached 1h)."""
-    global _voices_cache, _voices_cache_ts
+    global _voices_cache, _voices_cache_ts, _voices_cache_key
 
-    now = time.time()
-    if _voices_cache is not None and (now - _voices_cache_ts) < _VOICES_CACHE_TTL:
-        return web.json_response({"voices": _voices_cache})
+    # One read of the account and region for the whole request: the consent
+    # check, the cache key and the command must all name the same pair, even
+    # if a config PUT lands while this handler awaits.
+    profile, region = _vc.aws_profile or "", _vc.region or ""
 
     # The catalogue lives behind a paid provider, so two gates come before the
-    # subprocess. Neither may be dropped: without them the only thing stopping
+    # cache and the subprocess: a cached list is still Polly data, served only
+    # while Polly is the confirmed provider. Neither may be dropped: without them the only thing stopping
     # this endpoint from calling AWS is the frontend declining to fetch it while
     # another provider is selected, so any other client — or a direct request — reaches
     # `aws polly describe-voices` against whatever the ambient credential chain
@@ -827,9 +833,18 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     #    gated call site -- a denial that only logs is a denial an incident
     #    review cannot see.
     if not await aws_consent.refuse_and_log(
-        aws_consent.SERVICE_POLLY, profile=_vc.aws_profile, region=_vc.region
+        aws_consent.SERVICE_POLLY, profile=profile, region=region
     ):
         return web.json_response({"voices": []})
+
+    now = time.time()
+    cache_key = (profile, region)
+    if (
+        _voices_cache is not None
+        and _voices_cache_key == cache_key
+        and (now - _voices_cache_ts) < _VOICES_CACHE_TTL
+    ):
+        return web.json_response({"voices": _voices_cache})
 
     aws_bin = await asyncio.to_thread(resolve_polly_cli)
     if aws_bin is None:
@@ -846,10 +861,10 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         return web.json_response({"voices": []})
 
     cmd = [aws_bin, "polly", "describe-voices", "--output", "json"]
-    if _vc.aws_profile:
-        cmd += ["--profile", _vc.aws_profile]
-    if _vc.region:
-        cmd += ["--region", _vc.region]
+    if profile:
+        cmd += ["--profile", profile]
+    if region:
+        cmd += ["--region", region]
 
     try:
         # A Python-based `aws` (aws-cli v1) must not import the gateway's own
@@ -879,6 +894,7 @@ async def api_voice_voices(request: web.Request) -> web.Response:
         voices.sort(key=lambda v: (v["languageCode"], v["name"]))
         _voices_cache = voices
         _voices_cache_ts = now
+        _voices_cache_key = cache_key
         return web.json_response({"voices": voices})
     except asyncio.TimeoutError:
         with contextlib.suppress(ProcessLookupError):
