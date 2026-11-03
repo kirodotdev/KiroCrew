@@ -1,6 +1,6 @@
 """Tests for the chat (sidebar) folder tools on the kirocrew-dashboard server.
 
-Covers ``chat_folder_tree/create/move/move_session/delete/file_self`` — schema
+Covers ``chat_folder_tree/create/move/move_session/delete`` — schema
 validation, path→id resolution, mkdir -p, session-reference resolution, the
 requests sent, and result formatting. Each case runs one tools/call frame
 through ``mcp_dashboard.TABLE`` against an in-memory dashboard and asserts on
@@ -10,7 +10,7 @@ tested by ``test_folder_store_writer.py`` and ``test_dashboard_chat_folders.py``
 This file holds the tree, create, move, move_session and delete cases, the
 folder-name rules and the folder policy. The siblings hold the rest:
 ``test_mcp_dashboard_folders_caller_scope.py`` (which caller a request speaks
-for, and ``chat_folder_file_self``), ``test_mcp_dashboard_folders_session_create.py``
+for), ``test_mcp_dashboard_folders_session_create.py``
 (``session_create`` and the advertised tool set) and
 ``test_mcp_dashboard_folders_position.py`` (sibling order: ``before``/``after``
 and the folder sort mode). The shared rows and call helpers are in

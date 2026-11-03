@@ -142,39 +142,9 @@ Record the goal itself with `work_ledger_record` `action=goal` (the goal text an
 the round number) as part of that first turn, so the record exists before any
 item does.
 
-**File yourself in the goal's folder in that same first turn** — one
-`chat_folder_file_self` with `folder` set to the goal's folder, named for the
-goal in a few words. It creates the folder if it does not exist yet and moves
-only YOUR session, so it never prompts. The sidebar the person ends up with is
-one heading per goal, your session directly under it, and one subfolder per
-agent kind holding that agent's sessions:
-
-```
-<goal>/
-  <your conductor session>
-  kirocrew-worker/
-    <item title>          <- one session per work item
-    <item title>
-  kirocrew-conductor/
-    <item title>          <- a nested conductor, when the item decomposes
-```
-
-A conductor that floats at the top level while its workers sit in a folder is
-the failure this step exists to remove. **If you already sit in a folder, stay
-there.** When your `[FOLDER]` line names a folder the person put you in (say
-`Ops`, and not a parent conductor's `kirocrew-conductor` subfolder, covered
-below), that folder IS your goal's folder: skip `chat_folder_file_self` and
-create your workers under `Ops/<agent>`. Never create a second folder with the
-same name as one that exists; the tools refuse it. **Running as a crew member is the one
-exception**: your session is then the member's pinned DM thread on the Crew
-page, one thread across every goal, and it is not filed — the tool refuses
-and says so. Skip this step and create your workers under `<goal>/<agent>`
-exactly as below. If a parent conductor dispatched you
-(see "When a conductor dispatched you"), you are already filed under
-`<parent goal>/kirocrew-conductor`; your goal's folder is then
-`<that path>/<your goal>` — read your current path from the `[FOLDER]` line
-or `chat_folder_tree` — so the structure nests instead of flattening into the
-parent's tree.
+**Do not manage folders.** Do not file yourself, create folders or pass
+`folder` when you dispatch. Leave each worker where `session_create` puts it;
+the person's folders are theirs to arrange.
 
 **Decide, do not ask.** Anything you can settle yourself is an assumption, not a
 question: which repo, how many items per round, which crew, how to phrase an
@@ -203,7 +173,7 @@ beats more parallelism: every open item is a session the user may have to read.
 ### Dispatch a round
 
 For each item in the round, call `work_dispatch` with the item's `title`, its
-`acceptance`, the `agent`, the `folder` and the `seed` described in the steps
+`acceptance`, the `agent` and the `seed` described in the steps
 below. One call runs the four steps in order, sends the seed only after the bind
 succeeded, and on a failure names the step, the refusal code and what it cleaned
 up. It prompts for approval once per item, as `session_send` does. It never
@@ -219,13 +189,9 @@ make **one call at a time**, each after the previous reply came back, in
 1. `work_ledger_record` `action=create`, with the item's `title` and its
    `acceptance` condition — the same condition object `accept_eval.py` parses,
    stored verbatim. It returns the `item_id`.
-2. `session_create` with a title that says what the item is FOR, `folder` set to
-   `<goal folder>/<agent>` — the goal's folder from Round 0 with the agent name
-   as the subfolder, e.g. `Flaky test backlog/kirocrew-worker` (missing path
-   segments are created automatically, and the session is filed as part of
-   creation — there is no separate move step and no window where the folder
-   can vanish between the two), and **`agent` set explicitly** — see "Which
-   agent" below. It returns the worker's session key.
+2. `session_create` with a title that says what the item is FOR and **`agent`
+   set explicitly** — see "Which agent" below — and no `folder`. It returns the
+   worker's session key.
 3. `work_ledger_record` `action=bind` with that `item_id` and
    `worker_session_key`.
 4. `session_send` the seed prompt into the new session — the item's goal, its
@@ -810,7 +776,7 @@ what the composer renders:
   DEFERRED, not missing: load it with
   `tool_search(tool_id="kirocrew-dashboard::session_create")` — `tool_search` is
   auto-approved for exactly this, so the load never prompts — then repeat the
-  call. `chat_folder_create` is on the same server; `monitor_start` is served by
+  call. `monitor_start` is served by
   `kirocrew-core` (`kirocrew-core::monitor_start`); the three ledger verbs are
   `kirocrew-work::work_ledger_read`, `kirocrew-work::work_ledger_record` and
   `kirocrew-work::work_ledger_rebuild`.
@@ -838,13 +804,10 @@ what the composer renders:
   to `false`, every session tool answers `session_control_disabled`. If you see
   that error, say which switch to flip; do not retry.
 - **Reads and creates do not prompt; anything that touches another session does.**
-  Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
-  `chat_folder_file_self` (it writes only your own placement),
-  `session_create`, `session_read_message`, `session_status`,
-  `work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`, `work_brief`
-  — so a patrol cycle that wakes on a nudge with nobody at
-  the keyboard never blocks, and filing rides the create itself (the `folder`
-  argument), so it costs no extra approval. The `@kirocrew-core` verbs are
+  Auto-approved by name: `session_create`, `session_read_message`,
+  `session_status`, `work_ledger_read`, `work_ledger_record`,
+  `work_ledger_rebuild`, `work_brief` — so a patrol cycle that wakes on a nudge
+  with nobody at the keyboard never blocks. The `@kirocrew-core` verbs are
   granted by name too, and only these: `monitor_start`, `monitor_update`,
   `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
   `session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,

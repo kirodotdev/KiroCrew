@@ -524,11 +524,9 @@ does not, since kiro-cli still prompts for them.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). The caller's OWN slot is filed the same way with
-`chat_folder_file_self` (folder tools, same server): it takes no `session`
-argument, resolves the target from the verified caller key, and so can be
-granted where `chat_folder_move_session` is withheld — a conductor files itself
-in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing is
+part of creation (#6118). No dispatcher spec grants a folder verb or passes
+`folder`: conductor and crewmate guidance creates workers without it
+(rfc-crewmate-workers-under-the-crewmate.md, Design 6). Filing is
 part of creation rather than a second call (`chat_folder_move_session`), because a
 folder deleted between two calls would leave the session unfiled with the create
 already done. The handler assigns `folder_id` inside the same synchronous window
@@ -545,7 +543,10 @@ mutation behind.
 
 Filing into a folder also gives the child that folder's nearest inherited project
 directory as its project, as dashboard-native creation does; the workspace and
-memory boundary stay the caller's. An invalid folder project refuses the create
+memory boundary stay the caller's. Without a folder project the child takes the
+caller's own project, re-validated (absolute, existing, not a sensitive path),
+and the workspace default when the caller has none
+(`_inherited_project_dir` in `session_create.py`). An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
@@ -559,8 +560,7 @@ leaves the child unfiled; the reply carries `folder_ignored: "crew_mode"` when
 a folder was named and `crew_mode: true` whenever the caller is in such a tree.
 `session_fork` from such a caller clears even the folder the source transcript
 carried before the child's first save and answers the same two fields.
-`chat_folder_file_self` from such a caller is a no-op that says where the
-session stays. The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
+The MCP tools' replies say "unfiled (this chat is in Crew Mode)"
 so the agent does not report a filing that did not happen.
 
 `session_create` also takes an optional `agent_kind`, with one value: `template`.
@@ -1534,9 +1534,8 @@ injection would strip a member thread of its tools mid-conversation. On the
 KAS backend the wire agent projection additionally grants the server in
 `tools` plus the member's approval-free dashboard verbs in `allowedTools`
 (ceiling-filtered like every other grant): `_MEMBER_DASHBOARD_GRANTS`, the
-conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `chat_folder_tree`,
-`chat_folder_create`, `chat_folder_file_self`, `session_create`,
-`session_read_message`, `session_status`) plus `session_send`,
+conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `session_create`,
+`session_read_message`, `session_status`; no folder verb) plus `session_send`,
 `session_broadcast`, `session_stop`, `session_retry` and `session_close` — the write verbs are safe to auto-approve for a member *specifically* because the
 `created_by` ownership fence above bounds them to worker sessions the member
 itself opened. Member sessions also bypass the provider warm pool

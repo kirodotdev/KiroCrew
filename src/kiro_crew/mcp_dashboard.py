@@ -337,44 +337,6 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "DELETE /api/chat/folders/{folder}",
             ),
         ),
-        Tool(
-            name="chat_folder_file_self",
-            description=(
-                "File THIS session — the one making the call — into a sidebar "
-                "folder, or unfile it to the top level (omit ``folder`` / pass "
-                "'root'). ``folder`` is a folder id or '/'-separated human path; "
-                "missing path segments are created (mkdir -p), the same way "
-                "session_create's ``folder`` resolves. Use it when you stand up a "
-                "workstream that gets its own folder — a conductor files itself in "
-                "the goal's folder first, then creates its workers with "
-                '``folder="<goal>/<agent>"``, so the person finds the '
-                "conductor and every worker under one heading instead of the "
-                "conductor floating at the top level. Writes ONLY the caller's own "
-                "placement: to file a different session use "
-                "chat_folder_move_session. Metadata only — transcript, model and "
-                "any running turn are untouched; already filed there is a no-op."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "folder": {
-                        "type": "string",
-                        "description": (
-                            "Destination folder id or human path (created if missing). "
-                            "Omit / 'root' to unfile."
-                        ),
-                    },
-                },
-            },
-            run=_run_chat_folder_file_self,
-            identity="attribution",
-            routes=(
-                "GET /api/chat/slots",
-                "GET /api/chat/folders",
-                "POST /api/chat/folders",
-                "PATCH /api/chat/slots/{slot}/folder",
-            ),
-        ),
     )
 
 
@@ -743,7 +705,6 @@ from kiro_crew.mcp_dashboard_caller_scope import (  # noqa: E402, F401
     _caller_app_scope,
     _caller_in_crew_tree,
     _is_messaging_caller,
-    _own_chat_slot,
     _refuse_channel_board_write,
     _refuse_tree_shaping_if_unverifiable,
     _visible_chat_slots,
@@ -751,7 +712,6 @@ from kiro_crew.mcp_dashboard_caller_scope import (  # noqa: E402, F401
 from kiro_crew.mcp_dashboard_folder_runs import (  # noqa: E402, F401
     _run_chat_folder_create,
     _run_chat_folder_delete,
-    _run_chat_folder_file_self,
     _run_chat_folder_move,
     _run_chat_folder_move_session,
     _run_chat_folder_tree,
@@ -989,7 +949,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
-    from kiro_crew import crew_mode  # noqa: F401
     from kiro_crew.conductor_patrol import reply_line  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401

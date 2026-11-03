@@ -134,6 +134,131 @@ def test_create_inherits_an_ancestor_folders_project_dir(tmp_path):
     assert child.project == str(folder_project.resolve())
 
 
+def test_a_create_without_a_folder_keeps_the_callers_project(tmp_path):
+    """A dispatcher passes no ``folder``, so its worker works where it works.
+
+    The caller sits in a project folder; the child is filed nowhere and still runs
+    in the caller's project, in memory and in the birth metadata.
+    """
+    state = _make_state(tmp_path)
+    caller_project = tmp_path / "caller-project"
+    caller_project.mkdir()
+    _folder(state, "fold00000005", "Ops", project_dir=str(caller_project))
+    caller = _slot(state, "chat-1")
+    caller.folder_id = "fold00000005"
+    caller.project = str(caller_project.resolve())
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert not child.folder_id
+    assert child.project == str(caller_project.resolve())
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert written.get("project") == str(caller_project.resolve())
+
+
+def test_an_explicit_folder_project_wins_over_the_callers(tmp_path):
+    state = _make_state(tmp_path)
+    caller_project = tmp_path / "caller-project"
+    caller_project.mkdir()
+    folder_project = tmp_path / "folder-project"
+    folder_project.mkdir()
+    _folder(state, "fold00000006", "Other", project_dir=str(folder_project))
+    caller = _slot(state, "chat-1")
+    caller.project = str(caller_project.resolve())
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000006")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.project == str(folder_project.resolve())
+
+
+def test_a_caller_project_switch_mid_create_is_refused(tmp_path, monkeypatch):
+    """The inherited project is re-checked at the late gate, like a folder project.
+
+    A switch inside an await of the create would otherwise start the child in the
+    caller's former project.
+    """
+    from kiro_crew.dashboard.session_control_parts import session_create as create_mod
+
+    state = _make_state(tmp_path)
+    first = tmp_path / "first-project"
+    first.mkdir()
+    second = tmp_path / "second-project"
+    second.mkdir()
+    caller = _slot(state, "chat-1")
+    caller.project = str(first.resolve())
+    real = create_mod._inherited_project_dir
+
+    def _switch_after_read(raw, workspace):
+        resolved = real(raw, workspace)
+        caller.project = str(second.resolve())
+        return resolved
+
+    monkeypatch.setattr(create_mod, "_inherited_project_dir", _switch_after_read)
+
+    with pytest.raises(sc.SessionControlError) as refused:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    assert refused.value.code == "caller_project_changed"
+    assert list(state._slots) == [caller.key], "the refused create must allocate nothing"
+
+
+def test_the_validated_project_is_the_one_the_late_gate_compares(tmp_path, monkeypatch):
+    """A-to-B-to-A during the create must not start the child in B.
+
+    The helper validates the snapshot it is handed and never re-reads the slot, so
+    the late gate's equality check compares against the very value the child gets.
+    """
+    from kiro_crew.dashboard.session_control_parts import session_create as create_mod
+
+    state = _make_state(tmp_path)
+    first = tmp_path / "first-project"
+    first.mkdir()
+    second = tmp_path / "second-project"
+    second.mkdir()
+    caller = _slot(state, "chat-1")
+    caller.project = str(first.resolve())
+    real = create_mod._inherited_project_dir
+
+    def _flip_and_back(raw, workspace):
+        caller.project = str(second.resolve())
+        resolved = real(raw, workspace)
+        caller.project = str(first.resolve())
+        return resolved
+
+    monkeypatch.setattr(create_mod, "_inherited_project_dir", _flip_and_back)
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.project == str(first.resolve())
+
+
+@pytest.mark.parametrize("stored", ["", "relative/path", "/nonexistent/kc-project-gone"])
+def test_a_caller_without_a_usable_project_gives_the_default(tmp_path, monkeypatch, stored):
+    """An empty, relative or vanished caller project is not reused."""
+    from kiro_crew.dashboard.session_control_parts import session_create as create_mod
+
+    default = tmp_path / "workspace-default"
+    default.mkdir()
+    monkeypatch.setattr(create_mod, "default_project_dir", lambda _ws: str(default))
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.project = stored
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.project == str(default)
+
+
 def test_create_refuses_an_unknown_folder(tmp_path):
     """An unresolvable folder refuses the WHOLE create, allocating nothing.
 
