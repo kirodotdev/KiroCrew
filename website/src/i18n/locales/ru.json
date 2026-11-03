@@ -7860,7 +7860,6 @@
       "provider_github": "GitHub",
       "provider_google": "Google",
       "remote_host": "Дополнительный шаг",
-      "click_to_copy": "Нажми, чтобы скопировать",
       "code_valid_note": "Код действителен ограниченное время",
       "use_different_sign_in": "Использовать другой способ входа",
       "sign_in_failed": "Не удалось войти",

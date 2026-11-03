@@ -7699,7 +7699,6 @@
       "provider_github": "GitHub",
       "provider_google": "Google",
       "remote_host": "Paso adicional",
-      "click_to_copy": "Haz clic para copiar",
       "code_valid_note": "Código válido durante un tiempo limitado",
       "use_different_sign_in": "Usar otro método de inicio de sesión",
       "sign_in_failed": "Error al iniciar sesión",
