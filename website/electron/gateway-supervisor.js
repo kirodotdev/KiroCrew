@@ -279,6 +279,7 @@ function createGatewaySupervisor({
     lsofHoldsFile,
     psCommand,
     psPpid,
+    launchdJobPids,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
@@ -410,11 +411,12 @@ function createGatewaySupervisor({
     resolveUnresponsiveHolder,
     resolveGatewayConflict,
   } = createHolderDecision({
-    app, store, dialog, path, processObj, port: PORT, isWindows: IS_WIN, log: glog, setTimeoutFn,
+    app, store, dialog, fs, path, processObj, port: PORT, isWindows: IS_WIN, log: glog, setTimeoutFn,
     quitting, mainWindow, sendStatus, checkBackend, waitForPortFree, probeGatewayPortBinding,
     probeGatewayPortOwner, snapshotGatewayPortPids, psCommand, unverifiedIncumbent, waitForIncumbentExit,
     sameHomeGatewayPid, runGatewayStop, probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness,
     resolveFamilyConflict, getRunLocalGateway, setGatewayOwnership,
+    launchdJobPids: IS_MAC ? launchdJobPids : null,
   });
   const {
     stopGatewayGracefully,
