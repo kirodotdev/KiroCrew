@@ -5985,7 +5985,6 @@
       "decision_not_recorded_error": "この決定は記録されませんでした: {{error}}",
       "reject": "却下",
       "rejected": "却下済み",
-      "running": "実行中:",
       "tool_approval_requested": "ツール承認がリクエストされました:",
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",

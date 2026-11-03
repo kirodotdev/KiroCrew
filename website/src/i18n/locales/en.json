@@ -4369,7 +4369,6 @@
       "approved": "Approved",
       "reject": "Reject",
       "rejected": "Rejected",
-      "running": "Running:",
       "tool_approval_requested": "Tool approval requested:",
       "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls"
     },

@@ -6296,7 +6296,6 @@
       "decision_not_recorded_error": "Cette décision n’a pas été enregistrée : {{error}}",
       "reject": "Refuser",
       "rejected": "Refusé",
-      "running": "En cours :",
       "tool_approval_requested": "Approbation d’outil demandée :",
       "trusted_auto_approving_future_calls": "Approuvé — les prochains appels seront auto-approuvés",
       "trusted_channel_all": "Approuvé — tous les outils de ce canal seront auto-approuvés, persiste après redémarrage",

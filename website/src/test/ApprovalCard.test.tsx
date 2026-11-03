@@ -12,11 +12,11 @@ describe('ApprovalCard', () => {
     expect(screen.getByText('ls /tmp')).toBeInTheDocument()
   })
 
-  it('does not double the Running: prefix for shell titles (#4396)', () => {
+  it('reads a pending shell request as one sentence, with no Running: verb (#4396, #28883)', () => {
     const { container } = render(<ApprovalCard title="Running: gh api repos/o/r" toolInput="" showButtons onApprove={() => {}} />)
     const text = container.textContent || ''
-    expect(text.match(/Running:/g)).toHaveLength(1)
-    expect(text).toContain('gh api repos/o/r')
+    expect(text).not.toContain('Running:')
+    expect(text).toContain('gh api repos/o/r wants to run')
   })
 
   it('keeps the raw title in the label-less wrench branch', () => {

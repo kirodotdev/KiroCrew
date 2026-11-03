@@ -6296,7 +6296,6 @@
       "decision_not_recorded_error": "Esta decisão não foi registrada: {{error}}",
       "reject": "Rejeitar",
       "rejected": "Rejeitado",
-      "running": "Executando:",
       "tool_approval_requested": "Aprovação de ferramenta solicitada:",
       "trusted_auto_approving_future_calls": "Confiável — aprovando automaticamente as chamadas futuras",
       "trusted_channel_all": "Confiável — todas as ferramentas deste canal serão aprovadas automaticamente, persiste após reiniciar",
