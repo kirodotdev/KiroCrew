@@ -44,7 +44,7 @@ function setShell(kirocrew: Shell) {
 async function lightboxToolbar(kirocrew: Shell): Promise<HTMLElement> {
   setShell(kirocrew)
   const { Lightbox } = await import('../components/markdown/Lightbox')
-  const { container } = render(<Lightbox />)
+  render(<Lightbox />); const container = document.body
   act(() => {
     window.dispatchEvent(new CustomEvent('lightbox', {
       detail: { images: [{ src: 'a.png', alt: 'a' }], index: 0 },
@@ -87,7 +87,7 @@ async function copySurface(
     setShell(kirocrew)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob()) }))
     const { Lightbox } = await import('../components/markdown/Lightbox')
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => {
       window.dispatchEvent(new CustomEvent('lightbox', {
         detail: { images: [{ src: 'a.png', alt: 'a' }], index: 0 },
