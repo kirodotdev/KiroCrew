@@ -377,16 +377,12 @@ class TestGateLauncher:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(
-            pi_mod, "_pi_gate_launcher_encoding", lambda: code_page, raising=False
-        )
+        monkeypatch.setattr(pi_mod, "_pi_gate_launcher_encoding", lambda: code_page, raising=False)
         monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(pi_mod, "_pi_gate_launcher_cache", {})
         return run_dir
 
-    def test_the_windows_launcher_is_written_in_the_console_code_page(
-        self, monkeypatch, tmp_path
-    ):
+    def test_the_windows_launcher_is_written_in_the_console_code_page(self, monkeypatch, tmp_path):
         """``cmd.exe`` reads a ``.cmd`` in the OEM page, so a UTF-8 ``é`` (two bytes)
         reads back as two other characters and the launcher cannot find pi."""
         self._as_windows(monkeypatch, tmp_path, "cp437")
