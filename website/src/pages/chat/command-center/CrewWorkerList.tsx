@@ -12,7 +12,7 @@ import { openPanelView } from '../../../hooks/usePanelTabs'
 import { ChevronLeft } from 'lucide-react'
 import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { crewRouteNotServed, liveCrewWorkers, mergeCrewWorkers } from '../../../lib/crewWorkers'
-import { crewModeRoot, crewRootOf } from '../../../lib/crewMode'
+import { crewModeRoot, crewRootOf, runsCrewMode } from '../../../lib/crewMode'
 import UltraCrewPanel from './UltraCrewPanel'
 
 /** The status labels, keyed by the wire value `GET .../crew-workers` sends. */
@@ -176,18 +176,18 @@ export function CrewWorkerSearch({ query, onChange }: { query: string; onChange:
   </div>
 }
 
-/** The one way back to the root while one of its workers is on screen: "Back to
- *  main chat" ("Open main chat" while the root is closed). The worker view's
+/** The one way back to the root while one of its workers is on screen: "Back"
+ *  (its tooltip says "Back to main chat"), or "Open main chat" while the root is closed. The worker view's
  *  breadcrumb names the sessions and has no control of its own. Desktop keeps
  *  the panel open on the root. */
 export function CrewPanelBack({ root }: { root: string }) {
   const { t } = useTranslation()
   const { back, label, rootClosed, reopenFailed } = useCrewBack(root)
   return <div className="shrink-0 px-3 pt-3">
-    <button type="button" onClick={back} data-testid="crew-panel-back" data-root-closed={rootClosed ? 'true' : undefined}
+    <button type="button" onClick={back} data-testid="crew-panel-back" data-root-closed={rootClosed ? 'true' : undefined} title={rootClosed ? undefined : label}
       className="w-full min-h-11 flex items-center gap-2 rounded-lg border border-border bg-bg-elevated px-2.5 py-2 text-left text-[13px] text-text hover:bg-bg-hover cursor-pointer">
       <ChevronLeft size={14} aria-hidden="true" className="shrink-0 text-muted" />
-      <span className="font-medium truncate">{label}</span>
+      <span className="font-medium truncate">{rootClosed ? label : t('app.nav_back')}</span>
     </button>
     {reopenFailed && <div className="pt-2"><ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} askAgent /></div>}
   </div>
@@ -195,13 +195,16 @@ export function CrewPanelBack({ root }: { root: string }) {
 
 /** The side panel's Crew tab for `slot`: its root's Ultra Mode panel when the slot
  *  is an Ultra Mode root or one of its crew members, and one line saying so otherwise. */
-export function CrewWorkersTab({ slot, active }: { slot: string | null; active: boolean }) {
+export function CrewWorkersTab({ slot, active, onAct }: { slot: string | null; active: boolean; onAct?: (text: string) => void }) {
   const { t } = useTranslation()
   const row = useAppSelector(s => (slot ? s.dashboard.slots.find(item => item.key === slot) : undefined))
   const root = crewModeRoot(row) && row ? row.key : crewRootOf(row)
   // A brand-new chat whose Ultra Mode switch is landing has no root
   // stamp yet; show its (empty) Ultra panel instead of "not an Ultra Mode chat".
-  if (!root && row && !row.messages && !row.crew_root) return <UltraCrewPanel root={row.key} viewing={slot} active={active} />
+  // A chat with messages that was just switched on is in the same gap: it already
+  // runs Ultra Mode while the root stamp has not reached the row.
+  if (!root && row && !row.crew_root && (!row.messages
+    || (!row.created_by && !row.parent && runsCrewMode(row.agent, row.agent_kind, row.crew_mode_agent)))) return <UltraCrewPanel root={row.key} viewing={slot} active={active} onAct={onAct} />
   if (!root) return <p className="p-3 text-sm text-muted" data-testid="crew-workers-none">{t('commandCenter.workers_not_crew')}</p>
-  return <UltraCrewPanel root={root} viewing={slot} active={active} />
+  return <UltraCrewPanel root={root} viewing={slot} active={active} onAct={onAct} />
 }

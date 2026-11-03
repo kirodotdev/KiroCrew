@@ -3346,7 +3346,7 @@ Wraps `SlackClientOps` in the Layer-1 contract; declares Slack's real (rich-end)
 
 ### `SlackRenderer` + `SlackApprovalDecider` (`slack/renderer.py`)
 
-`SlackRenderer` maps the abstract `OutputEvent` stream onto Slack's streaming + Block Kit surface (`StatusReactionController` phase/emoji, per-tool task cards with a 30s elapsed timer in the stream's plan block, a timing footer at `on_done`). Text is **not** streamed as it arrives, because until the next event nothing says whether it is the reply or narration before a tool call, and an append to Slack's stream is final. It matches the dashboard, which folds narration into the turn's steps: at a tool call the text since the last step becomes that step's task-card `details` (display-safe, capped at `_NARRATION_MAX_CHARS`, written once and whole — when the driver flags `text_held`, the card is drawn without details and they follow with the `continues_segment` run, so no half sentence is shown; at a `wait` boundary such a step keeps no narration). The reply is the text after the last step — or, when the turn ends on a tool call, the last step's text (followed by the driver's unfinished-turn notice when there is one) — sealed in `on_done` (`[OPTIONS:…]`, `<thinking>` and control tags removed, images extracted, `_display_safe`, `decorate_reply`) and appended whole in pieces of at most `_STREAM_APPEND_MAX` characters cut at a line break or space (`_append_pieces`); the no-stream fallback renders it with one `chat.update` of the placeholder. The first text after a tool call resets the thread status from "is using …" to the working text. A step's label (card title, details, "is using …" status) is the driver's derived title and purpose passed through `slack/step_labels.slack_step_label`: environment assignments are dropped (where a command starts, including after `sudo`/`env`/`time`), the session cwd and home become relative / `~` wherever they appear, any other path rooted in a filesystem area (`/opt`, `/var`, `/usr`, `/tmp`, ...) becomes `…/parent/name` (a path-shaped argument such as `/api/v1` stays), and this host's name reads `[host]`; line breaks are kept and at most 4 KB is read; a raw-fallback title is rebuilt from the whole command (`OutputEvent.raw_title`) and cut to a line after the scrub. Display only — the classification and its safety rules are `tool_call_title`'s. `stamp_options` records the whole turn's raw text (`_turn_raw`). `on_turn_start` is idempotent (guarded by `_started`) so the dispatcher can fire the ack reaction early and the driver's later call no-ops.
+`SlackRenderer` maps the abstract `OutputEvent` stream onto Slack's streaming + Block Kit surface (`StatusReactionController` phase/emoji, per-tool task cards with a 30s elapsed timer in the stream's plan block, a timing footer at `on_done`). Text is **not** streamed as it arrives, because until the next event nothing says whether it is the reply or narration before a tool call, and an append to Slack's stream is final. It matches the dashboard, which folds narration into the turn's steps: at a tool call the text since the last step becomes that step's task-card `details` (display-safe, capped at `_NARRATION_MAX_CHARS`, written once and whole — when the driver flags `text_held`, the card is drawn without details and they follow with the `continues_segment` run, so no half sentence is shown; at a `wait` boundary such a step keeps no narration). The reply is the text after the last step — or, when the turn ends on a tool call, the last step's text (followed by the driver's unfinished-turn notice when there is one) — sealed in `on_done` (`[OPTIONS:…]`, `<thinking>` and control tags removed, images extracted, `_display_safe`, `decorate_reply`) and appended whole in pieces of at most `_STREAM_APPEND_MAX` characters cut at a line break or space at least a quarter into the piece (`_append_pieces`, picked by `slack/break_point.last_break`); the no-stream fallback renders it with one `chat.update` of the placeholder. The first text after a tool call resets the thread status from "is using …" to the working text. A step's label (card title, details, "is using …" status) is the driver's derived title and purpose passed through `slack/step_labels.slack_step_label`: environment assignments are dropped (where a command starts, including after `sudo`/`env`/`time`), the session cwd and home become relative / `~` wherever they appear, any other path rooted in a filesystem area (`/opt`, `/var`, `/usr`, `/tmp`, ...) becomes `…/parent/name` (a path-shaped argument such as `/api/v1` stays), and this host's name reads `[host]`; line breaks are kept and at most 4 KB is read; a raw-fallback title is rebuilt from the whole command (`OutputEvent.raw_title`) and cut to a line after the scrub. Display only — the classification and its safety rules are `tool_call_title`'s. `stamp_options` records the whole turn's raw text (`_turn_raw`). `on_turn_start` is idempotent (guarded by `_started`) so the dispatcher can fire the ack reaction early and the driver's later call no-ops.
 
 `on_prompt_choice` renders `build_approval_blocks()` — three Block Kit buttons whose `action_id`s encode the request id:
 
@@ -3694,7 +3694,8 @@ runtime enforces owner-only access.
 pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
 `DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
 also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
-the server interval with jitter,
+the server interval with jitter (a missing, non-finite or non-positive interval
+takes Discord's 41.25s; the rest is clamped to 1-300s),
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
 reconnect (every close that means to reconnect — op-7, op-9, a missed or failed
 heartbeat — sends close code `4000`, because Discord ends the session on a
@@ -4371,7 +4372,9 @@ screen's grammar: the shared `constants.md_link_destination` url pattern (one
 level of balanced parentheses, a backslash escape read as one token, a `[label](`
 inside the url ending the link), an `https?://` scheme, no whitespace in the url,
 and a label holding no `[`, `]` or line break, so the HTML and plaintext branches
-link exactly what the screen collapsed. An emitted form is rendered and redacted
+link exactly what the screen collapsed. The HTML translation links before its emphasis
+passes, as the screen's rendered form does, with each `<a>` tag stashed, so emphasis
+formats a link's label and never its url. An emitted form is rendered and redacted
 again until the text stops changing, at most `DISPLAY_SETTLING_PASSES` (4)
 times; past that, every markup character outside a redaction tag is removed
 before the final redaction.
@@ -5668,7 +5671,10 @@ never on the gateway boot path — every failure degrades to the in-memory map b
 a lost routing hint must not stop delivery, a non-Connector row does not survive a
 reload, and the map is bounded by count with least-recently-seen eviction. A file
 that exists but cannot be read is never replaced by a smaller map: `flush` reads it
-again first and writes nothing while that read fails. A file that does not parse is
+again first and writes nothing while that read fails. An `identities` field that
+is not an object is dropped and the conversations are kept, as is a row whose
+`seen_at` is too large for a float. A file that does not parse, or whose load fails
+in any other way, is
 renamed to `teams_service_urls.json.corrupt-<UTC stamp>` before the write, and a
 UTF-8 BOM file reads (`test_teams_service_urls_unreadable.py`).
 

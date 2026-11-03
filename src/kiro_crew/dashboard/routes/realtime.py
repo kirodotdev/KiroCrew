@@ -14,7 +14,7 @@ from aiohttp import web
 from kiro_crew.dashboard import handlers, milestones_api, ws
 from kiro_crew.feature_videos import (
     api_feature_videos_feedback,
-    api_feature_videos_next,
+    api_feature_videos_library,
     api_feature_videos_status,
 )
 from kiro_crew.feature_videos_cache import (
@@ -135,7 +135,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/tips/feedback", api_tips_feedback)
 
     # Feature videos (feature-intro clips, sibling of tips above)
-    app.router.add_get("/api/feature-videos/next", api_feature_videos_next)
+    app.router.add_get("/api/feature-videos/library", api_feature_videos_library)
     app.router.add_get("/api/feature-videos/status", api_feature_videos_status)
     app.router.add_post("/api/feature-videos/feedback", api_feature_videos_feedback)
     app.router.add_post("/api/feature-videos/fetch-all", api_feature_videos_fetch_all)

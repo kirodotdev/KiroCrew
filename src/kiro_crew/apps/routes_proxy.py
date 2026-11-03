@@ -112,10 +112,10 @@ _PROXY_HOP_HEADERS = frozenset(
 # X-KiroCrew-Proxy HMAC (injected below), never via user cookies or the
 # gateway's own internal-auth headers. The internal-auth set (X-Internal-Secret,
 # X-Session-Token, X-Session-Key, X-Internal-Caller) is stripped because a
-# credentialed internal caller — the design_tweak_update_thread MCP tool is the
-# first to reach an app backend through this proxy — would otherwise hand the
-# gateway-wide secret (which opens every strict internal route) to an app
-# subprocess that also serves content from the user's own projects. The HMAC is
+# credentialed internal caller — a tool a built-in app declares for its agent
+# (``apps.builtin_agent_tools``) reaches its backend through this proxy — would
+# otherwise hand the gateway-wide secret (which opens every strict internal route)
+# to an app subprocess that also serves content from the user's own projects. The HMAC is
 # all the backend needs to trust a proxied request, so dropping the rest is a
 # pure hardening with no functional loss.
 #

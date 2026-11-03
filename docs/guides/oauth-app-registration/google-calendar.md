@@ -2,10 +2,10 @@
 
 *Who this is for: the person who owns (or can create) a Google Cloud project and wants Kiro Crew agents to list calendars, read events and check free/busy time in a Google Calendar account through Google's remote Calendar MCP server. Expected time: 30–45 minutes of clicking, plus a wait of "a couple of days" for Google to accept you into the Developer Preview Program if you are not already a member.*
 
-**Google Calendar has no Connections entry yet** — see the
-[index](README.md) for the providers pre-registered on this build — so its card
-and its **Connect** button appear once that entry ships. Registering the redirect
-URI below now means it already matches when it does.
+Google Calendar is a pre-registered Connections entry. Its card shows **Needs configuration** until a client is
+saved in **Settings → OAuth Apps**, and the entry stays launch-gated until a person walks the
+manual launch-gate check with a real client. One Google client can serve every Google card; see
+[One Google client for every Google card](README.md#one-google-client-for-every-google-card).
 
 Google's Calendar MCP server is a **Developer Preview** feature. Google accepts a plain-http loopback redirect URI, so Kiro Crew's callback works as-is. The Calendar scopes Google lists for the server are all read-only and are not on Google's restricted-scope list, which makes this the lightest of the three Google runbooks on the review side.
 
@@ -26,7 +26,7 @@ Facts about Kiro Crew's side you will need to type exactly:
 
 ## 1. Create the app
 
-Google does not have an "app" object; you create a Google Cloud project, enable two APIs, configure the Google Auth Platform (consent screen), and then create an OAuth client inside it. If you already did this for Google Drive or Gmail in the same project, skip to 1.3 and add only the Calendar-specific items.
+Google does not have an "app" object; you create a Google Cloud project, enable two APIs, configure the Google Auth Platform (consent screen), and then create an OAuth client inside it. If you already did this for another Google card, use the same project and client: do 1.3, add the scopes from section 3 on **Data Access**, and add this card's redirect URI to the client (1.5 step 5).
 
 ### 1.1 Join the Developer Preview Program
 
@@ -67,7 +67,7 @@ gcloud services enable calendar-json.googleapis.com calendarmcp.googleapis.com -
 2. **Application type**: **Web application** (see section 2 for why not "Desktop app").
 3. **Name**: `Kiro Crew`.
 4. Leave **Authorized JavaScript origins** empty.
-5. Under **Authorized redirect URIs** click **+ Add URI** and paste `http://127.0.0.1:48105/callback` exactly. To share one client across Google Drive and Gmail as well, also add `http://127.0.0.1:48103/callback` and `http://127.0.0.1:48104/callback`; one client may carry all three URIs and the same Client ID and secret then go into all three Kiro Crew cards.
+5. Under **Authorized redirect URIs** click **+ Add URI** and paste `http://127.0.0.1:48105/callback` exactly. If you will use other Google cards too, add every URI in [One Google client for every Google card](README.md#one-google-client-for-every-google-card) to this same client now.
 6. **Tick Use this client for an AI-powered agent.** From 2026-11-11 Google's Workspace MCP servers reject requests from clients without this box ticked, and a client not marked by 2026-11-12 can never be marked later ([Workspace release notes, 2026-10-12](https://developers.google.com/workspace/chat/release-notes); [Configure the Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers)). If you reuse an older client that cannot be changed, create a new one.
 7. Click **Create**. Copy the **Client ID** (ends in `.apps.googleusercontent.com`) and the **Client secret** now. Google shows the full secret only once; afterwards only the last four characters are displayed. If you lose it, click **Add Secret** on the client page to rotate.
 
@@ -145,7 +145,7 @@ If something fails:
 - Consent works but tools fail: ask the admin to check **OAuth log events** in the security investigation tool (Google's troubleshooting tip), and consider `roles/mcp.toolUser`.
 - Sign-in succeeds but every MCP call is rejected, with an older client: the client is not marked **Use this client for an AI-powered agent** and cannot be marked now. Create a new client with the box ticked (section 1.5) and paste its Client ID and secret into Kiro Crew.
 
-To revoke on the Google side, the user opens [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) and removes the app. Revocation "removes all OAuth 2.0 scopes previously granted to a project", so if Calendar shares a project with Drive and Gmail, all three connections are revoked together.
+To revoke on the Google side, the user opens [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) and removes the app. Revocation "removes all OAuth 2.0 scopes previously granted to a project", so every Google card connected through the same project is revoked together.
 
 ## Known limits
 

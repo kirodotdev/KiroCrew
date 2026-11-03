@@ -437,7 +437,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     The sandbox launcher raises ``SandboxCeilingUnsealable`` from its ceiling
     materialisers when a governance ceiling cannot be made sealable — a symlink or a second hard link on the live-target pointer
     is the shape an ordinary snapshot tool produces — and that refusal is deliberately
-    NOT in the ``AcpError`` hierarchy, so ``_stream_and_print``'s handler never sees it
+    NOT in the ``AcpError`` hierarchy, so ``_send_and_print``'s handler never sees it
     and it escaped here as an unhandled exception. The remedy was technically on screen,
     buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
     to tell an operator whose actual problem is one extra file link.

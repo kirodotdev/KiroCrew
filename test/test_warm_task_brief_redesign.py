@@ -768,7 +768,7 @@ async def test_rc4_only_prs_named_in_open_asks_are_read(monkeypatch, _no_github)
 
 
 @pytest.mark.asyncio
-async def test_rc4_a_pr_number_the_input_never_named_fails_the_result(monkeypatch):
+async def test_rc4_a_pr_number_the_input_never_named_drops_the_model_fields(monkeypatch):
     state = _State()
     slot = _foreground_slot(state)
     base = _snap(
@@ -788,7 +788,9 @@ async def test_rc4_a_pr_number_the_input_never_named_fails_the_result(monkeypatc
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
-    assert row["meta"]["kind"] == "warm_task_brief_failure"
+    # The headline names an invented pull request: only the gateway's own
+    # cards and the failure line post.
+    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
     assert "18901" not in row["content"]
 
 

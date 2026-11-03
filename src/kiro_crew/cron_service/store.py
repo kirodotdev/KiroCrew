@@ -34,13 +34,19 @@ from kiro_crew.cron_service.model import (
     CronJob,
     CronSchedule,
 )
+from kiro_crew.cron_service.zone_default_migration import (
+    LOCAL_DEFAULT_STORE_VERSION,
+    predates_local_default,
+)
 
 logger = logging.getLogger("kiro_crew.cron")
 
 _CRONS_FILE = "crons.json"
 
 
-_STORE_VERSION = 2
+#: 3: an empty job zone under an empty config zone is the host's zone, not UTC
+#: (``zone_default_migration`` keeps an older store's jobs on UTC).
+_STORE_VERSION = LOCAL_DEFAULT_STORE_VERSION
 
 #: The top-level keys of the store document this build writes itself. Any other
 #: top-level key came from a newer build and is written back unchanged.
@@ -723,7 +729,8 @@ def encode_store(
     written back fill-only, the rule ``KiroCrewConfig.to_dict`` applies to unknown
     config keys: a key this build writes itself is never overwritten, and only a job
     still in ``jobs`` gets its unknown keys back, so a job this build deleted is gone
-    with them. The version is never written lower than the one read. A store with no
+    with them. ``version`` is written as given: the decoder's, never lower than the
+    one read, or the older version a store whose upgrade had to wait keeps. A store with no
     unknown keys encodes exactly as it did before.
     """
     fields_by_job = unknown_fields or {}
@@ -738,7 +745,7 @@ def encode_store(
                 record.setdefault(key, value)
         records.append(record)
     data: dict[str, Any] = {
-        "version": max(_STORE_VERSION, version),
+        "version": version,
         "jobs": records,
     }
     for key, value in (extra or {}).items():
@@ -767,6 +774,8 @@ class StoreDocument:
     version: int
     extra: Mapping[str, Any]
     unknown_fields: Mapping[str, UnknownFields]
+    #: Written before an unset zone followed the host; see ``zone_default_migration``.
+    predates_local_default: bool = False
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -867,7 +876,13 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             past_total,
             MAX_UNKNOWN_FIELDS_STORE_BYTES,
         )
-    return StoreDocument(jobs=jobs, version=version, extra=extra, unknown_fields=unknown_fields)
+    return StoreDocument(
+        jobs=jobs,
+        version=version,
+        extra=extra,
+        unknown_fields=unknown_fields,
+        predates_local_default=predates_local_default(read_version),
+    )
 
 
 #: Infix between the store's file name and the UTC stamp of a quarantine copy:

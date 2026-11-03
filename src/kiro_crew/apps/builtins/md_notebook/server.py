@@ -95,6 +95,7 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     synced_cleanly,
     write_vaults,
 )
+from kiro_crew.atomic_write import rename_with_retry, replace_with_retry
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
@@ -1101,8 +1102,8 @@ async def api_note_delete(request: web.Request) -> web.Response:
             try:
                 # `replace`, not `rename`: the reserved placeholder is in the
                 # way. Neither follows a final-component symlink, so an in-vault
-                # alias is moved as the link it is.
-                os.replace(abs_path, candidate)
+                # alias is moved as the link it is. Retried while a reader holds it.
+                replace_with_retry(abs_path, candidate)
             except OSError:
                 # The source was gone (or unmovable) — do not leave the empty
                 # placeholder behind as a phantom trash entry.
@@ -1280,7 +1281,7 @@ async def api_note_move(request: web.Request) -> web.Response:
             raise ApiError(f"a note already exists at {dst_rel}", 409, code="note_already_exists")
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.rename(src, dst)
+            rename_with_retry(src, dst)
         except FileNotFoundError as exc:
             raise ApiError(f"no such note: {src_rel}", 404, code="no_such_note") from exc
         return src, dst
@@ -1582,7 +1583,6 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         refuse_linked_parent,
-        replace_with_retry,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,

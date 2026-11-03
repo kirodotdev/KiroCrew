@@ -79,7 +79,8 @@ export function useDialogFocusTrap(
   // close the same happens to whatever regains focus.
   useEffect(() => {
     const restoreTo = restoreFocus ? (document.activeElement as HTMLElement | null) : null
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE)
+    const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+      .find((el) => el.tabIndex >= 0)
     ;(first ?? containerRef.current)?.focus({ preventScroll: true })
     return () => restoreTo?.focus?.({ preventScroll: true })
   }, [containerRef, restoreFocus])
@@ -118,8 +119,12 @@ export function useDialogFocusTrap(
       }
       const container = containerRef.current
       if (e.key !== 'Tab' || !container) return
+      // Only real Tab stops count: a roving-tabindex group (RadioChipGroup)
+      // leaves its unchecked options as `tabIndex = -1` buttons, which match
+      // FOCUSABLE but are never reached by Tab, so one of them as `lastEl`
+      // would stop the trap from ever wrapping.
       const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
-        .filter((el) => el.offsetParent !== null)
+        .filter((el) => el.offsetParent !== null && el.tabIndex >= 0)
       if (!items.length) return
       const firstEl = items[0]
       const lastEl = items[items.length - 1]

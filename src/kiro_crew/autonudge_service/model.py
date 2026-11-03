@@ -281,9 +281,10 @@ MANUAL_STOP_REASON = "manual"
 #: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
 #: therefore displace: a lapsed approval, a spent bound, a finished subject (a
 #: merged or closed watch, or the loop's own stop file), a dropped kill switch.
-#: Everything else — a manual pause (``"manual"``), a
-#: research tombstone (``AUTONUDGE_STOP_REASON``, consumed by the auto_research
-#: watchdog to tell deliberate completion from crash cleanup), and any reason
+#: Everything else — a manual pause (``"manual"``), an
+#: app's stop tombstone (``AUTONUDGE_STOP_REASON`` on a slot the
+#: ``stopped_loop_tombstone`` seam keeps, read by that app to tell
+#: deliberate completion from crash cleanup), and any reason
 #: this version does not know — is evidence some consumer may read, so it fails
 #: CLOSED to preserved.
 _REPLACEABLE_LOOP_STOP_REASONS = (

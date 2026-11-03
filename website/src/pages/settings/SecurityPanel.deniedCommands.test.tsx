@@ -214,6 +214,49 @@ describe('SecurityPanel — denied commands', () => {
     )
   })
 
+  it.each([
+    ['pattern', () => screen.getByLabelText('Custom deny pattern')],
+    ['note', () => screen.getByLabelText(NOTE_LABEL())],
+  ])('a second Enter in the %s field while the add is in flight sends nothing', async (_field, target) => {
+    // The server mints a fresh id for every add and never dedupes, so a second
+    // POST of the same rule lists it twice. Both inputs stay editable while the
+    // add runs, so Enter has to respect the in-flight add, as the Add button does.
+    let release: (v: DeniedCommandsData) => void = () => {}
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<DeniedCommandsData>(resolve => { release = resolve }),
+    )
+    await renderPanel()
+
+    fireEvent.change(screen.getByLabelText('Custom deny pattern'), { target: { value: 'rm -rf /data' } })
+    // Back to back, before the in-flight state re-renders, and again after it.
+    fireEvent.keyDown(target(), { key: 'Enter' })
+    fireEvent.keyDown(target(), { key: 'Enter' })
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalledTimes(1))
+    fireEvent.keyDown(target(), { key: 'Enter' })
+    // The mutation calls the api in a microtask, so flush before counting.
+    await act(async () => {})
+
+    expect(api.addUserDeniedCommand).toHaveBeenCalledTimes(1)
+    await act(async () => { release(snapshot()) })
+  })
+
+  it('takes the next add once the first settles, however fast it answered', async () => {
+    // The in-flight latch is released when the add settles, not when a busy
+    // render arrives, so an add that resolves before any re-render cannot
+    // leave the form refusing every later Enter.
+    await renderPanel()
+    const input = screen.getByLabelText('Custom deny pattern')
+    fireEvent.change(input, { target: { value: 'first .*' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+
+    fireEvent.change(screen.getByLabelText('Custom deny pattern'), { target: { value: 'second .*' } })
+    fireEvent.keyDown(screen.getByLabelText('Custom deny pattern'), { key: 'Enter' })
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalledTimes(2))
+    expect(api.addUserDeniedCommand).toHaveBeenLastCalledWith('second .*', '')
+  })
+
   it('add-pattern accepts Python-only regex syntax the browser cannot parse', async () => {
     // The gate compiles user rules with Python `re`. A named group `(?P<x>...)`
     // is valid there and a SyntaxError in `new RegExp()`, so a browser-side parse

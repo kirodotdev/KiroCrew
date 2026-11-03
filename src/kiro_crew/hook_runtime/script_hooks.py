@@ -489,8 +489,10 @@ class ScriptHookStore:
     def _load(self) -> None:
         if not self._path.exists():
             return
+        from kiro_crew.user_json import loads_user_json
+
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            data = loads_user_json(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
             return
@@ -567,12 +569,14 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
+        from kiro_crew.user_json import loads_user_json
+
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = json.loads(self._path.read_text(encoding="utf-8"))
+                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -817,8 +821,9 @@ class ScriptHookStore:
         a subagent to a hook keyed on the field's documented meaning.
 
         ``acp_session_id`` is the firing session's ACP session id. Only the
-        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and
-        ``acp_session_id`` on their stdin: they are the spec hooks kiro-cli would
+        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and both
+        ``session_id`` (kiro-cli's own key) and ``acp_session_id`` on their
+        stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
 
@@ -876,6 +881,9 @@ class ScriptHookStore:
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
+            # ``session_id`` is the key kiro-cli's own hook payload uses;
+            # ``acp_session_id`` stays for hooks that already read that key.
+            extra_event["session_id"] = acp_session_id
             extra_event["acp_session_id"] = acp_session_id
             extra_run["acp_session_id"] = acp_session_id
         # Only a hook that passes its matcher changes the status bookkeeping

@@ -749,7 +749,7 @@ export default function AgentImportFlow({
                   <input
                     id={inputId}
                     type="checkbox"
-                    aria-label={`${source.name}, ${count} items`}
+                    aria-label={i18nT('components.agentImportFlow.source_item_count', { name: source.name, count })}
                     className="mt-1 h-4 w-4 accent-[var(--accent)]"
                     checked={selectedSources.has(source.id)}
                     onChange={() => toggleSource(source.id)}
@@ -758,7 +758,7 @@ export default function AgentImportFlow({
                     <span className="block font-semibold text-text-strong">{source.name}</span>
                     {source.detail && <span className="mt-1 block break-words text-[13px] text-muted">{source.detail}</span>}
                   </span>
-                  <span className="shrink-0 text-[13px] font-medium text-muted">{count} {i18nT('components.agentImportFlow.found')}</span>
+                  <span className="shrink-0 text-[13px] font-medium text-muted">{i18nT('components.agentImportFlow.found_count', { count })}</span>
                 </label>
               )
             })}
@@ -780,7 +780,7 @@ export default function AgentImportFlow({
           />
           <div className="space-y-5">
             {sources.filter(source => selectedSources.has(source.id)).map(source => (
-              <fieldset key={source.id} aria-label={`${source.name} categories`}>
+              <fieldset key={source.id} aria-label={i18nT('components.agentImportFlow.source_categories', { name: source.name })}>
                 <legend className="mb-2 text-sm font-semibold text-text-strong">{source.name}</legend>
                 <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-bg shadow-sm">
                   {supportedCategories(source).map(category => {
@@ -865,13 +865,13 @@ export default function AgentImportFlow({
                       </p>
                     </div>
                     <span className="shrink-0 text-[13px] font-medium text-muted">
-                      {selection.categories.length} {selection.categories.length === 1 ? 'category' : 'categories'}
+                      {i18nT('components.agentImportFlow.category_count', { count: selection.categories.length })}
                     </span>
                   </div>
                 )
               })}
             </div>
-            <p className="mt-2 text-[13px] text-muted">{selectedItemCount} {i18nT('components.agentImportFlow.items_selected')}</p>
+            <p className="mt-2 text-[13px] text-muted">{i18nT('components.agentImportFlow.items_selected_count', { count: selectedItemCount })}</p>
           </section>
           <section className="mt-6">
             <h2 className="text-sm font-semibold text-text-strong">{i18nT('components.agentImportFlow.not_imported')}</h2>

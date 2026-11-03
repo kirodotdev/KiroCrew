@@ -42,6 +42,8 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1209,7 +1211,63 @@ def read_note(meeting_id: str, root: Path | None = None) -> dict[str, Any]:
     return payload
 
 
-def write_note(meeting_id: str, content: str, root: Path | None = None) -> dict[str, Any]:
+@dataclass(frozen=True)
+class NoteSaveOrder:
+    """Where one note save sits in its editor's own sequence of saves.
+
+    ``editor`` names one open note editor (one meeting view in one page) and ``seq``
+    counts that editor's saves upward. Only saves from the SAME editor are ordered
+    against each other; two tabs are still last-write-wins, as :func:`write_note`
+    says.
+    """
+
+    editor: str
+    seq: int
+
+
+# The newest ``seq`` stored per note, per editor: ``{note path: {editor: seq}}``.
+# In memory on purpose. The race it closes is two PUTs from one page in flight at
+# the same moment (an autosave and the reload's keepalive save), which never spans
+# a gateway restart, and a page loaded after a restart is a new editor anyway.
+# Both levels are bounded LRU maps so a long-running gateway does not grow it.
+_NOTE_SAVE_SEQ: OrderedDict[str, OrderedDict[str, int]] = OrderedDict()
+_NOTE_SAVE_SEQ_NOTES = 256
+_NOTE_SAVE_SEQ_EDITORS = 32
+_NOTE_SAVE_SEQ_LOCK = threading.Lock()
+
+
+def _note_save_is_stale(path: Path, order: NoteSaveOrder) -> bool:
+    """Whether a NEWER save from *order*'s editor is already stored for *path*."""
+    with _NOTE_SAVE_SEQ_LOCK:
+        editors = _NOTE_SAVE_SEQ.get(str(path))
+        stored = editors.get(order.editor) if editors is not None else None
+        return stored is not None and order.seq < stored
+
+
+def _record_note_save(path: Path, order: NoteSaveOrder) -> None:
+    """Remember *order* as stored for *path*. Called only once its write landed."""
+    key = str(path)
+    with _NOTE_SAVE_SEQ_LOCK:
+        editors = _NOTE_SAVE_SEQ.get(key)
+        if editors is None:
+            editors = OrderedDict()
+            _NOTE_SAVE_SEQ[key] = editors
+        _NOTE_SAVE_SEQ.move_to_end(key)
+        while len(_NOTE_SAVE_SEQ) > _NOTE_SAVE_SEQ_NOTES:
+            _NOTE_SAVE_SEQ.popitem(last=False)
+        editors[order.editor] = max(order.seq, editors.get(order.editor, 0))
+        editors.move_to_end(order.editor)
+        while len(editors) > _NOTE_SAVE_SEQ_EDITORS:
+            editors.popitem(last=False)
+
+
+def write_note(
+    meeting_id: str,
+    content: str,
+    root: Path | None = None,
+    *,
+    order: NoteSaveOrder | None = None,
+) -> dict[str, Any]:
     """Replace the note's text. BLOCKING.
 
     A whole-file replace, and deliberately NOT under ``meta_transaction()``: there
@@ -1218,10 +1276,24 @@ def write_note(meeting_id: str, content: str, root: Path | None = None) -> dict[
     last-write-wins — the same semantics a text editor has, and the honest one for
     a single user's own memo. Adding an optimistic-concurrency token would trade a
     conflict dialog for a race nobody is losing data to.
+
+    One editor's OWN saves are a different matter. A reload during an
+    autosave sends the newest text at once while the older save is still in flight,
+    and the route runs each on a pool thread, so they can reach the disk in either
+    order. With an *order*, a save older than one this editor already stored is
+    dropped, and the answer says ``superseded`` beside the note as it is on disk.
+    The seq is recorded only AFTER the write lands, so a save that failed (a full
+    disk, say) never makes an older one from the same editor look superseded. The
+    route calls this inside its existence transaction, which makes the check, the
+    write and the record one step.
     """
     path = note_path(meeting_id, root)
+    if order is not None and _note_save_is_stale(path, order):
+        return {**read_note(meeting_id, root), "superseded": True}
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, content, newline="")
+    if order is not None:
+        _record_note_save(path, order)
     return read_note(meeting_id, root)
 
 

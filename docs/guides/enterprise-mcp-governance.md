@@ -196,6 +196,15 @@ all: no `spawn_run`, no `cron_add`, no `learn_add`, no artifacts, knowledge or
 monitoring, and no error from the host explaining it. Declaring registry mode
 does not fix it there, because the marker it writes cannot reach the filter.
 
+The limitation is tracked upstream as
+[kirodotdev/Kiro#12231](https://github.com/kirodotdev/Kiro/issues/12231).
+
+When the host names the servers it filtered (KAS lists them in its MCP status as
+`accessModeFilteredServers`), Kiro Crew acts on that at once instead of waiting
+out the session-start budget. With `agent.mcp_registry_mode` on, the session
+starts without those servers. With it off, the session start fails straight
+away with an error that names each filtered server and the setting to declare.
+
 Kiro Crew makes the failure visible rather than silent. Projecting an agent onto
 that backend under registry mode logs a warning naming exactly this, and the
 servers your spec declares are withheld with a line each instead of being sent to
@@ -353,7 +362,8 @@ Kiro Crew runs as — the file *and* every directory above it**: a source that a
 write, and the refresher would install that ceiling without a restart. A `0444` file in a
 writable directory does not count: it can be replaced by unlink-and-recreate. Use a
 root-owned path or a read-only mount; if what you want is a local, editable policy file, that is
-`KIROCREW_SECURITY_POLICY`, not this channel. The validator is a content digest,
+`KIROCREW_SECURITY_POLICY`, not this channel. On Windows `file://` sources are
+refused until Kiro Crew can read the file's ACL. Use `https`. The validator is a content digest,
 so a host on a shared mount re-reads only when the bytes actually change — including the
 case where you replace the file with a same-size version and preserve its timestamp.
 Plain

@@ -15,6 +15,8 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
     releases: () => fetch('/api/releases').then(j),
     applyUpdate: () => post('/api/update').then(j),
     setAutoUpdate: (enabled: boolean) => post('/api/update/auto', { enabled }).then(j),
+    /** Whether config.local.json pins `auto_update`, read without running a check. */
+    autoUpdatePin: () => fetch('/api/update/auto').then(j) as Promise<{ overlay_override?: unknown }>,
     /**
      * Move this install onto another release channel. Changes which feed the next
      * check compares against; it never installs anything, so the response is the

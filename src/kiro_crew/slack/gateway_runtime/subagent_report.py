@@ -321,7 +321,7 @@ def _subagent_wave_digest(
         # with no consumer.
         #
         # Print the SERVED model id only (no "(requested …)" qualifier):
-        # `_res_model != _req_model` is NOT how the card decides a
+        # served != requested is NOT how the card decides a
         # downgrade — `isModelDowngrade` folds auto/default to "no pin"
         # and treats alias-vs-canonical / routing-prefix pairs as the
         # same model, so a raw inequality would print a false downgrade

@@ -140,6 +140,7 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     _RE_IN_DURATION,
     _TIMER_POLL_SECS,
     _UNIT_SECS,
+    LOCAL_TIMEZONE,
     _compute_next_run_ts_raw,
     _humanize_cron,
     _job_tz,
@@ -147,14 +148,19 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     compute_jitter,
     compute_next_run_ts,
     cron_expr_matches,
+    default_timezone_name,
     format_schedule,
     get_local_tz,
     is_due,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    job_follows_host,
+    job_zone_name,
     never_fires_warning,
     next_wake_secs,
     parse_time_string,
+    resolve_timezone_name,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.service import job_ownership as _job_ownership
@@ -968,13 +974,37 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                #
+                # Only the fields this update changed are put back. A run in
+                # flight writes its own fields on the loop thread, without the
+                # store lock, onto this same object -- the failure count, the
+                # auto-pause, the one-shot park, the last status -- and a
+                # whole-record restore would undo that write. So the update is
+                # applied to a private copy first, the fields it changed are
+                # read off that copy (no other thread can touch it), and only
+                # those are written to the live job; a failed save restores
+                # each of them only while it still holds this update's value.
                 previous_limit = job.auto_pause_after_failures
-                before = copy.copy(job)
-                apply_job_update(job, kwargs, chat_folder_out)
+                staged = copy.copy(job)
+                prior = dict(staged.__dict__)
+                apply_job_update(staged, kwargs, chat_folder_out)
+                edits = {
+                    name: value
+                    for name, value in staged.__dict__.items()
+                    if name not in prior or prior[name] is not value
+                }
+                for name, value in edits.items():
+                    setattr(job, name, value)
                 try:
                     self._save()
                 except BaseException:
-                    job.__dict__.update(before.__dict__)
+                    for name, value in edits.items():
+                        if name not in job.__dict__ or job.__dict__[name] is not value:
+                            continue
+                        if name in prior:
+                            setattr(job, name, prior[name])
+                        else:
+                            delattr(job, name)
                     raise
                 job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)

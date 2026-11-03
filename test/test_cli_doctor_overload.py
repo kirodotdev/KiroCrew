@@ -93,7 +93,7 @@ def test_overload_section_marks_adaptive_off(capsys: pytest.CaptureFixture[str])
     [
         ("linux", "STUCK_INPUT (blocked"),
         ("darwin", "STUCK_INPUT and socket evidence absent"),
-        ("win32", "no process-tree backend"),
+        ("win32", "windows Toolhelp — shell-tool CPU movement proves life only"),
     ],
 )
 def test_liveness_line_declares_the_platform_degradation(

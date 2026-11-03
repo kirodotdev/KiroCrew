@@ -346,7 +346,6 @@ class TestWhatThisSetGrants:
         # session in the folder are refused by name (see test_mcp_dashboard_folder_update).
         "chat_folder_update",
         "chat_folder_move_session",
-        "chat_folder_file_self",
         # Empty-only and creator-only: the endpoint's ``if_empty`` mode refuses
         # a folder holding a subfolder or a live or archived session instead of
         # unfiling it, refuses a folder the calling session did not create or

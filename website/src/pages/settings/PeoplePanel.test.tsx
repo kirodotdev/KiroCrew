@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { ALL_UNAVAILABLE, type PeopleResponse } from '../../api/sharedCrewUi'
@@ -520,7 +521,9 @@ describe('PeoplePanel layout C', () => {
     mount()
     fireEvent.click(await screen.findByTestId('person-edit'))
     fireEvent.change(await screen.findByTestId('person-edit-picture-input'), { target: { files: [new File(['x'], 'x.svg', { type: 'image/svg+xml' })] } })
-    expect(await screen.findByTestId('person-edit-hint')).toBeInTheDocument()
+    const hint = await screen.findByTestId('person-edit-hint')
+    expect(hint).toHaveAttribute('role', 'status')
+    expect(screen.getByRole('button', { name: i18nT('sharedCrew.edit_picture') })).toHaveAttribute('aria-describedby', hint.id)
     expect(api.sharedCrewSetPersonDisplay).not.toHaveBeenCalled()
   })
 

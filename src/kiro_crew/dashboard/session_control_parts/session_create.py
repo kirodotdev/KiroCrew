@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
     _resolve_folder_project_dir,
     _unhide_folder,
+    _validate_project_dir,
 )
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
@@ -439,7 +440,19 @@ async def create_session(
     # the sensitive-path list, so it is filesystem work the loop should not wait on.
     # The rule's own tiebreaker applies -- a leaked worker thread is survivable, a
     # frozen loop is not.
-    project_dir = folder_project or await asyncio.to_thread(default_project_dir, workspace)
+    #
+    # Without a folder project the child works where its caller works: a
+    # dispatcher passes no ``folder``, and its worker still belongs in the
+    # repository the dispatcher was opened in. The caller's stored project is
+    # re-validated (absolute, existing, not a sensitive path) before it is
+    # reused; the workspace default covers a caller with none or an invalid one.
+    # The caller project this read saw, re-checked at the late gate below the
+    # way a folder project is: a project switch inside one of the awaits would
+    # otherwise start the child in the caller's former project.
+    caller_project_raw = "" if folder_project else str(getattr(caller_slot, "project", "") or "")
+    project_dir = folder_project or await asyncio.to_thread(
+        _inherited_project_dir, caller_project_raw, workspace
+    )
 
     # ONE invariant covers every branch of agent resolution: the agent that will
     # actually ANSWER must be bound to the caller's workspace. Authorization reads
@@ -1001,6 +1014,12 @@ async def create_session(
         raise SessionControlError(
             "caller session changed workspace while the session was being created",
             code="caller_workspace_changed",
+        )
+    if not folder_project and str(getattr(live_caller, "project", "") or "") != caller_project_raw:
+        raise SessionControlError(
+            "caller session changed project while the session was being created",
+            code="caller_project_changed",
+            status=409,
         )
     _refuse_moved_caller_identity(state, caller_key, caller_slot, caller_memory_identity)
     _refuse_ineligible_creator(state, live_caller)
@@ -1631,6 +1650,21 @@ def _dispatching_crewmate(
         return record
     agent_name = getattr(caller_slot, "agent", "") or ""
     return cfg.agents.get(agent_name) if agent_name else None
+
+
+def _inherited_project_dir(raw: str, workspace: str) -> str:
+    """The project a child with no folder project starts in: the caller's own.
+
+    *raw* is the caller's stored project, read once by the caller of this helper so
+    the late gate compares against exactly the value validated here. Blocking
+    (realpath, stat, sensitive-path screen): run it off the loop. An empty or no
+    longer valid project gives the workspace default.
+    """
+    if raw:
+        resolved, error = _validate_project_dir(raw)
+        if resolved and error is None:
+            return resolved
+    return default_project_dir(workspace)
 
 
 def _conducts_for_a_worker(caller_slot: Any, caller_execution: ExecutionContext | None) -> bool:

@@ -80,6 +80,9 @@ export interface WorkBoardItem {
   report_undelivered?: { tool: 'work_report' | 'work_brief'; at: string } | null
   /** A question with no NEWER answering decision. Lifts the row into the band. */
   outstanding: boolean
+  /** The item waits on the PERSON: a blocked / question report naming one, not
+   *  answered since by the conductor or a steer. Absent on an older gateway. */
+  awaits_person?: boolean
   terminal: boolean
   alive: AliveState
   events: WorkBoardEvent[]
@@ -112,6 +115,10 @@ export interface WorkBoardResponse {
    * the page ignores. Each belongs in the change that adds its reader.
    */
   take_over_available: boolean
+  /** The conductor's offered answers per open item (goal-board's agentic `asks`
+   *  field), read by the Ultra Mode Board's Needs your input. Absent on an older
+   *  gateway. */
+  asks?: Record<string, string[]>
 }
 
 /** The two affordances Phase 4 names for an orphaned item. */

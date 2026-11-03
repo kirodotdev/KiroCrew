@@ -2,7 +2,7 @@
 ``llm_helpers._extract_json_of_type`` scanner.
 
 Locks the call-site behaviors ``_extract_json_array`` / ``_has_json_array``
-provide to ``_discover_surfaces_via_agent``: fenced replies, stray bracketed
+provide to ``discover_surfaces_via_agent``: fenced replies, stray bracketed
 prose (the input class outermost-span scanners mishandle), object-record
 preference, the shared ambiguity refusal, and the top-level-only contract the
 tool-side forcing re-emit relies on. Pure-function tests — no agent, no I/O.

@@ -155,11 +155,11 @@ describe('message font size scales the conversation surface', () => {
     })
 
     it('the Lexical editor and its placeholder overlay both carry the composer typography hook', () => {
-      // index.css applies the coarse-pointer 16px floor by `[data-composer-typo]`.
-      // ChatInput's textarea and the paste-highlight mirror carry it; the
-      // Lexical path has to as well or a touch device gets WebKit focus-zoom
-      // back below 16px. The placeholder is an overlay <div>, not a real
-      // `::placeholder`, so it needs the same hook to stay metric-identical.
+      // `[data-composer-typo]` is the composer's typography hook (cli-mode.css
+      // reads it too). ChatInput's textarea and the paste-highlight mirror carry
+      // it, and so does the Lexical path. The placeholder is an overlay <div>,
+      // not a real `::placeholder`, so it carries the same hook to stay
+      // metric-identical to the editor.
       render(
         <LexicalComposerInput
           value=""

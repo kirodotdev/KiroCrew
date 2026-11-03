@@ -263,7 +263,7 @@ _WARM_SPAWN_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
 #: How long to keep waiting for a handle whose create we already gave up on. Short, because
-#: this only buys back a session already on its way; see ``_abandon_session_creation``.
+#: this only buys back a session already on its way; see ``_abandon_session_creation_locked``.
 _WARM_SESSION_REAP_TIMEOUT_SECONDS = 10.0
 _WARM_KILL_TIMEOUT_SECONDS = 20.0
 #: One bounded drain window. A run stops after this many consecutive quiet windows,

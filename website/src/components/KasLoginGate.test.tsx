@@ -181,6 +181,33 @@ describe('KasLoginGate', () => {
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 
+  it('renders the verification URL as a link that opens in a new tab', async () => {
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    const url = 'https://app.kiro.dev/account/device?user_code=ABCD-EFGH'
+    const link = await screen.findByRole('link', { name: url })
+    expect(link).toHaveAttribute('href', url)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    // Copying stays available for approving on another device.
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument()
+  })
+
+  it('shows a verification URL with a non-http scheme as text, never as a link', async () => {
+    kasLoginBeginDevice.mockResolvedValueOnce({
+      login_id: 'login-1',
+      user_code: 'ABCD-EFGH',
+      verification_uri_complete: 'javascript:alert(1)',
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+    renderWithProviders(<KasLoginGate />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    expect(await screen.findByText('javascript:alert(1)')).toBeInTheDocument()
+    expect(screen.queryByTestId('kas-login-verification-link')).not.toBeInTheDocument()
+  })
+
   it('renders its children when a token lands mid-wait', async () => {
     kasLoginStatus.mockResolvedValue({
       authenticated: true,
@@ -222,6 +249,22 @@ describe('KasLoginGate', () => {
     // Trimmed URL travels; the blank region field is omitted, not sent empty.
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('idc', {
       start_url: 'https://acme.awsapps.com/start',
+    })
+  })
+
+  it('company SSO sends a start URL pasted without https:// for the gateway to complete', async () => {
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    await screen.findByTestId('kas-login-sso-form')
+    const field = screen.getByLabelText('Company sign-in URL') as HTMLInputElement
+    fireEvent.change(field, { target: { value: 'acme.awsapps.com/start' } })
+    // The browser's own URL check must not refuse the paste before the gateway
+    // can add the scheme.
+    expect(field.checkValidity()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(kasLoginBeginDevice).toHaveBeenCalledWith('idc', {
+      start_url: 'acme.awsapps.com/start',
     })
   })
 

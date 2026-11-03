@@ -279,6 +279,28 @@ describe('CrewExportView', () => {
     expect((await screen.findByTestId('crew-export-error')).textContent).toContain(i18nT(key))
   })
 
+  it.each([
+    ['lessons_too_large', true],
+    ['invalid_name', false],
+  ])('ties a %s refusal to the lessons editor only when it is about the lessons', async (code, tied) => {
+    servePlan(view())
+    memberExportFile.mockRejectedValue(new ApiError(400, 'no', JSON.stringify({ error: 'no', code })))
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    await screen.findByTestId('crew-export-view')
+    fireEvent.click(within(screen.getByTestId('crew-export-lessons')).getByRole('switch'))
+    fireEvent.change(screen.getByTestId('crew-export-lessons-editor'), { target: { value: '# Lessons\n- check first' } })
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    const error = await screen.findByTestId('crew-export-error')
+    const editor = screen.getByTestId('crew-export-lessons-editor')
+    if (tied) {
+      expect(editor).toHaveAttribute('aria-invalid', 'true')
+      expect(editor).toHaveAttribute('aria-describedby', error.id)
+    } else {
+      expect(editor).not.toHaveAttribute('aria-invalid')
+      expect(editor).not.toHaveAttribute('aria-describedby')
+    }
+  })
+
   it('shows a built-in dashboard id as is', async () => {
     servePlan(view({ dashboard: 'builtin:release-board', left_out: [] }))
     renderWithProviders(<CrewExportView slug="scout" member="scout" />)

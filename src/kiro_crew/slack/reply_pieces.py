@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from kiro_crew.dashboard.chat_utils_turn_text import open_construct_at_end
+from kiro_crew.slack.break_point import last_break
 
 #: Characters held back below ``max_message_chars`` when splitting. The shared
 #: splitter may exceed its limit by the fence scaffolding of a whole-line
@@ -66,14 +67,15 @@ def _reply_construct_open(text: str) -> bool:
 def _append_pieces(text: str, limit: int = _STREAM_APPEND_MAX) -> list[str]:
     """Cut *text* into pieces of at most *limit* characters, in order.
 
-    Each cut lands after the last line break in reach, else after the last
-    space, so a piece never ends inside a word; only a run with neither is cut
-    where the limit falls. Joined, the pieces are *text* exactly.
+    Each cut lands after the break :func:`~kiro_crew.slack.break_point.last_break`
+    picks: the last line break at least a quarter into the piece, else the last
+    such space, so a piece never ends inside a word; a text with no break that
+    counts is cut where the limit falls. Joined, the pieces are *text* exactly.
     """
     pieces: list[str] = []
     while len(text) > limit:
-        window = text[:limit]
-        cut = window.rfind("\n") + 1 or window.rfind(" ") + 1 or limit
+        index = last_break(text, limit)
+        cut = index + 1 if index > 0 else limit
         pieces.append(text[:cut])
         text = text[cut:]
     if text:

@@ -141,10 +141,17 @@ async def probe_intent_grants(token: str, *, timeout: float = PROBE_TIMEOUT_SECS
     if not token:
         return IntentGrants(error="no bot token")
     try:
+        # The bot's own proxy rule, so a host that reaches Discord only through
+        # HTTPS_PROXY gets the same answer here as the running bot. Imported here:
+        # the client module is heavy and only this call needs it.
+        from kiro_crew.discord.client import _resolve_proxy
+
         client_timeout = aiohttp.ClientTimeout(total=timeout)
         async with aiohttp.ClientSession(timeout=client_timeout) as session:
             async with session.get(
-                APPLICATION_URL, headers={"Authorization": f"Bot {token}"}
+                APPLICATION_URL,
+                headers={"Authorization": f"Bot {token}"},
+                proxy=_resolve_proxy(),
             ) as resp:
                 status = resp.status
                 if status == 401:

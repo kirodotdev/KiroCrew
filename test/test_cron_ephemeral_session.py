@@ -66,7 +66,7 @@ class TestCronJobPersistentSessionField:
                 }
             ],
         }
-        path.write_text(json.dumps(legacy))
+        path.write_text(json.dumps(legacy), encoding="utf-8")
 
         svc = CronService()
         loaded = [j for j in svc.list_jobs() if j.id == "legacy1"][0]

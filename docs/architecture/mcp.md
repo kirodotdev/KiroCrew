@@ -892,10 +892,14 @@ spec is not where it would survive: the conductor installers rebuild their map t
 exactly the Crew servers on every pass, and a third-party installer may rewrite its
 own spec. One record keyed by template name.
 
-- **Not for the default agent or the worker.** `kirocrew.json` already holds every
-  server installed through the MCP page, and `kirocrew-worker` mirrors it, so the
-  record refuses both (`DEFAULT_TEMPLATES`, `DEFAULT_REASON`); the request points
-  the user at the MCP page instead. A crewmate's own service templates are refused
+- **Mount-only for the default agent and the worker.** `kirocrew.json` holds every
+  server installed through the MCP page, whose add also approves every tool, and
+  `kirocrew-worker` mirrors it. So the record takes a default-agent addition only
+  with `mount_only: true`, under `kirocrew`, and refuses a plain one and any
+  addition under the worker (`DEFAULT_TEMPLATES`, `DEFAULT_REASON`); a hand-edited
+  default entry without the flag is skipped on read. The rebuild merges it with
+  `reconcile_default_spec` (stamp, Undo removal) and `sync_shared_server_refs`
+  withholds its bare grant (see *Asking for an MCP server mid-chat*). A crewmate's own service templates are refused
   (`CREWMATE_REASON`): a crewmate's servers change through its own capabilities.
   Every other template Kiro Crew writes (`agent_files.OWNED_KIRO_AGENT_FILES`: the
   heartbeat, which copies a fixed server list, and the background agents) is refused
@@ -1922,7 +1926,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -2691,7 +2695,11 @@ answers `tools/list` from):
   the agent can mark a batched visual-edit comment in progress or done as it
   applies it. `status` is restricted to `done` (forward progress only — no
   clear/dismiss), and the gateway admits only that one path for internal-secret
-  callers, never the app's state-mutating routes
+  callers, never the app's state-mutating routes. The tool is the app's own
+  data: its `agent_tools.py` declares the descriptor, the fields, the route and
+  the body, and the core builds the tool from that declaration and runs it with
+  one handler of its own (`mcp_tools/apps.py` `builtin_agent_tool`; see
+  [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-a-built-ins-agent-tool-is-the-built-ins-own-data))
 
 ### Server instructions travel with the server
 
@@ -2791,13 +2799,37 @@ change card, and the server is written to the template's additions record
   route there is no own-thread exemption: a card nobody sees is never raised.
   The template is the caller's execution record's `template_id`; the record
   folds an alias onto its target on every read and write.
-- **The default agent and the worker are refused, with no card.** The default
-  `kirocrew` agent carries every server installed on the MCP page, and the
-  worker mirrors it (`template_mcp_additions.DEFAULT_TEMPLATES`). The MCP page's
-  add would also approve every tool of the server, so a request from either is
-  refused by `template_mcp_additions.addition_support` (`409 unsupported`, its
-  `DEFAULT_REASON` pointing to the MCP page). The card therefore
-  covers only conductors and third-party agents, where nothing auto-approves.
+- **The default agent and the worker get a mount-only card.** Both normally
+  take their servers from the MCP page
+  (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
+  tool of the server; a mid-chat request must not be a second path to that
+  grant. So a
+  request from either is recorded on the default `kirocrew` template with
+  `mount_only: true` (the worker mirrors the default spec, so one record reaches
+  both). The rebuild merges the entry into `mcpServers`, adds the `@server` ref
+  to `tools`, and writes no `allowedTools` grant: its calls still ask. The
+  record keeps that disposition across every rebuild, including one where the
+  same server is also on the MCP page: the bare `@server` grant is withheld,
+  while a per-tool grant the user wrote stays (the card lists it under
+  "Already approved"). Because `kirocrew.json` is rebuilt on top of itself,
+  the merged entry is stamped `x-kirocrew-card-addition`
+  (`template_mcp_additions.reconcile_default_spec`); a stamped entry whose
+  record is gone, after the card's Undo, is removed with its bare `@server`
+  refs on the next rebuild, unless an MCP page scope launches that name (an
+  entry with a `command` or `url`; a page toggle's stub such as `{}` does not
+  count, `page_launched_names`). A per-tool `@server/tool` ref is kept: it
+  reaches nothing without the server, and a failed Undo that puts the record
+  back then returns the server with the grants it had. For the default agent
+  the card reads the outcome from `kirocrew.json` itself
+  (`template_server_request._default_spec_mounts`): Add server succeeded when
+  the spec holds the stamped entry, Undo when it no longer does. A rebuild
+  that reports failure for another reason (a held conductor spec, another
+  installer raising after the default spec was committed) is not rolled back,
+  because restoring the record over a committed spec would land after the
+  rebuild pruned the server's per-tool refs; an Add server whose launcher did
+  not resolve is rolled back instead of shown as applied. The grant pass uses
+  the mount-only set from the same read of the record as the merge. The stamp can only make a
+  rebuild remove an entry, never grant one.
 - **A harness that cannot apply it is refused with the record's reason.**
   `template_mcp_additions.addition_support(template, backend)` answers for the
   caller's backend; a template Crew does not own on a harness that loads its
@@ -4242,33 +4274,6 @@ the tool layer could only drift or race. What the tool layer still decides is th
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
 
-**Filing your own session is a separate verb, `chat_folder_file_self`, because
-the grant is name-scoped.** `chat_folder_move_session` takes its target from an
-argument, so it is the one dashboard tool that writes a session OTHER than the
-caller's, and the conductor agents keep it behind an approval: they ingest
-untrusted content on unattended cycles, and `allowedTools` can name a tool but
-not an argument. That left the conductor unable to file ITSELF without a prompt,
-so it floated at the top level while its workers sat in the goal's folder.
-`chat_folder_file_self` has no `session` argument — the target is resolved from
-the verified caller key (`_own_chat_slot`: only a `dashboard:<slot>` key
-qualifies, because the slot key is stable for the tab's life while a
-channel- or cron-bound slot's `linked_session_key` can be rebound between the
-read and the write, so matching on it could file a different conversation;
-a private session and a crew member's pinned DM thread are refused too) — so the one
-placement it can write is the caller's own, which is exactly the placement the
-conductor grant invariant (create or read, never mutate what is not your own)
-admits. It resolves `folder` with `mkdir -p` semantics behind the same
-tree-shaping gate as `session_create`'s `folder`, and PATCHes the same
-`/api/chat/slots/<slot>/folder` route under the gate's verified key, carrying
-the slot's `created` stamp as `expected_created`: the endpoint's own identity
-re-check covers its own awaits, but the tool resolves the slot in an EARLIER
-request, and a tab that closes and is recreated under the same key in that gap
-would share the `dashboard:<key>` transcript key — so the endpoint refuses (409
-`session_gone`) when the token does not match the live slot's `created_at`. The
-conductors call it once in their first turn, then create every worker with
-`folder="<goal>/<agent>"`, giving one heading per goal with the conductor
-directly under it and one subfolder per agent kind.
-
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never
 renumbers, so there is no single value a caller could compute — which is why
@@ -4843,7 +4848,31 @@ pinned exactly as registration pins it, never read from the spec, and with
 `PYTHONPATH` and `KIROCREW_HOME` set from that pin over anything the spec
 declares. A user app, a shadowed builtin, or a builtin app that ships its own
 binary is not Kiro Crew's code and gets no element. gatewayd's set stays the
-managed servers: a pooled app server is not handed the token.
+managed servers: a pooled app server is not handed the token. KAS never reaches
+`kiro_control_plane_servers`; its hoist tokens the same app servers from the
+same manifest launch (`acp/kas_app_identity.py`, see
+[acp-client](../system-specs/modules/acp-client.md)).
+
+A server that is NOT Kiro Crew's code can opt into a much smaller grant: a session
+LABEL, never the token (`acp/session_label.py`). Its `mcpServers` entry carries
+`"x-kirocrew-session-label": true` (an app manifest's entry reaches the spec
+verbatim, so an app declares it there), and the server receives
+`KIROCREW_SESSION_LABEL` set to the session key, which the dashboard already shows
+in its URL. The name is deliberately not `KIROCREW_SESSION_KEY`, a rung of
+`mcp_caller.resolve_own_identity`, so the label is readable as a name and as
+nothing else. On kiro the label rides a per-session element built by
+`kiro_session_label_elements` and appended by `AcpRuntime._session_label_elements`
+AFTER `_own_stub_session`, because that method stamps the token onto every element
+it is handed; the element re-declares the entry's own `command`, `args` and `env`,
+and a declaration it cannot reproduce (anything `native_mount_withholding` names,
+an `autoApprove`, an env value holding `${NAME}` or `secret://`) stays native and
+unlabelled. On KAS `_project_mcp_servers` adds the one value to the projected entry
+after the credential strip and drops the marker from the wire. A session with no
+key yet (a warm-pool session) and a broker-pooled server get no label: a value
+baked into a process at start cannot follow a rekey, so absent is the only answer
+that is never wrong. Publishing the pid mapping earlier would not do it either: on
+the shared runtime one pid hosts several sessions, and the resolver refuses a
+mapping with more than one tenant.
 
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global

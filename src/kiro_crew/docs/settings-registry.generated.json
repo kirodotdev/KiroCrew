@@ -753,6 +753,13 @@
       "configKey": "dashboard.prevent_sleep"
     },
     {
+      "id": "chat.preview-lines-on-session-cards",
+      "label": "Preview Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.preview-lines-on-session-cards",
+      "description": "How many lines the latest-message preview can use before it is cut off"
+    },
+    {
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",
@@ -926,6 +933,13 @@
       "hint": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
     },
     {
+      "id": "chat.title-lines-on-session-cards",
+      "label": "Title Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.title-lines-on-session-cards",
+      "description": "How many lines a session title can use before it is cut off"
+    },
+    {
       "id": "chat.tool-calls-start-expanded",
       "label": "Tool calls start expanded",
       "tab": "chat",
@@ -1034,6 +1048,48 @@
       "label": "OAuth app",
       "tab": "connections",
       "route": "/settings/connections?highlight=connections.oauth-client-asana",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-gmail",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-gmail",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-drive",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-drive",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-calendar",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-calendar",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-sheets",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-sheets",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-docs",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-docs",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-slides",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-slides",
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {

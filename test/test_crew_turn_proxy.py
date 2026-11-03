@@ -1257,3 +1257,30 @@ class TestTheCredentialIsBoundToTheNodeTheTunnelDials:
         self._store(tmp_path, monkeypatch)
         inst = self._Inst(ssm_target=_REAL_NODE, provisioner_tag="realcrew", **{field: value})
         assert control_secret_id(inst) == ""
+
+
+class TestTheFakeSessionStaysInTheHandler:
+    """``_install_session`` fakes the handler's ``aiohttp.ClientSession`` and nothing else.
+
+    A patch of the package attribute leaks: a module imported for the first time while
+    it is live (``aiohttp.test_utils``, through ``_turn_request``) binds the fake to its
+    own ``ClientSession`` name and keeps it after the undo. Every aiohttp test client
+    built later in the same worker then opens a ``_FakeSession`` and cannot close it,
+    which fails 4 tests of ``test_crewmate_dynamic_capabilities.py`` when that file runs
+    after this one in one process.
+    """
+
+    def test_the_package_keeps_its_real_client_session(self, monkeypatch):
+        import aiohttp
+
+        real = aiohttp.ClientSession
+        _install_session(monkeypatch, [])
+        assert aiohttp.ClientSession is real, "the fake reached the aiohttp package"
+        assert mod.aiohttp.ClientSession is not real, "the handler does not see the fake"
+        assert mod.aiohttp.ClientTimeout is aiohttp.ClientTimeout
+
+    def test_the_handler_opens_the_fake(self, monkeypatch):
+        calls = []
+        _install_session(monkeypatch, calls)
+        session = mod.aiohttp.ClientSession(timeout=mod.aiohttp.ClientTimeout(total=1))
+        assert type(session).__name__ == "_FakeSession"

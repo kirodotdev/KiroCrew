@@ -509,8 +509,11 @@ class TestSpecCheckRefusesAnUndeclaredGate:
             '`& $env:kirocrew_runtime_python -i -b "<skill-dir>/scripts/spec_check.py" --spec <path>`'
         )
         agent_read = startup.index("only after exit 0 may you read the spec")
-        folder = startup.index("`chat_folder_create`")
-        assert max(posix, powershell) < agent_read < folder
+        # The step after the check: build the queue. A dispatcher creates no folder
+        # (rfc-crewmate-workers-under-the-crewmate.md, Design 6).
+        queue = startup.index("build the queue from the work source")
+        assert max(posix, powershell) < agent_read < queue
+        assert "chat_folder_" not in startup
         assert "current directory, script directory, user site" in startup
         assert "never substitute bare `python` or `python3`" in startup
         assert "refusal to start" in startup

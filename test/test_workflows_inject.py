@@ -83,6 +83,9 @@ class _FakeState:
     def get_slot(self, name):
         return self._slots.get(name)
 
+    def live_slot_count(self):
+        return len(self._slots)
+
     def get_or_create_slot(self, name, **kw):
         self.created.append(name)
         if name not in self._slots:

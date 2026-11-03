@@ -34,7 +34,8 @@ from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # n
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
-from kiro_crew.atomic_write import atomic_write  # noqa: F401
+from kiro_crew.apps import seams as _app_seams
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -78,6 +79,7 @@ from kiro_crew.dashboard.chat_api import slot_guards as _owner_slot_guards
 from kiro_crew.dashboard.chat_api import slot_lifecycle as _owner_slot_lifecycle
 from kiro_crew.dashboard.chat_api import slot_model as _owner_slot_model
 from kiro_crew.dashboard.chat_api import slot_note as _owner_slot_note
+from kiro_crew.dashboard.chat_api import slot_repair as _owner_slot_repair
 from kiro_crew.dashboard.chat_api import slot_settings as _owner_slot_settings
 from kiro_crew.dashboard.chat_api import slot_summary as _owner_slot_summary
 from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
@@ -86,6 +88,7 @@ from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
     CREW_MODE_LOCKED,
     SlotAgentSwitchCaller,
     _append_session_switch_notice,
+    _channel_pin_refusal,
     _crew_mode_lock_refusal,
     _has_user_message,
     _MemberMemoryRequiresNewConversation,
@@ -151,6 +154,7 @@ from kiro_crew.dashboard.chat_api.handover_drain import (  # noqa: F401
     _owed_prompts_lost_on_line,
     _persist_handover_tail,
     _report_lost_queued_prompts,
+    _teardown_drain_basis,
 )
 from kiro_crew.dashboard.chat_api.pending_context import (  # noqa: F401
     _build_pending_context_entry,
@@ -170,6 +174,7 @@ from kiro_crew.dashboard.chat_api.project_lists import (  # noqa: F401
     _favorite_projects_path,
     _favorites_unreadable_response,
     _load_favorite_projects,
+    _load_recent_projects,
     _probe_favorite_candidate,
     _read_favorite_projects,
     _recent_projects_path,
@@ -197,6 +202,7 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _redact_history_rows,
     _resume_refusal_response,
     _resume_session_identity,
+    _resume_slot_from_history_noted,
     api_chat_slot_resume,
     resume_slot_from_history,
 )
@@ -278,12 +284,11 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
+    _restore_original_after_failed_close,
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
     _slot_still_ours,
     api_chat_slot_delete,
-    api_chat_slot_repair_images,
-    api_chat_slot_reset_conversation,
     api_chat_slots_cleanup,
     close_slot,
 )
@@ -304,6 +309,10 @@ from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
     _note_delivered_live,
     _persist_deferred_note_hold,
     api_chat_slot_note,
+)
+from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
+    api_chat_slot_repair_images,
+    api_chat_slot_reset_conversation,
 )
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
@@ -365,6 +374,8 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _await_takeover_ordering_settled,
+    _build_message_entry,
     _coerce_requested_mode,
     _has_validated_effort_marker,
     _load_restore_cfg,
@@ -378,7 +389,10 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
+    _slot_closed_before,
+    _transfer_basis_to_worker,
     _validate_autocompact_pct,
+    append_window_rows,
     cap_effort_capability_levels,
     get_reasoning_effort_ordered,
     get_reasoning_effort_values,
@@ -500,11 +514,28 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     slot_not_found,
     transcript_acquisition_reason,
 )
+from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
+    tighten_line_for_appends,
+)
+from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
+    close_metadata_under_lock,
+    record_deferred_dismissal,
+    retry_owed_unstamp,
+)
+from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: F401
+    drop_notes_authorized_elsewhere,
+    session_deletion_confirmed,
+)
 from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_registry import (  # noqa: F401
+    SlotRegistry,
+    TakeoverBasis,
+    TakeoverNote,
+)
 from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,
@@ -539,8 +570,10 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 )
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    ConversationLog,
     carry_provenance,
     is_incognito_transcript,
+    transcript_stems,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
@@ -663,13 +696,14 @@ _UNOWED_WINDOW_ROLES = _TRANSIENT_ROLES - {"permission", "elicitation", "chunk",
 
 # Modes a slot may be CREATED with. A deliberate superset of the mode-SWITCH
 # allowlist (chat_folders._VALID_MODES) and the fork override allowlist
-# (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
-# Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
-# slots off the chat sidebar, which renders only plain "" slots
-# (chat/page/pageEnvironment.ts filteredSlots). Switching an existing session INTO an
-# app-worker mode, or forking one with it as an override, is not a real flow, so those two
-# allowlists deliberately stay narrower — do not "sync" them to this one.
-_CREATABLE_MODES = ("", "design-critique")
+# (chat_fork): beyond "", each entry is an app-worker mode a shipped built-in app
+# registers for itself (apps/seams.py worker_slot_modes) and assigns at birth to the
+# throwaway worker slots it opens — the custom mode keeps them off the chat sidebar,
+# which renders only plain "" slots (chat/page/pageEnvironment.ts filteredSlots).
+# Switching an existing session INTO an app-worker mode, or forking one with it as an
+# override, is not a real flow, so those two allowlists deliberately stay narrower — do
+# not "sync" them to this one.
+_CREATABLE_MODES = ("", *_app_seams.worker_slot_modes())
 
 # Deferral is an optimization, so a request shape added later must stay on the
 # synchronous path until its publication ordering has been reviewed explicitly.
@@ -1110,6 +1144,14 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
 
 _MAX_RECENT_PROJECTS = 100
 
+# The recents save is a read-modify-write of one file, run on worker threads by the
+# slot project route and the set_project directive, so two overlapping saves would each
+# write back the snapshot they read and one entry would be lost. One lock serialises
+# the whole transaction, and the picker's read loads under it too: on Windows a rename
+# cannot replace a file another handle has open, so a read open during a save's rename
+# failed that save.
+_recent_projects_lock = threading.Lock()
+
 
 # Favourites are a SEPARATE file from the recents list, not a flag on its rows, because
 # the two have different lifetimes: recents is a rolling window capped at
@@ -1251,6 +1293,7 @@ _facade_compose(
         _owner_slot_lifecycle,
         _owner_slot_model,
         _owner_slot_note,
+        _owner_slot_repair,
         _owner_slot_settings,
         _owner_slot_summary,
         _owner_source_links,

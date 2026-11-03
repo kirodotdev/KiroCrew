@@ -239,6 +239,19 @@ class TestTheSpecIsSpelledInKasToolIds:
         out = to_client_custom_agent("a", _spec(tools=["web_fetch", "web_search"]), "p")
         assert out["tools"] == ["web_fetch", "web_search", "remote_web_search"]
 
+    def test_use_subagent_mounts_the_engine_s_sub_agent_tool(self):
+        """KAS registers kiro-cli's ``use_subagent`` as ``invoke_sub_agent``; the
+        kiro-cli name alone matches no KAS tool, so an agent whose spec asks for
+        sub-agents could never call the ones its ``availableAgents`` names."""
+        out = to_client_custom_agent("a", _spec(tools=["fs_read", "use_subagent"]), "p")
+        assert out["tools"] == [
+            "fs_read",
+            "read_file",
+            "list_directory",
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""
@@ -264,7 +277,14 @@ class TestTheSpecIsSpelledInKasToolIds:
         reg = json.loads(registry.read_text(encoding="utf-8"))
         registered = set(reg["registered"]) | set(reg["remote"]["ids"])
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
-            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob", "web_search"}
+            assert kiro_cli_name in {
+                "fs_read",
+                "fs_write",
+                "grep",
+                "glob",
+                "web_search",
+                "use_subagent",
+            }
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
 
@@ -959,6 +979,27 @@ class TestSpecLookup:
         message = str(exc.value)
         assert "AlphaPackage-kirocrew.json" in message
         assert "BetaPackage-kirocrew.json" in message
+
+    def test_the_refusal_names_every_claimant_and_how_to_repair_it(self, tmp_path):
+        """Three installed packages each vend their own spec under one name.
+        The refused session start is all the user sees, so it names every file
+        with its full path and says the repair that works: keep one, delete
+        the others or change their declared ``name``. Renaming a file is not a
+        repair, because the scan matches the declared name, and the message
+        says so."""
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            self._write(tmp_path, f"{package}-kirocrew.json", description=package)
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        message = str(exc.value)
+        assert message.startswith("3 specs declare the name 'kirocrew' with differing content")
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            assert repr(str(tmp_path / f"{package}-kirocrew.json")) in message
+        assert "keep exactly one: delete the others" in message
+        assert 'change the "name" field inside all but one' in message
+        assert "Renaming a file alone does not help" in message
 
     def test_two_identical_specs_declaring_one_name_are_projected(self, tmp_path):
         """A package installer that flattens dependencies writes the same spec

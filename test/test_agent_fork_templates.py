@@ -41,7 +41,7 @@ def _fork_env(tmp_path: Path):
     kiro_dir.mkdir(exist_ok=True)
     prompt = cfg_dir / "prompt.md"
     mc_config = tmp_path / "empty_mc_config.json"
-    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}))
+    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}), encoding="utf-8")
     _user_home = tmp_path / "kirocrew_home"
     patches = [
         patch.multiple(

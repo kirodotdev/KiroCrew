@@ -332,6 +332,63 @@ describe('the provider gallery', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
+  // A pre-registered provider while chats run on a backend that drops the
+  // `oauth` block (`backendLacksOauth`). Connect stays, because the sign-in runs
+  // on Kiro CLI; the caveat rides the tip beside it and never claims a failure.
+  it('keeps Connect for a pre-registered provider on KAS and puts the caveat in its tip', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false, backendLacksOauth: true }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'not-connected'))
+    expect(within(github).getByRole('button', { name: /Connect/ })).toBeInTheDocument()
+
+    fireEvent.mouseEnter(within(github).getByRole('button', { name: 'GitHub prerequisites' }))
+    const bubble = screen.getByRole('tooltip')
+    expect(within(bubble).getByText(/Connect still finishes, and the GitHub sign-in is saved for chats that support it/)).toBeInTheDocument()
+    expect(bubble).toHaveTextContent('its tools may not work there')
+  })
+
+  it('states the backend caveat in the status list on a connected, unshared pre-registered provider', async () => {
+    mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'connected', grantPresent: true, backendLacksOauth: true }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'connected'))
+    // No tip (and no new heading): the caveat is a fact about the current state.
+    expect(within(github).queryByRole('button', { name: 'GitHub prerequisites' })).not.toBeInTheDocument()
+    expect(within(github).getByText('In chats')).toBeInTheDocument()
+    expect(within(github).getByText("Saved for chats that support it. Some chats can't use this kind of sign-in yet.")).toBeInTheDocument()
+  })
+
+  it('merges the backend caveat into the shared-grant tip beside Disconnect', async () => {
+    mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'connected', grantPresent: true, backendLacksOauth: true, grantSharedWith: ['other-entry'] }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'connected'))
+    const tips = within(github).getAllByRole('button', { name: /GitHub/ }).filter(b => b.getAttribute('aria-label')?.includes('GitHub'))
+    const disconnect = within(github).getByRole('button', { name: /Disconnect/ })
+    const tip = tips.find(t => t.parentElement === disconnect.parentElement)
+    expect(tip).toBeDefined()
+    fireEvent.mouseEnter(tip as HTMLElement)
+    const bubble = screen.getByRole('tooltip')
+    expect(within(bubble).getByText('Before you disconnect')).toBeInTheDocument()
+    expect(bubble).toHaveTextContent('its tools may not work there')
+    expect(within(github).queryByText('In chats')).not.toBeInTheDocument()
+  })
+
   it('keeps a pre-registered provider on the Connect path once its client is configured', async () => {
     // No `needsClientConfig` on the row: the operator has configured the app,
     // so the card offers the ordinary first-connect CTA.
@@ -676,7 +733,8 @@ describe('a connected provider', () => {
     // documents — so equality is pinned here for every provider that warns.
     for (const provider of CONNECTION_PROVIDERS) {
       if (!provider.prerequisite_copy) continue
-      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug}`)).toBe(provider.prerequisite_copy)
+      // Catalog keys spell a slug's hyphens as underscores (google-drive -> google_drive).
+      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug.replace(/-/g, '_')}`)).toBe(provider.prerequisite_copy)
     }
   })
 

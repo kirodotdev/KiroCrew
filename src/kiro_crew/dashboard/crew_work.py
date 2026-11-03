@@ -88,33 +88,34 @@ def summarize(
     *closed* and *looping* answer for a worker's session key. Per listed item:
     ``worker`` (the bound session's slot key, ``""`` for a remote or unbound worker)
     and ``stale_at_ms`` (epoch ms it is stale from while its worker's turn is not
-    running; ``0`` for never). Both answers come from ``is_stale``.
+    running; ``0`` for never). Both answers come from ``is_stale``. ``person_workers``
+    names the worker each person-waiting item belongs to, the same way.
     """
-    from kiro_crew.dashboard.handlers.work_ledger_board import answered_since_report
+    from kiro_crew.dashboard.handlers.work_ledger_board import awaits_person
     from kiro_crew.session_ledger_layout import ledger_key
     from kiro_crew.work_ledger import (
         DEFAULT_STALE_WINDOW_SECS,
-        WAITING_STATUSES,
         WorkItem,
         is_stale,
         parse_stamp,
         quiet_since,
     )
-    from kiro_crew.work_vocab import WORK_BLOCKED_REASONS
 
     moment = now or datetime.now().astimezone()
     open_count = 0
     person = 0
+    person_workers: list[str] = []
     listed: list[dict[str, Any]] = []
     for raw in items:
         item = WorkItem.from_dict(dict(raw))
         open_count += 1
-        if (
-            item.status in WAITING_STATUSES
-            and item.reason in WORK_BLOCKED_REASONS
-            and not answered_since_report(item, list(raw.get("events") or []))
-        ):
+        if awaits_person(item, list(raw.get("events") or [])):
             person += 1
+            # Which worker it waits for, so the row counts a worker whose tool
+            # approval is also open once ("" for a remote or unbound worker).
+            if len(person_workers) < CREW_WORK_ITEM_LIMIT:
+                key = item.worker_session_key or ""
+                person_workers.append("" if item.worker_instance_id or not key else ledger_key(key))
             continue
         if len(listed) >= CREW_WORK_ITEM_LIMIT:
             continue
@@ -146,7 +147,7 @@ def summarize(
         else:
             stale_at = 0
         listed.append({"worker": "" if remote else ledger_key(key), "stale_at_ms": stale_at})
-    return {"open": open_count, "person": person, "items": listed}
+    return {"open": open_count, "person": person, "person_workers": person_workers, "items": listed}
 
 
 def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:

@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     EnvFileWideEncodingError,
     _default_workspace_base,
+    _read_saved_workspace_dir,
     _workspace_dir_file,
     coerce_config_field,
     config_path,
@@ -44,6 +45,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env
+from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.security import redact
@@ -563,11 +565,10 @@ def _setup_workspace_dir() -> None:
     platform_default = _default_workspace_base() / _WORKSPACE_DIR_NAME
     default = platform_default
     label = "Default"
-    if _workspace_dir_file().is_file():
-        configured = _workspace_dir_file().read_text(encoding="utf-8").strip()
-        if configured:
-            default = normalize_workspace_path(configured)
-            label = "Configured"
+    configured = _read_saved_workspace_dir(_workspace_dir_file())
+    if configured:
+        default = normalize_workspace_path(configured)
+        label = "Configured"
     print("── Workspace Directory ──\n")
     print("  LLM sessions and task output are stored in a workspace directory.")
     print(f"  {label}: {default}\n")
@@ -1068,40 +1069,10 @@ def _configured_port() -> int:
 def _detect_system_timezone() -> str:
     """Return the system IANA tz name, or empty string if it can't be detected.
 
-    ``TZ`` and ``/etc/localtime`` are POSIX-only. On Windows the zone lives in
-    the registry as a Windows zone id ("Pacific Standard Time") that needs a
-    Windows->IANA mapping, so without a Windows branch this returned "" there and
-    the whole product silently fell back to UTC — cron schedules and the agent's
-    "today" were off by the local offset. ``tzlocal`` (a Windows-marked dep whose
-    only requirement, ``tzdata``, we already ship) resolves it via the CLDR
-    windowsZones table; it is imported lazily so a source checkout without it
-    degrades to the old skip-and-ask flow rather than crashing.
+    The read lives in :func:`kiro_crew.host_timezone.detect_host_timezone`, which a
+    running gateway also uses to follow a laptop that changes zone.
     """
-    tz_env = os.environ.get("TZ", "").lstrip(":")
-    if tz_env and not tz_env.startswith("/"):
-        return tz_env
-    try:
-        p = Path("/etc/localtime")
-        if p.is_symlink():
-            target = str(p.resolve())
-            if "zoneinfo/" in target:
-                return target.split("zoneinfo/", 1)[1]
-    except Exception:
-        pass
-    if platform_compat.IS_WINDOWS:
-        try:
-            # tzlocal ships no type stubs; it is a Windows-only lazy import, so
-            # ignore the missing-stub error rather than add a types-* dep.
-            import tzlocal  # type: ignore[import-untyped]
-
-            name = tzlocal.get_localzone_name()
-            if name:
-                return str(name)
-        except Exception:
-            # No tzlocal / unmappable zone: fall through to the ask-or-skip path
-            # rather than crash the setup wizard.
-            pass
-    return ""
+    return detect_host_timezone()
 
 
 class _SetupAborted(Exception):
@@ -1522,13 +1493,25 @@ def _setup_timezone() -> None:
             return
         tz_val = answer
     elif detected:
+        # The default is "local", not the detected name: a fixed name is right only
+        # until the laptop travels, and "local" keeps following it.
         print(f"  Detected: {detected}")
-        answer = _input_or_skip(f"  Timezone [{detected}]: ")
-        tz_val = answer or detected
+        print(f"  '{LOCAL_TIMEZONE}' follows this computer's time zone wherever it is.")
+        answer = _input_or_skip(f"  Timezone [{LOCAL_TIMEZONE}]: ")
+        tz_val = answer or LOCAL_TIMEZONE
     else:
-        raw = _input_or_skip("  IANA timezone (e.g. America/Los_Angeles): ")
+        # The runtime reads the zone the same way, so "local" means UTC here until
+        # the zone can be detected (TZ set, or /etc/localtime linked to a zone).
+        print(
+            f"  Could not detect this computer's time zone; '{LOCAL_TIMEZONE}' "
+            "runs in UTC until it can be."
+        )
+        raw = _input_or_skip(f"  IANA timezone (e.g. America/Los_Angeles), or '{LOCAL_TIMEZONE}': ")
         if not raw:
-            print("  ⏭  Skipped. Cron schedules will show UTC.\n")
+            print(
+                "  ⏭  Skipped. Cron schedules run in UTC until this computer's "
+                "time zone can be detected.\n"
+            )
             return
         tz_val = raw
 
@@ -1555,6 +1538,9 @@ def _setup_timezone() -> None:
     }
     max_retries = 3
     for attempt in range(max_retries):
+        if is_local_timezone(tz_val):
+            tz_val = LOCAL_TIMEZONE
+            break
         try:
             ZoneInfo(tz_val)
             break  # valid

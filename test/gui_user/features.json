@@ -4080,15 +4080,15 @@
         "src/kiro_crew/apps/builtins/dev_fleet/app.json",
         "src/kiro_crew/apps/builtins/dev_fleet/server.py",
         "website/src/App.tsx",
-        "website/src/pages/DevFleetPage.tsx",
-        "website/src/pages/devFleetApi.ts"
+        "website/src/apps/dev-fleet/DevFleetPage.tsx",
+        "website/src/apps/dev-fleet/devFleetApi.ts"
       ],
       "priority": "P2",
       "merged_from": [
         "app-dev-fleet-pods",
         "dev-fleet-page"
       ],
-      "component": "website/src/pages/DevFleetPage.tsx"
+      "component": "website/src/apps/dev-fleet/DevFleetPage.tsx"
     },
     {
       "id": "schedule-cron-jobs",

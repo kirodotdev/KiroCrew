@@ -120,8 +120,7 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # here; it only edits FILES inside the worktree, and executing those files is
         # routed separately (profiles/github_repo/profile.py::_run).
         "apps/builtins/auto_improvement/spine/agent_discovery.py::_git",
-        "apps/builtins/auto_improvement/spine/driver_commit.py::_apply",
-        "apps/builtins/auto_improvement/spine/driver_commit.py::_stage_winner",
+        "apps/builtins/auto_improvement/spine/driver_commit.py::_git_apply",
         "apps/builtins/auto_improvement/spine/driver_git.py::_git",
         "apps/builtins/auto_improvement/spine/driver_publish.py::_push_with_rebase",
         "apps/builtins/auto_improvement/spine/gate.py::_changed_paths",
@@ -588,5 +587,14 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
         "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
         "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
+        # TEST-ONLY, and the spawn is the thing under test: Design Critique's capture
+        # scripts are Node ESM modules, so the only way to call their shipped pure
+        # functions (``hostResolverRule``, ``installSsrfGuard``, ``getPlaywright``) is
+        # a ``node --input-type=module -e <program>`` child. Fixed argv, no shell=True;
+        # the program is a literal built in the test from a ``file://`` URI of the
+        # app's own script and JSON-encoded fixture inputs, the cwd and environment
+        # overrides are the test's own ``tmp_path``. Nothing here is agent-derived.
+        "apps/builtins/design_critique/tests/test_capture_site_resolver_rule.py::_rules",
+        "apps/builtins/design_critique/tests/test_ssrf_guard_fail_closed.py::_run_node",
     }
 )

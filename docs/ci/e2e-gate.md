@@ -439,6 +439,11 @@ app store answers from the bundled seed, so `GET /api/apps/registry` never pays
 the live catalog's uncached HTTPS round trip (bounded by `FETCH_TIMEOUT`, the
 same 10 s the Discover specs wait for their ready signal) or a per-row manifest
 clone. `kiro_crew.apps.official_catalog.SKIP_FETCH_ENV` owns the name.
+It pins `KIROCREW_HARNESS_ADOPTION_PINS` too, to a path under the home that nothing
+writes: the former built-in adoption pin table is read from there instead of the
+wheel, so a harness boot never fetches a shipped app from GitHub, and a test that
+drives adoption writes a fixture pin there (app-kit-platform.md § Former built-in
+adoption). `kiro_crew.apps.builtin_adoption_pins.HARNESS_PINS_ENV` owns the name.
 The supervisor restart test also verifies that only the download switch changes:
 all other environment values retain the initial launch snapshot. The failed
 mirror port stays bound without listening until teardown, and loopback hosts

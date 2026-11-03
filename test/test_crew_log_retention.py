@@ -216,7 +216,7 @@ def _hold_lease(lease_path: str, ready, done) -> None:  # pragma: no cover - chi
 
     path = Path(lease_path)
     path.touch(exist_ok=True)
-    with open(path, "r+") as handle:
+    with open(path, "r+", encoding="utf-8") as handle:
         with file_lock(handle.fileno(), exclusive=True, required=True, wait=False):
             ready.set()
             done.wait(timeout=30)

@@ -23,7 +23,8 @@ To report a problem, collect a bundle instead of pasting logs by hand:
 kirocrew doctor --bundle
 ```
 
-This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs and
+This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs (the
+current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-boots/`) and
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
 removed. It then prints a GitHub new-issue link on the bug-report form; drag the

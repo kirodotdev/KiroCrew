@@ -33,6 +33,7 @@ vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: () => null }))
 // The dock is driven by props here; the Crew Mode root read is a store/query hook.
 vi.mock('../components/crew/useCrewRoot', () => ({ useCrewRoot: () => ({ rootClosed: false, rootTitle: '', workers: undefined, failed: false }) }))
 vi.mock('../chat-core/composer/Composer', () => ({ useComposerDraftText: () => null, Composer: forwardRef(({ children }: { children: ReactNode }, _ref) => <>{children}</>) }))
+vi.mock('../composerActions/useComposerActionItems', () => ({ useComposerActionItems: () => [] }))
 vi.mock('./chat/SubagentProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/TaskProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/WorkflowProgressBar', () => ({ default: () => null }))

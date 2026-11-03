@@ -357,7 +357,6 @@ class TestScenarioGitCoordinationE2E:
         diff = await git_coord.get_step_diff(run)
         assert "bar.py" in diff
 
-        # Finalize
         branch = await git_coord.finalize(run)
         assert branch == "kirocrew/task/e2e_test"
 
@@ -396,7 +395,6 @@ class TestScenarioRevertPreservesEarlierWork:
         await git_coord.commit_step(run, step2)
         assert (wt / "bad.py").exists()
 
-        # Revert step 2
         await git_coord.revert_step(run)
         assert not (wt / "bad.py").exists(), "bad.py should be gone after revert"
         assert (wt / "good.py").exists(), "good.py should survive revert"
@@ -951,7 +949,6 @@ class TestScenarioGitRevertReplanE2E:
         await git_coord.commit_step(run, s2)
         assert len(run.commit_hashes) == 2
 
-        # Revert step 2
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 1
         assert not (wt / "bad.py").exists()

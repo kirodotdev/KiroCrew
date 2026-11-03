@@ -26,6 +26,7 @@ import { PierreWorkspaceTree, type TreeReveal } from '../../pierre/tree'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
 import { findReport, reportForError } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
+import { relativeToRoot } from '../../utils/pathBasename'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -127,14 +128,6 @@ export function useTreeState(projectDir: string | null | undefined, active = tru
   // root cannot, which is why FolderPanel names and re-reads the tree only in the first case.
   const cause = searchErrorCause(q.error)
   return cause === 'timed_out' || cause === 'failed' ? 'recoverable' : 'error'
-}
-
-/** A hit's path as the rail shows it: relative to the searched root, because the
- *  absolute prefix is the same on every row and is what pushes the informative
- *  tail out of a 300px rail. */
-function shortenPath(path: string, root: string): string {
-  if (root && path.startsWith(root)) return path.slice(root.length).replace(/^\//, '')
-  return path
 }
 
 /**
@@ -302,7 +295,9 @@ function ContentResults({ query, projectDir, active, onOpen }: {
             >
               <div className="flex items-center gap-1 text-[11.5px] text-text truncate">
                 <FileText size={11} className="shrink-0 opacity-60" />
-                <span className="truncate">{shortenPath(hit.file, data?.root ?? projectDir)}</span>
+                {/* Relative to the searched root: the absolute prefix is the same on every
+                    row and pushes the informative tail out of a 300px rail. */}
+                <span className="truncate">{relativeToRoot(hit.file, data?.root ?? projectDir)}</span>
                 {/* A document has no line to jump to, so the row names the place
                     inside itself instead — "p 3", "slide 7", "Sheet1 row 12".
                     The note above the list says the click opens the document at
@@ -700,8 +695,10 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors aria-disabled:opacity-40 aria-disabled:cursor-default',
               treeNoticeNamesRefresh ? 'gap-1 px-1.5' : 'w-[26px]',
             )}
-            title={t('pages.chat.fileBrowserRail.refresh')}
-            aria-label={t('pages.chat.fileBrowserRail.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // disabled "Refresh" reads as unavailable, not busy.
+            title={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
+            aria-label={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
             {/* When the notice names "Refresh" as the remedy, the control it names has to

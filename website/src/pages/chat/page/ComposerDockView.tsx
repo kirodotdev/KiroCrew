@@ -18,6 +18,7 @@ import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeC
 import { CrewModeChip } from '../../../components/CrewModeChip'
 import type { PromptHistoryItem } from '../../../components/composerPromptHistory'
 import type { ResolvedSessionControl } from '../../../hooks/useSessionControls'
+import { useComposerActionItems } from '../../../composerActions/useComposerActionItems'
 import type { ProviderAdapter, ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import type { ChatMessage, SessionInfo, ChatSlot } from '../../../types'
@@ -232,6 +233,8 @@ interface ComposerDockViewProps {
   effectiveEffort: string
   effortLevelsOverride: string[] | undefined
   effortSupported: boolean
+  /** The picker says effort does not apply on `auto` (#11546). */
+  effortAutoNote?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -272,6 +275,9 @@ interface ComposerDockViewProps {
   composerSessionControls: ReturnType<typeof useSessionControlChips>
   /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its switch on. */
   crewModeOffered: boolean
+  /** A plain chat that already has messages: the same chip sits right of the
+   *  permission button and turns this chat into an Ultra Mode chat, one way. */
+  crewModeMidChatOffered?: boolean
   turnOnCrewMode: () => void
   /** Set only while Crew Mode is on and no message is sent yet: the composer's
    *  Crew Mode mark is then a toggle that turns it off. */
@@ -317,14 +323,16 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
-  composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // App composer actions: rows in "+" whose apps insert plain text.
+  const composerActions = useComposerActionItems()
   // Someone else holds the typing lock: no dictation may start into the draft.
   const voiceOptions = useMemo(
     () => (typingLock ? { ...composerVoiceOptions, startBlocked: true } : composerVoiceOptions),
@@ -693,6 +701,7 @@ export default function ComposerDockView({
                 setProjectPickerOpen(o => !o)
               }}
               sessionControls={composerSessionControls}
+              composerActions={composerActions}
               onSessionControlClick={(key, rect, trigger) => {
                 anchorSessionControl(rect, trigger)
                 // Two independent setState calls, not one updater with a side
@@ -756,6 +765,9 @@ export default function ComposerDockView({
               compacting={!!currentSlot?.compacting}
               stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
+              afterApprovalMode={crewModeMidChatOffered
+                ? <CrewModeChip testId="crew-mode-switch" onTurnOn={turnOnCrewMode} busy={crewModeBusy} disabled={memorySwitching || !!crewModeSwitching} />
+                : undefined}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
               effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!defaultEffort}
@@ -842,6 +854,7 @@ export default function ComposerDockView({
                 // the static model-name heuristic, and its level list replaces
                 // this machine's when it reports one.
                 hasEffort={!!(activeSlot && effortSupported)}
+                effortOffOnAuto={effortAutoNote}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)}
                 defaultEffort={defaultEffort}

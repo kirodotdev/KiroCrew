@@ -307,6 +307,23 @@ def override_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS)
     return {name} if name else set()
 
 
+def disposition_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Lowercased reviewer name(s) a disposition ``target=`` answers for.
+
+    Shares the override alias map (``fable`` -> the Opus reviewer) and accepts
+    the literal reviewer name. Unlike the override path it does NOT expand
+    ``all``: a disposition covers one finding, so ``target=all`` answers for no
+    lane and a span-bearing ``target=all`` record stays cross-lane.
+    """
+    text = (target or "").lower()
+    if text == OVERRIDE_TARGET_ALL:
+        return set()
+    names = {name.lower() for name in override_reviewer_names(text, bindings, keys)}
+    if text in {name.lower() for name in (bindings or {}).values()}:
+        names.add(text)
+    return names
+
+
 def _accepted_overrides(comments, head_sha, authors):
     """Yield ``(target, actor, comment)`` for each trusted record naming ``head_sha`` EXACTLY.
 
@@ -1436,8 +1453,11 @@ def disposition_violations(
     so an older ``head=`` does not exempt malformed, multi-finding, or cross-lane
     claims. Lanes without parseable finding identities remain exempt from the
     requirement to claim one.
+
+    Every check resolves ``target=`` to the reviewer(s) it answers for through
+    ``disposition_reviewer_names``, so the override spelling ``fable`` and the
+    bound name ``opus`` are held to the same claim rules for the OPUS lane.
     """
-    lanes = {name.lower() for name in (bindings or {}).values()}
 
     def lane_map(for_head):
         found: dict = {}
@@ -1462,6 +1482,7 @@ def disposition_violations(
             )
             continue
         target = record.get("target") or ""
+        target_lanes = disposition_reviewer_names(target, bindings)
         spans = record.get("spans") or []
         judged_head = record.get("head") or ""
         if judged_head and len(judged_head) < 40:
@@ -1492,7 +1513,7 @@ def disposition_violations(
                 "so post one comment per finding even when the findings "
                 "share a span id".format(bullets, where, target)
             )
-        if not spans and target in lanes and (target in judged_lanes or target in current_lanes):
+        if not spans and target_lanes & (judged_lanes | current_lanes):
             out.add(
                 "disposition record claims no span= finding identity ({}; "
                 "target={}) while that lane has findings on the head it "
@@ -1501,7 +1522,7 @@ def disposition_violations(
             )
         for span in spans:
             lane = judged_map.get(span) or current_map.get(span)
-            if lane is not None and lane != target:
+            if lane is not None and lane not in target_lanes:
                 out.add(
                     "cross-lane disposition ({}; target={}) claims span {} "
                     "from lane {} - one comment covers exactly one lane, so "
@@ -1509,7 +1530,7 @@ def disposition_violations(
                         where, target, span, lane, lane
                     )
                 )
-            elif lane is None and target in lanes and target in judged_lanes:
+            elif lane is None and target_lanes & judged_lanes:
                 out.add(
                     "disposition record claims span {} that resolves to no "
                     "finding ({}; target={}) - claim the span=<id> exactly as "

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { RepoRef } from '../apps/issue-radar/api'
 
 /**
@@ -255,6 +257,17 @@ describe('RepoSettings — members roster', () => {
     // A role the provider reports with no catalog entry is an identifier, not
     // copy, so it must not be mangled into a translation lookup.
     expect(screen.getByText('zzq-unmapped-role')).toBeInTheDocument()
+  })
+
+  it('titles each member chip in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderPage()
+      const chip = (await screen.findByText('zzq-reader-login')).closest('a')
+      expect(chip?.getAttribute('title')).toBe('zzq-reader-login — Lesen · auf GitHub öffnen')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('says so when the roster cannot be read', async () => {

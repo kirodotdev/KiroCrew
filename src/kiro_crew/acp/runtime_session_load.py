@@ -12,7 +12,8 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
-``_remote_session_servers``, ``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``,
+``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
+``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -43,10 +44,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import (
-    session_mcp_server_is_disabled,
-    settings_server_names,
-)
+from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -175,6 +173,10 @@ async def load_session(
         )
         mcp_servers = await self._unpooled_control_planes(pooled, active_agent, session_work_dir)
         mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        # After the token stamp, so a label element never carries the token.
+        mcp_servers = await self._session_label_elements(
+            mcp_servers, active_agent, session_work_dir, session_key
+        )
     member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
@@ -324,6 +326,7 @@ async def load_session(
             include_user_servers=True,
             reserved_names=reserved,
             managed_entries=kas_extras.managed_entries,
+            app_launches=kas_extras.app_launches,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.

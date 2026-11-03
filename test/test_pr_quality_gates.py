@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from git_maintenance_helpers import git_maintenance_off_entries
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
@@ -741,6 +742,87 @@ class TestScreenshotEvidenceSurfaceDetection:
         assert result.returncode == 1, result.stdout + result.stderr
         assert "Could not compute the diff" in result.stdout, result.stdout
         assert "visual=false" not in outputs, outputs
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the detection step runs under bash on ubuntu-latest",
+)
+class TestScreenshotEvidencePathspecs:
+    """Run the real surface-detection step against a real two-commit repo.
+
+    The step's answer comes from git's pathspec matching, which a stubbed
+    ``git`` cannot exercise. Each case commits one changed path on top of a
+    base commit and reads the ``visual=`` output the step writes.
+    """
+
+    def _detect(self, tmp_path: Path, changed: str) -> str:
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.test",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.test",
+        }
+        env.update(git_maintenance_off_entries(env))
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args], cwd=repo, env=env, check=True, capture_output=True, timeout=30
+            )
+
+        git("init", "-q")
+        (repo / "README").write_text("base\n", encoding="utf-8")
+        git("add", "README")
+        git("commit", "-q", "-m", "base")
+        target = repo / changed
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x\n", encoding="utf-8")
+        git("add", changed)
+        git("commit", "-q", "-m", "change")
+
+        outputs = tmp_path / "outputs.txt"
+        outputs.touch()
+        result = subprocess.run(
+            ["bash", "-c", _policy_step("Detect user-visible frontend changes")["run"]],
+            cwd=repo,
+            env={**env, "GITHUB_OUTPUT": str(outputs)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return outputs.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            "website/src/index.css",
+            "website/src/tailwind-theme.css",
+            "website/src/styles/theme.css",
+            "website/src/components/Foo.tsx",
+        ],
+    )
+    def test_visual_surface_is_detected(self, tmp_path, changed):
+        assert "visual=true" in self._detect(tmp_path, changed)
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            "website/src/main.ts",
+            "website/src/components/Foo.test.tsx",
+            "src/kiro_crew/app.css",
+        ],
+    )
+    def test_non_visual_path_is_not_detected(self, tmp_path, changed):
+        assert "visual=false" in self._detect(tmp_path, changed)
 
 
 class TestCrossPlatform:

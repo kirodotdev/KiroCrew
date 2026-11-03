@@ -24,6 +24,7 @@ from cloud_microvm_engine_helpers import (  # noqa: F401 -- fixtures are request
     engine_fixture,
 )
 
+from kiro_crew.cloud.fargate.identity import DocumentRefused
 from kiro_crew.cloud.microvm import api, states
 from kiro_crew.cloud.microvm.engine import (
     Activation,
@@ -47,7 +48,7 @@ class TestPreflight:
 
     def test_a_bad_region_is_refused(self, engine):
         built, _store, _launcher = engine
-        with pytest.raises(Exception):
+        with pytest.raises(DocumentRefused):
             built.preflight("prof", "not a region")
 
     def test_a_lifetime_over_the_platform_bound_is_refused(self, tmp_path):

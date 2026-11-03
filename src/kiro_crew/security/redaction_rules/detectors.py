@@ -79,9 +79,18 @@ NESTED = "nested"
 #: shell ``export``/``set``/``declare``, or a YAML list dash.
 _LINE_LEAD_RE = re.compile(r"[ \t]{0,64}(?:(?:export|set|setx|declare)[ \t]{1,8}|-[ \t]{1,8})?")
 _LEAD_MAX = 80
-#: A template placeholder (``${VAR}``, ``{{ var }}``) is read whole, so the
-#: table's allow entries see it as written instead of cut at its brace.
-_TEMPLATE_RE = re.compile(r"\$\{[^{}\r\n]{1,200}\}|\{\{[^\r\n]{0,200}?\}\}")
+#: One template placeholder: ``${VAR}``, or ``{{ var }}`` whose body may hold a
+#: lone ``}`` (``default({})``) and ends at the first ``}}``.
+_TEMPLATE_ONE = r"(?:\$\{[^{}\r\n]{1,200}\}|\{\{(?:[^}\r\n]|\}(?!\})){0,200}\}\})"
+#: A template placeholder, or a run of up to eight joined by at most three of
+#: `` -/:.,_`` (``${A}${B}``, ``{{ a }}-{{ b }}``), is read whole, so the
+#: table's allow entries see it as written instead of cut at a brace.
+_TEMPLATE_RE = re.compile(
+    rf"{_TEMPLATE_ONE}(?:[ \t\-/:.,_]{{0,3}}{_TEMPLATE_ONE}){{0,7}}(?=[\s\"'`,;&)\]}}]|$)"
+)
+#: A template run with text glued after it (``{{ x }}hunter2``) is a value, read
+#: through the trailing text, so the allow list does not keep it as a template.
+_GLUED_TEMPLATE_RE = re.compile(rf"{_TEMPLATE_ONE}{{1,8}}[^\s\"'`,;&)\]}}]{{1,{_N}}}")
 _LINE_RE = re.compile(rf"[^\r\n]{{0,{_N}}}")
 #: ``<password>value</password>``: the tag name is the key, the text up to the
 #: matching close tag is the value.
@@ -149,7 +158,7 @@ def _value_region(text: str, i: int) -> tuple[int, int, bool] | None:
         if m:
             return m.start(1), m.end(1), True
         return i + 1, _line_end(text, i + 1), True
-    if text[i] in _NOT_A_VALUE_START:
+    if text[i] in _NOT_A_VALUE_START and not text.startswith("{{", i):
         return None
     return i, _line_end(text, i), False
 
@@ -182,7 +191,11 @@ def labelled_value(text: str, i: int, shape: str = NESTED) -> tuple[int, int] | 
         end = len(text[start:hi].rstrip()) + start
     else:
         value_re = _FLAG_VALUE_RE if shape == FLAG else _UNQUOTED_RE
-        m = _TEMPLATE_RE.match(text, start, hi) or value_re.match(text, start, hi)
+        m = (
+            _TEMPLATE_RE.match(text, start, hi)
+            or _GLUED_TEMPLATE_RE.match(text, start, hi)
+            or value_re.match(text, start, hi)
+        )
         if m is None:
             return None
         end = m.end()

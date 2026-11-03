@@ -270,6 +270,8 @@ def test_qr_handler_swallows_observer_error(monkeypatch, tmp_path):
 
     c.on_qr = boom
     asyncio.run(c._client.qr_callback(None, b"c1"))  # must not raise
+    assert c.latest_qr == ["c1"]
+    assert c.state == STATE_PAIRING
     asyncio.run(c.disconnect())
 
 
@@ -345,6 +347,8 @@ def test_message_handler_noop_without_callback(monkeypatch, tmp_path):
     c = _connect(monkeypatch, tmp_path)
     c.on_message = None
     asyncio.run(c._client.handlers[MessageEv](None, "evt"))  # no-op
+    # The handler task is tracked while it runs and released on the early return.
+    assert c._handler_tasks == set()
     asyncio.run(c.disconnect())
 
 
@@ -494,6 +498,8 @@ def test_load_identity_swallows_errors():
 
     c._client = Fake()
     asyncio.run(c._load_identity())  # must not raise
+    assert c.me.jid == ""
+    assert c.push_name == ""
 
 
 # ── outbound: send_text ─────────────────────────────────────────────────────

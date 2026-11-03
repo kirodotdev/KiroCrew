@@ -243,7 +243,10 @@ async def _cron_run_sequence(
                     is_new,
                     agent_session_key,
                     interactive=False,
-                    agent=agent,
+                    # The execution template, as dispatched: a crew
+                    # alias names no template file, and a private
+                    # crewmate's essentials refuse a missing one.
+                    agent=step.dispatch_agent,
                     memory_store=cron_memory_store or None,
                     execution_context=cron_execution,
                     context_provider=client,
@@ -630,6 +633,9 @@ async def _cron_run_single(
             # Unattended: hold the first prompt (bounded) for the agent spec's
             # MCP servers, which nobody can reconnect by hand in this run.
             await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
+        # Skill triggers read the job's own prompt: the acknowledged-items list
+        # below is Kiro Crew's text, so its words must not load or veto a skill.
+        trigger_text = msg
         if job.acked_items:
             msg += (
                 "\n\n[User has seen and acknowledged ALL of the following — "
@@ -647,7 +653,8 @@ async def _cron_run_single(
             is_new,
             session_key,
             interactive=False,
-            agent=cron_agent or None,
+            # The execution template, as dispatched (see the sequence site).
+            agent=_dispatch_agent,
             memory_store=cron_memory_store or None,
             execution_context=cron_execution,
             context_provider=client,
@@ -657,6 +664,7 @@ async def _cron_run_single(
             minimal_context=job.minimal_context,
             # The previous run's result, framed as data, ahead of the request.
             request_prefix_context=cap.prior_result or None,
+            skill_trigger_text=trigger_text,
         )
 
         # Wall clock for the cron agent turn — see the sequential site

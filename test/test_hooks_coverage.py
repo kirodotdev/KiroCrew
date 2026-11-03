@@ -1517,11 +1517,9 @@ class TestSafeWriteFileNolink:
 
             return _Other()
 
-        monkeypatch.setattr(os, "stat", _swap_after_staging)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _swap_after_staging)
             assert safe_write_file_nolink(str(f), "new") is False
-        finally:
-            monkeypatch.undo()
         assert state["fired"] is True
         assert f.read_text(encoding="utf-8") == "old"
         # The staged sibling is cleaned up even on the refusal path.

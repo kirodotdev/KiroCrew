@@ -614,6 +614,21 @@ describe('leaving the meeting view', () => {
     expect(saveNow).toHaveBeenCalledWith('the whole note')
   })
 
+  it('does not confirm a save the server dropped as superseded', async () => {
+    // The server drops a save older than one this page already stored and answers
+    // `superseded`. That text is NOT on disk, so it must not become the baseline:
+    // the draft stays dirty and the next flush saves it.
+    const { view, save, type, flush, settle } = mount({
+      save: async () => ({ ok: true, superseded: true, content: 'something newer', updated_at: 'now', path: '' }),
+    })
+    type('dropped by the server')
+    flush()
+    await settle()
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(view.result.current.dirty).toBe(true)
+    expect(view.result.current.saveFailed).toBe(false)
+  })
+
   it('stops listening for pagehide once the hook is gone', () => {
     const { view, save } = mount()
     view.unmount()

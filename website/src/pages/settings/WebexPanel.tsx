@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Lock } from 'lucide-react'
 import { WebexIcon } from '../../components/WebexIcon'
@@ -127,6 +127,9 @@ export function WebexPanel() {
   // nothing to diagnose.
   const [saveError, setSaveError] = useState('')
   const [thresholdError, setThresholdError] = useState('')
+  const thresholdErrorId = useId()
+  // Which threshold the error is about, so only that field is marked invalid.
+  const [thresholdErrorField, setThresholdErrorField] = useState<'soft' | 'hard'>('soft')
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -182,14 +185,16 @@ export function WebexPanel() {
     const soft = Number(draft.soft_threshold_pct)
     const hard = Number(draft.hard_threshold_pct)
     const bad = [
-      [soft, i18nT('pages.settings.webexPanel.soft_threshold_must_be_1_to_100')] as const,
-      [hard, i18nT('pages.settings.webexPanel.hard_threshold_must_be_1_to_100')] as const,
+      [soft, i18nT('pages.settings.webexPanel.soft_threshold_must_be_1_to_100'), 'soft'] as const,
+      [hard, i18nT('pages.settings.webexPanel.hard_threshold_must_be_1_to_100'), 'hard'] as const,
     ].find(([v]) => !Number.isInteger(v) || v < 1 || v > 100)
     if (bad) {
+      setThresholdErrorField(bad[2])
       setThresholdError(bad[1])
       return
     }
     if (soft > hard) {
+      setThresholdErrorField('soft')
       setThresholdError(i18nT('pages.settings.webexPanel.soft_threshold_must_not_exceed_hard'))
       return
     }
@@ -405,6 +410,7 @@ export function WebexPanel() {
             onChange={v => upd({ soft_threshold_pct: v })}
             placeholder="80"
             disabled={ro}
+            invalidMessageId={thresholdError && thresholdErrorField === 'soft' ? thresholdErrorId : undefined}
           />
           <SettingsInput
             label={i18nT('pages.settings.webexPanel.hard_context_threshold')}
@@ -413,6 +419,7 @@ export function WebexPanel() {
             onChange={v => upd({ hard_threshold_pct: v })}
             placeholder="95"
             disabled={ro}
+            invalidMessageId={thresholdError && thresholdErrorField === 'hard' ? thresholdErrorId : undefined}
           />
         </SettingsCard>
       </SettingsSection>
@@ -435,8 +442,8 @@ export function WebexPanel() {
         {/* Client-side validation hint (the thresholds never left the browser) —
             not an error surface, so it stays plain text rather than ErrorNotice. */}
         {thresholdError && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {thresholdError}
+          <span id={thresholdErrorId} role="alert" className="inline-flex items-center gap-1.5 text-[12px] text-danger">
+            <AlertTriangle size={14} aria-hidden="true" /> {thresholdError}
           </span>
         )}
         {/* No hand-off: `botToken` (SecretField draft, never persisted) and the

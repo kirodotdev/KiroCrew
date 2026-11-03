@@ -579,6 +579,28 @@ class TestApiMemoryRestore:
         assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
 
     @pytest.mark.asyncio
+    async def test_a_backup_that_is_not_a_database_answers_409(self, env) -> None:
+        env.declare(_FINANCE)
+        path = owned_store_path(_FINANCE)
+        assert path is not None
+        env.tier(_FINANCE).close()
+        backup = memory_backup.backup_store(path)
+        assert backup is not None
+        backup.write_bytes(b"not a database")
+
+        resp = await memory_admin.api_memory_restore(
+            _request(
+                "POST",
+                "/api/memory/restore",
+                env.state(),
+                body={"store": _FINANCE, "name": backup.name},
+            )
+        )
+
+        assert resp.status == 409, resp.text
+        assert _body(resp)["code"] == "restore_refused"
+
+    @pytest.mark.asyncio
     async def test_integrity_refusal_answers_409_with_redaction(self, env, monkeypatch) -> None:
         env.declare(_FINANCE)
         path = owned_store_path(_FINANCE)

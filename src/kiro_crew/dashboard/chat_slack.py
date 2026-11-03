@@ -359,17 +359,30 @@ class SlackLinkError(Exception):
     English prose beside it.
     """
 
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: str, message: str, *, agent: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        self.agent = agent
 
 
 # The one line every auto-opened thread starts with; the manual button's anchor
 # says "linked", so a reader can tell the two apart in the channel.
 _AUTO_LINK_ANCHOR_SUFFIX = "Session connected automatically from the dashboard."
 _MANUAL_LINK_ANCHOR_SUFFIX = "Session linked from dashboard."
+
+
+def _audit_channel_pin_denial(session_key: str, operation: str) -> None:
+    """SEL record for a link refused because the channel names another agent."""
+    sel().log_api_access(
+        caller=f"session={session_key}",
+        operation=operation,
+        outcome="denied",
+        source="channel_agent_pinned",
+        resources=f"session={session_key}",
+        error="the Slack channel is served by a different agent",
+    )
 
 
 async def link_slot_to_slack(
@@ -443,6 +456,35 @@ async def link_slot_to_slack(
                 permitted = False
             if not permitted:
                 raise SlackLinkError(403, "channel_not_permitted", "channel is not permitted")
+
+        # A link hands the thread's replies to this slot, whether it binds an
+        # existing thread or posts a new anchor. A channel pinned to an agent
+        # may only be served by that agent, so refuse a slot running any other
+        # one (fail closed on a lookup error), before any Slack write.
+        from kiro_crew.slack.handler import (
+            channel_pinned_agent,
+            link_agent_mismatch,
+            read_link_record,
+        )
+
+        # The execution record the slot's turns run on decides, as it does for
+        # the replies the link will carry; read once, off the loop, and reused
+        # by the no-await check below.
+        link_record = await read_link_record(session_key)
+        # The slot's selection when the record was judged: a switch committed
+        # while the posts below await writes a new record the late check cannot
+        # see, but it moves these fields.
+        link_selection = (getattr(slot, "agent", "") or "", getattr(slot, "agent_kind", "") or "")
+        required = link_agent_mismatch(channel, slot, link_record)
+        if required is not None:
+            _audit_channel_pin_denial(session_key, operation)
+            named = f"the {required} agent" if required != "<unknown>" else "a different agent"
+            raise SlackLinkError(
+                409,
+                "channel_agent_mismatch",
+                f"This Slack channel is served by {named}; switch this session to it to link here.",
+                agent=required if required != "<unknown>" else "",
+            )
 
         existing_ts, existing_chan = state.sessions.get_slack_link(session_key)
         if existing_ts and existing_chan:
@@ -543,6 +585,18 @@ async def link_slot_to_slack(
         # while nothing ever told the open tab it had arrived. That same index is
         # what resolves an OPTIONS click on the control replayed below back to this
         # conversation -- without it the click would answer into a separate session.
+        # The channel's agent, read again with no await before the link is
+        # published: the slot's agent may have changed while the posts above
+        # awaited.
+        if (
+            channel_pinned_agent(target_channel) is not None
+            and (getattr(slot, "agent", "") or "", getattr(slot, "agent_kind", "") or "")
+            != link_selection
+        ) or (link_agent_mismatch(target_channel, slot, link_record) is not None):
+            _audit_channel_pin_denial(session_key, operation)
+            raise SlackLinkError(
+                409, "channel_agent_mismatch", "the session's agent changed while linking"
+            )
         try:
             # `link_slack` writes the map inline on leaving its batch, so a failed
             # write can surface here as well as from the flush below; both leave
@@ -777,6 +831,10 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
             state, slot, channel=raw_channel, existing_thread=existing_thread, governed=False
         )
     except SlackLinkError as exc:
+        if exc.agent:
+            return web.json_response(
+                {"error": exc.message, "code": exc.code, "agent": exc.agent}, status=exc.status
+            )
         return web.json_response({"error": exc.message, "code": exc.code}, status=exc.status)
     return web.json_response(result)
 

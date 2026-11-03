@@ -725,6 +725,66 @@ def provider_raw_model(provider: Any) -> str:
     return ""
 
 
+class ActiveModelLine:
+    """A built prompt kept naming the model that serves it across a retry loop.
+
+    The prompt for a goose turn carries an ``[ACTIVE MODEL]`` line naming the model
+    the session served when the prompt was built. A retry loop that switches the
+    model before it re-sends that prompt (a fallback swap, a restore of the primary,
+    a rejected-model retry) would otherwise tell the new model it is the old one.
+    Build one right after the prompt is built, then send :meth:`current` on every
+    attempt: it rewrites the line when the provider's ``served_model`` has moved
+    since the prompt last named it, and is the prompt unchanged otherwise.
+
+    The model is read the way the prompt builder read it, through the provider's
+    public ``served_model`` accessor; a provider without a readable one never
+    rewrites anything.
+    """
+
+    def __init__(self, message: str, provider: Any) -> None:
+        self._provider = provider
+        # Every restatement starts from the prompt as built, so an attempt whose
+        # model reads as unreported (which drops the line) cannot lose it for the
+        # attempts after it.
+        self._built = message
+        self._built_model = self._served()
+        self._message = message
+        self._stated = self._built_model
+
+    def _served(self) -> str:
+        try:
+            value = getattr(self._provider, "served_model", "")
+        except Exception:  # pragma: no cover - exotic property getters
+            return ""
+        return value if isinstance(value, str) else ""
+
+    def current(self) -> str:
+        """The prompt, its ``[ACTIVE MODEL]`` line naming the model serving now."""
+        served = self._served()
+        if served != self._stated and isinstance(self._built, str):
+            # Imported here: context assembly is above this layer, and a module-level
+            # import would make the facade serve the name.
+            from kiro_crew.context_assembly.sections import restate_active_model
+
+            self._message = restate_active_model(self._built, self._built_model, served)
+            self._stated = served
+        return self._message
+
+    def restate_tail(self, sent: str) -> tuple[str, str] | None:
+        """*sent*, which ends with the prompt this line holds, with that tail restated.
+
+        For a caller that prepended to the built prompt before sending it. Returns the
+        new sent prompt and the restated built prompt, or ``None`` when the line is
+        already right or *sent* does not end with the prompt held (a step that did
+        more than prepend leaves the prompt as it is).
+        """
+        held = self._message
+        restated = self.current()
+        if restated is held or not sent.endswith(held):
+            return None
+        return sent[: len(sent) - len(held)] + restated, restated
+
+
 async def probe_fallback_restore(
     provider: Any,
     *,

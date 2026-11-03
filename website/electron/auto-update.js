@@ -1125,6 +1125,9 @@ function initAutoUpdate(deps) {
       launchCheckDelayMs: LAUNCH_CHECK_DELAY_MS,
       checkIntervalMs: CHECK_INTERVAL_MS,
       isPolicyGoverned,
+      getMainWindow,
+      Notification,
+      osPlatform,
       log,
     });
   }

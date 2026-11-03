@@ -35,7 +35,7 @@ async function renderActiveCard() {
     provider: 'llama_cpp', setup_step: 'done', model_available: true,
   })
   renderWithProviders(<VectorMemoryCard />)
-  const group = await screen.findByRole('group', { name: i18next.t('pages.overview.vectorMemoryCard.view_switch_label') })
+  const group = await screen.findByRole('radiogroup', { name: i18next.t('pages.overview.vectorMemoryCard.view_switch_label') })
   return group
 }
 
@@ -45,21 +45,21 @@ describe('VectorMemoryCard view switch', () => {
 
   it('marks only the shown view as pressed and follows a click', async () => {
     const group = await renderActiveCard()
-    const semantic = within(group).getByRole('button', { name: 'Semantic' })
-    const audit = within(group).getByRole('button', { name: 'Audit' })
-    expect(semantic).toHaveAttribute('aria-pressed', 'true')
-    expect(audit).toHaveAttribute('aria-pressed', 'false')
+    const semantic = within(group).getByRole('radio', { name: 'Semantic' })
+    const audit = within(group).getByRole('radio', { name: 'Audit' })
+    expect(semantic).toHaveAttribute('aria-checked', 'true')
+    expect(audit).toHaveAttribute('aria-checked', 'false')
 
     fireEvent.click(audit)
-    await waitFor(() => expect(audit).toHaveAttribute('aria-pressed', 'true'))
-    expect(semantic).toHaveAttribute('aria-pressed', 'false')
-    expect(within(group).getAllByRole('button').filter(b => b.getAttribute('aria-pressed') === 'true')).toHaveLength(1)
+    await waitFor(() => expect(audit).toHaveAttribute('aria-checked', 'true'))
+    expect(semantic).toHaveAttribute('aria-checked', 'false')
+    expect(within(group).getAllByRole('radio').filter(b => b.getAttribute('aria-checked') === 'true')).toHaveLength(1)
   })
 
   it('names every view button from the catalog in another language', async () => {
     await i18next.changeLanguage('zh-CN')
     const group = await renderActiveCard()
-    const names = within(group).getAllByRole('button').map(b => b.textContent?.trim())
+    const names = within(group).getAllByRole('radio').map(b => b.textContent?.trim())
     expect(names).toEqual([zhCard.view_semantic, zhCard.view_episodic, zhCard.view_audit, zhCard.inspector])
     expect(names).not.toContain('Semantic')
     expect(names).not.toContain('Episodic')

@@ -261,6 +261,13 @@ def test_the_requeued_state_matches_the_dashboard_lifecycle():
     assert replay._STEER_STATE_RETRACTED == STEER_STATE_RETRACTED
 
 
+def test_the_continuing_inject_kinds_match_the_dashboard_transcript():
+    from kiro_crew.context_assembly import replay
+    from kiro_crew.dashboard.state_parts.transcript_rows import _TURN_CONTINUING_INJECT_KINDS
+
+    assert replay._CONTINUING_INJECT_KINDS == _TURN_CONTINUING_INJECT_KINDS
+
+
 def _partial(out: str) -> str:
     return out.split("Partial response before the interruption:\n", 1)[1].split(
         "\n[END INTERRUPTED TURN]", 1

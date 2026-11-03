@@ -113,12 +113,18 @@ def kas_verified_releases() -> str:
 #: prefixes the tool's name (``idPrefix = "remote_"``), so the id an allowlist must
 #: spell is ``remote_web_search`` (the fixture's ``remote`` list). Without the row
 #: a spec's ``web_search`` matched no KAS id and the tool was never mounted.
+#:
+#: ``use_subagent`` is kiro-cli's sub-agent tool; KAS registers the same tool as
+#: ``invoke_sub_agent`` (capability ``subagent``). Without the row a spec that
+#: lists ``use_subagent`` got no sub-agent tool on KAS, so it could not delegate
+#: to the agents its ``toolsSettings.subagent.availableAgents`` names.
 KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
     "fs_read": ("read_file", "list_directory"),
     "glob": ("file_search",),
     "grep": ("grep_search",),
     "fs_write": ("str_replace", "fs_append"),
     "web_search": ("remote_web_search",),
+    "use_subagent": ("invoke_sub_agent",),
 }
 
 #: KAS built-in tool id -> the kiro-cli name a policy about it is written under.
@@ -140,6 +146,11 @@ KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 #:
 #: Names the two engines share (``fs_write``, ``execute_bash``, ``web_fetch``,
 #: ``code``) need no entry: they already ARE the policy spelling.
+#:
+#: A ``remote_<name>`` key here also exempts that id from the KAS identity
+#: disagreement refusal when KAS's remote tool wrapper serves it
+#: (``permission_requests._is_kas_remote_builtin``), so adding one widens
+#: that check too.
 KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
     **{
         kas_id: kiro_cli_name

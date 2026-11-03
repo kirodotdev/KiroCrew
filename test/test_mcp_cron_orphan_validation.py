@@ -223,9 +223,7 @@ class TestCronServiceAddJobValidation:
 
         svc = CronService(base_dir=tmp_path)
         with pytest.raises(ValueError, match="skip_date"):
-            svc.add_job(
-                name="svc", message="hi", cron_expr="0 9 * * *", skip_dates=["2026-02-30"]
-            )
+            svc.add_job(name="svc", message="hi", cron_expr="0 9 * * *", skip_dates=["2026-02-30"])
         assert CronService(base_dir=tmp_path).list_jobs() == []
 
     def test_add_rejects_non_padded_skip_date_and_persists_nothing(self, tmp_path):
@@ -236,9 +234,7 @@ class TestCronServiceAddJobValidation:
 
         svc = CronService(base_dir=tmp_path)
         with pytest.raises(ValueError, match="skip_date"):
-            svc.add_job(
-                name="svc", message="hi", cron_expr="0 9 * * *", skip_dates=["2026-1-1"]
-            )
+            svc.add_job(name="svc", message="hi", cron_expr="0 9 * * *", skip_dates=["2026-1-1"])
         assert CronService(base_dir=tmp_path).list_jobs() == []
 
         svc = CronService(base_dir=tmp_path)

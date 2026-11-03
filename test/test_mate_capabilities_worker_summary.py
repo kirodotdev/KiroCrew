@@ -175,9 +175,10 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
 
     A stored server or tool removes itself; a catalog skill is stored under
     ``skills`` by its key; a skill URI off the catalog is stored under
-    ``resources``; a ``@server`` selector derived from a stored ``*`` and an entry
-    of the spec's own ``skills`` list name no stored row, so they offer no Remove
-    (the live miss: the remove popped a key that did not exist and saved).
+    ``resources``; an entry of the spec's own ``skills`` list is removed from that
+    list; a ``@server`` selector derived from a stored ``*`` names no stored row,
+    so it offers no Remove (the live miss: the remove popped a key that did not
+    exist and saved).
     """
     base = {"name": "kirocrew-mate-worker", "mcpServers": {}, "tools": [], "resources": []}
     file_spec = {
@@ -210,8 +211,8 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
     assert remove[("skills", release)] == {"section": "resources", "id": release}
     # Derived from the stored "*": nothing of its own to remove.
     assert remove[("tools", "@jira")] is None
-    # The spec's own skills list has no editor row.
-    assert remove[("skills", "listed-skill")] is None
+    # An entry of the spec's own skills list is stored there and removed from it.
+    assert remove[("skills", "listed-skill")] == {"section": "skills", "id": "listed-skill"}
 
 
 def test_stored_wildcard_prevents_removing_any_tool_row(monkeypatch):

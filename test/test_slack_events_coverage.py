@@ -43,6 +43,32 @@ from slack_events_coverage_helpers import _capture_respond, _drain, _make_orch
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, ChannelConfig
 from kiro_crew.slack import events as ev
 
+
+@pytest.fixture(name="_real_sel")
+def _real_sel_fixture(_mock_sel, tmp_path, monkeypatch):
+    """Back the in-memory SEL fake with a real synchronous log under tmp_path.
+
+    The fake keeps recording, and every write also lands as a row the test reads back.
+    """
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    _mock_sel.log_api_access.side_effect = log.log_api_access
+    return log
+
+
+def _audit_rows(log, operation: str) -> list[tuple[str, str, str, str]]:
+    """``(caller, outcome, resources, error)`` of every *operation* row, oldest first."""
+    rows = [r for r in reversed(log.recent()) if r["operation"] == operation]
+    return [(r["caller_identity"], r["outcome"], r["resources"], r["error"]) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # SeenCache / background-task bookkeeping
 # ---------------------------------------------------------------------------
@@ -360,7 +386,7 @@ class TestHandleYolo:
         assert "Failed to activate YOLO mode" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_on_success_pushes_slots_update(self, _yolo_env, _mock_sel):
+    async def test_on_success_pushes_slots_update(self, _yolo_env, _mock_sel, _real_sel):
         _yolo_env.is_active.return_value = False
         _yolo_env.activate.return_value = SimpleNamespace(active=True)
         orch = _make_orch()
@@ -370,9 +396,10 @@ class TestHandleYolo:
         orch.dashboard_state.push_slots_update.assert_called_once()
         assert "YOLO mode *ON*" in respond.call_args[0][0]
         assert _mock_sel.log_api_access.call_args.kwargs["resources"] == "yolo_on"
+        assert _audit_rows(_real_sel, "slack.yolo_mode") == [("U_OWNER", "allowed", "yolo_on", "")]
 
     @pytest.mark.asyncio
-    async def test_off_disables(self, _yolo_env, _mock_sel):
+    async def test_off_disables(self, _yolo_env, _mock_sel, _real_sel):
         orch = _make_orch()
         orch.dashboard_state = MagicMock()
         respond = AsyncMock()
@@ -381,22 +408,28 @@ class TestHandleYolo:
         disable.assert_called_once()
         assert "YOLO mode *OFF*" in respond.call_args[0][0]
         assert _mock_sel.log_api_access.call_args.kwargs["resources"] == "yolo_off"
+        assert _audit_rows(_real_sel, "slack.yolo_mode") == [("U_OWNER", "allowed", "yolo_off", "")]
 
     @pytest.mark.asyncio
-    async def test_renew_success_reports_minutes(self, _yolo_env):
+    async def test_renew_success_reports_minutes(self, _yolo_env, _real_sel):
         _yolo_env.renew.return_value = SimpleNamespace(renewed=True, ttl=1800)
         orch = _make_orch()
         orch.dashboard_state = MagicMock()
         respond = AsyncMock()
         await ev._handle_yolo(orch, "U_OWNER", "renew", respond)
         assert "renewed* (auto-expires in 30min)" in respond.call_args[0][0]
+        assert _audit_rows(_real_sel, "slack.yolo_mode") == [
+            ("U_OWNER", "renewed", "yolo_renew", "")
+        ]
 
     @pytest.mark.asyncio
-    async def test_renew_when_inactive_reports(self, _yolo_env):
+    async def test_renew_when_inactive_reports(self, _yolo_env, _real_sel):
         _yolo_env.renew.return_value = SimpleNamespace(renewed=False, ttl=0)
         respond = AsyncMock()
         await ev._handle_yolo(_make_orch(), "U_OWNER", "renew", respond)
         assert "not active" in respond.call_args[0][0]
+        # A refused renew is not audited as one.
+        assert _audit_rows(_real_sel, "slack.yolo_mode") == []
 
     @pytest.mark.asyncio
     async def test_bare_invocation_shows_status_on(self, _yolo_env):
@@ -766,6 +799,22 @@ def _acked_envelopes(client: MagicMock) -> list[str]:
     return [c.args[0].envelope_id for c in client.send_socket_mode_response.await_args_list]
 
 
+@contextlib.contextmanager
+def _real_route():
+    """Record the ``_route_message`` call while the real route still runs behind it.
+
+    The owner allowlist answers no, so the verdict does not depend on process-wide
+    allowlist state, and a dispatch stops at a fake ``handle_message``.
+    """
+    real = ev._route_message
+    with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
+            with patch(
+                "kiro_crew.slack.events._route_message", new_callable=AsyncMock, side_effect=real
+            ) as route:
+                yield route
+
+
 class TestOnEventDispatch:
     @pytest.mark.asyncio
     async def test_ack_failure_short_circuits(self):
@@ -836,7 +885,7 @@ class TestOnEventDispatch:
         prompt.assert_called_once_with(orch, payload["event"])
 
     @pytest.mark.asyncio
-    async def test_home_tab_published_for_allowed_user(self, _mock_sel):
+    async def test_home_tab_published_for_allowed_user(self, _mock_sel, _real_sel):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
         payload = {"event": {"type": "app_home_opened", "tab": "home", "user": "U_OWNER"}}
@@ -849,9 +898,10 @@ class TestOnEventDispatch:
                 await asyncio.gather(*list(ev._background_tasks), return_exceptions=True)
         publish.assert_awaited_once_with(orch, "U_OWNER")
         assert _mock_sel.log_api_access.call_args.kwargs["outcome"] == "allowed"
+        assert _audit_rows(_real_sel, "slack.home_tab") == [("U_OWNER", "allowed", "", "")]
 
     @pytest.mark.asyncio
-    async def test_home_tab_denied_for_unauthorized_user(self, _mock_sel):
+    async def test_home_tab_denied_for_unauthorized_user(self, _mock_sel, _real_sel):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
         payload = {"event": {"type": "app_home_opened", "tab": "home", "user": "U_BAD"}}
@@ -862,6 +912,9 @@ class TestOnEventDispatch:
                 await on_event(_client(), _req("events_api", payload))
         publish.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
+        assert _audit_rows(_real_sel, "slack.home_tab") == [
+            ("U_BAD", "denied", "", "unauthorized sender")
+        ]
 
     @pytest.mark.asyncio
     async def test_home_tab_other_tab_ignored(self):
@@ -928,7 +981,7 @@ class TestOnEventDispatch:
         assert route.await_args.kwargs["is_mention"] is True
 
     @pytest.mark.asyncio
-    async def test_missing_team_id_is_rejected(self, _mock_sel):
+    async def test_missing_team_id_is_rejected(self, _mock_sel, _real_sel):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
         event = {"type": "message", "user": "U1", "channel": "C1", "text": "hi"}
@@ -936,6 +989,7 @@ class TestOnEventDispatch:
             await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "missing_team_id"
+        assert _audit_rows(_real_sel, "slack.message") == [("U1", "denied", "", "missing_team_id")]
 
     @pytest.mark.asyncio
     async def test_bot_message_denied_when_allowlist_unset(self, _mock_sel):
@@ -952,7 +1006,7 @@ class TestOnEventDispatch:
         assert kw["caller"] == "B_EVIL"
 
     @pytest.mark.asyncio
-    async def test_bot_not_in_allowlist_still_denied(self, _mock_sel):
+    async def test_bot_not_in_allowlist_still_denied(self, _mock_sel, _real_sel):
         """Fail-closed pin: a configured allowlist admits ONLY exact members."""
         orch = _socket_orch()
         orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
@@ -962,6 +1016,9 @@ class TestOnEventDispatch:
             await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "untrusted_bot"
+        assert _audit_rows(_real_sel, "slack.message") == [
+            ("B_EVIL", "denied", "", "untrusted_bot")
+        ]
 
     @pytest.mark.parametrize(
         "bot_id",
@@ -973,7 +1030,7 @@ class TestOnEventDispatch:
         ],
     )
     @pytest.mark.asyncio
-    async def test_listed_bot_routed_with_trusted_flag(self, bot_id):
+    async def test_listed_bot_routed_with_trusted_flag(self, bot_id, _real_sel):
         orch = _socket_orch()
         orch._cfg.slack.trusted_bot_ids = {bot_id}
         on_event = await _install_on_event(orch, ev.SeenCache())
@@ -985,10 +1042,12 @@ class TestOnEventDispatch:
             "team": "T1",
         }
         with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
-            with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            with _real_route() as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
         assert route.await_args.kwargs["from_trusted_bot"] is True
+        # The real route admitted the bot on the trusted-bot basis.
+        assert _audit_rows(_real_sel, "slack.message")[0] == (bot_id, "allowed", "trusted_bot", "")
 
     @pytest.mark.parametrize(
         ("bot_id", "self_id", "error"),
@@ -1027,7 +1086,7 @@ class TestOnEventDispatch:
         assert kw["caller"] == bot_id
 
     @pytest.mark.asyncio
-    async def test_trusted_bot_message_subtype_routed(self):
+    async def test_trusted_bot_message_subtype_routed(self, _real_sel):
         """subtype=bot_message (the standard bot-authored shape) passes for a trusted bot."""
         orch = _socket_orch()
         orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
@@ -1041,10 +1100,16 @@ class TestOnEventDispatch:
             "team": "T1",
         }
         with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
-            with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            with _real_route() as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
         assert route.await_args.kwargs["from_trusted_bot"] is True
+        assert _audit_rows(_real_sel, "slack.message")[0] == (
+            "B_TRUSTED",
+            "allowed",
+            "trusted_bot",
+            "",
+        )
 
     @pytest.mark.asyncio
     async def test_untrusted_bot_message_subtype_denied_with_audit(self, _mock_sel):
@@ -1089,16 +1154,23 @@ class TestOnEventDispatch:
         assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
-    async def test_human_message_routed_without_trusted_flag(self):
+    async def test_human_message_routed_without_trusted_flag(self, _real_sel):
         """A human-authored event never carries from_trusted_bot=True."""
         orch = _socket_orch()
         orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
         on_event = await _install_on_event(orch, ev.SeenCache())
         event = {"type": "message", "user": "U1", "channel": "C1", "text": "hi", "team": "T1"}
-        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+        with _real_route() as route:
             await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
         assert route.await_args.kwargs["from_trusted_bot"] is False
+        # Without the trusted-bot basis an unlisted human is denied as a sender.
+        assert _audit_rows(_real_sel, "slack.message")[0] == (
+            "U1",
+            "denied",
+            "",
+            "unauthorized sender",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1118,13 +1190,16 @@ class TestHandleSlash:
         assert orch._handler_tasks == set()
 
     @pytest.mark.asyncio
-    async def test_unauthorized_caller_denied(self, _mock_sel):
+    async def test_unauthorized_caller_denied(self, _mock_sel, _real_sel):
         orch = _make_orch()
         payload = {"command": "/kirocrew", "user_id": "U_BAD", "text": "status"}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
             await ev._handle_slash(orch, payload)
             await _drain(orch)
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
+        assert _audit_rows(_real_sel, "slack.slash_command") == [
+            ("U_BAD", "denied", "status", "unauthorized sender")
+        ]
 
     @pytest.mark.asyncio
     async def test_owner_not_configured_reports(self):

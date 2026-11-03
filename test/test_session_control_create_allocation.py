@@ -556,8 +556,9 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
 
     src = inspect.getsource(sc.create_session)
     publish = src.index("get_or_create_slot(")
-    assert "await asyncio.to_thread(default_project_dir" in src
-    resolve = src.index("await asyncio.to_thread(default_project_dir")
+    # Off the loop: the caller's project, else the workspace default.
+    assert "await asyncio.to_thread(\n        _inherited_project_dir," in src
+    resolve = src.index("await asyncio.to_thread(\n        _inherited_project_dir,")
     assert resolve < publish, "the project directory must be resolved before the slot is published"
     # The agent is a constructor argument, not a later assignment.
     assert "agent=agent_name" in src, "the agent must be set at construction"

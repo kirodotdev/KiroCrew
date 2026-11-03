@@ -265,13 +265,24 @@ def reset_drains() -> None:
     _ACTIVE.clear()
     _PENDING.clear()
     for task in _HELD_RETRIES.values():
-        if not task.done():
-            try:
-                task.cancel()
-            except RuntimeError:
-                # Its event loop is already closed, which ended the task with it.
-                pass
+        # A task whose event loop is closed can never run again, and cancelling it
+        # would schedule onto that closed loop.
+        if not task.done() and not task.get_loop().is_closed():
+            task.cancel()
     _HELD_RETRIES.clear()
+
+
+def _prune_held_retries_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop held retries bound to a loop other than the running one.
+
+    The registry outlives its loop (a test loop per test). A retry whose loop was
+    torn down never runs its done callback, so its entry would stay and hold that
+    channel and session's slot: every later :func:`drain_when_free` for it would
+    answer False and schedule nothing.
+    """
+    for slot, task in list(_HELD_RETRIES.items()):
+        if task.get_loop() is not loop:
+            del _HELD_RETRIES[slot]
 
 
 def _take_pending(channel_type: str, session_key: str) -> bool:
@@ -460,6 +471,7 @@ def drain_when_free(*, channel: str, session_key: str, is_busy: Callable[[str], 
     channel is skipped. Returns whether a retry was scheduled.
     """
     slot = (str(channel), str(session_key))
+    _prune_held_retries_from_other_loops(asyncio.get_running_loop())
     if slot in _HELD_RETRIES:
         return False
     from kiro_crew.shared_crew.turn_gate import independent_turn

@@ -395,6 +395,21 @@ def _write_lend(port: int, hosts: List[str], path: str, partial: bool = False) -
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="ascii") as handle:
         handle.write(" ".join([str(port), *(["*"] if partial else []), *names]) + "\n")
+    # On Windows ``os.replace`` fails with PermissionError (WinError 5 / 32) if
+    # another process (the workspace git command polling _lendable_hosts) holds
+    # the lend file open at the same instant.  A brief bounded retry lets the
+    # transient resolve without propagating the error; on POSIX the OS permits
+    # replacing an open file, so we re-raise immediately there.
+    for _attempt in range(9):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if sys.platform != "win32":
+                raise
+            import time
+
+            time.sleep(0.05)
     os.replace(tmp, path)
 
 

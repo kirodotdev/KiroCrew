@@ -142,8 +142,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.validation_parts.app_schemas import (  # noqa: F401
-        _DESIGN_TWEAK_ALLOWED_STATUSES,
-        _DESIGN_TWEAK_MAX_TEXT,
         _GIT_SHA_RE,
         _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
         _ISSUE_RADAR_CREW_EVENT_KINDS,
@@ -159,7 +157,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OMC_QUERY_RE,
         _POD_LIMIT_MAX_LEN,
         _POD_WORKTREE_MAX_LEN,
-        DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
         ISSUE_RADAR_CREW_READ_SCHEMA,
         ISSUE_RADAR_CREW_RECORD_SCHEMA,
         ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
@@ -214,7 +211,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ARTIFACT_WEBAPP_METADATA_MAX_BYTES,
         CHAT_FOLDER_CREATE_SCHEMA,
         CHAT_FOLDER_DELETE_SCHEMA,
-        CHAT_FOLDER_FILE_SELF_SCHEMA,
         CHAT_FOLDER_MOVE_SCHEMA,
         CHAT_FOLDER_MOVE_SESSION_SCHEMA,
         CHAT_FOLDER_TREE_SCHEMA,

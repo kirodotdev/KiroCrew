@@ -862,14 +862,23 @@ def load_tags(self: DashboardState) -> None:
                 # column API rejects unknown ids, so a dangling id left
                 # in place would make that column's filter permanently
                 # un-editable (the popover echoes the full list back).
-                # Same fail-open rule as the slot-restore prune: only
-                # prune when the vocabulary is authoritative.
-                if self._tags_authoritative:
-                    known = {t.get("id") for t in self._tags}
-                    for col in self._tag_boards:
-                        tag_ids = col.get("tag_ids")
-                        if isinstance(tag_ids, list):
-                            col["tag_ids"] = [t for t in tag_ids if t in known]
+                # The one vocabulary reader the slot-restore and folder
+                # prunes use decides the rule here too: an UNKNOWN
+                # vocabulary prunes nothing, and a non-string id (a
+                # hand-edit) is dropped instead of raising ``unhashable
+                # type``, which would fail the whole columns load.
+                # Imported here so this owner binds no new name the state
+                # facade would then serve.
+                from kiro_crew.dashboard.tag_vocabulary_read import (
+                    known_tag_ids,
+                    prune_tag_ids,
+                )
+
+                known = known_tag_ids(self)
+                for col in self._tag_boards:
+                    tag_ids = col.get("tag_ids")
+                    if isinstance(tag_ids, list):
+                        col["tag_ids"] = prune_tag_ids(tag_ids, known)
         self._tag_boards_load_failed = not boards_ok
     except Exception:
         logger.warning("Failed to load sidebar columns", exc_info=True)

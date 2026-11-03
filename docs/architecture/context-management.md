@@ -238,7 +238,7 @@ it adds:
 | Block | Source | When |
 |---|---|---|
 | `[RUNTIME]` refresh | trusted `runtime_source` | every follow-up; a channel turn also re-asserts the diff-block mandate |
-| `[ACTIVE MODEL]` refresh | the live provider's `served_model` | every follow-up on a goose session that reports a model, because a live `set_model` keeps the conversation and the session-start line would name the old model |
+| `[ACTIVE MODEL]` refresh | the live provider's `served_model` | every follow-up on a goose session that reports a model, because a live `set_model` keeps the conversation and the session-start line would name the old model. Inside one turn, a retry loop that switches the model before re-sending the prompt it built (`stream_and_collect`, the sub-agent ladder) sends it through `ActiveModelLine` (`llm_helpers_parts/model_fallback.py`), which rewrites the line to the model now serving. The dashboard restates it the same way after its start-of-turn restore probe and Jev routing (`_turn_dispatch_gates`); its throttle swap re-queues the user's text, so that prompt is rebuilt |
 | Channel history | `channel_history.context_for` | group-channel turns, except a thread turn that carries `[SLACK THREAD REPLIES]` |
 | `[SLACK THREAD CONTEXT]` | thread parent / metadata | Slack threads |
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
@@ -298,6 +298,9 @@ The mechanism, when on:
   `[auto-nudge cycle N]` text it delivers: `_fire_dm_nudge` hands it to the
   dispatcher's `handle_message` as `skill_trigger_text`, and the channel pipeline
   (`ChannelTurns.answer`, `ChannelTurn.skill_trigger_text`) passes it to the build.
+  A single-agent cron turn reads the job's prompt, not the `[User has seen and
+  acknowledged ALL of the following ...]` list it appends for a job with
+  acknowledged items (`slack/gateway_runtime/cron_turn.py`).
 - `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
   skill's full body lands in the prompt as `[Skill: name]` the first time it
   matches in a provider session**; a later match of the same unconfined skill in

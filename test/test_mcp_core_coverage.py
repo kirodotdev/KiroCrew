@@ -1155,6 +1155,16 @@ class TestRegisterHook:
         assert "hooks.json is corrupted" in out
         assert hook_file.read_text() == "{not json"
 
+    def test_a_bom_hooks_json_is_merged_not_reported_corrupt(self):
+        # Windows editors save "UTF-8 with BOM"; the mark is not content.
+        hook_file = mcp_core.config_dir() / "hooks.json"
+        hook_file.parent.mkdir(parents=True, exist_ok=True)
+        hook_file.write_bytes(b'\xef\xbb\xbf{"first": {"context_summary": "a"}}\r\n')
+        out = _call_tool("register_hook", {"hook_id": "second", "context_summary": "b"})
+        assert "Hook registered: second" in out
+        stored = json.loads(hook_file.read_text(encoding="utf-8"))
+        assert set(stored) == {"first", "second"}
+
     def test_acquiring_the_lock_does_not_truncate_the_lock_file(self):
         """The lock-file open must be WRITABLE but MUST NOT truncate.
 

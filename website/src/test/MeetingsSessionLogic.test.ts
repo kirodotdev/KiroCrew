@@ -439,32 +439,24 @@ describe('the configured default preset survives an async config', () => {
 })
 
 describe('task sidebar inputs track the server value', () => {
-  // `defaultValue` is read on MOUNT only. So when the extractor agent revised a
-  // task, the poll updated the props and the input kept showing the old text — and
-  // `onBlur` then wrote that stale value back, silently reverting the agent's
-  // update. Keying on the server value remounts the input when the server's copy
-  // changes, which is what makes the refresh visible.
+  // A field seeded once from `defaultValue` keeps showing the old text after the
+  // extractor agent revises the task, and its blur then writes that stale value
+  // back over the agent's update. Each task field goes through
+  // `ServerSyncedInput`, which shows the server's copy while the field is not
+  // focused and keeps the user's typing while it is. The behaviour is pinned in
+  // `TaskSidebar.typingDuringPoll.test.tsx`; this keeps a third editable field
+  // from bypassing it.
 
   const sidebar = readSource('src/apps/meetings/components/TaskSidebar.tsx')
 
-  it('keys the description input on the server value', () => {
-    expect(sidebar).toContain('key={`desc:${task.description}`}')
+  it('edits the description and the assignee through ServerSyncedInput', () => {
+    expect(sidebar).toMatch(/<ServerSyncedInput\s+value=\{task\.description\}/)
+    expect(sidebar).toMatch(/<ServerSyncedInput\s+value=\{task\.assignee\}/)
   })
 
-  it('keys the assignee input on the server value', () => {
-    expect(sidebar).toContain('key={`assignee:${task.assignee}`}')
-  })
-
-  it('every defaultValue input carries a value-derived key', () => {
+  it('seeds no task field from defaultValue', () => {
     // Structural: a THIRD editable field added later must not reintroduce this.
-    const inputs = sidebar.match(/<Input\b[\s\S]*?\/>/g) ?? []
-    const withDefault = inputs.filter(i => i.includes('defaultValue='))
-    expect(withDefault.length).toBeGreaterThan(0)
-    for (const input of withDefault) {
-      expect(input, `an input uses defaultValue without a key: ${input}`).toMatch(
-        /key=\{`[^`]*\$\{task\./,
-      )
-    }
+    expect(sidebar).not.toMatch(/defaultValue=\{task\./)
   })
 })
 
@@ -761,8 +753,9 @@ describe('the microphone waits for transcript ingress, not just for `active`', (
     expect(binding, 'status binding no longer gates on canOpenTranscription').not.toBeNull()
     // open branch: only start when not active, connecting or halted
     expect(binding![0]).toContain('if (mayOpen && !t.active && !t.connecting && !t.halted)')
-    // close branch: stop when not mayOpen and active, connecting or halted
-    expect(binding![0]).toContain('if (!mayOpen && (t.active || t.connecting || t.halted))')
+    // close branch: stop when not mayOpen and active, connecting, halted, or a
+    // start still waiting on the permission prompt
+    expect(binding![0]).toContain('if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting()))')
   })
 
   it('readiness comes from the POLLED server flag, and unknown reads as not-ready', () => {
@@ -823,7 +816,7 @@ describe('STT error frame is terminal — no reconnect loop', () => {
     // the stop() branch never fires, and buffered PCM is flushed into the notes.
 
     // Hook must export connecting
-    expect(TranscriptionSource).toContain('connecting, halted, start, stop, supported: transcriptionSupported')
+    expect(TranscriptionSource).toContain('connecting, halted, isStarting, start, stop, supported: transcriptionSupported')
     // connecting is set to true just before await readyPromise
     expect(TranscriptionSource).toContain('setConnecting(true)')
     // connecting is cleared once the stream is live, after the ready gate

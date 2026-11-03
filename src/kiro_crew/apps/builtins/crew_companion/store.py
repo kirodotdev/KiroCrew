@@ -526,7 +526,7 @@ class CompanionStore:
         The natural-language parsing happens in the renderer, which POSTs a
         concrete ``fireAt``. This deliberately does no natural-language parsing:
         duplicating 900 lines of span-alignment and day-part rules in a second
-        language would re-earn every bug they took ten review rounds to remove.
+        language would bring back every edge-case bug already fixed there.
 
         It does, however, insist the instant is READABLE. Rejecting it here and
         not in the route keeps one chokepoint for every writer, and the route

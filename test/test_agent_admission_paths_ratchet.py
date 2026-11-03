@@ -131,7 +131,7 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ("acp/kas_env_launch.py", "batch_snapshot_names"): (
         "not a kiro-cli spawn: reads the KAS MCP launcher's --agent back from a projected entry"
     ),
-    ("kas_env_shim.py", "resolve_launch"): (
+    ("kas_env_shim.py", "_resolve_snapshot"): (
         "not a kiro-cli spawn: the KAS MCP launcher declaring its own --agent option"
     ),
 }

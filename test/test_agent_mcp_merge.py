@@ -183,6 +183,207 @@ class TestSpecEnvPathIsExpandedOnEmit:
         on_disk = json.loads(kiro_mcp.read_text(encoding="utf-8"))
         assert on_disk["mcpServers"]["wrapped"]["env"]["PATH"] == "/opt/shims"
 
+    def test_a_mount_only_addition_is_mounted_without_a_grant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert config["mcpServers"]["approved"]["command"] == binary
+        assert "@approved" in config["tools"]
+        assert "@approved" not in config.get("allowedTools", [])
+
+    def test_undoing_a_mount_only_addition_unmounts_it_on_the_next_rebuild(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """kirocrew.json is rebuilt on top of itself, so the record must be able to
+        take a server back out: the card's Undo removes the record, and the next
+        rebuild removes the entry and its refs."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert config["mcpServers"]["approved"][tma.MERGED_MARK] is True
+        assert "@approved" in config["tools"]
+
+        assert tma.remove_addition("kirocrew", "approved", card_id="card-1")
+        config = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert "approved" not in config["mcpServers"]
+        assert "@approved" not in config["tools"]
+        assert "@approved" not in config.get("allowedTools", [])
+
+    def test_an_undone_addition_the_mcp_page_now_carries_stays(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Once the MCP page holds the same name, the page owns it: the Undo of the
+        card removes the record, and the page's server stays mounted."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        cfg_dir = _bundled_defaults(tmp_path)
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert tma.remove_addition("kirocrew", "approved", card_id="card-1")
+        config = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"approved": {"command": binary}}
+        )
+        assert "approved" in config["mcpServers"]
+        assert tma.MERGED_MARK not in config["mcpServers"]["approved"]
+        assert "@approved" in config["tools"]
+
+    def test_a_hand_planted_stamp_only_removes_its_entry(self, tmp_path: Path, monkeypatch) -> None:
+        """The stamp can make a rebuild remove an entry, never add or grant one."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        spec = {
+            "mcpServers": {"planted": {"command": "/bin/x", tma.MERGED_MARK: True}},
+            "tools": ["@planted"],
+            "allowedTools": ["@planted", "@planted/run"],
+        }
+        assert tma.reconcile_default_spec(spec, frozenset()) == ([], ["planted"], frozenset())
+        # The user's per-tool grant reaches nothing without the server, and is kept.
+        assert spec == {"mcpServers": {}, "tools": [], "allowedTools": ["@planted/run"]}
+
+    def test_a_failed_undo_returns_the_server_with_its_per_tool_grant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failed Undo puts the record back; the rebuild that already ran must
+        not have destroyed the user's per-tool grant on the way."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        spec = {
+            "mcpServers": {"approved": {"command": "/bin/x", tma.MERGED_MARK: True}},
+            "tools": ["@approved"],
+            "allowedTools": ["@approved/run"],
+        }
+        tma.reconcile_default_spec(spec, frozenset())
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": "/bin/x"},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        assert tma.reconcile_default_spec(spec, frozenset()) == (
+            ["approved"],
+            [],
+            frozenset({"approved"}),
+        )
+        assert "@approved" in spec["tools"]
+        assert spec["allowedTools"] == ["@approved/run"]
+
+    def test_the_grant_pass_uses_the_record_read_the_merge_used(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """An Undo can remove the record between two reads of it in one rebuild.
+        The entry the merge kept must still be withheld its whole-server grant,
+        even when a page toggle stub gives the grant pass a source entry."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        real_read = tma.read_additions
+        reads = {"kirocrew": 0}
+
+        def read_once(template):
+            if template == "kirocrew":
+                reads["kirocrew"] += 1
+                if reads["kirocrew"] > 1:
+                    return {}
+            return real_read(template)
+
+        monkeypatch.setattr(tma, "read_additions", read_once)
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"approved": {}}
+        )
+        assert "@approved" in config["tools"]
+        assert "@approved" not in config.get("allowedTools", [])
+
+    def test_a_page_toggle_stub_does_not_keep_an_undone_addition(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A page toggle writes a stub with no launch line for a server it lists.
+        That is not the page owning the server: Undo still unmounts it, and the
+        page's grant never reaches it."""
+        from kiro_crew import template_mcp_additions as tma
+
+        home = tmp_path / "record_home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(tma, "config_dir", lambda: home)
+        binary = _make_exec(tmp_path, "approved-mcp")
+        tma.add_addition(
+            "kirocrew",
+            "approved",
+            {"command": binary},
+            approved_by="owner",
+            card_id="card-1",
+            mount_only=True,
+        )
+        cfg_dir = _bundled_defaults(tmp_path)
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        assert tma.remove_addition("kirocrew", "approved", card_id="card-1")
+        config = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers={"approved": {}}
+        )
+        assert "@approved" not in config.get("allowedTools", [])
+        assert "@approved" not in config["tools"]
+        assert not isinstance(config["mcpServers"].get("approved"), dict) or not (
+            {"command", "url"} & set(config["mcpServers"]["approved"])
+        )
+
     def test_rebuild_is_stable(self, tmp_path: Path, monkeypatch) -> None:
         """install_agent runs on every start; the emitted PATH must not grow."""
         monkeypatch.setenv("PATH", os.pathsep.join([_abs("usr", "bin"), _abs("bin")]))

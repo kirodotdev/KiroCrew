@@ -70,6 +70,12 @@ The electron-builder configuration lives in
   `rpm.depends` needs no such thing but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
+  binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
+  Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
+  dependency, which a minimal install skips, and on Ubuntu 22.04 nothing brings
+  it in. Without it the app installs but cannot start.
+  `website/electron/test/packaging.test.js` pins both entries.
 - `build.files` is an explicit per-file allowlist, not a glob: electron-builder
   packs exactly those paths into `app.asar` at the same relative location, plus
   `package.json` and the production `node_modules`. The four lifecycle facades
@@ -1621,7 +1627,12 @@ commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
 version as an available update. With the app's update switch on, it then runs
-`updateCommand` on the next quit.
+`updateCommand` on the next quit. Windows shutdown, restart and sign-out end the
+app without a quit, so on Windows the app shows a "Kiro Crew update ready"
+notice at session end instead, telling the user to quit from the tray to
+install. It never runs `updateCommand` then: Windows gives the app a few seconds,
+and an apply cut short can leave a half-installed app. The notice appears only
+while the update switch is still on, and not once an install has started.
 
 **A package manager's own update pause holds only if the check command honours
 it**: on this managed lane while the app's update switch is on, and on the

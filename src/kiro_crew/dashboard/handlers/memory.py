@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import _facade_mirror, memory_schema
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -624,7 +625,10 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                     {"error": "history_max_days must be an integer"}, status=400
                 )
         if "migrated" in body:
-            updates["migrated"] = bool(body["migrated"])
+            # A spelled "false"/"0"/"no"/"off" means False; any other value
+            # keeps the truthiness it has always been saved with.
+            raw_migrated = body["migrated"]
+            updates["migrated"] = _coerce_bool(raw_migrated, bool(raw_migrated))
 
         def _apply(data: dict) -> dict | None:
             # Nothing recognised in the body: skip the write rather than reach

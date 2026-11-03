@@ -986,9 +986,9 @@ class TestOperatorOAuthEndpointExtension:
         )
 
     @pytest.fixture(autouse=True)
-    # flake-ok: pre-existing class autouse reset of the OAuth audit memo moved verbatim; tracked for a de-flake pass
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse reset moved verbatim; no test in this class calls monkeypatch.undo()
-    def _isolated_extension_state(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    def _isolated_extension_state(
+        self, _floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Path:
         """Fresh home + fresh process-global audit/memo state for EVERY test.
 
         The dedupe set and the file memo are process-global by design; without
@@ -997,9 +997,9 @@ class TestOperatorOAuthEndpointExtension:
         """
         from kiro_crew import security
 
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        monkeypatch.setattr(security, "_OAUTH_EXTENSION_AUDITED", set())
-        monkeypatch.setattr(security, "_OAUTH_EXTENSION_MEMO", {})
+        _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _floor_monkeypatch.setattr(security, "_OAUTH_EXTENSION_AUDITED", set())
+        _floor_monkeypatch.setattr(security, "_OAUTH_EXTENSION_MEMO", {})
         return tmp_path
 
     @pytest.fixture()

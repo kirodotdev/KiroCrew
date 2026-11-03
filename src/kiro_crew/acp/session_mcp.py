@@ -86,6 +86,8 @@ from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
+from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
+from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
     _UNREADABLE_CHURN,
@@ -700,39 +702,6 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
 
 
-def _crewmate_worker_spec(
-    agent: str | None,
-    spec: dict[str, Any] | None,
-    session_key: str,
-    *,
-    tool_limits_honoured: bool = False,
-) -> dict[str, Any] | None:
-    """*spec*, or for a crewmate's worker session the worker spec it runs on.
-
-    The on-disk ``kirocrew-mate-worker`` is the base every crewmate's worker shares;
-    the session's own worker is that base plus its crewmate's file
-    (``mate_worker.worker_session_spec``, read from the session's execution record,
-    the seam KAS's projection reads too). Every later read below is of THIS spec, so
-    the array, the withhold set and the per-tool restrictions are the worker's own.
-    Any other agent, or no session key, keeps *spec*. A worker session whose base
-    is absent or unreadable raises :class:`~kiro_crew.mate_worker.WorkerKitUnreadable`
-    (fail closed, as KAS's projection does) rather than run without its kit. On a
-    host that does not honour single-tool limits (*tool_limits_honoured* False, the
-    default), a crewmate file that sets any refuses with
-    ``capability_tool_limits_unsupported``, judged on the read this spec is built from.
-    """
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT, WorkerKitUnreadable, worker_session_spec
-
-    if agent != MATE_WORKER_AGENT or not session_key:
-        return spec
-    if not isinstance(spec, dict):
-        raise WorkerKitUnreadable(
-            f"worker session {session_key}: the worker base spec {MATE_WORKER_AGENT!r} is "
-            f"missing or unreadable, so the worker would run without its kit"
-        )
-    return worker_session_spec(dict(spec), session_key, refuse_tool_limits=not tool_limits_honoured)
-
-
 def _session_spec_and_snapshot_for(
     agent: str, work_dir: str | Path | None = None
 ) -> tuple[dict[str, Any] | None, Any]:
@@ -1135,6 +1104,7 @@ def session_mcp_projection(
     work_dir: str | Path | None = None,
     session_key: str = "",
     worker_tool_limits_honoured: bool = False,
+    spec_policy_honoured: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1159,7 +1129,11 @@ def session_mcp_projection(
     """
     spec, snapshot = _session_spec_and_snapshot_for(agent, work_dir) if agent else (None, None)
     spec = _crewmate_worker_spec(
-        agent, spec, session_key, tool_limits_honoured=worker_tool_limits_honoured
+        agent,
+        spec,
+        session_key,
+        tool_limits_honoured=worker_tool_limits_honoured,
+        spec_policy_honoured=spec_policy_honoured,
     )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
@@ -1456,8 +1430,11 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # at deserialization -- so neither restricts the server, and an element that
 # omits them expresses everything the declaration says. Judging them as "a key
 # the element cannot carry" would refuse the default agent for Crew's own stamp,
-# with a message telling the user to remove it.
-_NATIVE_INERT_KEYS = frozenset({mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY})
+# with a message telling the user to remove it. The session-label opt-in
+# (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does.
+_NATIVE_INERT_KEYS = frozenset(
+    {mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY, SESSION_LABEL_MARKER}
+)
 
 # How the three places a managed server is declared are named to a user. These
 # land in the message that refuses a projected search agent, so they name the

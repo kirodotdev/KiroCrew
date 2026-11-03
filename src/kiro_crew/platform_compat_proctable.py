@@ -62,12 +62,14 @@ class ProcessStartIdentity(NamedTuple):
 # with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
 # ``pti_total_user``, ``pti_total_system``, ``pti_threads_user``,
 # ``pti_threads_system`` (48 bytes) — followed by twelve int32 counters (48),
-# for a struct size of 96. Only the two total-CPU fields matter here; the total
-# size doubles as the layout check. Both are in MACH TICKS, not nanoseconds: the
-# two coincide on Intel (1 GHz timebase), but on Apple Silicon one tick is 125/3
-# ns (24 MHz), so the reader scales them by ``hw.tbfrequency``.
+# for a struct size of 96. The readers use ``pti_resident_size`` (bytes) and the
+# two total-CPU fields; the total size doubles as the layout check. The CPU
+# fields are in MACH TICKS, not nanoseconds: the two coincide on Intel (1 GHz
+# timebase), but on Apple Silicon one tick is 125/3 ns (24 MHz), so the reader
+# scales them by ``hw.tbfrequency``.
 _DARWIN_PROC_PIDTASKINFO = 4
 _DARWIN_PROC_TASKINFO_SIZE = 96
+_DARWIN_PTI_RESIDENT_SIZE_OFFSET = 8
 _DARWIN_PTI_TOTAL_USER_OFFSET = 16
 _DARWIN_PTI_TOTAL_SYSTEM_OFFSET = 24
 
@@ -347,6 +349,39 @@ def _darwin_process_cpu_nanos(pid: int) -> int | None:
             "little",
         )
         return (user + system) * 1_000_000_000 // frequency
+    except Exception:
+        return None
+
+
+def darwin_resident_bytes_for_pid(pid: int) -> int | None:
+    """macOS resident set size of *pid* in bytes; None elsewhere or unreadable.
+
+    Reads ``pti_resident_size`` from ``proc_pidinfo(PROC_PIDTASKINFO)``: the
+    figure ``ps -o rss=`` prints, in bytes rather than KiB. Same contract as
+    the CPU probe above: no entitlement for a same-uid process, nothing is
+    exec'd, and a fill size other than the exact struct size is refused. It
+    needs no ``ps``, which is setuid and cannot run when a sandbox strips the
+    elevation.
+    """
+    if not IS_MACOS:
+        return None
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_TASKINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTASKINFO,
+            0,
+            buf,
+            _DARWIN_PROC_TASKINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_TASKINFO_SIZE:
+            return None
+        off = _DARWIN_PTI_RESIDENT_SIZE_OFFSET
+        # Both x86_64 and arm64 macOS are little-endian.
+        return int.from_bytes(buf.raw[off : off + 8], "little")
     except Exception:
         return None
 

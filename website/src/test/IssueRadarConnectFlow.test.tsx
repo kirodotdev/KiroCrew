@@ -11,6 +11,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 const mockConnect = vi.fn()
 const mockRecentRepos = vi.fn()
@@ -675,5 +677,21 @@ describe('StrictMode', () => {
 
     await waitFor(() => expect(mockConnect).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(onConnected).toHaveBeenCalledWith({ owner: 'o', repo: 'alpha' }))
+  })
+})
+
+describe('repo picker counts', () => {
+  it('counts found and selected repos in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      const user = userEvent.setup()
+      renderHost()
+      await openGithub(user)
+      expect(await screen.findByText('2 gefunden')).toBeInTheDocument()
+      await user.click(screen.getAllByRole('checkbox')[0])
+      expect(await screen.findByText('1 ausgewählt')).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 })

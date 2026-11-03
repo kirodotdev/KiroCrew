@@ -187,15 +187,15 @@ class TestMigrateChannelTranscripts:
         )
         _write(orphan, {}, [_msg("user", "tab", "2026-08-01T11:00:00")])
 
-        monkeypatch.setattr(ConversationLog, "delete_session", lambda self, key: False)
+        with monkeypatch.context() as mp:
+            mp.setattr(ConversationLog, "delete_session", lambda self, key: False)
 
-        assert migrate_channel_transcripts(log) == 0
-        assert orphan.exists()
-        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["channel", "tab"]
+            assert migrate_channel_transcripts(log) == 0
+            assert orphan.exists()
+            assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["channel", "tab"]
 
         # The retry re-merges to the same content (every message already present)
         # and completes the delete, so a failed pass converges on the next start.
-        monkeypatch.undo()
         log = ConversationLog(base_dir=tmp_path)
         assert migrate_channel_transcripts(log) == 1
         assert not orphan.exists()

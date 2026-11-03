@@ -104,6 +104,35 @@ class InvalidRegionError(Exception):
     """
 
 
+class InvalidStartUrlError(Exception):
+    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take."""
+
+
+def _canonical_start_url(raw: str) -> str:
+    """The start URL in the canonical form the cloud login target also stores.
+
+    Adds a missing ``https://`` and a missing ``/start`` (SSO-OIDC refuses
+    ``https://<org>.awsapps.com`` with "Invalid start url provided"), and drops
+    the ``#/...`` fragment the portal's own address bar shows: a fragment never
+    leaves the browser, so it names the same portal. ``""`` for blank input.
+    """
+    value = (raw or "").strip().split("#", 1)[0]
+    if not value:
+        return ""
+    # Imported here: kiro_crew.cloud pulls in the sandbox and deploy modules,
+    # which the auth service has no other use for.
+    from kiro_crew.cloud.login_target import LoginTargetError, normalize_start_url
+
+    try:
+        return normalize_start_url(value)
+    except LoginTargetError as exc:
+        reason = str(exc)
+        raise InvalidStartUrlError(
+            f"{reason[:1].upper()}{reason[1:]}. Use your company's AWS access portal "
+            "URL, which looks like https://your-company.awsapps.com/start."
+        ) from exc
+
+
 # AWS region names: two-letter partition, one or more dash-joined words, numeric
 # suffix (us-east-1, us-gov-west-1, ap-southeast-3). Anchored and character-tight
 # so no URL metacharacter ('/', '@', ':', '.') can survive into the hostname.
@@ -322,7 +351,9 @@ class KasLoginService:
         from; it is removed once this login's credential has landed (see
         ``_persist_and_finish``). Raises ValueError for an unrecognized provider or
         an unknown ``replaces`` slot, MissingStartUrlError for an IdC begin without
-        a start URL, and DeviceAuthError / BuilderIdAuthError when the auth service
+        a start URL, InvalidStartUrlError for one that cannot be made canonical
+        (StartUrlRejectedError, a BuilderIdAuthError, when SSO-OIDC refuses it),
+        and DeviceAuthError / BuilderIdAuthError when the auth service
         rejects the authorization request, and SignedOutDuringLoginError when a
         sign-out landed between this call's start and its registration.
         """
@@ -349,7 +380,7 @@ class KasLoginService:
                 signout_gen=signout_gen,
             )
         if normalized == "idc":
-            cleaned = (start_url or "").strip()
+            cleaned = _canonical_start_url(start_url)
             if not cleaned:
                 raise MissingStartUrlError("idc login requires the company start URL")
             return await self._begin_oidc(

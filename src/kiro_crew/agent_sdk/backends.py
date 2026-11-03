@@ -281,6 +281,8 @@ with no row here.
        cannot be found is left out and reported as failed before the request)
    * - ``ACP_BACKENDS_ACP_CLIENT_SPAWNABLE``
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
+   * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
+     - semantic question (``SessionCapabilities.honors_remote_mcp_oauth``)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -1077,6 +1079,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
+    ACP_BACKENDS_REMOTE_MCP_OAUTH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SPEC_FILE_GRANTS,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,

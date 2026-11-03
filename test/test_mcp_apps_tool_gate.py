@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.apps import builtin_agent_tools
 from kiro_crew.apps import manager as apps_manager
 from kiro_crew.mcp_tools import apps as apps_tools
 from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
@@ -31,14 +32,19 @@ ISSUE_RADAR_TOOLS = frozenset(
 )
 DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"})
 OPS_MISSION_CONTROL_TOOLS = frozenset({"ops_mission_control_api"})
-DESIGN_TWEAK_TOOLS = frozenset({"design_tweak_update_thread"})
+#: The tools a built-in declares as data (``apps.builtin_agent_tools``), by app.
+DECLARED_TOOLS: dict[str, frozenset[str]] = {
+    app: frozenset(t.name for t in builtin_agent_tools.agent_tools() if t.app == app)
+    for app in {t.app for t in builtin_agent_tools.agent_tools()}
+}
 APP_TOOLS = {
     "issue-radar": ISSUE_RADAR_TOOLS,
     "dev-fleet": DEV_FLEET_TOOLS,
     "ops-mission-control": OPS_MISSION_CONTROL_TOOLS,
-    "design-tweak": DESIGN_TWEAK_TOOLS,
+    **DECLARED_TOOLS,
 }
-ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS | DESIGN_TWEAK_TOOLS
+ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS
+ALL_APP_TOOLS |= frozenset().union(*DECLARED_TOOLS.values())
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -187,23 +193,26 @@ def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
     The listing agrees with the call only if both read the same ``installed.json``,
     and the file is found by the app's installed name -- so a literal that drifts
     from the app's own ``APP_NAME`` would gate the listing on a record the route
-    never consults. Design Tweak's backend keeps its constant in the server module
-    (whose import starts the process plumbing), so it is pinned to the manifest
-    name the app is installed under, which is what the app reverse proxy reads.
+    never consults. A declared tool's app is pinned to the manifest name its
+    package directory is installed under, which is what the app reverse proxy reads.
     """
-    from kiro_crew.apps.builtins import design_tweak as design_tweak_pkg
+    from kiro_crew.apps import builtins
     from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
     from kiro_crew.apps.builtins.issue_radar.backend import store as issue_radar_store
     from kiro_crew.apps.builtins.ops_mission_control.backend import store as omc_store
 
-    design_tweak_manifest = json.loads(
-        (Path(design_tweak_pkg.__file__).parent / "app.json").read_text(encoding="utf-8")
-    )
+    root = Path(builtins.__file__).parent
+    manifest_names = {
+        tool.name: json.loads(
+            (root / tool.app.replace("-", "_") / "app.json").read_text(encoding="utf-8")
+        )["name"]
+        for tool in builtin_agent_tools.agent_tools()
+    }
     expected = {
         **{tool: issue_radar_store.APP_NAME for tool in ISSUE_RADAR_TOOLS},
         **{tool: agent_pod_api.APP_NAME for tool in DEV_FLEET_TOOLS},
         **{tool: omc_store.APP_NAME for tool in OPS_MISSION_CONTROL_TOOLS},
-        **{tool: design_tweak_manifest["name"] for tool in DESIGN_TWEAK_TOOLS},
+        **manifest_names,
     }
     assert apps_tools.TOOL_APPS == expected
     assert set(expected.values()) == set(APP_TOOLS)

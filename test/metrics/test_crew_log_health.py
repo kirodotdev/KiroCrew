@@ -614,7 +614,7 @@ class TestTheWritePathIsUntouched:
         half of the no-clock-read proof: it covers a branch the driven pass does
         not take, and it catches a DIRECT ``time.monotonic()`` that would bypass
         the writer's injected clock and so be invisible to
-        :meth:`test_the_batch_pass_reads_no_clock`.
+        :meth:`test_the_batch_pass_takes_no_clock_read_beyond_its_own`.
         """
         import ast
         from pathlib import Path

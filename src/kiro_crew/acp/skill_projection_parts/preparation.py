@@ -31,6 +31,7 @@ from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (
     _INHERIT_SOURCE,
     _MANAGED_SETTING,
     _PREVIOUS_INHERITANCE,
+    _UNREADABLE_SETTINGS_ERRORS,
     _inheritance_preference,
     _restore_inheritance,
     _settings,
@@ -423,14 +424,37 @@ def prepare_native_skill_projection(
             return None
         try:
             with workspace_cli_settings_lock(work_dir) as locked_settings:
-                _restore_inheritance(locked_settings, _settings(locked_settings, may_pause=False))
+                try:
+                    local = _settings(locked_settings, may_pause=False)
+                except _UNREADABLE_SETTINGS_ERRORS as exc:
+                    # Nothing proves what the file says, so the rollback is
+                    # skipped and the file left as it is.
+                    logger.warning(
+                        "skill projection: workspace settings unreadable during rollback (%s); "
+                        "leaving them unchanged",
+                        exc,
+                    )
+                    return None
+                _restore_inheritance(locked_settings, local)
         except OSError:
             logger.warning(
                 "skill projection: workspace settings lock unavailable during rollback",
                 exc_info=True,
             )
         return None
-    global_settings = _settings(kiro_home() / "settings" / "cli.json")
+    try:
+        global_settings = _settings(kiro_home() / "settings" / "cli.json")
+    except _UNREADABLE_SETTINGS_ERRORS as exc:
+        # A present but unreadable file (an absent one reads ``{}``) is not a
+        # reason to abort the spawn: fall back to the authored agent and write
+        # nothing, the answer inherits_default_resources gives for the same file.
+        # A caller that needs a view (set_mode's re-preparation)
+        # refuses on ``None`` as it does for a busy lock.
+        logger.warning(
+            "skill projection: global Kiro settings unreadable (%s); using authored agents",
+            exc,
+        )
+        return None
     # Whether kirocrew-core's per-session element can be mounted is decided
     # from the agent spec HERE and from the settings files BY THE MOUNT at each
     # session start (:func:`session_mcp.kiro_control_plane_servers`, whose
@@ -453,6 +477,9 @@ def prepare_native_skill_projection(
     # its bounded directory, so such an agent needs the same search tool a mapped
     # one gets -- see agent_discovery.inherited_skill_globs.
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
+    # Call-time: a module-level name here would be served by the facade as well.
+    from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -466,6 +493,10 @@ def prepare_native_skill_projection(
             # between the two reads; skip it, exactly as an absent spec is skipped.
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
+        if agent.scope != SCOPE_PROJECT:
+            # A user-level custom agent gets Crew's default servers in its view; the
+            # KAS projection applies the same helper (acp/default_crew_servers.py).
+            spec = with_default_crew_servers(agent.name, spec)
         view, search, refusal = project_agent_view(
             spec,
             source,
@@ -513,7 +544,17 @@ def prepare_native_skill_projection(
                 # the write below. Every in-product workspace cli.json writer uses
                 # the same sidecar lock, so no effort or Tool Search update can land
                 # between this read and commit.
-                local = _settings(locked_settings, may_pause=False)
+                try:
+                    local = _settings(locked_settings, may_pause=False)
+                except _UNREADABLE_SETTINGS_ERRORS as exc:
+                    # Same fallback as the global read above: no view is
+                    # published and the file is left byte-for-byte.
+                    logger.warning(
+                        "skill projection: workspace Kiro settings unreadable (%s); using "
+                        "authored agents",
+                        exc,
+                    )
+                    return None
                 inherited, preference_source, overlaid = _inheritance_preference(
                     local, global_settings
                 )

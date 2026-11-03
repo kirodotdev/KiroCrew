@@ -147,6 +147,8 @@ describe('ThreadPanel', () => {
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
     // A validation hint, said as muted text -- not an ErrorNotice: nothing failed.
     expect(screen.getByTestId('thread-too-long')).toHaveTextContent('too long')
+    expect(box).toHaveAttribute('aria-invalid', 'true')
+    expect(box).toHaveAttribute('aria-describedby', screen.getByTestId('thread-too-long').id)
     expect(screen.queryByTestId('thread-send-error')).toBeNull()
     fireEvent.keyDown(box, { key: 'Enter' })
     expect(mockReply).not.toHaveBeenCalled()

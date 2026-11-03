@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import pytest
 
-from kiro_crew import history
+from kiro_crew import history, history_search
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestSearchSessions:
@@ -962,13 +962,20 @@ class TestNeedlesMatchText:
 class TestRecencyBoost:
     """Bounded multiplicative recency weighting in search_sessions ranking."""
 
+    @pytest.fixture
+    def clock(self, monkeypatch) -> ManualClock:
+        # The recency read in history_search is the clock the ranking ages sessions
+        # against. Freezing it here lets _set_age backdate from the same instant.
+        manual = ManualClock()
+        manual.install(monkeypatch, history_search)
+        return manual
+
     @staticmethod
-    def _set_age(tmp_path, key: str, days: float) -> None:
-        # flake-ok: pre-existing real-clock backdating of the session file's mtime, moved verbatim; tracked for a de-flake pass
-        t = time.time() - days * 86400
+    def _set_age(tmp_path, clock: ManualClock, key: str, days: float) -> None:
+        t = clock.time() - days * 86400
         os.utime(tmp_path / f"{key}.jsonl", (t, t))
 
-    def test_recent_session_outranks_stale_equal_match(self, tmp_path):
+    def test_recent_session_outranks_stale_equal_match(self, tmp_path, clock):
         """At equal relevance the newer session must come first.
 
         Regression: scoring was pure term frequency, so a year-old session
@@ -977,14 +984,14 @@ class TestRecencyBoost:
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo deployment notes")
         log.append("fresh", "user", "apollo deployment notes")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["fresh", "stale"]
 
-    def test_stale_double_mention_loses_to_fresh_single_mention(self, tmp_path):
+    def test_stale_double_mention_loses_to_fresh_single_mention(self, tmp_path, clock):
         """The canonical complaint, verbatim: a year-old session matching TWICE
         must not outrank today's session matching once. This is what sizes
         _RECENCY_MAX_BOOST — a ceiling of 1.0 left exactly this case unfixed.
@@ -992,20 +999,20 @@ class TestRecencyBoost:
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo apollo deployment notes here")
         log.append("fresh", "user", "apollo filler deployment notes here")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["fresh", "stale"]
 
-    def test_decisively_better_old_match_still_wins(self, tmp_path):
+    def test_decisively_better_old_match_still_wins(self, tmp_path, clock):
         """The boost is bounded, so it reorders near-ties, not clear wins."""
         log = ConversationLog(base_dir=tmp_path)
         log.append("stale", "user", "apollo apollo apollo apollo apollo notes")
         log.append("fresh", "user", "apollo filler filler filler filler notes")
-        self._set_age(tmp_path, "stale", 365)
-        self._set_age(tmp_path, "fresh", 0)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
 
         results = log.search_sessions("apollo")
 

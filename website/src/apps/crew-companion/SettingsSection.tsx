@@ -6,6 +6,7 @@ import { BREAK_PRESETS, BREAK_MIN_MINS, BREAK_MAX_MINS, BREAK_DEFAULT_MINS } fro
 import { clampBreakMins } from './reminders'
 import type { ReminderConfigPatch, RemindersPayload } from './types'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 
 export default function SettingsSection({ rem, remError, onCfg, customMins, setCustomMins }: {
@@ -43,19 +44,21 @@ export default function SettingsSection({ rem, remError, onCfg, customMins, setC
       {/* How often, shown only when nudges are on — same rule as the desktop panel. */}
       {rem?.breakNudgesEnabled ? (
         <div className="cc-every">
-          <span className="cc-every-label">{i18nT('apps.crewCompanion.settings.how_often')}</span>
-          {BREAK_PRESETS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              className="cc-pill"
-              aria-pressed={mins === m}
-              aria-label={i18nT('apps.crewCompanion.settings.preset_aria', { mins: m })}
-              onClick={() => { setCustomMins(null); onCfg({ breakReminderMins: m }) }}
-            >
-              {m}
-            </button>
-          ))}
+          <span className="cc-every-label" id="cc-every-label">{i18nT('apps.crewCompanion.settings.how_often')}</span>
+          <RadioChipGroup ariaLabelledBy="cc-every-label" className="cc-every-pills">
+            {BREAK_PRESETS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="cc-pill"
+                {...radioChip(mins === m)}
+                aria-label={i18nT('apps.crewCompanion.settings.preset_aria', { mins: m })}
+                onClick={() => { setCustomMins(null); onCfg({ breakReminderMins: m }) }}
+              >
+                {m}
+              </button>
+            ))}
+          </RadioChipGroup>
           {/* Any interval, not only the presets. */}
           <input
             type="number"

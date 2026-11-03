@@ -7,6 +7,7 @@ import { Btn } from '../../components/ui'
 import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
+import { CARD_LINE_OPTIONS, isCardLineCount } from '../chat/cardLineCount'
 import { api } from '../../api/client'
 import { fmtNumber } from '../../i18n/format'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
@@ -40,6 +41,7 @@ import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
 import { useModelsAuthRequired } from '../../providers/modelListHealth'
 import ErrorNotice from '../../components/ErrorNotice'
+import { parseWholeNumber } from '../../utils/wholeNumber'
 
 export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
@@ -225,13 +227,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
   const budgetMut = useMutation({
     mutationFn: (n: number) => api.patchConfig('agent.soft_stop_budget_secs', n),
+    // The failure banner is scoped to this row's path, so a retry clears it.
+    onMutate: () => clearOwnPathError('agent.soft_stop_budget_secs'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    // A failed save keeps the typed number on screen beside the failure, so it
+    // can be retried rather than retyped. budgetSeeded stays true, so the
+    // render-phase seed does not overwrite it on a later refetch.
     onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_soft_stop_budget'))
-      // Revert the input to the last-known server value so the user isn't
-      // left looking at an unpersisted number. budgetSeeded stays true,
-      // so the render-phase seed will not clobber this on future query updates.
-      setLocalBudget(String(mcCfg?.agent?.soft_stop_budget_secs ?? SOFT_STOP_DEFAULT))
+      setPathSaveError('agent.soft_stop_budget_secs', i18nT('pages.settings.chatPanel.failed_to_save_soft_stop_budget'))
     },
   })
 
@@ -248,7 +251,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
     keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
     compactClampNotice, compactPctMut,
-  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg })
+  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ })
 
   const {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
@@ -532,6 +535,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             hint={
               effortSupported
                 ? i18nT('pages.settings.chatPanel.model_default_applies_no_override_the_model_pick')
+                // On `auto` the backend picks the model and refuses an effort
+                // level until a specific one is selected (#11546).
+                : !shownDefaultModel || shownDefaultModel === 'auto'
+                ? i18nT('pages.settings.chatPanel.effort_default_off_on_auto')
                 : i18nT('pages.settings.chatPanel.effort_default_needs_reasoning_model')
             }
             value={shownDefaultEffort}
@@ -855,9 +862,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             step={500}
             onChange={setLocalKeepChars}
             onBlur={() => {
-              const n = parseInt(localKeepChars, 10)
+              const n = parseWholeNumber(localKeepChars)
               if (
-                isNaN(n) ||
+                n === null ||
                 n < COMPLETION_KEEP_CHARS_MIN ||
                 n > COMPLETION_KEEP_CHARS_MAX
               ) {
@@ -1141,6 +1148,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             configKey="dashboard.title_refresh_every_turns"
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} description={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} description={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>

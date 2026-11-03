@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
         _build_stream_chunk,
+        _channel_pin_refusal,
         _ChatSlot,
         _deny_app_session_settings,
         _emit_agent_assignment,
@@ -672,13 +673,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         requested_memory_mode = None
 
     # Honor mode from the body when auto-creating a slot, mirroring memory_mode
-    # above: an app whose worker slot lives only in gateway memory (e.g. Design
-    # Critique) repeats mode on send(), so a slot recreated here after a
-    # gateway restart keeps its non-"" surface and stays out of the chat
-    # sidebar's surface allowlist. Only creation-allowlisted values pass;
-    # anything else is dropped so get_or_create_slot uses its default. Unlike
-    # memory_mode there is no mismatch error: get_or_create_slot ignores mode
-    # for an already-existing slot.
+    # above: an app whose worker slot lives only in gateway memory repeats mode
+    # on send(), so a slot recreated here after a gateway restart keeps its
+    # non-"" surface and stays out of the chat sidebar's surface allowlist.
+    # Only creation-allowlisted values pass; anything else is dropped so
+    # get_or_create_slot uses its default. Unlike memory_mode there is no
+    # mismatch error: get_or_create_slot ignores mode for an already-existing
+    # slot.
     requested_mode = body.get("mode")
     if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
         requested_mode = ""
@@ -988,6 +989,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 {"error": "cannot set agent on running slot"},
                 status=409,
             )
+        # A slot linked to a pinned Slack channel's thread adopts only that
+        # channel's agent, the same rule the switch route holds.
+        pinned = _channel_pin_refusal(slot, agent, getattr(slot, "agent_kind", "") or "")
+        if pinned is not None:
+            return pinned
         slot.agent = agent
         _emit_agent_assignment(slot.key, agent)
     else:
@@ -1297,7 +1303,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # goes idle while children run). Without the hold, this message would start a
     # main turn immediately and interleave with the [Subagent completion event]
     # injections. Queue it instead (reusing the slot queue) — the queue drain
-    # releases it after the last sub-agent finishes (see chat_runner _hold_users).
+    # releases it after the last sub-agent finishes (see subagents_hold_user_messages).
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
     # An app on a session it does not own has no opt-out (`steer` is None there),
@@ -1620,7 +1626,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if may_configure and not slot._titled and not slot._title_in_flight:
             _tt = asyncio.create_task(_maybe_auto_title(state, slot))
             # Expose the handle so chat_done's chained title→refresh pass can wait
-            # for this attempt to settle (see _title_then_refresh in chat_runner).
+            # for this attempt to settle (see title_then_refresh in chat_title).
             slot._title_task = _tt
             state._background_tasks.add(_tt)
             _tt.add_done_callback(state._background_tasks.discard)

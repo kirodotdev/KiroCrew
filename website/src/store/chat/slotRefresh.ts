@@ -18,6 +18,7 @@ import {
 } from './runState'
 import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
+import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
 import { walkWindowBackTo } from './windowWalk'
 
 /** The two row kinds a person decides on and the client stamps locally: a tool
@@ -808,7 +809,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const mergedRaw = newerTail.length && !keepsAllPrior ? [...base, ...newerTail] : base
       // A queued row has no identity, so both merge branches keep one the warm
       // already re-added; collapsing once dedupes it and restores queued-last.
-      const merged = hydrateQueuedBubbles(mergedRaw, queue)
+      // A pending coordinator card lives only in this cache (see
+      // `coordinatorApprovals`), so the page cannot carry it. `boundedLen`
+      // below finds the page's last row by reference, so a kept card seated
+      // above that row still leaves the marker on it.
+      const merged = keepPendingCoordinatorApprovals(priorAll, hydrateQueuedBubbles(mergedRaw, queue))
       // Restore the preserved reasoning onto the reconciled list. A slot the
       // user switched AWAY from mid-turn holds its blocks only in this cache
       // (switchSlot.pending caches `state.messages` wholesale) and this warm is

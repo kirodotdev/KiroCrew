@@ -774,6 +774,58 @@ class TestAutoUpdateToggle:
         assert resp.status == 400
         req.app["state"].push_refresh.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("overlay", "pinned"),
+        [
+            (None, False),
+            ({"timezone": "UTC"}, False),
+            ({"auto_update": False}, True),
+            ({"auto_update": True}, True),
+        ],
+        ids=["no-overlay", "overlay-without-key", "pinned-off", "pinned-on"],
+    )
+    async def test_the_pin_is_readable_without_a_click(
+        self, monkeypatch, tmp_path, overlay, pinned
+    ):
+        """GET reports the pin so the switch can be held before its first click.
+
+        It reads the overlay alone: no update check, no config write.
+        """
+        from kiro_crew.config import loader
+
+        local = tmp_path / "config.local.json"
+        if overlay is not None:
+            local.write_text(json.dumps(overlay), encoding="utf-8")
+        monkeypatch.setattr(loader, "config_local_path", lambda: local)
+        checks: list[str] = []
+        monkeypatch.setattr(updates, "_do_update_check", lambda: checks.append("check"))
+        wrote: list[dict] = []
+        monkeypatch.setattr(
+            updates, "update_config_locked", lambda _p, *, mutate: wrote.append(mutate({}))
+        )
+
+        resp = await updates.api_update_auto_pin(MagicMock())
+
+        assert resp.status == 200
+        assert json.loads(resp.body.decode()) == {"overlay_override": pinned}
+        assert checks == []
+        assert wrote == []
+
+    def test_the_pin_read_is_routed_beside_the_write(self):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.routes import system
+
+        app = web.Application()
+        system.register(app)
+        methods = {
+            r.method
+            for r in app.router.routes()
+            if r.resource and r.resource.canonical == "/api/update/auto"
+        }
+        assert {"GET", "POST"} <= methods
+
     @pytest.mark.parametrize(
         "raw",
         [b"{not json", '{"timezone": "Europe/Z\u00fcrich"}'.encode("cp1252"), b"[]"],

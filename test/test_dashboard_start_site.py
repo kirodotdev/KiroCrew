@@ -309,17 +309,17 @@ async def test_boot_retry_releases_the_listener_without_shutting_the_app_down(
     loop = asyncio.get_running_loop()
     loop.call_later(0.4, occupier.close)
 
-    monkeypatch.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
     try:
-        await _start_site(site, port, retries=40, delay=0.1, reclaim=_no_reclaim())
-        assert len(runner.sites) == 1
-        assert fired == []
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://127.0.0.1:{port}/") as resp:
-                assert resp.status == 200
+        with monkeypatch.context() as mp:
+            mp.setattr(web.TCPSite, "stop", _forbidden_stop, raising=False)
+            await _start_site(site, port, retries=40, delay=0.1, reclaim=_no_reclaim())
+            assert len(runner.sites) == 1
+            assert fired == []
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                    assert resp.status == 200
     finally:
         # Undone before cleanup: runner.cleanup() legitimately stops the sites.
-        monkeypatch.undo()
         await runner.cleanup()
         try:
             occupier.close()

@@ -101,7 +101,7 @@ def _deferred(module_name: str, handler_name: str) -> Callable:
 def _deferred_work_ledger(handler_name: str) -> Callable:
     """Bind a work-ledger route without importing the subsystem at boot.
 
-    Same shape and same reason as :func:`_deferred_session_control`: the four
+    Same shape and same reason as the session-control routes :func:`_deferred` binds: the four
     handlers belong to ``kirocrew-work``, an opt-in MCP server, so they are an
     optional subsystem and a module-level import would be an eager one. Route
     registration itself is allowed at boot; only the import moves to first request,

@@ -344,18 +344,36 @@ class TestTheWriterAndTheSweepShareOneGate:
     def test_setting_the_count_waits_for_the_gate(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         finished = threading.Event()
+        at_gate = threading.Event()
+        real_gate = backup._RETENTION_GATE
+
+        class _ArrivalGate:
+            """The real gate, reporting when the setter starts to wait for it."""
+
+            def __enter__(self) -> bool:
+                at_gate.set()
+                return real_gate.__enter__()
+
+            def __exit__(self, *exc: object) -> None:
+                real_gate.__exit__(*exc)
 
         def write():
             backup.set_retention_keep(ACCOUNT, 3)
             finished.set()
 
-        with backup._RETENTION_GATE:
+        with real_gate:
+            # The setter reads the gate name when it runs, so this stand-in sees it
+            # arrive; the test holds the real gate underneath. The facade writes the
+            # stand-in into every module that holds the name.
+            monkeypatch.setattr(backup, "_RETENTION_GATE", _ArrivalGate())
             worker = threading.Thread(target=write, daemon=True)
             worker.start()
+            # Positive signal first: the writer is at the gate while it is held. Only
+            # then is the absence of its finish meaningful.
+            assert at_gate.wait(timeout=30), "the writer never reached the retention gate"
             # Held: the writer must be parked, not racing ahead of a sweep that has
-            # already checked the count and is about to call S3.
-            # flake-ok: pre-existing 0.5 s window on the absent finish while the gate is held, moved verbatim; tracked for a de-flake pass
-            assert not finished.wait(timeout=0.5)
+            # already checked the count and is about to call S3. The window is kept.
+            assert not finished.wait(timeout=0.5), "the writer finished while the gate was held"
         # Released: it proceeds, so the wait above was the lock and not a dead thread.
         assert finished.wait(timeout=5)
         worker.join(timeout=5)

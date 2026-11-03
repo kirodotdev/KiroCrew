@@ -48,6 +48,7 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     _XATTR_UNSUPPORTED_ERRNOS,
     _is_access_control_xattr,
     _should_carry_xattr,
+    read_bytes_with_retry,
 )
 from kiro_crew.config import paths as _config_paths
 
@@ -104,6 +105,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _rule_sensitive_bash,
     _rule_sensitive_path,
     _spec_builtin_names,
+    _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
@@ -744,7 +746,7 @@ class HookManager:
                 if not verdict.tier:
                     verdict.tier = tier.name
                 return verdict
-        return ToolHookResult.allow()
+        return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
     def on_tool_call(

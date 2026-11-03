@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         ScriptHookStore,
         _global_script_hook_store,
         logger,
+        read_bytes_with_retry,
         webhooks,
     )
 
@@ -50,6 +51,16 @@ def persisted_hook_store() -> ScriptHookStore:
     that one snapshot is both validated and loaded, so an edit landing mid-read
     cannot pair one version's shape check with another version's hooks. Blocking
     I/O: an event-loop caller runs it in a worker thread.
+
+    The read goes through :func:`kiro_crew.atomic_write.read_bytes_with_retry`,
+    the helper the other saved-state readers use: on Windows a momentary
+    share-deny hold on ``hooks.json`` (a foreign editor save, an AV or indexer
+    scan) raises ``PermissionError``, and the retry rides out that window. The
+    helper retries only ``PermissionError`` and only on Windows, so POSIX, a
+    missing file and a parse failure raise straight through, and a hold that
+    outlasts its budget raises so the gate fails closed. Both callers reach here
+    off the event loop (via ``asyncio.to_thread``), so the retry runs in a worker
+    thread and never sleeps the gateway loop.
     """
     store = get_global_hook_store()
     if store is not None:
@@ -57,8 +68,10 @@ def persisted_hook_store() -> ScriptHookStore:
     store = ScriptHookStore(load=False)
     if not store._path.exists():
         return store
+    from kiro_crew.user_json import loads_user_json
+
     with webhooks.locked(store._path):
-        data = json.loads(store._path.read_text(encoding="utf-8"))
+        data = loads_user_json(read_bytes_with_retry(store._path).decode("utf-8"))
     hooks_data = data.get("hooks", []) if isinstance(data, dict) else None
     if not isinstance(hooks_data, list):
         raise ValueError(f"{store._path} does not hold a hooks list")

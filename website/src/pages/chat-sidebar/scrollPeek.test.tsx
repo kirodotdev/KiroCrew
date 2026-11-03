@@ -86,6 +86,61 @@ describe('measureClippedTitles', () => {
     expect(got[0]).toMatchObject({ left: 20, top: 40, height: 20, width: 250, maxWidth: 1000 - 20 - 12 })
   })
 
+  it('peeks a title cut off after its last clamped line, which overflows only vertically', () => {
+    const lane = document.createElement('div')
+    stubLane(lane)
+    const mk = (scrollHeight: number, top: number, key: string, whiteSpace = '') => {
+      const row = document.createElement('div')
+      row.dataset.sessionRow = key
+      const t = document.createElement('div')
+      t.setAttribute('data-session-title', '')
+      t.textContent = `title ${key}`
+      t.style.whiteSpace = whiteSpace
+      stubTitle(t, 0, top)
+      Object.defineProperty(t, 'clientHeight', { configurable: true, value: 40 })
+      Object.defineProperty(t, 'scrollHeight', { configurable: true, value: scrollHeight })
+      row.appendChild(t)
+      lane.appendChild(row)
+    }
+    mk(60, 40, 'clamped')
+    mk(40, 80, 'fits')
+    mk(60, 120, 'one-line', 'nowrap')
+    document.body.appendChild(lane)
+    const got = measureClippedTitles(lane, 1000)
+    lane.remove()
+    expect(got.map(t => t.text)).toEqual(['title clamped'])
+    expect(got[0]).toMatchObject({ left: 20, top: 40, height: 20, maxWidth: 1000 - 20 - 12 })
+    expect(got[0].width).toBeGreaterThan(0)
+  })
+
+  it('sizes a clamped title chip to its first line, or the whole title when line-height is normal', () => {
+    const lane = document.createElement('div')
+    stubLane(lane)
+    const mk = (top: number, key: string, lineHeight: string) => {
+      const row = document.createElement('div')
+      row.dataset.sessionRow = key
+      const t = document.createElement('div')
+      t.setAttribute('data-session-title', '')
+      t.textContent = `title ${key}`
+      t.style.lineHeight = lineHeight
+      stubTitle(t, 0, top)
+      t.getBoundingClientRect = () => rect(top, top + 60, 20, 170)
+      Object.defineProperty(t, 'clientHeight', { configurable: true, value: 60 })
+      Object.defineProperty(t, 'scrollHeight', { configurable: true, value: 80 })
+      row.appendChild(t)
+      lane.appendChild(row)
+    }
+    mk(20, 'three-lines', '20px')
+    mk(100, 'normal', 'normal')
+    document.body.appendChild(lane)
+    const got = measureClippedTitles(lane, 1000)
+    lane.remove()
+    expect(got.map(t => [t.text, t.top, t.height])).toEqual([
+      ['title three-lines', 20, 20],
+      ['title normal', 100, 60],
+    ])
+  })
+
   it('skips a title behind a stuck folder header and the row under the pointer', () => {
     const lane = document.createElement('div')
     stubLane(lane)

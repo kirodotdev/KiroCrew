@@ -47,6 +47,7 @@ from test_connections_warm import (  # noqa: F401 -- autouse fixtures
 from kiro_crew.connections import mint, status, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
+from kiro_crew.dashboard import mcp_banner_dedupe
 from kiro_crew.dashboard.handlers import connections
 
 _URL = "https://consent.example/authorize?state=abc"
@@ -474,6 +475,7 @@ async def _client() -> TestClient:
 def cold_mint(monkeypatch: pytest.MonkeyPatch):
     """Record every cold-path call the handler makes, and make none of them real."""
     calls: dict[str, int] = {"reserved": 0, "spawned": 0, "disposed": 0}
+    monkeypatch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
 
     async def _reserve(slug: str):
         calls["reserved"] += 1
@@ -516,6 +518,8 @@ async def test_connect_adopts_the_preminted_url_instead_of_spawning_a_cold_mint(
     # No cold spawn, and nothing displaced the row: the URL is still there to serve.
     assert cold_mint == {"reserved": 0, "spawned": 0, "disposed": 0}
     assert _mints["notion"]["oauth_url"] == _URL
+    # Adopting is still the user's sign-in: it counts as a retry for chat banners.
+    assert list(mcp_banner_dedupe._sign_in_rounds) == ["notion"]
 
 
 @pytest.mark.asyncio
@@ -535,6 +539,7 @@ async def test_connect_falls_back_to_a_cold_mint_when_nothing_is_adoptable(
     assert body["state"] == "minting"
     assert body["token"] == "cold-token"
     assert cold_mint["reserved"] == 1 and cold_mint["spawned"] == 1
+    assert list(mcp_banner_dedupe._sign_in_rounds) == ["notion"]
 
 
 @pytest.mark.asyncio

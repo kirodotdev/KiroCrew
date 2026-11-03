@@ -17,7 +17,8 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_d
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
+``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
+``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -231,6 +232,10 @@ async def create_session(
                 pooled, agent or self._agent, session_work_dir
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            # After the token stamp, so a label element never carries the token.
+            mcp_servers = await self._session_label_elements(
+                mcp_servers, agent or self._agent, session_work_dir, session_key
+            )
     else:
         # An explicit array is the caller's own composition (a mirror's
         # projection, a test double); it is not this method's to re-key, and it
@@ -334,12 +339,16 @@ async def create_session(
     # global/workspace entry and 2.20.0 reports as the client's own (see
     # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
+    # Read BEFORE the hoist: it moves app launcher entries out of the batch, and
+    # the recorded batch then lacks the snapshots this projection wrote.
+    launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
     kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents,
         active_agent,
         mcp_servers,
         session_token=stub_token,
         managed_entries=kas_extras.managed_entries,
+        app_launches=kas_extras.app_launches,
     )
     # The host's last word on its own tool surface. A host that reads an
     # agent spec passes the list straight back; one that has nothing else
@@ -459,6 +468,7 @@ async def create_session(
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
             request_identity=request_identity,
+            launch_snapshots=launch_snapshots,
         )
         if collector is None:
             permit.release()
@@ -494,6 +504,7 @@ async def create_session(
         member_dispatch_mounted=member_mounted,
         request_sent_at=request_sent_at,
         request_identity=request_identity,
+        launch_snapshots=launch_snapshots,
     )
 
 
@@ -523,6 +534,7 @@ def _collect_late_start(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    launch_snapshots: list[str] | None = None,
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -610,6 +622,7 @@ def _collect_late_start(
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
                 request_identity=request_identity,
+                launch_snapshots=launch_snapshots,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -674,6 +687,7 @@ async def _finish_create_session(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    launch_snapshots: list[str] | None = None,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -721,9 +735,12 @@ async def _finish_create_session(
     # registered one; a host that took its agent at spawn time records nothing.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
     # The snapshot names this projection wrote, for shutdown. session/new hoists
-    # only managed servers, which never start through the launcher, so the batch
-    # still names every launcher entry here.
-    handle.kas_launch_snapshots.extend(kas_env_launch.batch_snapshot_names(kas_agents))
+    # builtin app servers, which do start through the launcher, so the names are
+    # read from the batch before that hoist (``create_session``); a caller that
+    # passes none falls back to the batch as registered.
+    if launch_snapshots is None:
+        launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+    handle.kas_launch_snapshots.extend(launch_snapshots)
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 

@@ -370,8 +370,10 @@ function DiscoverPageBody() {
               worklist, whose update map derives from the same registry rows. */}
           <IconButton
             {...uiLocation('apps.refresh-store')}
-            aria-label={i18nT('pages.appsPage.refresh_store')}
-            title={i18nT('pages.appsPage.refresh_store')}
+            // Disabled while a refresh runs, so the name carries the reason: a
+            // disabled "Refresh the store" reads as unavailable, not busy.
+            aria-label={refreshing ? i18nT('pages.appsPage.refreshing_store') : i18nT('pages.appsPage.refresh_store')}
+            title={refreshing ? i18nT('pages.appsPage.refreshing_store') : i18nT('pages.appsPage.refresh_store')}
             onClick={handleRefresh}
             disabled={refreshing}
           >

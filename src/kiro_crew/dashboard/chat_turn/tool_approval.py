@@ -632,6 +632,13 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             # fragments, paths, or credentials.
             _refusal_reasons.append((_deny_title, _deny_msg))
             return _Flow.CONTINUE
+        if tool_result.action == TOOL_ALLOW and tool_result.reason:
+            # The gate's note on why this call asks (an allowedCommands
+            # entry kept off by shell composition). Fixed gate text, shown
+            # on the card like the other declined-grant notices.
+            _declined_grant_notices.setdefault(
+                "ask_note", f"🛡 Auto-approve not applied — {tool_result.reason}"
+            )
         if _child_low_fidelity:
             # Backend-subagent origin whose tool_call frames never
             # reached us (cache miss): command bytes are absent, so

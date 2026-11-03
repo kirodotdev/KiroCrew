@@ -112,6 +112,10 @@ class GateFacts:
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
         self.trust_reads = trust_reads
+        #: Why this call will ask when no row decides it, for the person who
+        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
+        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
     def _once(self, key: str, compute: Callable[[], Any]) -> Any:
@@ -1164,10 +1168,10 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host, holding none of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`, that one of ``spec_granted_commands``
+    command recovered by the host and plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`), that one of ``spec_granted_commands``
     matches whole, as kiro-cli anchors each entry at both ends. Each entry is read
-    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the subset
+    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
     """
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
@@ -1175,20 +1179,29 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     return _command_matches_any(call.command, call.spec_granted_commands)
 
 
+def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
+    """Whether a shell call is kept from *patterns* only by its shell composition
+    (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
+    explains a prompt or a refusal; it never grants."""
+    if not patterns or "execute_bash" not in names or not call.is_shell:
+        return False
+    from kiro_crew.platform import allowed_commands
+
+    return allowed_commands.composition_blocks_match(tuple(patterns), call.command)
+
+
 def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
-    """Whether *command* is plain (no character of
-    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`) and one
-    of *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
-    it whole. ``None`` (no recovered command) matches nothing."""
+    """Whether *command* is plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no chaining, pipe,
+    redirect or substitution character anywhere, no ``( ) { }`` outside a quoted
+    argument) and one of *patterns*, each read by
+    :mod:`kiro_crew.platform.allowed_commands`, matches it whole. ``None`` (no
+    recovered command) matches nothing."""
     from kiro_crew.platform import allowed_commands
 
     if not isinstance(command, str) or not allowed_commands.plain_command(command):
         return False
-    for pattern in patterns:
-        segments = allowed_commands.parse(pattern)
-        if segments is not None and allowed_commands.matches(segments, command):
-            return True
-    return False
+    return allowed_commands.matches_any(tuple(patterns), command)
 
 
 def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
@@ -1216,6 +1229,12 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _command_matches_any(call.command, allowlist):
         return None
+    if _spec_command_composed(call, ("execute_bash",), allowlist):
+        return ToolHookResult.deny_policy(
+            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "and this command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
+            "or backticks never match. Run the script alone, or move the pipeline into the script."
+        )
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
@@ -1396,6 +1415,10 @@ def grant_spec_builtin(
         return None
     names = _spec_builtin_names(call)
     if not any(name in granted for name in names) and not _spec_command_granted(call, names):
+        if _spec_command_composed(call, names, call.spec_granted_commands):
+            from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
+
+            facts.ask_note = COMPOSITION_NOTICE
         return None
     from kiro_crew.platform.governance import may_grant_builtin_at_gate
 

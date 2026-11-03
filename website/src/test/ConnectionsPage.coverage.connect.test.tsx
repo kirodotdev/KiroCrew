@@ -121,7 +121,9 @@ describe('connecting a new provider', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
 
-    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL } }, true))
+    // The new entry requests the registry's scopes, the same list the warm path
+    // sends, so the cold mint does not fall back to the provider's default grant.
+    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL, scopes: ['default'] } }, true))
     expect(mcpProbe).toHaveBeenCalled()
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
     // jsdom grants no window, so `window.open` returns null and this click lands

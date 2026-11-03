@@ -26,7 +26,7 @@ const SAVE_PRESET = i18nT('apps.mochi.color.save_preset')
 const CANCEL = i18nT('apps.mochi.editor.cancel')
 const NAME = i18nT('apps.mochi.color.prompt_name')
 
-const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
+const nextFrame = () => act(async () => { await new Promise(r => setTimeout(r, 0)) })
 const nameField = () => screen.queryByPlaceholderText(NAME)
 // While the field is open the confirm button shares the trigger's name, so the
 // trigger is the only match once the field has closed.

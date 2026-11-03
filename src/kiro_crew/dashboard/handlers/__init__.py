@@ -646,6 +646,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_arm,
     api_update_arm_status,
     api_update_auto,
+    api_update_auto_pin,
     api_update_cancel,
     api_update_channel,
     api_update_check,
@@ -681,7 +682,7 @@ from kiro_crew.dashboard.theme_validate import (  # noqa: E402, F401
 # gateway boot path — which ``no-new-work-on-gateway-boot-path`` clause 5 forbids
 # ("gate the import, not just the handler"). ``server._deferred_work_ledger`` binds
 # the routes at boot and imports the module on the first request instead, exactly as
-# ``_deferred_session_control`` does for the feature-flagged session-control routes.
+# ``_deferred`` does for the feature-flagged session-control routes.
 
 
 # ── Prompts & Skills (extracted to handlers/prompts.py) ──

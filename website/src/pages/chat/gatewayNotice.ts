@@ -100,6 +100,8 @@ const NOTICE_FAMILIES = {
   memory_preparing: { role: 'notice', card: 'notice', tone: 'info' },
   agent_switch_blocked_pinned: { role: 'notice', card: 'notice', tone: 'info' },
   agent_switch_blocked_crew_mode: { role: 'notice', card: 'notice', tone: 'info' },
+  agent_switch_blocked_channel: { role: 'notice', card: 'notice', tone: 'info' },
+  channel_message_not_run: { role: 'notice', card: 'notice', tone: 'info' },
   crew_name_undispatchable: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
@@ -168,6 +170,8 @@ const COPY_KEY = {
   memory_preparing: 'pages.chat.gatewayNotice.memory_preparing',
   agent_switch_blocked_pinned: 'pages.chat.gatewayNotice.agent_switch_blocked_pinned',
   agent_switch_blocked_crew_mode: 'pages.chat.gatewayNotice.agent_switch_blocked_crew_mode',
+  agent_switch_blocked_channel: 'pages.chat.gatewayNotice.agent_switch_blocked_channel',
+  channel_message_not_run: 'pages.chat.gatewayNotice.channel_message_not_run',
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
@@ -364,6 +368,14 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is in Crew Mode, which stays on its conductor\. The next turn restarts on the conductor\.$/u,
     token: 'agent_switch_blocked_crew_mode',
+  },
+  {
+    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is linked to a Slack channel served by (?<channel_agent>.+?)\. The next turn restarts on that agent\.$/u,
+    token: 'agent_switch_blocked_channel',
+  },
+  {
+    re: /^⚠ A message from a Slack channel was not run: this session's agent is not the agent that channel uses\.$/u,
+    token: 'channel_message_not_run',
   },
   { re: /^This thread's crew name cannot be dispatched\. Rename or recreate the Crew Member\.$/u, token: 'crew_name_undispatchable' },
   {

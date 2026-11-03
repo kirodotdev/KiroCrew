@@ -36,7 +36,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
     REFUSAL_WAKE_LOOP_ID_META_KEY,
 )
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, source_channels_of
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
@@ -1182,6 +1182,11 @@ async def _start_next_queued_turn(
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
     }
+    # Every channel a consumed entry was typed in, so admission checks the batch
+    # against each one's configured agent. Set only when an entry carries one.
+    _source_channels = tuple(sorted({ch for item in consumed for ch in source_channels_of(item)}))
+    if _source_channels:
+        _run_kwargs["_directive_source_channels"] = _source_channels
     if any(responsive_chat.priority_entry(item) for item in consumed):
         _run_kwargs["_responsive_human"] = True
         _run_kwargs["_responsive_protected"] = any(

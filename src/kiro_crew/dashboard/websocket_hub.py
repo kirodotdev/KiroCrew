@@ -1043,7 +1043,7 @@ class WebSocketHub:
 
             # last_seqs() iterates and parses every uncached member log on first
             # dashboard connect -- synchronous file I/O that would stall the serving
-            # loop. Offload it, matching the sibling _handle_eventlog_frame read.
+            # loop. Offload it, matching the sibling _replay_suppressed_projections read.
             last_seqs = await asyncio.to_thread(get_service().last_seqs)
         except Exception:
             self._log.debug("members_subscribed: last_seqs read failed", exc_info=True)

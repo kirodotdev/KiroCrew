@@ -236,6 +236,16 @@ _FACADE_DEF_HOMES: dict[str, tuple[str, ...]] = {
 }
 _FACADE_DEF_HOME = {name: stem for stem, names in _FACADE_DEF_HOMES.items() for name in names}
 
+#: The only imports a data module may bind beside its values: the readers of what a
+#: shipped built-in app declares (its agent tools and its host grants), each folded
+#: into a value at import.
+_DATA_MODULE_SOURCES: dict[str, tuple[str, ...]] = {
+    "kiro_crew.dashboard.server_internal_paths": (
+        "_builtin_agent_tool_paths",
+        "_builtin_strict_internal_paths",
+    ),
+}
+
 #: The pure-data modules beside the server, by dotted name, and every name each binds.
 #: The server imports all of them and nothing else imports either module, so the
 #: server's binding is the one its owners read and the one a test rebinds.
@@ -382,6 +392,11 @@ _LAZY_IMPORTS = {
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
+    "kiro_crew.apps.builtin_adoption": (
+        "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
+    ),
+    "kiro_crew.apps.builtins": "BUILTIN_NAMES",
+    "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
     "kiro_crew.apps.event_bus": "build_broadcast_fn",
@@ -427,6 +442,7 @@ _LAZY_IMPORTS = {
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
+    "kiro_crew.dashboard.routes.system": "RELEASED_BUILTIN_PACKAGES",
     "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
@@ -474,7 +490,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 117
+    assert len(expected) == 123
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -602,7 +618,7 @@ def test_a_data_module_holds_only_the_values_the_facade_rebinds(module: str) -> 
     tree = ast.parse(Path(data.__file__).read_text(encoding="utf-8"))
     code = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
     assert [type(node).__name__ for node in ast.walk(tree) if isinstance(node, code)] == []
-    assert _module_bindings(tree) == names
+    assert _module_bindings(tree) == names | set(_DATA_MODULE_SOURCES.get(module, ()))
     assert {
         o.__name__: sorted(names & set(vars(o))) for o in _owners() if names & set(vars(o))
     } == {}

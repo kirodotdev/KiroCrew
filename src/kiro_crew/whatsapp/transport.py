@@ -98,6 +98,19 @@ logger = logging.getLogger(__name__)
 #: older than ``connected_at - GRACE`` are reconnect replay, not live traffic.
 _REPLAY_GRACE_S = 60.0
 
+#: neonize encodes ``MessageInfo.Timestamp`` with Go's ``UnixMilli``
+#: (goneonize/utils/encoder.go), while ``connected_at`` is ``time.time()``
+#: seconds. A stamp at or past this is milliseconds: as seconds it would be
+#: the year 5138, and as milliseconds anything since early 1973.
+_MS_TIMESTAMP_FLOOR = 1e11
+
+
+def _event_seconds(raw: Any) -> float:
+    """An event ``Timestamp`` in seconds, whichever unit neonize sent it in."""
+    stamp = float(raw or 0)
+    return stamp / 1000.0 if stamp >= _MS_TIMESTAMP_FLOOR else stamp
+
+
 #: Distinct ``@lid`` senders whose phone JID is remembered. An alias is stable
 #: for the life of an account, so this only bounds memory against a group with
 #: churning membership; a miss costs one resolver round-trip, never a denial.
@@ -578,7 +591,7 @@ class WhatsAppTransport(MessagingTransport):
             return
 
         # 2. Reconnect-replay flood gate.
-        stamp = float(getattr(info, "Timestamp", 0) or 0)
+        stamp = _event_seconds(getattr(info, "Timestamp", 0))
         connected_at = self._client.connected_at
         if connected_at is not None and stamp and stamp < connected_at - _REPLAY_GRACE_S:
             logger.debug("whatsapp: dropping replayed history message %s", message_id)

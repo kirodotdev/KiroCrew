@@ -299,7 +299,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 # Release the per-session semaphore so the next task in
                 # this cycle (asyncio.gather'd) can acquire the SAME
                 # warm session.  Cycle-end teardown is handled by
-                # ``_recycle_heartbeat`` (called once after gather
+                # ``recycle_heartbeat`` (called once after gather
                 # completes) — see ``HeartbeatService._process_heartbeat_file``.
                 self.sessions.release(session_key)
 

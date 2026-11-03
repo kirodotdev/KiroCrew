@@ -52,6 +52,10 @@ export interface ConnectionStatus {
   /** True for a pre-registered provider whose operator has not entered a usable
    *  OAuth client; present only when true and never alongside a held grant. */
   needsClientConfig?: boolean
+  /** True for every pre-registered provider while dashboard chats run on a
+   *  backend that drops a remote MCP entry's `oauth` block (KAS today). Present
+   *  only when true. A caveat only: Connect stays, the mint runs on Kiro CLI. */
+  backendLacksOauth?: boolean
   /** Other configured MCP entries backed by the SAME OAuth grant as this provider.
    *  Present and non-empty only for a provider whose grant is present AND shared.
    *  It lets the card show, proactively, that a local disconnect/reconnect keeps

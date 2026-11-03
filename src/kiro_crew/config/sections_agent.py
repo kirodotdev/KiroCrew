@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from kiro_crew import model_registry
 from kiro_crew.acp_backends import DEFAULT_ACP_BACKEND
@@ -292,17 +293,19 @@ class AgentConfig:
         ),
     )
     kas_persist_mcp_sign_in: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "KAS: keep remote MCP sign-ins across sessions",
-            "When true, the 'kas' backend lets Kiro Crew keep a remote MCP server's "
-            "OAuth sign-in (client registration and tokens) in a dedicated encrypted "
-            "vault under the data home (kas/mcp-grants/), so new sessions, subagents "
-            "and crons reuse it until the refresh token expires or is revoked. The "
+            "When true (the default), the 'kas' backend lets Kiro Crew keep a remote "
+            "MCP server's OAuth sign-in (client registration and tokens) in a "
+            "dedicated encrypted vault under the data home (kas/mcp-grants/), so new "
+            "sessions, subagents and crons reuse it until the refresh token expires or "
+            "is revoked, as the 'kiro' backend does with its own sign-in cache. The "
             "vault is not the Secrets vault: it is not listed there and cannot be "
-            "granted to a cron, and the agent cannot read it. When false (the "
-            "default), the engine keeps each sign-in in memory and a new session "
-            "asks again.",
+            "granted to a cron, and the agent cannot read it. When false, the engine "
+            "keeps each sign-in in memory and a new session asks again. Only a JSON "
+            "true turns it on: any other stored value, or a config file that cannot "
+            "be read, keeps sign-ins in memory.",
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
@@ -583,6 +586,15 @@ class AgentConfig:
             "them defaultInstall. A name here is never installed again "
             "automatically, so an app you uninstall or disable stays that way. "
             "Remove a name to let it be installed again on the next start.",
+        ),
+    )
+    apps_builtin_adoption: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in Apps",
+            "Former built-in apps this gateway moved to their own repository. "
+            "A name here is never registered as a built-in again, so "
+            "uninstalling the app sticks. Written by the gateway; do not edit.",
         ),
     )
     apps_ui_stream_timeout_secs: int = field(

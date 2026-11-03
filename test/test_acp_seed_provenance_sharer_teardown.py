@@ -37,6 +37,26 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.testing.wait import default_timeout
+
+
+class _ArrivalLock:
+    """A lock that reports each arrival at it, then takes the real lock.
+
+    A thread that reaches ``__enter__`` is about to block on the real lock, so
+    ``arrived`` marks the moment an absence window can start.
+    """
+
+    def __init__(self, real_lock) -> None:
+        self._real_lock = real_lock
+        self.arrived = threading.Event()
+
+    def __enter__(self):
+        self.arrived.set()
+        return self._real_lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real_lock.__exit__(*exc)
 
 
 class TestSharedPermissionSurfaceTeardownAndReseed:
@@ -1052,11 +1072,21 @@ class TestSharedPermissionSurfaceTeardownAndReseed:
             result["shared"] = sibling._share_settings_seed_if_identical(path, payload)
             done.set()
 
-        with sp.SETTLE_LOCK:  # a settle transaction is mid-flight
+        real_lock = sp.SETTLE_LOCK
+        settle_lock = _ArrivalLock(real_lock)
+        with real_lock:  # a settle transaction is mid-flight
+            # The sharer reads the lock by module name when it validates, so it
+            # reaches the stand-in, which reports the arrival and then waits on
+            # the real lock this test holds.
+            monkeypatch.setattr(sp, "SETTLE_LOCK", settle_lock)
             worker = threading.Thread(target=try_share)
             worker.start()
-            # flake-ok: a 300 ms absence window while this test holds SETTLE_LOCK; moved verbatim
-            assert not done.wait(0.3)  # the validation is held out of the window
+            assert settle_lock.arrived.wait(
+                timeout=default_timeout()
+            ), "the sharer never reached the settle lock"
+            assert not done.wait(
+                timeout=0.3
+            ), "the validation ran while a settle transaction held the lock"
         assert done.wait(5)
         worker.join(5)
         # The settled state still holds Crew's bytes, so the share lands.

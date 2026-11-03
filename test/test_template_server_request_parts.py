@@ -273,17 +273,27 @@ def test_a_rebuild_counts_only_when_every_spec_was_written(monkeypatch):
     assert tsr._rebuild_specs() is False
     _rebuild(monkeypatch, held=True)
     assert tsr._rebuild_specs() is False
+
+
+def test_the_default_agent_s_outcome_is_read_from_its_spec(monkeypatch):
+    """A held conductor spec says nothing about the default agent: what decides
+    is whether kirocrew.json now holds the server as a card addition."""
+    _rebuild(monkeypatch, held=True)
+    monkeypatch.setattr(tsr, "_default_spec_mounts", lambda server: False)
+    assert tsr._rebuild_required("kirocrew", "fetch", present=False) is False
+    assert tsr._rebuild_required("kirocrew", "fetch", present=True) is True
+    assert tsr._rebuild_required("kirocrew-conductor", "fetch", present=False) is True
     _rebuild(monkeypatch, raises=True)
     assert tsr._rebuild_specs() is False
 
 
 def test_only_a_conductor_needs_its_spec_rewritten(monkeypatch):
     _rebuild(monkeypatch, wrote=False)
-    assert tsr._rebuild_required("kirocrew-conductor") is True
-    assert tsr._rebuild_required("kirocrew-ledger-conductor") is True
-    assert tsr._rebuild_required("aim-installed-agent") is False
+    assert tsr._rebuild_required("kirocrew-conductor", "files", present=True) is True
+    assert tsr._rebuild_required("kirocrew-ledger-conductor", "files", present=True) is True
+    assert tsr._rebuild_required("aim-installed-agent", "files", present=True) is False
     _rebuild(monkeypatch)
-    assert tsr._rebuild_required("kirocrew-conductor") is False
+    assert tsr._rebuild_required("kirocrew-conductor", "files", present=True) is False
 
 
 def test_a_failed_reconcile_is_logged_not_raised(monkeypatch, caplog):

@@ -60,7 +60,7 @@ class TestEmbedThreads:
         # The resolver clamps to the core count, so a host with fewer cores than
         # the default answers with its own core count and the assertion would pin
         # the runner. Pinned above the default, the same way
-        # ``test_clamped_to_the_core_count`` below pins it under one.
+        # ``test_clamped_to_core_count`` below pins it under one.
         _pin_cores(monkeypatch, 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
@@ -544,3 +544,65 @@ class TestEmbedPriority:
         assert done.wait(timeout=5), "_submit_infer hung on a retired backend"
         assert out[0].error is not None
         assert "retired" in str(out[0].error)
+
+
+class TestTheRawKnobsReadTheLocalOverlay:
+    """``config.local.json`` wins over ``config.json`` for the raw ``memory`` knobs too.
+
+    The loader and Settings already report the overlay's value; the embedder must run
+    with the same one rather than the base file's.
+    """
+
+    @staticmethod
+    def _write(home: Path, name: str, memory: dict) -> None:
+        import json
+
+        (home / name).write_text(json.dumps({"memory": memory}), encoding="utf-8")
+
+    def test_an_overlay_value_wins_over_the_base(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 6, "embed_model_url": "base"})
+        self._write(
+            tmp_path,
+            "config.local.json",
+            {"embedding_threads": 2, "embedding_weight_repack": False},
+        )
+
+        memory = embeddings_settings._read_memory_config()
+
+        assert memory["embedding_threads"] == 2
+        assert memory["embedding_weight_repack"] is False
+        assert memory["embed_model_url"] == "base"  # a base key the overlay leaves alone
+
+    def test_an_overlay_alone_is_read(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.local.json", {"embedding_idle_evict_secs": 0})
+
+        assert embeddings_settings.embedding_idle_evict_secs() == 0
+
+    def test_a_non_object_overlay_section_replaces_the_base_like_the_loader(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The loader merges whole documents, so ``"memory": null`` in the overlay wins."""
+        import json
+
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 8})
+        (tmp_path / "config.local.json").write_text(json.dumps({"memory": None}), encoding="utf-8")
+
+        assert embeddings_settings._read_memory_config() == {}
+
+    def test_an_unreadable_overlay_leaves_the_base(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import embeddings_settings
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._write(tmp_path, "config.json", {"embedding_threads": 6})
+        (tmp_path / "config.local.json").write_text("{not json", encoding="utf-8")
+
+        assert embeddings_settings._read_memory_config() == {"embedding_threads": 6}

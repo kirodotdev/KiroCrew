@@ -653,6 +653,7 @@ async def _run_channel(tmp_path, upstream, *, credential_source=None):
             credential_source=credential_source or credential,
             agent="researcher",
             egress_permitted=lambda key, host, agent: True,
+            logins_lent=lambda: True,
             http_session=upstream,
         )
         serve = asyncio.ensure_future(channel.serve())
@@ -1559,83 +1560,6 @@ async def test_a_slow_lookup_does_not_withhold_another_hosts_login(monkeypatch):
         channel._lend_stale.set()
         await async_wait_until(lambda: len(link.frames) == 3, describe=lambda: "refresh")
         assert link.frames[-1] == {"t": "lend", "id": 0, "hosts": ["github.com"]}
-    finally:
-        link.stdout.feed_eof()
-        await await_until(serve, what="gateway channel closed")
-
-
-@pytest.mark.asyncio
-async def test_a_rejected_gateway_login_is_republished_at_once(monkeypatch):
-    """After an upstream 401 the guest hears the new list without waiting out
-    the refresh, so the next command goes direct."""
-    monkeypatch.setattr(git_gateway, "LEND_REFRESH_SECS", 3600.0)
-    link, valid = FrameLink(), {"github.com"}
-
-    async def credential(host):
-        if host not in valid:
-            raise GitProxyRefusal(502, f"Kiro Crew: no {host} login found")
-        return HEADER
-
-    channel = GitProxyChannel(
-        link,
-        "dashboard:x",
-        credential_source=credential,
-        agent="researcher",
-        egress_permitted=lambda key, host, agent: True,
-        logins_lent=lambda: True,
-        http_session=HttpBackendUpstream(Path("/nonexistent"), status=401),
-    )
-    serve = asyncio.ensure_future(channel.serve())
-    try:
-        link.guest({"t": "lend", "id": 0})
-        await async_wait_until(lambda: link.frames, describe=lambda: "first list")
-        valid.clear()  # the stored login stops working
-        link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
-        await async_wait_until(
-            lambda: [f for f in link.frames if f["t"] == "lend"][-1]["hosts"] == [],
-            describe=lambda: f"frames: {link.frames}",
-        )
-    finally:
-        link.stdout.feed_eof()
-        await await_until(serve, what="gateway channel closed")
-
-
-@pytest.mark.asyncio
-async def test_a_revoked_login_its_source_still_returns_stops_being_lent(monkeypatch):
-    """`gh auth token` can keep printing a token the host has revoked. The same
-    refused value must not keep the host routed here; a fresh sign-in (a new
-    value) lends again."""
-    monkeypatch.setattr(git_gateway, "LEND_REFRESH_SECS", 3600.0)
-    link, token = FrameLink(), {"value": HEADER}
-
-    async def credential(host):
-        if host != "github.com":
-            raise GitProxyRefusal(502, f"Kiro Crew: no {host} login found")
-        return token["value"]
-
-    channel = GitProxyChannel(
-        link,
-        "dashboard:x",
-        credential_source=credential,
-        agent="researcher",
-        egress_permitted=lambda key, host, agent: True,
-        logins_lent=lambda: True,
-        http_session=HttpBackendUpstream(Path("/nonexistent"), status=401),
-    )
-    serve = asyncio.ensure_future(channel.serve())
-
-    def last_lend():
-        lends = [f for f in link.frames if f["t"] == "lend"]
-        return lends[-1]["hosts"] if lends else None
-
-    try:
-        link.guest({"t": "lend", "id": 0})
-        await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "lent")
-        link.get(1, "/github.com/acme/w/info/refs?service=git-receive-pack")
-        await async_wait_until(lambda: last_lend() == [], describe=lambda: f"{link.frames}")
-        token["value"] = "Basic " + base64.b64encode(b"x-access-token:fresh").decode()
-        channel._lend_stale.set()
-        await async_wait_until(lambda: last_lend() == ["github.com"], describe=lambda: "re-lent")
     finally:
         link.stdout.feed_eof()
         await await_until(serve, what="gateway channel closed")

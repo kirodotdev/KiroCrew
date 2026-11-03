@@ -132,7 +132,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_emit_mcp_oauth_request",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '') -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '', session_id: 'str' = '') -> 'None'",
         ),
         (
             "_supersede_open_mcp_oauth_banners",

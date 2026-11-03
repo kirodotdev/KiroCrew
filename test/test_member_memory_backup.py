@@ -314,6 +314,28 @@ def test_checksum_corruption_is_refused_without_changing_live_data(env):
     assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
 
 
+def test_a_damaged_compressed_entry_is_refused_as_invalid(env):
+    """A corrupt deflate stream fails while the entry is read, as zlib.error, not BadZipFile."""
+    backup = memory_backup.backup_store(env.paths["alice"])
+    raw = bytearray(backup.read_bytes())
+    with zipfile.ZipFile(backup) as bundle:
+        info = max(bundle.infolist(), key=lambda entry: entry.compress_size)
+    assert info.compress_type == zipfile.ZIP_DEFLATED
+    header = info.header_offset
+    name_len = int.from_bytes(raw[header + 26 : header + 28], "little")
+    extra_len = int.from_bytes(raw[header + 28 : header + 30], "little")
+    start = header + 30 + name_len + extra_len
+    for i in range(start, start + min(info.compress_size, 256)):
+        raw[i] ^= 0xFF
+    bad = backup.parent / "deflate.zip"
+    bad.write_bytes(bytes(raw))
+
+    with pytest.raises(ValueError, match="invalid"):
+        memory_backup.restore_from_backup(bad, "member-alice")
+    assert not (backup.parent / member_backup.PENDING).exists()
+    assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
+
+
 def test_archive_symlink_is_refused(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     bad = backup.parent / "symlink.zip"

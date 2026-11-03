@@ -89,15 +89,8 @@ def test_materialize_queued_diff_apply_runs_no_planted_program(tmp_path, monkeyp
 def test_driver_winner_apply_runs_no_planted_program(tmp_path, extra):
     clone, marker, patch = _poisoned_clone(tmp_path)
 
-    done = subprocess.run(
-        driver_commit._apply_argv(clone, extra),
-        input=patch,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-    )
-    assert done.returncode == 0, done.stderr
+    rc, err = driver_commit._git_apply(clone, extra, patch)
+    assert rc == 0, err
     assert (clone / "a.txt").read_text() == "two\n"
     assert not marker.exists(), marker.read_text()
 

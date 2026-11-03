@@ -55,7 +55,7 @@ _AWS_KEY_BODY = "A2B3C4D5E6F7G8H9"  # 16 of [A-Z0-9], per AWS_KEY_ID_BODY
 _AWS_KEY_SAMPLES = tuple(prefix + _AWS_KEY_BODY for prefix in _cred.AWS_KEY_ID_PREFIXES.split("|"))
 
 #: A destination only the URL scanner objects to: the credential scanners clear it
-#: (probed above the assertion in ``test_the_two_scanners_are_distinguished``), so
+#: (probed above the assertion in ``test_the_two_scanners_are_distinguished_in_the_row``), so
 #: it is what separates the two scrub categories rather than doubling the first.
 _EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
 

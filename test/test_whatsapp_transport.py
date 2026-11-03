@@ -182,6 +182,21 @@ class TestGauntlet:
         )
         assert harness.dispatched == []
 
+    async def test_replayed_history_in_neonize_milliseconds_is_dropped(self, harness):
+        # neonize sends MessageInfo.Timestamp as UnixMilli; connected_at is seconds.
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_000_000_000.0)
+        )
+        assert harness.dispatched == []
+
+    async def test_recent_message_in_neonize_milliseconds_passes(self, harness):
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_999_970_000.0)
+        )
+        assert len(harness.dispatched) == 1
+
     async def test_recent_message_within_grace_passes(self, harness):
         harness.client.connected_at = 1_000_000.0
         await harness.transport.receive(

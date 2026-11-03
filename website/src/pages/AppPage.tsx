@@ -6,9 +6,9 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
-import AppHost from '../components/AppHost'
 import type { AppHostProps } from '../components/AppHost'
 import ErrorNotice from '../components/ErrorNotice'
+import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn } from '../components/ui'
 
 import { i18nT } from '../i18n/t'
@@ -84,9 +84,5 @@ export default function AppPage() {
     )
   }
 
-  // AppHost internally guards a null `app` (renders "not found"); its prop type
-  // is non-null, so cast the nullable state through — behavior is unchanged.
-  // Routed pages use the same dashboard-page identity as the core API client,
-  // not whichever chat happens to be selected elsewhere in the dashboard.
-  return <AppHost app={app as AppData} sessionKey="dashboard:ui" requestedName={name} />
+  return <InstalledAppSurface app={app} requestedName={name} />
 }

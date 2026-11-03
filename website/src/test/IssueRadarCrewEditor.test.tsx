@@ -414,15 +414,15 @@ describe('CrewEditor — face', () => {
 
   it('starts on the seed-derived face', async () => {
     await openCreate()
-    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-checked', 'true')
   })
 
   it('pinning a variant overrides the seed default and is what gets submitted', async () => {
     await openCreate()
     fireEvent.click(screen.getByTestId(`crew-face-${pinned}`))
 
-    expect(screen.getByTestId(`crew-face-${pinned}`)).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId(`crew-face-${pinned}`)).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-checked', 'false')
 
     fireEvent.click(submitBtn())
     await waitFor(() => expect(mockApi.createCrew).toHaveBeenCalledTimes(1))
@@ -435,7 +435,7 @@ describe('CrewEditor — face', () => {
     fireEvent.click(screen.getByTestId(`crew-face-${pinned}`))
     fireEvent.click(screen.getByTestId(`crew-face-${pinned}`))
 
-    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId(`crew-face-${derived}`)).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(submitBtn())
     await waitFor(() => expect(mockApi.createCrew).toHaveBeenCalledTimes(1))
     expect(mockApi.createCrew.mock.calls[0][1].avatar_variant).toBeNull()

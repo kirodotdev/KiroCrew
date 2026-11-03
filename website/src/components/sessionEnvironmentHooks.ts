@@ -87,6 +87,18 @@ export function useSlotRunsHere(slot: string | null | undefined): boolean | unde
   return undefined
 }
 
+/** The project folder relative paths in ``slot``'s transcript are joined to, or
+ *  null. Only for a chat confirmed to run on this machine: a remote chat's
+ *  project names a folder on another machine, and an unread placement is not
+ *  yet known to be local. Null keeps the backend's own resolution. */
+export function useChatProjectDir(
+  slot: { key: string; project?: string; executor?: string } | null | undefined,
+): string | null {
+  const local = !!slot && slot.executor !== 'remote'
+  const runsHere = useSlotRunsHere(local ? slot.key : null)
+  return local && runsHere === true && slot.project ? slot.project : null
+}
+
 /** Display-only remote label. Actions must use the placement hook to distinguish
  *  confirmed local from unknown. */
 export function useSlotRemoteEnvironment(slot: string | null | undefined): RemoteEnvironment | null {

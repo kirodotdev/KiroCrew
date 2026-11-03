@@ -34,7 +34,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_SURFACE_POLICY,
     STEER_NOTICE_BOUND_SECS,
 )
-from kiro_crew.deny_guidance import remediation_for
+from kiro_crew.deny_guidance import remediation_for, rule_id_for
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,12 @@ def build_refusal_steer_notice(
         return ""
     clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
+    # A catalog rule is named by its id first: the pattern alone is a regex the
+    # model has to decode, beside a tool result that says the user refused. The
+    # reason follows unchanged as the detail.
+    rule_id = rule_id_for(reason) if cause == DENY_CAUSE_POLICY else None
+    if rule_id:
+        what = f"{title}: blocked by rule {rule_id}. Detail: {reason}"
     # Class-specific remediation, for the policy cause only. The non-policy
     # causes judged nothing about the action — an invalid tool name is the
     # model's own malformed output, a hook fault is a host fault, a cascaded

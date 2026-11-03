@@ -41,6 +41,7 @@ import {
 } from '../apps/builtinRegistry'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { findReport } from '../utils/errorReport'
+import { withInstalledApps } from './installedAppsTestUtils'
 
 const dummy = () => lazy(async () => ({ default: () => null }))
 
@@ -78,6 +79,7 @@ function renderAtPath(path: string) {
         <Route path="/chat" element={<div data-testid="chat-page">Chat</div>} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: withInstalledApps() },
   )
 }
 
@@ -99,6 +101,7 @@ function renderUnderSplatAtPath(path: string) {
         <Route path="/chat" element={<div data-testid="chat-page">Chat</div>} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: withInstalledApps() },
   )
 }
 
@@ -699,6 +702,7 @@ describe('an armed route boundary does not follow the user to the next page', ()
           <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
         </Routes>
       </MemoryRouter>,
+      { wrapper: withInstalledApps() },
     )
     const first = await screen.findByTestId('zzq-subpath-page')
 

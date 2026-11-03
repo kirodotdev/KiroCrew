@@ -1190,6 +1190,30 @@ class TestRenderer:
         assert asyncio.run(_go()) == 0
 
 
+class TestLinkEmphasis:
+    """Emphasis formats a link's text, never the URL inside its href."""
+
+    def test_underscore_italic_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("[docs](https://e.com/_x_/y)")
+        assert out == '<a href="https://e.com/_x_/y">docs</a>'
+
+    def test_underscore_bold_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("[docs](https://e.com/__x__/y)")
+        assert out == '<a href="https://e.com/__x__/y">docs</a>'
+
+    def test_star_italic_in_a_url_stays_in_the_url(self) -> None:
+        out = _md_to_telegram_html("**[docs](https://e.com/*x*)**")
+        assert out == '<b><a href="https://e.com/*x*">docs</a></b>'
+
+    def test_emphasis_in_the_link_text_is_still_formatted(self) -> None:
+        out = _md_to_telegram_html("see [*new* docs](https://e.com/a_b_c) _now_")
+        assert out == 'see <a href="https://e.com/a_b_c"><i>new</i> docs</a> <i>now</i>'
+
+    def test_emphasis_around_a_link_still_wraps_it(self) -> None:
+        out = _md_to_telegram_html("_see [docs](https://e.com/a)_")
+        assert out == '<i>see <a href="https://e.com/a">docs</a></i>'
+
+
 async def _until_decider_waits(task: "asyncio.Future[bool]", key: str) -> None:
     """Wait until the decider has claimed *key* and is parked on its future.
 

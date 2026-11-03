@@ -121,7 +121,9 @@ describe('apps area locations', () => {
     const disable = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('disable')"))
     expect(disable.length).toBe(2)
     expect(disable.filter(l => l.includes("uiLocation('apps.detail.disable')")).length).toBe(1)
-    const uninstall = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('uninstall')"))
+    // Buttons only: a disabled self-managed app also offers Uninstall as an
+    // overflow menu item, which carries no marker.
+    const uninstall = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('uninstall')") && l.includes('<Btn'))
     expect(uninstall.length).toBe(2)
     expect(uninstall.filter(l => l.includes("uiLocation('apps.detail.uninstall')")).length).toBe(1)
     // Update is drawn once for self-managed apps and once for the rest.

@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         _SlackTurn,
         _thread_agents,
         await_replay_gap,
+        closed_dashboard_owner_refused,
         current_context,
         expire_slack_options,
         get_dashboard_state,
@@ -123,6 +124,18 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     _target_slot = None
     if route_pinned and target_slot_name and _dashboard_state:
         _target_slot = getattr(_dashboard_state, "_slots", {}).get(target_slot_name)
+
+    # A pinned OPTIONS answer whose asker has no live slot (a closed dashboard
+    # tab) is delivered to the asker's session: check that session's agent.
+    if (
+        route_pinned
+        and _target_slot is None
+        and turn.asker_key
+        and await closed_dashboard_owner_refused(
+            text, session_key, user_id, channel, slack, reply_ts, owner=turn.asker_key
+        )
+    ):
+        return False
 
     if await maybe_route_linked_thread(
         text,

@@ -659,9 +659,9 @@ whose stored value equals the old default, comparing type as well as value so a
 stored `0` is not read as `False`.
 
 Every registered row is listed once, in the table under *Auto-adoption* below,
-with its change and the reason it adopts or only reports. **Three** carry
-`auto_adopt` -- the agent timeout budgets and the spawn memory floor -- and every
-other row is report-only.
+with its change and the reason it adopts or only reports. **Four** carry
+`auto_adopt` -- the agent timeout budgets, the spawn memory floor and the KAS
+MCP sign-in vault -- and every other row is report-only.
 `test_the_spec_table_lists_every_registered_row` keeps that table equal to the
 registry.
 
@@ -724,6 +724,7 @@ names that test; every other report-only row gives its plain reason:
 | `agent.subagent_timeout_secs` | 1800 -> 10800, #8891 | adopts | -- |
 | `agent.chat_turn_timeout_secs` | 7200 -> 14400, #8949 | adopts | -- |
 | `agent.spawn_min_memory_gb` | 4.0 -> 2.0, #15890 | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
+| `agent.kas_persist_mcp_sign_in` | false -> true, #28630 | adopts | -- (false was the default until this change, so the only value an owner had reason to write was true; a false set back after the one-shot adoption is kept as the opt-out) |
 | `session.autocompact_pct` | 90.0 -> 70.0, #4388 | reports | `test_a_persisted_ceiling_value_is_left_alone` |
 | `dashboard.loop_stall_exit_after_secs` | 25 -> unset, #6651 | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
 | `stt.streaming` | false -> true, 0.5.0 | reports | `test_put_persists_streaming` |
@@ -1033,9 +1034,12 @@ drop an ack stored in the config document. Three properties of that file matter:
 A settings save is itself an answer, exactly as `--keep` is. When a config PATCH
 writes the old default of an `auto_adopt` row, `api_kirocrew_config_patch` calls
 `ack_explicit_write` under the config write lock and BEFORE the write (the same
-config-then-ack order), so the value is acked and the next load does not
-un-materialize the choice the operator just made. A refused ack raises `OSError`
-and aborts the write, rather than persisting a value the next load would delete.
+config-then-ack order). CLI `config set` does the same in its locked mutate
+callbacks, for both the base config and `--local` overlay, and for `--file`.
+Whole-section and file writes acknowledge each submitted dotted key, not unrelated
+values already on disk. The next load therefore does not un-materialize the choice
+the operator just made. A refused ack raises `OSError` and aborts the write, rather
+than persisting a value the next load would delete.
 Only `auto_adopt` rows are acked this way; a report-only row loses nothing on
 load and is left untouched.
 
@@ -1536,12 +1540,14 @@ keys`. Three exclusions from that warning are named in code:
 - `CONFIG_RESERVED_TOP_KEYS` in `resolution.py` (`meta`, retired keys) — stamped
   by `save()` itself or written by an older build; never parsed, never
   captured, dropped on the next save, never warned about.
-- `validation._APP_OWNED_TOP_KEYS` (`dev_fleet`) — a section a builtin app reads
-  from the file directly (`dev_fleet.repo_path`, prescribed by the Dev Fleet
-  "no checkout found" banner). Captured and round-tripped like any unknown
-  section, and NOT reported as unrecognized: the product told the operator to
-  write it. Private to the warning that is its only consumer; a second member
-  is the point at which this becomes an app-declared registration.
+- `validation._APP_OWNED_TOP_KEYS` — a section a shipped builtin app reads
+  from the file directly, declared in that app's own host grants
+  (`config_top_keys`, read once at import through `apps.builtin_host_grants`;
+  today Dev Fleet's `dev_fleet`, whose `dev_fleet.repo_path` the "no checkout
+  found" banner prescribes). The core spells no member, so the set is empty when
+  no builtin declares one. Captured and round-tripped like any unknown section,
+  and NOT reported as unrecognized: the product told the operator to write it.
+  Private to the warning that is its only consumer.
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
   writes and reads but does not model as a field. The settings UI persists it
   (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
@@ -1554,8 +1560,7 @@ keys`. Three exclusions from that warning are named in code:
   `connections/oauth_clients.py` reads back, and
   `agent_materialization/mcp_aliases.py` reads `connections.tool_aliases`.
   A separate set from `_APP_OWNED_TOP_KEYS` because the owner is core, not an
-  app: it has no manifest to declare itself through, so the "second member →
-  app-declared registration" trigger on the app-owned set does not apply to it.
+  app: it has no app to declare it through host grants.
   Both sets exempt only the shape the reader keeps — a JSON object — so a scalar
   value still warns.
 
@@ -1807,7 +1812,8 @@ reader:
     `load()` they read their field default (when jsonschema is installed).
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
-    `agent.member_dispatch`, `agent.crew_panel` or `skills.project_skills_enabled`
+    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in` or
+    `skills.project_skills_enabled`
     as `false` before validation can remove it, and resolves `stt.provider` and
     `dashboard.default_memory_mode` by the builders' rules, so those keys load as
     above.
@@ -2998,8 +3004,8 @@ file whole but the load carries `*`, the fingerprint is re-read, and a read the
 file moved under is treated as torn (previous snapshot kept, next tick reloads).
 So on a dispatched change `*` is only the loader's memory of a repaired tear,
 and the section flags — which the loader assigns only to the fail-closed
-sections `dashboard` (including `dashboard.tailscale`), `memory`, `publish` and
-`workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
+sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `memory`,
+`publish` and `workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
 non-object anywhere else before the loader could flag it) — are the ones a tear
 never produces and a save destroys the evidence of, hence the ones that stay
 sticky and keep their appliers deferred until the restart main documents for a
@@ -3261,6 +3267,7 @@ class AgentConfig:
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
+    apps_builtin_adoption: dict[str, dict] = {}  # gateway-written marker per adopted former built-in: {"state": "granting"|"adopted", "repository", "commit" (40-hex), "addedName", "setRepository", "removedLocal" (bools: what the adoption grant changed, read by its rollback)}. Keys must match execution.APP_NAME_RE, values exactly that shape, else the entry is dropped; capped at 512 (builtin_adoption_markers.coerce_adoption_markers). Read on demand (no restart mark), base UNION effective so an overlay cannot hide an entry; an "adopted" entry is never removed, which keeps an uninstalled adopted app from coming back. Not shown in Settings. See app-kit-platform.md § Former built-in adoption
     apps_ui_stream_timeout_secs: int = 30  # total transfer deadline for one response body on the unauthenticated /apps/<app>/ui/ route. Load-time clamped to [5, 600]; read per request (live), and no off switch — the route has eight descriptor permits and this deadline is what stops a client that quits reading from holding one indefinitely
     task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing, and with false (or no store) a floor miss also queues, in memory. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True

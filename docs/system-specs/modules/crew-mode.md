@@ -31,9 +31,10 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | Every conductor is Crew Mode: `conductor_agents` is the shipped conductor templates plus the configured one and the deprecated names that resolve to it; the catalog lists them as `conductor_agents` and names `crew_mode_agent`, and masks both for a non-owner | `crew_mode.conductor_agents`, `handlers/agent_catalog.py` |
 | A chat that turned Crew Mode on carries the stamp `crew_mode_agent` (the slot field, persisted with the slot's own metadata), so a root on a custom conductor absent from the config stays Crew Mode | `crew_mode.STAMP_FIELD`, `slot_persistence/metadata_codec.py` |
 | A **Crew Mode root** is a root session (nothing dispatched it) running a conductor as a template. Every session it dispatched, directly or through another, is its **crew member**: the slot list stamps `crew_mode_root: true` on the root and `crew_root: <root key>` on each member, following the persisted lineage past closed sessions, so a member whose root's tab closed after this gateway saw the root, or one reopened from History while its root is known, keeps its root. The known roots are in memory: a root still closed when the gateway starts is not remembered until it is reopened (the migration part reads closed roots from saved metadata) | `crew_mode.stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
-| A **mate thread** (slot `mode` `member`) is a root of its own kind, kept apart from Crew Mode: the same walk stamps `mate_root: <mate thread key>` and `mate_dispatched_by: <direct creator>` on each session it dispatched, directly or through another, stopping at the nearest root of either kind, and a mate thread this gateway saw holds its sessions after its tab closes. No row gains `crew_root` from it. Inert: no list or client reads the two fields yet ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), Design 1) | `crew_mode.stamp_rows`, `crew_mode.live_stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
+| The Crew panel's routes (`GET .../crew-workers`, `GET .../crew-timeline`, `POST .../crew-workers/{worker}/steer`, `POST .../crew-workers/{worker}/approve`) answer a **mate thread** as a root too: its sessions are those stamped `mate_root` for it, live, and closed ones from the session tree; a closed mate thread this gateway saw is answered from saved data like a closed Crew Mode root. The list answer for a mate carries `root_kind: "mate"`; a Crew Mode root's answer is unchanged. The gate is the same owner-only, app-token-refused gate, and a session outside the named root's own tree is refused `not_a_worker` whatever the root's kind. A steer into a mate's session is not counted as a Crew Mode steer ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), migration step 3) | `dashboard/handlers/crew_workers.py` (`_live_root`, `_closed_root_kind`, `_tree_workers`), `crew_mode.mate_workers_of` |
+| A **mate thread** (slot `mode` `member`) is a root of its own kind, kept apart from Crew Mode: the same walk stamps `mate_root: <mate thread key>` and `mate_dispatched_by: <direct creator>` on each session it dispatched, directly or through another, stopping at the nearest root of either kind, and a mate thread this gateway saw holds its sessions after its tab closes. No row gains `crew_root` from it. No list reads the two fields yet; the Crew panel's routes read them to answer a mate thread as a root (next row) ([RFC](../../request-for-change/rfc-crewmate-workers-under-the-crewmate.md), Design 1) | `crew_mode.stamp_rows`, `crew_mode.live_stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
-| A Crew Mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so, `chat_folder_file_self` is a no-op | [session-control](session-control.md) § `session_create`'s folder |
+| A Crew Mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
 
 The design and its parts are recorded in
@@ -69,7 +70,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
 | `src/kiro_crew/dashboard/handlers/agent_catalog.py` | Read-only `/api/agents/catalog` execution choices, with separate member and template namespaces, plus Crew Mode's `crew_mode_agent` and `conductor_agents` |
 | `src/kiro_crew/crew_mode.py` | Crew Mode's facts: the configured conductor (`agent.crew_mode_agent`), the one conductor set (every conductor is Crew Mode, `conductor_agents`), the stamp that marks a chat as Crew Mode, the known roots and the persisted lineage, which slot rows are Crew Mode roots and which are their workers (`stamp_rows`), and the session list's view (`list_view`) |
-| `src/kiro_crew/dashboard/handlers/crew_workers.py` | A Crew Mode root's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
+| `src/kiro_crew/dashboard/handlers/crew_workers.py` | A Crew Mode root's or a mate thread's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
 | `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
@@ -228,7 +229,16 @@ provides) and **Added to** (what the crewmate's own file adds beyond that base).
 Both list tools, MCP servers and skills, partitioned by each capability row's
 `state` (`inherited` → Comes with, `local` → Added to). An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
-op; approvals are configured in the **Approvals** section, never here. The mate's
+op. A name in the file's own `skills` list counts as stored: an add copies that
+list as written, so an entry can outlive the agent that listed it, and a
+`skills` remove drops the named entry from the list along with any catalog skill
+of that key, leaving every other entry (`mate_capabilities._drop_listed_skills`).
+The view flags every `skills` row the list names `listed`, and lists a name
+with no catalog row as a row of its own, so a capabilities card can name it.
+The card's snapshot keeps the flag, and a removal of a `listed` row has no Undo
+(`listed_skill_entry`), because a `set` writes catalog skills only and would not
+put the list entry back. Approvals are configured in the
+**Approvals** section, never here. The mate's
 **behavior directions** appear with **Remove**, which clears its single directions
 slot. **Add abilities** sits on the same page, under the bands
 (see "Adding abilities to a crewmate" below). General shows the section's name
@@ -4019,9 +4029,36 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   the merge sets `disabled: true` on the BASE's own entry -- its transport is never
   the file's -- and drops every `allowedTools` grant on that server. The KAS
   projection does not declare a muted entry (`kas_agents._project_mcp_servers`), so
-  the worker does not launch it (`test/test_mate_worker_disabled_servers.py`). Every
-  other field (`tools` for built-ins, `model`, `permissions`, `hooks`) is
-  ignored. **Per-tool limits are hidden, never a refusal:** every
+  the worker does not launch it (`test/test_mate_worker_disabled_servers.py`).
+  **`hooks`, `permissions` and `toolsSettings` are carried exactly**
+  (`mate_spec_policy.layer_policy`): each hook is added beside the base's, each
+  permission rule beside the base's rules, and a `toolsSettings` entry is copied
+  whole for a tool the base sets nothing for. **`toolsSettings` is an allowlist**
+  (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
+  `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
+  the read and write tools, and `web_fetch.blocked`, each only when KAS's
+  translation keeps every entry (`kas_tool_view.tools_settings_unenforced`).
+  Every other key or tool, in any form (`allowedPaths`, `fallbackAction`,
+  `denyByDefault`, `trusted`, `subagent.availableAgents` even when empty), is
+  refused by name. One that cannot land as written (anything outside the
+  allowlist, an entry for a tool the base sets differently or under another
+  spelling of it, a `permissions` block KAS would refuse whole, an `allow` rule
+  KAS's projection drops beside the worker's `allowedTools` list
+  (`kas_tool_view.permission_allow_derivable`), a hook past the
+  `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
+  `WorkerKitUnreadable`, so the
+  worker is refused, naming it. A host that applies none of the three
+  (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
+  that sets any (`resolve_worker_spec(refuse_spec_policy=True)`). Every other
+  field (`tools` for built-ins, `model`) is ignored. Crew fires the worker
+  session's merged spec's hooks on KAS (`spec_hooks._agent_spec` with the
+  session key, via `mate_worker.mate_service_scope_spec`), on a chat turn and on
+  a sub-agent or task-runner turn alike (`spec_hooks.provider_session_key` reads
+  the key from a shared client or a dedicated provider's `_client`). **Nothing from the
+  file reaches the conductor:** a crewmate's chat runs the stock conductor spec,
+  hooks, permissions and tool settings included. Owner decision:
+  `docs/decisions/2026-11-02-a-crewmates-worker-carries-its-template-policy.md`.
+  **Per-tool limits are hidden, never a refusal:** every
   `mcpServers.<name>.disabledTools` entry -- the base's own and the file's,
   for any server the file names, a base server included -- becomes an
   `@<name>/<tool>` entry in the merged spec's `excludedTools`
@@ -4198,9 +4235,20 @@ plus every auto-approval the add writes
 (`allowedTools` rows, from either channel) and every tool the template newly
 excludes. The apply needs the preview's `revision` (`_plan_revision`, binding
 the file and the result shown) or answers `stale_revision`. The template's
-`excludedTools` join the file's. A template with `permissions` deny/ask rules,
-`toolsSettings` or hooks the worker would not carry (`uncarried_restrictions`)
-is refused `template_restrictions_uncarried`. Other refusals: `not_a_mate_file`,
+`excludedTools` join the file's, and its `hooks`, `permissions` and
+`toolsSettings` are layered into the file (`mate_worker_kit._carry_policy`), less
+every hook, rule and tool setting the worker base already holds
+(`mate_spec_policy.without_held`: Crew's own and the user's hooks reach the
+worker through its base), and
+listed as `hooks` / `permissions` / `toolsSettings` preview rows, one per hook,
+rule or tool entry; they run on the crewmate's worker only. The add is refused,
+with a `detail` naming the field: `template_restrictions_uncarried` when one
+cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
+one tool's entry), and `template_policy_backend_unsupported` when the
+crewmate's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS. An apply that changes the file's hooks, permissions or tool settings
+reloads the crewmate's live workers onto it (`crewmate_worker_reload`, a busy
+one at its turn end), since a live KAS session keeps the batch it registered.
+Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
 `invalid_spec`. Each code reads as a localized sentence
 (`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add

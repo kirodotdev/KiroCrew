@@ -29,6 +29,8 @@ describe('crewWorkers', () => {
     [{ pending_approval: true, messages: 4 }, 'approval'],
     [{ needs_input: true, messages: 4 }, 'with_conductor'],
     [{ running: true, messages: 0 }, 'working'],
+    // An open question blocks the turn: the server reads it before `running`.
+    [{ running: true, needs_input: true, messages: 4 }, 'with_conductor'],
     // The server says done only from a closed tab or the ledger; a row has neither.
     [{ messages: 2 }, 'waiting'],
     [{ messages: 0 }, 'waiting'],
@@ -102,12 +104,16 @@ describe('crewWorkers', () => {
   })
 
   it('counts a root row\'s workers as working, waiting and needs you, zero buckets left out', () => {
-    // Mixed: a question with the conductor counts as working; done is not counted.
+    // Mixed: a question with the conductor is waiting, not running; done is not counted.
     // Needs you first: a narrow row drops the last count, never the urgent one.
     expect(crewRowCounts(['approval', 'working', 'with_conductor', 'waiting', 'done'])).toEqual([
       { bucket: 'needs_you', group: 'approval', count: 1 },
-      { bucket: 'working', group: 'working', count: 2 },
-      { bucket: 'waiting', group: 'waiting', count: 1 },
+      { bucket: 'working', group: 'working', count: 1 },
+      { bucket: 'waiting', group: 'waiting', count: 2 },
+    ])
+    // Only workers held with their conductor: nothing is running.
+    expect(crewRowCounts(['with_conductor', 'with_conductor'])).toEqual([
+      { bucket: 'waiting', group: 'waiting', count: 2 },
     ])
     expect(crewRowCounts(['waiting', 'approval', 'approval'])).toEqual([
       { bucket: 'needs_you', group: 'approval', count: 2 },

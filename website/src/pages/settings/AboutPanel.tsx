@@ -20,13 +20,14 @@ import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned,
 import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
+import { fmtSpeed } from '../../api/helpers'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
 import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtPercent } from '../../i18n/format'
 import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
@@ -34,11 +35,10 @@ import { useInstallDispatch } from '../../hooks/useInstallDispatch'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
-/** Human-readable transfer rate for the progress label. */
+/** Transfer rate for the progress label, in the active locale (`fmtSpeed`). */
 function formatRate(bps: number): string {
   if (!Number.isFinite(bps) || bps <= 0) return ''
-  const mb = bps / (1024 * 1024)
-  return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`
+  return fmtSpeed(bps / 1024)
 }
 
 /**
@@ -278,7 +278,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
         checked={gw.checked}
-        disabled={copy.disabled || gw.held}
+        disabled={copy.disabled || gw.held || gw.overlayPinned}
         onChange={gw.set}
         configKey="auto_update"
         describedBy={describedBy}
@@ -738,7 +738,7 @@ export function AboutPanel() {
           <span className="text-[12px] text-muted" data-testid="update-progress-label">
             {cardPercent === null
               ? i18nT('pages.settings.aboutPanel.downloading')
-              : `${Math.round(cardPercent)}%${updateState?.bytesPerSecond ? ` · ${formatRate(updateState.bytesPerSecond)}` : ''}`}
+              : `${fmtPercent(cardPercent / 100)}${updateState?.bytesPerSecond ? ` · ${formatRate(updateState.bytesPerSecond)}` : ''}`}
           </span>
         </>
       )}

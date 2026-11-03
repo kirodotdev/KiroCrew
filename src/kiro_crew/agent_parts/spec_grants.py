@@ -103,11 +103,9 @@ _MATE_AUTO_GRANTS = (
 #: the person arranged and would have to reconstruct by hand. Creation is otherwise
 #: recoverable clutter; mutation of what the user arranged is not.
 #:
-#: Both granted creation verbs earn half 2 from a server ceiling — without its
-#: ceiling neither verb is safe to auto-approve:
+#: The granted creation verb earns half 2 from a server ceiling — without it the
+#: verb is not safe to auto-approve:
 #:
-#: * ``chat_folder_create`` had no bound at all, so a loop grew durable on-disk
-#:   state without limit. Now ``MAX_CHAT_FOLDERS``, tested under the folder lock.
 #: * ``session_create`` had a GLOBAL ceiling (``MAX_LIVE_SLOTS``) but no
 #:   distribution: one caller could hold all 500, and every later create — the
 #:   person opening a chat tab included — got the 429. A bounded resource that one
@@ -117,22 +115,11 @@ _MATE_AUTO_GRANTS = (
 #:
 #: Every verb this server exposes, against that rule:
 #:
-#: * ``chat_folder_tree`` — READ of the caller's visible tree. GRANTED.
-#: * ``chat_folder_create`` — creates a NEW folder, and
-#:   ``_refuse_tree_shaping_if_unverifiable`` refuses an unverifiable caller and
-#:   keeps an app agent out of the person's own folders. Touches nothing that
-#:   already existed, and bounded by ``MAX_CHAT_FOLDERS``. GRANTED.
-#: * ``chat_folder_file_self`` — writes the CALLER'S OWN ``folder_id``, and only
-#:   that: the target slot is the ``dashboard:<slot>`` the verified caller key
-#:   names (``mcp_dashboard._own_chat_slot``; a linked channel/cron slot is
-#:   refused because its binding can be rebound between read and write),
-#:   there is no ``session`` argument, so ingested content cannot aim it at a
-#:   peer. The one placement it can change
-#:   is the conductor's own — the ``not the conductor's own`` clause of the
-#:   invariant is exactly what admits it. This is what lets a conductor sit
-#:   INSIDE the goal's folder beside its workers' subfolders instead of
-#:   floating at the top level; the destination path is created on the way
-#:   (mkdir -p, bounded by ``MAX_CHAT_FOLDERS`` like any create). GRANTED.
+#: * ``chat_folder_*`` — every folder verb is WITHHELD. A dispatcher does not
+#:   manage folders: Crew Mode workers and a crewmate's workers live under their
+#:   root (rfc-crewmate-workers-under-the-crewmate.md, Design 6). The verbs stay
+#:   mounted behind an approval like any ungranted tool, and ordinary agents
+#:   keep them.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
 #:   both globally (``MAX_LIVE_SLOTS``, 429 on breach) and per caller
 #:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
@@ -262,12 +249,8 @@ _MATE_AUTO_GRANTS = (
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted
 #: tool. The cost is an approval when a round files a session, seeds a child, or
 #: stops one; all three happen right after a human approved the plan, while the
-#: unattended patrol cycle needs none of them. A ``folder`` argument on
-#: ``session_create`` would remove the filing call altogether.
+#: unattended patrol cycle needs none of them.
 _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
-    "@kirocrew-dashboard/chat_folder_tree",
-    "@kirocrew-dashboard/chat_folder_create",
-    "@kirocrew-dashboard/chat_folder_file_self",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
     "@kirocrew-dashboard/session_status",
@@ -416,8 +399,8 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: DERIVED, not copied. The set is the union of the prompt's own "Your tools:"
 #: inventory and the ``goal-conductor`` skill's real call sites, filtered to
 #: the tools that actually register on ``kirocrew-core`` — the ``session_*``
-#: and ``chat_folder_*`` verbs the charter also names are
-#: ``@kirocrew-dashboard`` and are granted by the tuple above, while
+#: verbs the charter also names are ``@kirocrew-dashboard`` and are granted
+#: by the tuple above, while
 #: ``list_sessions`` is core (``mcp_tools/sessions.py``) despite sitting in the
 #: prompt's child-session paragraph. Deriving rather than reusing the sibling's
 #: thirteen is load-bearing: ``select_crew`` is absent from that tuple and is
@@ -590,21 +573,12 @@ _PIPELINE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
 #: on ``session_send``'s withholding — the fan-out changes how many sessions ingested
 #: text reaches, not whether anything bounds it.
 _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
-    "@kirocrew-dashboard/chat_folder_tree",
-    "@kirocrew-dashboard/chat_folder_create",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
     "@kirocrew-dashboard/session_status",
 )
 
 
-#: The security conductor's dashboard grants: the pipeline conductor's plus
-#: ``chat_folder_file_self``, for the same reason the goal conductor holds it
-#: (see ``_CONDUCTOR_DASHBOARD_GRANTS``): the verb writes only the caller's own
-#: placement, and this agent's procedure files itself in the audit's folder
-#: before its auditors go under ``<audit>/<agent>``. The pipeline conductor's
-#: procedure does not file itself yet, so its tuple stays as it is rather
-#: than carrying a grant nothing in its skill exercises.
-_SECURITY_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS + (
-    "@kirocrew-dashboard/chat_folder_file_self",
-)
+#: The security conductor's dashboard grants: the pipeline conductor's, with no
+#: folder verb, like every dispatcher's (see ``_CONDUCTOR_DASHBOARD_GRANTS``).
+_SECURITY_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS

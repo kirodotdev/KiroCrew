@@ -1177,6 +1177,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         KeptMcpServers,
         McpToolClient,
         McpToolError,
+        _joined_text,
         _resolve_mcp_server,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401

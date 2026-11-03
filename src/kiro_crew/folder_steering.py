@@ -734,8 +734,11 @@ def collect_folder_steering(
                 logger.debug("folder steering document unreadable: %s", key)
                 continue
             try:
+                # utf-8-sig drops one leading byte-order mark, which would
+                # otherwise hide the column-0 frontmatter fence and turn a
+                # manual document into an always-loaded one.
                 body = data.decode(
-                    "utf-8", errors="ignore" if len(data) >= _MAX_SOURCE_BYTES else "strict"
+                    "utf-8-sig", errors="ignore" if len(data) >= _MAX_SOURCE_BYTES else "strict"
                 )
             except UnicodeDecodeError:
                 logger.debug("folder steering document is not UTF-8: %s", key)

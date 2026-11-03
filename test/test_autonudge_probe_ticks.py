@@ -890,10 +890,12 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
         gate=True,
     )
     service._loops[loop.id] = loop
+    release = asyncio.Event()
 
     async def _never() -> None:
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing never-ending task body, moved verbatim; it is cancelled, never awaited as a barrier
-        await asyncio.sleep(3600)
+        # The in-flight tick stays pending until the cancel below ends it, or the
+        # cleanup releases it.
+        await release.wait()
 
     try:
         # A tick observed a wake and is now in flight toward its fire.
@@ -915,6 +917,7 @@ async def test_a_cancelled_cycle_does_not_bequeath_its_wake(tmp_path, monkeypatc
         assert loop.monitor.wakes == 0
         assert loop.monitor.followup_ticks == 0
     finally:
+        release.set()
         service.stop()
 
 

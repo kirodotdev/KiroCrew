@@ -19,6 +19,7 @@ import {
   type MeetingMeta,
   type MeetingStatus,
   type MeetingsConfig,
+  type NoteSaveOrder,
   type Task,
   type TranscriptResponse,
   type TranscriptSegment,
@@ -26,6 +27,13 @@ import {
 } from '../api'
 import { useMeetingTranscription } from './useMeetingTranscription'
 import { useNoteDraft } from './useNoteDraft'
+
+/** One id per meeting view, naming it as a note editor; only uniqueness matters. */
+function newNoteEditorId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  if (uuid) return uuid
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
 const DEDUP_WINDOW_MS = 5000
@@ -406,8 +414,23 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // exit flush report unsaved typing as safe to leave. A loaded note keeps saving.
   const noteLoadFailed = noteQuery.isError && noteQuery.data === undefined
 
+  // Every note save this view SENDS is numbered here, at send time. The
+  // tab-close save below skips the mutation's queue, so it and an autosave still on
+  // the wire are two concurrent PUTs the server may store in either order; with
+  // this pair it drops whichever is older, instead of letting it overwrite the
+  // newest text after the page is gone. Numbered at the call, not in `mutationFn`,
+  // because a queued save runs later than it was sent.
+  const noteEditorRef = useRef<string | null>(null)
+  noteEditorRef.current ??= newNoteEditorId()
+  const noteSeqRef = useRef(0)
+  const nextNoteOrder = (): NoteSaveOrder => ({
+    editor: noteEditorRef.current ?? newNoteEditorId(),
+    seq: ++noteSeqRef.current,
+  })
+
   const noteMutation = useMutation({
-    mutationFn: (content: string) => meetingsApi.saveNote(meetingId, content),
+    mutationFn: ({ content, order }: { content: string; order: NoteSaveOrder }) =>
+      meetingsApi.saveNote(meetingId, content, { order }),
     onSuccess: response => {
       // Seed the cache from the response instead of invalidating: an invalidate
       // would refetch and hand the editor a value mid-keystroke.
@@ -470,10 +493,12 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     meetingId,
     serverContent: noteQuery.data?.content,
     loadFailed: noteLoadFailed,
-    save: content => noteMutation.mutateAsync(content),
+    save: content => noteMutation.mutateAsync({ content, order: nextNoteOrder() }),
     // Outside the mutation's scope on purpose: the tab-close save cannot wait in
     // that queue, because the page is gone before the save ahead of it settles.
-    saveNow: content => meetingsApi.saveNote(meetingId, content, { keepalive: true }),
+    // Its `order` is what keeps the save it skipped from landing over it.
+    saveNow: content =>
+      meetingsApi.saveNote(meetingId, content, { keepalive: true, order: nextNoteOrder() }),
     uploadImage: uploadNoteImage,
   })
 
@@ -712,7 +737,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // Also guarded on `connecting`: pausing the meeting between the worklet loading
   // and the server's 'ready' frame leaves `active` false, so without the `connecting`
   // check the stop() branch never fires and buffered PCM is flushed after 'ready',
-  // persisting pause-window speech into the notes and tasks.
+  // persisting pause-window speech into the notes and tasks. `isStarting()` covers
+  // the step before that: a pause while the permission prompt is open publishes
+  // neither flag, and stopping there is what releases the stream granted later.
   //
   // A TERMINAL server error frame (streaming off, no consent, ...) `halts` the
   // hook: its own `start()` refuses until `stop()` runs, whatever order the
@@ -731,7 +758,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     if (mayOpen && !t.active && !t.connecting && !t.halted) {
       void t.start()
     }
-    if (!mayOpen && (t.active || t.connecting || t.halted)) {
+    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting())) {
       t.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive, transcriptionConnecting, transcriptionHalted])

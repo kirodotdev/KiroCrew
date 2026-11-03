@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from kiro_crew.history import ConversationLog
 
 
@@ -308,6 +310,32 @@ class TestCancelledTurnPreambleSteer:
         assert "Cancelled user request:\nkeep the public API stable\n" in result
         assert "an earlier request" not in result
         assert "an earlier answer" not in result
+
+    @pytest.mark.parametrize("kind", ["recovery", "user_replay"])
+    def test_a_continuing_inject_before_a_steer_does_not_hide_the_request(self, tmp_path, kind):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("sess1", "user", "an earlier request")
+        log.append("sess1", "assistant", "an earlier answer")
+        log.append("sess1", "user", "please refactor the parser")
+        log.append("sess1", "assistant", "Reading the parser module")
+        log.append("sess1", "inject", "continue the request", extra_meta={"injectKind": kind})
+        self._steer(log, "keep the public API stable")
+        log.append("sess1", "assistant", "Switching to a wrapper")
+        log.append("sess1", "system", self.STOP)
+
+        result = self._restore(log)
+
+        assert "Cancelled user request:\nplease refactor the parser\n" in result
+        assert (
+            "Partial assistant response before cancel:\n"
+            "Reading the parser module\n"
+            "[Steered mid-turn] keep the public API stable\n"
+            "Switching to a wrapper\n"
+            "[END PREVIOUS TURN]"
+        ) in result
+        assert result.count("keep the public API stable") == 1
+        assert "continue the request" not in result
+        assert "an earlier request" not in result
 
     def test_a_requeued_steer_is_not_carried_into_the_prompt_that_drains_it(self, tmp_path):
         # The Stop teardown requeues a steer the turn never took, and the queue then

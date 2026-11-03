@@ -1162,6 +1162,18 @@ describe('ChatPage URL prompt hand-off', () => {
     expect(prefillWrites().at(-1)).toMatchObject({ slotKey: 'chat-9', prompt: 'look into this' })
   })
 
+  it('says why when the channel is served by another agent and leaves the prompt unsent', async () => {
+    const { ApiError: RealApiError } = await vi.importActual<typeof import('../api/apiError')>('../api/apiError')
+    const token = tokenFor({ prompt: 'look into this', channel: 'C123', thread_ts: '1700.5' })
+    apiMocks.createChatSlot = vi.fn().mockResolvedValue({ key: 'chat-9', title: 'chat-9' })
+    apiMocks.slackLink = vi.fn().mockRejectedValue(new RealApiError(
+      409, 'refused', JSON.stringify({ error: 'refused', code: 'channel_agent_mismatch', agent: 'restricted-agent' })))
+    const { store } = renderChatPage([], { url: `/chat?token=${token}` })
+
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toContain('restricted-agent'))
+    expect(prefillWrites().at(-1)).toMatchObject({ slotKey: 'chat-9', prompt: 'look into this' })
+  })
+
   it('keeps text typed during the token create in the old session instead of losing it to the prompt', async () => {
     const token = tokenFor({ prompt: 'look into this', channel: 'C123', thread_ts: '1700.5' })
     let resolveCreate: (v: { key: string; title: string }) => void = () => {}

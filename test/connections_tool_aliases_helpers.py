@@ -17,8 +17,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the module-wide autouse pin of the test_connections_tool_aliases*.py modules, moved verbatim; none of them calls monkeypatch.undo(); tracked for a de-flake pass
-def _pinned_kiro_cli_version(monkeypatch):
+def _pinned_kiro_cli_version(_floor_monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
     The real-rebuild tests below drive ``rebuild_agent_config``, which ends in
@@ -29,7 +28,7 @@ def _pinned_kiro_cli_version(monkeypatch):
     child's cwd. Pinned to the floor release, as ``test_agent.py`` and the
     generated-writer suites pin it.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
         lambda: SPEC_PERMISSIONS_MIN_VERSION,
     )
@@ -85,8 +84,7 @@ def _rebuild_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the module-wide autouse pin of the test_connections_tool_aliases*.py modules, moved verbatim; none of them calls monkeypatch.undo(); tracked for a de-flake pass
-def _isolated_alias_record(tmp_path, monkeypatch):
+def _isolated_alias_record(tmp_path, _floor_monkeypatch):
     """Point the emitted-alias record at a per-test data home.
 
     Autouse because the pass READS the record on every run: without this a test
@@ -95,7 +93,7 @@ def _isolated_alias_record(tmp_path, monkeypatch):
     each test starts with no record at all -- the missing-record case -- and the
     two ``_apply`` calls inside one test share the record the way two rebuilds do.
     """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
 def _fail_nth_record_write(n: int):

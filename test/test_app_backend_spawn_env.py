@@ -194,9 +194,9 @@ class TestBootAdmissionRevet:
         assert started == []
 
     def test_dev_fleet_is_the_bound_port_deferred_backend(self):
-        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps import builtin_host_grants
 
-        assert bmod.DEV_FLEET_APP_NAME == "dev-fleet"
+        assert builtin_host_grants.bound_port_apps() == frozenset({"dev-fleet"})
 
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
@@ -256,7 +256,7 @@ def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     The dev-fleet backend runs as a separate process started with
     ``apps.registry.minimal_env()``, which passes only a fixed safe-key set.
     ``KIROCREW_DEVFLEET_REPO`` is dev-fleet's highest-priority repo discovery
-    hint, but until it is added to the explicit platform extras the allowlist
+    hint, but unless the backend forwards it as a host-grant variable the allowlist
     strips it — the operator sets the documented override, the backend never
     sees it, and the fleet silently renders empty (the remaining hints are
     ``KIROCREW_PROJECT_DIR``, which packaged installs point at the app bundle
@@ -271,12 +271,15 @@ def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     # The generic allowlist does NOT carry it — that is the trap this guards.
     assert "KIROCREW_DEVFLEET_REPO" not in minimal_env()
 
-    # apps/backend.py must therefore add it to the explicit platform extras
-    # (same mechanism that carries KIROCREW_PROJECT_DIR and the
-    # KIROCREW_DEVFLEET_BIN_* trusted-binary overrides).
+    # The app's host grants must therefore name it, and apps/backend.py must forward
+    # what they name (the mechanism that also carries the KIROCREW_DEVFLEET_BIN_*
+    # trusted-binary overrides).
+    from kiro_crew.apps import builtin_host_grants
+
+    assert "KIROCREW_DEVFLEET_REPO" in builtin_host_grants.backend_env_names()
     body = Path(bmod.__file__).read_text(encoding="utf-8")
     assert (
-        '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body
+        "_host_grants.backend_env_names()" in body
     ), "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"
 
 

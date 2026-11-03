@@ -800,7 +800,9 @@ export default function SteeringTab() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.steeringTab.refresh_steering_files')}>
+          {/* Disabled while a refresh runs, so the name carries the reason: a
+              disabled "Refresh steering files" reads as unavailable, not busy. */}
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>

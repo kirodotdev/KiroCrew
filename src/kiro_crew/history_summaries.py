@@ -47,7 +47,8 @@ def get_cached_summary(self: ConversationLog, key: str) -> str | None:
     """
     try:
         data = json.loads(self._summary_cache_path(key).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # Bytes that are not UTF-8 are as unusable as bad JSON: no cache.
         return None
     if not isinstance(data, dict):
         # JSON that is not an object is as unusable as bad JSON: no cache.
@@ -117,7 +118,7 @@ def get_cached_intent_summary(self: ConversationLog, key: str) -> dict | None:
     try:
         raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
         data = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
         return None
@@ -142,7 +143,7 @@ def read_intent_summary(self: ConversationLog, key: str) -> tuple[dict | None, b
     try:
         raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
         data = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None, False
     if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
         return None, False

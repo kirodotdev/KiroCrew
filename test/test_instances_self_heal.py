@@ -315,6 +315,31 @@ class TestSelfHealRefreshRestart:
         )
 
     @pytest.mark.asyncio
+    async def test_a_recovery_for_a_removed_instance_leaves_a_line(self, tmp_path, caplog):
+        """The one recovery exit that wrote nothing: an instance left down must name why."""
+        import logging
+
+        _reg, mgr = self._mgr(tmp_path)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.instances.ssh_tunnel_manager"):
+            await mgr._recover("gone-1")
+        assert "Self-heal for gone-1 not run" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_barrier_raised_during_the_backoff_leaves_a_line(self, tmp_path, caplog):
+        """Same line ``_on_tunnel_exit`` writes for its own skip, so the exit is visible."""
+        import logging
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        mgr._reconfiguring.add("cd-1")
+        try:
+            with caplog.at_level(logging.INFO, logger="kiro_crew.instances.ssh_tunnel_manager"):
+                await mgr._recover_after("cd-1", 0)
+        finally:
+            mgr._reconfiguring.discard("cd-1")
+        assert "Skipping self-heal for cd-1: reconfiguration in progress" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_recover_tier1_then_tier2(self, tmp_path):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
@@ -506,9 +531,11 @@ class TestSelfHealRefreshRestart:
             def __init__(self):
                 self.returncode = None
                 self.stderr = self
+                self._chunks = [b"bind [127.0.0.1]:53991: Address already in use\r\n"]
 
-            async def read(self):
-                return b"bind [127.0.0.1]:53991: Address already in use\r\n"
+            async def read(self, n=-1):
+                # A real stream: the bytes once, then EOF.
+                return self._chunks.pop(0) if self._chunks else b""
 
         t = _SshTunnel("cd-1", "cd-1-alias", 53991, 7777, connect_timeout_secs=1.0)
         t._proc = _Proc()
@@ -730,9 +757,13 @@ class TestSelfHealRefreshRestart:
             def __init__(self):
                 self.returncode = 255
                 self.stderr = self
+                self._chunks = [
+                    b"Connection closed by UNKNOWN port 65535\r\nConnection reset by peer\r\n"
+                ]
 
-            async def read(self):
-                return b"Connection closed by UNKNOWN port 65535\r\nConnection reset by peer\r\n"
+            async def read(self, n=-1):
+                # A real stream: the bytes once, then EOF.
+                return self._chunks.pop(0) if self._chunks else b""
 
         t = _SshTunnel("cd-1", "stale-alias", 53991, 7777, connect_timeout_secs=1.0)
         t._proc = _Proc()

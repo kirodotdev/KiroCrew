@@ -289,7 +289,9 @@ from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
 from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
+    _fit_stored_name,
     _log_upload_diagnostic,
+    _name_max,
     _resolve_raster_ext,
     _sniff_media_type,
     _stream_media_part,
@@ -572,10 +574,21 @@ _DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: Video gets its own, larger ceiling: a 30-second retina screen recording is
 #: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
 #: case and make the feature read as broken. Safe to raise only because video
-#: parts STREAM to disk (:func:`_stream_video_part`) instead of accumulating in
+#: parts STREAM to disk (:func:`_stream_media_part`) instead of accumulating in
 #: memory the way every other accepted type does.
 _MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB per video
 _MAX_UPLOAD_FILES = 20  # max files per request
+#: Longest stored-name tail of an upload, in UTF-8 bytes. A file name is capped
+#: at 255 bytes on ext4, APFS and NTFS, and the stored name adds a 32-hex UUID
+#: and ``_`` (``_fit_stored_name``).
+_MAX_STORED_NAME_BYTES = 200
+#: Bytes the stored name spends before the tail: 32 hex digits and ``_``.
+_STORED_NAME_PREFIX_BYTES = 33
+#: Bytes the cap also leaves free: a streamed part is written under the stored
+#: name plus this temp suffix before it is committed.
+_STORED_NAME_TEMP_BYTES = len(part_stream.TEMP_SUFFIX)
+#: File-name byte limit assumed where the file system cannot report its own.
+_DEFAULT_NAME_MAX = 255
 
 # Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
 # (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is

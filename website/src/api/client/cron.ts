@@ -10,7 +10,7 @@ import type { ClientTransport } from './transport'
 export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
   const jobs = {
     // Crons
-    crons: (): Promise<{ jobs?: CronJob[] }> => fetch('/api/crons').then(j),
+    crons: (): Promise<{ jobs?: CronJob[]; server_tz?: string | null; default_tz?: string; host_tz?: string | null }> => fetch('/api/crons').then(j),
     createCron: (body: object) => post('/api/crons', body).then(j),
     deleteCron: (id: string) => del('/api/crons/' + id).then(j),
     batchDeleteCron: (ids: string[]) => del('/api/crons', { ids }).then(j),

@@ -10,7 +10,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
-import { modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
+import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
 import { JEV_ROUTE_MODEL, jevRouteOffered, withJevRoute } from '../lib/jevRoute'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
@@ -22,6 +22,7 @@ import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { retryThroughRestart } from '../api/queryClient'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
@@ -84,6 +85,9 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
     enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
+    // A failure is a standing "could not verify" notice, so a gateway restart or a
+    // dropped link is ridden out first (see `retryThroughRestart`).
+    retry: retryThroughRestart,
     refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
   })
   const ownModelsQuery = useAvailableModelsQuery({ backend: selectionCapabilitiesQ.data?.models_backend })
@@ -156,6 +160,13 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
   const effortLevelsOverride = effortCaps?.effort_levels?.length ? effortCaps.effort_levels : undefined
+  // No effort control on `auto`: the picker says why instead (#11546).
+  const effortAutoNote = effortOffOnAuto(
+    provider.capabilities.reasoningEffort,
+    effortSupported,
+    selectionCapabilitiesFailed(selectionCapabilitiesQ),
+    shownModel,
+  )
   const readKirocrewConfig = useKirocrewConfigReader()
   const { data: defaultEffort = '' } = useQuery({
     queryKey: ['default-effort', provider.id],
@@ -190,7 +201,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
-    effortSupported, effortLevelsOverride, defaultEffort, effectiveEffort, chipDefault, modelMarker,
+    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker,
   }
 }
 

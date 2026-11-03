@@ -20,6 +20,7 @@ import shutil
 from aiohttp import web
 
 from kiro_crew import platform_compat, stt
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import _VALID_STT_PROVIDERS, KiroCrewConfig, config_path
 from kiro_crew.config.sections import (
     STT_LANGUAGE_AUTO,
@@ -258,7 +259,10 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section = {}
                 fresh["stt"] = stt_section
             if "enabled" in body:
-                stt_section["enabled"] = bool(body["enabled"])
+                # A spelled "false"/"0"/"no"/"off" means False; any other
+                # value keeps the truthiness it has always been saved with.
+                raw_enabled = body["enabled"]
+                stt_section["enabled"] = _coerce_bool(raw_enabled, bool(raw_enabled))
             # Guard the type before either membership lookup.  The model catalog
             # is a dict, so a JSON object or array would otherwise raise
             # ``TypeError: unhashable type`` and turn this partial update into a

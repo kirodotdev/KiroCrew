@@ -56,6 +56,19 @@ _PROMPT_BUSY = {
     "data": "Prompt already in progress",
 }
 
+# goose's answer to a `session/prompt` sent while its own run is still live, as
+# reported (the user saw it rendered "Invalid params: <data>"). The same shape
+# goose uses for its other -32602 answers ("no active run to steer").
+_GOOSE_ACTIVE_RUN = {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": (
+        "session already has active run "
+        "`run_63917c4b-a210-47ee-8c41-112231a29ddb`; "
+        "use _goose/unstable/session/steer"
+    ),
+}
+
 # kiro-cli >= 2.16 rewording of the capacity rejection, which names NO model.
 # A representative capacity-rejection frame, with the request id value
 # swapped. Before its own pattern existed this fell
@@ -441,6 +454,45 @@ class TestRunnerPromptBusyIsStructural:
             or "not running" in _msg
         )
         assert eligible
+
+
+class TestGooseActiveRunIsPromptBusy:
+    """goose's busy answer takes the same reset-and-requeue path as kiro-cli's.
+
+    goose refuses a `session/prompt` while its own run is live. Before this was
+    recognised the frame raised a bare AcpError, so the runner's retry gate
+    missed it and every auto-recovery re-prompt hit the same refusal.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_handle_path_raises_prompt_busy(self, driver):
+        exc = await driver(_GOOSE_ACTIVE_RUN)
+        assert isinstance(exc, AcpPromptBusy)
+        assert "still processing a previous request" in str(exc)
+
+    def test_client_path_raises_prompt_busy(self):
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        with pytest.raises(AcpPromptBusy):
+            _raise_acp_error(_GOOSE_ACTIVE_RUN, backend="goose")
+
+    def test_busy_text_only_in_message_still_classifies(self):
+        """The classifier also reads `message`, as it does for kiro-cli's text."""
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        frame = {"code": -32602, "message": f"Invalid params: {_GOOSE_ACTIVE_RUN['data']}"}
+        with pytest.raises(AcpPromptBusy):
+            _raise_acp_error(frame, backend="goose")
+
+    def test_steer_refusal_is_not_prompt_busy(self):
+        """goose's "no active run to steer" means the opposite: nothing is running."""
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        frame = {"code": -32602, "message": "Invalid params", "data": "no active run to steer"}
+        with pytest.raises(AcpError) as ei:
+            _raise_acp_error(frame, backend="goose")
+        assert not isinstance(ei.value, AcpPromptBusy)
 
 
 class TestTransientMarkerCoupling:

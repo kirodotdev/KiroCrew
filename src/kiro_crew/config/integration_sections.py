@@ -926,7 +926,7 @@ class InstancesConfig:
             "drop such as a screen lock or proxy warmup); a forward that re-binds "
             "but whose far end stays dead additionally spends one probe window per "
             "attempt (probe_failure_threshold x probe_interval), so handoff to "
-            "diagnosis takes roughly attempts x (90s + backoff) ~= 16 min at the "
+            "diagnosis takes roughly attempts x (30s + backoff) ~= 6 min at the "
             "default 8. Size this against the longer window.",
         ),
     )

@@ -494,8 +494,9 @@ class KiroCrewConfig:
         default="",
         metadata=_meta(
             "Timezone",
-            "IANA timezone name (e.g. 'America/Los_Angeles'). "
-            "Used to display cron schedules in local time.",
+            "IANA timezone name (e.g. 'America/Los_Angeles'), or 'local' to follow "
+            "this computer's time zone wherever it travels. The default zone for cron "
+            "jobs that name none and for the agent's sense of 'now'. Empty means 'local'.",
         ),
     )
     snapshot_dir: str = field(
@@ -938,7 +939,7 @@ class KiroCrewConfig:
                 model = bundled_data.get("model", "")
                 if model:
                     return model
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
         return DEFAULT_MODEL
 

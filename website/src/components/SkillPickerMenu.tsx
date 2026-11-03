@@ -10,6 +10,7 @@ import type { SkillsPayload } from '../lib/skillsPayload'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
+import { makeScoreThenNameComparator } from '../utils/fuzzyMatch'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
@@ -71,6 +72,56 @@ interface Props {
 function leafOf(key: string): string {
   const i = key.lastIndexOf('/')
   return i === -1 ? key : key.slice(i + 1)
+}
+
+// Whether `leaf[i]` starts a word: the first char, a char after a separator
+// (anything not a letter or digit), or a lower→Upper camelCase step.
+function startsWord(leaf: string, i: number): boolean {
+  if (i === 0) return true
+  const prev = leaf[i - 1]
+  if (!/[a-z0-9]/i.test(prev)) return true
+  return /[a-z]/.test(prev) && /[A-Z]/.test(leaf[i])
+}
+
+// Fuzzy score of a leaf that does NOT contain the query as a substring, or
+// null. The query must split into runs that each start a word of the leaf,
+// so `$tpull` finds `ticket-pull`, `$tc` finds `ticket-close` and `$onhand`
+// finds `oncall-handover`, while a stray word such as `$hello` does not pick
+// up a skill whose letters merely appear in order — Enter selects the top
+// row, so a loose match would swallow the send. Every alignment is tried, not
+// only the leftmost one: `$ps` reaches the `s` of `shopper` in
+// `personal-shopper` past the mid-word `s` of `personal`. Fewer runs score
+// higher, then a shorter leaf.
+function wordFuzzyScore(query: string, leaf: string): number | null {
+  const q = query.toLowerCase()
+  const l = leaf.toLowerCase()
+  if (!q) return null
+  // Word starts read the original casing (camelCase) only when lowercasing
+  // kept every index in place; a few characters lowercase to two.
+  const cased = l.length === leaf.length ? leaf : l
+  // Fewest runs that place q[qi..] after a match at `prev` (-1 = none yet),
+  // or Infinity. Memoized on (qi, prev): a leaf and a query are both short,
+  // so this is at most |q| * |leaf| states.
+  const memo = new Map<number, number>()
+  const runs = (qi: number, prev: number): number => {
+    if (qi === q.length) return 0
+    const key = qi * (l.length + 1) + prev + 1
+    const hit = memo.get(key)
+    if (hit !== undefined) return hit
+    let best = Infinity
+    // Extend the current run.
+    if (prev >= 0 && l[prev + 1] === q[qi]) best = runs(qi + 1, prev + 1)
+    // Or start a new run at a later word start.
+    for (let i = prev + 1; i < l.length; i++) {
+      if (l[i] !== q[qi] || !startsWord(cased, i)) continue
+      best = Math.min(best, 1 + runs(qi + 1, i))
+    }
+    memo.set(key, best)
+    return best
+  }
+  const n = runs(0, -1)
+  if (!Number.isFinite(n)) return null
+  return 1000 - 10 * n - leaf.length
 }
 
 // A workspace skill the operator has not consented to yet.
@@ -151,8 +202,10 @@ export default function SkillPickerMenu({
     else onSelect(info)
   }, [onSelect, onTrustRequest])
 
-  // Filter by leaf-name substring (case-insensitive). Empty query lists all,
-  // capped for menu height. Dedupe by leaf so the same $token isn't ambiguous
+  // Filter by leaf name (case-insensitive). Leaf-substring matches come first,
+  // in catalog order; leaves that only match as word-start fuzzy (see
+  // wordFuzzyScore) follow, best score first. Empty query lists all, capped
+  // for menu height. Dedupe by leaf so the same $token isn't ambiguous
   // (mirrors the backend's leaf-addressed resolution). Memoized (not computed
   // in the ordering effect below) so the keyboard-release gate reads the SAME
   // render's match set — a gate derived from the `results` state would lag one
@@ -160,15 +213,24 @@ export default function SkillPickerMenu({
   const matched = useMemo(() => {
     const q = query.toLowerCase()
     const seen = new Set<string>()
-    const out: SkillItem[] = []
+    const exact: SkillItem[] = []
+    const fuzzy: { item: SkillItem; leaf: string; score: number }[] = []
     for (const s of items) {
-      const leaf = leafOf(s.key || s.name).toLowerCase()
-      if (q && !leaf.includes(q)) continue
+      const rawLeaf = leafOf(s.key || s.name)
+      const leaf = rawLeaf.toLowerCase()
       if (seen.has(leaf)) continue
+      if (!q || leaf.includes(q)) {
+        seen.add(leaf)
+        exact.push(s)
+        continue
+      }
+      const score = wordFuzzyScore(q, rawLeaf)
+      if (score === null) continue
       seen.add(leaf)
-      out.push(s)
+      fuzzy.push({ item: s, leaf: rawLeaf, score })
     }
-    return out.slice(0, 50)
+    fuzzy.sort(makeScoreThenNameComparator((f) => f.score, (f) => f.leaf))
+    return [...exact, ...fuzzy.map((f) => f.item)].slice(0, 50)
   }, [items, query])
 
   // "Settled and genuinely empty": only then does the menu have no claim on

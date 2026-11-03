@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -71,6 +72,7 @@ from kiro_crew.hooks import (
     ScriptHook,
     _normalize_hook_timeout,
 )
+from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +93,13 @@ _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 #: capped at, so a hand-written spec cannot make every turn spawn without limit.
 _MAX_SPEC_HOOKS = 20
 
-#: Bound on a retained command, matching the document validator's payload cap.
-_MAX_COMMAND_LEN = 4096
+#: Bound on a retained command: the longest command the shell gate scans, so a
+#: spec hook is held to the same ceiling as a shell tool call's command and every
+#: one it keeps is scanned whole by the deny list before it spawns. kiro-cli runs
+#: an object-form hook of any length, so a lower bound here would drop on KAS a
+#: hook the same spec runs on kiro-cli. A hook document is still held to its own
+#: validator's payload cap before it reaches this.
+_MAX_COMMAND_LEN = MAX_SCANNABLE_COMMAND_CHARS
 
 #: Bound on the conversion cache. A spec edit adds an entry, so the cache is
 #: cleared rather than grown once it reaches this.
@@ -332,7 +339,16 @@ def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
 
 def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> ScriptHook | None:
     command = entry.get("command")
-    if not isinstance(command, str) or not command.strip() or len(command) > _MAX_COMMAND_LEN:
+    if isinstance(command, str) and len(command) > _MAX_COMMAND_LEN:
+        _reject(
+            agent_id,
+            event,
+            command,
+            f"command is {len(command)} characters, past the {_MAX_COMMAND_LEN} limit; "
+            "move it into a script file and call that from the hook",
+        )
+        return None
+    if not isinstance(command, str) or not command.strip():
         _reject(agent_id, event, command, "no usable command")
         return None
     matcher = entry.get("matcher") if event in _TOOL_EVENTS else None
@@ -742,7 +758,9 @@ def _convert(agent_id: str, spec: dict[str, Any]) -> tuple[tuple[ScriptHook, ...
     return result
 
 
-def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]:
+def _agent_spec(
+    agent_id: str, project_dir: str | None = None, session_key: str = ""
+) -> dict[str, Any]:
     """*agent_id*'s spec, or ``{}`` when it has none on disk.
 
     *project_dir* is the session's checkout on a backend that resolves its spec
@@ -759,19 +777,37 @@ def _agent_spec(agent_id: str, project_dir: str | None = None) -> dict[str, Any]
     page's hooks still apply to it. Reading that as an unreadable spec would
     refuse every call the session makes and leave it unusable. A spec that exists
     but cannot be read still raises, so callers keep failing closed on it.
+
+    Given *session_key*, a crewmate's worker is read as that
+    session's merged spec (``mate_worker.mate_service_scope_spec``), the one its
+    projection was handed, so the hooks its crewmate's file carries are the ones
+    that fire.
     """
-    return _agent_spec_with_origin(agent_id, project_dir)[0]
+    return _agent_spec_with_origin(agent_id, project_dir, session_key)[0]
 
 
 def _agent_spec_with_origin(
-    agent_id: str, project_dir: str | None = None
+    agent_id: str, project_dir: str | None = None, session_key: str = ""
 ) -> tuple[dict[str, Any], str]:
     """:func:`_agent_spec` and where it came from: ``"project"`` or ``"user"``."""
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import agent_spec_absent, load_agent_spec
     from kiro_crew.acp.session_mcp import trusted_project_agent_spec
+    from kiro_crew.agent_files import is_mate_service_agent
     from kiro_crew.config.paths import spec_dir_for
+
+    if session_key and is_mate_service_agent(agent_id):
+        from kiro_crew.mate_worker import mate_service_scope_spec
+
+        scoped = mate_service_scope_spec(agent_id, session_key)
+        if scoped is not None:
+            merged, _path = scoped
+            if merged is None:
+                raise ValueError(f"the session spec for agent {agent_id!r} could not be read")
+            # The crewmate folder is not the sealed user tree, so its hooks stay
+            # vetted as a project spec's are (see :func:`_user_dir_origin`).
+            return merged, "project"
 
     if project_dir:
         declared, spec = trusted_project_agent_spec(agent_id, project_dir)
@@ -873,7 +909,11 @@ def spec_project_dir(provider: object) -> str | None:
 
 
 def crew_fired_spec_hooks(
-    agent_id: str, project_dir: str | None = None, *, translates_tools_settings: bool = False
+    agent_id: str,
+    project_dir: str | None = None,
+    *,
+    translates_tools_settings: bool = False,
+    session_key: str = "",
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -885,13 +925,14 @@ def crew_fired_spec_hooks(
     cannot be read; the caller fails PreToolUse closed on that. *project_dir* is
     :func:`spec_project_dir` of the session. *translates_tools_settings* is true
     only for a KAS session, the one backend that receives ``toolsSettings`` as
-    ``permissions`` rules.
+    ``permissions`` rules. *session_key* reads a crewmate's worker as
+    that session's merged spec (:func:`_agent_spec`).
     """
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import spec_keys_without_carrier
 
-    spec, origin = _agent_spec_with_origin(agent_id, project_dir)
+    spec, origin = _agent_spec_with_origin(agent_id, project_dir, session_key)
     hooks, unconfirmable = _convert(agent_id, spec)
     lost = spec_keys_without_carrier(spec, translates_tools_settings=translates_tools_settings)
     # Copies, so the cached conversion keeps no origin: the same hooks can come
@@ -1004,6 +1045,19 @@ def session_agent(provider: object, agent_id: str) -> str:
     return projected if isinstance(projected, str) else ""
 
 
+def provider_session_key(provider: object) -> str:
+    """The session key *provider* runs, or ``""``.
+
+    A shared runtime's client carries it itself; a dedicated ``AcpProvider``
+    (``spawn_run(keep=True)``) holds it on its ``_client``.
+    """
+    for holder in (provider, getattr(provider, "_client", None)):
+        raw = getattr(holder, "_session_key", None)
+        if isinstance(raw, str) and raw:
+            return raw
+    return ""
+
+
 async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     """The spec hooks a subagent or task-runner turn gates on, and how.
 
@@ -1021,9 +1075,16 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     if not agent_id:
         logger.warning("no agent is known for this KAS turn; its tool calls are blocked")
         return TurnSpecHooks([], work_dir, True, True)
+    # A crewmate's worker fires its session's merged spec, as the chat turn does.
+    session_key = provider_session_key(provider)
     try:
         hooks, _lost, _unconfirmable = await asyncio.to_thread(
-            crew_fired_spec_hooks, agent_id, spec_project_dir(provider)
+            functools.partial(
+                crew_fired_spec_hooks,
+                agent_id,
+                spec_project_dir(provider),
+                session_key=session_key,
+            )
         )
     except Exception:  # noqa: BLE001 - the caller fails permission requests closed
         logger.warning(
@@ -1054,7 +1115,8 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     runs the spec's hooks itself, and when the session records no batch. An agent
     with no spec on disk (a KAS built-in mode) has no spec hooks, so only the Hooks
     page's hooks count; a spec that exists but cannot be read answers True:
-    re-projecting is the safe direction.
+    re-projecting is the safe direction. A crewmate's worker is read
+    as the provider's own session's merged spec (:func:`_agent_spec`).
     """
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return False
@@ -1064,6 +1126,7 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     agent_id = session_agent(provider, agent_id)
     if not agent_id:
         return True
+    session_key = provider_session_key(provider)
 
     def _covered() -> set[str]:
         # circular import: the ACP layer imports the config loader, which sits
@@ -1072,7 +1135,7 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
         from kiro_crew.acp.kas_permissions import hook_gated_capabilities
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
-        spec = _agent_spec(agent_id)
+        spec = _agent_spec(agent_id, None, session_key)
         return hook_gated_capabilities(pre_tool_hook_matchers(agent_id, spec))
 
     try:

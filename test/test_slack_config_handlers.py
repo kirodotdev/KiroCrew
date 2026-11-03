@@ -556,7 +556,7 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
 
     Failure scenario (config-first ordering):
       1. config.json write attempted — raises (e.g. disk full).
-      2. .env is never written (handler raised before reaching _commit_env).
+      2. .env is never written (handler raised before the .env write).
       3. Both stores still hold their original values.
       -> Restart sees old-pass + old app_id/tenant: consistent, no auth failure.
     """
@@ -630,7 +630,7 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
     assert status == 500, f"Expected 500, got {status}"
 
     # CRITICAL: .env must NOT have been written at all — config write failed
-    # before the handler reached _commit_env().
+    # before the handler reached the .env write.
     assert _write_env_calls == [], (
         "Config-first ordering: _write_env_updates must not be called when "
         f"the config write raises; got calls: {_write_env_calls}"
@@ -662,8 +662,8 @@ def test_teams_config_write_failure_preserves_process_only_credential(
       - .env file has no MICROSOFT_APP_PASSWORD entry at all
       - the config.json write raises (disk full)
 
-    With config-first ordering: config write fails before _commit_env() is
-    called, so os.environ is never mutated by the handler.  The process-only
+    With config-first ordering: config write fails before the .env write,
+    so os.environ is never mutated by the handler.  The process-only
     credential is trivially preserved — no special rollback logic needed.
     """
     import json
@@ -721,7 +721,7 @@ def test_teams_config_write_failure_preserves_process_only_credential(
     assert status == 500, f"Expected 500, got {status}"
 
     # CRITICAL: the process-only credential must survive intact.
-    # With config-first ordering the handler never reaches _commit_env(), so
+    # With config-first ordering the handler never reaches the .env write, so
     # os.environ is untouched by the failed request.
     assert os.environ.get("MICROSOFT_APP_PASSWORD") == "env-only-pass", (
         "Config-first ordering: process-only credential must be untouched when "

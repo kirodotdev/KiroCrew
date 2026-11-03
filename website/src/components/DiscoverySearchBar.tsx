@@ -2,7 +2,8 @@
  * DiscoverySearchBar — the shared search chrome of the provider-discovery
  * modals (SkillBrowserModal, McpBrowserModal): combobox input with clear
  * button, the providers/result-count meta line, and the three pre-result
- * placeholder states (short query, loading, empty).
+ * placeholder states (short query, loading, empty). Before a search the
+ * short-query state heads the featured list when the modal has one.
  *
  * Extracted so the two modals share one implementation instead of a byte
  * clone (jscpd runs at a 0% duplication threshold in CI). Behavior lives in
@@ -71,7 +72,9 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
           )}
         </div>
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
-          <span>{providers.length > 0 ? i18nT('components.discoverySearchBar.searching_2', { name: providers.join(', ') }) : '\u00A0'}</span>
+          {/* Before a search the list is the bundled featured one, so no provider is
+              being searched: the "Popular …" heading carries that state. */}
+          <span>{providers.length > 0 && debouncedQuery.length >= 2 ? i18nT('components.discoverySearchBar.searching_2', { name: providers.join(', ') }) : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
             /* This plural base is also used by file-explorer's SearchPanel — keep the
                key alive (or re-home it) if this component is ever removed. */
@@ -93,14 +96,27 @@ export function DiscoveryPlaceholder({ children }: { children: React.ReactNode }
 }
 
 /** The three canonical pre-result states, keyed off query/loading/results. */
-export function DiscoveryStates({ debouncedQuery, isLoading, resultCount, noun }: {
+export function DiscoveryStates({ debouncedQuery, isLoading, resultCount, noun, featuredLabel }: {
   debouncedQuery: string
   isLoading: boolean
   resultCount: number
   /** Plural noun for the empty state, e.g. "servers" / "skills". */
   noun: string
+  /** Heading for the featured list shown before a search. Without
+   *  rows to head, the short-query hint shows instead. */
+  featuredLabel?: string
 }) {
   if (debouncedQuery.length < 2) {
+    if (featuredLabel && resultCount > 0) {
+      return (
+        <div className="mb-2 shrink-0 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs">
+          <span className="font-medium text-text-strong">{featuredLabel}</span>
+          <span className="text-muted">{i18nT('components.discoverySearchBar.type_to_search_for_more')}</span>
+        </div>
+      )
+    }
+    // The featured list is still on its way: say nothing rather than flash the hint.
+    if (featuredLabel && isLoading) return null
     return <DiscoveryPlaceholder>{i18nT('components.discoverySearchBar.type_at_least_2_characters_to_search')}</DiscoveryPlaceholder>
   }
   if (isLoading) {

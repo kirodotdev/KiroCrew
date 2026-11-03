@@ -516,8 +516,8 @@ describe('overview pane', () => {
   })
 
   it('each metric card opens the pane that owns its figure', async () => {
-    // StatCard lifts on hover whether or not it is a target, so a card that
-    // went nowhere signalled a click it did not have.
+    // A metric card restates a figure some pane owns, so the card is the way
+    // through to that pane.
     renderWithProviders(<AwsControlPage />)
     fireEvent.click(await screen.findByTestId('overview-stat-spend'))
     expect(screen.getByTestId('rail-usage').getAttribute('aria-current')).toBe('page')

@@ -10,6 +10,7 @@ swallow it, so neither the lines within this function nor the order in which
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 
 from aiohttp import web
@@ -21,6 +22,14 @@ from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.edition_locks import local_enable_locked
+
+_log = logging.getLogger(__name__)
+
+#: The ``BUILTIN_NAMES`` packages whose wheel copy is released on this boot
+#: (``builtin_adoption.released_builtin_packages``). ``start_dashboard`` sets it
+#: off the event loop, after APPLY and before ``register_all``; absent, every
+#: package registers as before.
+RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
 
 
 def register(app: web.Application) -> None:
@@ -51,6 +60,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
+    app.router.add_get("/api/update/auto", handlers.api_update_auto_pin)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
     # A terminal `kirocrew update` on a git checkout pokes this so the running
@@ -231,15 +241,42 @@ def register(app: web.Application) -> None:
     # App Platform
     register_app_routes(app)
 
-    # Built-in app routes — register at startup (handlers check enabled state)
+    # Built-in app routes — register at startup (handlers check enabled state).
+    # A released package (its app adopted from its own repository, or uninstalled
+    # after that) registers nothing: its routes, and its on_startup/on_cleanup
+    # callbacks, would otherwise serve beside the app that owns the name.
+    _released = app.get(RELEASED_BUILTIN_PACKAGES, frozenset())
     for _builtin_name in BUILTIN_NAMES:
+        if _builtin_name in _released:
+            continue
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
-            if hasattr(_mod, "register_routes"):
-                _mod.register_routes(app)
+            # A package may serve ``register_routes`` through a lazy module
+            # ``__getattr__`` that imports its routes file on first access, so the
+            # lookup reads files too and belongs inside the same guard.
+            _register = getattr(_mod, "register_routes", None)
         except ModuleNotFoundError as exc:
             if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
                 raise
+            continue
+        except OSError as exc:
+            # One optional app whose files cannot be READ -- an endpoint security
+            # agent denying a path, a damaged install -- must not take the gateway,
+            # the dashboard and every session down with it. Its routes stay
+            # unregistered and the reason is logged; every other app still loads.
+            # Only the import and the ``register_routes`` lookup are guarded: an
+            # error while registering routes would leave the app half-registered,
+            # so it still aborts boot.
+            _log.warning(
+                "built-in app %r is unavailable: reading it failed (%s: %s); its routes "
+                "are not registered and the gateway continues without it",
+                _builtin_name,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        if _register is not None:
+            _register(app)
 
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)

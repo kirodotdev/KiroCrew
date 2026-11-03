@@ -560,7 +560,7 @@ async def test_prune_clears_dead_sync_refs_and_spares_live_ones(tmp_path, monkey
         ).stdout.strip()
 
     git("init", "-q", "-b", "main")
-    (repo / "f.txt").write_text("one\n")
+    (repo / "f.txt").write_text("one\n", encoding="utf-8")
     git("add", "f.txt")
     git("commit", "-q", "-m", "one")
     head = git("rev-parse", "HEAD")

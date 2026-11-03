@@ -519,7 +519,7 @@ def _claim_branch(root: str, branch: str, base_sha: str) -> bool:
 
     The empty old-value argument means "the ref must not exist", so git's ref
     lock decides the winner: exactly one of N concurrent requests for the same
-    branch gets a zero exit. A check-then-create (``_branch_head`` followed by
+    branch gets a zero exit. A check-then-create (a branch lookup followed by
     ``worktree add -b``) cannot do this: two requests could both observe the
     branch as absent, and the loser's cleanup would then delete the winner's
     branch and working tree.

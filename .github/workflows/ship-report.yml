@@ -95,13 +95,29 @@ jobs:
     # docs/ci/ci-and-reviews.md.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Room for both narrative calls to walk their model chain at the 240s
-    # per-call read timeout.
-    timeout-minutes: 20
+    # per-call read timeout (20 min), plus the 20 min the gh wrapper below
+    # may spend in total waiting out a spent API rate limit.
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
       LINK_STYLE: ${{ vars.SHIP_REPORT_LINK_STYLE || 'mrkdwn' }}
       HAS_BEDROCK: ${{ secrets.SHIP_REPORT_BEDROCK_ROLE_ARN != '' && 'true' || '' }}
     steps:
+      # Every `gh` call below goes through the rate-limit-aware wrapper
+      # (.github/actions/gh-rate-limit). A call that still fails on a spent
+      # limit fails the run as before, so the window is not advanced and the
+      # next run re-covers it. Only the action is checked out.
+      - name: Check out the gh wrapper action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/gh-rate-limit
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
+
       - name: Compute reporting window
         id: window
         env:

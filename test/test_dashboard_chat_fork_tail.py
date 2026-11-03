@@ -25,13 +25,14 @@ class TestForkSlotTail:
     """Tests for tail-only fork (direction="tail") on POST /api/chat/slots/{slot}/fork."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- a class-local default the class's own tests override
-    def _tail_fork_enabled(self, monkeypatch):
+    def _tail_fork_enabled(self, _floor_monkeypatch):
         """Default tail_fork_enabled=True so these tests exercise the tail path;
         the B1 gate test below overrides this to False for its own assertion."""
         mock_cfg = MagicMock()
         mock_cfg.dashboard.tail_fork_enabled = True
-        monkeypatch.setattr("kiro_crew.dashboard.chat_fork.KiroCrewConfig.load", lambda: mock_cfg)
+        _floor_monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_fork.KiroCrewConfig.load", lambda: mock_cfg
+        )
 
     @pytest.mark.asyncio
     async def test_tail_fork_keeps_messages_after_message_id(self, tmp_path):

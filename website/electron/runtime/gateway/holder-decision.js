@@ -16,6 +16,9 @@ const {
 // answers first; short enough that a wedged one is not a blank splash.
 const STUCK_GATEWAY_GRACE_MS = 15_000;
 const STUCK_GATEWAY_POLL_MS = 1_000;
+// How the stale dialog describes a launchd-parented gateway that is no launchd
+// job: a plain local gateway, which nothing restarts (see staleDialogOwner).
+const ORPHAN_DIALOG_OWNER = "kirocrew";
 
 /**
  * What a launch does about a gateway already holding its port: adopt it, wait
@@ -37,6 +40,7 @@ function createHolderDecision({
   app,
   store,
   dialog,
+  fs = null,
   path,
   processObj,
   port: PORT,
@@ -62,6 +66,7 @@ function createHolderDecision({
   fetchHealthInfo,
   fetchGatewayReadiness,
   resolveFamilyConflict,
+  launchdJobPids = null,
 }) {
   async function isCurrentBundleGateway() {
     if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
@@ -70,6 +75,65 @@ function createHolderDecision({
     const command = (await psCommand(pids[0])).trim();
     const bundleRoot = path.join(processObj.resourcesPath, "backend-dist") + path.sep;
     return command.startsWith(bundleRoot);
+  }
+
+  /**
+   * A managed install keeps each version in its own folder, so after an update
+   * the previous version's detached gateway runs from a sibling folder and
+   * isCurrentBundleGateway (this bundle only) does not see it. This recognizes
+   * exactly that gateway: the one listener's command starts with this app's
+   * own backend-dist path with the folder named for this app's version
+   * replaced by the version the gateway itself reports.
+   *
+   * Only the stale warning reads this. The update-time stop keeps
+   * isCurrentBundleGateway, so nothing is stopped because of it.
+   */
+  async function isPreviousManagedVersionGateway(gatewayVersion) {
+    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
+    const ownVersion = String(app.getVersion() || "");
+    const oldVersion = String(gatewayVersion || "");
+    const segmentOk = (value) => /^[0-9A-Za-z._+-]+$/.test(value) && value !== "." && value !== "..";
+    if (!segmentOk(ownVersion) || !segmentOk(oldVersion) || ownVersion === oldVersion) return false;
+    const resourcePaths = [processObj.resourcesPath];
+    try {
+      const realpath = fs?.realpathSync?.native || fs?.realpathSync;
+      if (realpath) resourcePaths.push(realpath(processObj.resourcesPath));
+    } catch { /* keep the path as given */ }
+    const roots = [];
+    for (const resources of new Set(resourcePaths)) {
+      const parts = path.normalize(resources).split(path.sep);
+      const index = parts.lastIndexOf(ownVersion);
+      if (index < 1) continue;
+      const sibling = [...parts.slice(0, index), oldVersion, ...parts.slice(index + 1)].join(path.sep);
+      roots.push(path.join(sibling, "backend-dist") + path.sep);
+    }
+    if (!roots.length) return false;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return false;
+    const command = (await psCommand(pids[0])).trim();
+    return roots.some((root) => command.startsWith(root));
+  }
+
+  /**
+   * The owner the stale dialog describes. A "service" owner on macOS is only a
+   * PPID-1 gateway, and an orphan the previous app left behind has that parent
+   * too. Only a gateway launchd runs as a job gets the service note; an
+   * unreadable job list keeps it. This reads nothing else: the port-owner
+   * classification, and every eviction and takeover decision built on it, stay
+   * as they are.
+   */
+  async function staleDialogOwner(localOwner) {
+    if (localOwner !== "service" || !launchdJobPids) return localOwner;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return localOwner;
+    try {
+      const jobPids = await launchdJobPids();
+      if (jobPids instanceof Set && !jobPids.has(Number(pids[0]))) {
+        glog(`stale gateway: pid ${pids[0]} on :${PORT} has launchd as its parent but is no launchd job — an orphan, not a service`);
+        return ORPHAN_DIALOG_OWNER;
+      }
+    } catch { /* keep the service note */ }
+    return localOwner;
   }
 
   /**
@@ -228,7 +292,7 @@ function createHolderDecision({
     const bundledGateway = getRunLocalGateway()
       && health?.version !== app.getVersion()
       && (localOwner === "kirocrew" || localOwner === "service")
-      && await isCurrentBundleGateway();
+      && (await isCurrentBundleGateway() || await isPreviousManagedVersionGateway(health?.version));
     const decision = decideGatewayAction(app.getVersion(), health, {
       localOwner, bundledGateway,
     });
@@ -261,7 +325,7 @@ function createHolderDecision({
     if (decision.action === "warn-stale") {
       glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — warning before reuse`);
       const choice = await askAboutExistingGateway("stale", {
-        localOwner, oldVersion: decision.oldVersion,
+        localOwner: await staleDialogOwner(localOwner), oldVersion: decision.oldVersion,
       });
       if (choice === "quit") return "abort";
     }

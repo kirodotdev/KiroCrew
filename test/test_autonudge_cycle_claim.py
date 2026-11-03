@@ -321,12 +321,11 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_failed_release_persists_the_undelivered_qualifier_on_retry(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING, upheld on adjudication): the qualifier was memory-only.
+        """The undelivered qualifier reaches disk even when the release write raised.
 
-        A refused turn whose release write raised added ``_undelivered_claim`` and then
-        returned without another write, so disk kept ``inflight_cycle`` with no
-        ``inflight_undelivered`` beside it. ``_load`` therefore could not repopulate the
-        qualifier, and re-activation charged ``max(cycle_count, owed)`` for a turn that
+        Held in memory only, disk keeps ``inflight_cycle`` with no
+        ``inflight_undelivered`` beside it. ``_load`` then cannot repopulate the
+        qualifier, and re-activation charges ``max(cycle_count, owed)`` for a turn that
         never went out -- with ``max_cycles=1`` the only scheduled action never runs and
         the record reads as complete.
         """

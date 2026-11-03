@@ -57,6 +57,31 @@ def world(monkeypatch):
     return orch, sent
 
 
+@pytest.fixture
+def audit(tmp_path, monkeypatch):
+    """A real, synchronous security event log under tmp_path, read back by the tests."""
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    monkeypatch.setattr(interactions, "sel", lambda: log)
+    return log
+
+
+def _answers(audit, tool: str = "options") -> list[tuple[str, str]]:
+    """``(outcome, selected-or-reason)`` of each stored OPTIONS row, oldest first."""
+    rows = [e for e in reversed(audit.recent()) if e["operation"] == tool]
+    return [
+        (e["outcome"], e["metadata"].get("selected") or e["metadata"].get("reason", ""))
+        for e in rows
+    ]
+
+
 def _buttons(blocks: list[dict]) -> list[dict]:
     return [
         el
@@ -128,13 +153,16 @@ class TestTheCard:
 
 class TestOneClick:
     @pytest.mark.asyncio
-    async def test_a_click_sends_exactly_that_option(self, world):
+    async def test_a_click_sends_exactly_that_option(self, world, audit):
         orch, sent = world
         await interactions.dispatch(_click(["Alpha", "Beta", "Gamma"], 1))
         await _settle()
         sent.assert_called_once()
         assert sent.call_args.args[3] == "Beta"
         assert "[OPTIONS multi-select: Beta]" in sent.call_args.kwargs["action_context"]
+        assert _answers(audit) == [("success", "Beta")]
+        # The card is recorded as answered, and settled since its buttons are gone.
+        assert outbound._ANSWERED == {("C1", "m1"): True}
 
     @pytest.mark.asyncio
     async def test_the_card_is_edited_in_place_to_who_chose_what(self, world, monkeypatch):
@@ -153,14 +181,15 @@ class TestOneClick:
         orch.slack.post_blocks.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_long_label_sends_the_full_text(self, world):
+    async def test_a_long_label_sends_the_full_text(self, world, audit):
         _, sent = world
         await interactions.dispatch(_click([_LONG, "Other"], 0))
         await _settle()
         assert sent.call_args.args[3] == _LONG
+        assert _answers(audit) == [("success", _LONG)]
 
     @pytest.mark.asyncio
-    async def test_a_double_click_sends_once_and_tells_the_second_clicker(self, world):
+    async def test_a_double_click_sends_once_and_tells_the_second_clicker(self, world, audit):
         orch, sent = world
         payload = _click(["Alpha", "Beta"], 0, msg_ts="m-double")
         await asyncio.gather(interactions.dispatch(payload), interactions.dispatch(payload))
@@ -168,9 +197,11 @@ class TestOneClick:
         assert sent.call_count == 1
         orch.slack.post_ephemeral.assert_called_once()
         assert orch.slack.post_ephemeral.call_args.args[2] == "Already answered."
+        assert sorted(_answers(audit)) == [("denied", "already_answered"), ("success", "Alpha")]
+        assert outbound._ANSWERED == {("C1", "m-double"): True}
 
     @pytest.mark.asyncio
-    async def test_a_stale_card_sends_nothing(self, world, monkeypatch):
+    async def test_a_stale_card_sends_nothing(self, world, monkeypatch, audit):
         orch, sent = world
 
         async def _stale(*_a, **_k):
@@ -181,9 +212,10 @@ class TestOneClick:
         await _settle()
         sent.assert_not_called()
         assert orch.slack.post_ephemeral.call_args.args[2] == "Already answered."
+        assert _answers(audit) == [("denied", "superseded_control")]
 
     @pytest.mark.asyncio
-    async def test_an_unauthorized_click_is_refused_privately(self, world):
+    async def test_an_unauthorized_click_is_refused_privately(self, world, audit):
         orch, sent = world
         await interactions.dispatch(_click(["Alpha", "Beta"], 0, user="U-stranger"))
         await _settle()
@@ -191,11 +223,16 @@ class TestOneClick:
         orch.slack.update_message.assert_not_called()
         orch.slack.post_ephemeral.assert_called_once()
         assert "not authorized" in orch.slack.post_ephemeral.call_args.args[2]
+        denied = [e for e in audit.recent() if e["operation"] == "slack.interactive"]
+        assert [(e["caller_identity"], e["outcome"]) for e in denied] == [("U-stranger", "denied")]
+        # The refused click claimed nothing, so the owner can still answer the card.
+        assert outbound._ANSWERED == {}
+        assert _answers(audit) == []
 
 
 class TestReviewEdges:
     @pytest.mark.asyncio
-    async def test_a_choice_written_as_an_action_value_still_answers_once(self, world):
+    async def test_a_choice_written_as_an_action_value_still_answers_once(self, world, audit):
         """``action::`` on a card's button is just the choice: guarded, sent once."""
         orch, sent = world
         payload = _click(['action::{"deploy": 1}', "B"], 0, msg_ts="m-action")
@@ -205,6 +242,10 @@ class TestReviewEdges:
         assert sent.call_count == 1
         assert sent.call_args.args[3] == 'action::{"deploy": 1}'
         assert orch.slack.post_ephemeral.call_args.args[2] == "Already answered."
+        assert _answers(audit) == [
+            ("success", 'action::{"deploy": 1}'),
+            ("denied", "already_answered"),
+        ]
 
     @pytest.mark.asyncio
     async def test_send_on_a_pre_upgrade_checkbox_card_is_told_it_expired(self, world):
@@ -300,7 +341,7 @@ class TestChooseSeveral:
         assert "chose *" in line and "*C*" in line
 
     @pytest.mark.asyncio
-    async def test_a_resubmitted_modal_sends_nothing_more(self, world):
+    async def test_a_resubmitted_modal_sends_nothing_more(self, world, audit):
         orch, sent = world
         await interactions.dispatch(_open(["A", "B"], msg_ts="m-resubmit"))
         view = orch.slack.views_open.call_args.args[1]
@@ -308,6 +349,10 @@ class TestChooseSeveral:
         await interactions.dispatch(_submission(view, [1]))
         await _settle()
         assert sent.call_count == 1
+        # Only the first submission answered; the second found no held card.
+        assert _answers(audit, "options_several") == [("success", "A")]
+        assert outbound._ANSWERED == {("C1", "m-resubmit"): True}
+        assert len(outbound._SEVERAL_PENDING) == 0
 
     @pytest.mark.asyncio
     async def test_an_answered_card_does_not_open_the_modal(self, world):
@@ -316,9 +361,11 @@ class TestChooseSeveral:
         await interactions.dispatch(_open(["A", "B"], msg_ts="m-answered"))
         orch.slack.views_open.assert_not_called()
         assert orch.slack.post_ephemeral.call_args.args[2] == "Already answered."
+        # No modal opened, so no card is held waiting for one.
+        assert len(outbound._SEVERAL_PENDING) == 0
 
     @pytest.mark.asyncio
-    async def test_a_submission_by_a_disallowed_user_is_refused(self, world, monkeypatch):
+    async def test_a_submission_by_a_disallowed_user_is_refused(self, world, monkeypatch, audit):
         orch, sent = world
         await interactions.dispatch(_open(["A", "B"], msg_ts="m-revoked"))
         view = orch.slack.views_open.call_args.args[1]
@@ -328,6 +375,8 @@ class TestChooseSeveral:
         sent.assert_not_called()
         orch.slack.update_message.assert_not_called()
         assert "not authorized" in orch.slack.post_ephemeral.call_args.args[2]
+        assert _answers(audit, "options_several") == [("denied", "not_allowed_user")]
+        assert outbound._ANSWERED == {}
 
     @pytest.mark.asyncio
     async def test_a_submission_from_a_refused_channel_sends_nothing(self, world, monkeypatch):

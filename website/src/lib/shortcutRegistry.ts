@@ -217,6 +217,11 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // keydown.preventDefault() cannot cancel a composed character — this chord
   // fires from inside the composer, so it must not be able to leave one behind.
   { id: 'toggle-focus-mode', group: 'actions', dispatch: 'registry', defaults: both({ key: 'm', alt: true, shift: true }) },
+  // ⌘O / Ctrl+O ("out") — pop the current session out to its own window, or
+  // focus that window when it is already out (#28521): the keyboard twin of the
+  // chat header's pop-out button. Not browser-reserved: a browser tab hands the
+  // keydown to the page, and claiming it cancels the browser's Open File.
+  { id: 'pop-out-session', group: 'actions', dispatch: 'registry', defaults: both({ key: 'o', mod: true }) },
   // Dispatched by ChatInput, not the global handler; listed for the reference.
   { id: 'optimize-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 'Enter', mod: true, shift: true }) },
   // ⌘↑ on macOS / Ctrl+↑ elsewhere — edit the last user message.

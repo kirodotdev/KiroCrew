@@ -992,6 +992,12 @@ class TestOwnerVerifiedSecretTransport:
         assert "not running" not in out
 
 
+#: Lost-run ceiling for the loopback exchanges below. Each one takes milliseconds; the bound only
+#: turns a hung socket or a server thread that never exits into a failure that names itself, and
+#: it sits well under the suite's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
+
 class _NoFqdnHTTPServer(http.server.HTTPServer):
     # http.server resolves socket.getfqdn(host) on bind, which can stall on some
     # hosts while the socket is bound but not listening; this loopback test
@@ -1037,11 +1043,15 @@ class TestTcpVerifiedUrlopen:
         try:
             yield srv.server_address[1], received
         finally:
-            # flake-ok: pre-existing shutdown of the in-test loopback server, moved verbatim; it returns once serve_forever's poll loop sees the shutdown request
-            srv.shutdown()
+            # ``shutdown()`` has no timeout of its own: it waits for ``serve_forever`` to leave its
+            # loop. Run it on a helper thread so a server that never stops fails by name.
+            stopper = threading.Thread(target=srv.shutdown, daemon=True)
+            stopper.start()
+            stopper.join(timeout=_LOST_RUN_SECS)
+            assert not stopper.is_alive(), "the loopback server never left serve_forever"
             srv.server_close()
-            # flake-ok: pre-existing 5 s join ceiling on the loopback server thread, moved verbatim; tracked for a de-flake pass
-            t.join(timeout=5)
+            t.join(timeout=_LOST_RUN_SECS)
+            assert not t.is_alive(), "the loopback server thread did not exit"
 
     def test_verify_peer_passes_sends_request(self):
         from kiro_crew.loopback_http import tcp_verified_urlopen
@@ -1052,9 +1062,10 @@ class TestTcpVerifiedUrlopen:
             def verify(sock):
                 seen_sock.append(sock)  # ran on the connected socket, no raise
 
-            # flake-ok: pre-existing 5 s socket ceiling on a loopback request to the in-test server, moved verbatim; tracked for a de-flake pass
             with tcp_verified_urlopen(
-                f"http://127.0.0.1:{port}/api/token/local", timeout=5, verify_peer=verify
+                f"http://127.0.0.1:{port}/api/token/local",
+                timeout=_LOST_RUN_SECS,
+                verify_peer=verify,
             ) as resp:
                 assert json.loads(resp.read()) == {"ok": True}
             assert received == ["/api/token/local"], "the request must reach the server"
@@ -1072,9 +1083,10 @@ class TestTcpVerifiedUrlopen:
                 raise _Refused("peer not proven")
 
             with pytest.raises(_Refused):
-                # flake-ok: pre-existing 5 s socket ceiling on a loopback request to the in-test server, moved verbatim; tracked for a de-flake pass
                 tcp_verified_urlopen(
-                    f"http://127.0.0.1:{port}/api/token/local", timeout=5, verify_peer=verify
+                    f"http://127.0.0.1:{port}/api/token/local",
+                    timeout=_LOST_RUN_SECS,
+                    verify_peer=verify,
                 )
             assert received == [], "a refused peer must never receive the request"
 
@@ -1082,7 +1094,8 @@ class TestTcpVerifiedUrlopen:
         from kiro_crew.loopback_http import tcp_verified_urlopen
 
         with self._server() as (port, received):
-            # flake-ok: pre-existing 5 s socket ceiling on a loopback request to the in-test server, moved verbatim; tracked for a de-flake pass
-            with tcp_verified_urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+            with tcp_verified_urlopen(
+                f"http://127.0.0.1:{port}/health", timeout=_LOST_RUN_SECS
+            ) as resp:
                 assert resp.status == 200
             assert received == ["/health"]

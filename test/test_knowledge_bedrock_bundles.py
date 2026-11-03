@@ -276,7 +276,7 @@ class TestBundlesNeverCarryBedrockSources:
         """Deleting a source hands each surviving item to another holder. A
         ``source_locations`` row a direct write planted under a live source must
         not make that source the new owner: the item would survive live and be
-        left out of every bundle, so the next restore loses it (review finding).
+        left out of every bundle, so the next restore loses it.
         On both deletion paths the new owner comes from the holders that may
         take ownership; an item whose only other holder is the live source goes
         with its owner, and the planted row goes with it."""

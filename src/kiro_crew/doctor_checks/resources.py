@@ -950,9 +950,9 @@ def _kirocrew_test_homes(root: str) -> tuple[int, bool]:
 def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:
     """``(free_space_pct, free_inode_pct, free_inodes, tmp_entries)`` for *root*.
 
-    ``None`` when the root does not exist or cannot be measured, or when the
-    platform has no ``os.statvfs`` (Windows; the doctor section that calls this
-    is Linux-only, so this is belt-and-braces for direct callers). ``tmp_entries``
+    ``None`` when the root does not exist or cannot be measured. A platform
+    without ``os.statvfs`` (Windows) reads free space only, with inodes
+    unconstrained; the doctor section that calls this is Linux-only. ``tmp_entries``
     counts the names carrying the sandbox launcher's mount-source prefix
     (``kirocrew_sb_<pid>_``), so a warning can say how much of the pressure is
     Kiro Crew's own; every other temporary entry belongs to somebody else and

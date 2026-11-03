@@ -39,6 +39,7 @@ from kiro_crew.acp import seed_provenance as sp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import default_timeout
 
 
 class _HalfSecondPolls(ManualClock):
@@ -53,6 +54,25 @@ class _HalfSecondPolls(ManualClock):
     def sleep(self, seconds: float) -> None:
         super().sleep(seconds)
         self.advance(0.5 - seconds)
+
+
+class _ArrivalLock:
+    """A lock that reports each arrival at it, then takes the real lock.
+
+    A thread that reaches ``__enter__`` is about to block on the real lock, so
+    ``arrived`` marks the moment an absence window can start.
+    """
+
+    def __init__(self, real_lock) -> None:
+        self._real_lock = real_lock
+        self.arrived = threading.Event()
+
+    def __enter__(self):
+        self.arrived.set()
+        return self._real_lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real_lock.__exit__(*exc)
 
 
 class TestSharedPermissionSurfaceEligibility:
@@ -979,12 +999,22 @@ class TestSharedPermissionSurfaceCreateRaces:
                 done.set()
 
         monkeypatch.setattr(sp, "record", refuse_record)
-        with sp.SETTLE_LOCK:
+        real_lock = sp.SETTLE_LOCK
+        settle_lock = _ArrivalLock(real_lock)
+        with real_lock:
+            # The cleanup reads the lock by module name once the record is
+            # refused, so it reaches the stand-in, which reports the arrival
+            # and then waits on the real lock this test holds.
+            monkeypatch.setattr(sp, "SETTLE_LOCK", settle_lock)
             worker = threading.Thread(target=create_seed)
             worker.start()
             assert record_called.wait(5)
-            # flake-ok: a 300 ms absence window while this test holds SETTLE_LOCK; moved verbatim
-            assert not done.wait(0.3)
+            assert settle_lock.arrived.wait(
+                timeout=default_timeout()
+            ), "the cleanup never reached the settle lock"
+            assert not done.wait(
+                timeout=0.3
+            ), "the cleanup finished while a sharer validation held the lock"
         assert done.wait(5)
         worker.join(5)
 

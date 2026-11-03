@@ -489,7 +489,7 @@ class TestChainedRepairPaths:
                 pathlib.Path(__file__).resolve().parents[1]
                 / "src/kiro_crew/instances"
                 / f"{name.rpartition('.')[2]}.py"
-            ).read_text()
+            ).read_text(encoding="utf-8")
             for name in (mod.__name__, *mod._OWNERS)
         )
         tree = ast.parse(src)

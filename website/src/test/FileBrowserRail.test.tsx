@@ -449,6 +449,28 @@ describe('FileBrowserRail refresh', () => {
     expect(btn).toHaveFocus()
   })
 
+  it('names Refresh for the refresh in flight while it is inert, then restores it', async () => {
+    // An `aria-disabled` "Refresh" reads as unavailable with no reason; while the
+    // refetch runs its name and tooltip say it is busy instead.
+    const { qc } = mount()
+    const releases: Array<() => void> = []
+    vi.spyOn(qc, 'refetchQueries').mockImplementation((() =>
+      new Promise<void>(res => { releases.push(res) })) as typeof qc.refetchQueries)
+
+    const btn = screen.getByRole('button', { name: 'Refresh' })
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+    expect(btn).toHaveAccessibleName('Refreshing…')
+    expect(btn).toHaveAttribute('title', 'Refreshing…')
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
+
+    releases.forEach(r => r())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
+    expect(btn).toHaveAccessibleName('Refresh')
+    expect(btn).toHaveAttribute('title', 'Refresh')
+  })
+
   it('ignores a second press while a refresh is in flight, and takes the next one after it lands', async () => {
     // Without `disabled` the press reaches the handler, so the handler has to refuse it: a
     // restart would cancel the round trip under way and let the first press's `finally`
@@ -751,6 +773,19 @@ describe('FileBrowserRail positionless hits', () => {
     // Gating the note on a TAG existing dropped it for a Word-only result, which is
     // the result that most needs telling where the file opens.
     expect(await screen.findByTestId('file-grep-doc-note')).toBeInTheDocument()
+  })
+})
+
+describe('FileBrowserRail Windows hit labels (#27823)', () => {
+  it('shows a native Windows hit relative to the root, without a leading backslash', async () => {
+    H.fileGrep.mockResolvedValue({
+      ...GREP_PAYLOAD,
+      root: 'C:\\proj',
+      results: [{ file: 'C:\\proj\\src\\a.ts', line: 3, preview: 'the needle here', label: null }],
+    })
+    mount()
+    await searchContents('needle')
+    expect(await screen.findByText('src\\a.ts')).toBeInTheDocument()
   })
 })
 

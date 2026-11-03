@@ -219,6 +219,8 @@ def test_the_reconciler_pushes_when_a_channel_turn_ends(state: Any) -> None:
 
     asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
     assert state.push_slots_update.call_count == 1, "turn start seen"
+    # The pass records what it saw, which is what the next pass compares with.
+    assert list(channel_slots._LINKED_RUNNING_SEEN[state].values()) == [True]
 
     asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
     assert state.push_slots_update.call_count == 1, "no change, no push"
@@ -226,6 +228,7 @@ def test_the_reconciler_pushes_when_a_channel_turn_ends(state: Any) -> None:
     state._test_busy.discard(CHANNEL_KEY)
     asyncio.run(channel_slots.reconcile_channel_slots(state, 30))
     assert state.push_slots_update.call_count == 2, "turn end pushed"
+    assert list(channel_slots._LINKED_RUNNING_SEEN[state].values()) == [False]
 
 
 def test_stop_during_a_compaction_is_declined_then_the_next_press_forces(

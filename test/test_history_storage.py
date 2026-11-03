@@ -12,14 +12,65 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from unittest.mock import MagicMock, patch
+import threading
+from collections import defaultdict
+from unittest.mock import MagicMock
 
 import pytest
 from windows_sim import builtin_open_sharing_violation
 
-from kiro_crew import history
+from kiro_crew import history, history_projection
 from kiro_crew.history import _METADATA_CACHE_MAX, ConversationLog
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until, wait_until
+
+#: Loop turns every worker of a storm over bare caches begins before the storm is stopped. It
+#: counts work, so the storm asks as much of a slow host as of a fast one. On a developer machine
+#: the slowest worker (a reader) begins about 15,000 turns in 0.75 s; this is a little above that.
+_CACHE_STORM_TURNS = 20_000
+#: The same for a storm over a ConversationLog, where a turn is a file append, read or parse. On a
+#: developer machine the slowest worker begins about 50 turns (an appender) to 100 (a chained
+#: read) in 0.5 to 0.75 s.
+_LOG_STORM_TURNS = 100
+
+
+class _StopAfterTurns:
+    """The stop flag of a storm test, counting the loop turns each worker thread has begun.
+
+    A worker loops ``while not stop.is_set():``, so every call is one turn begun by the
+    calling thread. :meth:`stop_after` holds the test until each worker has begun a given
+    number of turns and then sets the flag, so a storm lasts for an amount of work and never
+    for a stretch of the clock. The flag is set on every exit, a wait that gives up included,
+    so a failing run does not leave its workers spinning.
+    """
+
+    def __init__(self) -> None:
+        self._stopped = False
+        self._turns: defaultdict[int, int] = defaultdict(int)
+
+    def is_set(self) -> bool:
+        # One writer per key (the calling thread's id), so the counts need no lock.
+        self._turns[threading.get_ident()] += 1
+        return self._stopped
+
+    def set(self) -> None:
+        self._stopped = True
+
+    def stop_after(self, workers: int, turns: int) -> None:
+        """Wait until ``workers`` threads have each begun ``turns`` turns, then stop them."""
+
+        def every_worker_has_turned() -> bool:
+            counts = list(self._turns.values())
+            return len(counts) == workers and min(counts) >= turns
+
+        try:
+            wait_until(
+                every_worker_has_turned,
+                describe=lambda: f"turns begun per worker thread: {sorted(self._turns.values())}",
+            )
+        finally:
+            self.set()
+
 
 # ---------------------------------------------------------------------------
 # PR unit C — recommendation #3: bounded LRU transcript/metadata caches
@@ -36,12 +87,13 @@ class TestLRUCache:
         c["old"] = 1
         c["read-late"] = 2
         c["new"] = 3
-        # flake-ok: pre-existing real-clock stamps set 500 s back against a 100 s idle TTL, moved verbatim; tracked for a de-flake pass
-        now = time.monotonic()
-        c._stamps["old"] = now - 500
-        c._stamps["read-late"] = now - 500
+        # Age two entries 500 s behind the stamp the cache itself gave the newest one and sweep
+        # at that stamp, so no reading of the real clock decides which entries are idle.
+        swept_at = c._stamps["new"]
+        c._stamps["old"] = swept_at - 500
+        c._stamps["read-late"] = swept_at - 500
         assert c.get("read-late") == 2  # a read refreshes the entry
-        assert c.drop_idle() == 1
+        assert c.drop_idle(now=swept_at) == 1
         assert "old" not in c
         assert c.get("read-late") == 2 and c.get("new") == 3
 
@@ -50,8 +102,7 @@ class TestLRUCache:
 
         c: _LRUCache[int] = _LRUCache(maxsize=8)
         c["a"] = 1
-        # flake-ok: pre-existing real-clock base for an explicit sweep time, moved verbatim; tracked for a de-flake pass
-        assert c.drop_idle(now=time.monotonic() + 10**6) == 0
+        assert c.drop_idle(now=10**6) == 0  # however late the sweep, no TTL means nothing expires
         assert c.get("a") == 1
 
     def test_the_transcript_caches_expire_and_the_sweep_reaches_them(self, tmp_path):
@@ -60,8 +111,10 @@ class TestLRUCache:
         log = ConversationLog(tmp_path)
         log._msg_cache["k"] = ((0, 0, 0), 0, [{"role": "user", "content": "x"}])
         log._recent_cache["k\x00"] = ((0, 0, 0), 0, [])
-        # flake-ok: pre-existing real-clock base for an explicit sweep time, moved verbatim; tracked for a de-flake pass
-        later = time.monotonic() + history_cache._TRANSCRIPT_CACHE_IDLE_TTL + 1
+        # Sweep one second past the TTL after the newer of the two stamps the caches gave these
+        # entries, so no reading of the real clock decides that they are idle.
+        stamped = max(log._msg_cache._stamps["k"], log._recent_cache._stamps["k\x00"])
+        later = stamped + history_cache._TRANSCRIPT_CACHE_IDLE_TTL + 1
         assert history_cache.sweep_idle_caches(now=later) >= 2
         assert "k" not in log._msg_cache
         assert "k\x00" not in log._recent_cache
@@ -445,13 +498,11 @@ class TestLRUCacheConcurrency:
     """
 
     def test_get_pop_interleave_no_exception(self):
-        import threading
-
         from kiro_crew.history import _LRUCache
 
         c: _LRUCache[int] = _LRUCache(maxsize=64)
         errors: list[BaseException] = []
-        stop = threading.Event()
+        stop = _StopAfterTurns()
 
         def writer() -> None:
             i = 0
@@ -497,12 +548,7 @@ class TestLRUCacheConcurrency:
         ]
         for t in threads:
             t.start()
-        import time as _t
-
-        # flake-ok: pre-existing 750 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 750 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        _t.sleep(0.75)
-        stop.set()
+        stop.stop_after(len(threads), _CACHE_STORM_TURNS)
         for t in threads:
             t.join(timeout=5)
         assert not errors, f"cache raised under concurrency: {errors[:3]}"
@@ -510,15 +556,13 @@ class TestLRUCacheConcurrency:
         assert len(c) <= 64
 
     def test_getitem_pop_interleave_no_exception(self):
-        import threading
-
         from kiro_crew.history import _LRUCache
 
         c: _LRUCache[int] = _LRUCache(maxsize=32)
         for i in range(32):
             c[str(i)] = i
         errors: list[BaseException] = []
-        stop = threading.Event()
+        stop = _StopAfterTurns()
 
         def indexer() -> None:
             i = 0
@@ -545,12 +589,7 @@ class TestLRUCacheConcurrency:
         threads = [threading.Thread(target=fn) for fn in (indexer, indexer, churner, churner)]
         for t in threads:
             t.start()
-        import time as _t
-
-        # flake-ok: pre-existing 500 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 500 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        _t.sleep(0.5)
-        stop.set()
+        stop.stop_after(len(threads), _CACHE_STORM_TURNS)
         for t in threads:
             t.join(timeout=5)
         assert not errors, f"__getitem__ raised under concurrency: {errors[:3]}"
@@ -565,15 +604,13 @@ class TestConversationLogConcurrency:
     """
 
     def test_append_read_recent_interleave(self, tmp_path):
-        import threading
-
         log = ConversationLog(base_dir=tmp_path, cache_max=8)
         # Seed a few sessions.
         for s in range(4):
             for i in range(10):
                 log.append(f"s{s}", "user" if i % 2 == 0 else "assistant", f"m{i}")
         errors: list[BaseException] = []
-        stop = threading.Event()
+        stop = _StopAfterTurns()
 
         def appender(sid: int) -> None:
             i = 0
@@ -609,27 +646,20 @@ class TestConversationLogConcurrency:
             threads.append(threading.Thread(target=reader, args=(sid,)))
         for t in threads:
             t.start()
-        import time as _t
-
-        # flake-ok: pre-existing 750 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 750 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        _t.sleep(0.75)
-        stop.set()
+        stop.stop_after(len(threads), _LOG_STORM_TURNS)
         for t in threads:
             t.join(timeout=5)
         assert not errors, f"ConversationLog raised under concurrency: {errors[:3]}"
 
     def test_chained_read_invalidate_interleave(self, tmp_path):
         """read_messages_chained() vs invalidate_tab_id_cache() across threads."""
-        import threading
-
         log = ConversationLog(base_dir=tmp_path)
         # Create dashboard sessions sharing a tab_id so the chained path builds
         # the tab_id index.
         for n in range(3):
             log.append(f"dashboard:chat-{n}", "user", f"hi {n}", tab_id="tabX")
         errors: list[BaseException] = []
-        stop = threading.Event()
+        stop = _StopAfterTurns()
 
         def chained() -> None:
             while not stop.is_set():
@@ -653,12 +683,7 @@ class TestConversationLogConcurrency:
         ]
         for t in threads:
             t.start()
-        import time as _t
-
-        # flake-ok: pre-existing 500 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 500 ms stress window before the threads are stopped, moved verbatim; tracked for a de-flake pass
-        _t.sleep(0.5)
-        stop.set()
+        stop.stop_after(len(threads), _LOG_STORM_TURNS)
         for t in threads:
             t.join(timeout=5)
         assert not errors, f"chained read raced with invalidate: {errors[:3]}"
@@ -799,7 +824,7 @@ class TestMetadataReadSurvivesATransientSharingViolation:
             meta.get("agent") == "my-agent"
         ), f"a single transient sharing violation was reported as absence: {meta!r}"
 
-    def test_the_retry_never_sleeps_on_the_event_loop(self, tmp_path):
+    def test_the_retry_never_sleeps_on_the_event_loop(self, tmp_path, monkeypatch):
         """The retry delay must not run on the loop.
 
         ``restore_open_slots_async`` keeps the restore ON the event loop on
@@ -809,42 +834,38 @@ class TestMetadataReadSurvivesATransientSharingViolation:
         the crash-loop the async restore exists to prevent. So on the loop the
         retry must be immediate, and it must still recover the metadata.
         """
-        import kiro_crew.history as history_mod
-
         log = ConversationLog(base_dir=tmp_path)
         log.append("s1", "user", "hello", agent="my-agent")
         log._meta_cache.pop("s1", None)
 
-        slept: list[float] = []
+        # The pause reads the clock of the projection family, so a clock installed through
+        # that facade records its sleeps without rebinding the stdlib's for the whole worker.
+        clock = ManualClock()
+        clock.install(monkeypatch, history_projection)
 
         async def _on_loop():
-            # flake-ok: pre-existing worker-wide patch of the stdlib time.sleep through history's _time, moved verbatim; tracked for a de-flake pass
-            with patch.object(history_mod._time, "sleep", lambda s: slept.append(s)):
-                with builtin_open_sharing_violation(match="s1.jsonl", times=1):
-                    return log.get_metadata("s1")
+            with builtin_open_sharing_violation(match="s1.jsonl", times=1):
+                return log.get_metadata("s1")
 
         meta = asyncio.run(_on_loop())
 
-        assert slept == [], f"blocking sleep(s) ran on the event loop: {slept}"
+        assert clock.sleeps == (), f"blocking sleep(s) ran on the event loop: {clock.sleeps}"
         # The immediate retry still has to work.
         assert meta.get("agent") == "my-agent", f"on-loop retry lost the metadata: {meta!r}"
 
-    def test_the_retry_does_sleep_off_the_event_loop(self, tmp_path):
+    def test_the_retry_does_sleep_off_the_event_loop(self, tmp_path, monkeypatch):
         """Off the loop the pause is safe and worth taking -- a sharing violation
         clears in milliseconds, so retrying instantly would usually just fail."""
-        import kiro_crew.history as history_mod
-
         log = ConversationLog(base_dir=tmp_path)
         log.append("s1", "user", "hello", agent="my-agent")
         log._meta_cache.pop("s1", None)
 
-        slept: list[float] = []
-        # flake-ok: pre-existing worker-wide patch of the stdlib time.sleep through history's _time, moved verbatim; tracked for a de-flake pass
-        with patch.object(history_mod._time, "sleep", lambda s: slept.append(s)):
-            with builtin_open_sharing_violation(match="s1.jsonl", times=1):
-                meta = log.get_metadata("s1")
+        clock = ManualClock()
+        clock.install(monkeypatch, history_projection)
+        with builtin_open_sharing_violation(match="s1.jsonl", times=1):
+            meta = log.get_metadata("s1")
 
-        assert slept, "no retry pause off the event loop"
+        assert clock.sleeps, "no retry pause off the event loop"
         assert meta.get("agent") == "my-agent"
 
     def test_a_persistent_violation_still_reports_absence_but_warns(self, tmp_path, caplog):
@@ -873,8 +894,7 @@ class TestAppendIfAbsentOffLoop:
         log = MagicMock()
         fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
         assert fut is not None, "the scheduled write was not handed back to the caller"
-        # flake-ok: pre-existing unbounded await of the executor future, moved verbatim; tracked for a de-flake pass
-        await fut
+        await await_until(fut, what="the off-loop append_if_absent")
         log.append_if_absent.assert_called_once()
 
     @pytest.mark.asyncio
@@ -884,8 +904,7 @@ class TestAppendIfAbsentOffLoop:
         fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
         assert fut is not None
         with pytest.raises(OSError):
-            # flake-ok: pre-existing unbounded await of the executor future, moved verbatim; tracked for a de-flake pass
-            await fut
+            await await_until(fut, what="the failing off-loop append_if_absent")
 
     def test_returns_none_when_written_inline(self) -> None:
         # No running loop: the append already happened, so there is nothing to

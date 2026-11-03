@@ -1149,6 +1149,63 @@ class TestMcpToolClientProtocol:
         result = client.call_tool("my_tool", {"arg": "val"})
         assert result == "hello"
 
+    def test_call_tool_returns_every_text_block(self):
+        """A payload behind a leading notice block reaches the script."""
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        payload = json.dumps({"AuthorEmail": "someone@example.com"})
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [
+                            {"type": "text", "text": "=== UNTRUSTED CONTENT BOUNDARY ==="},
+                            {"type": "image", "data": "aGk=", "mimeType": "image/png"},
+                            {"type": "text", "text": payload},
+                        ]
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = client.call_tool("search", {})
+        assert result == "=== UNTRUSTED CONTENT BOUNDARY ===\n" + payload
+        assert json.loads(result.splitlines()[-1]) == {"AuthorEmail": "someone@example.com"}
+
+    def test_call_tool_is_error_joins_every_text_block(self):
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "isError": True,
+                        "content": [
+                            {"type": "text", "text": "notice"},
+                            {"type": "text", "text": "real reason"},
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        with pytest.raises(McpToolError, match="notice\nreal reason"):
+            client.call_tool("failing_tool", {})
+
     def test_call_tool_error_response(self):
         from kiro_crew.cron_script import McpToolClient
 
