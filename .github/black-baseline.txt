@@ -734,7 +734,6 @@ test/test_website_build_heap.py
 test/test_wecom_config_handlers.py
 test/test_wecom_wire.py
 test/test_weixin_media.py
-test/test_weixin_wire.py
 test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
