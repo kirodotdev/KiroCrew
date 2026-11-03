@@ -439,7 +439,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   republished by a rename INSIDE the directory, so the directory's own inode
     #:   stays the same, as for ``seed-provenance``; at the data-home root beside
     #:   writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
+    #:
+    #: One more root-level leaf, three entries per tier:
+    #:
+    #: * ``agent-plugins.json`` -- the owner's Agent Plugins on/off record, which
+    #:   authorizes an installed plugin's stdio servers to start. A file at the
+    #:   data-home root beside writable siblings, so leaf-only is the only hold
+    #:   available, as for ``aws_service_consent.json``.
+    EXPECTED: dict[str, int] = {"standard": 312, "cc": 319, "strict": 320}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

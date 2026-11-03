@@ -634,6 +634,7 @@ _FRAMEWORK_OWNED_AGENT_KEYS = frozenset(
         # _preserve_user_agent_edits for why that distinction decides ownership.
         "managedToolPolicy",  # which managed tools an app agent may NOT reach
         "includeMcpJson",  # whether the global mcp.json bleeds into this agent
+        "includePowers",  # pinned off: plugins reach a spec only through Crew's loader
         # `resources` holds `file://` URIs into the app's own provisioned tree, written
         # with `{ENGINE_ROOT}`-style placeholders the GATEWAY renders (see
         # `_render_shipped_agent`). It is a generated path list, not a preference: a
@@ -1017,6 +1018,11 @@ def _register_agents(
                     merged["mcpServers"] = _strip_ungoverned_auto_approve(
                         _servers, honour_owner_written=False
                     )
+                # KAS's own plugin loader stays off on an app agent, as on every
+                # spec Crew writes: Agent Plugins reach a session only through
+                # Crew's plugin MCP source, after the owner turned them on. The
+                # shipped template does not carry the key, so it is set here.
+                merged["includePowers"] = False
                 # The map above is FINAL — every source of servers has been merged —
                 # so this is the one point a dangling `@` grant is decidable. Warn,
                 # never reject: kiro-cli just skips the ref, so the agent works

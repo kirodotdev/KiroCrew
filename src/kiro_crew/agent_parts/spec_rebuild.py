@@ -1421,6 +1421,7 @@ def _write_heartbeat_spec(path: Path, main_path: Path, model: str) -> None:
         ),
         "model": model,
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": _HEARTBEAT_SYSTEM_PROMPT,
         "mcpServers": mcp,
         # Build from the servers actually resolved so we never reference a

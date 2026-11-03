@@ -77,6 +77,7 @@ _BASE = {
     },
     "resources": ["file://.kiro/steering/**/*.md"],
     "includeMcpJson": True,
+    "includePowers": True,
     "autoAllowReadonly": True,
     "hooks": {"auto_approve_tools": ["Read*"], "postToolUse": [{"matcher": "x", "command": "y"}]},
     "permissions": {"rules": [{"tool": "fs_read", "decision": "allow"}]},
@@ -88,6 +89,7 @@ _REWRITTEN_TOP_LEVEL = {
     "description",
     "allowedTools",
     "includeMcpJson",
+    "includePowers",
     "autoAllowReadonly",
     "permissions",
     "hooks",
@@ -110,6 +112,7 @@ def test_derived_spec_empties_every_grant_and_keeps_everything_else():
     assert "allowedPaths" not in derived["toolsSettings"]["fs_write"]
     assert "trustedAgents" not in derived["toolsSettings"]["subagent"]
     assert derived["includeMcpJson"] is False
+    assert derived["includePowers"] is False
     assert derived["autoAllowReadonly"] is False
     assert derived["permissions"] == {"rules": []}
     assert "hooks" not in derived  # lifecycle commands run unprompted; none on this surface

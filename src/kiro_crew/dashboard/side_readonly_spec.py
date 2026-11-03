@@ -392,6 +392,8 @@ def derive_readonly_spec(
       nothing the side chat can use is lost. ``useLegacyMcpJson``, kiro-cli's
       alias for the same field, is removed so the file does not declare it
       twice.
+    * ``includePowers`` → ``False`` — KAS's own plugin loader stays off, as on
+      every spec Crew writes.
     * ``autoAllowReadonly`` → ``False`` when present — kiro-cli's own (retired)
       read-only auto-approve, whose notion of read-only is not the host's.
     * ``permissions`` → ``{"rules": []}`` when the base carries one — the KAS
@@ -468,6 +470,7 @@ def derive_readonly_spec(
             entry["deniedPaths"] = existing + [p for p in denied_read_paths if p not in existing]
     spec.pop("useLegacyMcpJson", None)
     spec["includeMcpJson"] = False
+    spec["includePowers"] = False
     if "autoAllowReadonly" in spec:
         spec["autoAllowReadonly"] = False
     if "permissions" in spec:

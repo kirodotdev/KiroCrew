@@ -3,15 +3,18 @@
 ``installed.json`` is the list of record, as it is for Kiro IDE and KAS: a folder
 under ``installed/`` that the index does not name is not installed. Discovery
 only reads. It writes no file, starts no process and adds no skill root, so
-calling it can never activate a plugin.
+calling it can never activate a plugin. It does read the owner's on/off record
+(:mod:`kiro_crew.agent_plugins.consent`) to tell ``on`` from ``off``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from pathlib import Path
 
+from kiro_crew.agent_plugins import consent
 from kiro_crew.agent_plugins.manifest import (
     MANIFEST_FILE,
     MCP_SCHEMA_FOR,
@@ -67,14 +70,29 @@ def installed_names(home: Path) -> list[str]:
     return names
 
 
-def discover_plugins(home: Path | None = None) -> list[PluginRecord]:
-    """One record per installed name, sorted by name.
+def discover_plugins(
+    home: Path | None = None, enabled: frozenset[str] | None = None
+) -> list[PluginRecord]:
+    """One record per installed name, sorted by name, with the owner's switch applied.
 
-    One plugin can never hide another: an unexpected error while inspecting a
-    plugin makes that plugin ``invalid``, and the rest are still listed.
+    *enabled* is the on/off record (:func:`consent.enabled`), read once when not
+    given. One plugin can never hide another: an unexpected error while
+    inspecting a plugin makes that plugin ``invalid``, and the rest are still
+    listed.
     """
     base = powers_home() if home is None else home
-    return [_inspect_guarded(base, name) for name in sorted(installed_names(base))]
+    record = consent.enabled() if enabled is None else enabled
+    return [
+        apply_consent(_inspect_guarded(base, name), record)
+        for name in sorted(installed_names(base))
+    ]
+
+
+def apply_consent(rec: PluginRecord, enabled: frozenset[str]) -> PluginRecord:
+    """*rec* as ``on`` when it is valid (``off``) and the owner's record names it."""
+    if rec.state != "off" or rec.name not in enabled:
+        return rec
+    return dataclasses.replace(rec, state="on")
 
 
 def _inspect_guarded(home: Path, name: str) -> PluginRecord:

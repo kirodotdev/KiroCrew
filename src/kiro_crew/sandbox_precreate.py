@@ -329,6 +329,13 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The Agent Plugins on/off record: ``agent_plugins.consent.enabled`` reads an
+    # absent, empty and unreadable record alike as "no plugin on", so a pre-created
+    # ``{}`` means exactly what an absent file means (criterion 1); the writer
+    # publishes through ``atomic_write`` (new inode), so a sandboxed launcher frozen
+    # at ``{}`` refuses a plugin the owner turned on later, which is narrower than
+    # the truth (criterion 2).
+    "agent-plugins.json",
     "decisions_consent.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means

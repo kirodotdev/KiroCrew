@@ -13,8 +13,8 @@ from typing import Literal
 #: ``invalid``: the plugin was rejected as a whole, so none of its components may
 #: be used. ``not-a-plugin``: the directory has no ``plugin.json`` (a legacy
 #: ``POWER.md`` power, for example). ``off``: a valid plugin the owner has not
-#: turned on.
-PluginState = Literal["invalid", "not-a-plugin", "off"]
+#: turned on. ``on``: a valid plugin the owner turned on.
+PluginState = Literal["invalid", "not-a-plugin", "off", "on"]
 
 #: Which part of a plugin an :class:`Issue` is about.
 Component = Literal["plugin", "manifest", "skills", "mcp"]
@@ -99,7 +99,7 @@ class PluginRecord:
     #: The directory as listed, before resolution.
     root: str
     state: PluginState
-    #: Why the plugin is ``invalid`` or ``not-a-plugin``; ``None`` when ``off``.
+    #: Why the plugin is ``invalid`` or ``not-a-plugin``; else ``None``.
     reason: str | None = None
     manifest: Manifest | None = None
     skills: tuple[Skill, ...] = ()

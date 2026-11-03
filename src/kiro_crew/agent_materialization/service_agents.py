@@ -53,6 +53,7 @@ def _install_guest_agent() -> None:
         # Pinned: kiro-cli defaults this to True and would spawn every server in
         # the user-level mcp.json for a session that must mount nothing.
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": agent_mod.GUEST_AGENT_PROMPT,
     }
     auto_approve.write_governed_spec(
@@ -168,6 +169,7 @@ def _install_mate_conductor_agent() -> None:
         else {}
     )
     config["includeMcpJson"] = False
+    config["includePowers"] = False
     for key in ("tools", "allowedTools"):
         listed = config.get(key)
         if isinstance(listed, list):
@@ -297,6 +299,7 @@ def _knowledge_agent_config() -> dict[str, Any]:
         ),
         "model": model,
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": agent_mod._KNOWLEDGE_SYSTEM_PROMPT,
         "mcpServers": {},
         "tools": [],
@@ -655,6 +658,7 @@ def _install_dashboard_manager_agent() -> None:
         ),
         "model": model,
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT,
         "tools": ["fs_read", "@kirocrew-panel"],
         "allowedTools": ["fs_read", *agent_mod._MEMBER_PANEL_GRANTS],

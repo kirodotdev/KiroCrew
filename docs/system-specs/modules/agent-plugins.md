@@ -1,15 +1,19 @@
 # Agent Plugins
 
 Owner: `kiro_crew.agent_plugins`. Tests: `test/test_agent_plugins_discovery.py`,
-`test/test_agent_plugins_mcp.py`, and `test/test_agent_plugins_conformance.py`,
-which pins the loader's verdict on the official conformance suite's own fixtures
-(vendored in `test/fixtures/agent_plugins_conformance/`). Design:
+`test/test_agent_plugins_mcp.py`, `test/test_agent_plugins_conformance.py`
+(which pins the loader's verdict on the official conformance suite's own fixtures,
+vendored in `test/fixtures/agent_plugins_conformance/`),
+`test/test_agent_plugins_consent.py`, `test/test_agent_plugins_routes.py`,
+`test/test_agent_plugins_launch.py`, `test/test_agent_plugins_mcp_source.py` and
+`test/test_agent_plugins_include_powers.py`. Design:
 [rfc-agent-plugins-standard.md](../../request-for-change/rfc-agent-plugins-standard.md).
 
 Kiro Crew's client for the [Agent Plugins](https://agent-plugins.org/) 1.0.0
-standard. This module discovers and validates plugins. It never activates one:
-turning a plugin on and handing its skills and MCP servers to sessions are later
-phases of the RFC, and until they land nothing calls this module at runtime.
+standard. This module discovers and validates plugins, keeps the owner's on/off
+record, and starts the stdio servers of plugins the owner turned on. A plugin's
+MCP servers reach sessions through the plugin MCP source (§8). Skills are not
+handed to sessions yet.
 
 ## 1. Where plugins come from
 
@@ -34,7 +38,13 @@ unreadable index lists nothing.
 |---|---|
 | `invalid` | The folder is missing, or `plugin.json` fails a fatal rule. No component of it is used |
 | `not-a-plugin` | No `plugin.json`; a `POWER.md`-only power is named as such in `reason` |
-| `off` | A valid plugin. Its skills, servers and per-component issues are filled in |
+| `off` | A valid plugin the owner has not turned on. Its skills, servers and per-component issues are filled in |
+| `on` | A valid plugin the owner turned on (§6) |
+
+`on` is computed from the owner's record (`consent.enabled()`), read once per
+call unless the caller passes it. Consent is to a plugin by name: editing or
+updating the files of an `on` plugin keeps it `on`, and a plugin that becomes
+`invalid` is `invalid` whatever the record says.
 
 One plugin never hides another. A file that cannot be read or parsed, including
 one nested too deeply to parse, fails only the component it belongs to: a bad
@@ -152,5 +162,110 @@ caller uses it yet; the install flow (RFC Phase 4) will. Tests:
 ## 5. Side effects
 
 Conversion writes only under its staging folder and `dest`. Discovery reads files only: it does not create `data/<name>/`, write any
-index, start a process or add a skill root. Each read is size-bounded
-(`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB, `installed.json` 1 MiB).
+index or the owner's record, start a process or add a skill root. Each read is
+size-bounded (`plugin.json` and `mcp.json` 256 KiB, `SKILL.md` 1 MiB,
+`installed.json` 1 MiB).
+
+## 6. The owner's on/off record (`agent_plugins.consent`)
+
+`agent-plugins.json` in the data home (`config_dir()`):
+
+```json
+{"version": 1, "enabled": {"<name>": {}}}
+```
+
+- **By name.** Each key of `enabled` is a plugin the owner turned on; its row is
+  an empty object. `enabled()` returns the set of those names. A row's contents
+  are ignored, so a row an earlier build wrote with extra fields still reads as
+  on, and the next write stores it as `{}`.
+- **Reads fail closed.** A missing, empty, oversized (past 1 MiB), unreadable or
+  malformed record, a wrong `version`, or a row that is not an object, means
+  that plugin (or every plugin) is not on.
+- **Writes.** `set_enabled(name, on)` is called only by the dashboard
+  handler (§7). It serialises on an in-process lock (every writer runs in the
+  gateway), copies an unparseable record aside as `agent-plugins.json.corrupt-<UTC>`,
+  and publishes through `atomic_write` with owner-only permissions. Turning a
+  plugin on adds its row; turning one off removes it.
+- **Sandbox placement.** The leaf is in `sandbox_leaves._CREW_READONLY_LEAVES`
+  (sealed read-only for sandboxed code), `sandbox_precreate._CREW_PRECREATE_READONLY_FILE_LEAVES`
+  (pre-created as `{}`, which reads as nothing on), and `security.paths_lists._CREW_SECRET_LEAVES`
+  (fenced from the agent's file tools), the placement `aws_service_consent.json`
+  has. Unlike that record it is in `_CREW_CHILD_READABLE_LEAVES`, not the
+  enforced-harness withheld list: the launcher (§9) runs as a harness child and
+  must read it, it holds only plugin names, and the read-only seal answers
+  the write that would turn a plugin on.
+
+There is no MCP tool and no CLI verb that writes the record.
+
+## 7. Dashboard routes (`dashboard/handlers/agent_plugins_consent.py`)
+
+| Route | Body | Result |
+|---|---|---|
+| `GET /api/agent-plugins` | | `{"plugins": [{name, state, reason, version, description, servers, skills, issues}]}` |
+| `POST /api/agent-plugins` | `{"name": str, "enabled": bool}` | `{"ok": true, "name", "state"}` |
+
+Both refuse anyone but the dashboard owner (`is_owner_dashboard_request`) with
+403 `dashboard_owner_required`, before reading the body: an app token, an allowed
+messaging user and an unauthenticated caller are all refused. Only `name` and
+`enabled` are read from the body. An unknown name is 404 `agent_plugin_not_found`;
+an `invalid` or `not-a-plugin` plugin is 409 `agent_plugin_not_enableable`; a
+malformed body is 400. Each switch is recorded in
+the Security Event Log (`agent_plugins.enabled` / `agent_plugins.disabled`). The
+routes are registered in `dashboard/routes/system.py` beside the AWS consent
+routes. A change reaches sessions at their next spec rebuild.
+
+## 8. MCP source (`agent_materialization/mcp_sources.py`)
+
+`merge_mcp_sources()` projects the servers of every `on` plugin second in the
+chain: after the app servers, before the Kiro global `mcp.json`, the provider
+globals and the dashboard store. So an app's same-named key wins, and a
+leftover in a shared file cannot stand in for a plugin entry.
+
+- Each valid server is keyed `plugin-<name>:<server>`; characters of the server
+  name outside `[A-Za-z0-9_.-]` become `-`.
+- A stdio server becomes the launcher: `isolated_python_argv("-P", "-m",
+  "kiro_crew.agent_plugins.launch", <name>, <server>)`. A remote server becomes
+  `{"url"}`, plus `"type": "sse"` for SSE and its `headers`.
+- Each entry goes through `auto_approve._ceiling_filtered_spec` and is exposed
+  in `tools` as `@<key>`.
+- Entries are re-derived every rebuild and assigned, not `setdefault`ed. A
+  `plugin-` key a previous rebuild wrote that this one does not derive (plugin
+  turned off, now `invalid`, or uninstalled) is removed with its `@ref`.
+- The source never raises: a discovery failure contributes nothing, and a
+  failure on one plugin skips only that plugin.
+
+A host with no `on` plugin gets no `plugin-` key.
+
+## 9. The stdio launcher (`agent_plugins.launch`)
+
+`python -P -m kiro_crew.agent_plugins.launch <plugin> <server>`. Every harness,
+KAS included (which drops `cwd` from MCP entries), gets the same launch rules
+through it. In order it:
+
+1. re-reads the owner's record, re-inspects that one plugin and refuses unless
+   it is `on` (valid and in the record) and declares a valid stdio server by
+   that name;
+2. creates `<powers home>/data/<plugin>/`;
+3. expands `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` once, in a single left-to-right
+   pass, in `args`, `env` values and `cwd` (§9.2); other `${...}` stays literal;
+4. copies its own environment, overlays the declared `env`, then sets
+   `PLUGIN_ROOT` and `PLUGIN_DATA` last (§9.1);
+5. resolves `command` as one token: a bare name through the resulting `PATH`, a
+   `./` path against the root, which must stay a regular file inside it;
+6. changes to `cwd` (the root when omitted; a `./` value is relative to the
+   root) and calls `execve`. On Windows the server runs as a child on the
+   launcher's stdio and its exit status is passed on.
+
+A refusal prints one stderr line, `kirocrew: plugin MCP server <plugin>:<server>
+was not started: <reason>.`, and exits 78; the server is never started.
+
+## 10. `includePowers`
+
+Every spec Crew writes pins `includePowers: false` wherever it pins
+`includeMcpJson: false` (`agent._refresh_dynamic_fields`,
+`auto_approve.govern_spec`, `service_agents`, `spec_rebuild._write_heartbeat_spec`,
+`connections/mint._mint_spec_body`, `side_readonly_spec.derive_readonly_spec`),
+and `apps/bridges_agents._register_agents` sets it on every app agent. KAS's own
+plugin loader therefore never runs beside Crew's, and no server is registered
+twice. `acp/kas_agents.to_client_custom_agent` forwards the bool, and
+`client_mcp_array.spec_is_toolless` still treats a `false` value as toolless.

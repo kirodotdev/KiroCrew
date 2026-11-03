@@ -478,6 +478,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The owner's Agent Plugins on/off record. A writable record lets an
+    # auto-approved agent turn on, for itself, a plugin whose stdio servers run
+    # outside the PreToolUse gate. Same class as ``aws_service_consent.json``;
+    # the only writer is the owner-only ``/api/agent-plugins`` route.
+    "agent-plugins.json",
     # The runtime config and its overlay. They are ordinary settings files, but they
     # also carry the switches that LOOSEN confinement -- ``agent.sandbox`` (``"off"``
     # skips this very sandbox for every later spawn), ``agent.apps_allow_third_party`` /
@@ -1058,6 +1063,14 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # mapping, answered by the read-only seal. Off the read-gate floor, so the mask
     # never covered it.
     "skill-projection",
+    # The owner's Agent Plugins on/off record: plugin names only, no credential
+    # and no identifier. Unlike its consent siblings it is READ in a harness child
+    # on purpose: the plugin launcher runs as that harness's MCP server and
+    # refuses to start one unless the record names the plugin. Withholding it
+    # would bind an empty record and make every plugin server refuse on an
+    # enforced harness. The risk is a WRITE that turns a plugin on, and the
+    # read-only seal above is what answers it.
+    "agent-plugins.json",
 )
 
 

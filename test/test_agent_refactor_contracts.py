@@ -814,6 +814,7 @@ def _guest_bytes(model: str) -> str:
         "tools": [],
         "mcpServers": {},
         "includeMcpJson": False,
+        "includePowers": False,
         "prompt": agent.GUEST_AGENT_PROMPT,
     }
     return json.dumps(spec, indent=2) + "\n"
@@ -881,6 +882,7 @@ def test_the_lite_spec_is_the_bare_background_agent(
         "mcpServers": {},
         "prompt": "",
         "includeMcpJson": False,
+        "includePowers": False,
     }
     assert agent_state.get_cc_model("kirocrew-lite") == agent._BACKGROUND_CC_MODEL
 
