@@ -781,30 +781,37 @@ async def test_poll_builder_id_pending_then_authorized(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("region", "profile_region"),
+    [("us-east-1", "us-east-1"), ("eu-west-2", "eu-central-1")],
+)
+async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch, region, profile_region):
+    profile_arn = f"arn:aws:codewhisperer:{profile_region}:123456789012:profile/p1"
     service, session = _service(
         tmp_path,
         responses=[
             _FakeResp(200, {"accessToken": "at-2", "refreshToken": "rt-2", "expiresIn": 3600}),
             _FakeResp(
                 200,
-                {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/p1", "profileName": "P1"}]},
+                {"profiles": [{"arn": profile_arn, "profileName": "P1"}]},
             ),
         ],
     )
     begin = await _begin_oidc(
-        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start", region=region
     )
     result = await service.poll_device(begin["login_id"])
     assert result == {"status": "authorized", "provider": "Enterprise"}
     saved = TokenStore(tmp_path).resolve()
     assert saved is not None
     assert saved.identity == "identity_center"
-    assert saved.profile_arn == "arn:aws:kiro:us-east-1:1:profile/p1"
+    assert saved.profile_arn == profile_arn
+    assert saved.region == region
+    assert session.calls_with_headers[0][0] == f"https://oidc.{region}.amazonaws.com/token"
     # The control-plane call went to the regional CPS (the host kiro-cli itself
     # uses) with the fresh bearer token and the CodeWhisperer-family target.
     cp_url, cp_body, cp_headers = session.calls_with_headers[-1]
-    assert cp_url == "https://management.us-east-1.kiro.dev/"
+    assert cp_url == f"https://management.{profile_region}.kiro.dev/"
     assert cp_body == {"maxResults": 10}
     assert cp_headers["X-Amz-Target"] == "AmazonCodeWhispererService.ListAvailableProfiles"
     assert cp_headers["Authorization"] == "Bearer at-2"
@@ -940,6 +947,9 @@ def test_control_plane_url_is_the_regional_cps_host():
     # authorization.
     assert (
         control_plane.control_plane_url("eu-west-1") == "https://management.eu-central-1.kiro.dev/"
+    )
+    assert (
+        control_plane.control_plane_url("eu-west-2") == "https://management.eu-central-1.kiro.dev/"
     )
     # No dedicated CPS for that region: same fallback as kiro-cli's DEFAULT_ENDPOINT.
     assert control_plane.control_plane_url("ap-southeast-2") == control_plane.control_plane_url(

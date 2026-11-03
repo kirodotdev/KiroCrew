@@ -219,6 +219,10 @@ port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
 
+For IAM Identity Center in `eu-west-1` or `eu-west-2`, profile discovery uses
+the Frankfurt control plane (`management.eu-central-1.kiro.dev`). SSO-OIDC
+requests and token refresh keep the configured Identity Center region.
+
 ### External IdP (enterprise SSO) — independent
 
 Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,
