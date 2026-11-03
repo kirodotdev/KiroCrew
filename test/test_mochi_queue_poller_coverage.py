@@ -44,6 +44,7 @@ class _Rig:
         self.trigger_error: Exception | None = None
         self.spawn_error: Exception | None = None
         self.timeout = False  # True: the spawned agent never reports back
+        self.succeeded = True  # False: the agent that reports back failed or is unknown
         # The watch members are absent as far as the poller can tell until a test sets them.
         self.get_due_watch_items = self.get_unnotified_watch_items = None
         self.on_budget_exhausted = None
@@ -86,6 +87,9 @@ class _Rig:
         else:
             loop.call_soon(self.poller.notify_agent_done, "agent-1")
         return "agent-1"
+
+    def agent_succeeded(self, spawn_id: str) -> bool:
+        return self.succeeded and spawn_id == "agent-1"
 
     def write(self, *tasks: dict[str, Any], **top: Any) -> None:
         queue = {"planned_at": qf._iso(NOW - 3_600_000), "planned_until": FAR, "tasks": list(tasks)}
@@ -296,6 +300,31 @@ async def test_a_finished_freestyle_task_is_stamped_done_and_not_spawned_again(r
     assert rig.prompts == ["Execute freestyle task: fs1"]  # spawned once, not on every poll
 
 
+async def test_a_failed_or_unknown_run_is_fail_counted_not_stamped_done(rig: _Rig) -> None:
+    rig.succeeded = False  # the agent failed, was stopped, or its id is unknown
+    rig.write(_task("fs1", "freestyle"), _task("fs2", "freestyle", fail_count=MAX_FAIL_COUNT - 1))
+    await rig.poll()
+    states = [(rig.task(i)["done"], rig.task(i).get("fail_count")) for i in ("fs1", "fs2")]
+    assert states == [(False, 1), (False, MAX_FAIL_COUNT)]
+    assert rig.task(f"fail-notify-fs2-{NOW}")["action"]["sticky"] is True
+    rig.now += 1_000
+    await rig.poll()  # still undone, so a later poll runs it again
+    assert rig.prompts.count("Execute freestyle task: fs1") == 2
+
+
+async def test_a_failed_done_stamp_write_does_not_run_the_task_again(rig, caplog) -> None:
+    rig.write(_task("fs1", "freestyle"))
+    real_write = qf.write_queue_atomic
+    with mock.patch.object(qf, "write_queue_atomic", side_effect=OSError("disk full")):
+        await rig.poll()
+    assert "failed to mark task fs1 done" in caplog.text
+    rig.now += 1_000
+    with mock.patch.object(qf, "write_queue_atomic", side_effect=real_write):
+        await rig.poll()  # the disk is back: the stamp lands and nothing spawns
+    assert rig.prompts == ["Execute freestyle task: fs1"]
+    assert (rig.task("fs1")["done"], rig.task("fs1")["executed_at"]) == (True, qf._iso(NOW))
+
+
 async def test_the_done_stamp_keeps_a_task_added_while_the_agent_ran(rig: _Rig) -> None:
     rig.write(_task("fs1", "freestyle"))
     spawn = rig.spawn_agent
@@ -322,6 +351,88 @@ async def test_the_done_stamp_does_not_resurrect_a_queue_reset_while_the_agent_r
     rig.spawn_agent = _spawn_while_the_queue_is_reset
     await rig.poll()
     assert not rig.path.exists()
+
+
+def _modify_while_the_agent_runs(rig: _Rig, edit: dict[str, Any]) -> None:
+    """Make the next spawn apply ``update_plan``'s ``tasks_to_modify`` to fs1 while it runs."""
+    spawn = rig.spawn_agent
+
+    async def _spawn_while_the_chat_agent_modifies_it(prompt: str) -> str:
+        rig.spawn_agent = spawn  # one edit, during the first run only
+        changed = qf.apply_update(rig.read(), {"tasks_to_modify": [{"id": "fs1", **edit}]})
+        rig.path.write_text(json.dumps(changed["queue"]), encoding="utf-8")
+        return await spawn(prompt)
+
+    rig.spawn_agent = _spawn_while_the_chat_agent_modifies_it
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"action": {"prompt": "new work"}},
+        {"execute_after": qf._iso(NOW + 60_000)},
+        {"type": "notify", "action": {"summary": "now a note"}},
+    ],
+    ids=["prompt", "execute_after", "type"],
+)
+async def test_a_task_modified_while_its_agent_ran_is_not_stamped_done(rig: _Rig, edit) -> None:
+    rig.write(_task("fs1", "freestyle", action={"prompt": "old work"}))
+    _modify_while_the_agent_runs(rig, edit)
+    await rig.poll()
+    assert rig.prompts == ["old work"]
+    assert (rig.task("fs1")["done"], rig.task("fs1").get("executed_at")) == (False, None)
+
+
+async def test_a_prompt_changed_while_its_agent_ran_runs_on_the_next_poll(rig: _Rig) -> None:
+    rig.write(_task("fs1", "freestyle", action={"prompt": "old work"}))
+    _modify_while_the_agent_runs(rig, {"action": {"prompt": "new work"}})
+    await rig.poll()
+    rig.now += 1_000
+    await rig.poll()
+    assert rig.prompts == ["old work", "new work"]
+    assert rig.task("fs1")["done"] is True
+
+
+async def test_an_edit_that_changes_nothing_it_runs_still_stamps_done(rig: _Rig) -> None:
+    rig.write(_task("fs1", "freestyle", action={"prompt": "old work"}))
+    _modify_while_the_agent_runs(rig, {"source": "chat", "action": {"prompt": "old work"}})
+    await rig.poll()
+    assert rig.task("fs1")["done"] is True
+
+
+async def test_an_unsaved_done_stamp_survives_an_edit_that_changes_nothing_it_runs(rig) -> None:
+    rig.write(_task("fs1", "freestyle", action={"prompt": "old work"}))
+    _modify_while_the_agent_runs(rig, {"source": "chat", "action": {"prompt": "old work"}})
+    real_write = qf.write_queue_atomic
+    with mock.patch.object(qf, "write_queue_atomic", side_effect=OSError("disk full")):
+        await rig.poll()
+    rig.now += 1_000
+    with mock.patch.object(qf, "write_queue_atomic", side_effect=real_write):
+        await rig.poll()  # only the source changed: the finished run still counts
+    assert rig.prompts == ["old work"]
+    assert (rig.task("fs1")["done"], rig.task("fs1")["executed_at"]) == (True, qf._iso(NOW))
+
+
+async def test_a_queue_that_does_not_read_keeps_the_completion_for_the_retry(rig) -> None:
+    rig.write(_task("fs1", "freestyle"))
+    real_read = qf.read_queue
+    unreadable = []  # non-empty: the next read fails, as an OSError or bad UTF-8 would
+    spawn = rig.spawn_agent
+
+    async def _spawn_then_the_file_fails_to_read(prompt: str) -> str:
+        unreadable.append(True)
+        return await spawn(prompt)
+
+    def _read(path: str) -> Any:
+        return None if unreadable and unreadable.pop() else real_read(path)
+
+    rig.spawn_agent = _spawn_then_the_file_fails_to_read
+    with mock.patch.object(qf, "read_queue", side_effect=_read):
+        await rig.poll()
+        rig.now += 1_000
+        await rig.poll()
+    assert rig.prompts == ["Execute freestyle task: fs1"]
+    assert (rig.task("fs1")["done"], rig.task("fs1")["executed_at"]) == (True, qf._iso(NOW))
 
 
 async def test_a_disk_error_recording_a_timeout_is_logged_not_raised(rig, caplog) -> None:

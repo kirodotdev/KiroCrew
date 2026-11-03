@@ -111,6 +111,10 @@ _FIRST_LAUNCH_GRACE_MS = 60_000
 DETERMINISTIC_TYPES = ("move", "notify", "mood")
 AGENT_TYPES = ("freestyle",)
 
+# What a freestyle task runs and when: its kind, its due time and its action
+# (``build_agent_prompt`` reads the prompt from the action).
+_EXECUTION_FIELDS = ("type", "execute_after", "action")
+
 # ── Prompts ────────────────────────────────────────────────────────────────
 #
 # These were ported byte-exact from the original and then corrected: the original
@@ -223,6 +227,15 @@ def _task_identity(task: dict[str, Any]) -> str:
     return json.dumps(body, sort_keys=True, default=str)
 
 
+def _run_identity(task: dict[str, Any]) -> str:
+    """*task*'s id and ``_EXECUTION_FIELDS``, as a key: the same work in any read.
+
+    The prefix keeps it apart from every ``_task_identity`` key, which is a JSON object.
+    """
+    body = {"id": task.get("id"), **{field: task.get(field) for field in _EXECUTION_FIELDS}}
+    return "run:" + json.dumps(body, sort_keys=True, default=str)
+
+
 class QueuePoller:
     """Second-cadence executor over ``mochi-queue.json``."""
 
@@ -268,6 +281,9 @@ class QueuePoller:
         # that never recorded it. Matched on the whole task, not its id alone:
         # a replan may reuse an id for a new task, which must still run, while
         # a reminder ``full_replace`` carries over unchanged is the same task.
+        # A freestyle run is keyed by ``_run_identity`` instead, the same work
+        # rule ``_locked_mark_done`` applies, so an edit to another field while
+        # its agent ran does not make the finished work look new.
         self._unwritten_done: dict[str, Any] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
@@ -440,9 +456,7 @@ class QueuePoller:
         # 3. Due deterministic tasks. mood/notify: all; move: one per poll.
         now_ms = self._clock()
         due_tasks = [
-            t
-            for t in qf.get_executable_tasks(queue, now_ms)
-            if _task_identity(t) not in self._unwritten_done
+            t for t in qf.get_executable_tasks(queue, now_ms) if self._unsaved_completion(t) is None
         ]
         queue_modified = False
         move_executed = False
@@ -696,7 +710,7 @@ class QueuePoller:
                         fresh["executed_at"] = stale_task.get("executed_at")
             if self._unwritten_done:
                 for fresh in fresh_queue.get("tasks", []):
-                    ran_at = self._unwritten_done.get(_task_identity(fresh))
+                    ran_at = self._unsaved_completion(fresh)
                     if ran_at is not None and not fresh.get("done"):
                         fresh["done"] = True
                         fresh["executed_at"] = ran_at
@@ -744,9 +758,10 @@ class QueuePoller:
             self._spawn_deadline = None
 
     async def _spawn_agent_task_serial(self, task: dict[str, Any]) -> bool:
-        """Spawn a freestyle task's agent and wait; once the agent finishes,
-        mark the task done; on timeout, mark failure and queue the sticky
-        fail-notify after MAX_FAIL_COUNT.
+        """Spawn a freestyle task's agent and wait; once the host reports the
+        agent succeeded (``agent_succeeded``), mark the task done; on timeout or
+        any other ending, mark failure and queue the sticky fail-notify after
+        MAX_FAIL_COUNT.
 
         The spawn is SERIAL: once an id comes back (the agent is running, or
         queued behind the admission gate's capacity wait) this coroutine awaits
@@ -816,19 +831,44 @@ class QueuePoller:
             on_end()
 
         # Off the event loop either way: both wait on a cross-process lock.
-        if timed_out:
+        if timed_out or not self._agent_succeeded(spawn_id):
+            # Timed out, or ended without a reported success (failed, stopped,
+            # or an id the host does not know): fail-count it and retry.
             try:
                 await asyncio.to_thread(self._locked_mark_timeout, task_id)
             except OSError:
                 logger.exception("[QueuePoller] spawn timeout handler error for %s", task_id)
         else:
-            # The agent finished, so the task has run. Left undone it stays
+            # The agent succeeded, so the task has run. Left undone it stays
             # executable, and the next poll would spawn the same task again.
             try:
-                await asyncio.to_thread(self._locked_mark_done, task_id)
+                settled = await asyncio.to_thread(self._locked_mark_done, task)
             except OSError:
                 logger.exception("[QueuePoller] failed to mark task %s done", task_id)
+                settled = False
+            if not settled:
+                # Keep the completion so the next poll does not run it again,
+                # and the merged write-back retries the stamp.
+                self._unwritten_done[_run_identity(task)] = _iso(self._clock())
         return False
+
+    def _unsaved_completion(self, task: dict[str, Any]) -> Any:
+        """The executed_at of *task*'s completion that no write has saved yet, else None."""
+        ran_at = self._unwritten_done.get(_task_identity(task))
+        if ran_at is None:
+            ran_at = self._unwritten_done.get(_run_identity(task))
+        return ran_at
+
+    def _agent_succeeded(self, spawn_id: Any) -> bool:
+        """True only when the callbacks report that *spawn_id* succeeded."""
+        check = getattr(self._callbacks, "agent_succeeded", None)
+        if check is None or not spawn_id:
+            return False
+        try:
+            return bool(check(spawn_id))
+        except Exception:  # noqa: BLE001 — an unreadable outcome is not a success
+            logger.exception("[QueuePoller] could not read the outcome of %s", spawn_id)
+            return False
 
     async def _spawn_watch_check(self, prompt: str) -> None:
         """Spawn a watch/recovery agent and wait — same serial mechanism,
@@ -855,25 +895,41 @@ class QueuePoller:
         if on_end is not None:
             on_end()
 
-    def _locked_mark_done(self, task_id: Any) -> None:
+    def _locked_mark_done(self, dispatched: dict[str, Any]) -> bool:
         """Mark a freestyle task done once its agent finished, under the queue
         lock and on a fresh read, so queue edits made while it ran survive.
 
+        *dispatched* is the task as it was when its agent was spawned. A task
+        whose ``_EXECUTION_FIELDS`` changed since (``update_plan`` with
+        ``tasks_to_modify`` while the agent ran) is new work that run did not
+        do, so it stays undone and runs on a later poll.
+
+        Answers whether the completion is settled: False when the queue file
+        exists but did not read, so the caller keeps the completion for the
+        merged write-back to retry.
+
         Blocking — call via ``asyncio.to_thread``.
         """
+        task_id = dispatched.get("id")
         with qf.queue_mutation(self._queue_path):
             q = qf.read_queue(self._queue_path)
             if q is None:
-                return  # reset while the agent ran: nothing left to mark
+                # A deleted queue is a reset: nothing left to mark. A file that
+                # exists but did not read still holds the task.
+                return not os.path.exists(self._queue_path)
             t = next((x for x in q.get("tasks", []) if x.get("id") == task_id), None)
             if t is None or t.get("done"):
-                return  # removed or replaced while the agent ran
+                return True  # removed or replaced while the agent ran
+            if any(t.get(field) != dispatched.get(field) for field in _EXECUTION_FIELDS):
+                return True  # modified while the agent ran: its new work has not run
             t["done"] = True
             t["executed_at"] = _iso(self._clock())
             qf.write_queue_atomic(self._queue_path, q)
+            return True
 
     def _locked_mark_timeout(self, task_id: Any) -> None:
-        """Mark a timed-out spawn task failed under the queue lock.
+        """Mark a spawn task failed under the queue lock: it timed out, or it
+        ended without a reported success.
 
         Blocking — call via ``asyncio.to_thread``.
         """
