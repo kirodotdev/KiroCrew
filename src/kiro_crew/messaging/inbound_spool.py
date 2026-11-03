@@ -538,7 +538,7 @@ def _read_entries(path: Path) -> list[SpooledInbound]:
                     continue
                 try:
                     raw = json.loads(stripped)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(raw, dict):
                     continue

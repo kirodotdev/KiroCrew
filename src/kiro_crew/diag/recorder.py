@@ -1255,8 +1255,10 @@ class Recorder:
                             continue
                         try:
                             row = json.loads(line)
-                        except ValueError:
-                            continue  # a partial trailing write, not a reason to stop
+                        except (ValueError, RecursionError):
+                            # A partial trailing write, or a line nested past the
+                            # recursion limit: not a reason to stop.
+                            continue
                         if not isinstance(row, dict):
                             continue  # valid JSON, but not a record: skip, do not abort
                         ts = row.get("ts")
