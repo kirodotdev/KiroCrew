@@ -107,7 +107,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                 # never links it, so it carries no current name either.
                 continue
             data = json.loads(agent_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             # A declared agent we CANNOT read is not the same as a removed one. If
             # we skipped it, its name would be absent from `current_links` and the
             # prune below would delete its last-good materialized config — over a
