@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { CodeBlock } from '../components/CodeBlock'
+import { i18next } from '../i18n/all'
 import { __resetStagingForTests } from '../components/pierreStaging'
 
 const pierreCalls: Array<{ options?: { overflow?: string } }> = []
@@ -173,5 +174,22 @@ describe('CodeBlock: line-wrap toggle', () => {
       expect(screen.getByLabelText('Edit code')).toBeInTheDocument()
       expect(screen.getByLabelText('Copy')).toBeInTheDocument()
     })
+  })
+})
+
+describe('CodeBlock: localized names', () => {
+  it('names the code region and the untyped label in the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('es')
+    try {
+      const { container, unmount } = render(<CodeBlock code="print(1)" lang="python" complete={false} />)
+      expect(container.querySelector('[role="region"]')).toHaveAttribute('aria-label', 'Código python')
+      unmount()
+      const bare = render(<CodeBlock code="x" complete={false} />)
+      expect(bare.container.querySelector('[role="region"]')).toHaveAttribute('aria-label', 'código')
+      expect(bare.container.textContent).toContain('código')
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
   })
 })

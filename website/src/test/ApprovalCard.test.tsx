@@ -4,6 +4,7 @@ vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import ApprovalCard from '../components/ApprovalCard'
+import { i18next } from '../i18n/all'
 import { ApiError } from '../api/client'
 
 describe('ApprovalCard', () => {
@@ -24,6 +25,26 @@ describe('ApprovalCard', () => {
     const text = container.textContent || ''
     expect(text.match(/Running:/g)).toHaveLength(1)
     expect(screen.getByText('Running: gh api repos/o/r')).toBeInTheDocument()
+  })
+
+  it('says the command wants to run in the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('de')
+    try {
+      const { container } = render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
+      expect(container.textContent).toContain('ls /tmp möchte ausgeführt werden')
+      expect(container.textContent).not.toContain('wants to run')
+      // The command stays bold and verbatim inside the translated sentence.
+      expect(container.querySelector('strong')?.textContent).toBe('ls /tmp')
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
+  })
+
+  it('keeps a command that looks like markup as plain text in the sentence', () => {
+    const { container } = render(<ApprovalCard title="Running: echo <title/> <b>x</b>" toolInput="" showButtons onApprove={() => {}} />)
+    expect(container.querySelector('strong')?.textContent).toBe('echo <title/> <b>x</b>')
+    expect(container.textContent).toContain('echo <title/> <b>x</b> wants to run')
   })
 
   it('renders a non-shell title verbatim in the labeled branch (ChannelPage passes a role here)', () => {

@@ -5989,7 +5989,8 @@
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
       "trusted_channel_base": "信頼済み — {{base}} コマンドを @{{role}} に対して{{productName}} の再起動まで自動承認",
-      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認"
+      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認",
+      "title_wants_to_run": "<title/> の実行を求めています"
     },
     "approvalModePicker": {
       "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
@@ -6579,7 +6580,9 @@
       "copy": "コピー",
       "generating": "生成中…",
       "unwrap": "折り返し解除",
-      "wrap": "折り返し"
+      "wrap": "折り返し",
+      "code_label": "コード",
+      "code_region": "{{lang}} コード"
     },
     "blockquote": {
       "copied": "コピーしました！",

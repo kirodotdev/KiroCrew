@@ -4370,7 +4370,8 @@
       "reject": "Reject",
       "rejected": "Rejected",
       "tool_approval_requested": "Tool approval requested:",
-      "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls"
+      "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls",
+      "title_wants_to_run": "<title/> wants to run"
     },
     "approvalModePicker": {
       "nudge_body": "This is where you adjust how {{productName}} asks for approval. Choosing \"Trust\" here lets it work in this chat without asking first — you can switch back anytime.",
@@ -4574,7 +4575,9 @@
       "copy_selection": "Copy selection"
     },
     "codeBlock": {
-      "generating": "generating…"
+      "generating": "generating…",
+      "code_label": "code",
+      "code_region": "{{lang}} code"
     },
     "columnResizer": {
       "resize_column": "Resize column: {{column}}",
