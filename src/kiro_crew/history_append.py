@@ -15,6 +15,7 @@ Instance fields read: ``_dir``.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,8 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+
+_LOGGER = logging.getLogger("kiro_crew.history")
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
@@ -218,7 +221,15 @@ def append(
         # Rotate if file exceeds size limit. Pass the logical key so the
         # rotation's invalidation reaches every cache-key spelling; the
         # file stem alone cannot recover it (sanitization is lossy).
-        self._maybe_rotate(path, key)
+        # The row above is already durable, so a rotation that fails is
+        # logged rather than raised: a raise would report this append as
+        # failed and stop a caller writing a turn's rows from writing the rest.
+        try:
+            self._maybe_rotate(path, key)
+        except Exception:
+            _LOGGER.warning(
+                "Rotating %s failed; it is retried on the next append", path.name, exc_info=True
+            )
 
 
 def append_if_absent(

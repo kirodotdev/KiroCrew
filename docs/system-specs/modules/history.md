@@ -834,6 +834,14 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   through the `/api/session/archive` endpoints. Rotating a session the dashboard
   still displays therefore removes the head of that conversation from the chat,
   which is why the save path does not do it.
+  A rotation that fails after the append is logged and retried on the next
+  append; it never fails the append, whose row is already durable, so a caller
+  writing a turn's rows writes the rest. When the rewrite after the archive
+  raises and the transcript is unchanged (same inode, size and mtime), the
+  archive it just wrote is removed so a lasting fault adds no copy per append;
+  a rewrite that replaced the file before failing keeps its archive. A
+  `rotation_generation` that `int()` cannot read restarts at 1 rather than
+  blocking the rotation.
 - **Cache-fill staleness guard** — transcript memos use a cache identity of `(st_mtime_ns, st_ctime_ns, st_size, st_ino)` (`_cache_identity`), rather than mtime alone. That makes the normal atomic rewrite visible even when housekeeping restores its pre-write mtime via `_restore_mtime`; the replacement inode or changed ctime forces a miss. `st_size` catches an in-place append that lands on the same clock tick, which the timestamps alone miss on NTFS (coarse write clock, and Windows `st_ctime` is creation time); it cannot catch a same-length rewrite, which the generation below (this process) and the flock witness (another process) cover. A per-key invalidation **generation** still closes in-process fill races: `_invalidate_cache` bumps it BEFORE dropping entries, and each fill snapshots it before `stat` then re-checks it around publish via `_publish_if_current`, discarding a fill if it moved. `_meta_cache`, `_recent_cache`, `_folded_cache`, `_snippet_cache`, and `_msg_cache` record both identity and generation; `_folded_cache`/`_snippet_cache` serialize stat → read → store under `_file_lock`, while `_msg_cache`'s unlocked on-loop fallback additionally needs a cross-process flock-hold witness. The generation table is process-wide (class-level, keyed by transcript directory + sanitized stem), and invalidation covers each spelling of one session — logical key, sanitized `path.stem`, and canonical/legacy Slack aliases in both directions (`_cache_key_identities`).
 - `recent(key)` — last 20 messages for context injection
 - `recent_with_provenance(key)` — entries with source citations. Never a display-only row (`DISPLAY_ONLY_ROLES`, the `notice` and `card` roles): notices are drawn for the reader, not conversation, and the consolidator's memory and skill-detection prompts skip them the same way while its offset still passes them (the Slack thread-parent row reaches a model only through its fenced block)

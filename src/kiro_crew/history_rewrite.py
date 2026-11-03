@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,24 @@ def rewrite_transcript(path: Path, content: str | bytes) -> None:
 
 #: Marks a snapshot the unlocked pass could not take, so it never matches.
 _UNREAD = object()
+
+
+def _file_identity(path: Path) -> tuple[int, int, int] | None:
+    """``(inode, size, mtime_ns)`` of *path*, or ``None`` when it cannot be read."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _rotation_generation(metadata: dict[str, Any]) -> int:
+    """The stored ``rotation_generation`` as ``int()`` reads it, or 0 when it cannot."""
+    try:
+        return int(metadata.get("rotation_generation", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
 
 #: ``build(path, text)`` for :func:`rewrite_metadata_line`: *text* is the file as
 #: ``Path.read_text`` returns it (``None`` when the file is absent), except that a
@@ -355,8 +374,9 @@ class HistoryRewriteCoordinator:
 
         kept = message_lines[-keep_count:]
         dropped = message_lines[:-keep_count]
+        before = _file_identity(path)
         try:
-            _facade_archive_lines(
+            archived = _facade_archive_lines(
                 path.stem,
                 dropped,
                 reason="rotate",
@@ -390,16 +410,31 @@ class HistoryRewriteCoordinator:
                 metadata = json.loads(metadata_line)
                 metadata["last_consolidated"] = 0
                 metadata["rotated_at"] = _history_facade().metadata_now_iso()
-                metadata["rotation_generation"] = (
-                    int(metadata.get("rotation_generation", 0) or 0) + 1
-                )
+                metadata["rotation_generation"] = _rotation_generation(metadata) + 1
                 metadata_line = json.dumps(metadata) + "\n"
             except json.JSONDecodeError:
                 pass
 
         # Synced before the rename, as compaction is: an unsynced replacement can
         # come back empty after a power loss, and the kept rows are in no archive.
-        rewrite_transcript(path, metadata_line + "".join(kept))
+        try:
+            rewrite_transcript(path, metadata_line + "".join(kept))
+        except Exception:
+            # The transcript is unchanged when its identity is, so the archive
+            # just written is a second copy of rows it still holds. Removing it
+            # keeps a lasting rewrite fault (a full disk) from adding one more
+            # copy on every later append. A rewrite that did land and then
+            # failed its directory sync keeps the archive: it is their only copy.
+            if archived is not None and before is not None and _file_identity(path) == before:
+                try:
+                    os.unlink(archived)
+                except OSError:
+                    _HISTORY_LOGGER.warning(
+                        "Could not remove the archive %s of a rotation that did not land",
+                        archived,
+                        exc_info=True,
+                    )
+            raise
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
         _HISTORY_LOGGER.info(
