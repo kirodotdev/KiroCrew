@@ -16013,8 +16013,6 @@
       "free": "空闲",
       "gateway_cpu": "网关 CPU",
       "gateway_rss": "网关 RSS",
-      "graph_scale_network": "满量程 {{max}} KB/s · 最近 {{seconds}} 秒",
-      "graph_scale_percent": "满量程 100% · 最近 {{seconds}} 秒",
       "hostname": "主机名",
       "ip_address": "IP 地址",
       "kiro_cli_procs": "Kiro CLI",
@@ -16040,7 +16038,9 @@
       "used": "已用",
       "used_pct": "已用",
       "utilization": "利用率",
-      "working_directory": "工作目录"
+      "working_directory": "工作目录",
+      "graph_scale_network": "满量程 {{max}} · 最近 {{seconds}}",
+      "graph_scale_percent": "满量程 100% · 最近 {{seconds}}"
     },
     "popoutFrame": {
       "session": "会话",
@@ -19016,7 +19016,6 @@
       "hide_turn_detail": "隐藏每轮次明细",
       "instruments": "仪表",
       "loading_telemetry": "正在加载遥测数据…",
-      "local_only_no_egress": "· 仅本地，无外发",
       "max_col": "max",
       "mean_col": "均值",
       "mean_credits_by_occupancy": "按已用上下文分档的每轮平均额度",
@@ -19050,7 +19049,6 @@
       "session_col": "会话",
       "session_startup": "会话启动",
       "sessions_col": "会话数",
-      "shard_s_source": "个分片 · 来源",
       "share_col": "占比",
       "show_turn_detail": "显示每轮次明细",
       "showing_partial_window": "显示 {{total}} 个样本中的 {{shown}} 个（窗口内直方图边界已变化）",
@@ -19106,7 +19104,7 @@
       "range_to": "结束日期",
       "no_telemetry_in_window": "此时间范围内（{{period}}）没有记录遥测数据。",
       "otel_retention_cap": "轮次、延迟和启动数据仅涵盖最近 {{days}} 天；更早的指标会被删除（<settingRef/>）。",
-      "window_footer": "OTEL 部分 · 时间范围：{{period}} ·"
+      "window_footer_shards_other": "OTEL 部分 · 时间范围：{{period}} · {{n}} 个分片 · 来源：<dir/> · 仅本地，无外发"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",

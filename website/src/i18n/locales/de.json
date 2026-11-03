@@ -16364,8 +16364,6 @@
       "free": "Frei",
       "gateway_cpu": "Gateway-CPU",
       "gateway_rss": "Gateway-RSS",
-      "graph_scale_network": "Vollausschlag {{max}} KB/s · letzte {{seconds}} s",
-      "graph_scale_percent": "Vollausschlag 100 % · letzte {{seconds}} s",
       "hostname": "Hostname",
       "ip_address": "IP-Adresse",
       "kiro_cli_procs": "Kiro CLI",
@@ -16391,7 +16389,9 @@
       "used": "Belegt",
       "used_pct": "Belegt",
       "utilization": "Auslastung",
-      "working_directory": "Arbeitsverzeichnis"
+      "working_directory": "Arbeitsverzeichnis",
+      "graph_scale_network": "Vollausschlag {{max}} · letzte {{seconds}}",
+      "graph_scale_percent": "Vollausschlag 100 % · letzte {{seconds}}"
     },
     "popoutFrame": {
       "session": "Sitzung",
@@ -19406,7 +19406,6 @@
       "hide_turn_detail": "Details pro Zug ausblenden",
       "instruments": "Instrumente",
       "loading_telemetry": "Telemetrie wird geladen…",
-      "local_only_no_egress": "· nur lokal, kein Datenausgang",
       "max_col": "max",
       "mean_col": "Mittel",
       "mean_credits_by_occupancy": "Durchschnittliches Guthaben pro Zug, gruppiert nach genutztem Kontext",
@@ -19440,7 +19439,6 @@
       "session_col": "Sitzung",
       "session_startup": "Sitzungsstart",
       "sessions_col": "Sitzungen",
-      "shard_s_source": "Shard(s) · Quelle",
       "share_col": "Anteil",
       "show_turn_detail": "Details pro Zug anzeigen",
       "showing_partial_window": "Zeigt {{shown}} von {{total}} Messwerten (Histogrammgrenzen haben sich im Zeitfenster geändert)",
@@ -19500,7 +19498,8 @@
       "range_to": "Enddatum",
       "no_telemetry_in_window": "In diesem Zeitraum ({{period}}) wurde keine Telemetrie aufgezeichnet.",
       "otel_retention_cap": "Turn-, Latenz- und Startwerte decken nur die letzten {{days}} T ab; ältere Metriken werden gelöscht (<settingRef/>).",
-      "window_footer": "OTEL-Abschnitte · Zeitraum: {{period}} ·"
+      "window_footer_shards_one": "OTEL-Abschnitte · Zeitraum: {{period}} · {{n}} Shard · Quelle: <dir/> · nur lokal, kein Datenausgang",
+      "window_footer_shards_other": "OTEL-Abschnitte · Zeitraum: {{period}} · {{n}} Shards · Quelle: <dir/> · nur lokal, kein Datenausgang"
     },
     "terminalPopoutFrame": {
       "return": "Zurück zum Dock",

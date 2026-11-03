@@ -17066,8 +17066,6 @@
       "free": "Свободно",
       "gateway_cpu": "CPU шлюза",
       "gateway_rss": "RSS шлюза",
-      "graph_scale_network": "Полная шкала {{max}} КБ/с · последние {{seconds}} с",
-      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}} с",
       "hostname": "Имя хоста",
       "ip_address": "IP-адрес",
       "kiro_cli_procs": "Kiro CLI",
@@ -17093,7 +17091,9 @@
       "used": "Использовано",
       "used_pct": "Использовано",
       "utilization": "Использование",
-      "working_directory": "Рабочий каталог"
+      "working_directory": "Рабочий каталог",
+      "graph_scale_network": "Полная шкала {{max}} · последние {{seconds}}",
+      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}}"
     },
     "popoutFrame": {
       "session": "Сессия",
@@ -20186,7 +20186,6 @@
       "hide_turn_detail": "Скрыть детали по ходам",
       "instruments": "Инструменты",
       "loading_telemetry": "Загрузка телеметрии…",
-      "local_only_no_egress": "· только локально, без передачи наружу",
       "max_col": "макс",
       "mean_col": "Среднее",
       "mean_credits_by_occupancy": "Средние кредиты за ход по группам использованного контекста",
@@ -20220,7 +20219,6 @@
       "session_col": "Сессия",
       "session_startup": "Запуск сессии",
       "sessions_col": "Сессии",
-      "shard_s_source": "шард(ов) · источник",
       "share_col": "Доля",
       "show_turn_detail": "Показать детали по ходам",
       "showing_partial_window": "Показано {{shown}} из {{total}} замеров (границы гистограммы изменились внутри окна)",
@@ -20288,7 +20286,10 @@
       "range_to": "Дата окончания",
       "no_telemetry_in_window": "За этот период ({{period}}) телеметрия не записана.",
       "otel_retention_cap": "Данные о ходах, задержке и запуске охватывают только последние {{days}} дн.; более старые метрики удаляются (<settingRef/>).",
-      "window_footer": "Разделы OTEL · период: {{period}} ·"
+      "window_footer_shards_one": "Разделы OTEL · период: {{period}} · {{n}} шард · источник: <dir/> · только локально, без передачи наружу",
+      "window_footer_shards_few": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу",
+      "window_footer_shards_many": "Разделы OTEL · период: {{period}} · {{n}} шардов · источник: <dir/> · только локально, без передачи наружу",
+      "window_footer_shards_other": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу"
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",

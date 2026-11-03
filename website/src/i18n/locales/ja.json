@@ -16013,8 +16013,6 @@
       "free": "空き",
       "gateway_cpu": "ゲートウェイ CPU",
       "gateway_rss": "ゲートウェイ RSS",
-      "graph_scale_network": "フルスケール {{max}} KB/s · 直近 {{seconds}} 秒",
-      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}} 秒",
       "hostname": "ホスト名",
       "ip_address": "IP アドレス",
       "kiro_cli_procs": "Kiro CLI",
@@ -16040,7 +16038,9 @@
       "used": "使用中",
       "used_pct": "使用率",
       "utilization": "使用率",
-      "working_directory": "作業ディレクトリ"
+      "working_directory": "作業ディレクトリ",
+      "graph_scale_network": "フルスケール {{max}} · 直近 {{seconds}}",
+      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}"
     },
     "popoutFrame": {
       "session": "セッション",
@@ -19016,7 +19016,6 @@
       "hide_turn_detail": "ターンごとの詳細を非表示",
       "instruments": "インストルメント",
       "loading_telemetry": "テレメトリを読み込み中…",
-      "local_only_no_egress": "· ローカルのみ、送出なし",
       "max_col": "max",
       "mean_col": "平均",
       "mean_credits_by_occupancy": "ターンあたりの平均クレジット、コンテキスト使用率でグループ化",
@@ -19050,7 +19049,6 @@
       "session_col": "セッション",
       "session_startup": "セッションスタートアップ",
       "sessions_col": "セッション数",
-      "shard_s_source": "シャード · ソース",
       "share_col": "シェア",
       "show_turn_detail": "ターンごとの詳細を表示",
       "showing_partial_window": "{{shown}} / {{total}} サンプルを表示中 (ウィンドウの中途でヒストグラム境界が変更)",
@@ -19106,7 +19104,7 @@
       "range_to": "終了日",
       "no_telemetry_in_window": "この期間（{{period}}）に記録されたテレメトリはありません。",
       "otel_retention_cap": "ターン・レイテンシ・起動の数値は直近{{days}}日分のみです。古いメトリクスは削除されます（<settingRef/>）。",
-      "window_footer": "OTELセクション · 期間: {{period}} ·"
+      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",

@@ -9563,6 +9563,10 @@
       "profile_harness_saved": "Saved. {{name}}'s next message starts on this harness.",
       "profile_harness_unavailable": "{{name}} is set to run on {{harness}}, which can't start here, so its chats and workers don't start either. Choose another agent harness, or Inherited.",
       "profile_harness_choose": "Choose an agent harness"
+    },
+    "telemetryPanel": {
+      "window_footer_shards_one": "OTEL sections · period: {{period}} · {{n}} shard · source: <dir/> · local-only, no egress",
+      "window_footer_shards_other": "OTEL sections · period: {{period}} · {{n}} shards · source: <dir/> · local-only, no egress"
     }
   },
   "privacyDisclosure": {

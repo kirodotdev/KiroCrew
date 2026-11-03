@@ -9293,8 +9293,6 @@
       "free": "Free",
       "gateway_cpu": "Gateway CPU",
       "gateway_rss": "Gateway RSS",
-      "graph_scale_network": "Full scale {{max}} KB/s · last {{seconds}}s",
-      "graph_scale_percent": "Full scale 100% · last {{seconds}}s",
       "hostname": "Hostname",
       "ip_address": "IP Address",
       "kiro_cli_procs": "Kiro CLI",
@@ -9320,7 +9318,9 @@
       "used": "Used",
       "used_pct": "Used",
       "utilization": "Utilization",
-      "working_directory": "Working directory"
+      "working_directory": "Working directory",
+      "graph_scale_network": "Full scale {{max}} · last {{seconds}}",
+      "graph_scale_percent": "Full scale 100% · last {{seconds}}"
     },
     "projectDetailPage": {
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",
@@ -10832,7 +10832,6 @@
       "hide_turn_detail": "Hide per-turn detail",
       "instruments": "Instruments",
       "loading_telemetry": "Loading telemetry…",
-      "local_only_no_egress": "· local-only, no egress",
       "max_col": "max",
       "mean_col": "Mean",
       "mean_credits_by_occupancy": "Mean credits per turn, bucketed by context used",
@@ -10866,7 +10865,6 @@
       "session_col": "Session",
       "session_startup": "Session startup",
       "sessions_col": "Sessions",
-      "shard_s_source": "shard(s) · source",
       "share_col": "Share",
       "show_turn_detail": "Show per-turn detail",
       "showing_partial_window": "Showing {{shown}} of {{total}} samples (histogram boundaries changed mid-window)",
@@ -10925,8 +10923,7 @@
       "range_from": "Start date",
       "range_to": "End date",
       "no_telemetry_in_window": "No telemetry recorded in this period ({{period}}).",
-      "otel_retention_cap": "Turn, latency and startup figures cover only the last {{days}}d; older metrics are deleted (<settingRef/>).",
-      "window_footer": "OTEL sections · period: {{period}} ·"
+      "otel_retention_cap": "Turn, latency and startup figures cover only the last {{days}}d; older metrics are deleted (<settingRef/>)."
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",

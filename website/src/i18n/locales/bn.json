@@ -16364,8 +16364,6 @@
       "free": "খালি",
       "gateway_cpu": "গেটওয়ে CPU",
       "gateway_rss": "গেটওয়ে RSS",
-      "graph_scale_network": "পূর্ণ স্কেল {{max}} KB/s · সর্বশেষ {{seconds}} সেকেন্ড",
-      "graph_scale_percent": "পূর্ণ স্কেল 100% · সর্বশেষ {{seconds}} সেকেন্ড",
       "hostname": "হোস্টনেম",
       "ip_address": "IP অ্যাড্রেস",
       "kiro_cli_procs": "Kiro CLI",
@@ -16391,7 +16389,9 @@
       "used": "ব্যবহৃত",
       "used_pct": "ব্যবহৃত",
       "utilization": "ব্যবহার হার",
-      "working_directory": "কার্যকরী ডিরেক্টরি"
+      "working_directory": "কার্যকরী ডিরেক্টরি",
+      "graph_scale_network": "পূর্ণ স্কেল {{max}} · সর্বশেষ {{seconds}}",
+      "graph_scale_percent": "পূর্ণ স্কেল 100% · সর্বশেষ {{seconds}}"
     },
     "popoutFrame": {
       "session": "সেশন",
@@ -19406,7 +19406,6 @@
       "hide_turn_detail": "প্রতি টার্নের বিবরণ লুকান",
       "instruments": "ইনস্ট্রুমেন্ট",
       "loading_telemetry": "টেলিমেট্রি লোড হচ্ছে…",
-      "local_only_no_egress": "· শুধু স্থানীয়, কোনো এগ্রেস নেই",
       "max_col": "max",
       "mean_col": "গড়",
       "mean_credits_by_occupancy": "ব্যবহৃত কনটেক্সট অনুসারে প্রতি টার্নের গড় ক্রেডিট",
@@ -19440,7 +19439,6 @@
       "session_col": "সেশন",
       "session_startup": "সেশন শুরু",
       "sessions_col": "সেশন",
-      "shard_s_source": "শার্ড · সোর্স",
       "share_col": "অংশ",
       "show_turn_detail": "প্রতি টার্নের বিবরণ দেখান",
       "showing_partial_window": "{{total}}-এর মধ্যে {{shown}}টি নমুনা দেখানো হচ্ছে (উইন্ডোর মধ্যে হিস্টোগ্রামের সীমা বদলেছে)",
@@ -19500,7 +19498,8 @@
       "range_to": "শেষের তারিখ",
       "no_telemetry_in_window": "এই সময়কালে ({{period}}) কোনো টেলিমেট্রি রেকর্ড হয়নি।",
       "otel_retention_cap": "টার্ন, লেটেন্সি ও স্টার্টআপের সংখ্যা কেবল শেষ {{days}} দিনের; পুরোনো মেট্রিক মুছে ফেলা হয় (<settingRef/>)।",
-      "window_footer": "OTEL বিভাগ · সময়কাল: {{period}} ·"
+      "window_footer_shards_one": "OTEL বিভাগ · সময়কাল: {{period}} · {{n}}টি শার্ড · সোর্স: <dir/> · শুধু স্থানীয়, কোনো এগ্রেস নেই",
+      "window_footer_shards_other": "OTEL বিভাগ · সময়কাল: {{period}} · {{n}}টি শার্ড · সোর্স: <dir/> · শুধু স্থানীয়, কোনো এগ্রেস নেই"
     },
     "terminalPopoutFrame": {
       "return": "ডকে ফিরে যান",

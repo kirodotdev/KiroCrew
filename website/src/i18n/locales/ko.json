@@ -16013,8 +16013,6 @@
       "free": "여유",
       "gateway_cpu": "게이트웨이 CPU",
       "gateway_rss": "게이트웨이 RSS",
-      "graph_scale_network": "전체 눈금 {{max}} KB/s · 최근 {{seconds}}초",
-      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}초",
       "hostname": "호스트 이름",
       "ip_address": "IP 주소",
       "kiro_cli_procs": "Kiro CLI",
@@ -16040,7 +16038,9 @@
       "used": "사용 중",
       "used_pct": "사용률",
       "utilization": "사용률",
-      "working_directory": "작업 디렉터리"
+      "working_directory": "작업 디렉터리",
+      "graph_scale_network": "전체 눈금 {{max}} · 최근 {{seconds}}",
+      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}"
     },
     "popoutFrame": {
       "session": "세션",
@@ -19016,7 +19016,6 @@
       "hide_turn_detail": "턴별 상세 숨기기",
       "instruments": "계측기",
       "loading_telemetry": "텔레메트리 로드 중…",
-      "local_only_no_egress": "· 로컬 전용, 외부 전송 없음",
       "max_col": "최대",
       "mean_col": "평균",
       "mean_credits_by_occupancy": "컨텍스트 사용량으로 구간을 나눈 턴당 평균 크레딧",
@@ -19050,7 +19049,6 @@
       "session_col": "세션",
       "session_startup": "세션 시작",
       "sessions_col": "세션 수",
-      "shard_s_source": "샤드 · 소스",
       "share_col": "비중",
       "show_turn_detail": "턴별 상세 보기",
       "showing_partial_window": "전체 {{total}}개 샘플 중 {{shown}}개 표시(기간 중간에 히스토그램 경계 변경)",
@@ -19106,7 +19104,7 @@
       "range_to": "종료 날짜",
       "no_telemetry_in_window": "이 기간({{period}})에 기록된 텔레메트리가 없습니다.",
       "otel_retention_cap": "턴, 지연 시간, 시작 수치는 최근 {{days}}일만 포함합니다. 이전 메트릭은 삭제됩니다(<settingRef/>).",
-      "window_footer": "OTEL 섹션 · 기간: {{period}} ·"
+      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",
