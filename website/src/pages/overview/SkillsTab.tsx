@@ -29,6 +29,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -294,9 +295,9 @@ export default function SkillsTab() {
       // report a stale outcome as current. A fresh failure re-sets it.
       setDeleteError(null)
       await queryClient.cancelQueries({ queryKey: ['skills'] })
-      const prev = queryClient.getQueryData<Skill[]>(['skills'])
+      const removed = takeRow(queryClient.getQueryData<Skill[]>(['skills']), s => s.key === key)
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
-      return { prev }
+      return { removed }
     },
     onSuccess: () => {
       // An OPEN editor must survive this teardown, whatever its save state:
@@ -320,15 +321,17 @@ export default function SkillsTab() {
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
     onError: (err: Error, key, context) => {
-      if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
-      // Rollback first (above, unchanged), then say why the row came back:
+      // Only this skill's row comes back: a whole-list snapshot would also
+      // revive a skill another delete removed while this one was in flight.
+      queryClient.setQueryData<Skill[]>(['skills'], old => putRowBack(old, context?.removed, s => s.key === key))
+      // Rollback first (above), then say why the row came back:
       // reversing the optimistic write alone re-renders the deleted row with
       // no explanation, which reads as the delete silently not working.
       // The report is looked up by the ORIGINAL message before it is framed.
       // The banner names the skill the way the ROW does (its display name,
-      // from the rollback snapshot — guaranteed to hold the deleted skill),
-      // so the reader matches banner to row without decoding the raw key.
-      const target = context?.prev?.find(s => s.key === key)
+      // from the row this delete removed), so the reader matches banner to
+      // row without decoding the raw key.
+      const target = context?.removed?.row
       const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
       // The frame ALWAYS carries the skill name and the word "delete" — a bare
       // hint next to several rows would name neither what failed nor on which

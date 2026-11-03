@@ -21,6 +21,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -570,12 +571,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}`, { method: 'DELETE' }),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-sources'] })
-      const prev = queryClient.getQueryData<Source[]>(['knowledge-sources'])
+      const removed = takeRow(queryClient.getQueryData<Source[]>(['knowledge-sources']), s => s.id === id)
       queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== id))
-      return { prev }
+      return { removed }
     },
-    onError: (_err, _vars, ctx) => {
-      queryClient.setQueryData(['knowledge-sources'], ctx?.prev)
+    // Only this source comes back, and only into a cached list: a whole-list
+    // snapshot would revive a source another delete removed meanwhile, and an
+    // absent snapshot would blank the list.
+    onError: (_err, id, ctx) => {
+      queryClient.setQueryData<Source[]>(['knowledge-sources'], old => putRowBack(old, ctx?.removed, s => s.id === id))
     },
     onSuccess: () => {
       resetAdd()
