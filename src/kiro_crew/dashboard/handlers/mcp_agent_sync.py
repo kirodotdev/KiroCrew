@@ -116,7 +116,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
     path = _installed_agent_config()
     try:
         cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping sync: %s", path, exc)
         return
 
@@ -300,7 +300,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     path = _installed_agent_config()
     try:
         cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping batch sync: %s", path, exc)
         return
 
