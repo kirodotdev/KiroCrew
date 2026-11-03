@@ -692,7 +692,11 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Your dashboard settings didn't load, so GitLab instances can't be listed.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "Selection cleared: those projects are on the previous GitLab instance.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "Selection cleared: those repos belong to the previous provider.",
-        "try_again": "Try again"
+        "try_again": "Try again",
+        "repos_selected_one": "{{count}} selected",
+        "repos_selected_other": "{{count}} selected",
+        "repos_found_one": "{{count}} found",
+        "repos_found_other": "{{count}} found"
       },
       "connectRepoModal": {
         "connect": "Connect",
@@ -751,7 +755,8 @@
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "Reads GitHub Actions runs only on your own open pull requests, through your gh sign-in. Mute it or change its priority under Settings → Notifications.",
             "first_issue_friendly_count_one": "<strong>{{n}}</strong> open issue is marked first-issue-friendly",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> open issues are marked first-issue-friendly",
-            "triage_needed_of_open": "Open issues needing triage: <strong>{{triage}}</strong> of {{n}}"
+            "triage_needed_of_open": "Open issues needing triage: <strong>{{triage}}</strong> of {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · open on {{provider}}"
           },
           "generalSettings": {
             "always_refetch": "Always refetch",

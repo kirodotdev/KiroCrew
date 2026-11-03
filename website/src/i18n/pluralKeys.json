@@ -405,5 +405,21 @@
   "apps.mochi.stats.screenshots",
   "apps.mochi.stats.walks",
   "apps.mochi.stats.longest_chat",
-  "pages.localStorageDebug.delete_all_keys"
+  "pages.localStorageDebug.delete_all_keys",
+  "apps.issueRadar.connectPanel.repos_selected",
+  "apps.issueRadar.connectPanel.repos_found",
+  "apps.autoResearch.researchLabPage.suggested_from_sub_questions",
+  "apps.codeReviewSage.components.prStatusChips.running_count",
+  "apps.codeReviewSage.components.prStatusChips.passed_count",
+  "apps.issueRadar.components.labelPicker.add_suggested",
+  "apps.issueRadar.components.refSheet.deep_count",
+  "apps.issueRadar.views.tagging.labelsPanel.labels_defined",
+  "apps.opsMissionControl.signalsPanel.firing_count",
+  "apps.opsMissionControl.signalsPanel.parked_count",
+  "apps.opsMissionControl.signalsPanel.cleared_count",
+  "apps.opsMissionControl.signalsPanel.unclaimed_count",
+  "apps.codeReviewSage.components.prStatusChips.failing_count",
+  "apps.autoResearch.researchLabPage.estimate",
+  "apps.autoResearch.researchLabPage.findings_tally",
+  "apps.autoResearch.researchLabPage.cycles_count"
 ]

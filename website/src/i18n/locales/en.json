@@ -187,8 +187,6 @@
         "continue_research": "Continue Research",
         "copy_this_section_s_markdown_to_paste_into_chat": "Copy this section's markdown to paste into chat or autopilot",
         "cycle": "Cycle",
-        "cycles": "cycles,",
-        "cycles_2": "cycles",
         "definition_of_done_optional": "Definition of Done (optional)",
         "delete": "Delete",
         "delete_this_campaign_and_its_report_this_cannot": "Delete this campaign and its report? This cannot be undone.",
@@ -197,7 +195,6 @@
         "dynamic_workflow_can_fan_out_to_many_sub_agents": "Dynamic Workflow can fan out to many sub-agents, and its budget cap stops the run hard if hit (mid-run synthesis may be lost). Start with conservative cycle/worker limits.",
         "e_g_ai_code_review_finds_no_blocking_issues_and": "e.g. AI code review finds no blocking issues and the test build passes",
         "failed_to_export_as_artifact": "Failed to export as artifact",
-        "findings": "findings",
         "findings_so_far_are_preserved_below": "Findings so far are preserved below.",
         "first_cycle_in_progress": "First cycle in progress...",
         "focus_on": "Focus on...",
@@ -217,7 +214,6 @@
         "loading": "Loading...",
         "max_cycles": "Max cycles:",
         "max_cycles_2": "Max cycles",
-        "min": "min",
         "min_20_characters": "Min 20 characters.",
         "model": "Model",
         "model_default_inherit": "Default (inherit)",
@@ -246,7 +242,6 @@
         "resume": "Resume",
         "run_autonomous_research_campaigns": "Run autonomous research campaigns",
         "run_unattended_skip_clarification_questions": "Run unattended (skip clarification questions)",
-        "s_idle": "s idle. ~",
         "scripted": "(scripted)",
         "searched_empty": "Searched (empty):",
         "show_less": "Show less",
@@ -256,18 +251,23 @@
         "stops_at_the_cycle_cap_when_the_definition_of_do": "Stops at the cycle cap, when the Definition of Done is met, on stagnation, or when you Stop it.",
         "strong": "Strong",
         "sub_questions": "Sub-questions",
-        "sub_questions_2": "sub-questions",
-        "suggested_from": "suggested from",
         "the_ai_drives_every_round_itself_deciding_what_t": "The AI drives every round itself — deciding what to investigate, managing sub-agents, and following new leads from findings as they emerge.",
         "the_ai_writes_an_orchestration_script_up_front_a": "The AI writes an orchestration script up front; a deterministic runner manages sub-agent execution while the AI only plans, investigates, and synthesizes. Replayable, budget-capped.",
-        "up_to": "Up to",
         "validating": "Validating...",
         "view_report": "View report",
         "weak": "Weak",
         "what_do_you_want_to_research": "What do you want to research?",
         "when_should_the_agent_stop": "When should the agent stop?",
         "your_answer": "Your answer",
-        "your_answer_2": "Your answer..."
+        "your_answer_2": "Your answer...",
+        "suggested_from_sub_questions_one": "suggested from {{count}} sub-question",
+        "suggested_from_sub_questions_other": "suggested from {{count}} sub-questions",
+        "estimate_one": "Up to {{count}} cycle, {{idle}}s idle. ~{{minutes}} min",
+        "estimate_other": "Up to {{count}} cycles, {{idle}}s idle. ~{{minutes}} min",
+        "findings_tally_one": "{{count}} finding",
+        "findings_tally_other": "{{count}} findings",
+        "cycles_count_one": "{{count}} cycle",
+        "cycles_count_other": "{{count}} cycles"
       }
     },
     "autoTriagePipeline": {
@@ -695,12 +695,15 @@
           "checks_running_other": "{{pending}} of {{count}} checks still running",
           "closed": "closed",
           "conflicts": "conflicts",
-          "failing": "failing",
           "merge_blocked": "merge blocked",
           "merged": "merged",
           "open": "open",
-          "passed": "passed",
-          "running": "running"
+          "running_count_one": "{{count}} running",
+          "running_count_other": "{{count}} running",
+          "passed_count_one": "{{count}} passed",
+          "passed_count_other": "{{count}} passed",
+          "failing_count_one": "{{count}} failing",
+          "failing_count_other": "{{count}} failing"
         },
         "repoSwitcher": {
           "add_a_repo": "Add a repo",
@@ -1266,13 +1269,13 @@
           "search_labels_2": "Search labels…"
         },
         "labelPicker": {
-          "add": "Add",
           "filter_labels": "Filter labels…",
           "filter_labels_2": "Filter labels",
           "loading_labels": "Loading labels…",
           "remove_this_label_no_longer_exists_on_the_repo": "Remove — this label no longer exists on the repo",
           "saved_but_no_longer_on_this_repo": "Saved but no longer on this repo:",
-          "suggested": "suggested"
+          "add_suggested_one": "Add {{count}} suggested",
+          "add_suggested_other": "Add {{count}} suggested"
         },
         "leftRail": {
           "dashboards": "Dashboards",
@@ -1456,10 +1459,12 @@
           "close": "Close",
           "close_esc": "Close (Esc)",
           "close_reference": "Close reference",
-          "deep": "deep",
           "loading": "Loading #",
           "open_in_the_list_detail_column": "Open in the list + detail column",
-          "open_this_item_in_the_workspace": "Open this item in the workspace"
+          "open_this_item_in_the_workspace": "Open this item in the workspace",
+          "deep_count_one": "{{count}} deep",
+          "deep_count_other": "{{count}} deep",
+          "dialog_label": "{{kind}} {{ref}} in {{repo}}"
         },
         "repoSwitcher": {
           "repositories": "Repositories"
@@ -1684,12 +1689,13 @@
           "labelsPanel": {
             "created": "Created",
             "creating_needs_write_access": "creating needs write access",
-            "defined_by_open_issue_count": "defined · by open-issue count",
             "labels": "Labels",
             "looking_for_labels_this_repo_is_missing": "Looking for labels this repo is missing…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "None — the repo’s taxonomy already covers what its open issues need.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Propose labels this repo is missing, from its open issues",
-            "suggested_new_labels_not_created_until_you_say_s": "Suggested new labels — not created until you say so"
+            "suggested_new_labels_not_created_until_you_say_s": "Suggested new labels — not created until you say so",
+            "labels_defined_one": "{{count}} defined · by open-issue count",
+            "labels_defined_other": "{{count}} defined · by open-issue count"
           },
           "untaggedIssueCard": {
             "add": "Add",
@@ -3159,12 +3165,10 @@
         "at_least_one_source_did_not_answer_this_poll": "At least one source did not answer this poll.",
         "claim": "Claim",
         "claimed": "Claimed",
-        "cleared": "cleared ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· delivered by push, so an empty poll means nothing",
         "every_configured_source_answered": "Every configured source answered.",
         "everything_firing_already_has_an_incident": "Everything currently firing already has an incident.",
         "firing": "Firing",
-        "firing_2": "firing ·",
         "firing_not_yet_claimed": "Firing, not yet claimed",
         "inbound_webhook_queued_one": "{{count}} inbound webhook signal delivered and waiting for the next cycle to pick it up — it is not on the board yet.",
         "inbound_webhook_queued_other": "{{count}} inbound webhook signals delivered and waiting for the next cycle to pick them up — they are not on the board yet.",
@@ -3188,7 +3192,6 @@
         "no_signal_sources_registered": "No signal sources registered.",
         "no_sources_reporting_a_firing_signal": "No sources are reporting a firing signal.",
         "not_polled_yet_not_the_same_as_healthy": "not polled yet — this is not the same as healthy",
-        "not_yet_claimed": "not yet claimed",
         "nothing_firing_but_parked_signals_not_investigated": "nothing is firing, but the parked signals above are not being investigated",
         "nothing_firing_but_signals_parked_not_picked_up_one": "Nothing is firing — but {{count}} signal is parked at the provider (see above) and will not be picked up.",
         "nothing_firing_but_signals_parked_not_picked_up_other": "Nothing is firing — but {{count}} signals are parked at the provider (see above) and will not be picked up.",
@@ -3197,7 +3200,6 @@
         "one_ledger_entry_matched": "1 ledger entry matched — {{detail}}",
         "parked": "Parked",
         "parked_2": "parked",
-        "parked_at_provider": "parked at provider ·",
         "parked_at_the_provider": "Parked at the provider",
         "poll_answered": "answered",
         "poll_every_configured_source_now_read_only": "Poll every configured source now (read-only)",
@@ -3222,7 +3224,15 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "This source pushes to a spool that each poll empties, so a signal it already delivered will not appear again even if the fault is still live.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "Where work comes from. Configure credentials and scope in Settings; poll\n          here to see what a source actually returns.",
-        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look."
+        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look.",
+        "firing_count_one": "{{count}} firing ·",
+        "firing_count_other": "{{count}} firing ·",
+        "parked_count_one": "{{count}} parked at provider ·",
+        "parked_count_other": "{{count}} parked at provider ·",
+        "cleared_count_one": "{{count}} cleared ·",
+        "cleared_count_other": "{{count}} cleared ·",
+        "unclaimed_count_one": "{{count}} not yet claimed",
+        "unclaimed_count_other": "{{count}} not yet claimed"
       }
     },
     "papyrus": {

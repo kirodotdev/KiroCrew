@@ -506,8 +506,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "Скопировать markdown этого раздела для вставки в чат или автопилот",
         "could_not_generate_challenges_please_try_again": "Не удалось сформировать возражения. Попробуй ещё раз.",
         "cycle": "Цикл",
-        "cycles": "циклов,",
-        "cycles_2": "циклов",
         "definition_of_done_optional": "Критерий готовности (необязательно)",
         "delete": "Удалить",
         "delete_campaign": "Удалить кампанию?",
@@ -525,7 +523,6 @@
         "failed_to_add_to_knowledge_library": "Не удалось добавить в библиотеку знаний",
         "failed_to_export_as_artifact": "Не удалось экспортировать как артефакт",
         "failed_to_start_campaign_please_try_again": "Не удалось запустить кампанию — попробуй ещё раз.",
-        "findings": "выводов",
         "findings_count": "Выводы ({{count}})",
         "findings_so_far_are_preserved_below": "Полученные выводы сохранены ниже.",
         "first_cycle_in_progress": "Выполняется первый цикл...",
@@ -553,7 +550,6 @@
         "loading": "Загрузка...",
         "max_cycles": "Макс. циклов:",
         "max_cycles_2": "Макс. циклов",
-        "min": "мин",
         "min_20_characters": "Минимум 20 символов.",
         "model": "Модель",
         "model_default_inherit": "По умолчанию (наследовать)",
@@ -591,7 +587,6 @@
         "resume": "Возобновить",
         "run_autonomous_research_campaigns": "Запускайте автономные исследовательские кампании",
         "run_unattended_skip_clarification_questions": "Запустить без присмотра (пропустить уточняющие вопросы)",
-        "s_idle": "с простоя. ~",
         "scripted": "(по скрипту)",
         "searched_empty": "Поиск (пусто):",
         "send": "Отправить",
@@ -615,14 +610,11 @@
         "strong": "Сильная",
         "sub_question": "Подвопрос {{n}}",
         "sub_questions": "Подвопросы",
-        "sub_questions_2": "подвопросов",
         "sub_questions_guidance_count": "Подвопросы и указания ({{count}})",
-        "suggested_from": "предложено из",
         "the_agent_is_waiting_for_your_direction": "Агент ждёт твоих указаний.",
         "the_ai_drives_every_round_itself_deciding_what_t": "ИИ сам ведёт каждый раунд — решает, что исследовать, управляет подагентами и следует новым зацепкам из выводов по мере их появления.",
         "the_ai_writes_an_orchestration_script_up_front_a": "ИИ заранее пишет скрипт оркестрации; детерминированный исполнитель управляет запуском подагентов, а ИИ только планирует, исследует и обобщает. Воспроизводимо, с лимитом бюджета.",
         "the_campaign_stopped_unexpectedly": "Кампания неожиданно остановилась.",
-        "up_to": "До",
         "validating": "Проверка...",
         "validation_failed_check_your_connection_and_try": "Проверка не пройдена — проверь соединение и попробуй ещё раз.",
         "view_report": "Открыть отчёт",
@@ -631,7 +623,23 @@
         "when_should_the_agent_stop": "Когда агент должен остановиться?",
         "your_answer": "Ваш ответ",
         "your_answer_2": "Ваш ответ...",
-        "your_guidance": "твои указания"
+        "your_guidance": "твои указания",
+        "suggested_from_sub_questions_one": "предложено по {{count}} подвопросу",
+        "suggested_from_sub_questions_few": "предложено по {{count}} подвопросам",
+        "suggested_from_sub_questions_many": "предложено по {{count}} подвопросам",
+        "suggested_from_sub_questions_other": "предложено по {{count}} подвопроса",
+        "estimate_one": "До {{count}} цикла, {{idle}} с простоя. ~{{minutes}} мин",
+        "estimate_few": "До {{count}} циклов, {{idle}} с простоя. ~{{minutes}} мин",
+        "estimate_many": "До {{count}} циклов, {{idle}} с простоя. ~{{minutes}} мин",
+        "estimate_other": "До {{count}} цикла, {{idle}} с простоя. ~{{minutes}} мин",
+        "findings_tally_one": "{{count}} вывод",
+        "findings_tally_few": "{{count}} вывода",
+        "findings_tally_many": "{{count}} выводов",
+        "findings_tally_other": "{{count}} вывода",
+        "cycles_count_one": "{{count}} цикл",
+        "cycles_count_few": "{{count}} цикла",
+        "cycles_count_many": "{{count}} циклов",
+        "cycles_count_other": "{{count}} цикла"
       }
     },
     "autoTriagePipeline": {
@@ -1091,12 +1099,21 @@
           "checks_running_other": "{{pending}} из {{count}} проверок ещё выполняются",
           "closed": "закрыт",
           "conflicts": "конфликты",
-          "failing": "падают",
           "merge_blocked": "merge заблокирован",
           "merged": "смерджен",
           "open": "открыт",
-          "passed": "прошли",
-          "running": "выполняются"
+          "running_count_one": "{{count}} выполняется",
+          "running_count_few": "{{count}} выполняются",
+          "running_count_many": "{{count}} выполняются",
+          "running_count_other": "{{count}} выполняются",
+          "passed_count_one": "{{count}} прошла",
+          "passed_count_few": "{{count}} прошли",
+          "passed_count_many": "{{count}} прошли",
+          "passed_count_other": "{{count}} прошли",
+          "failing_count_one": "{{count}} падает",
+          "failing_count_few": "{{count}} падают",
+          "failing_count_many": "{{count}} падают",
+          "failing_count_other": "{{count}} падают"
         },
         "repoSwitcher": {
           "add_a_repo": "Добавить репозиторий",
@@ -2251,14 +2268,16 @@
           "search_labels_2": "Поиск меток…"
         },
         "labelPicker": {
-          "add": "Добавить",
           "filter_labels": "Фильтр меток…",
           "filter_labels_2": "Фильтр меток",
           "loading_labels": "Загрузка меток…",
           "remove_this_label_no_longer_exists_on_the_repo": "Удалить — этой метки больше нет в репозитории",
           "saved_but_no_longer_on_this_repo": "Сохранено, но больше нет в этом репозитории:",
-          "suggested": "предложено",
-          "this_repo_has_no_labels": "В этом репозитории нет меток."
+          "this_repo_has_no_labels": "В этом репозитории нет меток.",
+          "add_suggested_one": "Добавить предложенные: {{count}}",
+          "add_suggested_few": "Добавить предложенные: {{count}}",
+          "add_suggested_many": "Добавить предложенные: {{count}}",
+          "add_suggested_other": "Добавить предложенные: {{count}}"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — нажми, чтобы развернуть боковую панель",
@@ -2528,11 +2547,15 @@
           "close": "Закрыть",
           "close_esc": "Закрыть (Esc)",
           "close_reference": "Закрыть ссылку",
-          "deep": "в глубину",
           "issue": "Задача",
           "loading": "Загрузка #",
           "open_in_the_list_detail_column": "Открыть в колонке списка и подробностей",
-          "open_this_item_in_the_workspace": "Открыть этот элемент в рабочей области"
+          "open_this_item_in_the_workspace": "Открыть этот элемент в рабочей области",
+          "deep_count_one": "глубина {{count}}",
+          "deep_count_few": "глубина {{count}}",
+          "deep_count_many": "глубина {{count}}",
+          "deep_count_other": "глубина {{count}}",
+          "dialog_label": "{{kind}} {{ref}} в {{repo}}"
         },
         "repoSwitcher": {
           "repositories": "Репозитории"
@@ -2646,7 +2669,15 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "Не удалось загрузить настройки панели, поэтому список экземпляров GitLab недоступен.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "Выбор сброшен: эти проекты находятся на предыдущем экземпляре GitLab.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "Выбор сброшен: эти репозитории принадлежат предыдущему провайдеру.",
-        "try_again": "Повторить"
+        "try_again": "Повторить",
+        "repos_selected_one": "Выбран {{count}}",
+        "repos_selected_few": "Выбрано {{count}}",
+        "repos_selected_many": "Выбрано {{count}}",
+        "repos_selected_other": "Выбрано {{count}}",
+        "repos_found_one": "Найден {{count}}",
+        "repos_found_few": "Найдено {{count}}",
+        "repos_found_many": "Найдено {{count}}",
+        "repos_found_other": "Найдено {{count}}"
       },
       "connectRepoModal": {
         "close": "Закрыть",
@@ -3058,7 +3089,8 @@
             "first_issue_friendly_count_few": "<strong>{{n}}</strong> открытые задачи помечены как подходящие для первого вклада",
             "first_issue_friendly_count_many": "<strong>{{n}}</strong> открытых задач помечены как подходящие для первого вклада",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> открытой задачи помечены как подходящие для первого вклада",
-            "triage_needed_of_open": "Открытые задачи, требующие разбора: <strong>{{triage}}</strong> из {{n}}"
+            "triage_needed_of_open": "Открытые задачи, требующие разбора: <strong>{{triage}}</strong> из {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · открыть в {{provider}}"
           }
         },
         "tagging": {
@@ -3070,7 +3102,6 @@
             "created": "Создано",
             "creating": "Создание...",
             "creating_needs_write_access": "для создания нужны права на запись",
-            "defined_by_open_issue_count": "определено · по числу открытых задач",
             "labels": "Метки",
             "looking_for_labels_this_repo_is_missing": "Поиск меток, которых не хватает этому репозиторию…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Ничего — таксономия репозитория уже покрывает потребности его открытых задач.",
@@ -3088,7 +3119,11 @@
             "suggest_new_labels": "Предложить новые метки",
             "suggested_new_labels_not_created_until_you_say_s": "Предложенные новые метки — не создаются без вашего согласия",
             "re_fetch_this_repo_s_labels_from": "Заново загрузить метки этого репозитория из {{provider}}",
-            "create_this_label_on": "Создать эту метку в {{provider}}"
+            "create_this_label_on": "Создать эту метку в {{provider}}",
+            "labels_defined_one": "определено: {{count}} · по числу открытых задач",
+            "labels_defined_few": "определено: {{count}} · по числу открытых задач",
+            "labels_defined_many": "определено: {{count}} · по числу открытых задач",
+            "labels_defined_other": "определено: {{count}} · по числу открытых задач"
           },
           "untaggedIssueCard": {
             "add": "Добавить",
@@ -4670,12 +4705,10 @@
         "at_least_one_source_did_not_answer_this_poll": "Хотя бы один источник не ответил на этот опрос.",
         "claim": "Взять",
         "claimed": "Взят",
-        "cleared": "снят ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· доставляется push-ом, поэтому пустой опрос ничего не значит",
         "every_configured_source_answered": "Каждый настроенный источник ответил.",
         "everything_firing_already_has_an_incident": "У всего, что срабатывает, уже есть инцидент.",
         "firing": "Срабатывает",
-        "firing_2": "срабатывает ·",
         "firing_not_yet_claimed": "Срабатывает, ещё не взято",
         "inbound_webhook_queued_few": "Доставлено {{count}} входящих сигнала по вебхуку, они ждут, пока их подхватит следующий цикл, — на доске их пока нет.",
         "inbound_webhook_queued_many": "Доставлено {{count}} входящих сигналов по вебхуку, они ждут, пока их подхватит следующий цикл, — на доске их пока нет.",
@@ -4705,7 +4738,6 @@
         "no_signal_sources_registered": "Источники сигналов не зарегистрированы.",
         "no_sources_reporting_a_firing_signal": "Ни один источник не сообщает о сработавшем сигнале.",
         "not_polled_yet_not_the_same_as_healthy": "ещё не опрашивался — это не значит, что он здоров",
-        "not_yet_claimed": "ещё не взято",
         "nothing_firing_but_parked_signals_not_investigated": "ничего не срабатывает, но отложенные сигналы выше никто не разбирает",
         "nothing_firing_but_signals_parked_not_picked_up_few": "Ничего не срабатывает — но {{count}} сигнала отложены у провайдера (см. выше) и взяты не будут.",
         "nothing_firing_but_signals_parked_not_picked_up_many": "Ничего не срабатывает — но {{count}} сигналов отложены у провайдера (см. выше) и взяты не будут.",
@@ -4716,7 +4748,6 @@
         "one_ledger_entry_matched": "Совпала 1 запись журнала — {{detail}}",
         "parked": "Отложен",
         "parked_2": "отложен",
-        "parked_at_provider": "отложено у провайдера ·",
         "parked_at_the_provider": "Отложено у провайдера",
         "poll_answered": "ответил",
         "poll_every_configured_source_now_read_only": "Опросить сейчас каждый настроенный источник (только чтение)",
@@ -4743,7 +4774,23 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "Этот источник пишет push-ом в буфер, который каждый опрос опустошает, поэтому уже доставленный им сигнал не появится снова, даже если неисправность ещё жива.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "Откуда берётся работа. Настрой учётные данные и охват в разделе Settings; опроси\n          здесь, чтобы увидеть, что источник действительно возвращает.",
-        "while_that_is_true_absence_of_a_signal_does_not": "Пока это так, отсутствие сигнала НЕ значит, что всё восстановилось, — возможно, мы просто\n                не смогли посмотреть."
+        "while_that_is_true_absence_of_a_signal_does_not": "Пока это так, отсутствие сигнала НЕ значит, что всё восстановилось, — возможно, мы просто\n                не смогли посмотреть.",
+        "firing_count_one": "срабатывает: {{count}} ·",
+        "firing_count_few": "срабатывает: {{count}} ·",
+        "firing_count_many": "срабатывает: {{count}} ·",
+        "firing_count_other": "срабатывает: {{count}} ·",
+        "parked_count_one": "отложено у провайдера: {{count}} ·",
+        "parked_count_few": "отложено у провайдера: {{count}} ·",
+        "parked_count_many": "отложено у провайдера: {{count}} ·",
+        "parked_count_other": "отложено у провайдера: {{count}} ·",
+        "cleared_count_one": "снято: {{count}} ·",
+        "cleared_count_few": "снято: {{count}} ·",
+        "cleared_count_many": "снято: {{count}} ·",
+        "cleared_count_other": "снято: {{count}} ·",
+        "unclaimed_count_one": "ещё не взято: {{count}}",
+        "unclaimed_count_few": "ещё не взято: {{count}}",
+        "unclaimed_count_many": "ещё не взято: {{count}}",
+        "unclaimed_count_other": "ещё не взято: {{count}}"
       }
     },
     "papyrus": {

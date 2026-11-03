@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { RepoLabel } from '../apps/issue-radar/api'
 import LabelPicker from '../apps/issue-radar/components/LabelPicker'
 
@@ -96,6 +98,16 @@ describe('LabelPicker — suggestions', () => {
     renderPicker({ suggestPattern: pattern, onAddMany })
     await userEvent.click(screen.getByRole('button', { name: /Add 1 suggested/ }))
     expect(onAddMany).toHaveBeenCalledWith(['zzq-needs-triage'])
+  })
+
+  it('counts the suggestions in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderPicker({ suggestPattern: pattern, onAddMany })
+      expect(screen.getByRole('button', { name: /1 Vorschlag hinzufügen/ })).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('rings a suggested chip that is not already selected', () => {

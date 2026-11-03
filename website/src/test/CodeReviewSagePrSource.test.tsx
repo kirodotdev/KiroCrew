@@ -1,4 +1,6 @@
 // The PR content tab bodies: description, CI checks, comments.
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 //
 // These are pure given a PullRequestSource, so they are tested directly; the tab
 // bar that hosts them (and the single shared query behind it) is covered in
@@ -129,6 +131,22 @@ describe('the pull request\'s own status', () => {
       checks: [check('passed', 'a'), check('passed', 'b')],
     })} />)
     expect(screen.getByText('2 passed')).toBeTruthy()
+  })
+
+  it('counts failing, running and passed checks in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      const { unmount } = render(<PrStatusChips src={source({ checks: [check('pending', 'a'), check('passed', 'b')] })} />)
+      expect(screen.getByText('1 läuft')).toBeTruthy()
+      unmount()
+      const second = render(<PrStatusChips src={source({ checks: [check('passed', 'a'), check('passed', 'b')] })} />)
+      expect(screen.getByText('2 bestanden')).toBeTruthy()
+      second.unmount()
+      render(<PrStatusChips src={source({ checks: [check('failed', 'a'), check('failed', 'b')] })} />)
+      expect(screen.getByText('2 fehlgeschlagen')).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('shows no check chip when the provider reported none', () => {
