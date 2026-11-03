@@ -92,7 +92,9 @@ DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 #: A crewmate (mate) thread is a root of its own kind, kept apart from Crew Mode so
 #: no ``crew_root`` rule fires for it. ``mate_root`` is the mate thread's key on each
 #: session it dispatched, directly or through another; ``mate_dispatched_by`` is that
-#: row's direct creator. Absent elsewhere. Inert: no list or client reads them yet
+#: row's direct creator. Absent elsewhere. Read only by the Crew panel's routes
+#: (``dashboard/handlers/crew_workers.py``), which answer a mate thread as a root;
+#: no list reads them yet
 #: (``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``).
 MATE_ROOT_FIELD: Final[str] = "mate_root"
 MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
@@ -647,6 +649,11 @@ def live_stamp_rows(
     saved = {str(row["key"]): str(row.pop("saved_created_by") or "") for row in rows}
     stamp_rows(rows, settled=settled and parents is not None, saved_creators=saved)
     return {str(row["key"]): row for row in rows}
+
+
+def mate_workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping[str, Any]]:
+    """The stamped rows whose mate root is *root_key*: :func:`workers_of` for a mate."""
+    return [row for row in rows if root_key and row.get(MATE_ROOT_FIELD) == root_key]
 
 
 def mate_stamps_of(row: Mapping[str, Any]) -> tuple[str, str]:
