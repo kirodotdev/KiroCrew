@@ -195,16 +195,26 @@ def test_both_target_forms_are_accepted(payload):
 def test_a_dispatch_may_carry_a_brief():
     payload = {**SESSION_TARGET, "brief": "drive it green"}
     validate_data(KIND_CREW, DISPATCH, payload)
+    _crew().append(DISPATCH, payload, src="crew:conductor")
+    assert [e.data for e in CrewLog.open(KIND_CREW, CREW).iter_from(1)] == [payload]
 
 
 @pytest.mark.parametrize("status", CREW_REPORT_STATUSES)
 def test_every_declared_status_is_accepted(status):
-    validate_data(KIND_CREW, REPORT, {"item": "WI-4", "status": status})
+    payload = {"item": "WI-4", "status": status}
+    validate_data(KIND_CREW, REPORT, payload)
+    # The status lands under its own name: a report is never re-filed as another.
+    _crew().append(REPORT, payload, src="crew:conductor")
+    assert [e.data["status"] for e in CrewLog.open(KIND_CREW, CREW).iter_from(1)] == [status]
 
 
 def test_a_report_may_carry_credits_as_an_int_or_a_float():
+    led = _crew()
     for credits in (0, 1, 0.21):
         validate_data(KIND_CREW, REPORT, {**DONE_REPORT, "credits": credits})
+        led.append(REPORT, {**DONE_REPORT, "credits": credits}, src="crew:conductor")
+    stored = [e.data["credits"] for e in CrewLog.open(KIND_CREW, CREW).iter_from(1)]
+    assert stored == [0, 1, 0.21]
 
 
 # --- the validator refuses what the spec calls invalid --------------------

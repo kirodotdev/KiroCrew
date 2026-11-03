@@ -21,6 +21,7 @@ import pytest
 from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import (
+    CODE_BAD_DATA,
     CODE_BAD_DATA_FIELD,
     SESSION_ENTRY_TYPES,
     CrewLog,
@@ -886,18 +887,27 @@ def test_a_bad_value_is_refused_at_the_path_that_holds_it(entry_type, payload, p
 def test_an_open_enum_accepts_a_value_it_does_not_list():
     # `stop_reason` is the provider's own terminal reason, so the registry lists
     # what it knows and enforces nothing: an unlisted reason is a record to keep.
-    validate_data("session", "turn/completed", {"turn": 1, "stop_reason": "max_tokens"})
-    validate_data("session", "session/closed", {"reason": "evicted"})
-    validate_data(
-        "session", "tool/completed", CANONICAL["tool/completed"] | {"status": "cancelled"}
-    )
+    unlisted = [
+        ("turn/completed", {"turn": 1, "stop_reason": "max_tokens"}),
+        ("session/closed", {"reason": "evicted"}),
+        ("tool/completed", CANONICAL["tool/completed"] | {"status": "cancelled"}),
+    ]
+    led = _fresh()
+    for entry_type, payload in unlisted:
+        validate_data("session", entry_type, payload)
+        led.append(entry_type, payload, src="gateway")
+    del led
+    assert [(e["type"], e["data"]) for e in _entries()[1:]] == unlisted
 
 
 def test_a_token_mapping_is_required_whole_but_only_once_it_is_there():
     # The parent field stays optional: a nested requirement is checked once its
     # object is present, which is what lets the crash-repair closer write a
     # turn/completed with no tokens at all.
-    validate_data("session", "turn/completed", {"turn": 1, "stop_reason": "interrupted"})
+    payload = {"turn": 1, "stop_reason": "interrupted"}
+    validate_data("session", "turn/completed", payload)
+    _fresh().append("turn/completed", payload, src="gateway")
+    assert [e["data"] for e in _entries()[1:]] == [payload]
 
 
 # --- what is not declared passes through ---------------------------------
@@ -935,6 +945,13 @@ def test_a_non_mapping_payload_is_left_to_require_data():
     # `bad_data` already owns "data is not an object". Two codes for one fact
     # would make a caller branch twice on the same refusal.
     validate_data("session", "turn/started", ["not", "a", "dict"])
+    led = _fresh()
+    with pytest.raises(CrewLogError) as caught:
+        led.append("turn/started", ["not", "a", "dict"], src="gateway")  # type: ignore[arg-type]
+    code, field = caught.value.code, caught.value.field
+    # The record's traceback holds this frame, and so ``led`` and its write lease.
+    del caught, led
+    assert (code, field) == (CODE_BAD_DATA, "data")
 
 
 # --- the append path enforces it -----------------------------------------

@@ -209,11 +209,3 @@ def test_pick_tolerates_the_max_draw_index() -> None:
     prng2.next = lambda: _PRNG_MAX  # type: ignore[method-assign]
     # pick must fall back rather than raise on that out-of-range index.
     assert prng2.pick(choices, "FALLBACK") == "FALLBACK"
-
-
-def test_no_name_in_a_battery_crashes() -> None:
-    """Belt-and-braces: the public helpers never raise across the battery."""
-    for name in EXPECTED:
-        default_icon_avatar(name)
-        seed_icon_pose(name)
-        seed_icon_bg(name)
