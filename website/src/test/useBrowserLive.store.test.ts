@@ -224,6 +224,22 @@ describe('resolveTurn: binding a card to a record', () => {
     expect(browserLiveStore.resolveTurn(S, 'call:latest', false, started - 200)!.turnId).toBe('t2')
   })
 
+  it('after a reload a running card does not take the previous turn\'s finished record', () => {
+    const ended = Date.now() - 600_000
+    browserLiveStore.applyEvent(ev({ turn_id: 't1', state: 'done', turn_over: true, started_at_ms: ended - 30_000, ended_at_ms: ended }))
+    // The new turn's browser row arrives before its browser_live update.
+    expect(browserLiveStore.resolveTurn(S, 'call:new', true, Date.now())).toBeNull()
+    // Its own record then arrives and the same card binds to it, not to t1.
+    browserLiveStore.applyEvent(ev({ turn_id: 't2', state: 'live', started_at_ms: Date.now() - 1_000 }))
+    expect(browserLiveStore.resolveTurn(S, 'call:new', true, Date.now())!.turnId).toBe('t2')
+  })
+
+  it('a running card still binds to a finished record its anchor row belongs to', () => {
+    const ended = Date.now() - 5_000
+    browserLiveStore.applyEvent(ev({ turn_id: 't1', state: 'done', turn_over: true, started_at_ms: ended - 30_000, ended_at_ms: ended }))
+    expect(browserLiveStore.resolveTurn(S, 'call:t1', true, ended - 20_000)!.turnId).toBe('t1')
+  })
+
   it('returns null for a session the relay never spoke about', () => {
     expect(browserLiveStore.resolveTurn('slot:none', 'call:x', true, null)).toBeNull()
   })

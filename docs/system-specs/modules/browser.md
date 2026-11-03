@@ -419,7 +419,8 @@ connected owner socket is sent each chat's last published event
 card, a waiting quick ask included, without waiting for a change. The card takes
 its turn times from those two fields on first sight, so a restored card still
 binds to its own turn's tool rows (the bind window compares the row's timestamp
-with them), however long ago the turn ran. With the gateway's start the window
+with them), however long ago the turn ran. A running card whose record already finished takes it only when its anchor row sits inside that window; otherwise
+it stays unbound until its own turn's record arrives. With the gateway's start the window
 opens only 10 s before it (`BIND_LEAD_MS`): the row is the call that opened the
 turn, so an earlier turn's row, mounted first after a reload, cannot claim it. Frames are BINARY messages: a
 4-byte big-endian header length, a UTF-8 JSON header

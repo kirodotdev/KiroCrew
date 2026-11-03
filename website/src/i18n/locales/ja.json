@@ -11626,7 +11626,9 @@
         "waiting_for_first_frame": "最初のフレームを待っています…",
         "waiting_for_hand_back": "ブラウザーが戻されるのを待っています…",
         "wants_browser": "{{productName}} が {{browser}} を使おうとしています",
-        "you_are_in_control": "あなたが操作中"
+        "you_are_in_control": "あなたが操作中",
+        "recording_load_failed": "このターンの録画を読み込めませんでした。",
+        "recording_retry": "再試行"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",

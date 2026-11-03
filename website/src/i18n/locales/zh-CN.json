@@ -11626,7 +11626,9 @@
         "waiting_for_first_frame": "等待第一帧…",
         "waiting_for_hand_back": "等你交还浏览器…",
         "wants_browser": "{{productName}} 想用{{browser}}",
-        "you_are_in_control": "你在操作"
+        "you_are_in_control": "你在操作",
+        "recording_load_failed": "无法加载这一轮的录像。",
+        "recording_retry": "重试"
       },
       "chatFooter": {
         "compacting": "压缩中…",

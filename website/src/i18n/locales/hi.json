@@ -11821,7 +11821,9 @@
         "waiting_for_first_frame": "पहले फ़्रेम की प्रतीक्षा…",
         "waiting_for_hand_back": "तुम्हारे ब्राउज़र वापस देने की प्रतीक्षा…",
         "wants_browser": "{{productName}} {{browser}} इस्तेमाल करना चाहता है",
-        "you_are_in_control": "नियंत्रण तुम्हारे पास है"
+        "you_are_in_control": "नियंत्रण तुम्हारे पास है",
+        "recording_load_failed": "इस टर्न की रिकॉर्डिंग लोड नहीं हो सकी।",
+        "recording_retry": "पुन: प्रयास करें"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",

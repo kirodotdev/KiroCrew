@@ -12016,7 +12016,9 @@
         "waiting_for_first_frame": "En attente de la première image…",
         "waiting_for_hand_back": "En attente que tu rendes le navigateur…",
         "wants_browser": "{{productName}} veut utiliser {{browser}}",
-        "you_are_in_control": "Tu as la main"
+        "you_are_in_control": "Tu as la main",
+        "recording_load_failed": "Impossible de charger l’enregistrement de ce tour.",
+        "recording_retry": "Réessayer"
       },
       "chatFooter": {
         "compacting": "Compactage…",

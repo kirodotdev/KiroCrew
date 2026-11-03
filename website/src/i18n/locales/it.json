@@ -12016,7 +12016,9 @@
         "waiting_for_first_frame": "In attesa del primo fotogramma…",
         "waiting_for_hand_back": "In attesa che tu restituisca il browser…",
         "wants_browser": "{{productName}} vuole usare {{browser}}",
-        "you_are_in_control": "Hai il controllo"
+        "you_are_in_control": "Hai il controllo",
+        "recording_load_failed": "Impossibile caricare la registrazione di questo turno.",
+        "recording_retry": "Riprova"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",

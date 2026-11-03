@@ -11821,7 +11821,9 @@
         "waiting_for_first_frame": "Warten auf das erste Bild…",
         "waiting_for_hand_back": "Warten, bis du den Browser zurückgibst…",
         "wants_browser": "{{productName}} möchte {{browser}} verwenden",
-        "you_are_in_control": "Du hast die Kontrolle"
+        "you_are_in_control": "Du hast die Kontrolle",
+        "recording_load_failed": "Die Aufzeichnung dieses Durchgangs konnte nicht geladen werden.",
+        "recording_retry": "Wiederholen"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",

@@ -11626,7 +11626,9 @@
         "waiting_for_first_frame": "첫 프레임을 기다리는 중…",
         "waiting_for_hand_back": "브라우저를 돌려주실 때까지 기다리는 중…",
         "wants_browser": "{{productName}}이(가) {{browser}}을(를) 사용하려 합니다",
-        "you_are_in_control": "지금 사용자가 제어 중"
+        "you_are_in_control": "지금 사용자가 제어 중",
+        "recording_load_failed": "이 턴의 녹화를 불러오지 못했습니다.",
+        "recording_retry": "다시 시도"
       },
       "chatFooter": {
         "compacting": "압축 중…",

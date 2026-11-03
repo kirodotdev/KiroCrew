@@ -552,7 +552,12 @@ class BrowserLiveStore {
     const cur = s.current
     if (!cur) return null
     if (running) {
-      if ((isEnded(cur.state) || cur.turnOver) && this.isBound(sessionKey, cur.turnId)) return null
+      const finished = isEnded(cur.state) || cur.turnOver
+      if (finished && this.isBound(sessionKey, cur.turnId)) return null
+      // A running card against a record that already finished: that record is the
+      // PREVIOUS turn's (a reload restored it) unless the anchor row sits inside its
+      // window. Left unbound, the card waits for its own turn's record.
+      if (finished && !this.anchorFits(cur, anchorTs)) return null
       this.anchors.set(ak, cur.turnId)
       return cur
     }
@@ -560,13 +565,17 @@ class BrowserLiveStore {
     // when the clocks agree, so a reload cannot hand an old turn a newer turn's
     // browsing, and a settled turn never shows a turn that is still live.
     if ((!isEnded(cur.state) && !cur.turnOver) || this.isBound(sessionKey, cur.turnId)) return null
-    if (anchorTs !== null) {
-      const end = cur.endedAt ?? Date.now()
-      const lead = cur.serverClock ? BIND_LEAD_MS : BIND_SLACK_MS
-      if (anchorTs < cur.startedAt - lead || anchorTs > end + BIND_SLACK_MS) return null
-    }
+    if (!this.anchorFits(cur, anchorTs)) return null
     this.anchors.set(ak, cur.turnId)
     return cur
+  }
+
+  /** Whether an anchor row's timestamp sits inside a record's window (true when it has none). */
+  private anchorFits(cur: BrowserLiveTurn, anchorTs: number | null): boolean {
+    if (anchorTs === null) return true
+    const end = cur.endedAt ?? Date.now()
+    const lead = cur.serverClock ? BIND_LEAD_MS : BIND_SLACK_MS
+    return !(anchorTs < cur.startedAt - lead || anchorTs > end + BIND_SLACK_MS)
   }
 
   private isBound(sessionKey: string, turnId: string): boolean {
