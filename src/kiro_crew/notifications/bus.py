@@ -17,6 +17,7 @@ Design (see docs/request-for-change/rfc-local-notification-bus.md):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -147,6 +148,23 @@ _RESERVED_NOTE_KEYS = frozenset(
         "acked",
     }
 )
+
+
+def _finite_json(value: Any) -> Any:
+    """*value* with every NaN or infinite float, at any depth, read as ``None``.
+
+    The push route parses with plain ``json.loads``, which accepts ``NaN`` and
+    ``Infinity``; stored as is, one such meta value is written back out
+    literally, and the feed is then not JSON a browser can parse, for every
+    client, until the note ages out. ``None`` keeps the key and the note.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite_json(v) for v in value]
+    return value
 
 
 class NotificationValidationError(ValueError):
@@ -522,6 +540,6 @@ class NotificationBus:
             for key, value in payload.meta.items():
                 if key in note or key.startswith("_") or key in _RESERVED_NOTE_KEYS:
                     continue
-                note[key] = value
+                note[key] = _finite_json(value)
         self._sink(note)
         return note
