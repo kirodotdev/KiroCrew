@@ -5769,8 +5769,6 @@
       "more_waiting": "{{count}} weitere",
       "needs_you": "Braucht dich",
       "next": "Als Nächstes",
-      "progress": "Fortschritt",
-      "progress_count": "{{accepted}} von {{total}} erledigt",
       "remaining": "Offen",
       "show_fewer": "Weniger anzeigen",
       "status_blocked": "Blockiert",

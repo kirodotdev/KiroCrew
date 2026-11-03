@@ -5656,8 +5656,6 @@
       "more_waiting": "还有 {{count}} 件",
       "needs_you": "需要你处理",
       "next": "下一步",
-      "progress": "进度",
-      "progress_count": "{{total}} 项中已完成 {{accepted}} 项",
       "remaining": "还剩",
       "show_fewer": "收起",
       "status_blocked": "卡住了",

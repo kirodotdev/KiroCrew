@@ -1620,8 +1620,6 @@
       "more_waiting": "{{count}} more",
       "needs_you": "Needs you",
       "next": "Next",
-      "progress": "Progress",
-      "progress_count": "{{accepted}} of {{total}} done",
       "remaining": "Left",
       "show_fewer": "Show fewer",
       "status_blocked": "Blocked",

@@ -5769,8 +5769,6 @@
       "more_waiting": "আরও {{count}}টি",
       "needs_you": "তোমার কাছে দরকার",
       "next": "এরপর",
-      "progress": "অগ্রগতি",
-      "progress_count": "{{total}}টির মধ্যে {{accepted}}টি শেষ",
       "remaining": "বাকি",
       "show_fewer": "কম দেখাও",
       "status_blocked": "আটকে আছে",

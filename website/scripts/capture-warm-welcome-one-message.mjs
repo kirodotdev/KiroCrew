@@ -7,8 +7,12 @@
  *   01-crewmate-preparing-<theme>.png  the crewmate typing bubble's caption
  *   02-pane-preparing-<theme>.png      an ordinary pane's footer caption
  *   03-card-<theme>-<width>.png        a no-goal brief at the new caps (four
- *                                      asks, expanded, a long body, no orb
- *                                      since there is no count), the only new row
+ *                                      asks, expanded, a long body), the only
+ *                                      new row
+ *   04-visual-<theme>.png              a brief whose body carries the model's
+ *                                      own picture: a mermaid diagram, a table
+ *                                      and an <mcwidget>, drawn by the chat's
+ *                                      own markdown renderer
  *
  * Every frame asserts its state before it is written. Mounts the capture
  * harnesses (members-page.html, chatpane-loader.html) with route-intercepted,
@@ -53,6 +57,40 @@ const RESULT = {
   role: 'assistant', cls: 'msg msg-a', ts: '2026-10-05T09:30:09Z',
   content: `Waiting on you: ${BRIEF.headline}`,
   meta: { mid: 'w2', kind: 'warm_task_brief_result', fingerprint: 'fp', brief: BRIEF },
+}
+const VISUAL_BRIEF = {
+  status: 'needs_you',
+  headline: 'Goal: land the nightly fix. One ask waits on you.',
+  needs_you: ['Approve the push to the fix branch so CI can run'],
+  body: [
+    'Since you left (as of 09:30):',
+    '- worker report 09:12: the fix PR is open',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    'A[Fix PR open] --> B{You approve push}',
+    'B -->|yes| C[CI runs]',
+    'B -->|no| D[Fix waits]',
+    '```',
+    '',
+    '| Check | State |',
+    '| --- | --- |',
+    '| Unit | green |',
+    '| Shard 3 | running |',
+    '',
+    '<mcwidget title="Nightly runs">',
+    '<div style="display:flex;gap:4px;font:12px system-ui;color:var(--text)">',
+    '<span style="padding:2px 6px;background:var(--danger-subtle)">Mon</span>',
+    '<span style="padding:2px 6px;background:var(--danger-subtle)">Tue</span>',
+    '<span style="padding:2px 6px;background:var(--ok-subtle)">Wed</span>',
+    '</div>',
+    '</mcwidget>',
+  ].join('\n'),
+}
+const VISUAL_RESULT = {
+  role: 'assistant', cls: 'msg msg-a', ts: '2026-10-05T09:30:09Z',
+  content: `Waiting on you: ${VISUAL_BRIEF.headline}`,
+  meta: { mid: 'w3', kind: 'warm_task_brief_result', fingerprint: 'fp', brief: VISUAL_BRIEF },
 }
 
 const server = await createServer({ configFile: './vite.config.ts', server: { host: '127.0.0.1', port: 5199, strictPort: false }, logLevel: 'warn' })
@@ -109,14 +147,13 @@ for (const theme of ['dark', 'light']) {
     const card = page.getByTestId('warm-brief-card')
     await card.waitFor()
     check(`[03/${theme}/${width}] one card`, (await card.count()) === 1)
-    // The orb shows three asks and folds the rest behind one toggle.
+    // Three asks show; the rest fold behind one toggle.
     const asks = card.getByTestId('warm-brief-waiting-card')
     check(`[03/${theme}/${width}] three asks shown, one folded`, (await asks.count()) === 3)
     await card.getByTestId('warm-brief-more').click()
     check(`[03/${theme}/${width}] four asks after expanding`, (await asks.count()) === 4)
     check(`[03/${theme}/${width}] body kept whole`, (await card.getByTestId('warm-brief-body').innerText()).includes('Next without you'))
-    check(`[03/${theme}/${width}] no count: no orb is drawn`, (await card.locator('.wb-orb').count()) === 0)
-    check(`[03/${theme}/${width}] no count caption`, (await card.getByTestId('warm-brief-progress-count').count()) === 0)
+    check(`[03/${theme}/${width}] no progress picture or count`, (await card.getByRole('progressbar').count()) === 0)
     check(`[03/${theme}/${width}] status tag kept`, (await card.getByTestId('warm-brief-status').count()) === 1)
     check(`[03/${theme}/${width}] no opener row`, (await page.getByText('Welcome back, let me catch you up').count()) === 0)
     const box = await card.boundingBox()
@@ -124,6 +161,43 @@ for (const theme of ['dark', 'light']) {
     check(`[03/${theme}/${width}] no page errors`, errors.length === 0)
     const clip = { x: Math.max(0, box.x - 16), y: Math.max(0, box.y - 16), width: Math.min(width - Math.max(0, box.x - 16), box.width + 32), height: box.height + 32 }
     await page.screenshot({ path: resolve(OUT, `03-card-${theme}-${width}.png`), clip })
+    await ctx.close()
+  }
+  // 04 -- the model chose a picture: mermaid, a table and a widget in the body.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 1300 }, deviceScaleFactor: 2 })
+    const page = await ctx.newPage()
+    const errors = []; page.on('pageerror', e => errors.push(String(e)))
+    await routeRadarDm(page, { thread: [THREAD[3], THREAD[4], VISUAL_RESULT] })
+    // Stand in for the gateway's sandbox-doc mint, the same one any chat
+    // widget uses: serve back the document the frame built.
+    const docs = []
+    await page.route(u => new URL(u).pathname === '/api/sandbox-doc', route => {
+      docs.push(JSON.parse(route.request().postData() || '{}').html || '')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ url: `/sandbox-doc/w/${docs.length - 1}` }) })
+    })
+    await page.route(u => new URL(u).pathname.startsWith('/sandbox-doc/w/'), route => {
+      const i = Number(new URL(route.request().url()).pathname.split('/').pop())
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: docs[i] ?? '' })
+    })
+    await openRadarDm(page, BASE, theme)
+    const card = page.getByTestId('warm-brief-card')
+    await card.waitFor()
+    const body = card.getByTestId('warm-brief-body')
+    await body.locator('svg').first().waitFor({ timeout: 15000 })
+    // The chat widget frame mounts its iframe once it scrolls into view.
+    await body.getByRole('button', { name: 'Expand' }).first().scrollIntoViewIfNeeded()
+    await body.locator('iframe').first().waitFor({ state: 'attached', timeout: 15000 })
+    await body.frameLocator('iframe').first().getByText('Wed').waitFor({ timeout: 15000 })
+    await page.waitForTimeout(1200)
+    check(`[04/${theme}] mermaid drawn as a diagram`, (await body.locator('svg').count()) > 0)
+    check(`[04/${theme}] table drawn`, (await body.locator('table').count()) === 1)
+    check(`[04/${theme}] widget in a sandboxed frame`, (await body.locator('iframe[sandbox]').count()) === 1)
+    check(`[04/${theme}] no progress picture or count`, (await card.getByRole('progressbar').count()) === 0)
+    check(`[04/${theme}] no page errors`, errors.length === 0)
+    const box = await card.boundingBox()
+    const clip = { x: Math.max(0, box.x - 16), y: Math.max(0, box.y - 16), width: box.width + 32, height: box.height + 32 }
+    await page.screenshot({ path: resolve(OUT, `04-visual-${theme}.png`), clip })
     await ctx.close()
   }
 }

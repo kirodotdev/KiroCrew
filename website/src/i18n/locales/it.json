@@ -5882,8 +5882,6 @@
       "more_waiting": "Altre {{count}}",
       "needs_you": "Serve a te",
       "next": "Prossimi passi",
-      "progress": "Avanzamento",
-      "progress_count": "{{accepted}} di {{total}} completate",
       "remaining": "Manca",
       "show_fewer": "Mostra meno",
       "status_blocked": "Bloccato",
