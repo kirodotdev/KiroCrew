@@ -250,6 +250,8 @@ def test_an_existing_canvas_is_never_retried_or_adopted(env: Any) -> None:
         "ok": False,
         "error": "channel_canvas_already_exists",
     }
+    # Slack names the channel's canvas, but no create of ours ever ran: not adopted.
+    env.api.responses["conversations.info"] = _canvas_info("F7")
     for _ in range(2):
         out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
         assert not out.ok and "did not create" in out.text
@@ -257,6 +259,183 @@ def test_an_existing_canvas_is_never_retried_or_adopted(env: Any) -> None:
     assert len(_calls(env, "conversations.canvases.create")) == 2
     assert _calls(env, "agents.conversations.setCanvasContent") == []
     assert surface_store().get(CH) is None or not surface_store().get(CH).plan_canvas_id
+
+
+def _canvas_info(canvas_id: str) -> dict[str, Any]:
+    props: dict[str, Any] = {"canvas": {"file_id": canvas_id}} if canvas_id else {}
+    return {"ok": True, "channel": {"id": CH, "properties": props}}
+
+
+@pytest.mark.parametrize("pending_survives", ["memory", "restart"])
+def test_a_canvas_whose_create_answer_was_lost_is_adopted_next_time(
+    env: Any, monkeypatch: Any, pending_survives: str
+) -> None:
+    """A create that may have landed (the answer was lost) is ours: the next call's
+    "already exists" adopts the channel's canvas instead of refusing it for good."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    real_update = tools.surface_update
+
+    async def stamp_fails(channel: str, **fields: Any) -> Any:
+        if fields.get("canvas_create_pending_since"):
+            raise OSError("disk full")  # only this process's memory remembers it
+        return await real_update(channel, **fields)
+
+    if pending_survives == "memory":
+        tools.surface_update = stamp_fails  # type: ignore[assignment]
+    try:
+        out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
+    finally:
+        tools.surface_update = real_update  # type: ignore[assignment]
+    assert not out.ok and "may have applied" in out.text
+    if pending_survives == "restart":
+        tools.forget_channel(CH)  # only the stored record carries it over
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch)  # our bot made it, just now
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert out.ok, out.text
+    assert _calls(env, "files.info")[0]["file"] == "F9"
+    assert surface_store().get(CH).plan_canvas_id == "F9"
+    assert not surface_store().get(CH).canvas_create_pending_since
+    assert _calls(env, "agents.conversations.setCanvasContent")[0]["canvas_id"] == "F9"
+    # Adopted once: the next call writes the stored canvas without a create.
+    assert _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v3"}).ok
+    assert len(_calls(env, "conversations.canvases.create")) == 2
+
+
+def _our_canvas(monkeypatch: Any, *, user: str = "UBOT", bot: str = "", age: float = 0.0) -> Any:
+    """files.info for the channel canvas: its creator and when it was made."""
+    import time as time_mod
+
+    from kiro_crew.slack import enterprise
+
+    monkeypatch.setattr(enterprise, "validated_self_user_id", lambda: "UBOT")
+    monkeypatch.setattr(enterprise, "validated_self_bot_id", lambda: "BBOT")
+    created = int(time_mod.time() + age)
+
+    def info(_params: dict) -> dict:
+        file: dict[str, Any] = {"id": "F9", "user": user, "created": created}
+        if bot:
+            file["bot_id"] = bot
+        return {"ok": True, "file": file}
+
+    return info
+
+
+@pytest.mark.parametrize(
+    "creator",
+    [
+        {"user": "UHUMAN"},  # a person's canvas
+        {"user": "UHUMAN", "bot": "BOTHER"},  # another app's canvas
+        {"user": "UBOT", "age": -3600.0},  # ours, but made long before the lost create
+    ],
+)
+def test_a_foreign_canvas_is_never_adopted_or_overwritten(
+    env: Any, monkeypatch: Any, creator: dict
+) -> None:
+    """A lost create of ours only lets the next "already exists" adopt a canvas
+    files.info says our bot made, after that create began: anything else is a
+    canvas someone else made, left untouched and refused as usual."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch, **creator)
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
+    assert _calls(env, "agents.conversations.setView") == []
+    assert not (surface_store().get(CH) and surface_store().get(CH).plan_canvas_id)
+
+
+@pytest.mark.parametrize("case", ["bot_id_only", "two_lost_creates"])
+def test_our_canvas_is_adopted_by_bot_id_and_after_two_lost_creates(
+    env: Any, monkeypatch: Any, case: str
+) -> None:
+    """Our bot id alone identifies our canvas, and a second lost create keeps the
+    first one's start, so a canvas the first one made still counts."""
+    import time as time_mod
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    first = time_mod.time()
+    user = "UOTHER" if case == "bot_id_only" else "UBOT"
+    # Made now, by the first create: read before the clock is moved below.
+    canvas = _our_canvas(monkeypatch, user=user, bot="BBOT")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    if case == "two_lost_creates":
+        # The second lost create starts long after the first one's canvas was made.
+        # Only tools' own clock binding moves: the stdlib time module is shared
+        # by the whole worker (every store write and log timestamp reads it).
+        from kiro_crew.testing.clock import ManualClock
+
+        ManualClock(start=first + 3600).install(monkeypatch, tools)
+        assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+        assert surface_store().get(CH).canvas_create_pending_since == pytest.approx(first, abs=5)
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = canvas
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert out.ok, out.text
+    assert surface_store().get(CH).plan_canvas_id == "F9"
+
+
+@pytest.mark.parametrize("unknown", ["missing_scope", "transport", "no_self_identity"])
+def test_an_unverifiable_canvas_is_refused_and_code_channels_stay_on(
+    env: Any, monkeypatch: Any, unknown: str
+) -> None:
+    """When who made the canvas can't be told (no files:read, a dropped read, our
+    own identity unknown) it is refused, nothing written, and the install-wide
+    latch is never tripped by that read."""
+    from kiro_crew.slack import enterprise, features
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch)
+    if unknown == "missing_scope":
+        env.api.responses["files.info"] = {"ok": False, "error": "missing_scope"}
+    elif unknown == "transport":
+        env.api.responses["files.info"] = ConnectionResetError("socket reset")
+    else:
+        monkeypatch.setattr(enterprise, "validated_self_user_id", lambda: "")
+        monkeypatch.setattr(enterprise, "validated_self_bot_id", lambda: "")
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
+    assert features.CODE_CHANNELS not in features.latched()
+
+
+def test_a_lost_create_answer_adopts_nothing_when_slack_names_no_canvas(env: Any) -> None:
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("")
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
 
 
 def test_context_bar_items_follow_the_workspace_items(env: Any) -> None:
@@ -1213,6 +1392,64 @@ def test_archive_keeps_the_tree_while_the_bound_session_is_mid_turn(
     _, ts = _wrap(env)
     assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
     assert tree.is_dir() and events == []
+
+
+@pytest.mark.parametrize("change", ["bound_turn", "worker_turn", "worker_joined"])
+def test_archive_keeps_the_tree_when_a_turn_starts_while_sessions_move(
+    env: Any, worktree: Any, monkeypatch: Any, tmp_path: Path, change: str
+) -> None:
+    """Idle when checked is not idle at removal: a turn started (or a worker filed)
+    while the sessions were being moved keeps the tree, and they move back."""
+    from kiro_crew.slack.code_channels.workspace import folders as cc_folders
+
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    record = WorkspaceStore().get("T1", CH)
+    record.folder_id = "f1"
+    WorkspaceStore().put(record)
+    bound = SimpleNamespace(turn_running=False, _turn_generation=1, folder_id="")
+    worker = SimpleNamespace(turn_running=False, _turn_generation=4, folder_id="f1")
+    slots = {SLOT: bound, "chat-7-1": worker}
+    monkeypatch.setattr(env.state, "_slots", slots, raising=False)
+    monkeypatch.setattr(cc_folders, "subtree_ids", lambda _s, fid: frozenset({fid}))
+    events: list[tuple[str, str]] = []
+    svc = _retarget_service(monkeypatch, tmp_path, events, applies=True)
+    moved = svc._set_project
+
+    projects: dict[str, str] = {}
+
+    async def set_project(key: str, path: str) -> bool:
+        ok = await moved(key, path)
+        projects[key] = path
+        if path == str(root):  # the move off the tree; a turn starts meanwhile
+            if change == "bound_turn":
+                bound.turn_running, bound._turn_generation = True, 2
+            elif change == "worker_turn":
+                worker._turn_generation = 5  # began and ended between the reads
+            else:
+                slots["chat-8-1"] = SimpleNamespace(
+                    turn_running=False, _turn_generation=0, folder_id="f1"
+                )
+        return ok
+
+    svc._set_project = set_project
+
+    async def reader(key: str) -> str:
+        return projects.get(key, str(tree))
+
+    svc._project_of = reader
+    _, ts = _wrap(env)
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    assert tree.is_dir()
+    assert not any(e[0] == "worktree_remove" for e in events)
+    assert ("set_project", f"{SLOT}->{tree}") in events  # moved back
+    kept = [
+        r
+        for r in env.sel.ops("slack.code_channel.worktree_release")
+        if "result=kept" in r["resources"]
+    ]
+    assert kept
 
 
 def test_a_retry_takes_its_stamp_back_when_slack_was_unarchived_meanwhile(

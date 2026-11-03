@@ -97,6 +97,7 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     tools._canvas_locks.clear()
     tools._bar_locks.clear()
     tools._unsaved_canvas.clear()
+    tools._maybe_created.clear()
     from kiro_crew.messaging import identity
 
     e.inbound_ok = True

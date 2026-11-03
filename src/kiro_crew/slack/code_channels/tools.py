@@ -48,8 +48,9 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
@@ -291,14 +292,81 @@ def _redact_payload(text: str) -> str:
     return redact(text)
 
 
-def _redact_tree(value: Any) -> Any:
+#: Block Kit keys whose value is a link destination, not text Slack parses.
+_URL_KEYS = frozenset({"url"})
+
+
+def _redact_tree(value: Any, key: str = "") -> Any:
     if isinstance(value, str):
-        return _redact(value)
+        # A destination gets every redaction pass but no mention defang, which
+        # would only break it (``/@scope/`` package links).
+        return _redact_payload(value) if key in _URL_KEYS else _redact(value)
     if isinstance(value, list):
-        return [_redact_tree(v) for v in value]
+        return [_redact_tree(v, key) for v in value]
     if isinstance(value, dict):
-        return {_redact(str(k)): _redact_tree(v) for k, v in value.items()}
+        return {_redact(str(k)): _redact_tree(v, str(k)) for k, v in value.items()}
     return value
+
+
+#: Block Kit keys Slack shows as text: a text object's ``text``, a date element's
+#: ``format`` and ``fallback`` (a link with no ``text`` shows its ``url``, below).
+_SHOWN_KEYS = frozenset({"text", "format", "fallback"})
+
+
+def _shown_texts(value: Any) -> list[str]:
+    """Every Block Kit display string, in reading order."""
+    if isinstance(value, list):
+        return [t for v in value for t in _shown_texts(v)]
+    if isinstance(value, dict):
+        out: list[str] = []
+        if (
+            value.get("type") == "link"
+            and "text" not in value
+            and isinstance(value.get("url"), str)
+        ):
+            out.append(value["url"])
+        for k, v in value.items():
+            out.extend([v] if k in _SHOWN_KEYS and isinstance(v, str) else _shown_texts(v))
+        return out
+    return []
+
+
+def _redact_html(content: str) -> str:
+    """An HTML view's document, redacted and then screened as a browser shows it.
+
+    The projection is the dashboard cards' own (both readings of a tag boundary:
+    an inline one joins words, a block one separates them), so the two HTML
+    sinks cannot read a page two ways.
+    """
+    from kiro_crew.dashboard.card_lifecycle import _html_texts
+
+    redacted = _redact_payload(content)
+    _refuse_hidden_split(zip(_html_texts(content), _html_texts(redacted)))
+    return redacted
+
+
+def _joined(texts: list[str]) -> tuple[str, str]:
+    """Both readings of adjacent elements: run together, and word-separated."""
+    return "".join(texts), " ".join(texts)
+
+
+def _refuse_hidden_split(readings: Iterable[tuple[str, str]]) -> None:
+    """Refuse a view whose shown text hides something redaction should remove.
+
+    Each element is redacted on its own, but Slack shows adjacent elements (a
+    rich-text run, inline HTML spans) as one run: a credential cut between them,
+    or a label held apart from its value, passes every fragment and reads whole.
+    ``readings`` pairs each reading of the original with the same reading of what
+    would publish; the dashboard cards' own screen decides, with this surface's
+    redactor. A hit refuses the view rather than guess which fragments to rewrite.
+    """
+    from kiro_crew.dashboard.card_lifecycle import readings_hide_secret
+
+    if readings_hide_secret(readings, _redact_payload):
+        raise ArgumentError(
+            "a credential or sensitive value is split across display elements; "
+            "nothing was published"
+        )
 
 
 def _check_size(text: str, what: str) -> None:
@@ -339,7 +407,9 @@ def _blocks(args: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     if blocks_request_remote_media(raw):
         raise ArgumentError("blocks may not load remote images or video")
     _check_size(json.dumps(raw), "blocks")
-    return tuple(_redact_tree(raw))
+    redacted = _redact_tree(raw)
+    _refuse_hidden_split(zip(_joined(_shown_texts(raw)), _joined(_shown_texts(redacted))))
+    return tuple(redacted)
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────
@@ -376,7 +446,7 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
             raise ArgumentError("an html view needs content: a full, self-contained HTML document")
         _check_size(content, "content")
         # Up to MAX_CONTENT_BYTES through every display pass: off the event loop.
-        content = await asyncio.to_thread(_redact_payload, content)
+        content = await asyncio.to_thread(_redact_html, content)
         view_id = await call.client.set_view(
             call.binding.channel_id,
             type="html",
@@ -418,16 +488,36 @@ async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
 _canvas_locks: dict[str, asyncio.Lock] = {}
 #: Canvases created whose id could not be stored yet; written on the next call.
 _unsaved_canvas: dict[str, str] = {}
+#: Channels where a create of ours may have landed with its answer lost, and when
+#: that create began (also stored as ``canvas_create_pending_since``, so it
+#: outlasts a restart).
+_maybe_created: dict[str, float] = {}
+#: How far Slack's clock may run behind ours when a canvas's ``created`` is read.
+_CLOCK_SKEW_SECS = 120.0
 
 
 def forget_channel(channel_id: str) -> None:
     """Drop the in-memory canvas state of an archived channel (it takes no more calls)."""
     _canvas_locks.pop(channel_id, None)
     _unsaved_canvas.pop(channel_id, None)
+    _maybe_created.pop(channel_id, None)
     _bar_locks.pop(channel_id, None)
 
 
-async def _create_canvas(call: Call, channel: str, markdown: str, title: str) -> str:
+def _may_have_landed(exc: BaseException | None) -> bool:
+    return isinstance(exc, CodeChannelApiError) and exc.maybe_applied
+
+
+async def _note_maybe_created(channel: str, began: float) -> None:
+    """Remember a create whose answer was lost; best effort on disk, always in memory."""
+    _maybe_created[channel] = began
+    try:
+        await surface_update(channel, canvas_create_pending_since=began)
+    except Exception:
+        logger.warning("code channel %s: pending canvas create not stored", channel, exc_info=True)
+
+
+async def _create_canvas(call: Call, channel: str, markdown: str, title: str, began: float) -> str:
     """Create the canvas; a cancel mid-call still keeps the id Slack hands back."""
     creating = asyncio.ensure_future(call.client.create_canvas(channel, markdown, title=title))
     try:
@@ -438,9 +528,51 @@ async def _create_canvas(call: Call, channel: str, markdown: str, title: str) ->
                 await asyncio.wait({creating})
             except asyncio.CancelledError:
                 pass  # already cancelling: keep waiting for Slack's answer
-        if not creating.cancelled() and creating.exception() is None and creating.result():
-            _unsaved_canvas[channel] = str(creating.result())
+        if not creating.cancelled():
+            if creating.exception() is None and creating.result():
+                _unsaved_canvas[channel] = str(creating.result())
+            elif _may_have_landed(creating.exception()):
+                _maybe_created[channel] = began  # no await while cancelling
         raise
+
+
+def _made_by_us(user: str, bot: str) -> bool:
+    """Whether a canvas creator is this gateway's own bot (unknown identity: no)."""
+    from kiro_crew.slack.enterprise import validated_self_bot_id, validated_self_user_id
+
+    self_user, self_bot = validated_self_user_id(), validated_self_bot_id()
+    return bool((self_user and user == self_user) or (self_bot and bot == self_bot))
+
+
+async def _adopt_lost_create(call: Call, channel: str, began: float) -> str:
+    """The canvas a lost create of ours made ("" unless that is certain).
+
+    The channel's canvas is adopted only when ``files.info`` says this gateway's
+    bot made it, no earlier than the lost create began: a canvas anyone else
+    made, or one older than that create, is never written.
+    """
+    try:
+        canvas_id = await call.client.channel_canvas_id(channel)
+        if not canvas_id:
+            return ""
+        user, bot, created = await call.client.canvas_origin(canvas_id)
+    except (CodeChannelApiError, CodeChannelRequestError) as exc:
+        logger.info("code channel %s: channel canvas not verified: %s", channel, exc)
+        return ""
+    if not _made_by_us(user, bot):
+        # Named, so a creator Slack reports in a form we don't recognise shows here.
+        logger.info(
+            "code channel %s: channel canvas %s is not ours (user=%r bot_id=%r)",
+            channel,
+            canvas_id,
+            user[:32],
+            bot[:32],
+        )
+        return ""
+    if not began or not created or created < began - _CLOCK_SKEW_SECS:
+        logger.info("code channel %s: canvas %s predates the lost create", channel, canvas_id)
+        return ""
+    return canvas_id
 
 
 async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title: str) -> str:
@@ -450,28 +582,43 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
     )
     created = False
     if not canvas_id:
+        # Read before this create: only an EARLIER create's lost answer counts,
+        # and when it began bounds which canvas could be its.
+        lost_began = _maybe_created.get(channel) or (
+            record.canvas_create_pending_since if record is not None else 0.0
+        )
+        # The earliest create that may have landed: a second lost answer must not
+        # push the bound past a canvas the first one made.
+        began = min(lost_began, time.time()) if lost_began else time.time()
         try:
-            canvas_id = await _create_canvas(call, channel, markdown, title)
+            canvas_id = await _create_canvas(call, channel, markdown, title, began)
             created = True
         except CodeChannelApiError as exc:
+            if _may_have_landed(exc):
+                await _note_maybe_created(channel, began)
+                raise
             if exc.code != CANVAS_ALREADY_EXISTS:
                 raise
-            # Never retried, and never adopted: a canvas this gateway did not
-            # create may be a shared document, and writing it would edit it
-            # everywhere it appears.
-            raise ToolRefusal(
-                "Error: this channel already has a canvas that Kiro Crew did not create, "
-                "so it was left alone. Share the plan as an html view instead.",
-                CANVAS_ALREADY_EXISTS,
-            ) from None
+            # Adopted only when a create of ours may have made it (its answer was
+            # lost); otherwise never retried and never adopted: a canvas this
+            # gateway did not create may be a shared document, and writing it
+            # would edit it everywhere it appears.
+            canvas_id = await _adopt_lost_create(call, channel, lost_began) if lost_began else ""
+            if not canvas_id:
+                raise ToolRefusal(
+                    "Error: this channel already has a canvas that Kiro Crew did not create, "
+                    "so it was left alone. Share the plan as an html view instead.",
+                    CANVAS_ALREADY_EXISTS,
+                ) from None
         if not canvas_id:
             raise CodeChannelApiError("conversations.canvases.create", "missing_canvas_id")
         _unsaved_canvas[channel] = canvas_id
     if _unsaved_canvas.get(channel) == canvas_id:
         # Held in memory until stored: a failed write raises, and the next call
         # stores it instead of creating a second canvas.
-        await surface_update(channel, plan_canvas_id=canvas_id)
+        await surface_update(channel, plan_canvas_id=canvas_id, canvas_create_pending_since=0.0)
         _unsaved_canvas.pop(channel, None)
+        _maybe_created.pop(channel, None)
     if not created:
         await call.client.set_canvas_content(channel, canvas_id, markdown)
     view_note = ""

@@ -397,6 +397,10 @@ async def post_wrap_up(
             return ""
         if only_if_live and (settles is None or _requests.get(channel) != settles):
             return ""  # replaced or settled while the facts were read: not ours to post
+        if surface.channel_policy_refusal(
+            channel, operation="slack.code_channel.wrap_up", caller=caller
+        ):
+            return ""  # again at the commit point, after the facts and the lock
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
         except Exception:
@@ -741,6 +745,10 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if not stale and await surface.fenced_unrecorded(binding):
             # Archived here but never recorded: record it now rather than
             # answer "already archived" with nothing cleaned up.
+            if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+                # The recovery stamps and removes the worktree: same ceiling.
+                await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+                return True
             surface.audit(user, operation, "allowed", f"{resources} result=archive_retry")
             _start_recovery(binding, user, time.time(), resources, await _worktree_path(binding))
             await _ephemeral(channel, user, ALREADY_ARCHIVED_TEXT)
@@ -752,6 +760,11 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if stale:
             surface.audit(user, operation, "denied", resources, "not the current wrap-up")
             await _ephemeral(channel, user, STALE_TEXT)
+            return True
+        if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+            # Again at the commit point, after the awaits above: no button
+            # retired, no archive and no worktree removal once it refuses.
+            await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
             return True
         client, slack = surface.client(), surface.slack()
         if client is None or slack is None:
