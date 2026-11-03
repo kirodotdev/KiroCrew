@@ -12,7 +12,7 @@ import {
   changeForWrite, conductorExtension, parseMarkers, setDocData, splitReply,
   type ConductorHost, type DocData,
 } from '../pages/chat/page/docConductor'
-import { buildAskTurn, deriveThreads } from '../pages/chat/page/docThreads'
+import { buildAskTurn, deriveThreads, docTextForCopy } from '../pages/chat/page/docThreads'
 import { tableExtension } from '../pages/chat/page/docTables'
 import { rowQuoteLabel } from '../pages/chat/page/docAskRows'
 import type { ChatMessage } from '../types'
@@ -53,13 +53,17 @@ describe('writes', () => {
     expect(changeForWrite('# Doc', { mode: 'after', after: '## Gone', text: 'x' }, find)).toBeNull()
   })
 
-  it('the turn allows writing only when asked, only adding, and says how to draw the overlay', () => {
-    const turn = buildAskTurn({ id: 'q1', request: 'r', quote: 'q', doc: 'd', followUp: false, docId: 'abc123' })
-    expect(turn).toContain('ONLY when the person asks you to')
-    expect(turn).toContain('never rewrite, move or delete')
-    expect(turn).toContain('```doc-append')
-    expect(turn).toContain('watch="work-ledger"')
-    expect(turn).toContain('slug "doc-overlay-abc123"')
+  it('a turn carries only what changed: the brief is the session\'s, not the turn\'s', () => {
+    const first = buildAskTurn({ id: 'q1', request: 'r', quote: 'q', doc: 'd', title: 'Plan', copy: 'd' })
+    expect(first).toBe('[Doc ask q1]\nr\n\n---\nHighlighted:\n"""\nq\n"""\n\n[Doc title] "Plan"\n\n<<<DOC\nd\nDOC>>>')
+    const next = buildAskTurn({ id: 'q2', request: 'r', quote: 'q', doc: 'd', title: null, copy: null })
+    expect(next).toBe('[Doc ask q2]\nr\n\n---\nHighlighted:\n"""\nq\n"""')
+  })
+
+  it('an empty-spot ask quotes the line it sits under; a new highlight alone is no change', () => {
+    const doc = '# Plan\n\nfirst line\n<!-- ask:q3 --><!-- /ask:q3 -->\n'
+    expect(buildAskTurn({ id: 'q3', request: 'r', quote: '', doc, title: null, copy: null })).toContain('At the spot after: "first line"')
+    expect(docTextForCopy(doc)).toBe('# Plan\n\nfirst line\n\n')
   })
 })
 
@@ -67,7 +71,7 @@ describe('threads', () => {
   const msg = (role: string, content: string, mid?: string): ChatMessage => ({ role, content, cls: '', meta: mid ? { mid } : undefined })
 
   it('reads each highlight\'s thread from the transcript', () => {
-    const ask = buildAskTurn({ id: 'q1', request: 'expand this', quote: 'Plan', doc: 'Plan', followUp: false })
+    const ask = buildAskTurn({ id: 'q1', request: 'expand this', quote: 'Plan', doc: 'Plan', title: 'Plan', copy: 'Plan' })
     expect(ask.startsWith('[Doc ask q1]\nexpand this\n\n---\n')).toBe(true)
     expect(ask).toContain('<<<DOC\nPlan\nDOC>>>')
     const threads = deriveThreads([

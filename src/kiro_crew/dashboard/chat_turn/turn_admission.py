@@ -1067,9 +1067,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         return _Flow.END
     # This turn holds the session now: the launch copy's skills and prompt are read
     # from the app's registered file, and every other turn of the key reads by name.
+    from kiro_crew.doc_session_brief import pin_doc_session
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
 
     pin_session_skill_spec(session_key, _pinned_spec)
+    # Same hold, same reason: a doc session's contract carries its doc's brief.
+    pin_doc_session(session_key, getattr(slot, "_doc", "") or None)
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and

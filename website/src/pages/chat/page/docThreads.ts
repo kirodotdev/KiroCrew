@@ -7,68 +7,44 @@
  */
 import type { ChatMessage } from '../../../types'
 import { splitReply, type DocActions, type ThreadMsg } from './docConductor'
-import { overlaySlug } from './docOverlay'
 import { isGoalWake } from './goalLoop'
-import { goalThread } from './docGoals'
+import { GOAL_BEAT_COUNT, goalThread, isQuietReport, type GoalCheck } from './docGoals'
 
 const HEADER_RE = /^\[Doc ask ([A-Za-z0-9_-]+)\]\n([\s\S]*?)(?:\n\n---\n|$)/
 
-/** The turn the doc slot's conductor receives for one highlight. */
-export function buildAskTurn(o: { id: string; request: string; quote: string; doc: string; followUp: boolean; title?: string; docId?: string }): string {
-  const slug = overlaySlug(o.docId ?? 'unknown')
-  return `[Doc ask ${o.id}]
-${o.request}
+const ASK_MARKER = /<!-- \/?ask:[A-Za-z0-9_-]+ -->/g
 
----
-You are the conductor of the document "${o.title || 'Untitled doc'}". The person writes in it and talks to you only by highlighting text; there is no chat. ${o.id.startsWith('goal-')
-    ? `This is a reply on the pin of the goal ${o.id.slice(5)}: the goal set on a heading, which your goal checks report on. It is about that heading's section, as it stands now:
+/** The doc's text as the conductor's copy compares it: without ask markers, so a
+ *  new highlight alone is not a change that sends a fresh copy. */
+export const docTextForCopy = (doc: string) => doc.replace(ASK_MARKER, '')
 
-"""
-${o.quote}
-"""`
+/** The line just above ask *id*'s marker, which an empty-spot ask writes after. */
+function lineAbove(doc: string, id: string): string {
+  const at = doc.indexOf(`<!-- ask:${id} -->`)
+  if (at < 0) return ''
+  const before = docTextForCopy(doc.slice(0, at)).split('\n').map(l => l.trim()).filter(Boolean)
+  return before.at(-1) ?? ''
+}
+
+/**
+ * The turn the doc slot's conductor receives for one highlight. Short by design: the
+ * conventions are in the session's standing brief (`doc_session_brief.py`), so a
+ * turn carries only what changed. *title* and *copy* are given only when they differ
+ * from what the conductor was last sent; null leaves them out. *doc* is the doc as
+ * it is now, markers included, read only to place an empty-spot ask.
+ */
+export function buildAskTurn(o: { id: string; request: string; quote: string; doc: string; title: string | null; copy: string | null }): string {
+  const about = o.id.startsWith('goal-')
+    ? `The goal's section:\n"""\n${o.quote}\n"""`
     : o.quote.trim()
-    ? `${o.followUp ? 'This continues their thread on' : 'They highlighted'} the text between <!-- ask:${o.id} --> and <!-- /ask:${o.id} --> and wrote the request above.
-
-Highlighted text:
-"""
-${o.quote}
-"""`
-    : `${o.followUp ? 'This continues their thread, asked' : 'They asked'} at the spot marked <!-- ask:${o.id} --><!-- /ask:${o.id} -->, with nothing highlighted: take it as about the document, and "here" as that spot. To write at that spot, use doc-insert after the line just above it.`}
-
-How to answer:
-- Your answer is shown in a collapsed section under their highlight, never in the document: answer there, short and plain.
-- Write into the document ONLY when the person asks you to (or asks for something that is plainly meant to land in the doc, like "write them down"). You can only ADD: never rewrite, move or delete what they wrote. To add, end your reply with one or more blocks; the text inside is markdown and lands as written, so do not put a \`\`\` fence inside it:
-\`\`\`doc-append
-<markdown to add at the end of the document>
-\`\`\`
-\`\`\`doc-insert after="<one exact line from the document>"
-<markdown to add after that line>
-\`\`\`
-- When something reads better drawn than written (a chart, a timeline, a status board, a comparison, a diagram, a small interactive tool), you can add it as an HTML block. Its body is HTML, not markdown, and it lands in the document as a live element; give after="<one exact line>" to place it after that line, or leave it out for the end:
-\`\`\`doc-html after="<one exact line from the document>"
-<div style="...">...</div>
-\`\`\`
-  Make it look like part of the page, not a box pasted onto it:
-  - Transparent background: never set a background on html or body, and give the block itself no fill. Use a fill only for small inner pieces (a bar, a chip, a cell), and then a theme colour, usually a tint like color-mix(in srgb, var(--accent) 14%, transparent).
-  - Theme colours only, never literal colours: var(--text) for text, var(--muted) for secondary text, var(--border) for lines, var(--accent) for emphasis, var(--ok), var(--warn), var(--danger) for status. The page can be light or dark; literal colours break one of them.
-  - Inherit the page's font (font: inherit), and keep the page's rhythm: 14 to 15px text, quiet borders, no drop shadows, no big rounded cards around the whole thing.
-  - Fill the width it is given (width: 100%, no fixed pixel widths); its height follows its content.
-  - Self-contained: inline styles or one <style> element, and an inline <script> if it needs to move or respond. Nothing is fetched, so no remote images, fonts or scripts, and pass every value it shows inside the HTML.
-- Do not do the work yourself when it is real work. Start workers with session_create, seed each with session_send (what to do, the text it needs, and that you, not the document, get its result), record each on the work ledger (work_ledger_record create, then bind it to the worker), and arm monitor_start with watch="work-ledger" so you are woken when a worker reports. When the goal loop is already armed on you, arm and change nothing: it wakes you at the goal rate, and each goal check reads your work ledger. When results come back, update the overlay, and write them into the document when the person asked for that. Tell the person in one line what you started.
-
-The status overlay: show the person what is going on by drawing on top of the document. It is one HTML artifact you own: create it once with artifact_save (slug "${slug}", kind "html", name "Overlay: ${o.title || 'Untitled doc'}") and replace its content with artifact_update (slug "${slug}") whenever the picture changes. Each top-level element is one overlay item:
-- data-anchor="<exact text from the document>" pins the item to those words; it follows them as the person edits. Leave it out for a status about the whole document.
-- data-place="margin" puts it in the right margin level with that text; data-place="over" floats it just above the words. Choose per item.
-- data-open-session="<session key>" on any element opens that session when clicked.
-- Ready-made classes: ov-card, ov-pill, ov-ok, ov-busy, ov-warn, ov-muted, ov-status with ov-running / ov-waiting / ov-done / ov-blocked / ov-failed, ov-spinner, and ov-progress with a nested <span style="width:60%"></span>.
-- Anything still in progress MUST move, and anything finished or stuck must not: the person tells live work from done work by motion. Mark running work with ov-running (or ov-busy): <span class="ov-status ov-running">Researching</span> pulses, and an ov-card or ov-pill with ov-running gets a light sweeping across it. A partial ov-progress bar animates on its own; add ov-indeterminate when you cannot say how far along it is, and ov-done once it is complete. <span class="ov-spinner"></span> is a small spinner for anything else that is working. Use ov-waiting (a slow breath) for work waiting on someone, and ov-done, ov-blocked or ov-failed (still) once it settles. Animate only through these classes: inline animations and style elements are removed.
-- Plain HTML and inline styles only: scripts, style elements, event handlers, forms, buttons and remote resources are removed. Use the theme variables (var(--accent), var(--muted), var(--border), var(--bg-elevated), var(--text)).
-- Show the work the way it reads best to the person, not one item per worker: three workers on one effort can be one item. Update items as work moves and remove the ones that no longer matter.
-
-The document as it is right now, markers included:
-<<<DOC
-${o.doc}
-DOC>>>`
+    ? `Highlighted:\n"""\n${o.quote}\n"""`
+    : lineAbove(o.doc, o.id)
+    ? `At the spot after: "${lineAbove(o.doc, o.id)}"`
+    : 'At the start of the document.'
+  const parts = [`[Doc ask ${o.id}]\n${o.request}\n\n---\n${about}`]
+  if (o.title !== null) parts.push(`[Doc title] "${o.title || 'Untitled doc'}"`)
+  if (o.copy !== null) parts.push(`<<<DOC\n${o.copy}\nDOC>>>`)
+  return parts.join('\n\n')
 }
 
 export interface ThreadRead {
@@ -77,6 +53,8 @@ export interface ThreadRead {
   actions: { key: string; actions: DocActions }[]
   /** The last word is the person's: a reply is still owed. */
   awaiting: boolean
+  /** A goal's thread only: its finished checks, oldest first. */
+  checks?: GoalCheck[]
 }
 
 /** The thread every goal check's reply goes into. Not an ask id: no marker names it. */
@@ -106,26 +84,36 @@ export function latestGoalReport(threads: Record<string, ThreadRead>, goalId: st
 /** Whether a goal check is waiting on its reply: every goal's pin shows it working. */
 export const goalCheckPending = (threads: Record<string, ThreadRead>) => !!threads[GOALS_THREAD]?.awaiting
 
+/**
+ * What a transcript row does to the thread being read: `undefined` when it opens no
+ * turn (a reply, a tool row), otherwise the thread the turn opens, or `null` for a
+ * turn that belongs to no thread. A loop's wake arrives as a `nudge` row and a
+ * person's ask as a `user` one; both open a turn, so a reply is read against
+ * whichever came last. One rule, shared with the session view, so what that view
+ * labels a row is what this reader does with it.
+ */
+export function openedThread(m: Pick<ChatMessage, 'role' | 'content'>): string | null | undefined {
+  if (m.role !== 'user' && m.role !== 'nudge') return undefined
+  if (isGoalWake(m.content ?? '')) return GOALS_THREAD
+  return HEADER_RE.exec(m.content ?? '')?.[1] ?? null
+}
+
 /** Read the doc slot's transcript into one thread per highlight id. */
 export function deriveThreads(messages: ChatMessage[]): Record<string, ThreadRead> {
   const threads: Record<string, ThreadRead> = {}
   let current: string | null = null
   messages.forEach((m, i) => {
-    if (m.role === 'user') {
+    const opened = openedThread(m)
+    if (opened !== undefined) {
+      current = opened
+      if (current === null) return
+      const t = (threads[current] ??= { messages: [], actions: [], awaiting: false })
+      t.awaiting = true
       // A goal check: its own thread, so its reply's writes land and the goals can
       // show what it said. The person never typed it, so it adds no message of theirs.
-      if (isGoalWake(m.content ?? '')) {
-        current = GOALS_THREAD
-        const t = (threads[current] ??= { messages: [], actions: [], awaiting: false })
-        t.awaiting = true
-        return
-      }
+      if (current === GOALS_THREAD) return
       const h = HEADER_RE.exec(m.content ?? '')
-      if (!h) { current = null; return }
-      current = h[1]
-      const t = (threads[current] ??= { messages: [], actions: [], awaiting: false })
-      t.messages.push({ who: 'you', text: h[2].trim() })
-      t.awaiting = true
+      if (h) t.messages.push({ who: 'you', text: h[2].trim() })
       return
     }
     if (m.role !== 'assistant' || !current) return
@@ -139,6 +127,8 @@ export function deriveThreads(messages: ChatMessage[]): Record<string, ThreadRea
         const g = (threads[goalThread(b.id)] ??= { messages: [], actions: [], awaiting: false })
         g.messages.push({ who: 'conductor', text: b.text })
         g.awaiting = false
+        const at = Date.parse(m.ts ?? '')
+        g.checks = [...(g.checks ?? []), { ts: Number.isFinite(at) ? at : undefined, acted: !isQuietReport(b.text) }].slice(-GOAL_BEAT_COUNT)
       }
       if (rest) t.messages.push({ who: 'conductor', text: rest })
       if (prose) t.awaiting = false

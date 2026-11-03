@@ -47,7 +47,7 @@ export function goalInstruction(spec: Pick<GoalLoopSpec, 'kind' | 'docId' | 'tit
     : 'Change only shapes inside that section (board-edit, or board-add with "in": that section\'s id).'
   return `${OPEN}
 Goal check for the ${spec.kind} "${name}". ${where} For each goal, look at its section as it is now and do what the goal asks: start or steer workers for real work and keep them on your work ledger, never a second worker for something one of yours already has. ${write} Never touch anything outside a goal's section. Keep one item per goal in your status overlay artifact (${anchor}): what it is doing now, moving while work runs (ov-running) and still once settled.
-Reply with one block per goal, each opened by a line of its own, [goal <id>], then a short report of what you found and did ("nothing new" when so). The person reads each block on that goal's pin, so write it for them.
+Reply with one block per goal, each opened by a line of its own, [goal <id>], then a short report of what you found and did. When there is nothing to report, the block is exactly "Nothing new." and nothing else. The person reads each block on that goal's pin, so write it for them.
 Also read your work ledger and act on what your workers reported since the last check. This loop is what wakes you while the page has goals, so arm or change no loop of your own (no monitor_start, no monitor_update).
 ${CLOSE}`
 }

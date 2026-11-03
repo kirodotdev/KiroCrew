@@ -109,13 +109,12 @@ describe('in-progress overlay items move', () => {
     expect(OVERLAY_KEYFRAMES).toMatch(/prefers-reduced-motion: reduce\)\{\[class\*="ov-"\][^}]*animation:none!important/)
   })
 
-  it('both conductors are told that work in progress must move', async () => {
-    const { buildAskTurn } = await import('../pages/chat/page/docThreads')
+  // The doc conductor's copy of this rule is in its standing brief (doc_session_brief.py).
+  it('the board conductor is told that work in progress must move', async () => {
     const { buildBoardTurn } = await import('../pages/chat/page/board/boardTurn')
     const { emptyBoard } = await import('../pages/chat/page/board/boardModel')
-    const doc = buildAskTurn({ id: 'q', request: 'r', quote: 'x', doc: 'x', followUp: false, docId: 'd' })
     const board = buildBoardTurn({ id: 'q', request: 'r', board: emptyBoard(), selected: [], followUp: false, docId: 'b' })
-    for (const turn of [doc, board]) {
+    for (const turn of [board]) {
       expect(turn).toContain('Anything still in progress MUST move')
       expect(turn).toContain('ov-indeterminate')
       expect(turn).toContain('ov-spinner')

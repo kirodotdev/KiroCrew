@@ -86,6 +86,14 @@ def is_doc_id(value: object) -> bool:
     return isinstance(value, str) and DOC_ID_RE.match(value) is not None
 
 
+def doc_kind(doc_id: str) -> str:
+    """The kind *doc_id* was minted for: a key of ``_KIND_PREFIXES``, else "doc"."""
+    for kind, prefix in _KIND_PREFIXES.items():
+        if doc_id.startswith(prefix):
+            return kind
+    return "doc"
+
+
 def docs_dir() -> Path:
     return data_home() / DOCS_DIRNAME
 

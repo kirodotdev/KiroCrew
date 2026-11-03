@@ -113,7 +113,7 @@ describe('goal wakes in the transcript', () => {
     const messages = [
       { role: 'user', content: '[Doc ask q1]\nwhy?\n\n---\ncontext' },
       { role: 'assistant', content: 'Because.' },
-      { role: 'user', content: `[auto-nudge cycle 3]\n${GOALS_BANNER}` },
+      { role: 'nudge', content: `[auto-nudge cycle 3]\n${GOALS_BANNER}` },
       { role: 'assistant', content: 'Checked both.\n[goal gabc1]\nMarked #26162 done.\n[goal gxyz2]\nhi\n```doc-append\n- checked\n```' },
     ] as ChatMessage[]
     const threads = deriveThreads(messages)
@@ -128,11 +128,11 @@ describe('goal wakes in the transcript', () => {
 
   it('a check still running shows every goal working; a reply on a goal\'s pin continues its thread', () => {
     const messages = [
-      { role: 'user', content: `[auto-nudge cycle 1]\n${GOALS_BANNER}` },
+      { role: 'nudge', content: `[auto-nudge cycle 1]\n${GOALS_BANNER}` },
       { role: 'assistant', content: '[goal gabc1]\nTwo tickets moved.' },
       { role: 'user', content: '[Doc ask goal-gabc1]\nwhich two?\n\n---\ncontext' },
       { role: 'assistant', content: '#1 and #2.' },
-      { role: 'user', content: `[auto-nudge cycle 2]\n${GOALS_BANNER}` },
+      { role: 'nudge', content: `[auto-nudge cycle 2]\n${GOALS_BANNER}` },
     ] as ChatMessage[]
     const threads = deriveThreads(messages)
     expect(threads['goal-gabc1'].messages.map(m => `${m.who}: ${m.text}`)).toEqual(['conductor: Two tickets moved.', 'you: which two?', 'conductor: #1 and #2.'])
@@ -141,9 +141,9 @@ describe('goal wakes in the transcript', () => {
   })
 
   it('a reply on a goal\'s pin tells the conductor it is about that goal\'s section', () => {
-    const turn = buildAskTurn({ id: 'goal-gabc1', request: 'which two?', quote: '## Tickets\n- one', doc: 'x', followUp: true })
+    const turn = buildAskTurn({ id: 'goal-gabc1', request: 'which two?', quote: '## Tickets\n- one', doc: 'x', title: null, copy: null })
     expect(turn.startsWith('[Doc ask goal-gabc1]\nwhich two?')).toBe(true)
-    expect(turn).toContain('the pin of the goal gabc1')
+    expect(turn).toContain("The goal's section:")
     expect(turn).toContain('## Tickets\n- one')
   })
 

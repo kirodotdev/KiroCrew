@@ -333,7 +333,38 @@ describe('DocPane', () => {
     const [marker] = parseMarkers(view.state.doc.toString())
     expect(view.state.doc.toString()).toBe(`<!-- ask:${marker.id} --><!-- /ask:${marker.id} -->`)
     const { message } = send.mock.calls[0][0] as { message: string }
-    expect(message).toContain('with nothing highlighted')
+    expect(message).toContain('At the start of the document.')
+  })
+
+  it('a second ask sends no title or copy when neither changed; an edit rides on the next ask', async () => {
+    getDoc.mockResolvedValue({ content: `one${'\n'.repeat(12)}two\n`, version: 'v1' })
+    saveDoc.mockResolvedValue({ content: '', version: 'v2' })
+    send.mockReset()
+    send.mockResolvedValue({ status: 'dispatched' })
+    renderPane()
+    const view = await editor()
+    // An empty-spot ask on a blank line not yet used: each one adds only its markers.
+    const ask = async () => {
+      const at = view.state.doc.toString().lastIndexOf('\n\n\n') + 1
+      act(() => { view.dispatch({ selection: { anchor: at } }) })
+      act(() => { view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true })) })
+      const input = await screen.findByTestId('space-ask-input')
+      fireEvent.change(input, { target: { value: 'what?' } })
+      await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+      return (send.mock.calls.at(-1)?.[0] as { message: string }).message
+    }
+    const first = await ask()
+    expect(first).toContain('[Doc title] "Plan"')
+    expect(first).toContain('<<<DOC')
+    const second = await ask()
+    expect(send.mock.calls).toHaveLength(2)
+    expect(second).not.toContain('[Doc title]')
+    expect(second).not.toContain('<<<DOC')
+    // An edit starts no turn of its own; the next ask carries the new copy.
+    act(() => { view.dispatch({ changes: { from: 0, insert: 'zero\n' } }) })
+    expect(send.mock.calls).toHaveLength(2)
+    const third = await ask()
+    expect(third).toContain('<<<DOC\nzero')
   })
 
   it('a worker\'s tool approval is decided on the doc, its conductor\'s page', async () => {
@@ -374,6 +405,32 @@ describe('DocPane', () => {
     view = await editor()
     await act(async () => { await Promise.resolve() })
     expect(view.state.doc.toString().match(/Fix it/g)).toHaveLength(1)
+    act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
+  })
+
+  it('the session toggle opens the conductor\'s rows, each labelled with the thread it is read into', async () => {
+    getDoc.mockResolvedValue({ content: '# Issues\n', version: 'v1' })
+    act(() => {
+      store.dispatch(setActiveSlot('doc-slot'))
+      store.dispatch(replaceMessages([
+        { role: 'user', content: '[Doc ask q1]\nwhy?\n\n---\nrest', cls: '' },
+        { role: 'assistant', content: 'Because.', cls: '' },
+        { role: 'nudge', content: '[auto-nudge cycle 1]\n[Goals] Checking the goal sections', cls: '' },
+        { role: 'assistant', content: '[goal g1]\nnothing new', cls: '' },
+      ]))
+    })
+    renderPane()
+    await editor()
+    expect(screen.queryByTestId('conductor-session')).toBeNull()
+    fireEvent.click(screen.getByTestId('conductor-session-toggle'))
+    const rows = screen.getAllByTestId('conductor-session-row').map(r => r.textContent ?? '')
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toContain('opens q1')
+    expect(rows[1]).toContain('in q1')
+    expect(rows[2]).toContain('opens __goals__')
+    expect(rows[3]).toContain('[goal g1]')
+    fireEvent.click(screen.getByLabelText("Close the conductor's session"))
+    expect(screen.queryByTestId('conductor-session')).toBeNull()
     act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
   })
 })

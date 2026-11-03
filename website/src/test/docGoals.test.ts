@@ -8,7 +8,9 @@ import { act, fireEvent } from '@testing-library/react'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { docHasGoals, goalExtension, goalMarker, headingSections, parseGoalMarker, setGoalState, type GoalHost } from '../pages/chat/page/docGoals'
+import { docHasGoals, goalExtension, goalMarker, headingSections, isQuietReport, parseGoalMarker, setGoalChecks, setGoalState, type GoalHost } from '../pages/chat/page/docGoals'
+import { deriveThreads } from '../pages/chat/page/docThreads'
+import type { ChatMessage } from '../types'
 import { conductorExtension, setDocData, type ConductorHost } from '../pages/chat/page/docConductor'
 
 let view: EditorView | null = null
@@ -125,5 +127,60 @@ describe('doc heading goals', () => {
     act(() => { fireEvent.click(v.dom.querySelector('[data-testid="doc-goal-chip"]')!) })
     act(() => { fireEvent.click(v.dom.querySelector('[data-testid="doc-goal-clear"]')!) })
     expect(v.state.doc.toString()).toBe('## Tickets\n- one')
+  })
+})
+
+describe('moving and copying a goal section', () => {
+  const SECTION = '# Tasks\n<!-- goal gtask1: keep it current -->\none\n'
+  const ids = (v: EditorView) => [...v.state.doc.toString().matchAll(/<!-- goal (g[a-z0-9]+):/g)].map(m => m[1])
+
+  it('a copy takes a new goal id, so the two sections do not share one pin', () => {
+    const v = make(SECTION)
+    act(() => { v.dispatch({ changes: { from: v.state.doc.length, insert: SECTION }, userEvent: 'input.paste' }) })
+    const [first, second] = ids(v)
+    expect(first).toBe('gtask1')
+    expect(second).not.toBe('gtask1')
+    expect(headingSections(v.state).map(s => s.goal?.text)).toEqual(['keep it current', 'keep it current'])
+  })
+
+  it('a cut and paste keeps the id, so the section stays the same goal', () => {
+    const v = make(`${SECTION}\n# Other\ntext\n`)
+    const end = v.state.doc.toString().indexOf('# Other')
+    act(() => { v.dispatch({ changes: [{ from: 0, to: end }, { from: v.state.doc.length, insert: SECTION }], userEvent: 'move.drop' }) })
+    expect(ids(v)).toEqual(['gtask1'])
+    expect(v.state.doc.toString().startsWith('# Other')).toBe(true)
+  })
+})
+
+describe('the heartbeat on a watched chip', () => {
+  const wake = (ts: string) => ({ role: 'nudge', content: '[auto-nudge cycle 1]\n[Goals] Checking the goal sections', cls: '', ts }) as ChatMessage
+  const reply = (content: string, ts: string) => ({ role: 'assistant', content, cls: '', ts }) as ChatMessage
+
+  it('reads a quiet check and one that did something apart, per goal, oldest first', () => {
+    const threads = deriveThreads([
+      wake('2026-11-03T10:00:00Z'), reply('[goal gtick1]\nNothing new.', '2026-11-03T10:00:30Z'),
+      wake('2026-11-03T10:10:00Z'), reply('[goal gtick1]\nMarked #4 done.\n[goal gother]\nNothing new.', '2026-11-03T10:10:40Z'),
+    ])
+    expect(threads['goal-gtick1'].checks?.map(c => c.acted)).toEqual([false, true])
+    expect(threads['goal-gother'].checks?.map(c => c.acted)).toEqual([false])
+    expect(threads['goal-gtick1'].checks?.[1].ts).toBe(Date.parse('2026-11-03T10:10:40Z'))
+    expect(isQuietReport('Nothing new, all 10 tickets are still To do.')).toBe(true)
+    expect(isQuietReport('There is nothing new here')).toBe(false)
+  })
+
+  it('draws one bar per check, tall for the ones that did something, and how long ago the last was', () => {
+    const v = make(DOC)
+    act(() => { v.dispatch({ effects: setGoalChecks.of({ gtick1: [{ ts: Date.now() - 2 * 60_000, acted: false }, { ts: Date.now() - 60_000, acted: true }, { ts: Date.now() - 120_000, acted: false }] }) }) })
+    const bars = [...v.dom.querySelectorAll('[data-testid="doc-goal-beat"] > i')] as HTMLElement[]
+    expect(bars.map(b => b.dataset.acted)).toEqual(['false', 'true', 'false'])
+    expect(bars.map(b => b.style.height)).toEqual(['4px', '12px', '4px'])
+    expect(v.dom.querySelector('[data-testid="doc-goal-ago"]')?.textContent).toMatch(/2/)
+    expect(v.dom.querySelector('[data-testid="doc-goal-chip"]')?.getAttribute('aria-label')).toContain('1 of the last 3 checks found something')
+  })
+
+  it('shows no bars before the first check', () => {
+    const v = make(DOC)
+    expect(v.dom.querySelector('[data-testid="doc-goal-beat"]')).toBeNull()
+    expect(v.dom.querySelector('[data-testid="doc-goal-ago"]')).toBeNull()
   })
 })

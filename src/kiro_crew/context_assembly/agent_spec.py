@@ -632,6 +632,13 @@ def _resolve_agent_prompt(
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
     agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
+    # A doc session's conductor works from its doc's standing brief, set here once so
+    # each of the page's turns carries only what changed (``doc_session_brief``).
+    from kiro_crew.doc_session_brief import brief_for_session
+
+    doc_brief = brief_for_session(session_key)
+    if doc_brief:
+        agent_prompt = f"{agent_prompt.rstrip()}\n\n{doc_brief}" if agent_prompt else doc_brief
     # A built-in spec whose own prompt asks for widgets gets the widget pointer
     # here rather than as a token in its spec: kiro-cli loads that spec prompt
     # natively and a crewmate's essentials deliver it verbatim, and neither path

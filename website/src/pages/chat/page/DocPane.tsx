@@ -13,7 +13,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import type { EditorView } from '@codemirror/view'
 import { api, ApiError } from '../../../api/client'
 import ApprovalCard from '../../../components/ApprovalCard'
-import ApprovalModePicker from '../../../components/ApprovalModePicker'
+import { ConductorControls, SessionMessagesPanel } from './ConductorSession'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
@@ -37,7 +37,7 @@ import ConversationBar, { cycleDirection, shortLabel, stepId, type ConversationI
 import { changeForWrite, markerContent, parseMarkers, type ConductorHost, type DocData } from './docConductor'
 import { rowQuoteLabel } from './docAskRows'
 import { OVERLAY_KEYFRAMES, findAnchor, overlaySlug, parseOverlay, type OverlayItem } from './docOverlay'
-import { buildAskTurn, deriveThreads, goalCheckPending } from './docThreads'
+import { buildAskTurn, deriveThreads, docTextForCopy, goalCheckPending } from './docThreads'
 
 /** Quiet time after the last edit before it is written. */
 const SAVE_DEBOUNCE_MS = 600
@@ -214,6 +214,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   // ---- the conductor ----------------------------------------------------------
 
   const messages = useAppSelector(s => selectSlotMessages(s, slotKey))
+  const [sessionOpen, setSessionOpen] = useState(false)
   const slots = useAppSelector(s => s.dashboard.slots)
   const running = !!slotRowByKey(slots, slotKey)?.running
   const sessionRefs = useSessionRefs(slots)
@@ -310,6 +311,11 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     return () => { stopped = true; clearInterval(timer) }
   }, [docId, running])
 
+  // What the conductor was last sent, so an ask carries the title and a copy of the
+  // doc only when they changed. Edits never start a turn: a change rides on the next
+  // ask. Empty after a reload, so the first ask then sends both.
+  const lastSent = useRef<{ title: string; copy: string } | null>(null)
+
   // The conductor layer calls back through a ref, so the editor never rebuilds.
   const hostRef = useRef<ConductorHost>({ send: () => {}, openSession: () => {}, markRead: () => {} })
   hostRef.current = {
@@ -320,9 +326,20 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       if (rowLabel) setRowLabels({ ...rowLabels, [id]: rowLabel })
       // The markers just went in: write them now, not after the debounce.
       void save()
-      void sendTurn({ message: buildAskTurn({ id, request, quote, doc, followUp, title, docId }), slot: slotKey }).then(r => {
+      const name = title || ''
+      // Changed is judged without the ask markers (a new highlight is no change),
+      // but a copy that goes out carries them, so it matches the doc exactly.
+      const text = docTextForCopy(doc)
+      const message = buildAskTurn({
+        id, request, quote, doc,
+        title: lastSent.current?.title === name ? null : name,
+        copy: lastSent.current?.copy === text ? null : doc,
+      })
+      void sendTurn({ message, slot: slotKey }).then(r => {
         if (r.status === 'refused') setSendError(r.reason || i18nT('pages.chatPage.send_failed'))
         else if (r.status === 'transport-error') setSendError(i18nT('pages.chatPage.send_failed'))
+        // Counted as seen only once it went out, so a failed send resends both.
+        else lastSent.current = { title: name, copy: text }
       })
     },
     openSession: key => { void dispatch(switchSlot({ key, announceOnMissing: true, gesture: true })) },
@@ -361,6 +378,10 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   // What the loop was last brought to; null before the first sync, so a doc without
   // goals asks nothing of the loop until it gains one.
   const goalSynced = useRef<string | null>(null)
+  // Each goal's finished checks, for the bars on its heading's chip.
+  const goalChecks = useMemo(() => Object.fromEntries(
+    Object.entries(threads).filter(([k, t]) => k.startsWith('goal-') && t.checks?.length).map(([k, t]) => [k.slice(5), t.checks!]),
+  ), [threads])
   useEffect(() => {
     if (load.state !== 'ready') return
     const want = `${hasGoals}:${goalEvery}`
@@ -383,11 +404,9 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     {/* The conductor's approval mode, the same control as the chat composer's,
         at the bottom left as on the board: Trust here carries to the workers it
         starts, so they stop asking too. */}
-    {approvalMode && (
-      <div className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" data-testid="doc-approval-mode">
-        <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />
-      </div>
-    )}
+    {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
+    <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+      className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" testid="doc-approval-mode" />
     <div className="flex-1 min-h-0 overflow-y-auto relative" data-testid="doc-pane">
       {/* The overlay's animations; the board mounts the same copy. */}
       <style>{OVERLAY_KEYFRAMES}</style>
@@ -448,6 +467,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
             selfKey={slotKey}
             embedTheme={embedTheme}
             goalEvery={goalEvery}
+            goalChecks={goalChecks}
             onGoalEvery={setGoalEvery}
           />
         )}

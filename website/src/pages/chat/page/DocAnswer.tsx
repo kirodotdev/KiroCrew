@@ -26,7 +26,7 @@ function firstLine(text: string): string {
 }
 
 export default function DocAnswer({
-  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, lift, emptyLabel = 'No reply yet', active = false, focusSignal = 0, onActivate,
+  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, lift, inset = 0, emptyLabel = 'No reply yet', active = false, focusSignal = 0, onActivate,
 }: {
   thread: ThreadView | undefined
   onOpen: () => void
@@ -45,6 +45,9 @@ export default function DocAnswer({
   /** With *gutter*: how far above the widget the pin's top sits, for a line of
    *  another height than body text (a heading). */
   lift?: number
+  /** With *gutter*: extra px the pin sits left of its usual place. A goal's pin takes
+   *  some so its corner clears the section's rail instead of touching it. */
+  inset?: number
   /** What the pin says before anyone has answered: a goal says it is not checked yet. */
   emptyLabel?: string
   /** The page's current conversation: another becoming current collapses this one. */
@@ -101,7 +104,7 @@ export default function DocAnswer({
           data-stack={stack}
           aria-expanded={open}
           aria-label={`Conversation with the conductor: ${summary}${workerCount ? `, ${workerCount}` : ''}`}
-          style={{ right: `calc(100% + 14px + ${stack * PIN_STEP}px)`, top: pinTop }}
+          style={{ right: `calc(100% + 14px + ${stack * PIN_STEP + inset}px)`, top: pinTop }}
           onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} onFocus={() => setHover(true)} onBlur={() => setHover(false)}
           onMouseDown={e => e.preventDefault()}
           onClick={toggle}

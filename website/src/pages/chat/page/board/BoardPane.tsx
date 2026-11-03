@@ -11,7 +11,7 @@ import { ShieldCheck, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../../../api/client'
 import ApprovalCard from '../../../../components/ApprovalCard'
-import ApprovalModePicker from '../../../../components/ApprovalModePicker'
+import { ConductorControls, SessionMessagesPanel } from '../ConductorSession'
 import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
@@ -74,6 +74,7 @@ function useLocalRecord<T>(key: string, empty: T): [T, (next: T) => void] {
 
 export default function BoardPane({ docId, slotKey, title, approvalMode }: { docId: string; slotKey: string; title?: string; approvalMode?: string }) {
   const dispatch = useAppDispatch()
+  const [sessionOpen, setSessionOpen] = useState(false)
   const [load, setLoad] = useState<'loading' | 'ready' | { failed: string }>('loading')
   const [board, setBoard] = useState<Board>(() => parseBoard(''))
   const [saveError, setSaveError] = useState('')
@@ -290,11 +291,9 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       </div>
       {/* The conductor's approval mode, the same control as the chat composer's:
           Trust here carries to the workers it starts, so they stop asking too. */}
-      {approvalMode && (
-        <div className="absolute bottom-5 left-5 rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" style={{ zIndex: 25 }} data-testid="board-approval-mode">
-          <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />
-        </div>
-      )}
+      {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
+      <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+        className="absolute bottom-5 left-5 rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" style={{ zIndex: 25 }} testid="board-approval-mode" />
       {approvals.length > 0 && (
         <div className="absolute bottom-20 right-5 w-[380px] max-w-[90vw] flex flex-col gap-2" style={{ zIndex: 30 }} data-testid="board-approvals">
           {approvals.map(m => {

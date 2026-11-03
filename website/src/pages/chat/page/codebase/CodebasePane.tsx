@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Boxes, Crosshair, FolderOpen, GitBranch, Network, RefreshCw, Sparkles, X } from 'lucide-react'
 import { api, ApiError } from '../../../../api/client'
 import ApprovalCard from '../../../../components/ApprovalCard'
-import ApprovalModePicker from '../../../../components/ApprovalModePicker'
+import { ConductorControls, SessionMessagesPanel } from '../ConductorSession'
 import ProjectPicker from '../../../../components/ProjectPicker'
 import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
@@ -86,6 +86,7 @@ function Segmented<T extends string>({ value, options, onChange, testid }: { val
 
 export default function CodebasePane({ docId, slotKey, title, approvalMode, project }: { docId: string; slotKey: string; title?: string; approvalMode?: string; project?: string }) {
   const dispatch = useAppDispatch()
+  const [sessionOpen, setSessionOpen] = useState(false)
   const [load, setLoad] = useState<'loading' | 'ready' | { failed: string }>('loading')
   const [doc, setDoc] = useState<CodebaseDoc>(() => parseCodebaseDoc(''))
   const docRef = useRef(doc)
@@ -309,6 +310,7 @@ export default function CodebasePane({ docId, slotKey, title, approvalMode, proj
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden" data-testid="codebase-pane" data-codebase-root="">
       <style>{PANE_CSS}</style>
+      {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
       {typeof load === 'object' && (
         <div className="p-6"><ErrorNotice title={i18nT('pages.chat.codebasePane.load_failed')} message={load.failed} /></div>
       )}
@@ -379,11 +381,8 @@ export default function CodebasePane({ docId, slotKey, title, approvalMode, proj
             </button>
           </div>
           <div className="flex-1" />
-          {approvalMode && (
-            <div className="pointer-events-auto rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" data-testid="codebase-approval-mode">
-              <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />
-            </div>
-          )}
+          <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+            className="pointer-events-auto rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" testid="codebase-approval-mode" />
         </div>
       )}
 

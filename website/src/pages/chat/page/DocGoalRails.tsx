@@ -8,8 +8,9 @@ import { motion, useReducedMotion } from 'framer-motion'
 
 export interface Rail { key: string; top: number; height: number; left: number }
 
-/** How far left of the text the rail runs: inside the margin, clear of answer pins. */
-const OFFSET = 10
+/** How far left of the text the rail runs: inside the margin, clear of answer pins
+ *  (whose right edge is about 22px left of the text) and off the text itself. */
+const OFFSET = 16
 const DASH = 6
 const STROKE = 2
 

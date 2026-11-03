@@ -192,6 +192,9 @@ const roots = new WeakMap<HTMLElement, Root>()
  *  Index 0 is any level with body-size text. */
 const GOAL_PIN_LIFT = [27, 38, 33, 30, 27, 27, 27]
 
+/** How far left a goal's pin sits of where other pins do: clear of the section's rail. */
+const GOAL_PIN_INSET = 8
+
 /** The answer under a highlight: a React island inside a block widget. */
 class AnswerWidget extends WidgetType {
   constructor(
@@ -231,7 +234,7 @@ class AnswerWidget extends WidgetType {
       onActivate: () => host.current.activate?.(id),
       onOpen: () => host.current.markRead(id),
       onOpenSession: (key: string) => host.current.openSession(key),
-      ...(this.goal ? { lift: GOAL_PIN_LIFT[this.goal.level] ?? GOAL_PIN_LIFT[0], emptyLabel: 'Not checked yet' } : {}),
+      ...(this.goal ? { lift: GOAL_PIN_LIFT[this.goal.level] ?? GOAL_PIN_LIFT[0], inset: GOAL_PIN_INSET, emptyLabel: 'Not checked yet' } : {}),
       onSend: (text: string) => {
         const doc = view.state.doc.toString()
         if (this.goal) {

@@ -18,7 +18,7 @@ import { slashExtension } from './docSlash'
 import { mentionExtension, setMentionSessions } from './docMentions'
 import type { SessionRef } from './SessionMention'
 import { htmlExtension, setEmbedTheme } from './docHtml'
-import { goalExtension, setGoalState, type GoalHost } from './docGoals'
+import { goalExtension, setGoalChecks, setGoalState, type GoalCheck, type GoalHost } from './docGoals'
 import { DEFAULT_GOAL_EVERY } from './goalLoop'
 import type { EmbedTheme } from './DocHtmlFrame'
 
@@ -62,6 +62,7 @@ export default function DocEditor({
   selfKey,
   embedTheme,
   goalEvery,
+  goalChecks,
   onGoalEvery,
 }: {
   initial: string
@@ -83,6 +84,8 @@ export default function DocEditor({
   embedTheme?: EmbedTheme
   /** The page's goal rate, for the heading goal controls. */
   goalEvery?: number
+  /** Each goal's recent checks by goal id, for the chips' bars. */
+  goalChecks?: Record<string, GoalCheck[]>
   /** Where a change to the goal rate goes: the pane keeps it in the front matter. */
   onGoalEvery?: (minutes: number) => void
 }) {
@@ -150,6 +153,10 @@ export default function DocEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: setGoalState.of({ every: goalEvery ?? DEFAULT_GOAL_EVERY }) })
   }, [goalEvery])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: setGoalChecks.of(goalChecks ?? {}) })
+  }, [goalChecks])
 
   return <div ref={parent} data-testid="doc-editor" />
 }
