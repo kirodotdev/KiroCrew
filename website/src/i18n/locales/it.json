@@ -15379,9 +15379,11 @@
       "pool_warm_hit_rate": "Tasso di hit a caldo del pool",
       "ram_saved": "RAM risparmiata",
       "rss": "RSS",
-      "s": "s",
       "server": "Server",
       "shared_mcp_gateway": "Gateway MCP condiviso",
+      "status_active": "attivo",
+      "status_stopped": "arrestato",
+      "status_unhealthy": "non integro",
       "with_shared_gateway_pooled": "Con gateway condiviso (in pool)",
       "without_gateway_per_session_copies": "Senza gateway (copie per sessione)"
     },

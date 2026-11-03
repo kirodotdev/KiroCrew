@@ -14749,9 +14749,11 @@
       "pool_warm_hit_rate": "池热命中率",
       "ram_saved": "节省的 RAM",
       "rss": "RSS",
-      "s": "s",
       "server": "服务器",
       "shared_mcp_gateway": "共享 MCP 网关",
+      "status_active": "运行中",
+      "status_stopped": "已停止",
+      "status_unhealthy": "异常",
       "with_shared_gateway_pooled": "使用共享网关（池化）",
       "without_gateway_per_session_copies": "不使用网关（每会话独立副本）"
     },

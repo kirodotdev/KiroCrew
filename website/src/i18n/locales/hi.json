@@ -15064,9 +15064,11 @@
       "pool_warm_hit_rate": "पूल वॉर्म-हिट दर",
       "ram_saved": "बची RAM",
       "rss": "RSS",
-      "s": "s",
       "server": "सर्वर",
       "shared_mcp_gateway": "साझा MCP गेटवे",
+      "status_active": "सक्रिय",
+      "status_stopped": "रुका हुआ",
+      "status_unhealthy": "अस्वस्थ",
       "with_shared_gateway_pooled": "साझा गेटवे के साथ (पूल किया गया)",
       "without_gateway_per_session_copies": "गेटवे के बिना (हर सत्र की अलग कॉपी)"
     },

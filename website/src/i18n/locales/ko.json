@@ -14749,9 +14749,11 @@
       "pool_warm_hit_rate": "풀 웜 히트율",
       "ram_saved": "절약된 RAM",
       "rss": "RSS",
-      "s": "초",
       "server": "서버",
       "shared_mcp_gateway": "공유 MCP 게이트웨이",
+      "status_active": "활성",
+      "status_stopped": "중지됨",
+      "status_unhealthy": "비정상",
       "with_shared_gateway_pooled": "공유 게이트웨이 사용 (풀링)",
       "without_gateway_per_session_copies": "게이트웨이 없음 (세션별 사본)"
     },
