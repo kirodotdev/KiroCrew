@@ -4677,7 +4677,8 @@ bot's own name (matched on a word boundary, so `Kiro` does not eat the `Kiro` in
 **Files.** `files_inbound` and `files_outbound` are both live. Inbound: a message
 arrives on the `share` verb (not `post`), so the accepted-verb set is what makes
 file messages visible at all; `webex/attachments.py` HEADs each opaque
-`/v1/contents/{id}` URL for its name/type/size and hands the result to the shared
+`/v1/contents/{id}` URL for its name/type/size (the name parsed as a
+`Content-Disposition` parameter, the RFC 5987 `filename*` form preferred) and hands the result to the shared
 `messaging.attachments` ingest, which owns caps, classification, signature
 sniffing and temp-file ownership. The download honours Webex's anti-malware state
 machine — 423 retry-after (bounded), 410 infected, 428 unscannable, all refused
