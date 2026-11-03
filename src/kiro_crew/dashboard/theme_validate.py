@@ -20,6 +20,7 @@ from typing import Any
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.user_json import loads_user_json
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -500,7 +501,7 @@ def _read_json_file(path: Path, max_bytes: int) -> tuple[Any, str | None]:
     if len(raw) > max_bytes:
         return None, f"{path.name} too large (max {max_bytes} bytes)"
     try:
-        return json.loads(raw.decode("utf-8")), None
+        return loads_user_json(raw.decode("utf-8")), None
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         return None, f"{path.name} is not valid JSON: {e}"
 

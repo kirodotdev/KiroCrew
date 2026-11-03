@@ -821,8 +821,9 @@ class ScriptHookStore:
         a subagent to a hook keyed on the field's documented meaning.
 
         ``acp_session_id`` is the firing session's ACP session id. Only the
-        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and
-        ``acp_session_id`` on their stdin: they are the spec hooks kiro-cli would
+        ``extra_hooks`` get it, as ``KIRO_SESSION_ID`` in their env and both
+        ``session_id`` (kiro-cli's own key) and ``acp_session_id`` on their
+        stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
 
@@ -880,6 +881,9 @@ class ScriptHookStore:
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
+            # ``session_id`` is the key kiro-cli's own hook payload uses;
+            # ``acp_session_id`` stays for hooks that already read that key.
+            extra_event["session_id"] = acp_session_id
             extra_event["acp_session_id"] = acp_session_id
             extra_run["acp_session_id"] = acp_session_id
         # Only a hook that passes its matcher changes the status bookkeeping

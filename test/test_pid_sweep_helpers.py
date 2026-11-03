@@ -628,9 +628,6 @@ class TestKillConfirmedAndWriteback:
         mock_wb.assert_not_called()
 
 
-# ── Integration tests for _run_periodic_tasks sweep pipeline (L1574-L1628) ──
-
-
 class TestPeriodicSweepIntegration:
     """Integration tests covering the Phase 1 → 2a → 2b orchestration
     inside SessionManager._cleanup_loop's orphan sweep block."""

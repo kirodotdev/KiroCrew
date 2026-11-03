@@ -528,6 +528,48 @@ class TestARestartCannotShrinkTheRetentionWindow:
         assert mb.back_up_all_stores(keep=7, now=later)["backed_up"] == 1
         assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
 
+    def test_a_backup_stamped_in_the_future_does_not_stop_the_next_ones(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """A copy taken under a wrong clock must not read as fresh once the clock is fixed."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+
+        result = mb.back_up_all_stores(keep=7, now=base)
+
+        assert result["backed_up"] == 1
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    def test_a_backup_stamped_in_the_future_keeps_the_interval_guard(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """Restarts must not each copy and prune: the guard measures from the newest real copy."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+        assert mb.back_up_all_stores(keep=7, now=base)["backed_up"] == 1
+
+        for hours in (1, 6, mb.MIN_BACKUP_INTERVAL_HOURS - 1):
+            result = mb.back_up_all_stores(keep=7, now=base + timedelta(hours=hours))
+            assert result["backed_up"] == 0, hours
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    @pytest.mark.parametrize("keep", [1, 2])
+    def test_retention_never_evicts_the_copy_just_taken_for_a_future_stamp(
+        self, live_store: VectorMemoryStore, keep: int
+    ) -> None:
+        """Future-stamped copies take no keep slot, so the current copy survives."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        for days in (365, 366):
+            mb.back_up_all_stores(keep=keep, now=base + timedelta(days=days), force=True)
+
+        assert mb.back_up_all_stores(keep=keep, now=base)["backed_up"] == 1
+
+        backups = mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))
+        current = [b for b in backups if mb.snapshot_time(b) <= base]
+        assert len(current) == 1
+        # The wrong-clock copies the day-366 pass kept are still restore points.
+        assert len(backups) == 1 + keep
+
     def test_the_age_is_read_from_the_stamped_name_not_the_mtime(
         self, live_store: VectorMemoryStore
     ) -> None:
@@ -1225,7 +1267,9 @@ class TestRestoreIsNonDestructive:
         assert good is not None
         good.write_bytes(b"not a database either")
 
-        with pytest.raises(Exception):
+        # ValueError is what the dashboard answers 409 restore_refused for; any other
+        # type becomes a 500 that says the restore broke rather than the backup.
+        with pytest.raises(ValueError, match="not a readable memory database"):
             mb.restore_from_backup(good, DEFAULT_MEMORY_STORE)
 
         # Nothing displaced, and the store still works.

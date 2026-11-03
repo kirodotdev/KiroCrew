@@ -226,7 +226,7 @@ def _note_row_committed(conversation_log: Any, key: str, note_id: str) -> bool:
                     continue
                 try:
                     row = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(row, dict):
                     continue

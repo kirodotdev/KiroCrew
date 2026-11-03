@@ -761,7 +761,8 @@ class TestErrorEndTurnFooter:
         self._assert_cut_reply_footer(slot, 4.0)
         # An acknowledged stop keeps the footer the completion would have written,
         # its first-output latency included; a turn the seam bills itself records
-        # none, as a Stop press does (``test_a_stop_before_any_billing...``).
+        # none, as a Stop press does
+        # (``test_a_stop_before_any_billing_still_shows_elapsed_only``).
         stats = self._assistant_row(slot, "partial answer")["meta"]["turn_stats"]
         if native_stop == "acknowledged":
             assert (

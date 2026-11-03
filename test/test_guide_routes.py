@@ -938,9 +938,9 @@ def test_shim_module_holds_no_per_caller_state():
 
 
 def test_shim_schema_rejects_an_injected_guide_id():
-    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, ValidationError, validate_tool_args
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         validate_tool_args({"guide_id": "../x"}, MCP_GUIDE_SCHEMAS["guide_cancel"])
 
 

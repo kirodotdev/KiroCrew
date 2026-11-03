@@ -146,7 +146,7 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         # Only a finished child, or one parked at a spawn approval, or a resume
         # row -> False (nothing a retirement would cancel). This is the IN-MEMORY
         # half only: a durable-only / window-held store child is read off the loop
-        # by the sweep's own probe (``_parent_has_store_children``), not here.
+        # by the sweep's own probe (``has_pending_store_children``), not here.
         idle_mgr = _Manager(
             {
                 "done": _run("done", done=True),
@@ -1059,36 +1059,19 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         """Ratchet: the halves of ending a parent stay together.
 
         ``release_subagent_runtime`` IS this module's parent-end boundary, so a
-        site that reaps the companion runtime without ending the runs is a parent
-        end that lets a per-process harness's children survive. A future author
-        adding such a path is caught here rather than by an operator finding the
-        process.
+        site that reaps the companion runtime without ending the runs lets a
+        per-process harness's children survive. Matched on the AST rather than a
+        line window, so a reformat cannot trip it.
 
-        Matched on the AST rather than on a proximity window: a reformat moves
-        lines around and a line-distance rule fails on it for no reason, while the
-        question being asked — does this method call both halves — is structural.
+        Exempt: ``close_all`` (gateway shutdown, where ``SubagentManager.cancel_all``
+        runs instead) and ``_retire_kiro_subagent_runtimes``, which kills only idle
+        runtimes (a busy one is parked to drain), so it has no running child to end.
+        Narrower reaps delegate to it with a predicate, so the exemption never widens.
 
-        Two methods are exempt, each for a fact about itself rather than by
-        convenience. ``close_all`` is gateway shutdown, where
-        ``SubagentManager.cancel_all`` runs instead and additionally drains
-        follow-up watchers. ``_retire_kiro_subagent_runtimes`` KILLS only IDLE
-        companion runtimes — a runtime answering
-        ``has_active_or_initializing_sessions()`` is never killed; under the
-        spawn-identity predicate a busy wrong-account one is parked to drain
-        (no process ends, its running children finish on the parked process)
-        and the kill happens on a later pass only once it answers idle — so it
-        has no running child to end, and the parent conversation it belongs to
-        continues. Narrower
-        reaps (the spawn-identity stamp gate) delegate to it with a predicate
-        rather than releasing themselves, so this exemption never widens.
-
-        ``reset`` is NOT exempt: it calls both halves, under
-        ``ends_conversation``. That keyword defaults to False because almost every one of
-        its ~46 callers is an evict-and-retry (wedged prompt, failed auto-compaction,
-        provider switch, idle expiry, channel watchdog), and the callers that do end a
-        conversation are pinned by
-        ``test_the_conversation_ending_reset_callers_say_so`` — a structural ratchet
-        cannot see a keyword.
+        ``reset`` is NOT exempt: it calls both halves under ``ends_conversation``.
+        That keyword defaults to False because most callers evict and retry; the
+        callers that do end a conversation are pinned by
+        ``test_the_conversation_ending_reset_callers_say_so``.
         """
         import ast
         import inspect

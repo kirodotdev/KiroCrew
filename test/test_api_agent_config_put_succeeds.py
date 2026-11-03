@@ -435,12 +435,8 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
     A second dispatch, or any write outside one, re-creates a cancellation point
     between two writes however wide the lock is.
 
-    Supersedes an earlier version that asserted the offloaded callable was named
-    ``_write_installed_config_locked``. That name pinned the arrangement in which
-    the spec write was the only offloaded write and the other two ran on the
-    event loop -- the arrangement R3a and R3b were defects of. Asserting the
-    write set and its containment pins the property instead of the spelling, and
-    the spec write is still covered (it is one of the three).
+    It pins the write set and its containment, not the offloaded callable's name:
+    a name check would pass while the other two writes ran on the event loop.
     """
     installed = tmp_path / "kirocrew.json"
     installed.write_text(json.dumps({"name": "kirocrew"}))

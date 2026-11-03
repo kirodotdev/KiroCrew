@@ -1861,6 +1861,72 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "connections.oauth-client-gmail",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Gmail",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-gmail",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-google-drive",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Google Drive",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-google-drive",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-google-calendar",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Google Calendar",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-google-calendar",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-google-sheets",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Google Sheets",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-google-sheets",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-google-docs",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Google Docs",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-google-docs",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-google-slides",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Google Slides",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-google-slides",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
     "id": "developer.agent-harness-per-mate",
     "label": "Agent harness per mate",
     "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",

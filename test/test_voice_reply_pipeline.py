@@ -499,7 +499,6 @@ class TestTextTypeAutoDetection:
 
     @pytest.mark.asyncio
     async def test_standard_engine_text_to_ssml_returns_ssml(self) -> None:
-        """Standard engine should return SSML."""
         result = text_to_ssml("Hello world", engine="standard")
         assert result.startswith("<speak")
         assert "</speak>" in result

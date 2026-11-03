@@ -8,6 +8,10 @@ import json
 import pytest
 from instances_helpers import _body, _ConnectedMgr, _enable, _fake_reconfigure, _FakeReq, _State
 
+# 2100-01-01T00:00:00Z: a fixed stamp later than any write the test makes, so it reads as a
+# tunnel connected after the edit without reading the host clock.
+_CONNECTED_AFTER_ANY_WRITE = 4102444800.0
+
 
 class TestHandlers:
     def _reg(self, tmp_path):
@@ -1009,8 +1013,6 @@ class TestHandlers:
         """One teardown, inside the reconfiguration. An extra one after the write
         would hit whatever connected next — i.e. a Connect the user just made on
         the new coordinates."""
-        import time as _time
-
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
@@ -1027,13 +1029,12 @@ class TestHandlers:
                 return True
 
             def status(self, instance_id):
-                # Connected just now — i.e. after the write this handler is about
-                # to make, which is the case the dated sweep must spare.
-                # flake-ok: pre-existing live-clock stamp set 60 s ahead so it reads newer than the edit's write, moved verbatim
+                # Connected after the write this handler is about to make, which is
+                # the case the dated sweep must spare.
                 return TunnelStatus(
                     instance_id=instance_id,
                     state=TunnelState.CONNECTED,
-                    connected_at=_time.time() + 60,
+                    connected_at=_CONNECTED_AFTER_ANY_WRITE,
                 )
 
             def last_error(self, instance_id):

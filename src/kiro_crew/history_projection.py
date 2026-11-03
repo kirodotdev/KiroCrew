@@ -586,8 +586,16 @@ class SessionMetadataProjection:
         key: str,
         *,
         only_if_closed_before: float | None = None,
+        only_if_closed_id: str | None = None,
     ) -> None:
-        """Remove a stale closed marker with an optional compare-and-clear."""
+        """Remove a stale closed marker with an optional compare-and-clear.
+
+        *only_if_closed_before* keeps a stamp whose ``closed_at`` is at or past
+        the bound. *only_if_closed_id* keeps every stamp whose ``closed_id``
+        differs from the given identity -- a line stamped without one included,
+        so a writer can clear only the stamp it wrote itself. Both are read
+        under the transcript lock, against the line as it is now.
+        """
         with self._log._locked(key):
             path = self._log._path(key)
             if not path.exists():
@@ -614,8 +622,11 @@ class SessionMetadataProjection:
                     close_time = previous_mtime
                 if close_time is not None and close_time >= only_if_closed_before:
                     return
+            if only_if_closed_id is not None and metadata.get("closed_id") != only_if_closed_id:
+                return
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
+            metadata.pop("closed_id", None)
             lines[0] = json.dumps(metadata) + "\n"
             # Synced: the replacement carries every row, not just the cleared flag.
             # Bytes, so no newline translation turns the LF ends into CRLF on Windows.

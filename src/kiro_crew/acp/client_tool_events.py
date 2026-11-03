@@ -819,7 +819,7 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     # matches: with a connection URI whose "@" lands on byte 8000, the head
     # slice keeps "://user:password" and drops the "@" the prefilter needs,
     # so the password reaches the dashboard in clear text. Same ordering as
-    # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+    # `_dispatch._build_tool_result_event`.
     _redacted = redact_text(final_joined)
     tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
     final_output = _redacted[:8000]

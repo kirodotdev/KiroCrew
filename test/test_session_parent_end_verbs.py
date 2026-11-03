@@ -74,8 +74,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
 
         async def _dispatch_followup():
             watcher_started.set()
-            # flake-ok: parks the continuation watcher until remove cancels it; the finally sets the event and cancels the task so it cannot outlive the test; moved verbatim
-            await release_watcher.wait()
+            await await_until(release_watcher, what="the test releasing the continuation watcher")
             await dispatch()
             await mgr.get_or_create(parent)
 
@@ -131,13 +130,14 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
                 )
 
         mgr.set_child_teardown_handler(_Handler())
-        # flake-ok: unbounded wait on watcher_started which the already-scheduled watcher task sets as its first statement so the next loop pass ends it; moved verbatim
-        await watcher_started.wait()
+        await await_until(watcher_started, what="the continuation watcher starting")
         try:
             await mgr.remove(parent)
             release_watcher.set()
-            # flake-ok: unbounded gather of the watcher task after remove cancels it and the release event is set; it has nothing left to block on; moved verbatim
-            await asyncio.gather(watcher, return_exceptions=True)
+            await await_until(
+                asyncio.gather(watcher, return_exceptions=True),
+                what="the continuation watcher ending after remove",
+            )
 
             assert cancel_reasons == ["parent teardown cancelled owned follow-up"]
             assert info.pending_followups == []
@@ -153,8 +153,10 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             release_watcher.set()
             if not watcher.done():
                 watcher.cancel()
-            # flake-ok: the finally sets the release event and cancels the watcher if still running before this gather; it settles on its next step; moved verbatim
-            await asyncio.gather(watcher, return_exceptions=True)
+            await await_until(
+                asyncio.gather(watcher, return_exceptions=True),
+                what="the continuation watcher ending after the release",
+            )
             await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -880,8 +882,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             # Block only B's store probe; A reads childless and commits first.
             if parent_session_key == key_b:
                 entered_b.set()
-                # flake-ok: parks the second key's store probe; the test cancels the sweep and sets the event once await_until sees it parked; moved verbatim
-                await proceed.wait()
+                await await_until(proceed, what="the test releasing B's store probe")
             return False
 
         cb.has_pending_store_children = _blocking_store_probe
@@ -905,8 +906,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             task.cancel()
             proceed.set()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: unbounded await of the just-cancelled sweep task with its probe released; the drain runs on mock providers; moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(task, what="the cancelled sweep finishing its teardown of A")
 
         # Despite the cancel landing while B was probing: A was fully torn down.
         assert key_a not in mgr._sessions
@@ -939,8 +939,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         async def _blocking_store_probe(parent_session_key):
             if parent_session_key == key_b:
                 entered_b.set()
-                # flake-ok: parks the spare candidate's store probe; the test cancels the sweep and sets the event once await_until sees it parked; moved verbatim
-                await proceed.wait()
+                await await_until(proceed, what="the test releasing the spare candidate's probe")
             return False
 
         cb.has_pending_store_children = _blocking_store_probe
@@ -967,8 +966,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             task.cancel()
             proceed.set()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: unbounded await of the just-cancelled sweep task with its probe released; the drain runs on mock providers; moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(
+                    task, what="the cancelled sweep finishing its teardown of the stamp-dropped A"
+                )
 
         # The stamp-dropped parent was fully torn down despite the cancel.
         assert key_a not in mgr._sessions
@@ -1186,11 +1186,13 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         mgr.set_child_teardown_handler(_SlowHandler())
         await mgr.get_or_create("dashboard:chat-9")
 
-        # flake-ok: shrinks the parent's shielded child-cancel wait to 0.01 s so it expires before the 0.25 s reap double; expiry never cancels the reap; moved verbatim
-        with patch("kiro_crew.session_lifecycle._CHILD_CANCEL_TIMEOUT_SECS", 0.01):
-            await mgr.remove("dashboard:chat-9")
-
-        release.set()
+        try:
+            # The reap parks on ``release`` until the test sets it, so the parent's
+            # 0.01 s wait expires with the reap unfinished however slow the host is.
+            with patch("kiro_crew.session_lifecycle._CHILD_CANCEL_TIMEOUT_SECS", 0.01):
+                await mgr.remove("dashboard:chat-9")
+        finally:
+            release.set()
         await await_until(finished, what="the slow child reap settling")
         assert observed == ["completed"], (
             "the parent's wait expiring cancelled the reap itself, so a child could "

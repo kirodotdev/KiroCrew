@@ -1097,7 +1097,7 @@ export default function SidePanel({
             return (
               <div key={`${t.id}:${slot}`} className="absolute inset-0">
                 <ErrorBoundary scope="crew-workers" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.workers_error')} askAgent />}>
-                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} />
+                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} onAct={onComposerInsert} />
                 </ErrorBoundary>
               </div>
             )

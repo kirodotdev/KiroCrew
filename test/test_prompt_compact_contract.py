@@ -150,7 +150,7 @@ def test_cron_modes_and_session_ownership_remain_explicit() -> None:
         r"no-LLM.*mutually exclusive `command`.*deterministic",
         r"`Skip\(\)` to retry.*`Done\(msg\)` to deliver/remove.*`Report\(msg\)` to deliver/keep",
         r"synchronous runner refuses `async def`",
-        r"IANA `timezone`.*global config timezone, then UTC",
+        r"IANA `timezone`.*global config timezone, then `local`",
         r"THIS session's jobs only; empty does not mean none exist elsewhere",
         r"`timeout` bounds.*subprocess; `timeout_secs` bounds the whole wake",
     )

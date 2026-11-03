@@ -166,6 +166,16 @@ def _make_full_l2(root: Path, *, slug: str = "fixture-l2") -> Path:
 
 
 class TestValidateThemeDir:
+    def test_a_manifest_and_variables_saved_with_a_bom_validate(self, tmp_path: Path) -> None:
+        """Hand-edited pack files from an editor that writes a UTF-8 BOM."""
+        d = _make_theme(tmp_path)
+        for name in ("theme.json", "variables.json"):
+            f = d / name
+            f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
+        summary, err = _validate_theme_dir(d)
+        assert err is None
+        assert summary is not None and summary["name"] == "LCARS"
+
     def test_valid_toplevel(self, tmp_path: Path) -> None:
         summary, err = _validate_theme_dir(_make_theme(tmp_path))
         assert err is None, err

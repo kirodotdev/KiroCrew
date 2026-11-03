@@ -455,8 +455,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "このセクションのマークダウンをコピーしてチャットまたはオートパイロットに貼り付け",
         "could_not_generate_challenges_please_try_again": "チャレンジを生成できませんでした。もう一度お試しください。",
         "cycle": "サイクル",
-        "cycles": "サイクル、",
-        "cycles_2": "サイクル",
         "definition_of_done_optional": "完了の定義（オプション）",
         "delete": "削除",
         "delete_campaign": "キャンペーンを削除しますか？",
@@ -474,7 +472,6 @@
         "failed_to_add_to_knowledge_library": "ナレッジライブラリへの追加に失敗しました",
         "failed_to_export_as_artifact": "アーティファクトとしてのエクスポートに失敗しました",
         "failed_to_start_campaign_please_try_again": "キャンペーンの開始に失敗しました。もう一度お試しください。",
-        "findings": "調査結果",
         "findings_count": "調査結果（{{count}}）",
         "findings_so_far_are_preserved_below": "これまでの調査結果は以下に保存されます。",
         "first_cycle_in_progress": "最初のサイクルが進行中です…",
@@ -502,7 +499,6 @@
         "loading": "読み込み中…",
         "max_cycles": "最大サイクル：",
         "max_cycles_2": "最大サイクル",
-        "min": "分",
         "min_20_characters": "最小 20 文字。",
         "model": "モデル",
         "model_default_inherit": "デフォルト（継承）",
@@ -540,7 +536,6 @@
         "resume": "再開",
         "run_autonomous_research_campaigns": "自動調査キャンペーンを実行",
         "run_unattended_skip_clarification_questions": "無人で実行（確認質問をスキップ）",
-        "s_idle": "秒アイドル中。~",
         "scripted": "（スクリプト化）",
         "searched_empty": "検索（空）：",
         "send": "送信",
@@ -564,14 +559,11 @@
         "strong": "強い",
         "sub_question": "サブ質問 {{n}}",
         "sub_questions": "サブ質問",
-        "sub_questions_2": "サブ質問",
         "sub_questions_guidance_count": "サブ質問とガイダンス（{{count}}）",
-        "suggested_from": "提案元",
         "the_agent_is_waiting_for_your_direction": "エージェントはあなたの指示を待機しています。",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI がすべてのラウンドを自動的に駆動します — 調査内容を決定し、サブエージェントを管理し、調査結果から新しい手がかりが得られたらそれを追跡します。",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI は事前にオーケストレーションスクリプトを作成します。決定論的なランナーがサブエージェントの実行を管理している間、AI は計画、調査、統合のみを行います。再生可能、予算制限付き。",
         "the_campaign_stopped_unexpectedly": "キャンペーンが予期せず停止しました。",
-        "up_to": "最大",
         "validating": "検証中…",
         "validation_failed_check_your_connection_and_try": "検証に失敗しました。接続を確認してもう一度お試しください。",
         "view_report": "レポートを表示",
@@ -580,7 +572,11 @@
         "when_should_the_agent_stop": "エージェントはいつ停止すべきですか？",
         "your_answer": "あなたの回答",
         "your_answer_2": "あなたの回答…",
-        "your_guidance": "あなたのガイダンス"
+        "your_guidance": "あなたのガイダンス",
+        "suggested_from_sub_questions_other": "{{count}} 件のサブ質問から提案",
+        "estimate_other": "最大 {{count}} サイクル、{{idle}} 秒アイドル。約 {{minutes}} 分",
+        "findings_tally_other": "{{count}} 件の調査結果",
+        "cycles_count_other": "{{count}} サイクル"
       }
     },
     "autoTriagePipeline": {
@@ -992,12 +988,12 @@
           "checks_running_other": "{{count}} 件中 {{pending}} 件のチェックが実行中",
           "closed": "クローズ",
           "conflicts": "コンフリクト",
-          "failing": "失敗",
           "merge_blocked": "マージ不可",
           "merged": "マージ済み",
           "open": "オープン",
-          "passed": "成功",
-          "running": "実行中"
+          "running_count_other": "{{count}} 件実行中",
+          "passed_count_other": "{{count}} 件成功",
+          "failing_count_other": "{{count}} 件失敗"
         },
         "repoSwitcher": {
           "add_a_repo": "リポジトリを追加",
@@ -2183,14 +2179,13 @@
           "search_labels_2": "ラベルを検索…"
         },
         "labelPicker": {
-          "add": "追加",
           "filter_labels": "ラベルをフィルター…",
           "filter_labels_2": "ラベルをフィルター",
           "loading_labels": "ラベルを読み込み中…",
           "remove_this_label_no_longer_exists_on_the_repo": "削除 — このラベルはもうこのリポジトリに存在しません",
           "saved_but_no_longer_on_this_repo": "保存されましたが、このリポジトリにはもうありません：",
-          "suggested": "提案",
-          "this_repo_has_no_labels": "このリポジトリにはラベルがありません。"
+          "this_repo_has_no_labels": "このリポジトリにはラベルがありません。",
+          "add_suggested_other": "提案 {{count}} 件を追加"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — クリックでサイドバーを展開",
@@ -2427,11 +2422,12 @@
           "close": "クローズ",
           "close_esc": "クローズ (Esc)",
           "close_reference": "参照をクローズ",
-          "deep": "ディープ",
           "issue": "Issue",
           "loading": "#を読み込み中",
           "open_in_the_list_detail_column": "リスト + 詳細列で開く",
-          "open_this_item_in_the_workspace": "ワークスペースでこのアイテムを開く"
+          "open_this_item_in_the_workspace": "ワークスペースでこのアイテムを開く",
+          "deep_count_other": "深さ {{count}}",
+          "dialog_label": "{{repo}} の {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "リポジトリ"
@@ -2542,7 +2538,9 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "ダッシュボードの設定を読み込めなかったため、GitLab インスタンスを一覧表示できません。",
         "selection_cleared_those_projects_are_on_the_previous_instance": "選択を解除しました: これらのプロジェクトは以前の GitLab インスタンスにあります。",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "選択を解除しました: これらのリポジトリは以前のプロバイダーに属しています。",
-        "try_again": "再試行"
+        "try_again": "再試行",
+        "repos_selected_other": "{{count}} 件選択済み",
+        "repos_found_other": "{{count}} 件見つかりました"
       },
       "connectRepoModal": {
         "close": "クローズ",
@@ -2942,7 +2940,8 @@
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分のプルリクエストで CI が失敗したら通知する",
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> 件のオープンな Issue が first-issue-friendly とマークされています",
-            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件"
+            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件",
+            "member_chip_title": "{{login}} — {{role}} · {{provider}} で開く"
           }
         },
         "tagging": {
@@ -2954,7 +2953,6 @@
             "created": "作成済み",
             "creating": "作成中…",
             "creating_needs_write_access": "作成には書き込みアクセスが必要です",
-            "defined_by_open_issue_count": "定義 · オープン Issue 数で",
             "labels": "ラベル",
             "looking_for_labels_this_repo_is_missing": "このリポジトリにないラベルを検索中…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "なし。リポジトリのタクソノミーは、オープン Issue が必要とするものをすでにカバーしています。",
@@ -2966,7 +2964,8 @@
             "suggest_new_labels": "新しいラベルを提案",
             "suggested_new_labels_not_created_until_you_say_s": "提案された新しいラベル。実際に作成するまでは作成されません",
             "re_fetch_this_repo_s_labels_from": "{{provider}} からこのリポジトリのラベルを再取得",
-            "create_this_label_on": "{{provider}} でこのラベルを作成"
+            "create_this_label_on": "{{provider}} でこのラベルを作成",
+            "labels_defined_other": "{{count}} 件定義 · オープン Issue 数で"
           },
           "untaggedIssueCard": {
             "add": "追加",
@@ -4488,12 +4487,10 @@
         "at_least_one_source_did_not_answer_this_poll": "少なくとも 1 つのソースがこのポーリングに応答しませんでした。",
         "claim": "引き受け",
         "claimed": "引き受け済み",
-        "cleared": "クリア済み ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· プッシュで配信されるため、空のポーリングは意味がありません",
         "every_configured_source_answered": "設定されたすべてのソースが応答しました。",
         "everything_firing_already_has_an_incident": "現在発火しているすべてが既にインシデントを持っています。",
         "firing": "発火中",
-        "firing_2": "発火中 ·",
         "firing_not_yet_claimed": "発火中、未引き受け",
         "inbound_webhook_queued_other": "{{count}} 件の受信 webhook シグナルが配信され、次のサイクルに取り込まれるのを待機中です。まだボード上にありません。",
         "inhibited_by_alert_go_look_at_that_alert": "{{by}} により抑制されています。より高いランクのアラームがこれをマスクしています。そのアラームを確認してください。",
@@ -4514,7 +4511,6 @@
         "no_signal_sources_registered": "登録されたシグナルソースがありません。",
         "no_sources_reporting_a_firing_signal": "発火シグナルを報告しているソースはありません。",
         "not_polled_yet_not_the_same_as_healthy": "まだポーリングされていません。これは健全であることと同じではありません",
-        "not_yet_claimed": "未引き受け",
         "nothing_firing_but_parked_signals_not_investigated": "何も発火していませんが、上記の抑制シグナルは調査されていません",
         "nothing_firing_but_signals_parked_not_picked_up_other": "何も発火していません。ただし、{{count}} 件のシグナルがプロバイダーに抑制されており（上記を参照）、取り込まれません。",
         "nothing_in_the_ledger_matched_starts_from_scratch": "台帳のどれもマッチしなかったため、調査をゼロから開始します。",
@@ -4522,7 +4518,6 @@
         "one_ledger_entry_matched": "1 件の台帳エントリがマッチしました。{{detail}}",
         "parked": "抑制中",
         "parked_2": "抑制済み",
-        "parked_at_provider": "プロバイダーに抑制 ·",
         "parked_at_the_provider": "プロバイダーに抑制されています",
         "poll_answered": "応答",
         "poll_every_configured_source_now_read_only": "設定されたすべてのソースをポーリング（読み取り専用）",
@@ -4546,7 +4541,11 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "このソースはスプールにプッシュし、各ポーリングが空にするため、既に配信したシグナルは、障害がまだ生きていても再び表示されません。",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "作業の出所。設定で認証情報とスコープを構成します。\n          ここでソースが実際に何を返すかを確認するようにポーリングします。",
-        "while_that_is_true_absence_of_a_signal_does_not": "これが真の場合でも、シグナルの不在は復旧を意味しません。単に\n                見ることができなかっただけかもしれません。"
+        "while_that_is_true_absence_of_a_signal_does_not": "これが真の場合でも、シグナルの不在は復旧を意味しません。単に\n                見ることができなかっただけかもしれません。",
+        "firing_count_other": "{{count}} 件発火中 ·",
+        "parked_count_other": "{{count}} 件プロバイダーに抑制 ·",
+        "cleared_count_other": "{{count}} 件クリア済み ·",
+        "unclaimed_count_other": "{{count}} 件未引き受け"
       }
     },
     "papyrus": {
@@ -5220,7 +5219,8 @@
         "view_graph": "グラフ",
         "view_tree": "ツリー",
         "agents_other": "{{count}} 個のエージェント",
-        "events_other": "{{count}} 件のイベント"
+        "events_other": "{{count}} 件のイベント",
+        "view_label": "表示"
       }
     },
     "awsControl": {
@@ -5350,6 +5350,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "バックアップは自分で開始できますが、セッションのアーカイブは秘匿されずにアップロードされます。",
         "backup_archive": "保存済みバックアップ",
         "backup_restore": "復元",
+        "backup_show_all_archives": "すべてを表示（{{count}}）",
         "backup_restore_caveat": "復元にはバックアップフォルダーへの読み取りアクセスが必要です。推奨される最小権限ポリシーは意図的に書き込みのみを許可しているため、アカウントの認証情報がより広い権限を持たない限り拒否されます。",
         "backup_remote_error": "保存済みバックアップを今読み取れませんでした。",
         "backup_status_failed": "バックアップの状態を読み取れませんでした。",
@@ -5656,8 +5657,6 @@
       "more_waiting": "ほか {{count}} 件",
       "needs_you": "あなたの対応が必要",
       "next": "次に",
-      "progress": "進み具合",
-      "progress_count": "{{total}} 件中 {{accepted}} 件完了",
       "remaining": "残り",
       "show_fewer": "閉じる",
       "status_blocked": "止まっています",
@@ -5987,7 +5986,6 @@
       "decision_not_recorded_error": "この決定は記録されませんでした: {{error}}",
       "reject": "却下",
       "rejected": "却下済み",
-      "running": "実行中:",
       "tool_approval_requested": "ツール承認がリクエストされました:",
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
@@ -6393,6 +6391,7 @@
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}} にメッセージ…",
+      "follow_up_tab_placeholder": "{{option}} - Tab キーで入力",
       "message_placeholder_terminal": "{{bot}} にメッセージ… (/command · @file · $skill · ! シェルコマンド)",
       "model": "モデル",
       "model_2": "モデル：{{name}}",
@@ -6511,7 +6510,18 @@
       "attachment_removed": "{{file}} を添付から削除しました",
       "attachment_restored": "{{file}} を添付しました",
       "trusted_command_until": "「{{cmd}}」を {{time}} まで信頼します。その後は再度確認します",
-      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します"
+      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します",
+      "composer_action_dialog": "{{title}}（{{app}}）",
+      "composer_action_close": "閉じる",
+      "composer_action_timed_out": "{{app}} の処理に時間がかかりすぎたため停止しました。何も挿入されていません。",
+      "composer_action_app_error": "{{app}} でエラーが発生しました。何も挿入されていません。",
+      "composer_action_revoked": "{{app}} はオフになりました。何も挿入されていません。",
+      "composer_action_failed": "{{app}} が応答しませんでした。何も挿入されていません。",
+      "composer_action_from": "{{app}} アプリが提供",
+      "composer_action_footer_host": "{{productName}} が下書きを確認しました。{{app}} には引き続き見えません。",
+      "composer_action_needs_empty": "{{app}} は空のメッセージにのみ挿入できます。先に下書きを空にしてください。",
+      "composer_action_would_resolve": "{{app}} のテキストは /、! か @ で始まるか、$skill、ファイル、画像を含むため、テキストとして送られずに実行されます。挿入しませんでした。",
+      "composer_action_footer": "{{app}} は下書きを見られません。テキストはそのまま挿入され、送信するかどうかはあなたが決めます。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -6836,7 +6846,8 @@
       "search_across_providers": "プロバイダー横断で {{subject}} を検索…",
       "searching": "検索中…",
       "searching_2": "検索中：{{name}}",
-      "type_at_least_2_characters_to_search": "検索するには最低2文字入力してください"
+      "type_at_least_2_characters_to_search": "検索するには最低2文字入力してください",
+      "type_to_search_for_more": "入力するとさらに検索できます"
     },
     "embedTabStrip": {
       "close_tab": "タブを閉じる",
@@ -7001,7 +7012,8 @@
       "slides_thumbstrip": "スライド",
       "slides_truncated": "スライドは {{n}} 枚目で上限に達しました。それ以降は表示されません。",
       "light_background": "明るい背景",
-      "dark_background": "暗い背景"
+      "dark_background": "暗い背景",
+      "sheet_tabs_label": "シート"
     },
     "folderColorNames": {
       "amber": "琥珀色",
@@ -7322,7 +7334,11 @@
       "runs_as_custom_agent_hint": "専用のチャットで、共有メモリを使って実行されます。",
       "runs_as_crewmate_hint": "{{name}} のチャットで、{{name}} 自身のメモリとファイルを使って実行されます。クルーメイトページにも表示されます。",
       "runs_as_fixed": "ジョブは作成後にカスタムエージェントとクルーメイトを切り替えられません。",
-      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。"
+      "runs_as_no_crewmates": "クルーメイトはまだいません。クルーメイトページで追加してください。",
+      "timezone_local": "ローカル（このコンピューターに追従、現在 {{zone}}）",
+      "timezone_local_undetected": "ローカル（タイムゾーン未検出のため UTC）",
+      "timezone_default": "既定のタイムゾーン",
+      "timezone_default_unavailable": "既定のタイムゾーンを読み込めませんでした。「既定のタイムゾーン」のままのジョブは、それを使います。"
     },
     "jobLogsView": {
       "cancel": "キャンセル",
@@ -7796,7 +7812,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "インストール計画の読み込みを待機中",
       "detail_load_failed": "このサーバーの詳細を読み込めませんでした。",
-      "search_failed": "レジストリを検索できませんでした。もう一度お試しください。"
+      "search_failed": "レジストリを検索できませんでした。もう一度お試しください。",
+      "popular_mcp_servers": "人気の MCP サーバー"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "カスタムサーバーを追加",
@@ -8693,6 +8710,8 @@
       "license": "ライセンス:",
       "loading_preview": "プレビューを読み込み中…",
       "no_preview_available": "プレビューはありません。",
+      "popular_skills": "人気のスキル",
+      "search_failed": "スキルを読み込めませんでした。もう一度お試しください。",
       "overwrite": "上書き",
       "provider_could_not_search": "{{provider}} を検索できませんでした: {{reason}}",
       "provider_did_not_answer": "{{provider}} から応答がありませんでした。",
@@ -8836,26 +8855,6 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "ドラッグで領域をキャプチャ · 放して添付 · Esc でキャンセル",
       "drag_to_select_the_screen_region_to_capture": "ドラッグしてキャプチャする画面領域を選択してください",
       "screen_capture_drag_the_area_you_want_it_attache": "スクリーンキャプチャ — ドラッグして希望の領域を選択してください; 放すと自動的に添付されます"
-    },
-    "meetYourMatesIntro": {
-      "sample_line_1": "夜間に不安定なテストを見つけて修正しました。",
-      "sample_line_2": "PR の準備ができました。マージしますか？",
-      "sample_merge": "マージする",
-      "sample_show_first": "先に見せて"
-    },
-    "startupVideoModal": {
-      "close": "閉じる",
-      "crewmates_description": "仕事を見つけて片付け、あなたが必要なときだけ尋ねます。",
-      "crewmates_title": "クルーメイトをご紹介します。",
-      "got_it": "了解しました",
-      "media_failed": "機能紹介動画を読み込めませんでした",
-      "new_tag": "新着",
-      "not_now": "今はしない",
-      "share": "共有",
-      "share_description": "この機能紹介動画を、どこにでも投稿できる共有カードにします。",
-      "share_include_title": "動画のタイトルを含める",
-      "streaming": "オンライン再生",
-      "try_now": "今すぐ試す"
     },
     "tagManagerList": {
       "adopt_tag": "エージェント権限を設定",
@@ -9908,7 +9907,7 @@
       "tagline_lead": "目標はあなたが決めます。",
       "tagline_strong": "作業はクルーが行います。",
       "flow_label": "Ultra Mode のしくみ",
-      "flow_goal": "目標",
+      "flow_goal": "プロジェクト",
       "flow_split": "分ける",
       "flow_parallel": "別々のチャット",
       "flow_board": "ボード",
@@ -9945,16 +9944,24 @@
       "ultra_needs_you_none": "今は対応が必要な項目はありません。",
       "ultra_needs_you_none_stalled": "承認待ちはありません。停滞中の作業はマイルストーンにあります。",
       "ultra_answer_in_chat": "チャットで回答",
+      "ultra_ms_waiting_answer": "上であなたの回答を待っています",
+      "ultra_reply": "返信を書く",
+      "ultra_answers": "回答の候補",
+      "ultra_reply_draft": "「{{t}}」（{{id}}）について：{{answer}}",
+      "ultra_option_title": "チャット欄に入れます。確認して送信してください",
       "ultra_crew": "クルー",
       "ultra_finished": "完了 · {{n}}",
       "ultra_row_sessions_other": "{{count}} セッション · {{running}} 件実行中",
       "ultra_row_count_working_other": "{{count}} 件実行中",
       "ultra_row_count_waiting_other": "{{count}} 件待機中",
       "ultra_row_count_needs_you_other": "{{count}} 件対応が必要",
+      "ultra_row_count_stalled_other": "{{count}} 件停止中",
+      "ultra_row_count_running_other": "{{count}} 件実行中",
+      "ultra_row_stalled_detail": "停止中: {{name}} · {{duration}}",
       "ultra_recap_empty": "クルーからの報告はまだありません。",
       "chip_hint_pressed": "Ultra Mode がオンです。最初のメッセージの前にクリックするとオフにできます。",
       "ultra_view_status": "ステータス",
-      "ultra_view_list": "リスト",
+      "ultra_view_list": "ワーカー",
       "ultra_recap_head": "{{total}} 件中 {{done}} 件完了",
       "ultra_recap_main_chat": "あなたへの質問",
       "ultra_recap_waiting_one": "{{head}}。{{names}} があなたを待っています。",
@@ -10862,7 +10869,22 @@
       "link_open_remembered": "記憶したリンクの選択",
       "link_open_choice_app": "{{name}} で開く",
       "link_open_choice_browser": "ブラウザーで開く",
-      "link_open_forget": "削除"
+      "link_open_forget": "削除",
+      "adoption": {
+        "network": "{{name}} は App Store 版をまだダウンロードできていません。{{productName}} が自動で再試行します。このコンピューターのネットワーク接続を確認してください。",
+        "local": "{{name}} はこのコンピューターで App Store 版を準備できませんでした。ディスクがいっぱいか、設定ファイルを読み取れません。{{productName}} が自動で再試行します。",
+        "policy": "{{name}} の App Store 版への切り替えは保留中です。アプリの受け入れポリシーがこの版を許可していません。切り替えを完了するには、受け入れポリシーで許可してください。",
+        "trust": "{{name}} の App Store 版への切り替えは保留中です。信頼設定が別のソースを指しているか、config.local.json で設定されているため、{{productName}} は変更しませんでした。切り替えを完了するには、信頼設定を確認してください。",
+        "permissions": "{{name}} の App Store 版への切り替えは保留中です。この版は現在の版より多くのアクセスを求めています。何も変更されていません。",
+        "platform": "{{name}} は App Store 版に切り替えられません。この版はこのプラットフォームに対応していません。",
+        "host": "{{name}} の App Store 版への切り替えは保留中です。この版には新しい {{productName}} が必要です。切り替えを完了するには、{{productName}} を更新してください。",
+        "verification": "{{name}} は App Store 版に切り替わりません。この版は検証に通らず、このリリースの {{productName}} は再試行しません。何も変更されていません。",
+        "staged": "{{name}} の App Store 版はダウンロードと検証が完了しています。次に {{productName}} を再起動したときに、{{name}} は App Store 版に切り替わります。",
+        "keeps_builtin_until": "それまではビルトインアプリのままです。",
+        "keeps_builtin": "ビルトインアプリのままです。",
+        "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
+      },
+      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -12338,6 +12360,9 @@
         "copied": "コピーしました",
         "copy_link": "メッセージへのリンクをコピー",
         "unpin": "ピン留めを解除",
+        "copy_text_failed": "テキストをコピーできませんでした。メッセージに移動して、テキストを選択してコピーしてください。",
+        "copy_link_failed": "リンクをコピーできませんでした。このページがクリップボードを使えるか確認して、もう一度お試しください。",
+        "jump_to_named_message": "メッセージに移動、{{author}}: {{label}}",
         "jump_to_message": "メッセージに移動",
         "copy_failed": "コピーに失敗しました"
       },
@@ -13594,7 +13619,13 @@
       "chat_use_lacks_oauth": "対応しているチャット用に保存されています。一部のチャットはまだこの種類のサインインを使えません。",
       "configure_oauth_app": "OAuth アプリを設定",
       "prerequisite_github": "GitHub は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した GitHub のOAuth アプリを使います。GitHub の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
-      "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
+      "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_gmail": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_drive": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_calendar": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_sheets": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_docs": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_google_slides": "Google は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Google のOAuth アプリを使います。Google の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}} ターン目",
@@ -14799,6 +14830,8 @@
         "profile_blank_uses_default_chain": "空欄の場合はデフォルトの AWS 認証情報を使用します。",
         "remove_this_live_source": "このナレッジベースのソースを削除しますか？ローカルには何も保存されていません。ナレッジベース自体は変更されません。",
         "region_example_placeholder": "例: us-east-1",
+        "word_count_other": "{{n}} 語",
+        "word_count_approx_other": "約 {{n}} 語",
         "items_count_other": "{{n}} 件のアイテム"
       },
       "settings": {
@@ -16183,8 +16216,6 @@
       "free": "空き",
       "gateway_cpu": "ゲートウェイ CPU",
       "gateway_rss": "ゲートウェイ RSS",
-      "graph_scale_network": "フルスケール {{max}} KB/s · 直近 {{seconds}} 秒",
-      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}} 秒",
       "hostname": "ホスト名",
       "ip_address": "IP アドレス",
       "kiro_cli_procs": "Kiro CLI",
@@ -16210,7 +16241,9 @@
       "used": "使用中",
       "used_pct": "使用率",
       "utilization": "使用率",
-      "working_directory": "作業ディレクトリ"
+      "working_directory": "作業ディレクトリ",
+      "graph_scale_network": "フルスケール {{max}} · 直近 {{seconds}}",
+      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}"
     },
     "popoutFrame": {
       "session": "セッション",
@@ -16291,7 +16324,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML ファイルは「From YAML」タブ経由でアップロードしてください。",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML ワークフローはLLMデコンポーザーをバイパスします —",
       "action_failed": "アクション失敗",
-      "project_renamed_to": "プロジェクト名を {{name}} に変更しました"
+      "project_renamed_to": "プロジェクト名を {{name}} に変更しました",
+      "plan_mode_label": "計画モード"
     },
     "remoteArtifactDetailPage": {
       "back": "戻る",
@@ -16680,7 +16714,8 @@
       "group_today": "今日",
       "group_yesterday": "昨日",
       "group_earlier": "それ以前",
-      "empty_title": "セッションはありません"
+      "empty_title": "セッションはありません",
+      "filter_label": "セッションのフィルター"
     },
     "sessionsTab": {
       "agent": "エージェント",
@@ -19185,7 +19220,6 @@
       "hide_turn_detail": "ターンごとの詳細を非表示",
       "instruments": "インストルメント",
       "loading_telemetry": "テレメトリを読み込み中…",
-      "local_only_no_egress": "· ローカルのみ、送出なし",
       "max_col": "max",
       "mean_col": "平均",
       "mean_credits_by_occupancy": "ターンあたりの平均クレジット、コンテキスト使用率でグループ化",
@@ -19219,7 +19253,6 @@
       "session_col": "セッション",
       "session_startup": "セッションスタートアップ",
       "sessions_col": "セッション数",
-      "shard_s_source": "シャード · ソース",
       "share_col": "シェア",
       "show_turn_detail": "ターンごとの詳細を表示",
       "showing_partial_window": "{{shown}} / {{total}} サンプルを表示中 (ウィンドウの中途でヒストグラム境界が変更)",
@@ -19275,7 +19308,7 @@
       "range_to": "終了日",
       "no_telemetry_in_window": "この期間（{{period}}）に記録されたテレメトリはありません。",
       "otel_retention_cap": "ターン・レイテンシ・起動の数値は直近{{days}}日分のみです。古いメトリクスは削除されます（<settingRef/>）。",
-      "window_footer": "OTELセクション · 期間: {{period}} ·"
+      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",
@@ -19442,11 +19475,13 @@
       "agents_present_other": "{{n}} エージェント在席",
       "agents_active_other": "{{n}} 件アクティブ",
       "slots_open_other": "空きスロット {{n}} 個",
-      "summary": "{{present}}、{{active}}、{{open}}"
+      "summary": "{{present}}、{{active}}、{{open}}",
+      "scene_label": "シーン"
     },
     "worldsPopout": {
       "hide_controls": "コントロールを隠す",
-      "show_controls": "コントロールを表示"
+      "show_controls": "コントロールを表示",
+      "scene_label": "シーン"
     },
     "membersPage": {
       "drawer_delegated_working": "委任したタスクを実行中",
@@ -20376,6 +20411,9 @@
       "too_many_pixels": "{{name}} は {{width}} × {{height}} ピクセルで、ここで HEIC 写真を変換できる上限 {{max}} メガピクセルを超えています。より小さい JPEG を書き出して添付してください。",
       "convert_failed": "このブラウザーでは {{name}} を JPEG に変換できませんでした。ページを再読み込みしてもう一度試すか、JPEG として書き出してそのファイルを添付してください。",
       "cannot_fit": "{{name}} を JPEG で {{max}} 未満に縮小できませんでした。より小さい JPEG を書き出して添付してください。"
+    },
+    "tz": {
+      "local_zone_caption": "ローカル · {{zone}}"
     }
   },
   "memoryV2": {
@@ -21234,7 +21272,6 @@
     "indicator_label_streak_other": "探索：{{total}} 機能中 {{done}} 試した、{{count}} 日連続",
     "getting_started_result": "最初にできあがった成果",
     "title": "探索",
-    "intro_video_title": "15 秒でわかる {{productName}}",
     "try_today_none": "まずは下の「はじめに」から。",
     "intro_video_watch": "見る",
     "try_today": "今日試す",
@@ -21257,6 +21294,7 @@
     "try_today_entry_other": "今日試す：新しい機能 {{count}} 件",
     "load_failed": "探索を読み込めませんでした。",
     "getting_started": "はじめに",
-    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日"
+    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日",
+    "video_failed": "機能紹介動画を読み込めませんでした"
   }
 }

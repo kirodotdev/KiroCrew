@@ -88,6 +88,8 @@ describe('Windows gateway paths show their file name (#14581)', () => {
     'pages/chat/FilesHomePanel.tsx',
     'pages/chat/FolderPanel.tsx',
     'hooks/usePanelTabs.ts',
+    'components/ChatInput.tsx',
+    'apps/spec-builder/components/ProjectPicker.tsx',
   ])('%s derives file names through pathBasename only', (rel) => {
     const src = readFileSync(resolve(__dirname, '..', rel), 'utf8')
     expect(src).toMatch(/import \{[^}]*\bpathBasename\b[^}]*\} from '[./]+\/utils\/pathBasename'/)

@@ -290,10 +290,11 @@ an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
 An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
-the session's ACP id, as `KIRO_SESSION_ID` in the environment and
-`acp_session_id` on stdin, the same `KIRO_SESSION_ID` kiro-cli gives them. Before
-the session has an id, both are left out. Hooks-page hooks and subagent events do
-not get it.
+the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
+`session_id` on stdin, the same names kiro-cli uses. The older stdin key
+`acp_session_id` carries the same value. Before the session has an id, all of
+them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
+other subagent events do not.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead

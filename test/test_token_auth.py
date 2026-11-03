@@ -1590,25 +1590,25 @@ def test_signing_secret_destination_never_exists_while_incomplete(tmp_path, monk
     """
     from kiro_crew.dashboard import token_secret as ts
 
-    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
-    key_file = tmp_path / ts._SECRET_KEY_FILE
-    assert not key_file.exists()
+    with monkeypatch.context() as mp:
+        mp.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+        key_file = tmp_path / ts._SECRET_KEY_FILE
+        assert not key_file.exists()
 
-    # Sizes the destination had at each point a key byte was being written.
-    # ``None`` means "did not exist", which is the only acceptable value.
-    sizes_during_write: list[int | None] = []
-    real_write = os.write
+        # Sizes the destination had at each point a key byte was being written.
+        # ``None`` means "did not exist", which is the only acceptable value.
+        sizes_during_write: list[int | None] = []
+        real_write = os.write
 
-    def _spy(fd, data):  # type: ignore[no-untyped-def]
-        try:
-            sizes_during_write.append(key_file.stat().st_size)
-        except OSError:
-            sizes_during_write.append(None)
-        return real_write(fd, data)
+        def _spy(fd, data):  # type: ignore[no-untyped-def]
+            try:
+                sizes_during_write.append(key_file.stat().st_size)
+            except OSError:
+                sizes_during_write.append(None)
+            return real_write(fd, data)
 
-    monkeypatch.setattr(os, "write", _spy)
-    secret = ts._load_or_create_secret()
-    monkeypatch.undo()
+        mp.setattr(os, "write", _spy)
+        secret = ts._load_or_create_secret()
 
     on_disk = key_file.read_bytes()
     assert secret == on_disk, "returned key must be the persisted one"

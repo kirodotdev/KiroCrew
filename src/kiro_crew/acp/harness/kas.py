@@ -40,6 +40,7 @@ from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
+from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
@@ -167,6 +168,7 @@ def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 
     The rule lives in :func:`kiro_crew.acp.kas_route.is_operator_override`, which
     the route decision reads too, so the two cannot disagree about one binary.
+    Blocking on Windows.
     """
     return kas_route_mod.is_operator_override(binary, environ)
 
@@ -230,7 +232,9 @@ def resolve_projected_spec(
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
         spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-        return spec, agents_dir
+        # A user-level custom agent gets Crew's default servers, through the helper
+        # the kiro-cli skill view applies too, so the two paths cannot drift.
+        return with_default_crew_servers(agent, spec), agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -259,10 +263,8 @@ def resolve_projected_spec(
 
     if not declared:
         try:
-            return (
-                merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent)),
-                agents_dir,
-            )
+            spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+            return with_default_crew_servers(agent, spec), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -474,7 +476,13 @@ class KasHarness(MembershipHarness):
         # leaves kiro-cli (``kas_route`` rule 2).
         host_auth: bool | None = None
         switch_allowed = await asyncio.to_thread(kas_route_mod.automatic_switch_allowed)
-        if switch_allowed and kas_bin and kas_route_mod.is_operator_override(kas_bin, ctx.environ):
+        # Off the loop: on Windows the comparison resolves the override's real path.
+        operator_override = False
+        if kas_bin:
+            operator_override = await asyncio.to_thread(
+                kas_route_mod.is_operator_override, kas_bin, ctx.environ
+            )
+        if switch_allowed and operator_override:
             # The operator's binary is never second-guessed (``kas_route`` rule 4).
             switch_allowed = False
         if switch_allowed:
@@ -543,7 +551,7 @@ class KasHarness(MembershipHarness):
             # An operator's KIROCREW_KIRO_BIN is exactly what they asked for --
             # a wrapper of theirs named `kiro-cli` is never swapped out from
             # under them.
-            if not _is_operator_override(kas_bin, ctx.environ):
+            if not operator_override:
                 chat_bin = await asyncio.to_thread(chat_sibling, kas_bin)
                 if chat_bin:
                     kas_bin = chat_bin

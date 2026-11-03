@@ -322,8 +322,8 @@ describe('ChatPanel — Composer', () => {
 
   it('stores the follow-up bar layout from the button group', async () => {
     wrap('composer')
-    const group = await screen.findByRole('group', { name: 'Follow-Up Bar Layout' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Multiline' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Follow-Up Bar Layout' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Multiline' }))
     await waitFor(() => expect(storedChat().followUpLayout).toBe('multiline'))
   })
 
@@ -391,7 +391,7 @@ describe('ChatPanel — Composer', () => {
     expect(input.value).toBe('10')
   })
 
-  it('reverts the soft-stop budget to the server value when the write fails', async () => {
+  it('keeps the typed soft-stop budget when the write fails, and a saved retry clears the banner', async () => {
     rejectOnce(patchConfigMock)
     wrap('composer')
     const input = await settledInput('Soft-stop budget (seconds)')
@@ -399,22 +399,27 @@ describe('ChatPanel — Composer', () => {
     fireEvent.change(input, { target: { value: '30' } })
     fireEvent.blur(input)
     expect(await screen.findByText(/Failed to save soft-stop budget/)).toBeInTheDocument()
-    await waitFor(() => expect(input.value).toBe('10'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(1))
+    expect(input.value).toBe('30')
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(2))
+    expect(patchConfigMock).toHaveBeenLastCalledWith('agent.soft_stop_budget_secs', 30)
+    await waitFor(() => expect(screen.queryByText(/Failed to save soft-stop budget/)).not.toBeInTheDocument())
   })
 })
 
 describe('ChatPanel — Messages', () => {
   it('stores the text streaming style from the button group', async () => {
     wrap()
-    const group = await screen.findByRole('group', { name: 'Text Streaming Style' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Immediate' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Text Streaming Style' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Immediate' }))
     await waitFor(() => expect(storedChat().streamMode).toBe('immediate'))
   })
 
   it('stores the content width from the button group', async () => {
     wrap()
-    const group = await screen.findByRole('group', { name: 'Content Width' })
-    fireEvent.click(within(group).getByRole('button', { name: 'Full' }))
+    const group = await screen.findByRole('radiogroup', { name: 'Content Width' })
+    fireEvent.click(within(group).getByRole('radio', { name: 'Full' }))
     await waitFor(() => expect(storedChat().contentWidth).toBe('full'))
   })
 
@@ -862,6 +867,34 @@ describe('ChatPanel — Context', () => {
     expect(patchConfigMock.mock.calls.map(c => (c as unknown[])[1])).toEqual([63.5, 70])
   })
 
+  it('keeps a preset picked while a typed save was pending, when that save fails', async () => {
+    let stored = 90
+    kirocrewConfigMock.mockImplementation(() =>
+      Promise.resolve({ ...BASE_MC, session: { autocompact_pct: stored } })
+    )
+    let fail: (e: unknown) => void = () => {}
+    patchConfigMock.mockImplementationOnce(() => new Promise((_r, rej) => { fail = rej }) as never)
+    patchConfigMock.mockImplementation(((_p: string, v: number) => { stored = v; return Promise.resolve({}) }) as never)
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '63.5' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(1))
+    await pickOption('Auto-Compact Threshold', 3)
+    fail(new Error('boom'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(kirocrewConfigMock.mock.calls.length).toBeGreaterThan(1))
+    // Reopening the field and leaving it must not write the failed 63.5 over the 70.
+    await pickOption('Auto-Compact Threshold', 6)
+    const reopened = await exactField()
+    await waitFor(() => expect(reopened).toHaveValue(70))
+    fireEvent.blur(reopened)
+    for (let i = 0; i < 5; i++) await act(async () => {})
+    expect(patchConfigMock.mock.calls.map(c => (c as unknown[])[1])).toEqual([63.5, 70])
+  })
+
   it('opens Custom… for a deep link to the exact field, without saving', async () => {
     // A preset is stored (90), so only the deep link can reveal the field.
     function Highlighter() { useSettingHighlight(); return null }
@@ -891,6 +924,21 @@ describe('ChatPanel — Context', () => {
     fireEvent.blur(input)
     expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
     expect(screen.queryByText(/outside the allowed range/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a typed exact threshold after a failed write and retries it on the next blur', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '40' } })
+    fireEvent.blur(input)
+    expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
+    expect(input).toHaveValue(40)
+    patchConfigMock.mockClear()
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('session.autocompact_pct', 40))
   })
 
   it('clears its own failure banner when a retry saves', async () => {
@@ -1010,7 +1058,7 @@ describe('ChatPanel — Compaction Wait Budget', () => {
     expect(patchConfigMock).not.toHaveBeenCalledWith('session.compact_wait_secs', expect.anything())
   })
 
-  it('surfaces a failed write and restores the saved value', async () => {
+  it('surfaces a failed write, keeps the typed value, and retries it on the next blur', async () => {
     seedMc({ session: { compact_wait_secs: 300 } })
     rejectOnce(patchConfigMock)
     wrap('advanced')
@@ -1019,7 +1067,32 @@ describe('ChatPanel — Compaction Wait Budget', () => {
     fireEvent.change(input, { target: { value: '600' } })
     fireEvent.blur(input)
     expect(await screen.findByText(/Failed to save compaction wait budget/)).toBeInTheDocument()
-    await waitFor(() => expect(input).toHaveValue(300))
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(600)
+    patchConfigMock.mockClear()
+    fireEvent.focus(input)
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('session.compact_wait_secs', 600))
+    await waitFor(() => expect(screen.queryByText(/Failed to save compaction wait budget/)).not.toBeInTheDocument())
+  })
+
+  it('keeps a typed turn time limit after a failed write and retries it on the next blur', async () => {
+    seedMc({ agent: { chat_turn_timeout_secs: 3600 } })
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    const input = await screen.findByRole('spinbutton', { name: 'Turn Time Limit (seconds)' })
+    await waitFor(() => expect(input).toHaveValue(3600))
+    fireEvent.change(input, { target: { value: '7200' } })
+    fireEvent.blur(input)
+    expect(await screen.findByText(/Failed to save turn time limit/)).toBeInTheDocument()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(7200)
+    patchConfigMock.mockClear()
+    fireEvent.focus(input)
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.chat_turn_timeout_secs', 7200))
+    // The retry landed, so its failure banner goes.
+    await waitFor(() => expect(screen.queryByText(/Failed to save turn time limit/)).not.toBeInTheDocument())
   })
 })
 
@@ -1058,7 +1131,7 @@ describe('ChatPanel — Subagents', () => {
     expect(first).toEqual({ enabled: true, value: '3000' })
   })
 
-  it('reverts the completion-keep characters when the write fails', async () => {
+  it('keeps the typed completion-keep characters when the write fails', async () => {
     rejectOnce(patchConfigMock)
     wrap('advanced')
     const input = await settledInput('Completion event characters')
@@ -1066,7 +1139,9 @@ describe('ChatPanel — Subagents', () => {
     fireEvent.change(input, { target: { value: '8000' } })
     fireEvent.blur(input)
     expect(await screen.findByText(/Failed to save completion-keep characters/)).toBeInTheDocument()
-    await waitFor(() => expect(input.value).toBe('3000'))
+    // The failed number stays to retry, not the stored 3000.
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(1))
+    expect(input.value).toBe('8000')
   })
 })
 

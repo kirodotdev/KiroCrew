@@ -477,6 +477,9 @@ def prepare_native_skill_projection(
     # its bounded directory, so such an agent needs the same search tool a mapped
     # one gets -- see agent_discovery.inherited_skill_globs.
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
+    # Call-time: a module-level name here would be served by the facade as well.
+    from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -490,6 +493,10 @@ def prepare_native_skill_projection(
             # between the two reads; skip it, exactly as an absent spec is skipped.
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
+        if agent.scope != SCOPE_PROJECT:
+            # A user-level custom agent gets Crew's default servers in its view; the
+            # KAS projection applies the same helper (acp/default_crew_servers.py).
+            spec = with_default_crew_servers(agent.name, spec)
         view, search, refusal = project_agent_view(
             spec,
             source,

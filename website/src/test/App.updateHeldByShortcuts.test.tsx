@@ -46,7 +46,6 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ auto_update: true }),
     themeBoot: vi.fn().mockResolvedValue({ onboarded: true, import_onboarded: true, privacy_acked: true }),
     dashboardConfig: vi.fn().mockResolvedValue({ social_share_enabled: false }),
-    featureVideoNext: vi.fn().mockResolvedValue({ video: null, enabled: false, download_enabled: false }),
     featureVideoFeedback: vi.fn().mockResolvedValue({ ok: true }),
     featureVideoProbe: vi.fn().mockResolvedValue({ ok: true }),
   },

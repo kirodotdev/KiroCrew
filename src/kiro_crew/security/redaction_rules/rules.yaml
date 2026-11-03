@@ -25,13 +25,15 @@ version: 1
 allow:
   values: [changeme, placeholder, example, 'true', 'false', 'null', none]
   patterns:
-    - '\$\{[^{}\r\n]{1,200}\}'
-    - '\$\{\{[^\r\n]{0,200}?\}\}'
+    # A template placeholder (`${VAR}`, `${{ x }}`, `{{ x }}`), or a run of up
+    # to eight joined by at most three of ` -/:.,_`. A `{{ }}` body may hold a
+    # lone `}` and ends at the first `}}`. Text glued after the run does not
+    # match.
+    - '(?:\$\{[^{}\r\n]{1,200}\}|\$?\{\{(?:[^}\r\n]|\}(?!\})){0,200}\}\})(?:[ \t\-/:.,_]{0,3}(?:\$\{[^{}\r\n]{1,200}\}|\$?\{\{(?:[^}\r\n]|\}(?!\})){0,200}\}\})){0,7}'
     # An environment-variable reference. Upper case only, so a password that
     # starts with `$` is not mistaken for one.
     - '\$[A-Z_][A-Z0-9_]{0,127}'
     - '<[^<>\r\n]{1,200}>'
-    - '\{\{[^\r\n]{0,200}\}\}'
     - '%[A-Za-z_][A-Za-z0-9_]{0,127}%'
     - '\*{3,200}'
     - '(?i:x{3,200})'
@@ -251,6 +253,12 @@ rules:
       - credential
       - credentials
     allow:
+      # Status and schema words a credential field holds in place of a value.
+      # The match is the whole value, case-insensitive: `enabledXYZ` is still
+      # redacted. A credential whose real value is exactly one of these words
+      # (`password=enabled`) is kept; that trade was accepted in review.
+      values: [required, optional, expired, revoked, invalid, missing, disabled,
+               enabled, hidden, redacted, unset, empty, string]
       suffixes: [EXAMPLEKEY]
     corpus: rules/labelled.secret_field
 

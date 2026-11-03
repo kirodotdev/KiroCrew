@@ -122,15 +122,16 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the configured timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted.",
     )
     cron_add.add_argument(
         "--timezone",
         dest="timezone",
         default="",
         help="IANA timezone the job's wall clock is read in (e.g. America/New_York): the "
-        "--cron expression's fields, or an --at time string such as '9am'. Defaults to the "
-        "configured timezone; refused with --every (an interval has no wall clock).",
+        "--cron expression's fields, or an --at time string such as '9am'. 'local' follows "
+        "this computer's time zone wherever it travels. Defaults to the configured "
+        "timezone, else 'local'; refused with --every (an interval has no wall clock).",
     )
     cron_add.add_argument("--channel", help="Slack channel ID to post results to")
     # One job KIND per job. A script or command job never launches an agent,

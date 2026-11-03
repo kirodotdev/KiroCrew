@@ -256,7 +256,7 @@ _MAX_STEER_MARKER_CHARS = 16_384
 #: tail still become a marker?", which is the question the drain below has to ask
 #: before it holds text back. Sourcing the pattern from the one place the grammar
 #: is written keeps the two probes from drifting apart -- a divergence
-#: ``test_the_two_spellings_of_the_grammar_agree`` pins.
+#: ``TestTheTwoSpellingsOfTheGrammarAgree`` pins.
 #:
 #: Recompiled with ``IGNORECASE`` because THIS module's recognizer carries it:
 #: ``constants``' copy is case-sensitive on purpose (it probes the exact

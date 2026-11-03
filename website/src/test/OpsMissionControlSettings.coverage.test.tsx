@@ -693,7 +693,9 @@ describe('the Slack card', () => {
     renderPanel()
 
     expect(await screen.findByText('active')).toBeInTheDocument()
-    expect(field(/Channel ID/)).toHaveValue('C0000000001')
+    // The card mounts before /state answers, so its channel draft is seeded by an effect
+    // after the status line renders.
+    await waitFor(() => expect(field(/Channel ID/)).toHaveValue('C0000000001'))
     expect(screen.queryByText('ok')).not.toBeInTheDocument()
   })
 
@@ -1145,8 +1147,11 @@ describe('the heartbeat-pacing card', () => {
     mockApi.rotation.mockResolvedValue({ ...ROTATION, sweep: sweep() })
     renderPanel()
 
-    expect(await findField(/Release an investigation after/)).toHaveValue('120')
-    expect(field(/Release a question after/)).toHaveValue('720')
+    // Both drafts are seeded by an effect one commit after the inputs mount, so the
+    // values are awaited rather than read the moment the inputs exist.
+    const stale = await findField(/Release an investigation after/)
+    await waitFor(() => expect(stale).toHaveValue('120'))
+    await waitFor(() => expect(field(/Release a question after/)).toHaveValue('720'))
     // 43200 read as minutes is the confusion the card exists to remove.
     expect(screen.getByText('2h / 12h')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()

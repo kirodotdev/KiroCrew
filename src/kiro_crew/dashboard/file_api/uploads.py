@@ -21,15 +21,19 @@ if TYPE_CHECKING:
         _ALLOWED_IMAGE_EXT,
         _ALLOWED_TEXT_EXT,
         _ALLOWED_VIDEO_EXT,
+        _DEFAULT_NAME_MAX,
         _HEIC_HINT_EXT,
         _HEIF_BRANDS,
         _MAGIC_PREFIXES,
+        _MAX_STORED_NAME_BYTES,
         _MAX_UPLOAD_FILES,
         _MAX_VIDEO_UPLOAD_BYTES,
         _MEDIA_EXT_MIME,
         _MEDIA_MAGIC,
         _RASTER_EXT_MIME,
         _RASTER_MIME_EXT,
+        _STORED_NAME_PREFIX_BYTES,
+        _STORED_NAME_TEMP_BYTES,
         _UPLOAD_DIR,
         _VIDEO_HINT_EXT,
         _ZIP_CONTAINER_EXTS,
@@ -44,9 +48,48 @@ if TYPE_CHECKING:
     )
 
 
+def _fit_stored_name(safe_name: str, name_max: int | None = None) -> str:
+    """*safe_name* shortened to fit the stored name, keeping its extension.
+
+    The tail may use ``_MAX_STORED_NAME_BYTES`` UTF-8 bytes, or less when the
+    upload directory's file-name limit *name_max* leaves less room after the
+    ``_STORED_NAME_PREFIX_BYTES`` UUID prefix and the ``_STORED_NAME_TEMP_BYTES``
+    a streamed part's temp suffix needs. The stem is cut on a character boundary so
+    a multi-byte name never ends in a broken sequence. A name already within the
+    limit is returned unchanged.
+    """
+    if name_max is None:
+        name_max = _DEFAULT_NAME_MAX
+    room = name_max - _STORED_NAME_PREFIX_BYTES - _STORED_NAME_TEMP_BYTES
+    limit = max(min(_MAX_STORED_NAME_BYTES, room), 1)
+    if len(safe_name.encode("utf-8")) <= limit:
+        return safe_name
+    path = Path(safe_name)
+    ext = path.suffix
+    budget = max(limit - len(ext.encode("utf-8")), 1)
+    stem = path.stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    return f"{stem}{ext}"
+
+
 def _upload_dir() -> Path:
     """Uploads directory, resolved against the live data home."""
     return _UPLOAD_DIR if _UPLOAD_DIR is not None else data_home() / "uploads"
+
+
+def _name_max(directory: Path) -> int:
+    """The file-name byte limit of *directory*'s file system.
+
+    ``_DEFAULT_NAME_MAX`` where it cannot be read: ``os.pathconf`` does not exist
+    on Windows, and a file system may not report the value.
+    """
+    pathconf = getattr(os, "pathconf", None)
+    if pathconf is None:
+        return _DEFAULT_NAME_MAX
+    try:
+        value = pathconf(str(directory), "PC_NAME_MAX")
+    except (OSError, ValueError):
+        return _DEFAULT_NAME_MAX
+    return value if isinstance(value, int) and value > 0 else _DEFAULT_NAME_MAX
 
 
 def _write_file_restricted(path: Path, data: bytes) -> None:
@@ -235,6 +278,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
     # Read once per request, off the loop: a config load stats and may parse
     # files. ``dashboard.upload_max_mb``; video keeps _MAX_VIDEO_UPLOAD_BYTES.
     max_upload_bytes = await asyncio.to_thread(upload_max_bytes)
+    name_max = await asyncio.to_thread(_name_max, upload_dir)
     max_upload_mb = max_upload_bytes // 1024 // 1024
     reader = await request.multipart()
     paths: list[str] = []
@@ -293,6 +337,9 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # Sanitize: strip path components to prevent traversal
             safe_name = re.sub(r"[^\w.\-]", "_", Path(fname).name)
             ext = Path(safe_name).suffix.lower()
+            # A browser sends any length; past the file-system limit the open
+            # below raises "File name too long" and the upload answers 500.
+            safe_name = _fit_stored_name(safe_name, name_max)
             if ext not in allowed:
                 await _cleanup()
                 _sel().log_api_access(
@@ -442,7 +489,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         true_ext,
                     )
                     ext = true_ext
-                    dest = dest.with_suffix(true_ext)
+                    # Fitted again: the true suffix can be longer (.jpg -> .webp).
+                    prefix = dest.name[:_STORED_NAME_PREFIX_BYTES]
+                    tail = Path(dest.name[_STORED_NAME_PREFIX_BYTES:]).with_suffix(true_ext).name
+                    dest = dest.with_name(prefix + _fit_stored_name(tail, name_max))
             else:
                 content_ok = _content_matches_ext(ext, bytes(data))
             if not content_ok:

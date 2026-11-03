@@ -243,7 +243,6 @@ class TestClaimFromPool:
         assert mgr._warm_pool.qsize() == 0
 
     def test_claim_empty_agent_matches_empty_pool_agent(self):
-        """Empty agent matches empty pool_agent."""
         mgr, _ = _make_manager(pool_agent="")
         provider = _make_provider()
         mgr._warm_pool.put_nowait((provider, time.monotonic()))

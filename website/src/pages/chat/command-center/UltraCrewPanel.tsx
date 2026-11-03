@@ -8,13 +8,16 @@
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronRight, Loader, Pause } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, MessageSquare, Pause } from 'lucide-react'
+import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { api } from '../../../api/client'
 import type { CrewWorker } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
 import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
 import { artifactEntries } from '../../crewBoardRows'
-import { fmtDuration, fmtList, fmtRelative } from '../../../i18n/format'
+import { fmtList, fmtRelative } from '../../../i18n/format'
+import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { isNotFoundError } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
@@ -28,6 +31,7 @@ import { crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, mergeCrewWorker
 import { fmtRelativeTime } from '../sessionOrder'
 import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 
 export interface UltraCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
@@ -232,11 +236,6 @@ function minutesBetween(a: string | null | undefined, b: string | number | null 
   return Number.isFinite(ta) && Number.isFinite(tb) ? Math.max(0, Math.round((tb - ta) / 60000)) : NaN
 }
 
-function fmtMinutes(mins: number): string {
-  if (!Number.isFinite(mins)) return ''
-  if (mins < 60) return fmtDuration([[Math.max(1, mins), 'minute']], { unitDisplay: 'narrow' } as never)
-  return fmtDuration([[Math.floor(mins / 60), 'hour'], [mins % 60, 'minute']], { dropZero: true, unitDisplay: 'narrow' } as never)
-}
 
 const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,
@@ -311,7 +310,76 @@ function MemberRow({ w, depth, onOpen, current }: { w: CrewWorker; depth: number
   )
 }
 
-export default function UltraCrewPanel({ root, viewing, active }: { root: string; viewing: string | null; active: boolean }) {
+/** The open ledger items that wait on the PERSON: the board read's own
+ *  `awaits_person` (goal-board's "needs you" rule, minus a report the conductor or
+ *  the person has answered since, the same test as the sidebar's count), less an
+ *  item whose tool approval already has its own card (`covered`). Exported for tests. */
+export function personAsks(items: readonly WorkBoardItem[], covered: ReadonlySet<string> = new Set()): WorkBoardItem[] {
+  return items.filter(item => !!item.awaits_person && !covered.has(item.item_id))
+}
+
+function clip(text: string, n: number): string {
+  return text.length > n ? `${text.slice(0, n - 1)}…` : text
+}
+
+/** One item that waits on the person: which task, what it asks, and goal-board's
+ *  Reply: one Write a reply button and, when the conductor offered answers, one
+ *  Suggested answers menu holding them (two controls in the row). Each only FILLS
+ *  the chat box (`onAct`); the person still presses send, and the line under the
+ *  buttons says so. With a crew member on screen (`onAct` absent) the row offers
+ *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
+ *  reopening a closed one), the same as the panel's Back row. */
+function PersonAskRow({ item, options, onAct, back }: { item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
+  const draft = (answer: string) => i18nT('components.crewMode.ultra_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
+  const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
+  return (
+    <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="ultra-person-ask" data-item={item.item_id}>
+      <div className="flex items-center gap-2 min-w-0">
+        <MessageSquare size={14} aria-hidden="true" className="shrink-0 text-warn" />
+        <h4 className="flex-1 min-w-0 text-[13px] font-semibold truncate" title={item.title}>{item.title}</h4>
+      </div>
+      {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
+      {onAct ? (
+        <div className="pl-[22px] space-y-1">
+          <div className="flex items-center gap-1.5" data-testid="ultra-person-ask-actions">
+            <button type="button" className={`${small} ultra-accent`} onClick={() => onAct(draft(''))} data-testid="ultra-person-ask-reply">{i18nT('components.crewMode.ultra_reply')}</button>
+            {options.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className={small} data-testid="ultra-person-ask-answers">{i18nT('components.crewMode.ultra_answers')}<ChevronDown size={12} aria-hidden="true" /></button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="max-w-[280px]">
+                  {options.map(o => (
+                    <DropdownMenuItem key={o} onSelect={() => onAct(draft(clip(o, 200)))} data-testid="ultra-person-ask-option">
+                      <span className="break-words">{clip(o, 80)}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
+          <p className="text-[11px] text-muted" data-testid="ultra-person-ask-hint">{i18nT('components.crewMode.ultra_option_title')}</p>
+        </div>
+      ) : (
+        <div className="pl-[22px] space-y-1">
+          <button type="button" onClick={back.back} data-testid="ultra-person-ask-open-main"
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium ultra-accent hover:bg-bg-hover">
+            <ChevronLeft size={12} aria-hidden="true" />{back.label}
+          </button>
+          {back.reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
+        </div>
+      )}
+    </article>
+  )
+}
+
+export default function UltraCrewPanel({ root, viewing, active, onAct }: {
+  root: string
+  viewing: string | null
+  active: boolean
+  /** Put a reply into the main chat's composer (the side panel's composer insert). */
+  onAct?: (text: string) => void
+}) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const isMobile = useIsMobile()
@@ -383,6 +451,14 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
     const w = workers.find(x => x.key === a.worker)
     if (w?.ledger_item) approvalByItem.set(w.ledger_item, i18nT('components.crewMode.ultra_ms_waiting_approval'))
   }
+  // The ledger items a worker said wait on the person, with the conductor's offered answers.
+  const forYou = personAsks(items, new Set(approvalByItem.keys()))
+  // Its milestone says it waits on the person too, not on the main chat.
+  for (const item of forYou) approvalByItem.set(item.item_id, i18nT('components.crewMode.ultra_ms_waiting_answer'))
+  // Only while the main chat is on screen: the side panel's insert fills the
+  // composer on screen, and a reply belongs in the main chat's.
+  const replyInto = !viewing || viewing === root ? onAct : undefined
+  const crewBack = useCrewBack(root)
   const milestones = items.map(item => {
     const state = milestoneState(item, approvalByItem.has(item.item_id))
     const waitingOn = approvalByItem.get(item.item_id) || firstSentence(item.summary) || i18nT('components.crewMode.ultra_needs_you')
@@ -394,6 +470,8 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
   // rows agree on whether the person must act.
   const needsYouRows = milestones.filter(m => m.state === 'needs_you' && !approvalByItem.has(m.item.item_id)).map(m => m.item.title)
   const needYou = c.approvals + c.questions + needsYouRows.length
+  // Plus the rows below that wait on the person (kept out of `needsYouRows`).
+  const needCount = needYou + forYou.length
   const openMs = milestones.filter(m => m.state !== 'done')
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
@@ -420,14 +498,14 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
           the route is not a failure (the live rows stand in). */}
       {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
       <div className="shrink-0 px-3 pt-3">
-        <div role="group" aria-label={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="ultra-view-switch">
+        <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="ultra-view-switch">
           {(['status', 'list'] as const).map(v => (
-            <button key={v} type="button" aria-pressed={view === v} data-testid={`ultra-view-${v}`} onClick={() => setView(v)}
+            <button key={v} type="button" {...radioChip(view === v)} data-testid={`ultra-view-${v}`} onClick={() => setView(v)}
               className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${view === v ? 'bg-bg-elevated text-text shadow-sm' : 'text-muted hover:text-text'}`}>
               {i18nT(v === 'status' ? 'components.crewMode.ultra_view_status' : 'components.crewMode.ultra_view_list')}
             </button>
           ))}
-        </div>
+        </RadioChipGroup>
       </div>
       {view === 'status' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4" data-testid="ultra-status">
@@ -442,11 +520,11 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
           {/* (2) Needs your input: the chat's own ask_question card and the crew's
               approval cards, both compact. */}
           <section data-testid="ultra-needs-you" className="space-y-1.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_needs_input')} · ${needYou}`}</h3>
+            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_needs_input')} · ${needCount}`}</h3>
             {/* A milestone that needs the person without an approval card, or one
                 that stalled, is not counted here, but the line does not claim
                 nothing is wrong: it points at the rows below. */}
-            {(needYou === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{needsYouRows.length
+            {(needCount === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{needsYouRows.length
               ? i18nT(needsYouRows.length === 1 ? 'components.crewMode.ultra_needs_you_rows_one' : 'components.crewMode.ultra_needs_you_rows_many', { names: joinNames(needsYouRows) })
               : i18nT(milestones.some(m => m.state === 'stalled') ? 'components.crewMode.ultra_needs_you_none_stalled' : 'components.crewMode.ultra_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
@@ -458,6 +536,7 @@ export default function UltraCrewPanel({ root, viewing, active }: { root: string
                 </button>
               </div>
             ) : null}
+            {forYou.map(item => <PersonAskRow key={item.item_id} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
             <CrewApprovalCards root={root} compact />
           </section>
           {/* (3) Milestones: one row per ledger item, as outcomes. */}

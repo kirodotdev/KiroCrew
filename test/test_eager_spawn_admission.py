@@ -103,9 +103,8 @@ class TestFreshSpawnPopulationCap:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _no_debounce(self, monkeypatch):
-        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+    def _no_debounce(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
 
     @pytest.mark.asyncio
     async def test_fresh_spawn_registers_in_live_population(self):
@@ -182,9 +181,8 @@ class TestPrewarmAdmission:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _no_debounce(self, monkeypatch):
-        monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+    def _no_debounce(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
 
     @staticmethod
     def _bindings():

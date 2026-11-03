@@ -15,6 +15,11 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
+
+# ``main`` imports the mirrored facade lazily. Imported here, before any test
+# patches ``config_dir`` or ``sel``, so its owners bind the real objects: a
+# first import under those patches composes a family that disagrees with itself.
+from kiro_crew import cli_commands  # noqa: F401
 from kiro_crew import platform_compat
 from kiro_crew.cli import main
 

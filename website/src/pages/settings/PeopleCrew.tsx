@@ -292,7 +292,7 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
             {login && <span className="text-[12px] text-muted truncate" data-testid="person-edit-login">{login}</span>}
             <div className="flex gap-2 flex-wrap">
               <input ref={fileRef} type="file" accept={AVATAR_TYPES.join(',')} className="sr-only" aria-label={i18nT('sharedCrew.edit_picture')} onChange={e => { void onPick(e.target.files?.[0]); e.target.value = '' }} data-testid="person-edit-picture-input" />
-              <Btn type="button" onClick={() => fileRef.current?.click()} disabled={save.isPending || reading}>{i18nT('sharedCrew.edit_picture')}</Btn>
+              <Btn type="button" onClick={() => fileRef.current?.click()} disabled={save.isPending || reading} aria-describedby={hint ? 'person-edit-hint' : undefined}>{i18nT('sharedCrew.edit_picture')}</Btn>
               {shown && (
                 <Btn type="button" onClick={() => { setPicture(null); setClear(true) }} disabled={save.isPending || reading} data-testid="person-edit-remove-picture">
                   {i18nT('sharedCrew.edit_remove_picture')}
@@ -301,7 +301,7 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
             </div>
           </div>
         </div>
-        {hint && <span className="text-[12px] text-text" data-testid="person-edit-hint">{inviteErrorText(hint)}</span>}
+        {hint && <span id="person-edit-hint" role="status" className="text-[12px] text-text" data-testid="person-edit-hint">{inviteErrorText(hint)}</span>}
         {/* No hand-off: the dialog holds the unsaved name and picture. */}
         {readFailed && <ErrorNotice variant="inline" message={inviteErrorText('error')} testId="person-edit-read-error" />}
         <label className="flex flex-col gap-1 min-w-0">

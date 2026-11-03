@@ -330,42 +330,21 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
 def _settle_codex_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     """Close out a codex compaction whose terminal never arrived, or None.
 
-    Called at the turn's terminal. ``None`` -- the ordinary case -- means no
-    codex compaction was in flight, or one was and it already reported.
+    Called at the turn's terminal; ``None`` means nothing was pending.
 
-    The verdict is ``failed``, and that is the opposite of what the claude
-    twin synthesizes. The two harnesses differ in what a MISSING terminal
-    means. claude-agent-acp sends its ``Compacting completed.`` text only for
-    a MANUAL ``/compact``; an automatic mid-turn compaction takes a different
-    path and emits no text at all, so for claude a turn that ends naturally
-    after a ``started`` is evidence the compaction finished. codex-acp sends
-    its terminal for BOTH -- the capture shows the marked
-    ``tool_call_update`` on a manual ``/compact`` and on a native
-    ``model_auto_compact_token_limit`` compaction alike -- so here a missing
-    terminal is evidence the compaction did NOT finish. Reporting
-    ``completed`` would reset the context meter against a window nobody
-    summarized.
+    The verdict is ``failed``, the opposite of the claude twin. claude-agent-acp
+    sends ``Compacting completed.`` only for a manual ``/compact``, so a missing
+    terminal there implies success. codex-acp sends its marked
+    ``tool_call_update`` for both manual and ``model_auto_compact_token_limit``
+    compactions, so here a missing terminal means it did NOT finish, whatever
+    the *reason* (a cancelled turn did not compact either).
 
-    One arm for every *reason*, unlike its claude twin, and for the same
-    reason the verdict differs: this is not an inference from how the turn
-    ended, it is the absence of a frame codex always sends on success. A turn
-    cancelled mid-compaction did not compact either.
-
-    Three things it deliberately does NOT do:
-
-    * reset the context counts -- nothing was summarized, so the pre-compaction
-      numbers are still the true ones;
-    * arm the post-failure budget (``_compaction_failed_at``) -- that budget
-      exists to bound a wait for a turn that may never end, and this runs AT
-      the end of the turn, so arming it would charge the NEXT turn's idle
-      clock for this one's failure;
-    * claim the failure is retryable. ``last_compaction_transient`` is set
-      False because an inferred failure carries no reason to classify, and
-      False is the value that does not promise a user a retry will help.
-
-    The title is text this module authors, not text a backend echoed, so it
-    needs no redaction -- and it is there so the surfaces that render a
-    failure reason stop collapsing this case to "unknown error".
+    It deliberately does NOT reset the context counts (nothing was summarized),
+    does NOT arm ``_compaction_failed_at`` (that would charge the NEXT turn's
+    idle clock), and sets ``last_compaction_transient`` False (an inferred
+    failure has no reason to classify, so no retry is promised). The title is
+    authored here, so it needs no redaction; it keeps the failure from showing
+    as "unknown error".
     """
     if not self._codex_compaction_pending:
         return None

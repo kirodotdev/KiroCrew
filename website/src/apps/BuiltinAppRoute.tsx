@@ -18,9 +18,12 @@ import { AlertTriangle } from 'lucide-react'
 import { getBuiltinApp, builtinRefusalReason } from './builtinRegistry'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { AppCacheRetention } from '../app-sdk/appQuery'
+import { adoptedLegacyNav } from '../appNav'
 import AskAgentButton from '../components/AskAgentButton'
 import ErrorBoundary from '../components/ErrorBoundary'
+import InstalledAppSurface from '../components/InstalledAppSurface'
 import { ContentSkeleton } from '../components/ui'
+import { useLoadedInstalledApps } from '../hooks/panelTabRegistry'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -127,6 +130,32 @@ export default function BuiltinAppRoute() {
   const { builtinApp } = useParams<{ builtinApp: string }>()
   const path = `/${builtinApp || ''}`
   const entry = getBuiltinApp(path)
+  const installedApps = useLoadedInstalledApps()
+
+  // A former built-in whose record the gateway moved to its registry copy keeps
+  // its old route, and renders that copy's own bundle here instead of the page
+  // compiled into this dashboard. The record decides, not the route: the match
+  // is the gateway's `adoption` row, and `adoptedLegacyNav` admits only an
+  // adopted NON-builtin record that ships a bundle. The copy mounts under its own
+  // origin (AppHost reads it from the record), never under the `builtin` origin
+  // the compiled page below publishes.
+  //
+  // The list is only what the shell's own `['apps']` read has already cached: this
+  // route never fetches it, waits for it or reports it failing. Until a loaded list
+  // names an adopted record for this path, the compiled page renders at once, as
+  // it does for every built-in with no adoption row. The copy's boundary has its
+  // own key, so a list that arrives after the compiled page mounted swaps in a
+  // fresh boundary rather than one that may already hold that page's caught throw.
+  const adopted = entry
+    ? installedApps.find(app => adoptedLegacyNav(app)?.route === path)
+    : undefined
+  if (adopted) {
+    return (
+      <ErrorBoundary key={`${path}#adopted`}>
+        <InstalledAppSurface app={adopted} requestedName={adopted.name} />
+      </ErrorBoundary>
+    )
+  }
 
   // Both boundaries below are keyed by `path`, and that key is load-bearing.
   // `App.tsx` serves all 23 builtin pages from ONE unkeyed

@@ -22,6 +22,9 @@ export interface CrewWorkFacts {
   open: number
   /** Open items waiting on a person (`reason` approval / needs_human). */
   person: number
+  /** The worker each of those items belongs to ("" for a remote or unbound one);
+   *  absent from a gateway that predates it. */
+  person_workers?: string[]
   items: CrewWorkItemFacts[]
 }
 

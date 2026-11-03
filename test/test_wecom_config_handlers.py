@@ -507,7 +507,7 @@ def test_set_config_write_failure_leaves_consistent_pair(
         pass
 
     # CRITICAL: .env must be untouched — config write failed before the
-    # handler reached _commit_env_wecom(), so both stores still hold originals.
+    # handler reached the .env write, so both stores still hold originals.
     env_text = env.read_text(encoding="utf-8")
     assert "old-bot-id" in env_text, (
         "Config-first: .env must be untouched when config write fails (WECOM_BOT_ID)"
@@ -534,7 +534,7 @@ def test_set_config_write_failure_preserves_process_only_credential(
       - the config.json write raises (disk full)
 
     With config-first ordering: the config write fails before
-    _commit_env_wecom() is called, so os.environ is never mutated by the
+    the .env write, so os.environ is never mutated by the
     handler.  Both process-only credentials are trivially preserved.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
@@ -569,7 +569,7 @@ def test_set_config_write_failure_preserves_process_only_credential(
         pass
 
     # CRITICAL: both process-only credentials must survive intact.
-    # Config-first ordering: _commit_env_wecom() is never called when config
+    # Config-first ordering: the .env write never happens when config
     # write fails, so os.environ is untouched by the failed request.
     assert os.environ.get("WECOM_BOT_ID") == "env-only-bot-id", (
         "Config-first ordering: process-only WECOM_BOT_ID must be untouched "

@@ -158,7 +158,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_libproc_fd_bound _darwin_libproc_fd_handle _darwin_peer_is_loopback
         darwin_established_tcp_count _darwin_libc_sysctl _darwin_libc_sysctl_loaded
         _darwin_libc_sysctl_lock _darwin_sysctl_handle darwin_process_argv
-        _darwin_tb_frequency
+        _darwin_tb_frequency _DARWIN_PTI_RESIDENT_SIZE_OFFSET darwin_resident_bytes_for_pid
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
         darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC

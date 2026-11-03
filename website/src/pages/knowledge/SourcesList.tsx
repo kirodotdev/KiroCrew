@@ -20,6 +20,8 @@ import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -190,6 +192,15 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
       ))}
     </div>
   )
+}
+
+/** A source's word count: exact under 1000, compact and approximate above. The
+ *  count goes into the catalog so each language picks its own plural form. */
+export function sourceWordCountLabel(wordCount: number): string {
+  if (wordCount < 1000) {
+    return i18nT('pages.knowledge.sourcesList.word_count', { count: wordCount, n: fmtNumber(wordCount) })
+  }
+  return i18nT('pages.knowledge.sourcesList.word_count_approx', { count: wordCount, n: fmtCompact(wordCount) })
 }
 
 function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
@@ -560,12 +571,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}`, { method: 'DELETE' }),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-sources'] })
-      const prev = queryClient.getQueryData<Source[]>(['knowledge-sources'])
+      const removed = takeRow(queryClient.getQueryData<Source[]>(['knowledge-sources']), s => s.id === id)
       queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== id))
-      return { prev }
+      return { removed }
     },
-    onError: (_err, _vars, ctx) => {
-      queryClient.setQueryData(['knowledge-sources'], ctx?.prev)
+    // Only this source comes back, and only into a cached list: a whole-list
+    // snapshot would revive a source another delete removed meanwhile, and an
+    // absent snapshot would blank the list.
+    onError: (_err, id, ctx) => {
+      queryClient.setQueryData<Source[]>(['knowledge-sources'], old => putRowBack(old, ctx?.removed, s => s.id === id))
     },
     onSuccess: () => {
       resetAdd()
@@ -741,10 +755,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
-          <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="text-sm font-medium" id="knowledge-add-source-label">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
+          <RadioChipGroup className="flex gap-2 flex-wrap" ariaLabelledBy="knowledge-add-source-label">
             {(['local', 'url', 'bedrock_kb'] as const).map(t => (
-              <button key={t} type="button" onClick={() => setAddType(t)} aria-pressed={addType === t}
+              <button key={t} type="button" onClick={() => setAddType(t)} {...radioChip(addType === t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
                 {t === 'local'
                   ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.files_and_folders')}</>
@@ -753,7 +767,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   : <><Database size={12} /> {i18nT('pages.knowledge.sourcesList.bedrock_kb')}</>}
               </button>
             ))}
-          </div>
+          </RadioChipGroup>
           {/* A fetched page is stored in the default namespace, and a remote KB
               holds no items at all, so neither offers a namespace picker. */}
           {addType === 'local' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
@@ -1054,7 +1068,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   with the row's action buttons, where a third button breaks the
                   max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
-              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
+              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
               {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (

@@ -56,6 +56,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.work_vocab import WORK_BLOCKED_REASONS
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,41 @@ def _project_item(
     return projected
 
 
+#: The most offered answers one item keeps, the cap goal-board draws.
+_ASK_OPTIONS_MAX = 6
+
+
+def _conductor_asks(slot: str, item_ids: set[str]) -> dict[str, list[str]]:
+    """The conductor's offered answers per item: goal-board's agentic ``asks`` field.
+
+    ``{item_id: {options: [...]}}`` as the conductor wrote it with ``dashboard_write``,
+    read from the slot's own ``agentic`` fold (the value its page is filled from), and
+    cut to this board's items and to non-empty strings. FILE I/O -- call off the loop.
+    TOTAL: a fold that cannot be read, or holds no ``asks``, answers ``{}``.
+    """
+    try:
+        from kiro_crew.crew_log import projection
+
+        value = projection.read_slot_projection(slot, "agentic").value
+        fields = value.get("fields") if isinstance(value, Mapping) else None
+        row = fields.get("asks") if isinstance(fields, Mapping) else None
+        asks = row.get("value") if isinstance(row, Mapping) else None
+    except Exception:
+        logger.debug("no conductor asks for this board", exc_info=True)
+        return {}
+    out: dict[str, list[str]] = {}
+    if not isinstance(asks, Mapping):
+        return out
+    for item_id, entry in asks.items():
+        options = entry.get("options") if isinstance(entry, Mapping) else None
+        if item_id not in item_ids or not isinstance(options, list):
+            continue
+        kept = [o for o in options if isinstance(o, str) and o.strip()][:_ASK_OPTIONS_MAX]
+        if kept:
+            out[item_id] = kept
+    return out
+
+
 def _redact_deep(value: Any) -> Any:
     """Run every STRING in the payload through the egress credential redactor.
 
@@ -269,10 +305,9 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
     counts, so the conductor row and this board agree that the worker has its answer.
 
     Stamps are seconds-precision, so when the tail holds the report itself the tail's
-    ORDER decides: only an answer recorded after the newest report answers it, and a
-    steer in the same second just before a new question does not."""
-    if work_item_answered(item):
-        return True
+    ORDER decides, ahead of the item's stamps: only an answer recorded after the newest
+    report answers it, and a decision or steer in the same second just before a new
+    question does not. Only a tail without the report falls back to the stamps."""
     last_report = max(
         (n for n, e in enumerate(events) if isinstance(e, dict) and e.get("kind") == "report"),
         default=None,
@@ -282,6 +317,8 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
             isinstance(e, dict) and e.get("kind") in _ANSWER_KINDS
             for e in events[last_report + 1 :]
         )
+    if work_item_answered(item):
+        return True
     # Through ``work_ledger.parse_stamp``, which answers offset-aware datetimes only:
     # a peer's report stamp may carry no offset, and an aware/naive compare raises.
     reported = work_ledger.parse_stamp(item.last_report_at or "")
@@ -293,6 +330,18 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
         if stamp is not None and (reported is None or stamp >= reported):
             return True
     return False
+
+
+def awaits_person(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+    """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
+    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), and nobody has
+    answered it since (:func:`answered_since_report`). The one test behind the
+    sidebar's crew count and the Ultra Mode Board's Needs your input, so they agree."""
+    return (
+        item.status in work_ledger.WAITING_STATUSES
+        and item.reason in WORK_BLOCKED_REASONS
+        and not answered_since_report(item, events)
+    )
 
 
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
@@ -482,7 +531,10 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["report_undelivered"] = undelivered.get(item.item_id)
-        row["events"] = _mask_events([event.to_dict() for event in event_tails[item.item_id]])
+        events = [event.to_dict() for event in event_tails[item.item_id]]
+        # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
+        row["awaits_person"] = not item.is_terminal and awaits_person(item, events)
+        row["events"] = _mask_events(events)
         rows.append(
             _project_item(
                 row,
@@ -496,10 +548,17 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             )
         )
 
+    # The conductor's offered answers, which the Ultra Mode Board's Needs your input
+    # draws as Reply buttons the way goal-board does.
+    asks = await asyncio.to_thread(
+        _conductor_asks, requested, {item.item_id for item in items if not item.is_terminal}
+    )
+
     payload = {
         "conductor": record.to_dict(),
         "conductor_alive": "idle" if conductor_alive else "closed",
         "items": rows,
+        "asks": asks,
         # The ONE capability the page actually reads, because it changes what the
         # page renders: no take-over button is rendered while this is false.
         #

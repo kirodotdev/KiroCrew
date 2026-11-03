@@ -3002,8 +3002,8 @@ file whole but the load carries `*`, the fingerprint is re-read, and a read the
 file moved under is treated as torn (previous snapshot kept, next tick reloads).
 So on a dispatched change `*` is only the loader's memory of a repaired tear,
 and the section flags — which the loader assigns only to the fail-closed
-sections `dashboard` (including `dashboard.tailscale`), `memory`, `publish` and
-`workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
+sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `memory`,
+`publish` and `workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
 non-object anywhere else before the loader could flag it) — are the ones a tear
 never produces and a save destroys the evidence of, hence the ones that stay
 sticky and keep their appliers deferred until the restart main documents for a
@@ -3265,6 +3265,7 @@ class AgentConfig:
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
+    apps_builtin_adoption: dict[str, dict] = {}  # gateway-written marker per adopted former built-in: {"state": "granting"|"adopted", "repository", "commit" (40-hex), "addedName", "setRepository", "removedLocal" (bools: what the adoption grant changed, read by its rollback)}. Keys must match execution.APP_NAME_RE, values exactly that shape, else the entry is dropped; capped at 512 (builtin_adoption_markers.coerce_adoption_markers). Read on demand (no restart mark), base UNION effective so an overlay cannot hide an entry; an "adopted" entry is never removed, which keeps an uninstalled adopted app from coming back. Not shown in Settings. See app-kit-platform.md § Former built-in adoption
     apps_ui_stream_timeout_secs: int = 30  # total transfer deadline for one response body on the unauthenticated /apps/<app>/ui/ route. Load-time clamped to [5, 600]; read per request (live), and no off switch — the route has eight descriptor permits and this deadline is what stops a client that quits reading from holding one indefinitely
     task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing, and with false (or no store) a floor miss also queues, in memory. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True

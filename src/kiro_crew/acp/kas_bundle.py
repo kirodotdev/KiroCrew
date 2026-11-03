@@ -734,7 +734,17 @@ def install_bundle(
         if force and final.exists():
             retired = Path(tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}retired-", dir=root))
             retired.rmdir()
-            os.rename(final, retired)
+            try:
+                os.rename(final, retired)
+            except OSError as exc:
+                # Windows refuses to rename a directory while a process holds a file
+                # in it open, as a running session's node.exe does; the installed
+                # engine stays where it is.
+                raise KasBundleError(
+                    f"KAS {manifest.version} at {final} could not be replaced "
+                    f"({exc.strerror or exc}); if a KAS session is running it, "
+                    "stop that session and retry"
+                ) from exc
         try:
             platform_compat.publish_dir_noreplace(staging, final)
         except FileExistsError as exc:

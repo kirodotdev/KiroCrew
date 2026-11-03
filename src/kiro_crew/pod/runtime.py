@@ -285,7 +285,9 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
 
     Decoded through the data home's ``.env`` decoder, so a file a Windows editor
     saved as UTF-8 with a byte-order mark reads as UTF-8 with the mark dropped. A
-    UTF-16 or UTF-32 file raises :class:`PodError` naming the file and the fix:
+    file without a mark reads as UTF-8 when its bytes are valid UTF-8, whatever
+    the locale, so what :func:`write_env_file` stores reads back unchanged; other
+    bytes decode with the locale default. A UTF-16 or UTF-32 file raises :class:`PodError` naming the file and the fix:
     reading it as ``{}`` would launch the pod without the operator's variables,
     and :func:`write_env_file` would then overwrite the file it could not read.
     """
@@ -299,11 +301,16 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     except OSError:
         return {}
     try:
-        text = decode_env_bytes(raw)
+        # The product writes this file as UTF-8, so a file without a mark is
+        # read as UTF-8 first; only bytes that are not valid UTF-8 (a file saved
+        # by hand in a legacy code page) fall back to the locale default.
+        text = decode_env_bytes(raw, "utf-8")
     except EnvFileWideEncodingError as exc:
         raise PodError(
             f"pod env file {path} is saved with a {exc.reason}; save it as UTF-8"
         ) from exc
+    except UnicodeDecodeError:
+        text = decode_env_bytes(raw)
     return _parse_env_text(text)
 
 

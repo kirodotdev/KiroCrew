@@ -96,6 +96,12 @@ from kiro_crew.apps.link_open_grants import (  # noqa: E402
 )
 
 register_point_grants(LINK_OPEN_GRANT_FAMILIES, link_open_grant_entries)
+from kiro_crew.apps.composer_action_grants import (  # noqa: E402
+    COMPOSER_ACTION_GRANT_FAMILIES,
+    composer_action_grant_entries,
+)
+
+register_point_grants(COMPOSER_ACTION_GRANT_FAMILIES, composer_action_grant_entries)
 
 
 __all__ = [

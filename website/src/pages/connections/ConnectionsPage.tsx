@@ -352,7 +352,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         await api.mcpApply([reenable])
       }
     } else {
-      await api.mcpCustomAdd({ [provider.slug]: { url: provider.mcp_url } }, true)
+      // Request the registry's scopes, as the warm path does: an entry written
+      // without them authorizes with the provider's default grant (wider than
+      // the read-only set for Google) and no longer matches the warm plan.
+      const scopes = provider.recommended_scopes ?? []
+      await api.mcpCustomAdd(
+        { [provider.slug]: scopes.length ? { url: provider.mcp_url, scopes: [...scopes] } : { url: provider.mcp_url } },
+        true,
+      )
     }
     // Ask for the approval URL rather than waiting for one, and await it: a
     // rejected POST must reach `run`'s error path instead of leaving the card in

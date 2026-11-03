@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, useId, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Lock } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
@@ -421,6 +421,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   // nothing to diagnose.
   const [saveError, setSaveError] = useState('')
   const [thresholdError, setThresholdError] = useState('')
+  const thresholdErrorId = useId()
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -818,6 +819,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             onChange={v => upd({ soft_threshold_pct: v })}
             placeholder="80"
             disabled={ro}
+            invalidMessageId={thresholdError ? thresholdErrorId : undefined}
           />
           {spec.progressDisplay && (
             <>
@@ -913,8 +915,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         {/* Client-side validation hint (the threshold never left the browser) —
             not an error surface, so it stays plain text rather than ErrorNotice. */}
         {thresholdError && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {thresholdError}
+          <span id={thresholdErrorId} role="alert" className="inline-flex items-center gap-1.5 text-[12px] text-danger">
+            <AlertTriangle size={14} aria-hidden="true" /> {thresholdError}
           </span>
         )}
         {/* No hand-off: `botToken` / `botId` (SecretField drafts, never persisted)

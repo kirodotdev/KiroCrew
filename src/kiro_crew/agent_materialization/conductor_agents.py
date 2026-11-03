@@ -165,9 +165,11 @@ _HISTORY_CORE_VERBS: frozenset[str] = frozenset(
         "@kirocrew-core/nothing_to_do",
     }
 )
-# The dashboard verbs every conductor ships: the folder/session reads and creates,
+# The dashboard verbs every conductor shipped: the folder/session reads and creates,
 # and ``session_status``. ``chat_folder_file_self`` is listed per spec below: the
-# pipeline conductor has never shipped it.
+# pipeline conductor never shipped it. The three folder verbs are retired: a
+# dispatcher stops managing folders (rfc-crewmate-workers-under-the-crewmate.md,
+# Design 6), and the history is what lets an existing install drop them.
 _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
     {
         "@kirocrew-dashboard/chat_folder_tree",
@@ -722,7 +724,7 @@ def _conductor_spec(
         "report",
         # Load-bearing, not decoration: with MCP Tool Search active the
         # session-control specs are deferred, so the conductor cannot reach
-        # ``session_create`` / ``chat_folder_*`` / ``monitor_start`` at all until
+        # ``session_create`` / ``monitor_start`` at all until
         # it loads them by id. Named in the prompt's tool inventory for that
         # reason, and auto-approved below so the load itself never prompts.
         "tool_search",

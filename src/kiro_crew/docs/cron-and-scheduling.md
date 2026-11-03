@@ -57,7 +57,11 @@ cron resume <id>
 
 `cron_expr` uses five fields: `min hour dom month dow`; the MCP schema documents numeric day-of-week values `0=Sun` through `6=Sat`.
 
-A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` in seconds, minutes or hours (`"in 2 hours"`, `"in 90 mins"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed. A relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is counted in calendar days in that zone, so it keeps the clock time across a daylight saving change, like `"tomorrow"`.
+A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, and with no config timezone in `local`. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC.
+
+`local` is the time zone of the computer Kiro Crew runs on, as it is now. A laptop that travels switches its system zone, and a `local` job follows it: a daily `0 9 * * *` job runs at 09:00 in Shanghai, and at 09:00 in San Francisco after the flight. The gateway re-reads the zone at least every 30 seconds while it runs; `TZ` in the gateway's environment wins over the system setting. Two rules cover the trip itself. Flying west, a time that already ran is not run again on the same date: 09:00 on the 3rd in Shanghai is not followed by 09:00 on the 3rd in San Francisco. Flying east, a time the clock jumped over is not caught up, as a time the laptop slept through is not. A one-shot `at_time` in `local` is read in the zone you are in when you create it and then stays at that instant. Pick a named zone instead when a job belongs to a place rather than to you, such as a report for an office.
+
+Jobs saved by an earlier version without a timezone, on an install with no config timezone, ran in UTC. On the first load after the upgrade those jobs are given the timezone `UTC`, so they keep running when they did; edit one to `local` to have it follow you. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` in seconds, minutes or hours (`"in 2 hours"`, `"in 90 mins"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed. A relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is counted in calendar days in that zone, so it keeps the clock time across a daylight saving change, like `"tomorrow"`.
 
 A zone's rules come from the timezone data the gateway's Python finds: the operating system's zoneinfo where it has one (macOS and most Linux hosts), otherwise the `tzdata` package Kiro Crew installs (Windows, and Linux hosts without the system `tzdata` package). Out-of-date data still resolves every zone name, so a job in a zone whose rules changed runs at the old rule's hour (with data older than IANA tzdb 2026b, a 9am job in `America/Vancouver` runs at 10am from 2026-11-01). `kirocrew doctor` reports such data on its `tz data` row and names the update; restart the gateway afterwards, since it keeps every zone it already loaded.
 
@@ -81,7 +85,7 @@ Each run appends a pair of rows so the runs stay distinguishable inside that one
 | `user` | `# Cron Run: <name> \| <date time tz>` | the job's `message` — what this run was asked to do, or, for a long unchanged instruction, a reference to the row that holds it (below) |
 | `assistant` | `# Cron Job Result: <name> \| <date time tz>` | what the run produced |
 
-The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then UTC). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
+The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then `local`). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
 
 The stamp is rendered ONCE, when the result is recorded, and stored with it — later edits to the job's `timezone` do not respell an existing row. That matters because a row is recognised as already-written by its exact text, so a re-render under changed settings would append a second copy of a run instead of recognising the first.
 
@@ -204,7 +208,7 @@ Jobs can skip specific dates — useful for holidays, vacation, or one-off excep
 
 When a job is due but the current local date is in `skip_dates`, the job is silently not fired. `last_run_ts` is not updated, so the next run naturally covers the skipped period — agents using "since last run" logic handle gaps automatically.
 
-The `timezone` field determines what "today" means. Without it, the global config timezone is used, falling back to UTC. This matters when a UTC date boundary differs from the user's local date.
+The `timezone` field determines what "today" means. Without it, the global config timezone is used, falling back to `local` (this computer's zone). This matters when a UTC date boundary differs from the user's local date.
 
 ### Examples
 

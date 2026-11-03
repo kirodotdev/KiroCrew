@@ -747,6 +747,11 @@ let the server close so trailing finals arrive. Every FINAL segment is POSTed to
 they drive both the compact caption and one clearly marked live row, then disappear
 when the recognizer finalizes or the stream closes. The browser keeps only a
 bounded recent-final buffer for the caption because the JSONL file owns history.
+A stop or an unmount while the microphone permission prompt is open ends the
+start: when the prompt is answered, the late stream is released and no socket
+opens. A pause or end during the prompt is such a stop: the hook's
+`isStarting()` reports the pending start, which `active` and `connecting` do
+not yet show, and the status binding stops it.
 
 `TranscriptPanel` is always present in a meeting and remains available during
 action-item review. With at least one enabled note or diagram agent,

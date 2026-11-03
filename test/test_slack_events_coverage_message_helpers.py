@@ -24,6 +24,32 @@ from slack_events_coverage_helpers import _make_orch
 from kiro_crew.slack import events as ev
 from kiro_crew.slack import files as slack_files
 
+
+@pytest.fixture(name="_real_sel")
+def _real_sel_fixture(_mock_sel, tmp_path, monkeypatch):
+    """Back the in-memory SEL fake with a real synchronous log under tmp_path.
+
+    The fake keeps recording, and every write also lands as a row the test reads back.
+    """
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    _mock_sel.log_api_access.side_effect = log.log_api_access
+    return log
+
+
+def _deleted_rows(log) -> list[tuple[str, str, str]]:
+    """``(caller, outcome, resources)`` of every ``slack.message_deleted`` row, oldest first."""
+    rows = [r for r in reversed(log.recent()) if r["operation"] == "slack.message_deleted"]
+    return [(r["caller_identity"], r["outcome"], r["resources"]) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Voice transcription helpers
 # ---------------------------------------------------------------------------
@@ -324,9 +350,10 @@ class TestHandleMessageDeleted:
         _mock_sel.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_session_queue_cancellation_recorded(self, _mock_sel):
+    async def test_session_queue_cancellation_recorded(self, _mock_sel, _real_sel):
         orch = _make_orch()
         orch.sessions.cancel_queued = MagicMock(return_value=True)
+        orch._pending_queue = {"1.0": [("2.0", "text", {})]}
         event = {
             "deleted_ts": "2.0",
             "channel": "C1",
@@ -336,6 +363,11 @@ class TestHandleMessageDeleted:
             await ev._handle_message_deleted(orch, event)
         orch.sessions.cancel_queued.assert_called_once_with("1.0", "2.0")
         assert "queued=True" in _mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert _deleted_rows(_real_sel) == [
+            ("U_OWNER", "allowed", "ts=2.0 session=1.0 queued=True")
+        ]
+        # The session queue took the cancellation, so the fallback stash is not touched.
+        assert orch._pending_queue == {"1.0": [("2.0", "text", {})]}
 
     @pytest.mark.asyncio
     async def test_pending_queue_entry_removed_and_key_dropped(self):
@@ -356,12 +388,15 @@ class TestHandleMessageDeleted:
         assert orch._pending_queue["4.0"] == [("5.0", "stays", {})]
 
     @pytest.mark.asyncio
-    async def test_nothing_queued_still_audits(self, _mock_sel):
+    async def test_nothing_queued_still_audits(self, _mock_sel, _real_sel):
         orch = _make_orch()
         event = {"deleted_ts": "6.0", "channel": "C1", "previous_message": {"user": "U_OWNER"}}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             await ev._handle_message_deleted(orch, event)
         assert "queued=False" in _mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert _deleted_rows(_real_sel) == [
+            ("U_OWNER", "allowed", "ts=6.0 session=6.0 queued=False")
+        ]
 
 
 # ---------------------------------------------------------------------------

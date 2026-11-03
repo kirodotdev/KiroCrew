@@ -57,6 +57,8 @@ DECLARED_SITES = frozenset(
         ("apps/bridges_skills.py", "_deregister_skills"),
         ("apps/bridges_skills.py", "_register_skills"),
         ("apps/bridges_skills.py", "reconcile_app_skills"),
+        ("apps/builtin_adoption_apply.py", "_record_eligible"),
+        ("apps/builtin_adoption_fetch.py", "_walk_tree"),
         (
             "apps/builtins/auto_improvement/backend/clone_setup.py",
             "_prune_unsafe_clone_retirements",
@@ -86,6 +88,7 @@ DECLARED_SITES = frozenset(
         ("apps/builtins/dev_fleet/fleet_state.py", "_dir_size_bytes"),
         ("apps/builtins/issue_radar/backend/crew_store_unit_order.py", "_write_unit_order"),
         ("apps/builtins/meetings/backend/routes/audio_import.py", "_snapshot_recording"),
+        ("apps/manager_adopt.py", "recover_interrupted_adoption"),
         ("apps/manager_builtins.py", "migrated_builtin_cleanup_applies"),
         ("apps/manager_lookup.py", "_absence_is_genuine"),
         ("apps/manager_lookup.py", "app_enabled_state"),

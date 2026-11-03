@@ -60,6 +60,15 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Listed by both connector directories (ChatGPT's app directory and Claude's
     # connector directory); launch-gated until the manual gate, like batch 2.
     "todoist",
+    # Google Workspace: pre-registered (Google refuses DCR), so visible as
+    # "needs configuration" while launch-gated; one user-owned Google client
+    # can serve all six cards.
+    "gmail",
+    "google-calendar",
+    "google-docs",
+    "google-drive",
+    "google-sheets",
+    "google-slides",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -89,6 +98,12 @@ LAUNCH_GATED = {
     "webflow",
     "zapier",
     "todoist",
+    "gmail",
+    "google-calendar",
+    "google-docs",
+    "google-drive",
+    "google-sheets",
+    "google-slides",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -111,7 +126,16 @@ def test_probe_accessor_includes_every_entry_even_when_launch_gated():
 # launch gate: their card renders an operator instruction until a client is
 # configured, and hiding an instruction is how the step never gets done. The gate
 # still governs the entry's own quality claims, so they stay in LAUNCH_GATED.
-PREREGISTERED = {"github", "asana"}
+PREREGISTERED = {
+    "github",
+    "asana",
+    "gmail",
+    "google-drive",
+    "google-calendar",
+    "google-sheets",
+    "google-docs",
+    "google-slides",
+}
 
 
 def test_only_gated_launch_services_are_visible():

@@ -569,8 +569,10 @@ describe('LibraryPage — action dispatch', () => {
     const scope = await openTileMenu('secretary', 'Secretary')
     fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
     const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
-    // Focus moves to the dialog's first control (the shared dialog contract).
-    expect(document.activeElement).toBe(within(dialog).getByLabelText('Keep app data'))
+    // Focus moves to the dialog's first control via useDialogFocusTrap's
+    // useEffect; waitFor awaits that effect's commit instead of reading
+    // activeElement synchronously before it runs.
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByLabelText('Keep app data')))
 
     // A re-render (here the checkbox's own state change) must not pull focus
     // back to the dialog box: the user's Tab position would reset each time.

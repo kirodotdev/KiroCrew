@@ -474,6 +474,24 @@ class TestExecutionDecision:
         assert reason
         assert "third-party app execution is disabled" in reason
 
+    def test_denial_points_at_the_app_store_trust_prompt(self, monkeypatch) -> None:
+        """The per-app grant is made by the App Store's Enable prompt; the Settings
+        panel only lists and revokes grants, so the reason must not send a CLI
+        user there to make one."""
+        from kiro_crew.apps import execution
+
+        monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: False)
+        quiet_sel = SimpleNamespace(log_api_access=lambda **_: None)
+        monkeypatch.setattr(execution, "sel", lambda: quiet_sel)
+
+        reason = execution.app_execution_denied("store-app", action="enable")
+
+        assert reason
+        assert "App Store" in reason
+        assert "agent.apps_trusted" in reason
+        assert "agent.apps_allow_third_party=true" in reason
+        assert "in Settings" not in reason
+
 
 class TestLaunchAndLifecycleBoundary:
     @pytest.mark.asyncio

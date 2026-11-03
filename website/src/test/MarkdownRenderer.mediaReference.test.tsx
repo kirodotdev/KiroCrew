@@ -130,3 +130,33 @@ describe('root-relative media in a previewed file', () => {
     expect(container.querySelector('[data-testid="md-broken-image-chip"]')).toBeNull()
   })
 })
+
+describe('relative media in a previewed file resolves beside the file', () => {
+  function rawUrl(path: string): string {
+    return `/api/file-raw?path=${encodeURIComponent(path)}`
+  }
+
+  function srcIn(basePath: string, content: string): string {
+    const { container } = render(
+      <BasePathCtx.Provider value={basePath}>
+        <MarkdownRenderer content={content} />
+      </BasePathCtx.Provider>,
+    )
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    return img!.getAttribute('src') || ''
+  }
+
+  it.each([
+    ['img.png', 'C:\\work\\notes/img.png'],
+    ['images/b.png', 'C:\\work\\notes/images/b.png'],
+    ['../up.png', 'C:\\work\\notes/../up.png'],
+  ])('a Windows file path drops its own name for %s', (ref, expected) => {
+    // The file explorer hands over the native path, so the file name follows a `\`.
+    expect(srcIn('C:\\work\\notes\\a.md', `![x](${ref})`)).toBe(rawUrl(expected))
+  })
+
+  it('a POSIX file path keeps a backslash as part of a folder name', () => {
+    expect(srcIn('/repo/no\\tes/a.md', '![x](img.png)')).toBe(rawUrl('/repo/no\\tes/img.png'))
+  })
+})

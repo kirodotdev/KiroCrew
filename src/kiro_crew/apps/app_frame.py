@@ -870,6 +870,20 @@ from kiro_crew.apps.link_open_frame import (  # noqa: E402
 
 register_frame_point("linkOpen", resolve_link_open, LINK_OPEN_POINT_SCRIPT, admit_link_open)
 
+from kiro_crew.apps import composer_action_frame as _composer_action_frame  # noqa: E402
+
+
+def _resolve_composer_action(name: str, action_id: str) -> FrameEntry | None:
+    # Through the module, so a test that stands in for the resolver is what every route reads.
+    return _composer_action_frame.resolve_composer_action(name, action_id)
+
+
+register_frame_point(
+    _composer_action_frame.COMPOSER_ACTION_POINT,
+    _resolve_composer_action,
+    _composer_action_frame.COMPOSER_ACTION_SCRIPT,
+)
+
 
 __all__: list[str] = [
     "CAPABILITY_HEADER",

@@ -137,8 +137,8 @@ class TestPipelineConductorInstaller:
         # The roster read: narrower than the transcript read above, and asked on
         # every unattended cycle, so it is granted rather than gated.
         assert "@kirocrew-dashboard/session_status" in allowed
-        assert "@kirocrew-dashboard/chat_folder_tree" in allowed
-        assert "@kirocrew-dashboard/chat_folder_create" in allowed
+        # A dispatcher does not manage folders (rfc-crewmate-workers-under-the-crewmate.md).
+        assert not [g for g in allowed if "chat_folder_" in g]
         for gated in (
             "@kirocrew-dashboard/session_send",
             # The fan-out write, withheld on session_send's own reason: the
@@ -147,10 +147,6 @@ class TestPipelineConductorInstaller:
             "@kirocrew-dashboard/session_broadcast",
             "@kirocrew-dashboard/session_stop",
             "@kirocrew-dashboard/chat_folder_move_session",
-            # Deliberately NOT granted here: the pipeline procedure does not
-            # file itself yet (the goal and security conductors do), and a
-            # grant nothing in the skill exercises is surface without a user.
-            "@kirocrew-dashboard/chat_folder_file_self",
             "@kirocrew-dashboard",
             "execute_bash",
         ):
@@ -158,12 +154,11 @@ class TestPipelineConductorInstaller:
         assert "@kirocrew-dashboard" in data["tools"]  # mounted, so gated verbs still work
         assert "execute_bash" in data["tools"]
 
-    def test_skill_does_not_name_the_self_filing_verb_it_is_not_granted(self):
-        """Grant and procedure move together. ``chat_folder_file_self`` is
-        withheld from this agent (see the gated list above), so its skill must
-        not instruct a call that would prompt on every unattended cycle. When
-        the pipeline procedure adopts the goal/agent folder shape, both this
-        pin and the grant change in the same PR."""
+    def test_skill_gives_no_folder_guidance(self):
+        """Grant and procedure move together. No folder verb is granted to this
+        agent (rfc-crewmate-workers-under-the-crewmate.md, Design 6), so its
+        skill must not instruct a folder call that would prompt on every
+        unattended cycle."""
         from pathlib import Path
 
         skill = (
@@ -174,7 +169,7 @@ class TestPipelineConductorInstaller:
             / "pipeline-conductor"
             / "SKILL.md"
         )
-        assert "chat_folder_file_self" not in skill.read_text(encoding="utf-8")
+        assert "chat_folder_" not in skill.read_text(encoding="utf-8")
 
     def test_core_grants_are_named_verbs_never_the_whole_server(self, tmp_path, monkeypatch):
         """Untrusted content feeds every auto-approved call on an unattended

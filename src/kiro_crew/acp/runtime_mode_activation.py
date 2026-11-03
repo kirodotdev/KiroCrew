@@ -212,56 +212,27 @@ async def _verify_spawn_agent_active(
 ) -> None:
     """Fail closed when the agent the ``--agent`` flag selected never loaded.
 
-    Guard (A2) — the spawn-flag half of Guard (A) in :meth:`create_session`.
-    ``set_mode`` only ever activates an EXPLICIT override (or, on KAS, the
-    injected default), so on kiro-cli the agent chosen by ``--agent`` — the
-    agent of every ordinary session — reaches no availability check at all.
-    It needs one, because that spec can fail to load silently: kiro-cli
-    validates ``~/.kiro/agents/<agent>.json`` with ``deny_unknown_fields``
-    and, on ANY unknown field, rejects the spec wholesale and runs its own
-    default agent instead. :func:`kiro_crew.agent.migrate_agent_specs` exists
-    to strip the two keys already known to trip it; nothing validates the
-    rest, and a spec written by another tool (or by a product this install
-    superseded) can carry more.
+    Guard (A2), the spawn-flag half of Guard (A) in :meth:`create_session`.
+    ``set_mode`` only activates an explicit override (or KAS's injected default),
+    so the ``--agent`` agent of an ordinary kiro-cli session gets no other check.
+    kiro-cli validates ``~/.kiro/agents/<agent>.json`` with
+    ``deny_unknown_fields`` and on ANY unknown field silently runs its own
+    default agent (:func:`kiro_crew.agent.migrate_agent_specs` strips only the
+    two known keys). Nothing downstream notices: the session would run without
+    Kiro Crew's control plane, so every Kiro Crew tool (``learn_add`` among
+    them) answers "does not exist". Skipped when an override is requested.
 
-    Nothing downstream notices the substitution. The ``set_mode`` response is
-    never read back, ``currentModeId`` is never re-compared, and
-    :mod:`kiro_crew.acp.mcp_session_report` only LOGS — its own docstring
-    forbids reading a missing report as "not mounted". The session then runs
-    with NONE of Kiro Crew's control plane, while the global provider
-    ``mcp.json`` that Kiro Crew pins off only on specs IT writes stays
-    merged. So third-party MCP servers declared there keep working and every
-    Kiro Crew tool the injected prompt names — ``learn_add`` among them —
-    answers "does not exist", which the agent reports to the user as its
-    memory being unavailable.
+    ``currentModeId`` is PROOF both ways: a loaded spec is the current mode and
+    listed in ``availableModes``; a refused one is absent and ``currentModeId``
+    names the backend default. A non-empty ``currentModeId`` naming another
+    agent fails closed even without an advertised list. The compatibility
+    escape applies only when no current mode is named (older kiro-cli, the
+    offline fake backend).
 
-    Skipped when an override is requested: Guard (A) checks the agent
-    ``set_mode`` will activate.
-
-    ``currentModeId`` is read as PROOF, in both directions. A live probe of
-    this backend settles what it means: a spec that loads is reported as the
-    current mode AND listed in ``availableModes``, while a spec the backend
-    refuses is absent from the list and ``currentModeId`` names the backend's
-    own default instead. So a non-empty ``currentModeId`` naming something
-    OTHER than the spawn agent is positive evidence of the substitution, and
-    fails closed even when no advertised list came back. Treating a
-    current-mode mismatch as an extra ADMIT is the hole this avoids: a
-    ``currentModeId``-only response naming a substituted agent would otherwise
-    sail through the compatibility escape.
-
-    That escape is therefore narrow. It applies only when the response names
-    NO current mode, where the advertised list is the sole signal and its
-    absence is no evidence of a substitution -- so older kiro-cli and the
-    offline fake backend behave exactly as before.
-
-    Asked of the harness, which answers yes only for a host whose argv
-    actually carries ``--agent``. Never phrased as an inequality: a negative
-    test would silently capture every host added later (harness-parity H5),
-    and a host that activates its agent by ``set_mode`` already has that
-    response as proof -- on KAS the agent travels over the wire as an injected
-    custom agent and Guard (A) covers it. Asked of the host rather than of
-    "the KAS projection came back None" so the same call serves
-    :meth:`load_session`, which never builds that projection.
+    Asked of the harness (``verifies_agent_activation``), never as an
+    inequality, so hosts added later are not silently captured
+    (harness-parity H5). Asking the host also lets :meth:`load_session`, which
+    builds no KAS projection, use the same call.
     """
     if override or not self._agent:
         return

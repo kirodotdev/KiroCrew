@@ -327,6 +327,29 @@ def test_a_config_load_that_raises_keeps_sign_ins_in_memory(monkeypatch):
     assert kss.persistence_enabled() is False
 
 
+@pytest.mark.parametrize(
+    ("name", "overlay"),
+    [
+        ("config.local.json", {"agent": None}),
+        ("config.local.json", {"agent": ["kas_persist_mcp_sign_in", False]}),
+        ("config.json", {"agent": 5}),
+    ],
+)
+def test_a_non_object_agent_section_keeps_sign_ins_in_memory(tmp_path, monkeypatch, name, overlay):
+    """A non-object ``agent`` section is degraded, never read as unconfigured.
+
+    Repaired to absent, an overlay replacing the base file's ``agent`` with
+    ``null`` would drop a stored ``false`` and read as on. Preserved, the loader
+    records the section as degraded and the read keeps sign-ins in memory.
+    """
+    home = _config_home(tmp_path, monkeypatch)
+    base = {"agent": {"kas_persist_mcp_sign_in": False}} if name != "config.json" else overlay
+    (home / "config.json").write_text(json.dumps(base))
+    if name == "config.local.json":
+        (home / name).write_text(json.dumps(overlay))
+    assert kss.persistence_enabled() is False
+
+
 @pytest.mark.asyncio
 async def test_a_kas_handshake_with_no_config_declares_secret_storage(tmp_path, monkeypatch):
     """The default reaches the wire: a KAS spawn on an unconfigured home keeps sign-ins."""

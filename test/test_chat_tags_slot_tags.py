@@ -15,6 +15,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, _make_tags_app
 
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state_parts import slot_sidebar
+from kiro_crew.testing.clock import ManualClock
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
@@ -239,8 +241,7 @@ class TestSlotTags:
         assert all(new_revision > old for old in old_revisions)
         # A backward clock step cannot regress the claim below the counter.
         monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
-        # flake-ok: pre-existing patch of the stdlib time.time_ns the state module reads, undone by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        ManualClock(start=0.001).install(monkeypatch, slot_sidebar)
         assert state_module.ensure_tags_revision_epoch() == int(epoch_file.read_text().strip())
         assert state_module.ensure_tags_revision_epoch() > int(new_revision.split(".")[0])
 
@@ -332,8 +333,7 @@ class TestSlotTags:
         epoch_file = tmp_path / state_module._TAGS_REVISION_EPOCH_FILE
         epoch_file.write_text("garbage\n")
         # Backward clock: far below any epoch a healthy process would have claimed.
-        # flake-ok: pre-existing patch of the stdlib time.time_ns the state module reads, undone by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        ManualClock(start=0.001).install(monkeypatch, slot_sidebar)
         monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
         monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
         assert state_module.ensure_tags_revision_epoch() is None

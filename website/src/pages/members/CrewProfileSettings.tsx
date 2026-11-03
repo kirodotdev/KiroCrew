@@ -108,10 +108,13 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // The Settings page (the group) is open over the card.
   const [open, setOpen] = useState(false)
   const models = useAvailableModelsQuery({ enabled: true })
-  const { data: resolved, error: resolvedError } = useQuery({
+  const { data: served, error: resolvedError } = useQuery({
     queryKey: ['agent-resolved-model', member.name],
     queryFn: () => api.agentResolvedModel(member.name),
   })
+  // The crewmate's own harness can be another harness's member route: its model is
+  // `harness_model`, not the configured backend's `model`.
+  const resolved = served?.harness_model === undefined ? served : { ...served, model: served.harness_model }
   // A developer preview (Settings > Developer > Feature Previews): the Harness row.
   // The pin itself is read from the owner-only readout above whatever the flag
   // says, so a saved pin always scopes the model lists below.

@@ -455,8 +455,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "이 섹션의 Markdown을 복사해 채팅이나 오토파일럿에 붙여넣기",
         "could_not_generate_challenges_please_try_again": "반론을 생성하지 못했습니다. 다시 시도하세요.",
         "cycle": "사이클",
-        "cycles": "사이클,",
-        "cycles_2": "사이클",
         "definition_of_done_optional": "완료 정의 (선택 사항)",
         "delete": "삭제",
         "delete_campaign": "캠페인을 삭제하시겠습니까?",
@@ -474,7 +472,6 @@
         "failed_to_add_to_knowledge_library": "지식 라이브러리에 추가하지 못했습니다",
         "failed_to_export_as_artifact": "아티팩트로 내보내지 못했습니다",
         "failed_to_start_campaign_please_try_again": "캠페인을 시작하지 못했습니다 — 다시 시도하세요.",
-        "findings": "조사 결과",
         "findings_count": "조사 결과 ({{count}})",
         "findings_so_far_are_preserved_below": "지금까지의 조사 결과는 아래에 보존됩니다.",
         "first_cycle_in_progress": "첫 사이클이 진행 중입니다…",
@@ -502,7 +499,6 @@
         "loading": "불러오는 중…",
         "max_cycles": "최대 사이클:",
         "max_cycles_2": "최대 사이클",
-        "min": "분",
         "min_20_characters": "최소 20자.",
         "model": "모델",
         "model_default_inherit": "기본값(상속)",
@@ -540,7 +536,6 @@
         "resume": "재개",
         "run_autonomous_research_campaigns": "자율 조사 캠페인 실행",
         "run_unattended_skip_clarification_questions": "무인으로 실행 (확인 질문 건너뛰기)",
-        "s_idle": "초 대기. ~",
         "scripted": "(스크립트형)",
         "searched_empty": "검색함 (결과 없음):",
         "send": "보내기",
@@ -564,14 +559,11 @@
         "strong": "강함",
         "sub_question": "하위 질문 {{n}}",
         "sub_questions": "하위 질문",
-        "sub_questions_2": "하위 질문",
         "sub_questions_guidance_count": "하위 질문 및 지침 ({{count}})",
-        "suggested_from": "제안 출처",
         "the_agent_is_waiting_for_your_direction": "에이전트가 지시를 기다리고 있습니다.",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI가 모든 라운드를 직접 주도합니다 — 무엇을 조사할지 정하고, 서브에이전트를 관리하며, 조사 결과에서 새 단서가 나오면 따라갑니다.",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI가 미리 오케스트레이션 스크립트를 작성하고, 결정론적 러너가 서브에이전트 실행을 관리하는 동안 AI는 계획·조사·종합만 수행합니다. 재실행이 가능하고 예산 상한이 적용됩니다.",
         "the_campaign_stopped_unexpectedly": "캠페인이 예기치 않게 중지되었습니다.",
-        "up_to": "최대",
         "validating": "검증 중…",
         "validation_failed_check_your_connection_and_try": "검증에 실패했습니다 — 연결을 확인하고 다시 시도하세요.",
         "view_report": "보고서 보기",
@@ -580,7 +572,11 @@
         "when_should_the_agent_stop": "에이전트는 언제 멈춰야 하나요?",
         "your_answer": "답변",
         "your_answer_2": "답변…",
-        "your_guidance": "지침"
+        "your_guidance": "지침",
+        "suggested_from_sub_questions_other": "하위 질문 {{count}}개에서 제안",
+        "estimate_other": "최대 {{count}}회 사이클, {{idle}}초 대기. 약 {{minutes}}분",
+        "findings_tally_other": "결과 {{count}}개",
+        "cycles_count_other": "{{count}}회 사이클"
       }
     },
     "autoTriagePipeline": {
@@ -992,12 +988,12 @@
           "checks_running_other": "검사 {{count}}개 중 {{pending}}개 실행 중",
           "closed": "닫힘",
           "conflicts": "충돌",
-          "failing": "실패",
           "merge_blocked": "병합 차단",
           "merged": "병합됨",
           "open": "열림",
-          "passed": "통과",
-          "running": "실행 중"
+          "running_count_other": "{{count}}개 실행 중",
+          "passed_count_other": "{{count}}개 통과",
+          "failing_count_other": "{{count}}개 실패"
         },
         "repoSwitcher": {
           "add_a_repo": "저장소 추가",
@@ -2183,14 +2179,13 @@
           "search_labels_2": "라벨 검색…"
         },
         "labelPicker": {
-          "add": "추가",
           "filter_labels": "라벨 필터…",
           "filter_labels_2": "라벨 필터",
           "loading_labels": "라벨을 불러오는 중…",
           "remove_this_label_no_longer_exists_on_the_repo": "삭제 — 이 라벨은 저장소에 더 이상 없습니다",
           "saved_but_no_longer_on_this_repo": "저장되었지만 이 저장소에는 더 이상 없습니다:",
-          "suggested": "제안",
-          "this_repo_has_no_labels": "이 저장소에는 라벨이 없습니다."
+          "this_repo_has_no_labels": "이 저장소에는 라벨이 없습니다.",
+          "add_suggested_other": "제안 {{count}}개 추가"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — 클릭하면 사이드바가 펼쳐집니다",
@@ -2427,11 +2422,12 @@
           "close": "닫기",
           "close_esc": "닫기 (Esc)",
           "close_reference": "참조 닫기",
-          "deep": "단계 깊이",
           "issue": "이슈",
           "loading": "불러오는 중 #",
           "open_in_the_list_detail_column": "목록 + 세부 정보 열에서 열기",
-          "open_this_item_in_the_workspace": "이 항목을 작업 공간에서 열기"
+          "open_this_item_in_the_workspace": "이 항목을 작업 공간에서 열기",
+          "deep_count_other": "{{count}}단계 깊이",
+          "dialog_label": "{{repo}}의 {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "저장소"
@@ -2542,7 +2538,9 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "대시보드 설정을 불러오지 못해 GitLab 인스턴스를 나열할 수 없습니다.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "선택이 해제되었습니다: 해당 프로젝트는 이전 GitLab 인스턴스에 있습니다.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "선택이 해제되었습니다: 해당 리포지토리는 이전 공급자에 속합니다.",
-        "try_again": "다시 시도"
+        "try_again": "다시 시도",
+        "repos_selected_other": "{{count}}개 선택됨",
+        "repos_found_other": "{{count}}개 찾음"
       },
       "connectRepoModal": {
         "close": "닫기",
@@ -2942,7 +2940,8 @@
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 풀 리퀘스트에서 CI가 실패하면 알림 받기",
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh 로그인으로 내가 연 열린 풀 리퀘스트의 GitHub Actions 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다.",
             "first_issue_friendly_count_other": "열린 이슈 <strong>{{n}}</strong>개가 입문자용으로 표시되어 있습니다",
-            "triage_needed_of_open": "트리아지가 필요한 열린 이슈: {{n}}개 중 <strong>{{triage}}</strong>개"
+            "triage_needed_of_open": "트리아지가 필요한 열린 이슈: {{n}}개 중 <strong>{{triage}}</strong>개",
+            "member_chip_title": "{{login}} — {{role}} · {{provider}}에서 열기"
           }
         },
         "tagging": {
@@ -2954,7 +2953,6 @@
             "created": "생성됨",
             "creating": "생성 중…",
             "creating_needs_write_access": "생성하려면 쓰기 권한이 필요합니다",
-            "defined_by_open_issue_count": "개 정의됨 · 열린 이슈 수 기준",
             "labels": "레이블",
             "looking_for_labels_this_repo_is_missing": "이 저장소에 없는 레이블을 찾는 중…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "없음 — 저장소의 분류 체계가 열린 이슈에 필요한 것을 이미 모두 담고 있습니다.",
@@ -2966,7 +2964,8 @@
             "suggest_new_labels": "새 레이블 제안",
             "suggested_new_labels_not_created_until_you_say_s": "제안된 새 레이블 — 승인하기 전까지는 생성되지 않습니다",
             "re_fetch_this_repo_s_labels_from": "이 저장소의 레이블을 {{provider}}에서 다시 가져오기",
-            "create_this_label_on": "{{provider}}에서 이 라벨 만들기"
+            "create_this_label_on": "{{provider}}에서 이 라벨 만들기",
+            "labels_defined_other": "{{count}}개 정의됨 · 열린 이슈 수 기준"
           },
           "untaggedIssueCard": {
             "add": "레이블 추가",
@@ -4488,12 +4487,10 @@
         "at_least_one_source_did_not_answer_this_poll": "최소 한 개의 소스가 이 폴링에 응답하지 않았습니다.",
         "claim": "인수",
         "claimed": "인수됨",
-        "cleared": "해제됨 ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· 푸시로 전달되므로 빈 폴링은 아무 의미가 없습니다",
         "every_configured_source_answered": "설정된 모든 소스가 응답했습니다.",
         "everything_firing_already_has_an_incident": "현재 발생 중인 모든 것에 이미 인시던트가 있습니다.",
         "firing": "발생 중",
-        "firing_2": "발생 중 ·",
         "firing_not_yet_claimed": "발생 중, 아직 미인수",
         "inbound_webhook_queued_other": "수신 webhook 신호 {{count}}건이 전달되어 다음 주기가 가져가기를 기다리고 있습니다 — 아직 보드에 없습니다.",
         "inhibited_by_alert_go_look_at_that_alert": "{{by}}에 의해 억제되었습니다 — 더 높은 순위의 알림이 이것을 가리고 있습니다. 그 알림을 확인하세요.",
@@ -4514,7 +4511,6 @@
         "no_signal_sources_registered": "등록된 신호 소스가 없습니다.",
         "no_sources_reporting_a_firing_signal": "발생 중인 신호를 보고하는 소스가 없습니다.",
         "not_polled_yet_not_the_same_as_healthy": "아직 폴링되지 않음 — 이는 정상과 같지 않습니다",
-        "not_yet_claimed": "아직 미인수",
         "nothing_firing_but_parked_signals_not_investigated": "발생 중인 것은 없지만 위의 보류된 신호는 조사되지 않고 있습니다",
         "nothing_firing_but_signals_parked_not_picked_up_other": "발생 중인 것은 없습니다 — 다만 신호 {{count}}건이 공급자에 보류되어 있어(위 참조) 가져가지 않습니다.",
         "nothing_in_the_ledger_matched_starts_from_scratch": "원장에서 일치하는 것이 없어 조사를 처음부터 시작합니다.",
@@ -4522,7 +4518,6 @@
         "one_ledger_entry_matched": "원장 항목 1건이 일치했습니다 — {{detail}}",
         "parked": "보류",
         "parked_2": "보류됨",
-        "parked_at_provider": "공급자에 보류됨 ·",
         "parked_at_the_provider": "공급자에 보류됨",
         "poll_answered": "응답함",
         "poll_every_configured_source_now_read_only": "지금 설정된 모든 소스를 폴링(읽기 전용)",
@@ -4546,7 +4541,11 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "이 소스는 폴링마다 비워지는 스풀로 푸시하므로, 이미 전달한 신호는 장애가 아직 살아 있어도 다시 나타나지 않습니다.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "작업이 오는 곳입니다. 자격 증명과 범위는 설정에서 구성하고, 소스가 실제로\n 무엇을 반환하는지 보려면 여기서 폴링하세요.",
-        "while_that_is_true_absence_of_a_signal_does_not": "그것이 사실이더라도 신호가 없다는 것이 복구를 뜻하지는 않습니다 — 단지\n 확인할 수 없었다는 뜻일 수 있습니다."
+        "while_that_is_true_absence_of_a_signal_does_not": "그것이 사실이더라도 신호가 없다는 것이 복구를 뜻하지는 않습니다 — 단지\n 확인할 수 없었다는 뜻일 수 있습니다.",
+        "firing_count_other": "{{count}}개 발생 중 ·",
+        "parked_count_other": "{{count}}개 공급자에 보류됨 ·",
+        "cleared_count_other": "{{count}}개 해제됨 ·",
+        "unclaimed_count_other": "{{count}}개 아직 미인수"
       }
     },
     "papyrus": {
@@ -5220,7 +5219,8 @@
         "view_graph": "그래프",
         "view_tree": "트리",
         "agents_other": "에이전트 {{count}}개",
-        "events_other": "이벤트 {{count}}개"
+        "events_other": "이벤트 {{count}}개",
+        "view_label": "보기"
       }
     },
     "awsControl": {
@@ -5350,6 +5350,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "백업은 직접 시작할 수 있지만 세션 아카이브는 가려지지 않은 상태로 업로드됩니다.",
         "backup_archive": "저장된 백업",
         "backup_restore": "복원",
+        "backup_show_all_archives": "모두 보기({{count}})",
         "backup_restore_caveat": "복원에는 백업 폴더에 대한 읽기 권한이 필요합니다. 권장되는 최소 권한 정책은 의도적으로 쓰기 권한만 부여하므로, 계정 자격 증명의 범위가 더 넓지 않으면 거부됩니다.",
         "backup_remote_error": "지금은 저장된 백업을 읽지 못했습니다.",
         "backup_status_failed": "백업 상태를 읽지 못했습니다.",
@@ -5656,8 +5657,6 @@
       "more_waiting": "{{count}}개 더",
       "needs_you": "확인이 필요해요",
       "next": "다음 단계",
-      "progress": "진행",
-      "progress_count": "{{total}}개 중 {{accepted}}개 완료",
       "remaining": "남은 일",
       "show_fewer": "접기",
       "status_blocked": "막힘",
@@ -5987,7 +5986,6 @@
       "decision_not_recorded_error": "이 결정이 기록되지 않았습니다: {{error}}",
       "reject": "거부",
       "rejected": "거부됨",
-      "running": "실행 중:",
       "tool_approval_requested": "도구 승인 요청됨:",
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인",
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
@@ -6393,6 +6391,7 @@
       "message_input": "메시지 입력",
       "message_placeholder": "{{bot}}에게 메시지… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}}에게 메시지…",
+      "follow_up_tab_placeholder": "{{option}} - Tab 키를 눌러 입력",
       "message_placeholder_terminal": "{{bot}}에게 메시지… (/command · @file · $skill · ! 셸 명령어)",
       "model": "모델",
       "model_2": "모델: {{name}}",
@@ -6511,7 +6510,18 @@
       "attachment_removed": "{{file}} 첨부에서 제거됨",
       "attachment_restored": "{{file}} 첨부됨",
       "trusted_command_until": "‘{{cmd}}’을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
-      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다"
+      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
+      "composer_action_dialog": "{{title}}, {{app}}",
+      "composer_action_close": "닫기",
+      "composer_action_timed_out": "{{app}}이(가) 너무 오래 걸려 중지되었습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_app_error": "{{app}}에서 오류가 발생했습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_revoked": "{{app}}이(가) 꺼졌습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_failed": "{{app}}이(가) 응답하지 않았습니다. 아무것도 넣지 않았습니다.",
+      "composer_action_from": "{{app}} 앱에서 제공",
+      "composer_action_footer_host": "{{productName}}이(가) 초안을 확인했습니다. {{app}}은(는) 여전히 초안을 볼 수 없습니다.",
+      "composer_action_needs_empty": "{{app}}은(는) 빈 메시지에만 넣을 수 있습니다. 먼저 초안을 비우세요.",
+      "composer_action_would_resolve": "{{app}}의 텍스트가 /, ! 또는 @로 시작하거나 $skill, 파일, 이미지를 포함해 텍스트로 보내지지 않고 실행됩니다. 넣지 않았습니다.",
+      "composer_action_footer": "{{app}}은(는) 초안을 볼 수 없습니다. 텍스트는 그대로 들어가며, 보낼지는 직접 정합니다."
     },
     "chatPane": {
       "agent_list": "에이전트 목록",
@@ -6836,7 +6846,8 @@
       "search_across_providers": "여러 공급자에서 {{subject}} 검색…",
       "searching": "검색 중…",
       "searching_2": "검색 중: {{name}}",
-      "type_at_least_2_characters_to_search": "검색하려면 2자 이상 입력하세요"
+      "type_at_least_2_characters_to_search": "검색하려면 2자 이상 입력하세요",
+      "type_to_search_for_more": "입력하면 더 검색할 수 있습니다"
     },
     "embedTabStrip": {
       "close_tab": "탭 닫기",
@@ -7001,7 +7012,8 @@
       "slides_thumbstrip": "슬라이드",
       "slides_truncated": "슬라이드가 {{n}}번째에서 상한에 도달했습니다. 나머지는 표시되지 않습니다.",
       "light_background": "밝은 배경",
-      "dark_background": "어두운 배경"
+      "dark_background": "어두운 배경",
+      "sheet_tabs_label": "시트"
     },
     "folderColorNames": {
       "amber": "호박색",
@@ -7322,7 +7334,11 @@
       "runs_as_custom_agent_hint": "자체 채팅에서 공유 메모리로 실행됩니다.",
       "runs_as_crewmate_hint": "{{name}}의 채팅에서 {{name}}의 메모리와 파일로 실행됩니다. 크루메이트 페이지에도 표시됩니다.",
       "runs_as_fixed": "작업은 만든 뒤에 커스텀 에이전트와 크루메이트 사이를 바꿀 수 없습니다.",
-      "runs_as_no_crewmates": "아직 크루메이트가 없습니다. 크루메이트 페이지에서 추가하세요."
+      "runs_as_no_crewmates": "아직 크루메이트가 없습니다. 크루메이트 페이지에서 추가하세요.",
+      "timezone_local": "로컬 (이 컴퓨터를 따름, 현재 {{zone}})",
+      "timezone_local_undetected": "로컬 (시간대를 감지하지 못해 UTC 사용)",
+      "timezone_default": "기본 시간대",
+      "timezone_default_unavailable": "기본 시간대를 불러오지 못했습니다. 기본 시간대로 둔 작업은 그래도 기본 시간대를 사용합니다."
     },
     "jobLogsView": {
       "cancel": "취소",
@@ -7796,7 +7812,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "설치 계획이 로드되기를 기다리는 중",
       "detail_load_failed": "이 서버의 세부 정보를 불러올 수 없습니다.",
-      "search_failed": "레지스트리를 검색할 수 없습니다. 다시 시도하세요."
+      "search_failed": "레지스트리를 검색할 수 없습니다. 다시 시도하세요.",
+      "popular_mcp_servers": "인기 MCP 서버"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "사용자 지정 서버 추가",
@@ -8693,6 +8710,8 @@
       "license": "라이선스:",
       "loading_preview": "미리 보기를 불러오는 중…",
       "no_preview_available": "미리 보기가 없습니다.",
+      "popular_skills": "인기 스킬",
+      "search_failed": "스킬을 불러오지 못했습니다. 다시 시도하세요.",
       "overwrite": "덮어쓰기",
       "provider_could_not_search": "{{provider}}에서 검색할 수 없습니다: {{reason}}",
       "provider_did_not_answer": "{{provider}}이(가) 응답하지 않았습니다.",
@@ -8836,26 +8855,6 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "끌어서 영역 캡처 · 놓으면 첨부 · Esc로 취소",
       "drag_to_select_the_screen_region_to_capture": "끌어서 캡처할 화면 영역을 선택하세요",
       "screen_capture_drag_the_area_you_want_it_attache": "화면 캡처 — 원하는 영역을 끌면 놓는 순간 자동으로 첨부됩니다"
-    },
-    "meetYourMatesIntro": {
-      "sample_line_1": "밤사이 불안정한 테스트를 찾아 고쳤어요.",
-      "sample_line_2": "PR이 준비됐어요. 병합할까요?",
-      "sample_merge": "병합하기",
-      "sample_show_first": "먼저 보여줘"
-    },
-    "startupVideoModal": {
-      "close": "닫기",
-      "crewmates_description": "할 일을 찾아서 해내고, 필요할 때만 묻습니다.",
-      "crewmates_title": "크루메이트를 만나보세요.",
-      "got_it": "확인",
-      "media_failed": "기능 소개 동영상을 불러올 수 없습니다",
-      "new_tag": "신규",
-      "not_now": "나중에",
-      "share": "공유",
-      "share_description": "이 기능 소개 영상을 어디에나 게시할 수 있는 공유 카드로 만듭니다.",
-      "share_include_title": "영상 제목 포함",
-      "streaming": "온라인 재생",
-      "try_now": "지금 시도"
     },
     "tagManagerList": {
       "adopt_tag": "에이전트 권한 설정",
@@ -9908,7 +9907,7 @@
       "tagline_lead": "목표는 당신이 정하고,",
       "tagline_strong": "일은 크루가 합니다.",
       "flow_label": "Ultra Mode 작동 방식",
-      "flow_goal": "목표",
+      "flow_goal": "프로젝트",
       "flow_split": "나누기",
       "flow_parallel": "별도 채팅",
       "flow_board": "보드",
@@ -9945,16 +9944,24 @@
       "ultra_needs_you_none": "지금은 확인할 항목이 없습니다.",
       "ultra_needs_you_none_stalled": "승인을 기다리는 항목이 없습니다. 정체된 작업은 마일스톤에 있습니다.",
       "ultra_answer_in_chat": "채팅에서 답변",
+      "ultra_ms_waiting_answer": "위에서 답변을 기다리는 중",
+      "ultra_reply": "답장 쓰기",
+      "ultra_answers": "추천 답변",
+      "ultra_reply_draft": "‘{{t}}’ ({{id}}) 관련: {{answer}}",
+      "ultra_option_title": "채팅 상자에 넣습니다. 확인 후 보내세요",
       "ultra_crew": "크루",
       "ultra_finished": "완료 · {{n}}",
       "ultra_row_sessions_other": "세션 {{count}}개 · {{running}}개 실행 중",
       "ultra_row_count_working_other": "{{count}}개 작업 중",
       "ultra_row_count_waiting_other": "{{count}}개 대기 중",
       "ultra_row_count_needs_you_other": "{{count}}개 확인 필요",
+      "ultra_row_count_stalled_other": "{{count}}개 멈춤",
+      "ultra_row_count_running_other": "{{count}}개 실행 중",
+      "ultra_row_stalled_detail": "멈춤: {{name}} · {{duration}}",
       "ultra_recap_empty": "크루가 아직 보고하지 않았습니다.",
       "chip_hint_pressed": "Ultra Mode가 켜져 있습니다. 첫 메시지 전에 클릭하면 끌 수 있습니다.",
       "ultra_view_status": "상태",
-      "ultra_view_list": "목록",
+      "ultra_view_list": "작업자",
       "ultra_recap_head": "{{total}}개 중 {{done}}개 완료",
       "ultra_recap_main_chat": "확인할 질문",
       "ultra_recap_waiting_one": "{{head}}; {{names}}이(가) 기다리고 있습니다.",
@@ -10862,7 +10869,22 @@
       "link_open_remembered": "기억된 링크 선택",
       "link_open_choice_app": "{{name}}에서 열림",
       "link_open_choice_browser": "브라우저에서 열림",
-      "link_open_forget": "지우기"
+      "link_open_forget": "지우기",
+      "adoption": {
+        "network": "{{name}}이(가) 아직 App Store 버전을 다운로드하지 못했습니다. {{productName}}이(가) 자동으로 다시 시도합니다. 이 컴퓨터의 네트워크 연결을 확인하세요.",
+        "local": "{{name}}이(가) 이 컴퓨터에서 App Store 버전을 준비하지 못했습니다. 디스크가 가득 찼거나 설정 파일을 읽을 수 없습니다. {{productName}}이(가) 자동으로 다시 시도합니다.",
+        "policy": "{{name}}의 App Store 버전 전환이 보류되었습니다. 앱 허용 정책이 이 버전을 허용하지 않습니다. 전환을 마치려면 허용 정책에서 허용하세요.",
+        "trust": "{{name}}의 App Store 버전 전환이 보류되었습니다. 신뢰 설정이 다른 소스를 가리키거나 config.local.json에 설정되어 있어 {{productName}}이(가) 변경하지 않았습니다. 전환을 마치려면 신뢰 설정을 확인하세요.",
+        "permissions": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전은 현재 버전보다 더 많은 접근 권한을 요청합니다. 변경된 내용은 없습니다.",
+        "platform": "{{name}}은(는) App Store 버전으로 전환할 수 없습니다. 이 버전은 이 플랫폼을 지원하지 않습니다.",
+        "host": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전에는 더 새로운 {{productName}}이(가) 필요합니다. 전환을 마치려면 {{productName}}을(를) 업데이트하세요.",
+        "verification": "{{name}}은(는) App Store 버전으로 전환되지 않습니다. 이 버전이 검증을 통과하지 못했고, 이 릴리스의 {{productName}}은(는) 다시 시도하지 않습니다. 변경된 내용은 없습니다.",
+        "staged": "{{name}}의 App Store 버전이 다운로드되고 검증되었습니다. 다음에 {{productName}}을(를) 다시 시작하면 {{name}}이(가) 이 버전으로 전환됩니다.",
+        "keeps_builtin_until": "그때까지는 기본 제공 앱으로 유지됩니다.",
+        "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
+        "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
+      },
+      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -12338,6 +12360,9 @@
         "copied": "복사됨",
         "copy_link": "Copy link to message",
         "unpin": "Unpin",
+        "copy_text_failed": "텍스트를 복사하지 못했습니다. 메시지로 이동해 텍스트를 선택해서 복사하세요.",
+        "copy_link_failed": "링크를 복사하지 못했습니다. 이 페이지가 클립보드를 사용할 수 있는지 확인한 뒤 다시 시도하세요.",
+        "jump_to_named_message": "메시지로 이동, {{author}}: {{label}}",
         "jump_to_message": "Jump to message",
         "copy_failed": "복사 실패"
       },
@@ -13594,7 +13619,13 @@
       "chat_use_lacks_oauth": "지원하는 채팅을 위해 저장되었습니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없습니다.",
       "configure_oauth_app": "OAuth 앱 설정",
       "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
+      "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_gmail": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_drive": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_calendar": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_sheets": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_docs": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_slides": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}}번째 턴",
@@ -14799,6 +14830,8 @@
         "profile_blank_uses_default_chain": "비워 두면 기본 AWS 자격 증명을 사용합니다.",
         "remove_this_live_source": "이 지식 기반 소스를 제거하시겠습니까? 로컬에 저장된 항목은 없으며, 지식 기반 자체는 변경되지 않습니다.",
         "region_example_placeholder": "예: us-east-1",
+        "word_count_other": "{{n}}단어",
+        "word_count_approx_other": "약 {{n}}단어",
         "items_count_other": "{{n}}개 항목"
       },
       "settings": {
@@ -16183,8 +16216,6 @@
       "free": "여유",
       "gateway_cpu": "게이트웨이 CPU",
       "gateway_rss": "게이트웨이 RSS",
-      "graph_scale_network": "전체 눈금 {{max}} KB/s · 최근 {{seconds}}초",
-      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}초",
       "hostname": "호스트 이름",
       "ip_address": "IP 주소",
       "kiro_cli_procs": "Kiro CLI",
@@ -16210,7 +16241,9 @@
       "used": "사용 중",
       "used_pct": "사용률",
       "utilization": "사용률",
-      "working_directory": "작업 디렉터리"
+      "working_directory": "작업 디렉터리",
+      "graph_scale_network": "전체 눈금 {{max}} · 최근 {{seconds}}",
+      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}"
     },
     "popoutFrame": {
       "session": "세션",
@@ -16291,7 +16324,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 파일은 ‘YAML에서’ 탭으로 업로드하세요.",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML 워크플로는 LLM 분해기를 거치지 않습니다 —",
       "action_failed": "작업 실패",
-      "project_renamed_to": "프로젝트 이름이 {{name}}(으)로 변경되었습니다"
+      "project_renamed_to": "프로젝트 이름이 {{name}}(으)로 변경되었습니다",
+      "plan_mode_label": "계획 모드"
     },
     "remoteArtifactDetailPage": {
       "back": "뒤로",
@@ -16680,7 +16714,8 @@
       "group_today": "오늘",
       "group_yesterday": "어제",
       "group_earlier": "이전",
-      "empty_title": "세션이 없습니다"
+      "empty_title": "세션이 없습니다",
+      "filter_label": "세션 필터"
     },
     "sessionsTab": {
       "agent": "에이전트",
@@ -19185,7 +19220,6 @@
       "hide_turn_detail": "턴별 상세 숨기기",
       "instruments": "계측기",
       "loading_telemetry": "텔레메트리 로드 중…",
-      "local_only_no_egress": "· 로컬 전용, 외부 전송 없음",
       "max_col": "최대",
       "mean_col": "평균",
       "mean_credits_by_occupancy": "컨텍스트 사용량으로 구간을 나눈 턴당 평균 크레딧",
@@ -19219,7 +19253,6 @@
       "session_col": "세션",
       "session_startup": "세션 시작",
       "sessions_col": "세션 수",
-      "shard_s_source": "샤드 · 소스",
       "share_col": "비중",
       "show_turn_detail": "턴별 상세 보기",
       "showing_partial_window": "전체 {{total}}개 샘플 중 {{shown}}개 표시(기간 중간에 히스토그램 경계 변경)",
@@ -19275,7 +19308,7 @@
       "range_to": "종료 날짜",
       "no_telemetry_in_window": "이 기간({{period}})에 기록된 텔레메트리가 없습니다.",
       "otel_retention_cap": "턴, 지연 시간, 시작 수치는 최근 {{days}}일만 포함합니다. 이전 메트릭은 삭제됩니다(<settingRef/>).",
-      "window_footer": "OTEL 섹션 · 기간: {{period}} ·"
+      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",
@@ -19442,11 +19475,13 @@
       "agents_present_other": "에이전트 {{n}}개 참석",
       "agents_active_other": "{{n}}개 활동 중",
       "slots_open_other": "빈 슬롯 {{n}}개",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "장면"
     },
     "worldsPopout": {
       "hide_controls": "컨트롤 숨기기",
-      "show_controls": "컨트롤 표시"
+      "show_controls": "컨트롤 표시",
+      "scene_label": "장면"
     },
     "membersPage": {
       "drawer_delegated_working": "위임한 작업 실행 중",
@@ -20376,6 +20411,9 @@
       "too_many_pixels": "{{name}}은(는) {{width}} × {{height}}픽셀로, 여기에서 HEIC 사진을 변환할 수 있는 한도인 {{max}}메가픽셀을 넘습니다. 더 작은 JPEG를 내보내 대신 첨부하세요.",
       "convert_failed": "이 브라우저에서 {{name}}을(를) JPEG로 변환하지 못했습니다. 페이지를 새로 고친 뒤 다시 시도하거나, JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
       "cannot_fit": "{{name}}을(를) JPEG로 {{max}} 미만까지 줄이지 못했습니다. 더 작은 JPEG를 내보내 대신 첨부하세요."
+    },
+    "tz": {
+      "local_zone_caption": "로컬 · {{zone}}"
     }
   },
   "memoryV2": {
@@ -21255,8 +21293,8 @@
     "getting_started_result": "처음 완성한 결과물",
     "intro_video_close": "동영상 닫기",
     "your_progress": "내 진행 상황",
-    "intro_video_title": "15초 만에 보는 {{productName}}",
     "group_streak": "연속 기록",
-    "getting_started_brief": "아침 브리핑 설정"
+    "getting_started_brief": "아침 브리핑 설정",
+    "video_failed": "기능 소개 동영상을 불러올 수 없습니다"
   }
 }

@@ -472,8 +472,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "इस सेक्शन का markdown कॉपी करें और चैट या ऑटोपायलट में पेस्ट करें",
         "could_not_generate_challenges_please_try_again": "चुनौतियाँ नहीं बनाई जा सकीं। कृपया फिर कोशिश करें।",
         "cycle": "चक्र",
-        "cycles": "चक्र,",
-        "cycles_2": "चक्र",
         "definition_of_done_optional": "पूर्णता की परिभाषा (वैकल्पिक)",
         "delete": "हटाएँ",
         "delete_campaign": "अभियान हटाएँ?",
@@ -491,7 +489,6 @@
         "failed_to_add_to_knowledge_library": "ज्ञान लाइब्रेरी में जोड़ने में विफल",
         "failed_to_export_as_artifact": "आर्टिफ़ैक्ट के रूप में एक्सपोर्ट करने में विफल",
         "failed_to_start_campaign_please_try_again": "अभियान शुरू करने में विफल — कृपया फिर कोशिश करें।",
-        "findings": "निष्कर्ष",
         "findings_count": "निष्कर्ष ({{count}})",
         "findings_so_far_are_preserved_below": "अब तक के निष्कर्ष नीचे सुरक्षित हैं।",
         "first_cycle_in_progress": "पहला चक्र चल रहा है...",
@@ -519,7 +516,6 @@
         "loading": "लोड हो रहा है...",
         "max_cycles": "अधिकतम चक्र:",
         "max_cycles_2": "अधिकतम चक्र",
-        "min": "min",
         "min_20_characters": "न्यूनतम 20 वर्ण।",
         "model": "मॉडल",
         "model_default_inherit": "डिफ़ॉल्ट (इनहेरिट)",
@@ -557,7 +553,6 @@
         "resume": "फिर शुरू करें",
         "run_autonomous_research_campaigns": "स्वायत्त शोध अभियान चलाएँ",
         "run_unattended_skip_clarification_questions": "बिना निगरानी चलाएँ (स्पष्टीकरण प्रश्न छोड़ें)",
-        "s_idle": "s निष्क्रिय। ~",
         "scripted": "(स्क्रिप्टेड)",
         "searched_empty": "खोजा गया (खाली):",
         "send": "भेजें",
@@ -581,14 +576,11 @@
         "strong": "मज़बूत",
         "sub_question": "उप-प्रश्न {{n}}",
         "sub_questions": "उप-प्रश्न",
-        "sub_questions_2": "उप-प्रश्न",
         "sub_questions_guidance_count": "उप-प्रश्न और मार्गदर्शन ({{count}})",
-        "suggested_from": "सुझाए गए — स्रोत:",
         "the_agent_is_waiting_for_your_direction": "एजेंट तुम्हारे निर्देश का इंतज़ार कर रहा है।",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI हर राउंड खुद चलाता है — क्या जाँचना है यह तय करता है, सबएजेंट संभालता है, और निष्कर्षों से उभरने वाले नए सूत्रों का पीछा करता है।",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI पहले ही एक ऑर्केस्ट्रेशन स्क्रिप्ट लिख देता है; सबएजेंट का निष्पादन एक नियतात्मक रनर संभालता है, जबकि AI केवल योजना बनाता, जाँच करता और संश्लेषण करता है। दोबारा चलाया जा सकता है, बजट-सीमित।",
         "the_campaign_stopped_unexpectedly": "अभियान अचानक रुक गया।",
-        "up_to": "अधिकतम",
         "validating": "सत्यापित किया जा रहा है...",
         "validation_failed_check_your_connection_and_try": "सत्यापन विफल — अपना कनेक्शन जाँचें और फिर कोशिश करें।",
         "view_report": "रिपोर्ट देखें",
@@ -597,7 +589,15 @@
         "when_should_the_agent_stop": "एजेंट को कब रुकना चाहिए?",
         "your_answer": "आपका उत्तर",
         "your_answer_2": "आपका उत्तर...",
-        "your_guidance": "तुम्हारा मार्गदर्शन"
+        "your_guidance": "तुम्हारा मार्गदर्शन",
+        "suggested_from_sub_questions_one": "{{count}} उप-प्रश्न से सुझाया गया",
+        "suggested_from_sub_questions_other": "{{count}} उप-प्रश्न से सुझाया गया",
+        "estimate_one": "अधिकतम {{count}} चक्र, {{idle}}s निष्क्रिय। ~{{minutes}} मिनट",
+        "estimate_other": "अधिकतम {{count}} चक्र, {{idle}}s निष्क्रिय। ~{{minutes}} मिनट",
+        "findings_tally_one": "{{count}} निष्कर्ष",
+        "findings_tally_other": "{{count}} निष्कर्ष",
+        "cycles_count_one": "{{count}} चक्र",
+        "cycles_count_other": "{{count}} चक्र"
       }
     },
     "autoTriagePipeline": {
@@ -1025,12 +1025,15 @@
           "checks_running_other": "{{count}} में से {{pending}} जाँचें अब भी चल रही हैं",
           "closed": "बंद",
           "conflicts": "टकराव",
-          "failing": "विफल",
           "merge_blocked": "merge रुका हुआ",
           "merged": "merge हो गया",
           "open": "खुला",
-          "passed": "पास",
-          "running": "चल रही"
+          "running_count_one": "{{count}} चल रही",
+          "running_count_other": "{{count}} चल रही",
+          "passed_count_one": "{{count}} पास",
+          "passed_count_other": "{{count}} पास",
+          "failing_count_one": "{{count}} विफल",
+          "failing_count_other": "{{count}} विफल"
         },
         "repoSwitcher": {
           "add_a_repo": "रेपो जोड़ो",
@@ -2147,14 +2150,14 @@
           "search_labels_2": "लेबल खोजें…"
         },
         "labelPicker": {
-          "add": "जोड़ें",
           "filter_labels": "लेबल फ़िल्टर करें…",
           "filter_labels_2": "लेबल फ़िल्टर करें",
           "loading_labels": "लेबल लोड हो रहे हैं…",
           "remove_this_label_no_longer_exists_on_the_repo": "हटाएँ — यह लेबल अब रेपो में मौजूद नहीं है",
           "saved_but_no_longer_on_this_repo": "सहेजे गए, लेकिन अब इस रेपो में नहीं:",
-          "suggested": "सुझाया गया",
-          "this_repo_has_no_labels": "इस रिपो में कोई लेबल नहीं है।"
+          "this_repo_has_no_labels": "इस रिपो में कोई लेबल नहीं है।",
+          "add_suggested_one": "{{count}} सुझाए गए जोड़ें",
+          "add_suggested_other": "{{count}} सुझाए गए जोड़ें"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — साइडबार विस्तृत करने के लिए क्लिक करो",
@@ -2402,11 +2405,13 @@
           "close": "बंद करें",
           "close_esc": "बंद करें (Esc)",
           "close_reference": "संदर्भ बंद करें",
-          "deep": "गहरा",
           "issue": "इश्यू",
           "loading": "लोड हो रहा है #",
           "open_in_the_list_detail_column": "सूची + विवरण कॉलम में खोलें",
-          "open_this_item_in_the_workspace": "इस आइटम को वर्कस्पेस में खोलें"
+          "open_this_item_in_the_workspace": "इस आइटम को वर्कस्पेस में खोलें",
+          "deep_count_one": "{{count}} गहरा",
+          "deep_count_other": "{{count}} गहरा",
+          "dialog_label": "{{repo}} में {{kind}} {{ref}}"
         },
         "repoSwitcher": {
           "repositories": "रिपॉज़िटरी"
@@ -2518,7 +2523,11 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "तुम्हारी डैशबोर्ड सेटिंग लोड नहीं हुईं, इसलिए GitLab इंस्टेंस सूचीबद्ध नहीं किए जा सकते।",
         "selection_cleared_those_projects_are_on_the_previous_instance": "चयन साफ़ किया गया: वे प्रोजेक्ट पिछले GitLab इंस्टेंस पर हैं।",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "चयन साफ़ किया गया: वे रिपॉज़िटरी पिछले प्रदाता से संबंधित हैं।",
-        "try_again": "फिर से कोशिश करो"
+        "try_again": "फिर से कोशिश करो",
+        "repos_selected_one": "{{count}} चुना गया",
+        "repos_selected_other": "{{count}} चुने गए",
+        "repos_found_one": "{{count}} मिला",
+        "repos_found_other": "{{count}} मिले"
       },
       "connectRepoModal": {
         "close": "बंद करें",
@@ -2749,7 +2758,8 @@
             "ci_failure_alerts_read_only_your_own_open_pull_requests": "तुम्हारे gh साइन-इन से केवल तुम्हारे अपने खुले pull requests पर GitHub Actions रन पढ़ता है। इसे सेटिंग्स → सूचनाएँ में म्यूट करो या इसकी प्राथमिकता बदलो।",
             "first_issue_friendly_count_one": "<strong>{{n}}</strong> खुला इश्यू फ़र्स्ट-इश्यू-फ़्रेंडली के रूप में चिह्नित है",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> खुले इश्यू फ़र्स्ट-इश्यू-फ़्रेंडली के रूप में चिह्नित हैं",
-            "triage_needed_of_open": "ट्राइएज की ज़रूरत वाले खुले इश्यू: {{n}} में से <strong>{{triage}}</strong>"
+            "triage_needed_of_open": "ट्राइएज की ज़रूरत वाले खुले इश्यू: {{n}} में से <strong>{{triage}}</strong>",
+            "member_chip_title": "{{login}} — {{role}} · {{provider}} पर खोलो"
           }
         },
         "tagging": {
@@ -2761,7 +2771,6 @@
             "created": "बनाया गया",
             "creating": "बनाया जा रहा है…",
             "creating_needs_write_access": "बनाने के लिए राइट एक्सेस चाहिए",
-            "defined_by_open_issue_count": "परिभाषित · खुले इश्यू की संख्या के अनुसार",
             "labels": "लेबल",
             "looking_for_labels_this_repo_is_missing": "इस रिपो में जो लेबल नहीं हैं, उन्हें खोजा जा रहा है…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "कोई नहीं — रिपो की टैक्सोनॉमी पहले से ही उसके खुले इश्यू की ज़रूरतें पूरी करती है।",
@@ -2775,7 +2784,9 @@
             "suggest_new_labels": "नए लेबल सुझाएँ",
             "suggested_new_labels_not_created_until_you_say_s": "सुझाए गए नए लेबल — आपके कहने तक नहीं बनाए जाते",
             "re_fetch_this_repo_s_labels_from": "इस रिपो के लेबल {{provider}} से फिर लाएँ",
-            "create_this_label_on": "यह लेबल {{provider}} पर बनाओ"
+            "create_this_label_on": "यह लेबल {{provider}} पर बनाओ",
+            "labels_defined_one": "{{count}} परिभाषित · खुले इश्यू की संख्या के अनुसार",
+            "labels_defined_other": "{{count}} परिभाषित · खुले इश्यू की संख्या के अनुसार"
           },
           "untaggedIssueCard": {
             "add": "जोड़ें",
@@ -4490,12 +4501,10 @@
         "at_least_one_source_did_not_answer_this_poll": "इस पोल का जवाब कम से कम एक सोर्स ने नहीं दिया।",
         "claim": "उठाओ",
         "claimed": "उठा लिया",
-        "cleared": "शांत हुआ ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· push से आता है, इसलिए खाली पोल का कोई मतलब नहीं",
         "every_configured_source_answered": "हर कॉन्फ़िगर किए सोर्स ने जवाब दिया।",
         "everything_firing_already_has_an_incident": "जो कुछ अभी भड़क रहा है, उस सबका इंसिडेंट पहले से है।",
         "firing": "भड़क रहा",
-        "firing_2": "भड़क रहा ·",
         "firing_not_yet_claimed": "भड़क रहा है, अभी नहीं उठाया गया",
         "inbound_webhook_queued_one": "{{count}} इनबाउंड वेबहुक सिग्नल आ चुका है और अगली साइकिल के उठाने का इंतज़ार कर रहा है — वह अभी बोर्ड पर नहीं है।",
         "inbound_webhook_queued_other": "{{count}} इनबाउंड वेबहुक सिग्नल आ चुके हैं और अगली साइकिल के उठाने का इंतज़ार कर रहे हैं — वे अभी बोर्ड पर नहीं हैं।",
@@ -4519,7 +4528,6 @@
         "no_signal_sources_registered": "कोई सिग्नल सोर्स पंजीकृत नहीं है।",
         "no_sources_reporting_a_firing_signal": "कोई सोर्स भड़कते सिग्नल की ख़बर नहीं दे रहा।",
         "not_polled_yet_not_the_same_as_healthy": "अभी पोल नहीं किया — यह ठीक होने के बराबर नहीं है",
-        "not_yet_claimed": "अभी नहीं उठाया गया",
         "nothing_firing_but_parked_signals_not_investigated": "कुछ नहीं भड़क रहा, पर ऊपर रोके हुए सिग्नल की जाँच नहीं हो रही",
         "nothing_firing_but_signals_parked_not_picked_up_one": "कुछ नहीं भड़क रहा — पर {{count}} सिग्नल प्रोवाइडर पर रोका हुआ है (ऊपर देखो) और उठाया नहीं जाएगा।",
         "nothing_firing_but_signals_parked_not_picked_up_other": "कुछ नहीं भड़क रहा — पर {{count}} सिग्नल प्रोवाइडर पर रोके हुए हैं (ऊपर देखो) और उठाए नहीं जाएँगे।",
@@ -4528,7 +4536,6 @@
         "one_ledger_entry_matched": "1 लेजर एंट्री मैच हुई — {{detail}}",
         "parked": "रोका हुआ",
         "parked_2": "रोका हुआ",
-        "parked_at_provider": "प्रोवाइडर पर रोका हुआ ·",
         "parked_at_the_provider": "प्रोवाइडर पर रोका हुआ",
         "poll_answered": "जवाब दिया",
         "poll_every_configured_source_now_read_only": "हर कॉन्फ़िगर किए सोर्स को अभी पोल करो (सिर्फ़ पढ़ना)",
@@ -4553,7 +4560,15 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "यह सोर्स एक स्पूल में push करता है जिसे हर पोल खाली कर देता है, इसलिए जो सिग्नल वह एक बार दे चुका है वह दोबारा नहीं दिखेगा, चाहे गड़बड़ी अभी भी ज़िंदा हो।",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "काम कहाँ से आता है। क्रेडेंशियल और दायरा Settings में कॉन्फ़िगर करो; कोई सोर्स असल में\n          क्या लौटाता है यह देखने के लिए यहाँ पोल करो।",
-        "while_that_is_true_absence_of_a_signal_does_not": "यह सही है, पर सिग्नल न दिखने का मतलब सुधार नहीं है — इसका मतलब सिर्फ़ यह भी हो\n                सकता है कि हम देख ही नहीं पाए।"
+        "while_that_is_true_absence_of_a_signal_does_not": "यह सही है, पर सिग्नल न दिखने का मतलब सुधार नहीं है — इसका मतलब सिर्फ़ यह भी हो\n                सकता है कि हम देख ही नहीं पाए।",
+        "firing_count_one": "{{count}} भड़क रहा ·",
+        "firing_count_other": "{{count}} भड़क रहे ·",
+        "parked_count_one": "{{count}} प्रोवाइडर पर रोका हुआ ·",
+        "parked_count_other": "{{count}} प्रोवाइडर पर रोका हुआ ·",
+        "cleared_count_one": "{{count}} शांत हुआ ·",
+        "cleared_count_other": "{{count}} शांत हुए ·",
+        "unclaimed_count_one": "{{count}} अभी नहीं उठाया गया",
+        "unclaimed_count_other": "{{count}} अभी नहीं उठाए गए"
       }
     },
     "papyrus": {
@@ -5238,7 +5253,8 @@
         "agents_one": "{{count}} एजेंट",
         "agents_other": "{{count}} एजेंट",
         "events_one": "{{count}} इवेंट",
-        "events_other": "{{count}} इवेंट"
+        "events_other": "{{count}} इवेंट",
+        "view_label": "दृश्य"
       }
     },
     "commandBar": {
@@ -5458,6 +5474,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "तुम बैकअप खुद शुरू कर सकते हो, लेकिन सेशन संग्रह बिना छँटाई अपलोड होता है।",
         "backup_archive": "संग्रहित बैकअप",
         "backup_restore": "पुनर्स्थापित करें",
+        "backup_show_all_archives": "सब दिखाएँ ({{count}})",
         "backup_restore_caveat": "पुनर्स्थापना के लिए बैकअप फ़ोल्डर पर पढ़ने की अनुमति आवश्यक है। अनुशंसित न्यूनतम-विशेषाधिकार नीति जानबूझकर केवल लिखने की अनुमति देती है, इसलिए जब तक खाते के क्रेडेंशियल अधिक व्यापक न हों, इसे अस्वीकार कर दिया जाएगा।",
         "backup_remote_error": "संग्रहित बैकअप अभी पढ़े नहीं जा सके।",
         "backup_status_failed": "बैकअप की स्थिति पढ़ी नहीं जा सकी।",
@@ -5774,8 +5791,6 @@
       "more_waiting": "{{count}} और",
       "needs_you": "तुमसे चाहिए",
       "next": "आगे",
-      "progress": "प्रगति",
-      "progress_count": "{{total}} में से {{accepted}} पूरे",
       "remaining": "बाकी",
       "show_fewer": "कम दिखाएँ",
       "status_blocked": "अटका है",
@@ -6143,7 +6158,6 @@
       "decision_not_recorded_error": "यह निर्णय दर्ज नहीं हुआ: {{error}}",
       "reject": "अस्वीकार करें",
       "rejected": "अस्वीकृत",
-      "running": "चल रहा है:",
       "tool_approval_requested": "टूल स्वीकृति का अनुरोध:",
       "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे",
       "trusted_channel_all": "विश्वसनीय — इस चैनल के सभी टूल स्वतः स्वीकृत होंगे, रीस्टार्ट के बाद भी बना रहता है",
@@ -6524,6 +6538,7 @@
       "message_input": "संदेश इनपुट",
       "message_placeholder": "{{bot}} को मैसेज करो… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}} को मैसेज करो…",
+      "follow_up_tab_placeholder": "{{option}} - भरने के लिए Tab दबाओ",
       "message_placeholder_terminal": "{{bot}} को मैसेज करो… (/command · @file · $skill · ! शेल कमांड)",
       "model": "मॉडल",
       "model_2": "मॉडल: {{name}}",
@@ -6644,7 +6659,18 @@
       "attachment_removed": "{{file}} अनुलग्नकों से हटाया गया",
       "attachment_restored": "{{file}} संलग्न किया गया",
       "trusted_command_until": "«{{cmd}}» पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
-      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा"
+      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
+      "composer_action_dialog": "{{title}}, {{app}} से",
+      "composer_action_close": "बंद करो",
+      "composer_action_timed_out": "{{app}} ने बहुत समय लिया, इसलिए उसे रोक दिया गया। कुछ भी नहीं डाला गया।",
+      "composer_action_app_error": "{{app}} में त्रुटि हुई। कुछ भी नहीं डाला गया।",
+      "composer_action_revoked": "{{app}} बंद कर दिया गया। कुछ भी नहीं डाला गया।",
+      "composer_action_failed": "{{app}} ने जवाब नहीं दिया। कुछ भी नहीं डाला गया।",
+      "composer_action_from": "{{app}} ऐप द्वारा",
+      "composer_action_footer_host": "{{productName}} ने ड्राफ़्ट जाँचा। {{app}} अब भी उसे नहीं देख सकता।",
+      "composer_action_needs_empty": "{{app}} केवल खाली संदेश में डाल सकता है। पहले ड्राफ़्ट खाली करो।",
+      "composer_action_would_resolve": "{{app}} का टेक्स्ट /, ! या @ से शुरू होता है, या उसमें $skill, फ़ाइल या इमेज है, इसलिए वह टेक्स्ट की तरह भेजे जाने के बजाय चलता। उसे नहीं डाला गया।",
+      "composer_action_footer": "{{app}} तुम्हारा ड्राफ़्ट नहीं देख सकता। उसका टेक्स्ट जैसा है वैसा डाला जाता है, और भेजना तुम तय करते हो।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -6973,7 +6999,8 @@
       "search_across_providers": "सभी प्रोवाइडर में {{subject}} खोजो...",
       "searching": "खोज रहे हैं...",
       "searching_2": "खोज हो रही है: {{name}}",
-      "type_at_least_2_characters_to_search": "खोजने के लिए कम से कम 2 अक्षर टाइप करें"
+      "type_at_least_2_characters_to_search": "खोजने के लिए कम से कम 2 अक्षर टाइप करें",
+      "type_to_search_for_more": "और खोजने के लिए टाइप करो"
     },
     "embedTabStrip": {
       "close_tab": "टैब बंद करें",
@@ -7143,7 +7170,8 @@
       "slides_thumbstrip": "स्लाइड",
       "slides_truncated": "स्लाइड की सीमा {{n}} पर पूरी हो गई; प्रेज़ेंटेशन का बाकी हिस्सा नहीं दिखाया गया है।",
       "light_background": "हल्की पृष्ठभूमि",
-      "dark_background": "गहरी पृष्ठभूमि"
+      "dark_background": "गहरी पृष्ठभूमि",
+      "sheet_tabs_label": "शीट"
     },
     "folderColorNames": {
       "amber": "एम्बर",
@@ -7467,7 +7495,11 @@
       "runs_as_custom_agent_hint": "अपनी एक चैट में चलता है, साझा मेमोरी के साथ।",
       "runs_as_crewmate_hint": "{{name}} की चैट में चलता है, {{name}} की अपनी मेमोरी और फ़ाइलों के साथ। उसके क्रूमेट पेज पर भी दिखता है।",
       "runs_as_fixed": "जॉब बनने के बाद कस्टम एजेंट और क्रूमेट के बीच नहीं बदल सकता।",
-      "runs_as_no_crewmates": "अभी कोई क्रूमेट नहीं। क्रूमेट पेज पर एक जोड़ो।"
+      "runs_as_no_crewmates": "अभी कोई क्रूमेट नहीं। क्रूमेट पेज पर एक जोड़ो।",
+      "timezone_local": "स्थानीय (इस कंप्यूटर के अनुसार, अभी {{zone}})",
+      "timezone_local_undetected": "स्थानीय (ज़ोन का पता नहीं चला, UTC में चलता है)",
+      "timezone_default": "डिफ़ॉल्ट समय क्षेत्र",
+      "timezone_default_unavailable": "डिफ़ॉल्ट समय क्षेत्र लोड नहीं हो सका। डिफ़ॉल्ट समय क्षेत्र पर छोड़ा गया कार्य फिर भी उसी का उपयोग करता है।"
     },
     "jobLogsView": {
       "cancel": "रद्द करें",
@@ -7941,7 +7973,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "इंस्टॉल प्लान लोड होने की प्रतीक्षा",
       "detail_load_failed": "इस सर्वर का विवरण लोड नहीं किया जा सका।",
-      "search_failed": "रजिस्ट्री में खोज नहीं की जा सकी। कृपया पुनः प्रयास करें।"
+      "search_failed": "रजिस्ट्री में खोज नहीं की जा सकी। कृपया पुनः प्रयास करें।",
+      "popular_mcp_servers": "लोकप्रिय MCP सर्वर"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "कस्टम सर्वर जोड़ें",
@@ -8852,6 +8885,8 @@
       "license": "लाइसेंस:",
       "loading_preview": "पूर्वावलोकन लोड हो रहा है...",
       "no_preview_available": "कोई प्रीव्यू उपलब्ध नहीं।",
+      "popular_skills": "लोकप्रिय स्किल",
+      "search_failed": "स्किल लोड नहीं हो सकीं। फिर से कोशिश करो।",
       "overwrite": "अधिलेखित करें",
       "provider_could_not_search": "{{provider}} में खोज नहीं हो सकी: {{reason}}",
       "provider_did_not_answer": "{{provider}} ने जवाब नहीं दिया।",
@@ -8996,26 +9031,6 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "क्षेत्र कैप्चर करने के लिए ड्रैग करें · अटैच करने के लिए छोड़ें · रद्द करने के लिए Esc",
       "drag_to_select_the_screen_region_to_capture": "कैप्चर करने के लिए स्क्रीन का क्षेत्र चुनने के लिए ड्रैग करें",
       "screen_capture_drag_the_area_you_want_it_attache": "स्क्रीन कैप्चर — जो क्षेत्र चाहिए उसे ड्रैग करें; छोड़ने पर यह स्वतः अटैच हो जाता है"
-    },
-    "meetYourMatesIntro": {
-      "sample_line_1": "मुझे रात में एक अस्थिर टेस्ट मिला और मैंने उसे ठीक कर दिया।",
-      "sample_line_2": "PR तैयार है। क्या मैं इसे मर्ज कर दूँ?",
-      "sample_merge": "मर्ज करो",
-      "sample_show_first": "पहले मुझे दिखाओ"
-    },
-    "startupVideoModal": {
-      "close": "बंद करें",
-      "crewmates_description": "वे काम खुद ढूँढते हैं, उसे करते हैं, और केवल ज़रूरत पड़ने पर ही तुमसे पूछते हैं।",
-      "crewmates_title": "अपने साथियों से मिलो।",
-      "got_it": "समझ गया",
-      "media_failed": "फ़ीचर वीडियो लोड नहीं हो सका",
-      "new_tag": "नया",
-      "not_now": "अभी नहीं",
-      "share": "साझा करो",
-      "share_description": "इस फ़ीचर वीडियो को शेयर कार्ड बनाओ जिसे कहीं भी पोस्ट कर सकते हो।",
-      "share_include_title": "वीडियो का शीर्षक शामिल करो",
-      "streaming": "ऑनलाइन चलता है",
-      "try_now": "अभी आज़माओ"
     },
     "tagManagerList": {
       "adopt_tag": "एजेंट अनुमतियाँ सेट अप करो",
@@ -10075,7 +10090,7 @@
       "tagline_lead": "तुम लक्ष्य तय करो।",
       "tagline_strong": "तुम्हारी टीम काम करती है।",
       "flow_label": "Ultra Mode कैसे काम करता है",
-      "flow_goal": "लक्ष्य",
+      "flow_goal": "प्रोजेक्ट",
       "flow_split": "बाँटें",
       "flow_parallel": "अलग चैट",
       "flow_board": "बोर्ड",
@@ -10112,6 +10127,11 @@
       "ultra_needs_you_none": "अभी तुम्हारे लिए कुछ नहीं है।",
       "ultra_needs_you_none_stalled": "कोई मंज़ूरी तुम्हारा इंतज़ार नहीं कर रही। अटका हुआ काम माइलस्टोन में है।",
       "ultra_answer_in_chat": "चैट में जवाब दो",
+      "ultra_ms_waiting_answer": "ऊपर तुम्हारे जवाब का इंतज़ार",
+      "ultra_reply": "जवाब लिखो",
+      "ultra_answers": "सुझाए गए जवाब",
+      "ultra_reply_draft": "\"{{t}}\" ({{id}}) के बारे में: {{answer}}",
+      "ultra_option_title": "इसे तुम्हारे चैट बॉक्स में डालता है, जाँचकर भेजो",
       "ultra_crew": "क्रू",
       "ultra_finished": "पूरे · {{n}}",
       "ultra_row_sessions_one": "{{count}} सेशन · {{running}} चालू",
@@ -10122,10 +10142,15 @@
       "ultra_row_count_waiting_other": "{{count}} इंतज़ार में",
       "ultra_row_count_needs_you_one": "{{count}} को तुम्हारी ज़रूरत",
       "ultra_row_count_needs_you_other": "{{count}} को तुम्हारी ज़रूरत",
+      "ultra_row_count_stalled_one": "{{count}} रुका हुआ",
+      "ultra_row_count_stalled_other": "{{count}} रुके हुए",
+      "ultra_row_count_running_one": "{{count}} चल रहा",
+      "ultra_row_count_running_other": "{{count}} चल रहे",
+      "ultra_row_stalled_detail": "रुका हुआ: {{name}} · {{duration}}",
       "ultra_recap_empty": "क्रू ने अभी तक रिपोर्ट नहीं दी है।",
       "chip_hint_pressed": "Ultra Mode चालू है। पहले संदेश से पहले इसे बंद करने के लिए क्लिक करो।",
       "ultra_view_status": "स्थिति",
-      "ultra_view_list": "सूची",
+      "ultra_view_list": "कार्यकर्ता",
       "ultra_recap_head": "{{total}} में से {{done}} पूरे",
       "ultra_recap_main_chat": "तुम्हारे लिए एक सवाल",
       "ultra_recap_waiting_one": "{{head}}; {{names}} तुम्हारे इंतज़ार में है।",
@@ -11042,7 +11067,22 @@
       "link_open_remembered": "याद रखे गए लिंक विकल्प",
       "link_open_choice_app": "{{name}} में खुलता है",
       "link_open_choice_browser": "तुम्हारे ब्राउज़र में खुलता है",
-      "link_open_forget": "भूल जाओ"
+      "link_open_forget": "भूल जाओ",
+      "adoption": {
+        "network": "{{name}} अभी अपना App Store संस्करण डाउनलोड नहीं कर पाया। {{productName}} अपने आप फिर कोशिश करता है; इस कंप्यूटर का नेटवर्क कनेक्शन जाँचो।",
+        "local": "{{name}} इस कंप्यूटर पर अपना App Store संस्करण तैयार नहीं कर पाया: डिस्क भरी है या कोई सेटिंग फ़ाइल पढ़ी नहीं जा सकी। {{productName}} अपने आप फिर कोशिश करता है।",
+        "policy": "{{name}} का अपने App Store संस्करण पर स्विच होना रुका हुआ है: तुम्हारी ऐप प्रवेश नीति उस संस्करण को अनुमति नहीं देती। स्विच पूरा करने के लिए इसे प्रवेश नीति में अनुमति दो।",
+        "trust": "{{name}} का अपने App Store संस्करण पर स्विच होना रुका हुआ है: उसकी भरोसा सेटिंग किसी दूसरे स्रोत को बताती है, या config.local.json में सेट है, इसलिए {{productName}} ने इसे नहीं बदला। स्विच पूरा करने के लिए भरोसा सेटिंग देखो।",
+        "permissions": "{{name}} का अपने App Store संस्करण पर स्विच होना रुका हुआ है: वह संस्करण अभी वाले से ज़्यादा पहुँच माँगता है। कुछ भी नहीं बदला गया।",
+        "platform": "{{name}} अपने App Store संस्करण पर स्विच नहीं हो सकता: वह संस्करण इस प्लेटफ़ॉर्म को सपोर्ट नहीं करता।",
+        "host": "{{name}} का अपने App Store संस्करण पर स्विच होना रुका हुआ है: उस संस्करण को नया {{productName}} चाहिए। स्विच पूरा करने के लिए {{productName}} अपडेट करो।",
+        "verification": "{{name}} अपने App Store संस्करण पर स्विच नहीं हो रहा: वह संस्करण जाँच में पास नहीं हुआ, और {{productName}} की यह रिलीज़ फिर कोशिश नहीं करती। कुछ भी नहीं बदला गया।",
+        "staged": "{{name}} का App Store संस्करण डाउनलोड और जाँचा जा चुका है। अगली बार {{productName}} रीस्टार्ट होने पर {{name}} उस पर स्विच हो जाएगा।",
+        "keeps_builtin_until": "तब तक यह अंतर्निहित ऐप ही रहेगा।",
+        "keeps_builtin": "यह अंतर्निहित ऐप ही रहेगा।",
+        "installed_needs_newer_host": "{{name}} के इंस्टॉल किए गए संस्करण को नया {{productName}} चाहिए। {{productName}} अपडेट करो; तुम्हारा डेटा नहीं बदला है।"
+      },
+      "grants_reconsent_composer_actions": "कंपोज़र बटन: ऐप को कंपोज़र के + मेनू में ये बटन जोड़ने देता है। क्लिक करने पर ऐप का टेक्स्ट तुम्हारे ड्राफ़्ट में डलता है; ऐप ड्राफ़्ट को देख या भेज नहीं सकता।"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",
@@ -12573,6 +12613,9 @@
         "copied": "कॉपी किया गया",
         "copy_link": "संदेश का लिंक कॉपी करें",
         "unpin": "अनपिन",
+        "copy_text_failed": "टेक्स्ट कॉपी नहीं हो सका। संदेश पर जाओ और कॉपी करने के लिए टेक्स्ट चुनो।",
+        "copy_link_failed": "लिंक कॉपी नहीं हो सका। देखो कि यह पेज क्लिपबोर्ड इस्तेमाल कर सकता है, फिर दोबारा कोशिश करो।",
+        "jump_to_named_message": "संदेश पर जाओ, {{author}}: {{label}}",
         "jump_to_message": "संदेश पर जाएं",
         "copy_failed": "कॉपी विफल"
       },
@@ -13872,7 +13915,13 @@
       "chat_use_lacks_oauth": "उन चैट के लिए सहेजा गया जो इसे सपोर्ट करती हैं। कुछ चैट अभी इस तरह का साइन-इन इस्तेमाल नहीं कर सकतीं।",
       "configure_oauth_app": "OAuth ऐप कॉन्फ़िगर करो",
       "prerequisite_github": "GitHub डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए GitHub OAuth ऐप का उपयोग करता है। GitHub का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
-      "prerequisite_asana": "Asana डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Asana MCP ऐप का उपयोग करता है। Asana का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।"
+      "prerequisite_asana": "Asana डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Asana MCP ऐप का उपयोग करता है। Asana का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_gmail": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_google_drive": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_google_calendar": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_google_sheets": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_google_docs": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।",
+      "prerequisite_google_slides": "Google डायनामिक क्लाइंट रजिस्ट्रेशन का समर्थन नहीं करता, इसलिए कनेक्ट सेटिंग्स → OAuth ऐप्स में रजिस्टर किए गए Google OAuth ऐप का उपयोग करता है। Google का सहमति पेज उस ऐप का नाम दिखाता है; जारी रखने के लिए उसे स्वीकृत करो।"
     },
     "contextBreakdown": {
       "axis_turn_n": "टर्न {{n}}",
@@ -15098,6 +15147,10 @@
         "profile_blank_uses_default_chain": "डिफ़ॉल्ट AWS क्रेडेंशियल उपयोग करने के लिए खाली छोड़ें।",
         "remove_this_live_source": "क्या इस नॉलेज बेस स्रोत को हटाना है? स्थानीय रूप से कुछ भी संग्रहीत नहीं है; नॉलेज बेस स्वयं अप्रभावित रहेगा।",
         "region_example_placeholder": "उदा. us-east-1",
+        "word_count_one": "{{n}} शब्द",
+        "word_count_other": "{{n}} शब्द",
+        "word_count_approx_one": "~{{n}} शब्द",
+        "word_count_approx_other": "~{{n}} शब्द",
         "items_count_one": "{{n}} आइटम",
         "items_count_other": "{{n}} आइटम"
       },
@@ -16524,8 +16577,6 @@
       "free": "खाली",
       "gateway_cpu": "गेटवे CPU",
       "gateway_rss": "गेटवे RSS",
-      "graph_scale_network": "पूर्ण स्केल {{max}} KB/s · पिछले {{seconds}} सेकंड",
-      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}} सेकंड",
       "hostname": "होस्टनाम",
       "ip_address": "IP पता",
       "kiro_cli_procs": "Kiro CLI",
@@ -16551,7 +16602,9 @@
       "used": "उपयोग",
       "used_pct": "उपयोग",
       "utilization": "उपयोगिता",
-      "working_directory": "कार्य डायरेक्टरी"
+      "working_directory": "कार्य डायरेक्टरी",
+      "graph_scale_network": "पूर्ण स्केल {{max}} · पिछले {{seconds}}",
+      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}"
     },
     "popoutFrame": {
       "session": "सेशन",
@@ -16632,7 +16685,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML फ़ाइलें \"YAML से\" टैब के ज़रिए अपलोड करनी चाहिए।",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML वर्कफ़्लो LLM डीकंपोज़र को बायपास करते हैं —",
       "action_failed": "कार्रवाई विफल",
-      "project_renamed_to": "प्रोजेक्ट का नाम बदलकर {{name}} कर दिया गया"
+      "project_renamed_to": "प्रोजेक्ट का नाम बदलकर {{name}} कर दिया गया",
+      "plan_mode_label": "योजना मोड"
     },
     "remoteArtifactDetailPage": {
       "back": "वापस",
@@ -17035,7 +17089,8 @@
       "group_today": "आज",
       "group_yesterday": "बीता कल",
       "group_earlier": "पहले",
-      "empty_title": "कोई सत्र नहीं"
+      "empty_title": "कोई सत्र नहीं",
+      "filter_label": "सत्र फ़िल्टर"
     },
     "sessionsTab": {
       "agent": "एजेंट",
@@ -19566,7 +19621,6 @@
       "hide_turn_detail": "प्रति टर्न विवरण छिपाएँ",
       "instruments": "इंस्ट्रूमेंट",
       "loading_telemetry": "टेलीमेट्री लोड हो रही है…",
-      "local_only_no_egress": "· केवल स्थानीय, कोई एग्रेस नहीं",
       "max_col": "max",
       "mean_col": "औसत",
       "mean_credits_by_occupancy": "उपयोग किए गए कॉन्टेक्स्ट के अनुसार प्रति टर्न औसत क्रेडिट",
@@ -19600,7 +19654,6 @@
       "session_col": "सेशन",
       "session_startup": "सेशन स्टार्टअप",
       "sessions_col": "सेशन",
-      "shard_s_source": "शार्ड · स्रोत",
       "share_col": "हिस्सा",
       "show_turn_detail": "प्रति टर्न विवरण दिखाएँ",
       "showing_partial_window": "{{total}} में से {{shown}} नमूने दिखाए जा रहे हैं (विंडो के भीतर हिस्टोग्राम सीमाएँ बदल गईं)",
@@ -19660,7 +19713,8 @@
       "range_to": "अंतिम तारीख",
       "no_telemetry_in_window": "इस अवधि ({{period}}) में कोई टेलीमेट्री दर्ज नहीं हुई।",
       "otel_retention_cap": "टर्न, लेटेंसी और स्टार्टअप के आँकड़े केवल पिछले {{days}} दिन के हैं; पुराने मेट्रिक हटा दिए जाते हैं (<settingRef/>)।",
-      "window_footer": "OTEL अनुभाग · अवधि: {{period}} ·"
+      "window_footer_shards_one": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
+      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",
@@ -19832,11 +19886,13 @@
       "agents_active_other": "{{n}} सक्रिय",
       "slots_open_one": "{{n}} स्लॉट खाली",
       "slots_open_other": "{{n}} स्लॉट खाली",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "दृश्य"
     },
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",
-      "show_controls": "नियंत्रण दिखाएँ"
+      "show_controls": "नियंत्रण दिखाएँ",
+      "scene_label": "दृश्य"
     },
     "membersPage": {
       "drawer_delegated_working": "सौंपे गए कार्य चल रहे हैं",
@@ -20781,6 +20837,9 @@
       "too_many_pixels": "{{name}} {{width}} × {{height}} पिक्सेल की है, जो यहाँ HEIC फ़ोटो बदलने की {{max}} मेगापिक्सेल की सीमा से ज़्यादा है। एक छोटी JPEG एक्सपोर्ट करो और उसकी जगह वह अटैच करो।",
       "convert_failed": "यह ब्राउज़र {{name}} को JPEG में नहीं बदल सका। पेज रीलोड करके फिर से कोशिश करो, या इसे JPEG के रूप में एक्सपोर्ट करो और उसकी जगह वह फ़ाइल अटैच करो।",
       "cannot_fit": "{{name}} को JPEG के रूप में {{max}} से छोटा नहीं किया जा सका। एक छोटी JPEG एक्सपोर्ट करो और उसकी जगह वह अटैच करो।"
+    },
+    "tz": {
+      "local_zone_caption": "स्थानीय · {{zone}}"
     }
   },
   "memoryV2": {
@@ -21613,11 +21672,11 @@
     "notice_count_one": "एक्सप्लोर में {{count}} नई बात",
     "your_progress": "तुम्हारी प्रगति",
     "all_tried": "तुमने यहाँ की सारी सुविधाएँ आज़मा लीं।",
-    "intro_video_title": "15 सेकंड में {{productName}}",
     "group_streak": "लगातार दिन",
     "try_it": "आज़माओ",
     "getting_started": "शुरुआत",
-    "intro_video_save_failed": "तुमने यह वीडियो देखा या बंद किया, यह सेव नहीं हो सका। फिर से कोशिश करो।"
+    "intro_video_save_failed": "तुमने यह वीडियो देखा या बंद किया, यह सेव नहीं हो सका। फिर से कोशिश करो।",
+    "video_failed": "फ़ीचर वीडियो लोड नहीं हो सका"
   },
   "milestone": {
     "parallel_chats": {

@@ -134,9 +134,7 @@ def _spooled(directory: Path) -> list[str]:
 def test_source_uses_tempfile_gettempdir_not_a_hardcoded_tmp():
     """The spool path must derive from ``tempfile.gettempdir()``.
 
-    Idiom and assertion shape copied from
-    ``test_mcp_playwright_proxy.py::test_source_uses_tempfile_gettempdir_not_hardcoded_slash_tmp``.
-    ``os.environ.get("TMPDIR", "/tmp")`` was the original defect there: the
+    ``os.environ.get("TMPDIR", "/tmp")`` is the defect this guards: the
     fallback does not exist on Windows and ``os.makedirs`` crashed on it.
 
     Asserted against ``macos_ffi`` and its owners (``macos_ffi_window`` owns the default

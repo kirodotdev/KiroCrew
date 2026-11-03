@@ -29,6 +29,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -166,6 +167,16 @@ export default function SkillsTab() {
   // runs must not open an editor on the skill the user just left.
   const selectedKeyRef = useRef(selectedKey)
   useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
+  // Gives mutation callbacks a fresh view of detailEditing without capturing
+  // a stale closure value: the deleteSkill onSuccess fires after an await,
+  // by which point the user may have entered edit mode since the mutation
+  // started, so reading detailEditing directly from the closure yields the
+  // value at call time, not the current value. Written during render (not in
+  // an effect) so the ref is current before any passive effects flush — a
+  // useEffect sync would share the same post-commit batch as useMutation's
+  // observer.setOptions and lose the same race this ref is meant to close.
+  const detailEditingRef = useRef(detailEditing)
+  detailEditingRef.current = detailEditing
 
   const createSkill = useMutation({
     mutationFn: ({ name, content }: { name: string; content: string }) => api.createSkill(name, content),
@@ -284,20 +295,23 @@ export default function SkillsTab() {
       // report a stale outcome as current. A fresh failure re-sets it.
       setDeleteError(null)
       await queryClient.cancelQueries({ queryKey: ['skills'] })
-      const prev = queryClient.getQueryData<Skill[]>(['skills'])
+      const removed = takeRow(queryClient.getQueryData<Skill[]>(['skills']), s => s.key === key)
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
-      return { prev }
+      return { removed }
     },
     onSuccess: () => {
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
       // typed-but-unsaved draft outright and leaves an in-flight PUT's later
-      // rejection with nothing to render it. `!detailEditing` covers both — a
-      // pending save can only exist while the editor is open, since every
-      // path that leaves it is disabled or no-ops during the save window.
-      // Outside the editor, the original teardown applies.
-      if (!detailEditing) {
+      // rejection with nothing to render it. `!detailEditingRef.current` covers
+      // both — a pending save can only exist while the editor is open, since
+      // every path that leaves it is disabled or no-ops during the save window.
+      // Outside the editor, the original teardown applies. The ref is used
+      // rather than the state variable to avoid a stale closure: onSuccess
+      // executes after an async await, and the user may have entered edit mode
+      // after the mutation was called but before it resolved.
+      if (!detailEditingRef.current) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
@@ -307,15 +321,17 @@ export default function SkillsTab() {
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
     onError: (err: Error, key, context) => {
-      if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
-      // Rollback first (above, unchanged), then say why the row came back:
+      // Only this skill's row comes back: a whole-list snapshot would also
+      // revive a skill another delete removed while this one was in flight.
+      queryClient.setQueryData<Skill[]>(['skills'], old => putRowBack(old, context?.removed, s => s.key === key))
+      // Rollback first (above), then say why the row came back:
       // reversing the optimistic write alone re-renders the deleted row with
       // no explanation, which reads as the delete silently not working.
       // The report is looked up by the ORIGINAL message before it is framed.
       // The banner names the skill the way the ROW does (its display name,
-      // from the rollback snapshot — guaranteed to hold the deleted skill),
-      // so the reader matches banner to row without decoding the raw key.
-      const target = context?.prev?.find(s => s.key === key)
+      // from the row this delete removed), so the reader matches banner to
+      // row without decoding the raw key.
+      const target = context?.removed?.row
       const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
       // The frame ALWAYS carries the skill name and the word "delete" — a bare
       // hint next to several rows would name neither what failed nor on which
@@ -708,7 +724,10 @@ export default function SkillsTab() {
                     <ErrorNotice askAgent title={i18nT('pages.overview.skillsTab.edit_read_failed_title')} message={editReadError} messagePlacement="below" onDismiss={() => setEditReadError('')} testId="skill-edit-read-failure" />
                   </div>
                 )}
-                <InjectionRow skill={selectedSkill} />
+                {/* Keyed like the browser below: the row's pending and error
+                    state belongs to one skill and must not follow the
+                    selection to the next. */}
+                <InjectionRow key={selectedSkill.key} skill={selectedSkill} />
                 <div className="flex-1 min-h-0 p-3">
                   <SkillDirectoryBrowser key={selectedSkill.key} skillKey={selectedSkill.key} skill={selectedSkill} />
                 </div>

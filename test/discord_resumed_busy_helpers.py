@@ -23,9 +23,8 @@ _TYPED = f"use https://docs.example.com/page?key={_SECRET} for this"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of the test_discord_resumed_busy*.py suites, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+def _isolated_home(tmp_path, _floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
 def _steerable(accepted: bool = True) -> MagicMock:

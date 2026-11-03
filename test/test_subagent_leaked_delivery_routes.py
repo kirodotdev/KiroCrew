@@ -64,7 +64,7 @@ def _leaked(agent_id: str, **fields: Any):
 
 
 def _tombstone(root, agent_id: str) -> dict[str, Any]:
-    return json.loads((root / agent_id / "tombstone.json").read_text())
+    return json.loads((root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
 
 def _assert_flagged_on_disk(root, agent_id: str) -> None:

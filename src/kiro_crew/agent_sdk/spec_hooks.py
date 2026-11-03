@@ -72,6 +72,7 @@ from kiro_crew.hooks import (
     ScriptHook,
     _normalize_hook_timeout,
 )
+from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,13 @@ _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 #: capped at, so a hand-written spec cannot make every turn spawn without limit.
 _MAX_SPEC_HOOKS = 20
 
-#: Bound on a retained command, matching the document validator's payload cap.
-_MAX_COMMAND_LEN = 4096
+#: Bound on a retained command: the longest command the shell gate scans, so a
+#: spec hook is held to the same ceiling as a shell tool call's command and every
+#: one it keeps is scanned whole by the deny list before it spawns. kiro-cli runs
+#: an object-form hook of any length, so a lower bound here would drop on KAS a
+#: hook the same spec runs on kiro-cli. A hook document is still held to its own
+#: validator's payload cap before it reaches this.
+_MAX_COMMAND_LEN = MAX_SCANNABLE_COMMAND_CHARS
 
 #: Bound on the conversion cache. A spec edit adds an entry, so the cache is
 #: cleared rather than grown once it reaches this.
@@ -333,7 +339,16 @@ def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
 
 def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> ScriptHook | None:
     command = entry.get("command")
-    if not isinstance(command, str) or not command.strip() or len(command) > _MAX_COMMAND_LEN:
+    if isinstance(command, str) and len(command) > _MAX_COMMAND_LEN:
+        _reject(
+            agent_id,
+            event,
+            command,
+            f"command is {len(command)} characters, past the {_MAX_COMMAND_LEN} limit; "
+            "move it into a script file and call that from the hook",
+        )
+        return None
+    if not isinstance(command, str) or not command.strip():
         _reject(agent_id, event, command, "no usable command")
         return None
     matcher = entry.get("matcher") if event in _TOOL_EVENTS else None

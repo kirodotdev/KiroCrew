@@ -412,6 +412,29 @@ async def test_a_restored_tab_loads_its_window_before_the_completion_lands(
     assert restored.task is None
 
 
+@pytest.mark.asyncio
+async def test_a_restored_tab_whose_window_cannot_be_read_takes_the_parents_own_route(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = _Slot("main")
+    restored.window_pending = True
+    done.bound_slot = restored
+    monkeypatch.setattr(
+        gw_mod, "load_window_off_loop", AsyncMock(side_effect=PermissionError(13, "in use"))
+    )
+    own_route = AsyncMock(name="_inject_subagent_into_channel_parent")
+    monkeypatch.setattr(done.orch, "_inject_subagent_into_channel_parent", own_route)
+
+    await done.done(make_info())
+    await done.drain()
+
+    own_route.assert_awaited_once()
+    assert own_route.await_args.kwargs["parent_key"] == "dashboard:main"
+    assert done.chats == [] and restored.queued == [] and restored.task is None
+    statuses = done.frames("subagent_status")
+    assert [(f["event"], f["slot"]) for f in statuses] == [("done", "evt:dashboard:main")]
+
+
 # ── records that route nothing ───────────────────────────────────────────────
 
 
@@ -550,6 +573,29 @@ async def test_a_failed_injection_notice_lands_on_the_loaded_tab_and_queues_its_
 
 
 @pytest.mark.asyncio
+async def test_a_failed_injection_notice_whose_tab_cannot_be_read_still_reaches_the_ui(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = MagicMock(name="restored tab", window_pending=True, _pending_subagent_failures=[])
+    done.state.get_slot = MagicMock(return_value=restored)
+    monkeypatch.setattr(
+        gw_mod, "load_window_off_loop", AsyncMock(side_effect=PermissionError(13, "in use"))
+    )
+
+    await done.manager_kwargs["on_event"](
+        "subagent_injection_failed",
+        make_info(),
+        {"error": "boom", "failure_msg": "report"},
+    )
+
+    restored.append.assert_not_called()
+    assert restored._pending_subagent_failures == []
+    assert done.frames("subagent_injection_failed") == [
+        {"id": "a1", "slot": "evt:dashboard:main", "error": "boom", "failure_msg": "report"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_stalled_child_kicks_the_parents_parked_queue(
     done: _Done, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,6 +629,20 @@ async def test_an_orphan_notice_loads_a_restored_tab_first(done: _Done) -> None:
 
     assert ("load", "main") in done.calls
     assert loaded._pending_subagent_failures == ["lost [R]"]
+
+
+@pytest.mark.asyncio
+async def test_an_orphan_notice_whose_tab_cannot_be_read_falls_through_to_the_owner_dm(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = MagicMock(name="restored tab", window_pending=True, _pending_subagent_failures=[])
+    done.state.get_slot = MagicMock(return_value=restored)
+    monkeypatch.setattr(gw_mod, "load_window_off_loop", AsyncMock(side_effect=OSError("disk gone")))
+
+    assert await done.manager_kwargs["on_orphan_notify"]("dashboard:main", "lost") is False
+
+    restored.append.assert_not_called()
+    assert restored._pending_subagent_failures == []
 
 
 @pytest.mark.asyncio

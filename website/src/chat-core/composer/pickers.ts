@@ -6,6 +6,7 @@ import type { ComposerControl } from '../../components/composerControl'
 import type { FileKind } from '../../components/FilePickerMenu'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
 import { offers, pickerQueryKey, type ComposerPickerSource } from './pickerSource'
+import { SLASH_MENU_QUERY } from './slashQuery'
 
 /* The in-input trigger pickers (chat-core RFC §3 layer 4): `/` commands, `@`
    files, `$` skills and shell-style `./` paths. One rule decides which menu
@@ -84,7 +85,10 @@ export function useComposerPickers({ source, project, onFileSelect, typedCommand
   const openPickersForText = useCallback((text: string, before: string) => {
     // This is the incoming edit, which can enter terminal mode before render.
     if (terminalCommands && terminalCommand(text) !== null) { closePickers(); return }
-    setSlashMenuOpen(slashOn && text.startsWith('/'))
+    // Open exactly when the menu can show (see slashQuery.ts): a `/` draft
+    // with arguments, a new line or a capital renders no menu, and an
+    // invisible one must not keep Escape-to-stop, Tab indent and ↑/↓ history.
+    setSlashMenuOpen(slashOn && SLASH_MENU_QUERY.test(text))
     // Anchor @/$ detection to the token being edited AT THE CARET, not the
     // end of the whole input. `before` ends at the caret, so a match means
     // "the token ends where my cursor is" — which makes both pickers fire

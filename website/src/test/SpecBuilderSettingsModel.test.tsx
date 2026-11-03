@@ -9,7 +9,7 @@ import SettingsModal from '../apps/spec-builder/components/SettingsModal'
 import { specApi } from '../apps/spec-builder/api'
 
 // The picker reads the advertised list via useAvailableModels. Mock the hook
-// module (same pattern as ResearchLabPage.test.tsx): the real hook fetches
+// module (same pattern as apps/auto-research/ResearchLabPage.integration.test.tsx): the real hook fetches
 // through the provider context, which this harness does not stand up.
 // Non-vendor test ids only.
 vi.mock('../hooks/useAvailableModels', () => ({

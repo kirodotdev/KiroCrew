@@ -1271,11 +1271,13 @@ if _typing.TYPE_CHECKING:
         is_link_or_junction,
     )
     from kiro_crew.apps.builtins.aws_control.backend.backup_parts.catalog import (  # noqa: F401
+        _MAX_LISTING_PAGES,
         MAX_OTHER_INSTALLS,
         _archive_row,
         _archive_sort_key,
         _checked,
         _install_folders,
+        _section_files,
         list_remote_backups,
         read_remote_label,
     )

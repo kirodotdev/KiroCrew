@@ -30,7 +30,9 @@ except ImportError:
     get_description = None  # type: ignore[assignment]
 from croniter import CroniterBadDateError, croniter  # type: ignore[import-untyped]
 
-from kiro_crew import platform_compat
+from kiro_crew import host_timezone, platform_compat
+from kiro_crew.cron_service.zone_default_migration import LEGACY_ZONE_ATTR
+from kiro_crew.host_timezone import LOCAL_TIMEZONE, is_local_timezone  # noqa: F401 -- re-exported
 
 if TYPE_CHECKING:
     from kiro_crew.cron_service.model import CronJob, CronSchedule
@@ -135,6 +137,7 @@ def _humanize_cron(expr: str, tz_name: str = "") -> str:
     # Timezone-aware display: evaluate the cron expression in the job's
     # timezone (matching compute_next_run_ts) and display the local time.
     parts = expr.split()
+    tz_name = resolve_timezone_name(tz_name) if tz_name else ""
     if tz_name and len(parts) == 5 and parts[0].isdigit() and parts[1].isdigit():
         try:
             tz = ZoneInfo(tz_name)
@@ -167,10 +170,10 @@ def format_schedule(schedule: CronSchedule, tz_name: str = "") -> str:
     """Human-readable schedule description."""
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
-    # Fallback: the published config default. Reading the snapshot rather than
-    # loading config.json is what lets a loop-side caller omit tz_name safely.
-    if not tz_name:
-        tz_name = seams.published_config_timezone()
+    # An empty or "local" name resolves through the published config default and
+    # the published host zone. Reading snapshots rather than loading config.json
+    # or the host's zone is what lets a loop-side caller omit tz_name safely.
+    tz_name = resolve_timezone_name(tz_name)
     if schedule.kind == "cron" and schedule.cron_expr:
         return _humanize_cron(schedule.cron_expr, tz_name)
     if schedule.kind == "every" and schedule.every_secs:
@@ -217,9 +220,14 @@ def is_valid_timezone(tz_name: str) -> bool:
     gateway (see ``no-blocking-call-on-event-loop``). ``ZoneInfo`` raises
     ``ZoneInfoNotFoundError`` for unknown keys and ``ValueError`` for malformed
     ones (e.g. absolute paths, ``..``); both are treated as invalid.
+
+    ``local`` is valid too: it names no IANA key, and stands for the host's zone
+    (see :func:`resolve_timezone_name`).
     """
     if not tz_name:
         return False
+    if is_local_timezone(tz_name):
+        return True
     try:
         ZoneInfo(tz_name)
     except Exception:
@@ -248,8 +256,77 @@ def is_valid_skip_date(value: object) -> bool:
         return False
 
 
+def resolve_timezone_name(tz_name: str = "") -> str:
+    """The IANA zone *tz_name* stands for right now, or ``""`` for UTC.
+
+    An IANA name stands for itself. An empty name stands for the published config
+    default, and an empty config default stands for ``local``. ``local`` stands
+    for the zone of the machine this process runs on, so a schedule that follows
+    it moves with a laptop that travels. The result is ``""`` when that host zone
+    has never been detected; every caller reads ``""`` as UTC.
+
+    Reads published snapshots only (:func:`published_config_timezone`,
+    :func:`published_host_timezone`), never ``config.json`` or the host's zone
+    files on the event loop.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    name = (tz_name or "").strip()
+    if not name:
+        name = (seams.published_config_timezone() or "").strip()
+    if name and not is_local_timezone(name):
+        return name
+    return host_timezone.published_host_timezone()
+
+
+def default_timezone_name() -> str:
+    """The zone a job with none of its own follows, as a name to store or show.
+
+    The configured zone, or ``local`` when none is configured (or it is
+    ``local``). Unresolved on purpose: a job that stores ``local`` keeps
+    following the host, where the resolved name would pin today's zone. A
+    configured name that cannot load (a typo in a hand-edited config) is
+    ``UTC``, the zone :func:`_job_tz` runs it in: stored as is, every write
+    would refuse it.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    name = (seams.published_config_timezone() or "").strip()
+    if not name or is_local_timezone(name):
+        return LOCAL_TIMEZONE
+    return name if is_valid_timezone(name) else "UTC"
+
+
+def job_zone_name(job: CronJob) -> str:
+    """The zone name *job*'s wall clock follows: its own, else one held in memory only.
+
+    The held one is set by an upgrade waiting for a readable config
+    (``zone_default_migration.hold_jobs_on_utc_in_memory``) on an older job it
+    could not stamp. Every reader that resolves a job's zone reads it here, so
+    such a job runs, and shows, in UTC without a stamp reaching disk.
+    """
+    # Read defensively, as the display callers it replaced did: a caller may hold a
+    # job-like object without the field, and only a string names a zone.
+    own = getattr(job, "timezone", "")
+    held = getattr(job, LEGACY_ZONE_ATTR, "")
+    return (own.strip() if isinstance(own, str) else "") or (held if isinstance(held, str) else "")
+
+
+def _zone_follows_host(tz_name: str) -> bool:
+    """Whether the zone *tz_name* stands for is the host's (``local``, directly or by default)."""
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    name = (tz_name or "").strip() or (seams.published_config_timezone() or "").strip()
+    return not name or is_local_timezone(name)
+
+
+def job_follows_host(job: CronJob) -> bool:
+    """Whether *job*'s wall clock follows the host's zone (``local``, directly or by default)."""
+    return _zone_follows_host(job_zone_name(job))
+
+
 def get_local_tz() -> tuple[str, tzinfo]:
-    """Return (tz_name, zone) from the published config default, or UTC.
+    """Return (tz_name, zone) for the default zone: the config default, else the host's, else UTC.
 
     Reads :func:`published_config_timezone` rather than loading ``config.json``:
     prompt assembly (``context.py``), the dashboard cron handler and the
@@ -262,10 +339,8 @@ def get_local_tz() -> tuple[str, tzinfo]:
     host with no system zoneinfo tree and no ``tzdata`` package cannot load
     any zone, UTC included, and prompt assembly calls this on every chat turn.
     """
-    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
-
     try:
-        tz_name = seams.published_config_timezone() or "UTC"
+        tz_name = resolve_timezone_name() or "UTC"
         return tz_name, ZoneInfo(tz_name)
     except Exception:
         logger.warning(
@@ -360,18 +435,28 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
     an ISO date and time) is read in *tz_name*, the job's own timezone, when the
     caller has one -- the same zone the job's ``cron_expr`` and ``skip_dates``
     are evaluated in and its schedule is rendered in. Without one it is read in
-    the CONFIGURED timezone, never the process's, so a gateway running in UTC
-    still honours the user's setting. *tz_name* must already have passed
+    the default zone (:func:`get_local_tz`): the configured timezone, else the
+    host's. ``local``, directly or by default, is read in the host's zone as it is
+    now: read here off the event loop, and by an on-loop caller beforehand with
+    ``host_timezone.ensure_host_timezone``. The result is an instant, so a one-shot
+    does not move when the host later changes zone.
+    *tz_name* must already have passed
     :func:`is_valid_timezone`; every caller checks it before parsing so a bad
     name is refused with that caller's own message.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     s = s.strip()
+    if _zone_follows_host(tz_name):
+        # The instant is stored for good: read the host's zone as it is now.
+        host_timezone.ensure_host_timezone_off_loop()
     tz: tzinfo
-    if tz_name:
+    if tz_name and not is_local_timezone(tz_name):
         resolved_tz_name = tz_name
         tz = ZoneInfo(tz_name)
+    elif tz_name:
+        resolved_tz_name = host_timezone.published_host_timezone() or "UTC"
+        tz = ZoneInfo(resolved_tz_name)
     else:
         resolved_tz_name, tz = seams.get_local_tz()
     now = seams.datetime.now(tz)
@@ -424,22 +509,21 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
 
 
 def _job_tz(job: CronJob) -> tzinfo:
-    """Return the job's timezone, falling back to the published default then UTC.
+    """Return the job's timezone, as :func:`resolve_timezone_name` resolves it, else UTC.
 
-    Reads :func:`published_config_timezone` rather than loading ``config.json``.
+    Reads :func:`published_config_timezone` rather than loading ``config.json``,
+    and :func:`published_host_timezone` rather than the host's zone files.
     Both callers reach this from the event loop: :meth:`CronService._on_timer`
     scans EVERY cron-expression job through :meth:`_is_due` on every tick, and
     :meth:`CronJob.set_run_result` renders a completed run's stamp, so a config
     stat/read/validate here was a recurring gateway stall
     (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
     successful config load, so a timezone change still reaches a running
-    gateway on the following tick.
+    gateway on the following tick; the host zone is refreshed by the tick's
+    worker-thread scan, so a laptop that changes zone does too.
     """
-    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
-
     try:
-        tz_name = job.timezone or seams.published_config_timezone() or "UTC"
-        return ZoneInfo(tz_name)
+        return ZoneInfo(resolve_timezone_name(job_zone_name(job)) or "UTC")
     except Exception:
         logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
         # Fixed UTC needs no tz database, so the Schedule page and the timer
@@ -603,6 +687,10 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
             horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
             for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
                 nxt = cron.get_next(float)
+                # The slot that repeats the last run's occurrence in a new host zone
+                # is not its next run (see _already_ran_by_wall_clock).
+                if _already_ran_by_wall_clock(job, seams.datetime.fromtimestamp(nxt, tz=tz)):
+                    continue
                 if not job.skip_dates:
                     return nxt
                 if nxt > horizon:
@@ -635,8 +723,8 @@ def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | 
     return None
 
 
-def compute_jitter(job: CronJob) -> float:
-    """Return random jitter seconds based on schedule frequency.
+def jitter_bound(job: CronJob) -> float:
+    """The longest jitter wait *job* can get, in seconds: the band :func:`compute_jitter` draws from.
 
     - strict_schedule=True or one-shot 'at' jobs: no jitter
     - Sub-hourly (every < 3600s or cron whose parsed minute field fires
@@ -652,9 +740,9 @@ def compute_jitter(job: CronJob) -> float:
         return 0.0  # one-shot jobs fire at exact time
     if sched.kind == "every" and sched.every_secs:
         if sched.every_secs >= 86400:
-            return random.uniform(0, _JITTER_DAILY_MAX)
+            return _JITTER_DAILY_MAX
         elif sched.every_secs >= 3600:
-            return random.uniform(0, _JITTER_HOURLY_MAX)
+            return _JITTER_HOURLY_MAX
         else:
             return 0.0  # sub-hourly jobs shouldn't be jittered
     if sched.kind == "cron" and sched.cron_expr:
@@ -673,17 +761,77 @@ def compute_jitter(job: CronJob) -> float:
         if len(parts) == 5:
             # Single literal hour (e.g., "0 3 * * *") = truly daily/weekly
             if parts[1].isdigit():
-                return random.uniform(0, _JITTER_DAILY_MAX)
+                return _JITTER_DAILY_MAX
             # Multi-hour patterns (*/2, 1,13) or wildcard = hourly jitter
             if parts[1] != "*":
-                return random.uniform(0, _JITTER_HOURLY_MAX)
-        return random.uniform(0, _JITTER_HOURLY_MAX)
+                return _JITTER_HOURLY_MAX
+        return _JITTER_HOURLY_MAX
     return 0.0
+
+
+def compute_jitter(job: CronJob) -> float:
+    """Return random jitter seconds based on schedule frequency, within :func:`jitter_bound`."""
+    bound = jitter_bound(job)
+    return random.uniform(0, bound) if bound else 0.0
 
 
 # Two runs of a cron job this close together that belong to one occurrence are
 # one run fired twice (see ``is_due``); adjacent minutes are at most 120 s apart.
 _SAME_OCCURRENCE_SECS = 120
+
+
+#: How long after a run's time limit its end may be stamped: a reaped run ends
+#: once its deadline has passed, not exactly at it.
+_RUN_STAMP_SLACK_SECS = 300
+
+
+def _already_ran_by_wall_clock(job: CronJob, slot: datetime) -> bool:
+    """Whether *slot* repeats, in a new host zone, the occurrence the job last ran.
+
+    For a job that follows the host. *slot* is an aware datetime in the zone the
+    job resolves to now. Moving west (Shanghai to San Francisco) brings a local
+    date and time round again; the slot whose date and time equal the occurrence
+    the last run belonged to, read in the zone the host was in then, does not
+    run a second time. Every other slot runs, so a frequent job keeps running
+    through the trip. Moving east skips the slots the clock jumped over; nothing
+    catches them up, as nothing catches up a slot the gateway slept through.
+
+    ``last_run_ts`` is stamped when a run ENDS, so from its dispatch the run spans
+    up to the job's own longest jitter wait (:func:`jitter_bound`) plus its time
+    limit before it, and the zone
+    may have changed inside that span (during the jitter wait, or a lid closed
+    mid-run on a flight): each zone other than the slot's over that span
+    is compared, and only for an occurrence the scheduler could have dispatched
+    there, one the host was in that zone for at its instant. In an unchanged zone this is never true, so the repeated hour of
+    a DST fall-back still runs as it did. ``False`` when no other zone is known
+    for that span: the zone history starts when this process first detected it.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    last = job.last_run_ts
+    expr = job.schedule.cron_expr
+    if not last or not expr or not job_follows_host(job):
+        return False
+    # Dispatch to end: this job's longest jitter wait before the run, its time limit,
+    # and the slack a reaped run's end stamp may lag its deadline by.
+    span = jitter_bound(job) + (job.timeout_secs or seams._JOB_TIMEOUT_SECS) + _RUN_STAMP_SLACK_SECS
+    zones = host_timezone.host_timezones_between(last - span, last)
+    slot_wall = slot.replace(tzinfo=None, second=0, microsecond=0)
+    for zone in zones - {str(getattr(slot.tzinfo, "key", ""))}:
+        try:
+            then = ZoneInfo(zone)
+        except Exception:
+            continue
+        occurrence = _cron_occurrence_ts(expr, last, then)
+        # Only an occurrence the scheduler could have dispatched in this zone: the
+        # host was in it at that very instant. A zone the host left before the
+        # occurrence came round never ran it. No lower bound on the instant: a run
+        # the host slept through ends long after its occurrence.
+        if occurrence is None or host_timezone.host_timezone_at(occurrence) != zone:
+            continue
+        if seams.datetime.fromtimestamp(occurrence, tz=then).replace(tzinfo=None) == slot_wall:
+            return True
+    return False
 
 
 def _cron_occurrence_ts(expr: str, ts: float, tz: tzinfo) -> float | None:
@@ -736,6 +884,8 @@ def is_due(job: CronJob, now: float) -> bool:
                 job.schedule.cron_expr, job.last_run_ts, tz
             ):
                 return False
+        if _already_ran_by_wall_clock(job, dt):
+            return False
     else:
         return False
     # Skip dates check (evaluated in job's local timezone, applies to all schedule types)

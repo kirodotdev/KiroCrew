@@ -182,10 +182,9 @@ export function PaneHeader({ icon, title, meta, subtitle, actions }: {
  * the bottom inset the card is asked to reserve (`pb-9`). One surface, one
  * border, one entrance animation.
  *
- * `onClick` is required rather than optional because `StatCard` lifts on hover
- * whether or not it is a target, so a metric card that went nowhere signalled a
- * click it did not have; every figure this app restates has a pane that owns
- * it, and the card is the way through.
+ * `onClick` is required rather than optional because every figure this app
+ * restates has a pane that owns it, and the card is the way through. It is also
+ * what gives the card its hover lift: `StatCard` paints one only when clickable.
  *
  * `pointer-events-none` is what keeps the card's own hover working underneath
  * the line, and `group-hover` mirrors the card's lift so the two cannot drift

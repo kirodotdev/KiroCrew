@@ -4,7 +4,7 @@
  * policy-pinned and floor-locked tooltip keys the governance rows reuse. One of
  * the sections `SecurityPanel.tsx` composes.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Lock, AlertTriangle, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -245,16 +245,23 @@ function CustomDenyRow({ rule, onToggle, onDelete, error, errorHandoff }: { rule
  *  browser parse would refuse valid rules and wave through invalid ones, so the
  *  server's `re.compile` is the one judge; its 400 (`invalid regex: ...`) reaches
  *  the reader through `submitError`. */
-function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => void; busy: boolean; submitError: string }) {
+function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => Promise<unknown>; busy: boolean; submitError: string }) {
   const ime = useImeGuard()
 
+  // Enter reaches `submit` from both inputs, which stay editable while an add
+  // is in flight: a second Enter would post the same rule again, and the
+  // server mints a fresh id for each, so it would list twice. `busy` only
+  // arrives on the next render, so a synchronous latch covers two Enters
+  // landing before it; it is released when the add settles.
+  const submitting = useRef(false)
   const submit = () => {
     const pattern = value.trim()
-    if (!pattern) return
+    if (!pattern || busy || submitting.current) return
+    submitting.current = true
     // Deliberately does NOT clear the drafts. The server can still reject this
     // (a note carrying the refusal prefix is a 400), and clearing here would
     // discard text the operator has to retype. The parent clears on SUCCESS.
-    onAdd(pattern, note.trim())
+    void onAdd(pattern, note.trim()).finally(() => { submitting.current = false })
   }
 
   return (
@@ -678,7 +685,7 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             {i18nT('pages.settings.securityPanel.custom_patterns_hidden_by_filter')}
           </div>
         )}
-        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutate({ pattern, note })} busy={addUser.isPending} submitError={addRejectionForDraft} />
+        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutateAsync({ pattern, note }).catch(() => undefined)} busy={addUser.isPending} submitError={addRejectionForDraft} />
       </SettingsCard>
 
       {/* ── Confirm modal (disable a built-in rule / disable all) ── */}

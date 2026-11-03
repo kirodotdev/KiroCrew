@@ -36,7 +36,7 @@ CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane", 
 # round-trip instead of being silently dropped.
 #
 # INVARIANT: this set must equal the top-level keys to_dict() emits (guarded by
-# test_config_extra_sections_roundtrip's parity test). It is the *emitted* set,
+# test_known_sections_equals_emitted_sections). It is the *emitted* set,
 # not merely the *parsed* set: a section this core parses into a field must ALSO
 # be emitted by to_dict() to be listed here — otherwise it would be excluded
 # from _extra_sections capture yet dropped by to_dict(), losing it on save().

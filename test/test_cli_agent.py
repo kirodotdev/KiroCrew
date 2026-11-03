@@ -1085,8 +1085,10 @@ class TestAgentUpdateWorkspace:
         # A stored "" resolves to the shared default tree, so it is never saved.
         assert saved["workspace"] == "research-ws"
         captured = capsys.readouterr()
-        assert "Updated agent: research" in captured.out
+        # A blank --workspace alone leaves nothing to change.
+        assert "Updated agent" not in captured.out
         assert "blank --workspace ignored" in captured.err
+        assert "nothing to update" in captured.err
 
     def test_blank_beside_another_field_saves_only_that_field(self, tmp_path: Path) -> None:
         from kiro_crew.memory_stores import persist_member_config

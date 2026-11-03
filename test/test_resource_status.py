@@ -7,6 +7,7 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -245,7 +246,30 @@ def test_temp_headroom_unmeasurable_is_none(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(rs.os, "statvfs", _gone, raising=False)
     assert rs.temp_headroom("/missing") is None
     monkeypatch.delattr(rs.os, "statvfs", raising=False)
-    assert rs.temp_headroom("/tmp") is None
+    monkeypatch.setattr(shutil, "disk_usage", _gone)
+    assert rs.temp_headroom("C:\\Missing") is None
+
+
+def test_temp_headroom_without_statvfs_measures_disk_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native Windows has no ``os.statvfs``; free space still comes through."""
+    monkeypatch.delattr(rs.os, "statvfs", raising=False)
+    usage = SimpleNamespace(total=1000, used=913, free=87)
+    monkeypatch.setattr(shutil, "disk_usage", lambda root: usage)
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["C:\\Temp"])
+
+    reading = rs.temp_headroom("C:\\Temp")
+    assert reading is not None and reading.low
+    assert reading.text() == "LOW on space, 9% space free, no inode limit"
+
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    lines = rs.temp_headroom_lines()
+    assert lines[:2] == [
+        "Temp space (advisory):",
+        "  C:\\Temp: LOW on space, 9% space free, no inode limit",
+    ]
+    assert any(line.startswith("\nGuidance: temp space is low on C:\\Temp") for line in lines)
 
 
 def _fake_devices(monkeypatch: pytest.MonkeyPatch, devices: dict[str, int]) -> None:

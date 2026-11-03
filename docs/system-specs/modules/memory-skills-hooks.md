@@ -2641,6 +2641,11 @@ staged; only an explicitly missing original permits activation without a
 preserved prior tree. An existing directory with a missing or mismatched database identity is refused. This recovery exception never relaxes ordinary memory reads.
 Restore refusal responses retain the concrete reason (`restore_refused`), including
 an already-pending restore, rather than labeling every refusal as corruption.
+A damaged backup is a refusal too, not a failed restore: a V1 file SQLite cannot
+read as a database and a member zip whose compressed entry fails to decompress
+both raise `ValueError` before anything is displaced, so the dashboard answers 409
+`restore_refused`. An I/O or locking error (`sqlite3.OperationalError`) is not
+about the backup and still answers 500 `restore_failed`.
 
 **Global V1 keeps its single-DB backup format. Restore activation is staged for
 both versions so a live writer never loses its database or WAL.**
@@ -2681,7 +2686,13 @@ self-contained file with no WAL to pair.
   operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
   the interval guard and `newest_backup` (restore's default choice) read
   `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
-  toward `keep` and never restored without `--from`.
+  toward `keep` and never restored without `--from`. The interval guard measures
+  from the newest backup stamped at or before the current time and logs a warning
+  for any stamped after it (taken under a wrong clock): a future stamp neither keeps
+  every pass skipping until the clock catches up, nor turns the guard off so that
+  each restart copies and prunes the real history away. `prune_backups` reads the
+  same view: a future-stamped copy is kept and takes no `keep` slot, so it can never
+  evict the copy the pass just took.
 - **Atomicity**: each call writes its own hidden UUID `.partial` and renames it, so an
   interrupted or concurrent run cannot delete another call's stage or leave a
   truncated file that looks like a backup. The stage is switched to
@@ -6308,7 +6319,8 @@ supplies them, so a hook reads them with a default:
 | `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
 | `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
 | `agent_role` | the agent template the firing session runs |
-| `acp_session_id` | on an `extra_hooks` (agent spec) hook of a dashboard chat turn only: the session's ACP session id, also set as `KIRO_SESSION_ID` in that hook's env, the name kiro-cli uses for the hooks it runs itself. Absent (and the env var unset) before `session/new`, on stored hooks, and on subagent and task-runner events |
+| `session_id` | on an `extra_hooks` (agent spec) hook of a dashboard chat turn only: the session's ACP session id, under the stdin key kiro-cli's own hook payload uses. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Also set on a subagent's Stop event (`subagent_manager/stop_hooks.py`). Absent (and the env var unset) before `session/new`, on stored hooks, and on the other subagent and task-runner events |
+| `acp_session_id` | the same value as `session_id`, present exactly when it is; the key the first KAS release of this field used, kept for hooks written against it |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
 A hook deciding "did a person type this?" keys on `subagent_id`; it must not

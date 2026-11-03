@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "pins": [
+    {
+      "name": "personal-shopper",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-personal-shopper",
+      "commit": "5ee04d9924519b2a1df19e43715b3127c4c400ef",
+      "version": "0.1.0",
+      "treeSha256": "586797aa4a619094065f0b0f1360a17df89e3fcf68b19b1a3a1f53489dfe989f",
+      "archiveSha256": "5b06ef841a9dd5c38240ff72b1c1178233ccb9c4f7a7a52fbe8be5075590ce2d",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/personal-shopper",
+        "icon": "ShoppingBag"
+      }
+    }
+  ]
+}

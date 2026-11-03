@@ -154,3 +154,64 @@ async def test_an_unparseable_store_is_kept_aside_before_the_write(
     store.remember("a:conv4", _SVC)
     await store.flush()
     assert len(sorted(tmp_path.glob("teams_service_urls.json.corrupt-*"))) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identities", [["x"], "x", 7])
+async def test_a_non_object_identities_field_keeps_every_route(
+    tmp_path: Path, identities: object
+) -> None:
+    path = tmp_path / "teams_service_urls.json"
+    await _seed(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["identities"] = identities
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    store = ServiceUrlStore(path=path)
+    await store.ensure_loaded()
+    assert store.get("a:conv1") == _SVC
+    store.remember("a:conv3", _SVC)
+    await store.flush()
+
+    assert _conversations(path) == ["a:conv1", "a:conv2", "a:conv3"]
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_load_error_keeps_the_file_aside_before_the_write(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "teams_service_urls.json"
+    await _seed(path)
+    before = path.read_bytes()
+    store = ServiceUrlStore(path=path)
+
+    def broken():  # type: ignore[no-untyped-def]
+        raise RuntimeError("unexpected")
+
+    with patch.object(store, "_read_rows", broken):
+        await store.ensure_loaded()
+    store.remember("a:conv3", _SVC)
+    await store.flush()
+
+    copies = list(tmp_path.glob("teams_service_urls.json.corrupt-*"))
+    assert [copy.read_bytes() for copy in copies] == [before]
+    assert _conversations(path) == ["a:conv3"]
+
+
+@pytest.mark.asyncio
+async def test_a_seen_at_too_large_for_a_float_keeps_the_route(tmp_path: Path) -> None:
+    path = tmp_path / "teams_service_urls.json"
+    await _seed(path)
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(text)
+    data["conversations"]["a:conv1"]["seen_at"] = 0
+    path.write_text(
+        json.dumps(data).replace('"seen_at": 0', '"seen_at": 1' + "0" * 400), encoding="utf-8"
+    )
+
+    store = ServiceUrlStore(path=path)
+    await store.ensure_loaded()
+    assert store.get("a:conv1") == _SVC
+    store.remember("a:conv3", _SVC)
+    await store.flush()
+    assert _conversations(path) == ["a:conv1", "a:conv2", "a:conv3"]

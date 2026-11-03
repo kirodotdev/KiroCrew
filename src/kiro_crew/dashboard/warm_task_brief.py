@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import re
 import time
+import unicodedata
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -64,7 +66,9 @@ WARM_TASK_BRIEF_TIMEOUT_SECS = 60.0
 # Model calls one return may spend: the first, and one redo when the state
 # changed while it ran.
 WARM_TASK_BRIEF_ATTEMPTS = 2
-WARM_TASK_BRIEF_MAX_OUTPUT_BYTES = 16 * 1024
+# Room for every field at its cap in a three-byte script, plus JSON escaping
+# of a widget's quotes, so a full brief is never cut into a failure line.
+WARM_TASK_BRIEF_MAX_OUTPUT_BYTES = 40 * 1024
 # A return while a turn runs waits for the turn to end, at most this long, and
 # only while the owner keeps the thread on screen.
 WARM_TASK_BRIEF_DEFER_MAX_SECS = 30 * 60
@@ -86,9 +90,10 @@ _MAX_DONE_ITEMS = 4
 _MAX_EXTRA_SECTIONS = 2
 _MAX_EXTRA_TITLE_CHARS = 60
 # The free-form catch-up text: kept line by line, capped as a whole. Room for
-# four asks of four lines each (what, why, options, recommendation).
-_MAX_BODY_CHARS = 2400
-_MAX_BODY_LINES = 32
+# four asks of four lines each, plus one picture the model chose (a mermaid
+# diagram, a table or an <mcwidget>).
+_MAX_BODY_CHARS = 6000
+_MAX_BODY_LINES = 160
 # Work items waiting on the owner, read by the gateway from the ledger. The card
 # folds all but the first few; past this bound only the count rides along.
 _MAX_WAITING = 50
@@ -128,8 +133,6 @@ _TEXT_LABEL_KEYS = (
     "blocked",
     "done",
     "needs",
-    "progress",
-    "count",
     "remaining",
     "asked",
     "finished",
@@ -138,33 +141,15 @@ _TEXT_LABEL_KEYS = (
 # One "|"-separated row per language, in _TEXT_LABEL_KEYS order: the four
 # status words, then the section labels.
 _TEXT_LABEL_ROWS = {
-    "en": (
-        "On track|Waiting on you|Blocked|Done|"
-        "Needs you|Progress|{accepted} of {total} done|Left|You asked|Done so far|Next"
-    ),
-    "zh": (
-        "进展顺利|等你处理|卡住了|已完成|"
-        "需要你|进度|{total} 项中已完成 {accepted} 项|还剩|你让我做|已做完|下一步"
-    ),
-    "ja": (
-        "順調|あなた待ち|止まっています|完了|"
-        "あなたの番|進み具合|{total} 件中 {accepted} 件完了|残り|ご依頼|済んだこと|次に"
-    ),
-    "ko": (
-        "순조로움|답변 대기|막힘|완료|"
-        "확인 필요|진행|{total}개 중 {accepted}개 완료|남은 일|요청하신 일|한 일|다음"
-    ),
-    "ru": (
-        "По плану|Ждёт вас|Застряло|Готово|"
-        "Нужно от вас|Прогресс|Готово {accepted} из {total}|Осталось|Вы просили|Сделано|Дальше"
-    ),
-    "hi": (
-        "ठीक चल रहा है|आपका इंतज़ार|अटका है|पूरा हुआ|"
-        "आपसे चाहिए|प्रगति|{total} में से {accepted} पूरे|बाकी|आपने कहा था|हो चुका|आगे"
-    ),
+    "en": "On track|Waiting on you|Blocked|Done|Needs you|Left|You asked|Done so far|Next",
+    "zh": "进展顺利|等你处理|卡住了|已完成|需要你|还剩|你让我做|已做完|下一步",
+    "ja": "順調|あなた待ち|止まっています|完了|あなたの番|残り|ご依頼|済んだこと|次に",
+    "ko": "순조로움|답변 대기|막힘|완료|확인 필요|남은 일|요청하신 일|한 일|다음",
+    "ru": "По плану|Ждёт вас|Застряло|Готово|Нужно от вас|Осталось|Вы просили|Сделано|Дальше",
+    "hi": "ठीक चल रहा है|आपका इंतज़ार|अटका है|पूरा हुआ|आपसे चाहिए|बाकी|आपने कहा था|हो चुका|आगे",
     "bn": (
         "ঠিকঠাক চলছে|আপনার অপেক্ষায়|আটকে আছে|শেষ|"
-        "আপনার কাছে দরকার|অগ্রগতি|{total}টির মধ্যে {accepted}টি শেষ|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর"
+        "আপনার কাছে দরকার|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর"
     ),
 }
 _TEXT_LABELS = {
@@ -239,14 +224,25 @@ Return exactly one JSON object:
  "body": "<parts 2 to 5>"}}
 
 "needs_you" holds at most {max_items} items of at most {item_cap} characters;
-it is [] when nothing waits on the owner. "body" is plain text of at most
-{body_cap} characters in short "- " lines. No markdown, HTML, links or
-[OPTIONS] lines. Return words only: no HTML, widget or picture of any kind.
+it is [] when nothing waits on the owner. "body" is markdown of at most
+{body_cap} characters and {body_lines} lines, mostly short "- " lines; a
+picture that would pass either cap is dropped whole. When a picture helps the
+owner act faster, you may add one, in the form that fits best: a ```mermaid
+diagram, a markdown table, or an <mcwidget> (a live widget: HTML, CSS and
+script in one block, coloured only with the theme's CSS variables, never a
+hex colour). The widget has no network: nothing loads from a CDN or any
+site, and its buttons cannot send anything to the chat, so put every fact it
+shows in its own source. There is no fixed template, and most catch-ups need
+none.
+Every #N, commit SHA and HH:MM anywhere in your fields, a picture's source
+included, must appear in the snapshot or be the "as of" time; one that does
+not makes the gateway drop everything you wrote. Never add a bare "N of M done" line. No links,
+images or [OPTIONS] lines.
 
-The gateway draws two things itself, from the snapshot: the "progress" count,
-and every open work item whose status is "blocked" or "question" with reason
-"approval" or "needs_human" (those wait on the owner). Never repeat or draw
-them: put in "needs_you" only owner actions that are not such a work item.
+The gateway draws every open work item whose status is "blocked" or "question"
+with reason "approval" or "needs_human" (those wait on the owner). Never
+repeat them: put in "needs_you" only owner actions that are not such a work
+item.
 
 Write in the language of "owner_recent_messages".
 {style}
@@ -515,18 +511,24 @@ def _record_claim(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
+# Set on a result row that fell back to the gateway's own cards after a
+# section 3.9.6 grounding miss; the value names the miss.
+_GROUNDING_MISS_KEY = "grounding_miss"
+
+
 def _claim_digest(rows: list[dict[str, Any]]) -> str:
     """The ledger digest the newest claim row stored, or "".
 
-    It counts only when a result row followed that claim: a brief that failed
-    or was dropped caught the owner up on nothing, so there is no digest to
+    It counts only when a delivered result row followed that claim: a brief
+    that failed, was dropped, or fell back to the gateway's own cards after a
+    grounding miss caught the owner up on nothing, so there is no digest to
     match and the next return runs the model."""
     answered = False
     for row in reversed(rows):
         meta = row.get("meta")
         if not isinstance(meta, dict):
             continue
-        if meta.get("kind") == _RESULT_KIND:
+        if meta.get("kind") == _RESULT_KIND and not meta.get(_GROUNDING_MISS_KEY):
             answered = True
         elif meta.get("kind") == _CLAIM_KIND:
             digest = meta.get("ledger_digest")
@@ -1062,13 +1064,14 @@ def _build_prompt(
     conductor: bool = False,
     anchor: float | None = None,
     live: tuple[dict[str, Any], ...] = (),
+    now: float | None = None,
 ) -> str:
     """The one-call prompt; *conductor* words it for a thread that owns work items."""
     role, role_hint = _ROLE_CONDUCTOR if conductor else _ROLE_CREWMATE
     rendered = json.dumps(_payload(snapshot, anchor, live), ensure_ascii=False)
     return _PROMPT.format(
         snapshot=rendered,
-        now=inputs.clock(time.time()),
+        now=inputs.clock(time.time() if now is None else now),
         style=_style_hint(verbosity),
         role=role,
         role_hint=role_hint,
@@ -1076,24 +1079,25 @@ def _build_prompt(
         item_cap=_MAX_ITEM_CHARS,
         max_items=_MAX_ITEMS,
         body_cap=_MAX_BODY_CHARS,
+        body_lines=_MAX_BODY_LINES,
     )
 
 
 @dataclass(frozen=True)
 class Brief:
-    """One validated, redacted, capped brief. Every text field is plain text; ``progress`` and ``waiting`` are the gateway's own reads of
-    the ledger, never the model's."""
+    """One validated, redacted, capped brief. Every field but ``body`` is plain
+    text; ``body`` is markdown. ``waiting`` is the gateway's own read of the
+    ledger, never the model's."""
 
     status: str
     headline: str
     asked: str
-    progress: tuple[int, int] | None
     remaining: str
     done: tuple[str, ...]
     needs_you: tuple[str, ...]
     next: tuple[str, ...]
     extra: tuple[tuple[str, tuple[str, ...]], ...]
-    # Free-form plain text, kept line by line.
+    # Free-form markdown, kept line by line; may hold a picture the model chose.
     body: str = ""
     # Work items waiting on the owner as ``(title, ask)``, at most _MAX_WAITING.
     waiting: tuple[tuple[str, str], ...] = ()
@@ -1111,8 +1115,6 @@ class Brief:
             "next": list(self.next),
             "extra": [{"title": title, "items": list(items)} for title, items in self.extra],
         }
-        if self.progress is not None:
-            meta["progress"] = {"accepted": self.progress[0], "total": self.progress[1]}
         if self.body:
             meta["body"] = self.body
         if self.waiting_total:
@@ -1121,10 +1123,10 @@ class Brief:
         return meta
 
     def model_text(self) -> str:
-        """Every text field the model wrote, for the PR-number post-check.
-
-        The widget is HTML the owner never reads as text, and a colour such
-        as ``#333`` would read as a pull request, so it is left out."""
+        """Every text field the model wrote, the body whole (prose, mermaid
+        source, table cells and widget source), for the PR-number post-check
+        and the section 3.9.6 check. The older separate ``widget`` field is not
+        model text a new brief carries, so it is left out."""
         parts = [self.headline, self.asked, self.remaining, self.body]
         parts.extend(self.done + self.needs_you + self.next)
         for title, items in self.extra:
@@ -1206,22 +1208,168 @@ def _redact_whole(text: str) -> str:
     return _redact(_redact(text).replace("**", ""))
 
 
+def _unescaped(text: str) -> str:
+    """*text* with HTML entities decoded until it stops changing, so a
+    double-encoded value reads as the page shows it."""
+    for _ in range(8):
+        decoded = html.unescape(text)
+        if decoded == text:
+            break
+        text = decoded
+    return text
+
+
+# Emphasis, code and strike marks: drawn as nothing between two halves of a
+# fact, so a reference or a time split by bold still reads as one.
+_EMPHASIS_RE = re.compile(r"[*_`~]")
+
+# Where a CSS-style declaration can sit: a mermaid fence, a ``<style>`` block,
+# or a ``style=`` attribute value.
+_STYLE_SPAN_RE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})[ \t]*mermaid\b[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*$|\Z)"
+    r"|<style\b[^>]*>[\s\S]*?(?:</style\s*>|\Z)"
+    r"|\bstyle\s*=\s*(?:\"[^\"]*\"|'[^']*')",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Inside a mermaid fence, declarations sit only on these statement lines; a
+# node label such as ``A[PR: 42]`` is text, not a declaration.
+_MERMAID_STYLE_LINE_RE = re.compile(
+    r"^[ \t]*(?:style|classDef|linkStyle)\b[^\n]*", re.IGNORECASE | re.MULTILINE
+)
+# A CSS-style declaration: ``<name>:`` at a declaration boundary (start, space,
+# ``;``, ``,``, ``{`` or a quote), then its value up to the next separator.
+_DECLARATION_RE = re.compile(r"(?:^|(?<=[\s;,{\"']))([A-Za-z-]+\s*:\s*)([^;,{}\"'\n]*)")
+# A colour value inside a declaration: ``#`` and 3, 4, 6 or 8 hex characters.
+_COLOUR_VALUE_RE = re.compile(
+    r"#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b", re.IGNORECASE
+)
+
+
+def _without_declared_colours(span: str) -> str:
+    return _DECLARATION_RE.sub(lambda d: d.group(1) + _COLOUR_VALUE_RE.sub("", d.group(2)), span)
+
+
+def _without_colour_values(text: str) -> str:
+    """The scan copy of *text* with every colour declaration's value removed.
+    A ``#`` + hex value is a colour only inside the value of a CSS-style
+    declaration in a mermaid ``style``/``classDef``/``linkStyle`` line, a
+    ``<style>`` block or a ``style=`` attribute; everywhere else a ``#N``
+    stays a pull-request reference."""
+
+    def strip(match: re.Match[str]) -> str:
+        span = match.group(0)
+        if match.group(1):
+            return _MERMAID_STYLE_LINE_RE.sub(
+                lambda line: _without_declared_colours(line.group(0)), span
+            )
+        return _without_declared_colours(span)
+
+    return _STYLE_SPAN_RE.sub(strip, text)
+
+
+def _canonical(text: str) -> str:
+    """One canonical form of model output for the secret scan: entities
+    decoded until stable, then NFKC. Nothing is stripped, so attribute values,
+    text and comments all stay in it."""
+    # The cap's cut marker stays one character: NFKC would make it three dots,
+    # and a number the cap cut (``#261…``) would then read as a whole reference.
+    return "…".join(unicodedata.normalize("NFKC", part) for part in _unescaped(text).split("…"))
+
+
+# Markup that can sit between two halves of a key without showing: an HTML
+# tag or comment, a markdown link's brackets and target (its label stays),
+# and emphasis and code marks. Not ``_``, which credential prefixes (``ghp_``)
+# contain.
+_JOINER_RE = re.compile(r"<!--[\s\S]*?-->|<[^<>]*>|!?\[|\]\([^)\n]*\)|[*`~]")
+
+
+def _scan_views(text: str) -> tuple[str, ...]:
+    """The one set of views every section 3.9.6 scanner reads, all of the
+    final posted *text*: its canonical form (entities decoded until stable,
+    then NFKC) as written, with markup removed so the halves around it join,
+    and that joined form with emphasis marks also removed. Colour
+    declaration values are removed in every view. The stored markdown is not
+    changed."""
+    written = _without_colour_values(_canonical(text))
+    # Until stable, so markup nested in markup (``<im<img>g>``) joins too.
+    joined = written
+    while (once := _JOINER_RE.sub("", joined)) != joined:
+        joined = once
+    return written, joined, _EMPHASIS_RE.sub("", joined)
+
+
+def _holds_a_secret(text: str) -> bool:
+    """Whether the redactor finds anything in any of *text*'s scan views."""
+    return any(_redact(view) != view for view in _scan_views(text))
+
+
+# A markdown image (its alt text kept) or an HTML `<img>` tag (dropped).
+_BODY_IMAGE_RE = re.compile(
+    r"!\[([^\]\n]*)\](?:\([^)\n]*\)|\[[^\]\n]*\])?|<img\b[^>]*>", re.IGNORECASE
+)
+# An opener whose block a cap must never cut: a widget or a code fence.
+_WIDGET_OPEN_RE = re.compile(r"<mcwidget\b", re.IGNORECASE)
+_WIDGET_CLOSE_RE = re.compile(r"</mcwidget\s*>", re.IGNORECASE)
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})", re.MULTILINE)
+
+
+def _drop_cut_block(text: str) -> str:
+    """*text* with a widget or code fence the cap left open removed from its
+    opener on: a cut widget draws broken HTML and a cut fence swallows what
+    follows, so a block is kept whole or not at all."""
+    opens = list(_WIDGET_OPEN_RE.finditer(text))
+    if opens and len(_WIDGET_CLOSE_RE.findall(text[opens[-1].start() :])) == 0:
+        text = text[: opens[-1].start()]
+    fences = list(_FENCE_RE.finditer(text))
+    if len(fences) % 2:
+        text = text[: fences[-1].start()]
+    return text.rstrip()
+
+
+# A closed widget or code fence: source the image strip leaves as written.
+_SOURCE_BLOCK_RE = re.compile(
+    r"<mcwidget\b[\s\S]*?</mcwidget\s*>|^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _without_images(text: str) -> str:
+    while True:
+        stripped = _BODY_IMAGE_RE.sub(lambda m: m.group(1) or "", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
 def _clean_body(value: object) -> str:
-    """Free-form text: each line cleaned like a field, blank runs kept as one,
-    capped as a whole. The whole value is redacted before it is split, so a
-    credential that spans lines is matched whole."""
+    """Free-form markdown, kept as source so a mermaid block, a table and a
+    widget's script reach the renderer intact (``2 ** 3`` stays exponentiation,
+    indentation stays). Blank runs are kept as one, and the body is capped
+    whole. The secret and grounding scans run later, on what is posted."""
     if not isinstance(value, str):
         return ""
+    # An image is a remote fetch the owner would start with one click: only
+    # its alt text is kept, repeated until none is left, so an image nested
+    # in another's alt text or split by an inner tag does not survive. A
+    # widget or fence is source, not markdown: it is left as written (the
+    # widget frame allows no remote image).
+    pieces: list[str] = []
+    start = 0
+    for block in _SOURCE_BLOCK_RE.finditer(value):
+        pieces += [_without_images(value[start : block.start()]), block.group(0)]
+        start = block.end()
+    value = "".join(pieces + [_without_images(value[start:])])
     lines: list[str] = []
-    for raw in _redact_whole(value).splitlines():
-        line = _clean(raw, _MAX_BODY_CHARS)
-        if line or (lines and lines[-1]):
-            lines.append(line)
+    for line in (raw.rstrip() for raw in value.splitlines()):
+        if line.strip() or (lines and lines[-1]):
+            lines.append(line if line.strip() else "")
     # Again on the joined text: a marker's opener may sit at a line's end.
-    text = _defang_markers("\n".join(lines[:_MAX_BODY_LINES]).strip())
-    if len(text) <= _MAX_BODY_CHARS:
-        return text
-    return text[: _MAX_BODY_CHARS - 1].rstrip() + "…"
+    whole = _defang_markers("\n".join(lines).strip())
+    text = "\n".join(whole.split("\n")[:_MAX_BODY_LINES])
+    if len(text) > _MAX_BODY_CHARS:
+        text = text[: _MAX_BODY_CHARS - 1].rstrip() + "…"
+    # A cap that cut inside a widget or fence drops that block whole.
+    return _drop_cut_block(text)
 
 
 def _answered(item: dict[str, Any]) -> bool:
@@ -1267,7 +1415,6 @@ _HEADLINE_KEYS = ("headline", "now", "message")
 def _parse_result(
     text: str,
     fallback_asked: str = "",
-    progress: tuple[int, int] | None = None,
     work_items: tuple[dict[str, Any], ...] = (),
 ) -> Brief | None:
     """Validate the model's JSON into a :class:`Brief`, or ``None``.
@@ -1275,9 +1422,9 @@ def _parse_result(
     ``headline`` is the one required field; the older ``now`` and prose
     ``message`` shapes are read as it, so a model that ignores the new shape
     still yields a short card instead of a failure line. A missing ``asked``
-    falls back to the original request the gateway quoted. *progress* is the
-    gateway's count and *work_items* the ledger the waiting list is read from;
-    any number, list or HTML picture the model returns for them is ignored.
+    falls back to the original request the gateway quoted. *work_items* is the
+    ledger the waiting list is read from; any list the model returns for it,
+    and any ``progress`` count, is ignored.
     """
     raw = _extract_json_of_type(
         text,
@@ -1305,7 +1452,6 @@ def _parse_result(
         # A free-form body carries the reminder itself.
         asked=_clean(raw.get("asked"), _MAX_ASKED_CHARS)
         or ("" if body else _clean(fallback_asked, _MAX_ASKED_CHARS)),
-        progress=progress,
         remaining=_clean(raw.get("remaining"), _MAX_REMAINING_CHARS),
         done=_clean_items(raw.get("done"), _MAX_DONE_ITEMS),
         needs_you=needs_you,
@@ -1317,10 +1463,130 @@ def _parse_result(
     )
 
 
+# The section 3.9.6 output check: what the model may only repeat, never make up.
+# A commit SHA: 7 to 40 hex digits, not a `#` colour, with a digit and a letter.
+_SHA_RE = re.compile(r"(?<![#\w])([0-9a-f]{7,40})(?!\w)", re.IGNORECASE)
+_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
+
+
+def _times_in(text: str) -> set[str]:
+    return {f"{int(h):02d}:{m}" for h, m in _TIME_RE.findall(text)}
+
+
+def _posted_text(brief: "Brief", content: str) -> str:
+    """Every string the result row posts: its ``content`` and each field of
+    ``meta.brief`` as stored. The secret scan reads this, after every
+    transform has run, so no later step can rejoin what it would catch."""
+    return content + "\n" + brief.model_text()
+
+
+def _posted_model_text(brief: "Brief") -> str:
+    """The model-written strings exactly as the row posts them: each
+    ``meta.brief`` field, and the body as ``content`` carries it. The PR, SHA
+    and time scans read this; the gateway's own waiting cards are not model
+    text."""
+    return brief.model_text() + "\n" + _inert_body(brief.body)
+
+
+def _names_an_unknown_pr(posted: str, known: set[int]) -> bool:
+    """Whether *posted*, read as the page shows it (entities decoded), names a
+    pull request outside *known*: one read live, or named by the input or the
+    owner's request."""
+    named: set[int] = set()
+    for view in _scan_views(posted):
+        named |= inputs.pr_numbers(view)
+    return bool(named - known)
+
+
+def _grounding_miss(
+    brief: "Brief", content: str, known_prs: set[int], grounding: str, clocks: set[str]
+) -> str:
+    """The section 3.9.6 miss in what the row would post, or "" when it is
+    grounded: a secret anywhere in it, or, in the model-written strings, a
+    pull request outside *known_prs* or a commit SHA or time the input never
+    gave. Runs after every transform, on the final strings."""
+    if _holds_a_secret(_posted_text(brief, content)):
+        return "secret"
+    written = _posted_model_text(brief)
+    if _names_an_unknown_pr(written, known_prs):
+        return "unknown_pr"
+    if _unbacked_facts(written, grounding, clocks):
+        return "unbacked_fact"
+    return ""
+
+
+def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
+    """The commit SHAs and HH:MM times in *posted* that the input never gave
+    (section 3.9.6); unknown `#N` references are checked by
+    :func:`_names_an_unknown_pr`. *grounding* is the snapshot the prompt
+    carried; *clocks* the "as of" times the prompt stated."""
+    views = _scan_views(posted)
+    lowered = grounding.lower()
+    times = _times_in(grounding) | clocks
+    # Each SHA is named once, however many views or fields carry it.
+    shas = dict.fromkeys(sha for view in views for sha in _SHA_RE.findall(view))
+    bad = [
+        sha
+        for sha in shas
+        if any(c.isdigit() for c in sha)
+        and any(c.isalpha() for c in sha)
+        and sha.lower() not in lowered
+    ]
+    found = set().union(*(_times_in(view) for view in views))
+    bad += [t for t in sorted(found) if t not in times]
+    return bad
+
+
+def _gateway_only(brief: "Brief", language: str) -> "Brief":
+    """The brief with every model field dropped: the gateway's waiting cards
+    and one line saying the summary could not be written (section 3.9.6)."""
+    return replace(
+        brief,
+        # The model's own asks are gone, so only the gateway's list can owe the
+        # owner something; a "blocked" read is kept rather than shown on track.
+        status=(
+            "needs_you"
+            if brief.waiting_total
+            else ("blocked" if brief.status == "blocked" else "on_track")
+        ),
+        headline=_FAILURE_TEXT[language],
+        asked="",
+        remaining="",
+        done=(),
+        needs_you=(),
+        next=(),
+        extra=(),
+        body="",
+    )
+
+
 def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+# What `content` must never carry live: a widget block (an unclosed one runs
+# to the end), a markdown link or image, and a bare web address.
+_CONTENT_WIDGET_RE = re.compile(r"<mcwidget\b[\s\S]*?(?:</mcwidget\s*>|$)", re.IGNORECASE)
+_CONTENT_LINK_RE = re.compile(r"!?\[([^\]\n]*)\]\([^)\n]*\)")
+_CONTENT_URL_RE = re.compile(
+    r"<(https?://[^\s<>]+)>|(?<!`)\b(?:https?://|www\.)[^\s<>()`]+", re.IGNORECASE
+)
+
+
+def _inert_body(body: str) -> str:
+    """*body* for ``content``: every surface that renders ``content`` instead of
+    the card (a reply thread's parent, history) draws it under the chat
+    profile, so the widget, links and bare addresses must not survive there.
+    A widget becomes a one-line mention; a link keeps its text; an address
+    becomes code. Mermaid and tables stay."""
+    text = _CONTENT_WIDGET_RE.sub("[widget]", body)
+    text = _CONTENT_LINK_RE.sub(lambda m: m.group(1), text)
+    text = _CONTENT_URL_RE.sub(lambda m: f"`{m.group(1) or m.group(0)}`", text)
+    # Removing a link can rejoin a control marker or a comment opener: the
+    # markers are defanged again on the final text.
+    return _defang_markers(text)
 
 
 def _brief_text(brief: Brief, language: str) -> str:
@@ -1336,11 +1602,8 @@ def _brief_text(brief: Brief, language: str) -> str:
     owed = tuple(f"{title}: {ask}" if ask else title for title, ask in brief.waiting)
     unlisted = brief.waiting_total - len(brief.waiting)
     section(labels["needs"], owed + ((f"+{unlisted}",) if unlisted > 0 else ()) + brief.needs_you)
-    if brief.progress is not None:
-        count = labels["count"].format(accepted=brief.progress[0], total=brief.progress[1])
-        lines.append(f"{labels['progress']}: {count}")
     if brief.body:
-        lines.append(brief.body)
+        lines.append(_inert_body(brief.body))
     if brief.remaining:
         lines.append(f"{labels['remaining']}: {brief.remaining}")
     if brief.asked:
@@ -1360,6 +1623,7 @@ def _post_message(
     kind: str,
     fingerprint: str,
     brief: Brief | None = None,
+    grounding_miss: str = "",
 ) -> dict[str, Any]:
     """Post one ordinary crewmate message; the normal flush loop persists it."""
     from kiro_crew.dashboard.state import append_and_surface
@@ -1367,6 +1631,8 @@ def _post_message(
     meta: dict[str, Any] = {"kind": kind, "fingerprint": fingerprint}
     if brief is not None:
         meta["brief"] = brief.as_meta()
+    if grounding_miss:
+        meta[_GROUNDING_MISS_KEY] = grounding_miss
     return append_and_surface(state, slot, "assistant", content, "msg msg-a", meta=meta)
 
 
@@ -1376,6 +1642,7 @@ async def _generate(
     fresh: TaskSnapshot,
     anchor: float | None,
     live: tuple[dict[str, Any], ...] = (),
+    now: float | None = None,
 ) -> tuple[str, str]:
     """One tool-free background model call over *fresh*: ``(text, source)``,
     with "" text on any failure. *source* is every text value of the prompt's
@@ -1399,6 +1666,7 @@ async def _generate(
             ),
             anchor=anchor,
             live=live,
+            now=now,
         )
         state._warm_task_brief_model_active.add(slot.key)
         try:
@@ -1517,7 +1785,8 @@ async def _run_warm_task_brief(
     # once from the new state; a second change posts nothing this visit.
     for _attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
         live = tuple(await inputs.read_live_prs(_live_refs(fresh)))
-        text, source = await _generate(state, slot, fresh, anchor, live)
+        asked_at = time.time()
+        text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
         # Once the indicator shows, the result lands as ordinary history even
         # while the owner is away from the thread. A turn that started
         # meanwhile defers publication until it ends.
@@ -1530,12 +1799,7 @@ async def _run_warm_task_brief(
     else:
         _skip(slot.key, "changed_during_write")
         return
-    brief = _parse_result(text, fresh.original_request, fresh.progress, fresh.work_items)
-    if brief is not None and inputs.pr_numbers(brief.model_text()) - inputs.pr_numbers(source):
-        # A pull request the input never named is invented, and so may be
-        # every fact around it: post the fixed line.
-        _skip(slot.key, "unknown_pr_in_result")
-        brief = None
+    brief = _parse_result(text, fresh.original_request, fresh.work_items)
     if brief is None:
         _post_message(
             state,
@@ -1545,11 +1809,29 @@ async def _run_warm_task_brief(
             fingerprint=snapshot.fingerprint,
         )
         return
+    # Section 3.9.6, after the PR filter above: a commit SHA or time the input
+    # never gave drops every model field, the picture included; the gateway's
+    # waiting cards still post. *source* already carries the original request
+    # (a missing ``asked`` falls back to it) and the live PR reads.
+    grounding = source + "\n" + json.dumps(_payload(fresh, anchor, live), ensure_ascii=False)
+    # Only the exact "as of" time the prompt stated, beside the snapshot's own.
+    clocks = {inputs.clock(asked_at)[-5:]}
+    # Section 3.9.6: every grounding miss takes this one exit. All model fields
+    # go; the gateway's waiting cards and the failure line post, and the row
+    # is marked so the next return is not read as already caught up.
+    # The scans run last, on the exact strings the row would post.
+    content = _brief_text(brief, language)
+    miss = _grounding_miss(brief, content, inputs.pr_numbers(source), grounding, clocks)
+    if miss:
+        logger.info("warm task brief for %s dropped: %s", slot.key, miss)
+        brief = _gateway_only(brief, language)
+        content = _brief_text(brief, language)
     _post_message(
         state,
         slot,
-        _brief_text(brief, language),
+        content,
         kind=_RESULT_KIND,
         fingerprint=snapshot.fingerprint,
         brief=brief,
+        grounding_miss=miss,
     )

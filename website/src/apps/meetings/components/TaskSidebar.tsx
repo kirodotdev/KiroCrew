@@ -5,7 +5,7 @@
 // Filing happens in the review view after the meeting ends — this panel is for
 // keeping the list honest while the meeting is still running.
 
-import { useRef } from 'react'
+import { useEffect, useRef, useState, type InputHTMLAttributes } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
 
 import { i18nT } from '../../../i18n/t'
@@ -20,6 +20,56 @@ function priorityBadge(priority: TaskPriority): 'err' | 'warn' | 'muted' {
   if (priority === 'high') return 'err'
   if (priority === 'medium') return 'warn'
   return 'muted'
+}
+
+type ServerSyncedInputProps = Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'value' | 'defaultValue' | 'onChange' | 'onFocus' | 'onBlur'
+> & {
+  /** The server's copy of the field, refreshed by the meeting's poll. */
+  value: string
+  /** Called on blur with what the user typed, only when they changed it. */
+  onCommit: (typed: string) => void
+}
+
+/**
+ * A field the extractor agent may revise while the user edits it.
+ *
+ * While the field is not focused it shows the server's copy, so an agent
+ * revision appears on the next poll. While it is focused, a revision does not
+ * replace what the user is typing. On blur the user's text is written only if
+ * they changed it; a field they only focused takes the server's copy, so it
+ * cannot write a stale value back over the agent's update.
+ */
+function ServerSyncedInput({ value, onCommit, ...rest }: ServerSyncedInputProps) {
+  const [draft, setDraft] = useState(value)
+  const focusedRef = useRef(false)
+  const atFocusRef = useRef(value)
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(value)
+  }, [value])
+
+  return (
+    <Input
+      {...rest}
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={e => {
+        focusedRef.current = true
+        atFocusRef.current = e.target.value
+      }}
+      onBlur={e => {
+        focusedRef.current = false
+        const typed = e.target.value
+        if (typed === atFocusRef.current) {
+          setDraft(value)
+          return
+        }
+        onCommit(typed)
+      }}
+    />
+  )
 }
 
 interface Props {
@@ -72,36 +122,23 @@ export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete 
               key={task.id}
               className="p-3 border border-border rounded-md flex flex-col gap-2 bg-card"
             >
-              {/*
-                `key` on the SERVER value, not just `defaultValue`. `defaultValue` is
-                read on mount only, so when the extractor agent revised a task the
-                poll updated the props and the input kept showing the old text — and
-                `onBlur` then wrote that stale value back, silently reverting the
-                agent's update. Keying on the value remounts the input when the
-                server's copy changes, which is what makes the refresh visible.
-
-                It does NOT interrupt typing: the key changes only when the SERVER
-                value does, and local edits do not touch it.
-              */}
-              <Input
-                key={`desc:${task.description}`}
-                defaultValue={task.description}
+              <ServerSyncedInput
+                value={task.description}
                 aria-label={i18nT('apps.meetings.taskSidebar.descriptionLabel')}
-                onBlur={e => {
-                  const next = e.target.value.trim()
+                onCommit={typed => {
+                  const next = typed.trim()
                   if (next && next !== task.description) onUpdate(task.id, { description: next })
                 }}
               />
               <div className="flex items-center gap-2">
-                <Input
-                  key={`assignee:${task.assignee}`}
-                  defaultValue={task.assignee}
+                <ServerSyncedInput
+                  value={task.assignee}
                   placeholder={i18nT('apps.meetings.taskSidebar.unassigned')}
                   aria-label={i18nT('apps.meetings.taskSidebar.assigneeLabel')}
                   className="flex-1"
-                  onBlur={e => {
-                    if (e.target.value.trim() !== task.assignee) {
-                      onUpdate(task.id, { assignee: e.target.value.trim() })
+                  onCommit={typed => {
+                    if (typed.trim() !== task.assignee) {
+                      onUpdate(task.id, { assignee: typed.trim() })
                     }
                   }}
                 />

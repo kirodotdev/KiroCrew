@@ -29,11 +29,14 @@ from kiro_crew.cron_service.model import (
     validate_auto_pause_after_failures,
 )
 from kiro_crew.cron_service.schedule import (
+    LOCAL_TIMEZONE,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
+from kiro_crew.cron_service.zone_default_migration import release_legacy_zone
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 _MIN_INTERVAL_SECS = 60
@@ -173,6 +176,11 @@ def validate_create_timeouts(
             )
 
 
+def _stored_timezone(timezone: str) -> str:
+    """The spelling a validated *timezone* is stored in: ``local`` in one case, else as given."""
+    return LOCAL_TIMEZONE if timezone and is_local_timezone(timezone) else timezone
+
+
 def build_job(
     name: str,
     message: str,
@@ -288,6 +296,7 @@ def build_job(
     )
     if timezone and not is_valid_timezone(timezone):
         raise ValueError(f"Invalid timezone: {timezone!r}")
+    timezone = _stored_timezone(timezone)
     skip_dates = skip_dates or []
     for _d in skip_dates:
         if not is_valid_skip_date(_d):
@@ -549,7 +558,9 @@ def apply_job_update(
     if "skip_dates" in kwargs:
         job.skip_dates = kwargs["skip_dates"] or []
     if "timezone" in kwargs:
-        job.timezone = kwargs["timezone"] or ""
+        job.timezone = _stored_timezone(kwargs["timezone"] or "")
+        # Chosen with today's meaning of an empty zone, so no upgrade holds it on UTC.
+        release_legacy_zone(job)
     if "strict_schedule" in kwargs:
         job.strict_schedule = bool(kwargs["strict_schedule"])
     if "persistent_session" in kwargs:

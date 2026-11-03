@@ -1,5 +1,5 @@
 ---
-title: Crew Enterprise Edition -- a build-time edition that requires login, fetches governance rules before it opens, and turns every governable feature off by default
+title: Crew Enterprise Edition -- a build-time edition that requires login, fetches governance rules before it opens, and turns most governable features off by default
 status: accepted
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
@@ -7,20 +7,20 @@ last-audited: 2026-10-29
 audited-at: a7ecdf3f1
 doc-pr: null
 implementation-prs: []
-tracking-issues: [23206]
+tracking-issues: [23206, 28751]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: Crew Enterprise Edition
 
-- Status: accepted. The owner approved this design on 2026-10-23; D1 to D5 in section 5 are owner decisions (D4 and D5 added 2026-10-29). This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (every governable feature off) and adds a startup gate.
+- Status: accepted. The owner approved this design on 2026-10-23; D1 to D5 in section 5 are owner decisions (D4 and D5 added 2026-10-29, D3 amended 2026-11-02). This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (most governable features off) and adds a startup gate.
 - Tracking issue: [#23206](https://github.com/kirodotdev/KiroCrew/issues/23206)
 - Related: [rfc-central-governance-ceiling](rfc-central-governance-ceiling.md) (the policy ceiling this edition fetches and enforces), [platform-context](../system-specs/modules/platform-context.md) (the existing edition seam), [governance](../system-specs/modules/governance.md) (the evaluator and catalog this edition tightens)
 
 ## Summary
 
-Kiro Crew gains an enterprise edition built from the same codebase. The build picks the edition (`make desktop EDITION=enterprise`, default `oss`) and writes it into the package as a constant. At run time the enterprise edition will not open until the user has a kiro login and Crew has fetched the organisation's governance rules. With no login it opens only a sign-in screen; any other failure makes Crew exit (amended 2026-10-29). Every action is then checked against those rules, and every governable feature is off by default or keeps only a minimal set until a rule turns it on. The `oss` edition is unchanged.
+Kiro Crew gains an enterprise edition built from the same codebase. The build picks the edition (`make desktop EDITION=enterprise`, default `oss`) and writes it into the package as a constant. At run time the enterprise edition will not open until the user has a kiro login and Crew has fetched the organisation's governance rules. With no login it opens only a sign-in screen; any other failure makes Crew exit (amended 2026-10-29). Every action is then checked against those rules. Most governable features are off by default or keep only a minimal set until a rule turns them on; eight keep Crew's normal default until a rule turns them off (D3, amended 2026-11-02). The `oss` edition is unchanged.
 
 ## Motivation
 
@@ -35,7 +35,7 @@ An organisation that wants to run Crew today can install a governance ceiling ([
 ## Goals
 
 1. Crew requires a kiro login before it opens the dashboard (amended 2026-10-29, D4 and D5). With no login it opens only a sign-in screen; every other startup failure makes it exit.
-2. Most local shims are turned off. Governance controls the real behaviour.
+2. Governance controls the real behaviour. Most local shims are turned off; eight shims keep Crew's normal default, and governance can still turn each off (D3, amended 2026-11-02).
 3. No new repository: one codebase builds both editions.
 
 ## Non-goals
@@ -78,18 +78,20 @@ flowchart LR
 
 Any failed step denies (fail-closed). While the gate is closed, gateway middleware denies every route outside the sign-in allow-list: sign-in, health and static routes (D5).
 
-### 3. Every governable feature off by default
+### 3. Most governable features off by default
 
-In the enterprise edition, every governable feature is off by default, or keeps only a minimal set. A feature turns on only when a governance rule turns it on. The appendix lists all 66 controls with each one's default.
+In the enterprise edition, most governable features are off by default, or keep only a minimal set. Such a feature turns on only when a governance rule turns it on. Eight controls are open instead (amended 2026-11-02, D3): MCP servers, file read, file write, shell commands, tools, sub-agents, scheduled jobs and Crew apps. Each keeps Crew's normal default until a governance rule turns it off. The owner's reason: the organisation's governance (KGL, and KAS for MCP servers) is where these are meant to be controlled, so Crew does not add its own default-off on top. The appendix lists all 66 controls with each one's default.
 
 | Class | Count | Enterprise behaviour |
 |---|---|---|
-| Green | 33 | Off by default; governance turns it on |
-| Yellow | 20 | Off by default. Until the Crew work lands, minimal set only |
+| Green | 33 | Off by default; governance turns it on. MCP servers, scheduled jobs, Crew apps and sub-agents keep Crew's default; governance turns them off |
+| Yellow | 20 | Off by default. Until the Crew work lands, minimal set only. Tools, shell commands and file read / write keep Crew's default; governance turns them off |
 | Red | 13 | Governance cannot control it; hardcoded to the minimal set |
 | Local floor | 2 | Always on; see below |
 
-For controls that already have a key, "off by default" comes from one change: in the enterprise edition `_query_level` denies a control the policy does not name, where today it permits; the built-in baseline policy keeps each minimal set (D3). For controls with no key yet, the enterprise edition reads `EDITION` at the feature's entry and turns it off.
+For controls that already have a key, "off by default" comes from one change: in the enterprise edition `_query_level` denies a control the policy does not name, where today it permits; the built-in baseline policy keeps each minimal set, and leaves the eight open controls at Crew's own default (D3). For controls with no key yet, the enterprise edition reads `EDITION` at the feature's entry and turns it off.
+
+The open controls do not skip Crew's approval prompt; they get the same approval behaviour as in the `oss` edition. Under the default `normal` mode, every file write and every shell command that is not read-only asks the user first, unless a grant the user or operator made already covers it (for example a trusted pattern, an operator grant or an agent spec allow-list); read-only shell commands that do not run git, and read-only built-in tools, run without asking. `yolo` stays off. A user may still pick `trust` or `trust_reads`, as in every enterprise build since D3: a policy cannot deny those two modes yet (the catalog's `always_permitted` floor for `approval_modes`), and governing them is tracked separately. Under `trust`, open commands and writes run without a prompt. `trust_reads` still asks for writes and for commands that are not read-only. A policy that names `commands` or `filesystem.write` still limits what runs in every mode.
 
 The local floor is Crew's own protection, not a governance rule:
 
@@ -114,10 +116,12 @@ The repository owner decided D1 to D3 on 2026-10-23. They hold in an enterprise 
 
 **D3. No local loosening.** Remote rules are the only thing that can turn a control on. A control the remote policy does not name is locked to its minimal set, or off when it has no minimal set. Local config, environment variables, profiles and dashboard settings cannot widen any control in an enterprise build; they may only narrow it further. A built-in baseline policy holds each control's minimal set (the appendix "Minimal set" column), and enterprise `_query_level` denies anything outside it. This closes the earlier open question on how deny-unnamed keeps each minimal set.
 
+Open controls (amended 2026-11-02): `mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron` and `apps` are not gated by the baseline. When the remote policy does not name one of them, it keeps Crew's own default (the appendix shows "Crew default"). A remote policy that names one still wins, so governance can narrow or turn it off. The baseline lists each open control with its reason, beside the minimal sets. The approval mode default stays `normal` and the local floor stays on, so open commands and writes get the approval behaviour section 3 describes, and in every mode they cannot reach credential files. `trust` and `trust_reads` stay selectable and are not yet governable (section 3). For an open control the remote policy does not name, local config and settings work as in the `oss` edition; for every other control they may still only narrow.
+
 | Source | Can widen | Can narrow |
 |---|---|---|
 | Remote policy | yes | yes |
-| Built-in baseline | minimal set only | — |
+| Built-in baseline | minimal set only; Crew's own default for the open controls | — |
 | Local config | no | yes |
 | Environment variables | no | yes |
 | Profiles | no | yes |
@@ -147,6 +151,8 @@ Each refusal names one real cause, from this list: both sign-ins disagree, gover
 - 2026-10-30: the owner amended D4. Why it changes: in review of the code PR (#26100), the gate, the rules fetch and the account lock each picked the sign-in source on their own, by liveness, so a lapsed vault entry next to a live kiro-cli sign-in could make the fetch use one account while the lock saw another, refusing every start. New consequence: one selection, by presence, read by every check: a vault entry means the vault only, and a lapsed one is not signed in; no vault entry means kiro-cli's sign-in only. Crew does not renew kiro-cli's token at boot (follow-up #26183). What does not change: the vault is preferred; two stored sign-ins on different accounts are refused naming both; D5; the `oss` edition is unchanged. Delivery: the vault sign-in lands first (#26100); the kiro-cli fallback lands in its own change, written so the `oss` edition can reuse the same resolver.
 - 2026-10-30: the owner extended D4's sign-in order to the `oss` edition. Why it changes: users moving from older Kiro Crew, which needed kiro-cli, must keep working on their kiro-cli sign-in without a new Crew sign-in (a migration path); and `oss` picked its KAS sign-in with its own rule, which quietly fell back from a lapsed or unreadable vault entry to kiro-cli's account, so the two sign-ins could mix. New consequence: `oss` reads D4's resolver: a vault entry means the vault only, and a lapsed or unreadable one is not signed in; no vault entry means kiro-cli's sign-in; two accounts use the vault with one warning. The old silent fallback from a lapsed vault entry to kiro-cli is removed on purpose. What does not change: the enterprise rules in D4, including the refusal of two accounts; D5; the kiro-cli bundle route, which has no kiro-cli and stays Crew-owned. Delivery: #26841 (issue #26829).
 
+- 2026-11-02: the owner amended D3 to open eight controls. Why it changes: review of the design (nine comments on the enterprise design doc) asked not to turn off features the organisation's governance (KGL, and KAS for MCP servers) is meant to control; turning them off by default left an enterprise build without them until an organisation wrote a rule turning each one on. New consequence: `mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron` and `apps` keep Crew's own default when the remote policy does not name them, and a policy that names one still wins. What does not change: the approval mode default stays `normal`, so under it every write and every command that is not read-only asks unless a grant covers it (`trust` and `trust_reads` stay selectable and are not yet governable, as before); the local floor (`~/.aws`, `~/.ssh`, no self-disable) stays on; `app_versions`, extension install, `yolo` (approval modes keep `normal`, `trust`, `trust_reads`), chat services (`channels`) and the Slack posture stay off; every other control keeps its minimal set; the `oss` edition is unchanged. Delivery: one code pull request after this amendment merges (issue #28751).
+
 ### 6. Changes
 
 | Where | What changes |
@@ -160,7 +166,7 @@ Each refusal names one real cause, from this list: both sign-ins disagree, gover
 | Governance client (new) | Fetch, cache and query rules from the organisation's governance service |
 | `src/kiro_crew/platform/profile.py` | `resolve_profile`: enterprise build returns the enterprise profile from `EDITION` alone (D1) |
 | `src/kiro_crew/platform/policy_distribution_source.py` | Enterprise build uses the build-time policy URL; `POLICY_URL_ENV` and config are ignored (D2) |
-| Built-in baseline policy (new) | Grants each control's minimal set beneath the remote policy (D3) |
+| Built-in baseline policy (new) | Grants each control's minimal set beneath the remote policy, and lists the open controls that keep Crew's default (D3) |
 | `src/kiro_crew/platform/governance_parts/evaluator.py` | `_query_level`: a control the policy layer does not name is allowed today. Enterprise edition denies anything outside the remote policy and the baseline (D3) |
 | Local config, env, profile and dashboard settings readers | Enterprise build lets them narrow a control, never widen it (D3) |
 | Features Crew has no key for yet | Enterprise edition reads `EDITION` at the feature entry and turns it off |
@@ -172,7 +178,7 @@ Each phase is one pull request and changes nothing in the `oss` edition.
 
 1. **Edition stamp.** Add `edition.py`, the `EDITION=enterprise` build, the build-time policy URL placeholder and the `resolve_profile` change (D1, D2). Exit: an `oss` build and an enterprise build differ only in `edition.py`; a test asserts that no config key or environment variable changes `EDITION`; in an enterprise build `KIROCREW_PROFILE=standalone` still resolves the enterprise profile, boot with no companion composes the core defaults under the enterprise profile while boot with a broken or mismatched companion raises `PlatformCompositionError` (amended 2026-10-28), and setting `KIROCREW_POLICY_URL` does not change the policy URL.
 2. **Enterprise gate.** Login check, governance fetch, middleware deny, expiry and refresh. The placeholder URL is replaced with the real endpoint before this phase enables the gate. Exit: with no sign-in, an enterprise build opens only the sign-in-only gateway (D5), and after sign-in it fetches the rules; with the governance fetch failing, or any other startup failure, it exits; the login check, the rules fetch and the account lock read the one sign-in resolver (D4); while the gate is closed every route outside the sign-in allow-list is refused; tests cover the disagreement refusal, the sign-in screen naming both commands, each refusal naming its cause, and a route outside the allow-list being refused (amended 2026-10-29). Blocked on the Open question.
-3. **Deny unnamed controls, no local loosening.** Enterprise `_query_level` denies anything outside the remote policy and the built-in baseline policy (D3). Exit: an empty remote policy leaves each `yes` control at its appendix minimal set; a local config, environment, profile or dashboard setting that would widen a control has no effect, and one that narrows it does.
+3. **Deny unnamed controls, no local loosening.** Enterprise `_query_level` denies anything outside the remote policy and the built-in baseline policy (D3). Exit: an empty remote policy leaves each `yes` control at its appendix minimal set, and each open control at Crew's default (amended 2026-11-02); a local config, environment, profile or dashboard setting that would widen a control has no effect, and one that narrows it does.
 4. **Hardcoded defaults for controls with no key.** Exit: each `no` and Red control behaves as its appendix row in an enterprise build.
 
 ## Backward compatibility
@@ -201,19 +207,21 @@ How deny-unnamed keeps each control's minimal set was open in the first draft; D
 
 "In Crew": `yes` = the key already exists in `src/kiro_crew/platform/governance_parts/catalog.py` or `carriers.py`. `partial` = the on/off switch exists, the list does not. `no` = must be added.
 
-`yes` controls become off by default through the `_query_level` change. `no` controls are not reachable by governance today; the enterprise edition hardcodes them to the "Enterprise default" column for now.
+`yes` controls become off by default through the `_query_level` change, except the open controls marked "Crew default". `no` controls are not reachable by governance today; the enterprise edition hardcodes them to the "Enterprise default" column for now.
 
 "Minimal set": what stays when no rule turns the control on. `—` means fully off.
+
+"Crew default" (amended 2026-11-02, D3): an open control. When no rule names it, it keeps Crew's normal default, as in the `oss` edition; a rule can narrow it or turn it off. The local floor still applies, and so does the approval prompt under the default `normal` mode (`trust` and `trust_reads` stay selectable; see section 3).
 
 ### Green (33)
 
 | Control | Policy term | Crew key | In Crew | Enterprise default | Minimal set |
 |---|---|---|---|---|---|
-| Chat services | `messaging_channel` | `channels` | yes | off | — |
+| Chat services | `messaging_channel` | `channels` | yes | off (kept off 2026-11-02: sends data off the machine; waits for its KGL control) | — |
 | Agent-initiated messages | `messaging` | `capabilities.messaging` | yes | off | — |
 | Agent harness | `harness_use` | `agent_backend` | yes | off | `kiro` |
-| Approval modes | `permission_mode` | `approval_modes` | yes | off | `normal` |
-| MCP servers | `mcp` | `mcp` | yes | off | `@kirocrew-core` |
+| Approval modes | `permission_mode` | `approval_modes` | yes | `yolo` off | `normal`, `trust`, `trust_reads` |
+| MCP servers | `mcp` | `mcp` | yes | Crew default | Crew default |
 | Theme persona | `theme_persona` | `capabilities.theme_persona` | yes | off | — |
 | Theme install | `theme_install` | `capabilities.theme_install` | yes | off | — |
 | Publish destinations | `artifact_publish` | `capabilities.publish` | yes | off | `default` |
@@ -223,10 +231,10 @@ How deny-unnamed keeps each control's minimal set was open in the first draft; D
 | Tailscale access | `remote_connect` | `capabilities.tailnet_origin` | yes | off | — |
 | Allowed tailnets | `crew_remote_tailnets` | `tailnet_origin.tailnets` | no | off | — |
 | Durable memory writes | `memory_writes` | `capabilities.memory_writes` | yes | off | — |
-| Scheduled jobs | `cron` | `capabilities.cron` | yes | off | — |
-| Crew apps | `app_use` | `apps` | yes | off | — |
-| App versions | `crew_app_versions` | `app_versions` | no | off | — |
-| Sub-agents | `subagent` | `capabilities.spawn` | yes | off | — |
+| Scheduled jobs | `cron` | `capabilities.cron` | yes | Crew default | Crew default |
+| Crew apps | `app_use` | `apps` | yes | Crew default | Crew default |
+| App versions | `crew_app_versions` | `app_versions` | no | off (kept off 2026-11-02) | — |
+| Sub-agents | `subagent` | `capabilities.spawn` | yes | Crew default | Crew default |
 | Script hooks | `script_hook_execute` | `capabilities.script_hooks` | yes | off | — |
 | Hook trigger events | `crew_script_hook_events` | `script_hooks.events` | no | off | — |
 | Optional telemetry | `telemetry_export` | `capabilities.telemetry` | partial | off | — |
@@ -247,9 +255,9 @@ How deny-unnamed keeps each control's minimal set was open in the first draft; D
 
 | Control | Policy term | Crew key | In Crew | Enterprise default | Minimal set |
 |---|---|---|---|---|---|
-| Tools | `tool` | `tools` | yes | off | read-only tools |
-| Shell commands | `shell` | `commands` | yes | off | — |
-| File read / write | `fs_read` / `fs_write` | `filesystem.read` / `write` | yes | off | read: inside the workspace. write: — |
+| Tools | `tool` | `tools` | yes | Crew default | Crew default |
+| Shell commands | `shell` | `commands` | yes | Crew default; under `normal` a command that is not read-only asks unless a grant covers it (section 3) | Crew default |
+| File read / write | `fs_read` / `fs_write` | `filesystem.read` / `write` | yes | Crew default; under `normal` each write asks unless a grant covers it (section 3); local floor stays | Crew default |
 | Reachable hosts | `web_fetch` | `network.egress` | yes | off | — |
 | Extension install | `extension_install` | `capability_install` | no | off | — |
 | Extension sources | `crew_extension_registry_hosts` / `_local_sources` | `external_access.registry_hosts` | no | off | — |

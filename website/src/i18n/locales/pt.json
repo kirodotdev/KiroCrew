@@ -489,8 +489,6 @@
         "copy_this_section_s_markdown_to_paste_into_chat": "Copiar o markdown desta seção para colar no chat ou no autopilot",
         "could_not_generate_challenges_please_try_again": "Não foi possível gerar questionamentos. Tente novamente.",
         "cycle": "Ciclo",
-        "cycles": "ciclos,",
-        "cycles_2": "ciclos",
         "definition_of_done_optional": "Definição de Pronto (opcional)",
         "delete": "Excluir",
         "delete_campaign": "Excluir campanha?",
@@ -508,7 +506,6 @@
         "failed_to_add_to_knowledge_library": "Falha ao adicionar à Biblioteca de Conhecimento",
         "failed_to_export_as_artifact": "Falha ao exportar como artefato",
         "failed_to_start_campaign_please_try_again": "Falha ao iniciar a campanha — tente novamente.",
-        "findings": "descobertas",
         "findings_count": "Descobertas ({{count}})",
         "findings_so_far_are_preserved_below": "As descobertas até agora estão preservadas abaixo.",
         "first_cycle_in_progress": "Primeiro ciclo em andamento...",
@@ -536,7 +533,6 @@
         "loading": "Carregando...",
         "max_cycles": "Ciclos máx.:",
         "max_cycles_2": "Ciclos máx.",
-        "min": "min",
         "min_20_characters": "Mín. 20 caracteres.",
         "model": "Modelo",
         "model_default_inherit": "Padrão (herdar)",
@@ -574,7 +570,6 @@
         "resume": "Retomar",
         "run_autonomous_research_campaigns": "Execute campanhas de pesquisa autônomas",
         "run_unattended_skip_clarification_questions": "Executar sem supervisão (ignorar perguntas de esclarecimento)",
-        "s_idle": "s de espera. ~",
         "scripted": "(com script)",
         "searched_empty": "Pesquisado (vazio):",
         "send": "Enviar",
@@ -598,14 +593,11 @@
         "strong": "Forte",
         "sub_question": "Subpergunta {{n}}",
         "sub_questions": "Subperguntas",
-        "sub_questions_2": "subperguntas",
         "sub_questions_guidance_count": "Subperguntas e orientações ({{count}})",
-        "suggested_from": "sugerido a partir de",
         "the_agent_is_waiting_for_your_direction": "O agente está esperando o seu direcionamento.",
         "the_ai_drives_every_round_itself_deciding_what_t": "A IA conduz cada rodada por conta própria — decidindo o que investigar, gerenciando subagentes e seguindo novas pistas das descobertas conforme elas surgem.",
         "the_ai_writes_an_orchestration_script_up_front_a": "A IA escreve um script de orquestração no início; um executor determinístico gerencia a execução dos subagentes enquanto a IA apenas planeja, investiga e sintetiza. Reproduzível e com orçamento limitado.",
         "the_campaign_stopped_unexpectedly": "A campanha parou inesperadamente.",
-        "up_to": "Até",
         "validating": "Validando...",
         "validation_failed_check_your_connection_and_try": "A validação falhou — verifique sua conexão e tente novamente.",
         "view_report": "Ver relatório",
@@ -614,7 +606,19 @@
         "when_should_the_agent_stop": "Quando o agente deve parar?",
         "your_answer": "Sua resposta",
         "your_answer_2": "Sua resposta...",
-        "your_guidance": "seu direcionamento"
+        "your_guidance": "seu direcionamento",
+        "suggested_from_sub_questions_one": "sugerido a partir de {{count}} subpergunta",
+        "suggested_from_sub_questions_many": "sugerido a partir de {{count}} subperguntas",
+        "suggested_from_sub_questions_other": "sugerido a partir de {{count}} subperguntas",
+        "estimate_one": "Até {{count}} ciclo, {{idle}} s ocioso. ~{{minutes}} min",
+        "estimate_many": "Até {{count}} ciclos, {{idle}} s ocioso. ~{{minutes}} min",
+        "estimate_other": "Até {{count}} ciclos, {{idle}} s ocioso. ~{{minutes}} min",
+        "findings_tally_one": "{{count}} descoberta",
+        "findings_tally_many": "{{count}} descobertas",
+        "findings_tally_other": "{{count}} descobertas",
+        "cycles_count_one": "{{count}} ciclo",
+        "cycles_count_many": "{{count}} ciclos",
+        "cycles_count_other": "{{count}} ciclos"
       }
     },
     "autoTriagePipeline": {
@@ -1058,12 +1062,18 @@
           "checks_running_other": "{{pending}} de {{count}} verificações ainda rodando",
           "closed": "fechada",
           "conflicts": "conflitos",
-          "failing": "falhando",
           "merge_blocked": "merge bloqueado",
           "merged": "merged",
           "open": "aberta",
-          "passed": "passaram",
-          "running": "rodando"
+          "running_count_one": "{{count}} em execução",
+          "running_count_many": "{{count}} em execução",
+          "running_count_other": "{{count}} em execução",
+          "passed_count_one": "{{count}} passou",
+          "passed_count_many": "{{count}} passaram",
+          "passed_count_other": "{{count}} passaram",
+          "failing_count_one": "{{count}} falhando",
+          "failing_count_many": "{{count}} falhando",
+          "failing_count_other": "{{count}} falhando"
         },
         "repoSwitcher": {
           "add_a_repo": "Adicionar um repo",
@@ -2199,14 +2209,15 @@
           "search_labels_2": "Pesquisar rótulos…"
         },
         "labelPicker": {
-          "add": "Adicionar",
           "filter_labels": "Filtrar rótulos…",
           "filter_labels_2": "Filtrar rótulos",
           "loading_labels": "Carregando rótulos…",
           "remove_this_label_no_longer_exists_on_the_repo": "Remover — este rótulo não existe mais no repositório",
           "saved_but_no_longer_on_this_repo": "Salvos, mas não estão mais neste repositório:",
-          "suggested": "sugerido",
-          "this_repo_has_no_labels": "Este repositório não tem rótulos."
+          "this_repo_has_no_labels": "Este repositório não tem rótulos.",
+          "add_suggested_one": "Adicionar {{count}} sugerido",
+          "add_suggested_many": "Adicionar {{count}} sugeridos",
+          "add_suggested_other": "Adicionar {{count}} sugeridos"
         },
         "leftRail": {
           "click_to_expand_the_sidebar": "{{name}} — clique para expandir a barra lateral",
@@ -2465,11 +2476,14 @@
           "close": "Fechar",
           "close_esc": "Fechar (Esc)",
           "close_reference": "Fechar referência",
-          "deep": "de profundidade",
           "issue": "Issue",
           "loading": "Carregando #",
           "open_in_the_list_detail_column": "Abrir na coluna de lista + detalhes",
-          "open_this_item_in_the_workspace": "Abrir este item no espaço de trabalho"
+          "open_this_item_in_the_workspace": "Abrir este item no espaço de trabalho",
+          "deep_count_one": "{{count}} de profundidade",
+          "deep_count_many": "{{count}} de profundidade",
+          "deep_count_other": "{{count}} de profundidade",
+          "dialog_label": "{{kind}} {{ref}} em {{repo}}"
         },
         "repoSwitcher": {
           "repositories": "Repositórios"
@@ -2582,7 +2596,13 @@
         "gitlab_instances_unavailable_dashboard_settings_didn_t_load": "As configurações do painel não foram carregadas, então não é possível listar as instâncias do GitLab.",
         "selection_cleared_those_projects_are_on_the_previous_instance": "Seleção limpa: esses projetos estão na instância GitLab anterior.",
         "selection_cleared_those_repos_belong_to_the_previous_provider": "Seleção limpa: esses repositórios pertencem ao provedor anterior.",
-        "try_again": "Tentar novamente"
+        "try_again": "Tentar novamente",
+        "repos_selected_one": "{{count}} selecionado",
+        "repos_selected_many": "{{count}} selecionados",
+        "repos_selected_other": "{{count}} selecionados",
+        "repos_found_one": "{{count}} encontrado",
+        "repos_found_many": "{{count}} encontrados",
+        "repos_found_other": "{{count}} encontrados"
       },
       "connectRepoModal": {
         "close": "Fechar",
@@ -2990,7 +3010,8 @@
             "first_issue_friendly_count_one": "<strong>{{n}}</strong> issue aberta está marcada como adequada para iniciantes",
             "first_issue_friendly_count_many": "<strong>{{n}}</strong> issues abertas estão marcadas como adequadas para iniciantes",
             "first_issue_friendly_count_other": "<strong>{{n}}</strong> issues abertas estão marcadas como adequadas para iniciantes",
-            "triage_needed_of_open": "Issues abertas que precisam de triagem: <strong>{{triage}}</strong> de {{n}}"
+            "triage_needed_of_open": "Issues abertas que precisam de triagem: <strong>{{triage}}</strong> de {{n}}",
+            "member_chip_title": "{{login}} — {{role}} · abrir no {{provider}}"
           }
         },
         "tagging": {
@@ -3002,7 +3023,6 @@
             "created": "Criada",
             "creating": "Criando…",
             "creating_needs_write_access": "criar exige acesso de gravação",
-            "defined_by_open_issue_count": "definidas · por número de issues abertas",
             "labels": "Etiquetas",
             "looking_for_labels_this_repo_is_missing": "Procurando etiquetas que faltam neste repo…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Nenhuma — a taxonomia do repo já cobre o que suas issues abertas precisam.",
@@ -3018,7 +3038,10 @@
             "suggest_new_labels": "Sugerir novos rótulos",
             "suggested_new_labels_not_created_until_you_say_s": "Novas etiquetas sugeridas — só são criadas quando você autorizar",
             "re_fetch_this_repo_s_labels_from": "Buscar novamente as etiquetas deste repo no {{provider}}",
-            "create_this_label_on": "Criar este rótulo no {{provider}}"
+            "create_this_label_on": "Criar este rótulo no {{provider}}",
+            "labels_defined_one": "{{count}} definida · por número de issues abertas",
+            "labels_defined_many": "{{count}} definidas · por número de issues abertas",
+            "labels_defined_other": "{{count}} definidas · por número de issues abertas"
           },
           "untaggedIssueCard": {
             "add": "Adicionar",
@@ -4580,12 +4603,10 @@
         "at_least_one_source_did_not_answer_this_poll": "At least one source did not answer this poll.",
         "claim": "Claim",
         "claimed": "Claimed",
-        "cleared": "cleared ·",
         "delivered_by_push_so_an_empty_poll_means_nothing": "· delivered by push, so an empty poll means nothing",
         "every_configured_source_answered": "Every configured source answered.",
         "everything_firing_already_has_an_incident": "Everything currently firing already has an incident.",
         "firing": "Firing",
-        "firing_2": "firing ·",
         "firing_not_yet_claimed": "Firing, not yet claimed",
         "inbound_webhook_queued_many": "{{count}} inbound webhook signals delivered and waiting for the next cycle to pick them up — they are not on the board yet.",
         "inbound_webhook_queued_one": "{{count}} inbound webhook signal delivered and waiting for the next cycle to pick it up — it is not on the board yet.",
@@ -4612,7 +4633,6 @@
         "no_signal_sources_registered": "No signal sources registered.",
         "no_sources_reporting_a_firing_signal": "No sources are reporting a firing signal.",
         "not_polled_yet_not_the_same_as_healthy": "not polled yet — this is not the same as healthy",
-        "not_yet_claimed": "not yet claimed",
         "nothing_firing_but_parked_signals_not_investigated": "nothing is firing, but the parked signals above are not being investigated",
         "nothing_firing_but_signals_parked_not_picked_up_many": "Nothing is firing — but {{count}} signals are parked at the provider (see above) and will not be picked up.",
         "nothing_firing_but_signals_parked_not_picked_up_one": "Nothing is firing — but {{count}} signal is parked at the provider (see above) and will not be picked up.",
@@ -4622,7 +4642,6 @@
         "one_ledger_entry_matched": "1 ledger entry matched — {{detail}}",
         "parked": "Parked",
         "parked_2": "parked",
-        "parked_at_provider": "parked at provider ·",
         "parked_at_the_provider": "Parked at the provider",
         "poll_answered": "answered",
         "poll_every_configured_source_now_read_only": "Poll every configured source now (read-only)",
@@ -4648,7 +4667,19 @@
         "this_source_pushes_to_a_spool_that_each_poll_emp": "This source pushes to a spool that each poll empties, so a signal it already delivered will not appear again even if the fault is still live.",
         "title_resource_tooltip": "{{title}}\n{{resource}}",
         "where_work_comes_from_configure_credentials_and": "Where work comes from. Configure credentials and scope in Settings; poll\n          here to see what a source actually returns.",
-        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look."
+        "while_that_is_true_absence_of_a_signal_does_not": "While that is true, absence of a signal does NOT mean recovery — it may just\n                mean we could not look.",
+        "firing_count_one": "{{count}} disparando ·",
+        "firing_count_many": "{{count}} disparando ·",
+        "firing_count_other": "{{count}} disparando ·",
+        "parked_count_one": "{{count}} em espera no provedor ·",
+        "parked_count_many": "{{count}} em espera no provedor ·",
+        "parked_count_other": "{{count}} em espera no provedor ·",
+        "cleared_count_one": "{{count}} resolvido ·",
+        "cleared_count_many": "{{count}} resolvidos ·",
+        "cleared_count_other": "{{count}} resolvidos ·",
+        "unclaimed_count_one": "{{count}} ainda não assumido",
+        "unclaimed_count_many": "{{count}} ainda não assumidos",
+        "unclaimed_count_other": "{{count}} ainda não assumidos"
       }
     },
     "papyrus": {
@@ -5344,7 +5375,8 @@
         "agents_other": "{{count}} agentes",
         "events_one": "{{count}} evento",
         "events_many": "{{count}} eventos",
-        "events_other": "{{count}} eventos"
+        "events_other": "{{count}} eventos",
+        "view_label": "Visualização"
       }
     },
     "commandBar": {
@@ -5566,6 +5598,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Você ainda pode iniciar o backup manualmente, mas o arquivo de sessões é enviado sem ocultação.",
         "backup_archive": "Backups armazenados",
         "backup_restore": "Restaurar",
+        "backup_show_all_archives": "Mostrar tudo ({{count}})",
         "backup_restore_caveat": "A restauração precisa de acesso de leitura à pasta de backups. A política de privilégio mínimo recomendada concede deliberadamente apenas escrita, portanto será negada a menos que as credenciais da conta sejam mais amplas.",
         "backup_remote_error": "Não foi possível ler os backups armazenados agora.",
         "backup_status_failed": "Não foi possível ler o status do backup.",
@@ -5892,8 +5925,6 @@
       "more_waiting": "Mais {{count}}",
       "needs_you": "Precisa de você",
       "next": "Próximos passos",
-      "progress": "Progresso",
-      "progress_count": "{{accepted}} de {{total}} concluídas",
       "remaining": "Falta",
       "show_fewer": "Mostrar menos",
       "status_blocked": "Travado",
@@ -6266,7 +6297,6 @@
       "decision_not_recorded_error": "Esta decisão não foi registrada: {{error}}",
       "reject": "Rejeitar",
       "rejected": "Rejeitado",
-      "running": "Executando:",
       "tool_approval_requested": "Aprovação de ferramenta solicitada:",
       "trusted_auto_approving_future_calls": "Confiável — aprovando automaticamente as chamadas futuras",
       "trusted_channel_all": "Confiável — todas as ferramentas deste canal serão aprovadas automaticamente, persiste após reiniciar",
@@ -6655,6 +6685,7 @@
       "message_input": "Entrada de mensagem",
       "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Enviar mensagem para {{bot}}…",
+      "follow_up_tab_placeholder": "{{option}} - Pressione Tab para preencher",
       "message_placeholder_terminal": "Enviar mensagem para {{bot}}… (/command · @file · $skill · ! comando de shell)",
       "model": "Modelo",
       "model_2": "Modelo: {{name}}",
@@ -6777,7 +6808,18 @@
       "attachment_removed": "{{file}} removido dos anexos",
       "attachment_restored": "{{file}} anexado",
       "trusted_command_until": "“{{cmd}}” é confiável até {{time}}; depois disso, pergunta novamente",
-      "trusted_base_until": "Qualquer comando “{{base}}” é confiável até {{time}}; depois disso, pergunta novamente"
+      "trusted_base_until": "Qualquer comando “{{base}}” é confiável até {{time}}; depois disso, pergunta novamente",
+      "composer_action_dialog": "{{title}}, de {{app}}",
+      "composer_action_close": "Fechar",
+      "composer_action_timed_out": "{{app}} demorou demais e foi interrompido. Nada foi inserido.",
+      "composer_action_app_error": "{{app}} teve um erro. Nada foi inserido.",
+      "composer_action_revoked": "{{app}} foi desativado. Nada foi inserido.",
+      "composer_action_failed": "{{app}} não respondeu. Nada foi inserido.",
+      "composer_action_from": "Fornecido pelo app {{app}}",
+      "composer_action_footer_host": "O {{productName}} verificou o rascunho. {{app}} continua sem vê-lo.",
+      "composer_action_needs_empty": "{{app}} só pode inserir em uma mensagem vazia. Esvazie o rascunho primeiro.",
+      "composer_action_would_resolve": "O texto de {{app}} começa com /, ! ou @, ou contém um $skill, um arquivo ou uma imagem, então seria executado em vez de enviado como texto. Não foi inserido.",
+      "composer_action_footer": "{{app}} não vê seu rascunho. O texto dele entra como está, e você decide se envia."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -7110,7 +7152,8 @@
       "search_across_providers": "Pesquisar {{subject}} em todos os provedores…",
       "searching": "Pesquisando...",
       "searching_2": "Pesquisando: {{name}}",
-      "type_at_least_2_characters_to_search": "Digite pelo menos 2 caracteres para pesquisar"
+      "type_at_least_2_characters_to_search": "Digite pelo menos 2 caracteres para pesquisar",
+      "type_to_search_for_more": "Digite para pesquisar mais"
     },
     "embedTabStrip": {
       "close_tab": "Fechar aba",
@@ -7285,7 +7328,8 @@
       "slides_thumbstrip": "Slides",
       "slides_truncated": "Limite de slides atingido em {{n}}; o restante da apresentação não é exibido.",
       "light_background": "Fundo claro",
-      "dark_background": "Fundo escuro"
+      "dark_background": "Fundo escuro",
+      "sheet_tabs_label": "Planilhas"
     },
     "folderColorNames": {
       "amber": "Âmbar",
@@ -7612,7 +7656,11 @@
       "runs_as_custom_agent_hint": "Roda em um chat próprio, com a memória compartilhada.",
       "runs_as_crewmate_hint": "Roda no chat de {{name}}, com a memória e os arquivos de {{name}}. Também aparece na página de Colegas.",
       "runs_as_fixed": "Uma tarefa não pode trocar entre agente personalizado e colega depois de criada.",
-      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas."
+      "runs_as_no_crewmates": "Ainda não há colegas. Adicione um na página de Colegas.",
+      "timezone_local": "Hora local (segue este computador, agora {{zone}})",
+      "timezone_local_undetected": "Hora local (fuso não detectado, usa UTC)",
+      "timezone_default": "Fuso padrão",
+      "timezone_default_unavailable": "Não foi possível carregar o fuso horário padrão. Uma tarefa deixada em Fuso padrão continua a usá-lo."
     },
     "jobLogsView": {
       "cancel": "Cancelar",
@@ -8086,7 +8134,8 @@
       "v": "v",
       "waiting_for_the_install_plan_to_load": "Aguardando o carregamento do plano de instalação",
       "detail_load_failed": "Não foi possível carregar os detalhes deste servidor.",
-      "search_failed": "Não foi possível pesquisar no registro. Tente novamente."
+      "search_failed": "Não foi possível pesquisar no registro. Tente novamente.",
+      "popular_mcp_servers": "Servidores MCP populares"
     },
     "mcpCustomServerModal": {
       "add_custom_server": "Adicionar servidor personalizado",
@@ -9011,6 +9060,8 @@
       "license": "Licença:",
       "loading_preview": "Carregando prévia...",
       "no_preview_available": "Nenhuma prévia disponível.",
+      "popular_skills": "Habilidades populares",
+      "search_failed": "Não foi possível carregar as habilidades. Tente novamente.",
       "overwrite": "Substituir",
       "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
       "provider_did_not_answer": "{{provider}} não respondeu.",
@@ -9156,26 +9207,6 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "Arraste para capturar uma área · solte para anexar · Esc para cancelar",
       "drag_to_select_the_screen_region_to_capture": "Arraste para selecionar a região da tela a capturar",
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de tela — arraste a área desejada; ela é anexada automaticamente ao soltar"
-    },
-    "meetYourMatesIntro": {
-      "sample_line_1": "Encontrei um teste instável durante a noite e o corrigi.",
-      "sample_line_2": "O PR está pronto. Quer que eu faça o merge?",
-      "sample_merge": "Fazer o merge",
-      "sample_show_first": "Mostre-me antes"
-    },
-    "startupVideoModal": {
-      "close": "Fechar",
-      "crewmates_description": "Eles encontram o trabalho, fazem e só perguntam quando precisam de você.",
-      "crewmates_title": "Conheça seus colegas.",
-      "got_it": "Entendi",
-      "media_failed": "Não foi possível carregar o vídeo do recurso",
-      "new_tag": "Novo",
-      "not_now": "Agora não",
-      "share": "Compartilhar",
-      "share_description": "Transforme este vídeo do recurso em um card que você pode publicar em qualquer lugar.",
-      "share_include_title": "Incluir o título do vídeo",
-      "streaming": "Reproduz online",
-      "try_now": "Experimentar agora"
     },
     "tagManagerList": {
       "adopt_tag": "Configurar permissões de agentes",
@@ -10242,7 +10273,7 @@
       "tagline_lead": "Você define a meta.",
       "tagline_strong": "Sua equipe faz o trabalho.",
       "flow_label": "Como o Ultra Mode funciona",
-      "flow_goal": "Objetivo",
+      "flow_goal": "Projetos",
       "flow_split": "Dividir",
       "flow_parallel": "Chats próprios",
       "flow_board": "Quadro",
@@ -10279,6 +10310,11 @@
       "ultra_needs_you_none": "Nada precisa de você agora.",
       "ultra_needs_you_none_stalled": "Nenhuma aprovação aguarda você. O trabalho parado está em Marcos.",
       "ultra_answer_in_chat": "Responder no chat",
+      "ultra_ms_waiting_answer": "Aguardando sua resposta acima",
+      "ultra_reply": "Escrever resposta",
+      "ultra_answers": "Respostas sugeridas",
+      "ultra_reply_draft": "Sobre \"{{t}}\" ({{id}}): {{answer}}",
+      "ultra_option_title": "Coloca isto na sua caixa de chat para revisar e enviar",
       "ultra_crew": "Equipe",
       "ultra_finished": "Concluídos · {{n}}",
       "ultra_row_sessions_one": "{{count}} sessão · {{running}} em execução",
@@ -10293,10 +10329,17 @@
       "ultra_row_count_needs_you_one": "{{count}} precisa de você",
       "ultra_row_count_needs_you_many": "{{count}} precisam de você",
       "ultra_row_count_needs_you_other": "{{count}} precisam de você",
+      "ultra_row_count_stalled_one": "{{count}} parado",
+      "ultra_row_count_stalled_many": "{{count}} parados",
+      "ultra_row_count_stalled_other": "{{count}} parados",
+      "ultra_row_count_running_one": "{{count}} em andamento",
+      "ultra_row_count_running_many": "{{count}} em andamento",
+      "ultra_row_count_running_other": "{{count}} em andamento",
+      "ultra_row_stalled_detail": "Parado: {{name}} · {{duration}}",
       "ultra_recap_empty": "A equipe ainda não enviou atualizações.",
       "chip_hint_pressed": "Ultra Mode está ativado. Clique para desativá-lo antes da sua primeira mensagem.",
       "ultra_view_status": "Status",
-      "ultra_view_list": "Lista",
+      "ultra_view_list": "Trabalhadores",
       "ultra_recap_head": "{{done}} de {{total}} concluídos",
       "ultra_recap_main_chat": "uma pergunta para você",
       "ultra_recap_waiting_one": "{{head}}; {{names}} está aguardando você.",
@@ -11222,7 +11265,22 @@
       "link_open_remembered": "Escolhas de links lembradas",
       "link_open_choice_app": "Abre no {{name}}",
       "link_open_choice_browser": "Abre no seu navegador",
-      "link_open_forget": "Esquecer"
+      "link_open_forget": "Esquecer",
+      "adoption": {
+        "network": "{{name}} ainda não conseguiu baixar sua versão da App Store. O {{productName}} tenta de novo automaticamente; verifique a conexão de rede deste computador.",
+        "local": "{{name}} não conseguiu preparar sua versão da App Store neste computador: o disco está cheio ou um arquivo de configuração não pôde ser lido. O {{productName}} tenta de novo automaticamente.",
+        "policy": "A troca de {{name}} para sua versão da App Store está em espera: sua política de admissão de apps não admite essa versão. Permita-a na política de admissão para concluir a troca.",
+        "trust": "A troca de {{name}} para sua versão da App Store está em espera: a configuração de confiança dele aponta outra origem, ou está definida em config.local.json, então o {{productName}} não a alterou. Revise a configuração de confiança para concluir a troca.",
+        "permissions": "A troca de {{name}} para sua versão da App Store está em espera: essa versão pede mais acesso do que a que você tem agora. Nada foi alterado.",
+        "platform": "{{name}} não pode trocar para sua versão da App Store: essa versão não oferece suporte a esta plataforma.",
+        "host": "A troca de {{name}} para sua versão da App Store está em espera: essa versão precisa de um {{productName}} mais recente. Atualize o {{productName}} para concluir a troca.",
+        "verification": "{{name}} não vai trocar para sua versão da App Store: essa versão não passou na verificação, e esta versão do {{productName}} não tenta de novo. Nada foi alterado.",
+        "staged": "A versão da App Store de {{name}} já foi baixada e verificada. {{name}} troca para ela na próxima vez que o {{productName}} reiniciar.",
+        "keeps_builtin_until": "Até lá, ele continua sendo um app integrado.",
+        "keeps_builtin": "Ele continua sendo um app integrado.",
+        "installed_needs_newer_host": "A versão instalada de {{name}} precisa de um {{productName}} mais recente. Atualize o {{productName}}; seus dados não mudam."
+      },
+      "grants_reconsent_composer_actions": "Botões do editor: permite que o app adicione estes botões ao menu + do editor. Um clique insere o texto do app no seu rascunho; o app não pode ver o rascunho nem enviá-lo."
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -12808,6 +12866,9 @@
         "copied": "Copiado",
         "copy_link": "Copiar link da mensagem",
         "unpin": "Desafixar",
+        "copy_text_failed": "Não foi possível copiar o texto. Vá até a mensagem e selecione o texto para copiá-lo.",
+        "copy_link_failed": "Não foi possível copiar o link. Verifique se esta página pode usar a área de transferência e tente de novo.",
+        "jump_to_named_message": "Ir para a mensagem, {{author}}: {{label}}",
         "jump_to_message": "Ir para a mensagem",
         "copy_failed": "Falha ao copiar"
       },
@@ -14150,7 +14211,13 @@
       "chat_use_lacks_oauth": "Salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login.",
       "configure_oauth_app": "Configurar app OAuth",
       "prerequisite_github": "GitHub não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do GitHub registrado em Configurações → Apps OAuth. A página de consentimento do GitHub mostra esse app; aprove-o para continuar.",
-      "prerequisite_asana": "Asana não oferece registro dinâmico de clientes, então Conectar usa o app MCP do Asana registrado em Configurações → Apps OAuth. A página de consentimento do Asana mostra esse app; aprove-o para continuar."
+      "prerequisite_asana": "Asana não oferece registro dinâmico de clientes, então Conectar usa o app MCP do Asana registrado em Configurações → Apps OAuth. A página de consentimento do Asana mostra esse app; aprove-o para continuar.",
+      "prerequisite_gmail": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_google_drive": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_google_calendar": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_google_sheets": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_google_docs": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar.",
+      "prerequisite_google_slides": "Google não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do Google registrado em Configurações → Apps OAuth. A página de consentimento do Google mostra esse app; aprove-o para continuar."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",
@@ -15397,6 +15464,12 @@
         "profile_blank_uses_default_chain": "Deixe em branco para usar as credenciais padrão da AWS.",
         "remove_this_live_source": "Remover esta fonte de base de conhecimento? Nada está armazenado localmente; a base de conhecimento em si não é alterada.",
         "region_example_placeholder": "ex.: us-east-1",
+        "word_count_one": "{{n}} palavra",
+        "word_count_many": "{{n}} palavras",
+        "word_count_other": "{{n}} palavras",
+        "word_count_approx_one": "~{{n}} palavras",
+        "word_count_approx_many": "~{{n}} palavras",
+        "word_count_approx_other": "~{{n}} palavras",
         "items_count_one": "{{n}} item",
         "items_count_many": "{{n}} itens",
         "items_count_other": "{{n}} itens"
@@ -16865,8 +16938,6 @@
       "free": "Livre",
       "gateway_cpu": "CPU do gateway",
       "gateway_rss": "RSS do gateway",
-      "graph_scale_network": "Escala total {{max}} KB/s · últimos {{seconds}} s",
-      "graph_scale_percent": "Escala total 100% · últimos {{seconds}} s",
       "hostname": "Nome do host",
       "ip_address": "Endereço IP",
       "kiro_cli_procs": "Kiro CLI",
@@ -16892,7 +16963,9 @@
       "used": "Usado",
       "used_pct": "Usado",
       "utilization": "Utilização",
-      "working_directory": "Diretório de trabalho"
+      "working_directory": "Diretório de trabalho",
+      "graph_scale_network": "Escala total {{max}} · últimos {{seconds}}",
+      "graph_scale_percent": "Escala total 100% · últimos {{seconds}}"
     },
     "popoutFrame": {
       "session": "Sessão",
@@ -16973,7 +17046,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Os arquivos YAML devem ser enviados pela aba \"De YAML\".",
       "yaml_workflows_bypass_the_llm_decomposer": "Os fluxos de trabalho YAML ignoram o decompositor do LLM —",
       "action_failed": "Ação falhou",
-      "project_renamed_to": "Projeto renomeado para {{name}}"
+      "project_renamed_to": "Projeto renomeado para {{name}}",
+      "plan_mode_label": "Modo de planejamento"
     },
     "remoteArtifactDetailPage": {
       "back": "Voltar",
@@ -17390,7 +17464,8 @@
       "group_today": "Hoje",
       "group_yesterday": "Ontem",
       "group_earlier": "Anteriores",
-      "empty_title": "Nenhuma sessão"
+      "empty_title": "Nenhuma sessão",
+      "filter_label": "Filtro de sessões"
     },
     "sessionsTab": {
       "agent": "Agente",
@@ -19947,7 +20022,6 @@
       "hide_turn_detail": "Ocultar detalhe por turno",
       "instruments": "Instrumentos",
       "loading_telemetry": "Carregando telemetria…",
-      "local_only_no_egress": "· apenas local, sem saída de dados",
       "max_col": "máx",
       "mean_col": "Média",
       "mean_credits_by_occupancy": "Créditos médios por turno, agrupados por contexto usado",
@@ -19981,7 +20055,6 @@
       "session_col": "Sessão",
       "session_startup": "Inicialização da sessão",
       "sessions_col": "Sessões",
-      "shard_s_source": "shard(s) · origem",
       "share_col": "Fração",
       "show_turn_detail": "Mostrar detalhe por turno",
       "showing_partial_window": "Mostrando {{shown}} de {{total}} amostras (os limites do histograma mudaram dentro da janela)",
@@ -20045,7 +20118,9 @@
       "range_to": "Data de término",
       "no_telemetry_in_window": "Nenhuma telemetria registrada neste período ({{period}}).",
       "otel_retention_cap": "Os números de turnos, latência e inicialização cobrem só os últimos {{days}} d; métricas mais antigas são excluídas (<settingRef/>).",
-      "window_footer": "Seções OTEL · período: {{period}} ·"
+      "window_footer_shards_one": "Seções OTEL · período: {{period}} · {{n}} fragmento · origem: <dir/> · apenas local, sem saída de dados",
+      "window_footer_shards_many": "Seções OTEL · período: {{period}} · {{n}} fragmentos · origem: <dir/> · apenas local, sem saída de dados",
+      "window_footer_shards_other": "Seções OTEL · período: {{period}} · {{n}} fragmentos · origem: <dir/> · apenas local, sem saída de dados"
     },
     "terminalPopoutFrame": {
       "return": "Voltar ao dock",
@@ -20222,11 +20297,13 @@
       "slots_open_one": "{{n}} slot livre",
       "slots_open_many": "{{n}} slots livres",
       "slots_open_other": "{{n}} slots livres",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Cena"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar controles",
-      "show_controls": "Mostrar controles"
+      "show_controls": "Mostrar controles",
+      "scene_label": "Cena"
     },
     "membersPage": {
       "drawer_delegated_working": "Tarefas delegadas em execução",
@@ -21186,6 +21263,9 @@
       "too_many_pixels": "{{name}} tem {{width}} × {{height}} pixels, acima do limite de {{max}} megapixels para converter uma foto HEIC aqui. Exporte um JPEG menor e anexe esse arquivo no lugar.",
       "convert_failed": "Este navegador não conseguiu converter {{name}} para JPEG. Recarregue a página e tente de novo, ou exporte-a como JPEG e anexe esse arquivo no lugar.",
       "cannot_fit": "Não foi possível reduzir {{name}} para menos de {{max}} como JPEG. Exporte um JPEG menor e anexe esse arquivo no lugar."
+    },
+    "tz": {
+      "local_zone_caption": "Hora local · {{zone}}"
     }
   },
   "memoryV2": {
@@ -21990,7 +22070,6 @@
     "question_waiting_you": "Kiro aguarda a sua resposta"
   },
   "milestones": {
-    "intro_video_title": "{{productName}} em 15 segundos",
     "notice_count_one": "{{count}} novidade em Explorar",
     "pill_count": "Explorar {{done}}/{{total}}",
     "streak_days_one": "{{count}} dia · melhor {{best}}",
@@ -22029,7 +22108,8 @@
     "streak_short_one": "Sequência de {{count}} dia",
     "indicator_label_streak_many": "Explorar: {{done}} de {{total}} recursos experimentados, sequência de {{count}} dias",
     "notice_count_other": "{{count}} novidades em Explorar",
-    "intro_video_save_failed": "Não foi possível salvar que você assistiu ou fechou este vídeo. Tente de novo."
+    "intro_video_save_failed": "Não foi possível salvar que você assistiu ou fechou este vídeo. Tente de novo.",
+    "video_failed": "Não foi possível carregar o vídeo do recurso"
   },
   "milestone": {
     "widgets": {

@@ -295,6 +295,26 @@ describe('SourcesList — row actions', () => {
     expect(await screen.findByText('doc.md')).toBeTruthy()
   })
 
+  it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
+    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let refuse!: (e: Error) => void
+    handler = (path: string, opts?: RequestInit) => {
+      if (path === '/sources') return [src(), src({ id: 's2', name: 'other.md', uri: '/tmp/other.md' })]
+      if (path === '/sources/s1' && opts?.method === 'DELETE') return new Promise((_, reject) => { refuse = reject })
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    await screen.findByText('doc.md')
+    // The rows render in list order, so the first Remove control is doc.md's.
+    fireEvent.click(screen.getAllByLabelText('Remove source')[0])
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
+    // A second delete lands while the first is in flight.
+    act(() => { queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== 's2')) })
+    await act(async () => { refuse(new Error('gateway said no')) })
+    await waitFor(() => expect(queryClient.getQueryData<Source[]>(['knowledge-sources'])?.map(s => s.id)).toEqual(['s1']))
+    expect(screen.queryByText('other.md')).toBeNull()
+  })
+
   it('does not delete when the user declines the prompt', async () => {
     confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     handler = (path: string) => {
@@ -379,6 +399,7 @@ describe('SourcesList — row metadata', () => {
         src({ id: 's1', name: 'Short', properties: JSON.stringify({ word_count: 500 }) }),
         src({ id: 's2', name: 'Long', properties: JSON.stringify({ word_count: 2500 }) }),
         src({ id: 's3', name: 'Unknown', properties: JSON.stringify({}) }),
+        src({ id: 's4', name: 'Single', properties: JSON.stringify({ word_count: 1 }) }),
       ]
       return { ok: true }
     }
@@ -386,8 +407,10 @@ describe('SourcesList — row metadata', () => {
     await screen.findByText('Short')
 
     expect(screen.getByText('500 words')).toBeTruthy()
-    expect(screen.getByText('~3k words')).toBeTruthy()
-    expect(screen.getAllByText(/words/)).toHaveLength(2)
+    expect(screen.getByText('~2.5K words')).toBeTruthy()
+    // The plural comes from the catalog, so one word is not "1 words".
+    expect(screen.getByText('1 word')).toBeTruthy()
+    expect(screen.getAllByText(/words?$/)).toHaveLength(3)
   })
 
   it('shows a summary topic even when the stored themes are unreadable', async () => {

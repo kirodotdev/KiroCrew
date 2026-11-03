@@ -187,7 +187,7 @@ The operator's seed message names a spec file (JSON). Fields you consume now:
                   "credit_budget_per_item": 100, "topup_ceiling": 2},
   "policy": {"keep_unused_seams": true, "refuse_design_asks": true,
               "refuse_benign_duplication": true},
-  "interface": {"folder_name": "pipeline-{id}", "digest_language": "auto"}
+  "interface": {"digest_language": "auto"}
 }
 ```
 
@@ -247,9 +247,10 @@ never relabel it success in the friction report.
    that is neither of its options, and every such value engages no branch at all
    — so the mode the operator asked for is silently off while the spec says it is
    on. Report the message verbatim and stop; do not guess a default, and do not
-   open the folder or claim an item first, because a run that has already
+   claim an item first, because a run that has already
    dispatched a worker cannot un-dispatch it. Only after exit 0 may you read the
-   spec and use its values. Then `chat_folder_create` the pipeline folder.
+   spec and use its values. Do not create folders or pass `folder` when you
+   dispatch; the person's folders are theirs to arrange.
 2. Build the queue from the work source (or adopt the operator's seeded
    backlog), then **subtract the items an open PR claims to close** with
    `scripts/coverage_filter.py` before recording it — see "Queue build
@@ -521,8 +522,7 @@ sessions end up on one item and mutual-yield deadlock):
 Then **claim atomically** — the lock label and the assignee in ONE call, never
 two. The forge is the cross-operator lock and your ledger is only a cache of
 it; a claim written as two calls is a window another operator dispatches into.
-Only after the claim lands: `session_create` (titled `{id}: {item}`, filed into
-the pipeline folder), seed it with the work-order brief, record
+Only after the claim lands: `session_create` (titled `{id}: {item}`), seed it with the work-order brief, record
 `{state: dispatched, session, ts}` in the ledger.
 
 **The claim is only valid while a worker holds it.** If ANY post-claim step

@@ -49,6 +49,7 @@ const apiMocks = vi.hoisted(() => ({
 const stt = vi.hoisted(() => ({
   active: false,
   halted: false,
+  starting: false,
   start: vi.fn(() => Promise.resolve()),
   stop: vi.fn(),
   onCaption: undefined as ((text: string) => void) | undefined,
@@ -82,6 +83,7 @@ vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal =
         active: stt.active,
         connecting: false,
         halted: stt.halted,
+        isStarting: () => stt.starting,
         start: stt.start,
         stop: stt.stop,
         supported: true,
@@ -153,6 +155,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   stt.active = false
   stt.halted = false
+  stt.starting = false
   stt.onCaption = undefined
   stt.onFinal = undefined
   stt.onError = undefined
@@ -406,6 +409,17 @@ describe('useMeetingSession transcription binding', () => {
     view.rerender(view.initialProps)
     view.rerender(view.initialProps)
     expect(stt.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops a start still waiting on the permission prompt when the meeting pauses', async () => {
+    // Neither `active` nor `connecting` is set while getUserMedia is pending,
+    // so only the pending start tells the effect there is something to stop.
+    stt.starting = true
+    apiMocks.meeting.mockResolvedValue({ meta: meta({ status: 'paused' }), live: null })
+    await mountLoaded()
+
+    await waitFor(() => expect(stt.stop).toHaveBeenCalled())
+    expect(stt.start).not.toHaveBeenCalled()
   })
 
   it('clears a halt by stopping when the meeting leaves the open state', async () => {

@@ -198,7 +198,7 @@ def _utc_now() -> str:
 def _load_connected_since() -> dict[str, str] | None:
     """Read persisted first-connect timestamps; ``None`` when unknowable.
 
-    Tri-state, mirroring ``_artifact_presence``: a MISSING file is an answer
+    Tri-state, mirroring ``mcp_grant.artifact_presence``: a MISSING file is an answer
     (nothing was ever written -> empty), a DAMAGED file is the documented
     self-heal (unparseable content is replaceable -> empty), but any other
     ``OSError`` (EACCES/EIO/stalled mount) means the record could not be READ

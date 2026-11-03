@@ -1023,8 +1023,17 @@ def main() -> None:
         # the `kirocrew app mcp <name>` manifest path uses (clean stderr line +
         # exit 1 on ImportError or a missing run_mcp_server entrypoint), so an
         # unresolvable module cannot reach a raw traceback here.
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
         from kiro_crew.cli_commands import _run_app_mcp_server
 
+        if builtin_package_released(args.command[4:]):
+            # The app now runs from its own repository; the wheel copy's server
+            # must not answer for it.
+            print(
+                "This app is installed from its repository; use `kirocrew app mcp <name>`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _run_app_mcp_server(args.command[4:])
     elif args.command == "computer":
         # Deferred import: ``computer_use.cli`` reaches the driver seam, and the

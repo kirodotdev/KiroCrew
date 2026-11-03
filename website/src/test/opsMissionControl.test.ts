@@ -18,8 +18,13 @@ const CATALOG = JSON.parse(
   readFileSync(resolve(__dirname, '../i18n/locales/en.json'), 'utf-8'),
 ) as Record<string, unknown>
 
-/** Resolve a dotted catalog path (`apps.opsMissionControl.signalsPanel.key`) to its value. */
-const catalogValue = (key: string): string | undefined => {
+/** Resolve a dotted catalog path (`apps.opsMissionControl.signalsPanel.key`) to its value.
+ * A plural key is called by its base and stored as `_one` / `_other` forms; it resolves
+ * to its `_other` form. */
+const catalogValue = (key: string): string | undefined =>
+  catalogLeaf(key) ?? catalogLeaf(`${key}_other`)
+
+const catalogLeaf = (key: string): string | undefined => {
   let node: unknown = CATALOG
   for (const seg of key.split('.')) {
     if (node && typeof node === 'object' && seg in (node as Record<string, unknown>)) {

@@ -417,6 +417,20 @@ class WeixinTransport(MessagingTransport):
                         self._client._handler_tasks.add(task)
                     try:
                         await self.receive(msg)
+                    except asyncio.CancelledError:
+                        # Shutdown: let it propagate so teardown is not mistaken
+                        # for loop death (see the outer handler).
+                        raise
+                    except Exception:
+                        # Guard EACH message on its own. ``_sync_buf`` already
+                        # advanced to this batch's cursor ABOVE, and the next
+                        # poll confirms it to the server -- so a raising
+                        # ``receive`` that escaped to the outer ``except`` would
+                        # drop every LATER message in this batch with no
+                        # redelivery. One bad message must cost only itself.
+                        logger.warning(
+                            "weixin: dropping one message that failed to process", exc_info=True
+                        )
                     finally:
                         if task is not None:
                             self._client._handler_tasks.discard(task)

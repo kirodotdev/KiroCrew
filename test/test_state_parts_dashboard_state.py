@@ -340,7 +340,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "ensure_context_snapshots_loaded": ("function", False, False, "(self) -> 'bool'"),
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
     "finish_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
-    "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
+    "flush_slot_now": (
+        "function",
+        False,
+        False,
+        "(self, slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> 'None'",
+    ),
     "fold_apply_watch": ("function", False, False, "(self) -> 'frozenset[str]'"),
     "fold_watch_routing": (
         "function",

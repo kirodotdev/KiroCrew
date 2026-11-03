@@ -431,6 +431,21 @@ def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> Non
     publish_env(ep, _loader.env_bom_prefix(ep) + content)
 
 
+def _stored_threshold_pct(cfg: dict[str, Any], key: str, default: int) -> int:
+    """The stored *cfg[key]* as the config loader reads it.
+
+    ``config.json`` is a file an operator can hand-edit, so the stored side of a
+    "did it change?" check can be ``null``, a word, a numeric string or a bool.
+    Read raw, ``null`` or a word makes ``int()`` raise out of the save as a 500
+    and nothing is saved. The loader's own coercion is used instead, so the
+    check compares against the value the channel runs with: ``"75"`` reads as
+    75, and ``null``, a word or a bool read as *default*.
+    """
+    from kiro_crew.config.sections_channels import _threshold_pct
+
+    return _threshold_pct(cfg.get(key), default)
+
+
 def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] | None:
     """``(code, message)`` when *body[key]* is present and not a valid percentage.
 

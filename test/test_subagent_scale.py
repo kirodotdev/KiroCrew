@@ -1098,7 +1098,8 @@ class TestWaveDigest:
         spawn, not gated on wave size. A 3-agent wave = 1 injection turn
         labelled 1/1 with the final release guidance, never 3 per-agent
         turns. (Single-task spawns have no batch identity and keep the plain
-        per-agent injection — see test_single_spawn_keeps_per_agent below.)"""
+        per-agent injection — see test_single_spawn_keeps_per_agent_injection
+        below.)"""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()

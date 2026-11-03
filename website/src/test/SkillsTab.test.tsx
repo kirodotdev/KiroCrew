@@ -220,6 +220,28 @@ describe('SkillsTab', () => {
     confirmSpy.mockRestore()
   })
 
+  it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
+    // The first read serves the list; later reads never answer, so the cache
+    // shows what the rollback left rather than a refetch.
+    mockApi.skills.mockResolvedValueOnce([
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'gone', name: 'gone', description: 'deleted elsewhere', source: 'kirocrew', loaded_by_agents: [] },
+    ]).mockImplementation(() => new Promise(() => {}))
+    let refuse!: (e: Error) => void
+    mockApi.deleteSkill.mockImplementation(() => new Promise((_, reject) => { refuse = reject }))
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { qc } = renderWithQuery()
+    fireEvent.click(await screen.findByText('Delete'))
+    await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
+    // A second delete lands while the first is in flight.
+    act(() => { qc.setQueryData<{ key: string }[]>(['skills'], old => old?.filter(s => s.key !== 'gone')) })
+    await act(async () => { refuse(new Error('permission denied')) })
+    await screen.findByTestId('skill-delete-failure')
+    expect(qc.getQueryData<{ key: string }[]>(['skills'])?.map(s => s.key)).toEqual(['doomed'])
+    confirmSpy.mockRestore()
+  })
+
   it('Edit button enters edit mode for kirocrew-sourced skills', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'editable', name: 'editable', description: 'fixme', source: 'kirocrew', loaded_by_agents: [] },

@@ -37,6 +37,7 @@ import { awsControlApi } from './api'
 import type { ArtifactKind, LibraryArtifact } from './types'
 import { PaneHeader, AwsErrorNotice } from './shared'
 import { CliDrawer, useViewMode, ViewModeToggle, TileConfirm } from './DrivePageControls'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 const KIND_LABEL_KEY: Record<ArtifactKind, string> = {
   widget: 'apps.awsControl.console.kind_widget',
@@ -1004,7 +1005,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             library built on nothing, which is the one answer a failure cannot
             support. Filtering is meaningless with nothing to filter anyway. */}
         {!libQ.isError && (
-        <div className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2.5" data-testid="library-chips">
+        <RadioChipGroup className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2.5" data-testid="library-chips" ariaLabel={i18nT('apps.awsControl.console.col_kind')}>
           {/* A chip you cannot usefully press is noise: a zero-count kind
               filters the grid to nothing. 'All' always renders, and the
               currently-selected kind stays visible even at zero so the reader
@@ -1014,8 +1015,9 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             .map((k) => (
             <button
               key={k}
+              type="button"
               onClick={() => setKind(k)}
-              aria-pressed={kind === k}
+              {...radioChip(kind === k)}
               className={`cursor-pointer rounded-full border px-2.5 py-1 text-[12px] transition-colors ${
                 kind === k
                   ? 'border-accent bg-accent/10 text-accent'
@@ -1027,7 +1029,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
               <span className="font-mono opacity-70">{fmtNumber(counts[k] ?? 0)}</span>
             </button>
           ))}
-        </div>
+        </RadioChipGroup>
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">

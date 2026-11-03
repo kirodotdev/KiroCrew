@@ -302,8 +302,25 @@ def test_native_view_of_an_inheriting_agent_gets_skill_search(native_custom):
     agents, project = native_custom
     _write_agent(agents, {"name": "custom", "tools": ["read"]})
     view = projection.prepare_native_skill_projection(project).specs["custom"]
-    assert view["tools"] == ["read", projection._SEARCH_TOOL]
+    # The whole-server grant a custom agent gets by default carries skill search.
+    assert view["tools"] == ["read", "@kirocrew-core", "@kirocrew-cron"]
     assert "kirocrew-core" in view["mcpServers"]
+
+
+def test_native_view_of_an_opted_out_inheriting_agent_gets_only_skill_search(native_custom):
+    agents, project = native_custom
+    _write_agent(
+        agents,
+        {"name": "custom", "tools": ["read"], "excludedTools": ["@kirocrew-cron"]},
+    )
+    view = projection.prepare_native_skill_projection(project).specs["custom"]
+    assert view["tools"] == ["read", "@kirocrew-core"]
+    _write_agent(
+        agents,
+        {"name": "custom", "tools": ["read", projection._SEARCH_TOOL]},
+    )
+    view = projection.prepare_native_skill_projection(project).specs["custom"]
+    assert view["tools"] == ["read", projection._SEARCH_TOOL, "@kirocrew-cron"]
 
 
 def test_native_view_of_a_zero_tool_agent_stays_zero_tool(native_custom):
@@ -318,8 +335,11 @@ def test_native_view_without_inheritance_gets_no_search(native_custom):
     agents, project = native_custom
     _disable_inheritance(project)
     _write_agent(agents, {"name": "custom", "tools": ["read"]})
-    view = projection.prepare_native_skill_projection(project).specs["custom"]
-    assert view["tools"] == ["read"]
+    prepared = projection.prepare_native_skill_projection(project)
+    view = prepared.specs["custom"]
+    # Crew's default servers, but no skill-search agent: nothing relies on search.
+    assert view["tools"] == ["read", "@kirocrew-core", "@kirocrew-cron"]
+    assert "custom" not in prepared.search_agents
 
 
 def test_only_a_kiro_cli_session_gets_the_inherited_trees(kiro_tree, monkeypatch):
@@ -438,10 +458,26 @@ def test_a_wildcard_agent_that_already_mounts_kirocrew_core_inherits(kiro_tree):
     ]
 
 
-def test_native_view_of_a_wildcard_agent_gains_no_kirocrew_core(native_custom):
-    """Adding the server to a "*" agent would grant every Crew tool."""
+def test_native_view_of_a_wildcard_agent_gets_the_default_servers(native_custom):
+    """A "*" agent grants every tool, Crew's default servers' included."""
     agents, project = native_custom
     _write_agent(agents, {"name": "custom", "tools": ["*"]})
+    view = projection.prepare_native_skill_projection(project).specs["custom"]
+    assert view["tools"] == ["*"]
+    assert {"kirocrew-core", "kirocrew-cron"} <= set(view["mcpServers"])
+
+
+def test_native_view_of_an_opted_out_wildcard_agent_gains_no_kirocrew_core(native_custom):
+    """Skill search does not add the server to a "*" agent: it would grant every Crew tool."""
+    agents, project = native_custom
+    _write_agent(
+        agents,
+        {
+            "name": "custom",
+            "tools": ["*"],
+            "managedToolPolicy": {"excludeServers": ["kirocrew-core", "kirocrew-cron"]},
+        },
+    )
     view = projection.prepare_native_skill_projection(project).specs["custom"]
     assert "kirocrew-core" not in view.get("mcpServers", {})
 

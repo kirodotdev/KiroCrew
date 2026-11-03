@@ -440,8 +440,7 @@ class TestReviewLaneVerdictVisibility:
         # refuses to create when the lookup errored, because a marker planted is
         # not undone by a later run; the same unknown cannot mean "must not
         # create" for a notice and "must create" for a verdict.
-        # `test_an_unreadable_duplicate_check_refuses_the_write` and
-        # `test_a_stale_head_comment_also_occupies_the_slot` cover the other two.
+        # `test_an_unreadable_duplicate_check_refuses_the_write` covers the unknown one.
         calls, result = self._run_step(
             lane,
             tmp_path,

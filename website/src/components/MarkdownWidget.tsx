@@ -6,9 +6,10 @@
  * page and the star, which the backend's registration of the widget as an
  * artifact makes meaningful whatever the body is.
  */
-import type { ReactNode } from 'react'
+import { useContext, type ReactNode } from 'react'
 import { IconButtonGroup } from './ui'
 import { useWidgetArtifact, WidgetArtifactTitle, WidgetStarButton } from './WidgetArtifact'
+import { WidgetFrameProfileContext, widgetFramePolicy } from './widgetFrameProfile'
 
 export default function MarkdownWidget({ body, title, slug, messageTs, slotKey, children }: {
   /** The body as emitted, untrimmed: the artifact content and the derived slug read it. */
@@ -20,6 +21,8 @@ export default function MarkdownWidget({ body, title, slug, messageTs, slotKey, 
   /** The rendered markdown. */
   children: ReactNode
 }) {
+  // A welcome brief's widget is never saved (widgetFrameProfile.ts).
+  const { saveAsArtifact } = widgetFramePolicy(useContext(WidgetFrameProfileContext))
   // An empty title falls back to the hook's default artifact name.
   const artifact = useWidgetArtifact({ body, title: title || undefined, slug, messageTs, slotKey })
   return (
@@ -27,7 +30,7 @@ export default function MarkdownWidget({ body, title, slug, messageTs, slotKey, 
       <div className="mb-1 flex items-center justify-between">
         <WidgetArtifactTitle title={title || ''} artifact={artifact} className="text-[12px] font-semibold text-muted truncate" />
         <IconButtonGroup reveal>
-          <WidgetStarButton artifact={artifact} />
+          {saveAsArtifact && <WidgetStarButton artifact={artifact} />}
         </IconButtonGroup>
       </div>
       {children}

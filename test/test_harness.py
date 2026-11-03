@@ -1865,6 +1865,22 @@ def test_harness_environment_skips_the_model_download_by_default(tmp_path, monke
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
     assert env["PYTHONUNBUFFERED"] == "1"
+    # The adoption pin table is the test's own, absent and so empty: a harness
+    # boot never fetches a shipped pin from GitHub.
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    pins = Path(env[HARNESS_PINS_ENV])
+    assert pins.parent == tmp_path and not pins.exists()
+
+
+def test_harness_environment_pins_the_adoption_table_over_an_inherited_one(
+    tmp_path, monkeypatch
+) -> None:
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    monkeypatch.setenv(HARNESS_PINS_ENV, "/operator/pins.json")
+    env = harness_environment(tmp_path, tmp_path / "src")
+    assert env[HARNESS_PINS_ENV] == str(tmp_path / "harness-adoption-pins.json")
 
 
 def test_harness_environment_can_arm_the_download_path_for_one_gateway(

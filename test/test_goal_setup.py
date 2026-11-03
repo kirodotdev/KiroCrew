@@ -122,8 +122,10 @@ def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"])
     assert text is not None
     assert "Keep the release notes current" in text
-    # A crewmate's chat starts no sub-agents: the research goes to a worker session.
-    assert "session_create" in text and "session_send" in text
+    # A crewmate's chat starts no sub-agents: the research goes to a worker session,
+    # seeded through session_create's `message` in the same call.
+    assert "session_create" in text and "`message`" in text
+    assert "session_send" not in text
     # It dispatches and ends the turn; the worker's report wakes it, so nothing polls.
     assert "end this turn" in text and "[Worker report]" in text
     assert "session_read_message" not in text and "call wait" not in text

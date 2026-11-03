@@ -1418,6 +1418,9 @@ def _no_backend_oracle(tmp_path, clock: _Clock, monkeypatch) -> LivenessOracle:
     to ``win32`` with an absent proc_root yields the Windows shape on any host.
     """
     monkeypatch.setattr(liveness.sys, "platform", "win32")
+    # The Toolhelp backend is pinned off: this is the no-backend shape,
+    # which a Windows host still reaches when that backend is not selected.
+    monkeypatch.setattr(liveness, "select_windows_backend", lambda _proc_root: None)
     return LivenessOracle(str(tmp_path / "no-proc"), now=clock, sample_min_secs=1.0)
 
 

@@ -212,6 +212,26 @@ export function useInstalledApps(): {
   }
 }
 
+/**
+ * The installed apps the `['apps']` cache already holds, without asking for them.
+ *
+ * A disabled observer: it reads whatever answer the shell's own `['apps']` read has
+ * put in the cache and re-renders when that answer arrives, but never starts a
+ * request, waits on one, or reports one failing. An empty list therefore means
+ * "nothing known yet" as much as "nothing installed", which suits a reader whose
+ * default render does not depend on the list. It registers the same guarded
+ * `queryFn` as `useInstalledApps`, so the key keeps a guarded function whichever
+ * observer registered last.
+ */
+export function useLoadedInstalledApps(): InstalledApp[] {
+  const { data } = useQuery({
+    queryKey: ['apps'],
+    queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
+    enabled: false,
+  })
+  return Array.isArray(data) ? (data as InstalledApp[]) : []
+}
+
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {
   const { apps } = useInstalledApps()
   return useMemo(() => resolvePanelTabs(apps as unknown as PanelTabAppRecord[]), [apps])

@@ -303,16 +303,25 @@ async def api_voice_config(request: web.Request) -> web.Response:
     # caller gets a 400 while an earlier field has already taken effect, so the
     # live provider can change on a request the API said it refused.
     pending: dict[str, object] = {}
+    # A provider or engine the server does not know is left unsaved, as it
+    # always was, and named here, so the caller can tell its choice did not
+    # take instead of reading the 200 as saved.
+    warnings: list[dict[str, str]] = []
 
     # ``in valid_providers()`` would raise TypeError on an unhashable JSON value
     # (list/dict), 500ing the PUT — require a str first. The built-ins plus the
     # edition's registered TTS providers; with the default registry, the built-ins.
-    if (
-        "provider" in body
-        and isinstance(body["provider"], str)
-        and body["provider"] in valid_providers()
-    ):
-        pending["provider"] = body["provider"]
+    if "provider" in body:
+        if isinstance(body["provider"], str) and body["provider"] in valid_providers():
+            pending["provider"] = body["provider"]
+        else:
+            warnings.append(
+                {
+                    "field": "provider",
+                    "code": "voice_provider_unknown",
+                    "message": "provider is not a known voice provider, so it was not saved",
+                }
+            )
     if "voice" in body:
         # A voice NAME, same class as system_voice: a wrong type must be refused
         # rather than stringified, because "{}" is a name no engine can satisfy.
@@ -325,8 +334,17 @@ async def api_voice_config(request: web.Request) -> web.Response:
         pending["default_voice"] = _voice
     # Same as provider above: ``in VALID_ENGINES`` raises TypeError on an
     # unhashable JSON value (list/dict), 500ing the PUT — require a str first.
-    if "engine" in body and isinstance(body["engine"], str) and body["engine"] in VALID_ENGINES:
-        pending["default_engine"] = body["engine"]
+    if "engine" in body:
+        if isinstance(body["engine"], str) and body["engine"] in VALID_ENGINES:
+            pending["default_engine"] = body["engine"]
+        else:
+            warnings.append(
+                {
+                    "field": "engine",
+                    "code": "voice_engine_unknown",
+                    "message": "engine is not a known Polly engine, so it was not saved",
+                }
+            )
     # rate/pitch differ from the name fields on purpose: their validators own a
     # documented degrade-to-default contract (a numeric "rate": 100 is a mundane
     # typo, not a refusable request), and they are shape-checked against a percent
@@ -410,6 +428,11 @@ async def api_voice_config(request: web.Request) -> web.Response:
     for _attr, _new in pending.items():
         setattr(_vc, _attr, _new)
 
+    if warnings:
+        logger.warning(
+            "voice config PUT: left unsaved: %s", ", ".join(w["field"] for w in warnings)
+        )
+        return web.json_response({"ok": True, "warnings": warnings})
     return web.json_response({"ok": True})
 
 

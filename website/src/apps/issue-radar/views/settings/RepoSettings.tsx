@@ -624,7 +624,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
                 href={userUrlFor(repoRef, m.login)}
                 target="_blank"
                 rel="noreferrer"
-                title={`${m.login} — ${roleLabel(m.role)} · open on ${terms.providerName}`}
+                title={i18nT('apps.issueRadar.views.settings.repoSettings.member_chip_title', {
+                  login: m.login,
+                  role: roleLabel(m.role),
+                  provider: terms.providerName,
+                })}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-hover pl-2.5 pr-2 py-1 text-[13px] text-text hover:border-border-strong transition-colors"
               >
                 <span className="truncate max-w-[160px]">{m.login}</span>

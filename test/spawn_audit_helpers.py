@@ -454,9 +454,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # binary on the unattended path). Same read shape and grounds as
         # npm_preflight._extract above.
         "dep_sync.py::_git_blob_text",
-        # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
-        # resolve through the CapabilityManager seam, so the resolver spawns no
-        # subprocess at all and needs no allowlist entry.)
         # Browser Mode setup/install path, run only from the dashboard settings
         # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
         # argv of trusted node-toolchain tools resolved via find_node_tool
@@ -603,7 +600,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # exactly what the pin declines to trust); a miss on both means no
         # spawn at all. Operator-invoked doctor, 10s-capped, queries only — no
         # fetch, no mutation. Same classification as the other fixed-argv
-        # doctor probes (``_detect_userspace_oom_killer``, ``_detect_linger``).
+        # doctor probes (``_detect_userspace_oom_killer``).
         "cli_doctor_parts/host_probes.py::_git_line",
         # Read-only system-metrics probe for the Memory section on macOS, where
         # the ``platform_compat`` shim has no ctypes-only per-pid RSS path:
@@ -822,6 +819,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # timeout, no shell, no cwd, no agent-influenced arguments.
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
+        # The Windows half of _scan_mcp_processes: PowerShell pinned via
+        # trusted_system_bin, list argv with no shell and no cwd. The query's
+        # only inputs are signature strings, which the function itself refuses
+        # unless they are [A-Za-z0-9_.-]+ (no quote, $, backtick or WQL
+        # wildcard), and its one caller passes two hard-coded literals. Reads
+        # the same Win32_Process data as process_command_line.
+        "dashboard/system_windows_probes.py::windows_process_command_lines",
         "dashboard/port_reclaim.py::_listeners_on_port",
         # Bundle-freshness startup probe: fixed `git rev-parse HEAD:website`
         # list-argv (no shell=True) with git PINNED via trusted_git_bin (fixed
@@ -1215,9 +1219,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "apple_speech/__init__.py::inventory",
         "apple_speech/__init__.py::start",
         "apple_speech/__init__.py::transcribe",
-        # (`transcribe.py::_python3_bin_dir` is absent: its scripts-dir probe
-        # routes through `dep_sync.py::_probe_interpreter`, so an entry here
-        # would be stale.)
         # Every runtime audio conversion now converges here so the authenticated
         # bundled image stays bound until spawn. The executable is either that
         # digest-verified image or a fixed-directory system candidate; the three

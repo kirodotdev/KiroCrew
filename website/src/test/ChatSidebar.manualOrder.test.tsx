@@ -736,6 +736,32 @@ describe('the Manual sort', () => {
     expect(end.contains(handle)).toBe(false)
   })
 
+  it('sets the running dot apart from the drag handle, and only on a row that has one', () => {
+    localStorage.setItem('mc-sidebar-lane', 'flat')
+    renderSidebar([
+      slot('a', '2026-03-01T00:00:00Z', { manual_rank: 0, manual_rev: 100, running: true }),
+      slot('p', '2026-01-05T00:00:00Z', { pinned: true, manual_rank: null, running: true }),
+    ], 'manual')
+    const rowOf = (k: string) => screen.getByText(`${k} title`).closest('[data-session-row]') as HTMLElement
+    const dotClasses = (k: string) =>
+      (rowOf(k).querySelector('[data-testid="session-live-dot"]') as HTMLElement).className.split(/\s+/)
+    // The handle's box ends at the content column's 14px edge; the dot's 4px
+    // left margin is the gap between the two.
+    expect(rowOf('a').querySelector('[data-testid="session-row-drag-handle"]')).toBeTruthy()
+    expect(dotClasses('a')).toContain('ml-1')
+    // A pinned row has no handle, so its dot keeps the content column's edge.
+    expect(rowOf('p').querySelector('[data-testid="session-row-drag-handle"]')).toBeNull()
+    expect(dotClasses('p')).not.toContain('ml-1')
+  })
+
+  it('keeps the running dot on the content edge when the sort is not Manual', () => {
+    renderSidebar([slot('a', '2026-03-01T00:00:00Z', { running: true })], 'date-desc')
+    const row = screen.getByText('a title').closest('[data-session-row]') as HTMLElement
+    expect(row.querySelector('[data-testid="session-row-drag-handle"]')).toBeNull()
+    const dot = row.querySelector('[data-testid="session-live-dot"]') as HTMLElement
+    expect(dot.className.split(/\s+/)).not.toContain('ml-1')
+  })
+
   it('an unpinned session takes back its manual place', () => {
     const { rerender } = renderSidebar([
       slot('a', '2026-03-01T00:00:00Z', { manual_rank: 0, manual_rev: 100 }),

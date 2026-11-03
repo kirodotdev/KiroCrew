@@ -110,12 +110,34 @@ function failureText(error: unknown): string {
   return errMessage(error) || i18nT('pages.knowledge.index.error_no_reason')
 }
 
+/**
+ * Send every request of a bulk action, wait for all of them, then fail with the
+ * first refusal. `Promise.all` would reject on the first refusal while the rest
+ * are still in flight, so the rollback and its refetch could run before those
+ * writes land.
+ */
+async function settleAll(requests: Promise<unknown>[]): Promise<void> {
+  const results = await Promise.allSettled(requests)
+  const refused = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (refused) throw refused.reason
+}
+
 function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>; items: KnowledgeItem[]; onDone: () => void }) {
   const queryClient = useQueryClient()
+  // A bulk action that failed part-way still changed the items whose requests
+  // went through. The snapshot puts every selected row back; this refetch takes
+  // away the ones the server did archive or delete, so they are not shown as
+  // live rows that a retry would only fail on again. Awaited by `onError`, so
+  // the mutation stays pending (its buttons disabled) until the reads finish:
+  // a retry's own `cancelQueries` could otherwise cancel this refetch.
+  const refetchAfterPartialFailure = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['knowledge-items'] }),
+    queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] }),
+  ])
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async (status: string) => {
-      await Promise.all(Array.from(selectedIds).map(id =>
+      await settleAll(Array.from(selectedIds).map(id =>
         knowledgeApi(`/items/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
       ))
     },
@@ -133,8 +155,9 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       })
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: async (_err, _vars, ctx) => {
       ctx?.prev.forEach(([key, data]) => queryClient.setQueryData(key, data))
+      await refetchAfterPartialFailure()
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
@@ -145,7 +168,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async () => {
-      await Promise.all(Array.from(selectedIds).map(id =>
+      await settleAll(Array.from(selectedIds).map(id =>
         knowledgeApi(`/items/${id}`, { method: 'DELETE' })
       ))
     },
@@ -163,8 +186,9 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
       })
       return { prev }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: async (_err, _vars, ctx) => {
       ctx?.prev.forEach(([key, data]) => queryClient.setQueryData(key, data))
+      await refetchAfterPartialFailure()
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })

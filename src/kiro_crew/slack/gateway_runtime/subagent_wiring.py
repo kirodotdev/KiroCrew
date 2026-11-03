@@ -209,9 +209,23 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # bump would invent an agent that never ran.
         _flush_only = getattr(info, "_digest_flush_only", False) is True
         parent_key = info.parent_session_key
-        _parent_slot_name, _injection_slot, _injection_slot_name = await self._parent_tab(
-            parent_key
-        )
+        try:
+            _parent_slot_name, _injection_slot, _injection_slot_name = await self._parent_tab(
+                parent_key
+            )
+        except Exception:
+            # A restored tab whose window cannot be read is treated as closed:
+            # the parent's own route delivers the completion now, rather than
+            # leaving it to the next start's re-announce.
+            logger.warning(
+                "Subagent %s: the tab showing %s could not be read; "
+                "delivering its completion through the parent's own route",
+                info.id,
+                parent_key,
+                exc_info=True,
+            )
+            _parent_slot_name, _injection_slot = "", None
+            _injection_slot_name = subagent_event_slot(parent_key)
 
         if not _flush_only:
             await _broadcast_subagent_status(info, "done", _injection_slot_name)
@@ -403,8 +417,20 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             if slot is not None and getattr(slot, "window_pending", False) is True:
                 # A parent tab restored as a sidebar row loads its window
                 # before the card is appended, with the read off the loop.
-                await load_window_off_loop(slot)
-                slot = self.dashboard_state.get_slot(slot_name)
+                # A window that cannot be read is treated as no tab: the
+                # frame below still reaches the UI.
+                try:
+                    await load_window_off_loop(slot)
+                    slot = self.dashboard_state.get_slot(slot_name)
+                except Exception:
+                    logger.warning(
+                        "Subagent %s: the tab %s could not be read; "
+                        "its failure card is sent as a frame only",
+                        info.id,
+                        slot_name,
+                        exc_info=True,
+                    )
+                    slot = None
             if slot:
                 task_preview = redact_and_truncate(info.task or "", 100)
                 error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
@@ -536,8 +562,18 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         slot = self.dashboard_state.get_slot(slot_name)
         if slot is not None and getattr(slot, "window_pending", False) is True:
             # A parent tab restored as a sidebar row loads its window before
-            # the notice is appended, with the read off the loop.
-            await load_window_off_loop(slot)
+            # the notice is appended, with the read off the loop. A window
+            # that cannot be read is treated as no tab, so the manager falls
+            # through to the owner DM.
+            try:
+                await load_window_off_loop(slot)
+            except Exception:
+                logger.warning(
+                    "The tab %s could not be read; its orphan notice goes to the owner",
+                    slot_name,
+                    exc_info=True,
+                )
+                return False
             slot = self.dashboard_state.get_slot(slot_name)
         if not slot:
             return False

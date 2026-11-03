@@ -149,7 +149,10 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
+  /** App composer actions (`composerActions.tsx`), a group of their own after
+   *  the host's shortcuts so an app's row never sits among the host's. */
+  appActionRows?: ReactNode
   /** "Optimize prompt" while a turn runs (#23572), a menu row because the
    *  busy send cluster is at its button cap. Null when idle: the cluster's
    *  own Optimize button is back then. */
@@ -361,6 +364,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
+              {appActionRows}
             </div>
           </OverlayPortal>}
           </GuideRevealScope>

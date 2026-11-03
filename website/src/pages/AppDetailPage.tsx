@@ -53,7 +53,9 @@ import { classifyManifestArt, installedArt, installedArtList, installedArtListAl
 import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
+import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
+import { actionGrant } from '../composerActions/composerActionRegistry'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
 // its local-art second chance) and `appDetailPageTypes.ts` (the page's view
@@ -113,7 +115,9 @@ export default function AppDetailPage() {
   // So do link-open hosts and whole URLs for opened links.
   const stagedOpenHosts = app?.linkOpenGrant?.stagedHosts || []
   const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length > 0 || stagedFullUrl || stagedOpenFullUrl
+  // A composer button an update added waits the same way.
+  const stagedComposerActions = app?.composerActionGrant?.staged || []
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length > 0 || stagedFullUrl || stagedOpenFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -292,10 +296,12 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            adoption: installed.adoption,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
             linkOpenGrant: installed.linkOpenGrant,
+            composerActionGrant: installed.composerActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -420,10 +426,12 @@ export default function AppDetailPage() {
             installedVersion: installed.version,
             enabled: installed.enabled,
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
+            adoption: installed.adoption,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
             messageActionGrant: installed.messageActionGrant,
             linkOpenGrant: installed.linkOpenGrant,
+            composerActionGrant: installed.composerActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -975,6 +983,16 @@ export default function AppDetailPage() {
           </div>
         )}
 
+        {/* A former built-in's move to its published registry copy: blocked, retrying,
+            staged for the next restart, or installed on a host too old for it. */}
+        {app.installed && (
+          <AppDetailAdoptionNotice
+            adoption={app.adoption}
+            name={appDisplayName(app)}
+            builtinOwned={app.origin === 'builtin'}
+          />
+        )}
+
         {app.installed && hasStagedGrants && (
           <div
             role="status"
@@ -1053,6 +1071,16 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedComposerActions.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {stagedComposerActions.map(id => (
+                      <code key={id} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{id}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
               {stagedOpenFullUrl && (
                 <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
               )}
@@ -1068,7 +1096,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : [])].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions].join(', ')
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1079,6 +1107,7 @@ export default function AppDetailPage() {
                     messageActions: stagedMessageActions,
                     linkOpenHosts: stagedOpenHosts,
                     linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
+                    composerActions: stagedComposerActions.map(actionGrant),
                   })
                   setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))

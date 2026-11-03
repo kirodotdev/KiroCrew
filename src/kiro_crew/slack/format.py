@@ -34,6 +34,7 @@ from kiro_crew.messaging.tables import (
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.slack.break_point import last_break
 
 logger = logging.getLogger(__name__)
 
@@ -930,12 +931,11 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
 
     if len(text) > SLACK_MAX_TEXT:
         # rfind returns -1 (no newline in window) or the last newline's index —
-        # NOT a bool. `rfind(...) or SLACK_MAX_TEXT` mishandles both: -1 is
-        # truthy so text[:-1] keeps ~39000 chars (Slack then rejects the
-        # message), and a newline at index 0 falls through to the cap. Use the
-        # explicit -1 check already used by split_message().
+        # NOT a bool, so it is compared, never used as one. A line break less
+        # than a quarter in (including none, -1) would keep almost nothing of
+        # the text, so the cut falls back to the cap.
         cut = text[:SLACK_MAX_TEXT].rfind("\n")
-        if cut <= 0:
+        if cut < SLACK_MAX_TEXT // 4:
             cut = SLACK_MAX_TEXT
         text = f"{text[:cut]}\n\n_…truncated ({len(text)} chars total)_"
 
@@ -1214,7 +1214,9 @@ def strip_thinking_tags(text: str, *, strip_whitespace: bool = True) -> tuple[st
 def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
     """Split text into chunks that fit within Slack's message limit.
 
-    Splits on newline boundaries when possible to avoid breaking mid-line.
+    Splits at the line break :func:`~kiro_crew.slack.break_point.last_break`
+    picks (at least a quarter into the chunk, or one before a line that fits one
+    post whole); with none that counts, it cuts where the limit falls.
     """
     if len(text) <= limit:
         return [text]
@@ -1230,10 +1232,13 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
         # loop would spin forever. Keep at least one character of progress per
         # iteration so the function always terminates regardless of `limit`.
         chunk_limit = max(1, limit - len(CONTINUATION))
-        # Try to split at last newline within limit
-        cut = text.rfind("\n", 0, chunk_limit)
+        cut = last_break(text, chunk_limit, ("\n",))
         if cut <= 0:
-            cut = chunk_limit
+            # The last post carries no CONTINUATION, so a remainder up to
+            # ``limit`` still goes out whole after an early line break.
+            early = text.rfind("\n", 0, chunk_limit)
+            fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
+            cut = early if fits else chunk_limit
         remainder = text[cut:].lstrip("\n")
         if remainder:
             parts.append(text[:cut] + CONTINUATION)
@@ -1328,8 +1333,9 @@ def _truncated(text: str, limit: int, total: int | None = None) -> list[str]:
     """
     if len(text) <= limit:
         return [text]
+    # A line break less than a quarter in would keep almost nothing of the text.
     cut = text[:limit].rfind("\n")
-    if cut <= 0:
+    if cut < limit // 4 or cut <= 0:
         cut = limit
     notice = f"\n\n_…truncated ({len(text) if total is None else total} chars total)_"
     # Charge the notice against the ceiling so the result really fits.

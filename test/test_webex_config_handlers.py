@@ -250,7 +250,7 @@ class TestSave:
             pass
 
         # CRITICAL: .env must be untouched — config write failed before the
-        # handler reached _write_env_now(), so the old token is still there.
+        # handler reached the .env write, so the old token is still there.
         env_text = env.read_text(encoding="utf-8")
         assert (
             "old-token" in env_text
@@ -269,7 +269,7 @@ class TestSave:
           - the config.json write raises (disk full)
 
         With config-first ordering: the config write fails before
-        _write_env_now() is called, so os.environ is never mutated by the
+        the .env write, so os.environ is never mutated by the
         handler.  The process-only credential is trivially preserved.
         """
         env = tmp_path / ".env"
@@ -298,7 +298,7 @@ class TestSave:
             pass
 
         # CRITICAL: the process-only credential must survive intact.
-        # Config-first ordering: _write_env_now() is never called when config
+        # Config-first ordering: the .env write never happens when config
         # write fails, so os.environ is untouched by the failed request.
         assert os.environ.get("WEBEX_BOT_TOKEN") == "env-only-tok", (
             "Config-first ordering: process-only credential must be untouched "

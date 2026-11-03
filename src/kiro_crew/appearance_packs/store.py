@@ -892,7 +892,7 @@ class AppearanceStore:
                 return None
             if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
                 return None
-            raw = json.loads(path.read_text("utf-8"))
+            raw = loads_user_json(path.read_text("utf-8"))
             return raw if isinstance(raw, dict) else None
         except (OSError, ValueError):
             return None

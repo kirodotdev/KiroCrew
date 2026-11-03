@@ -90,6 +90,7 @@ from kiro_crew.config.sections import (
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     _pip_install_channel_available,
@@ -266,7 +267,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
         # `and` in the left operand's type (str | None), which rejects is_file's bool.
         if validated:
             if await asyncio.to_thread(Path(validated).is_file):
-                return web.FileResponse(validated)
+                return DistFileResponse(Path(validated))
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches
@@ -281,7 +282,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
     for name in names:
         path = _h._STATIC_DIR / name
         if await asyncio.to_thread(path.is_file):
-            return web.FileResponse(path)
+            return DistFileResponse(path)
     return web.Response(status=404)
 
 
@@ -624,7 +625,7 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
         and await asyncio.to_thread(_DIST_DIR.resolve)
         in (await asyncio.to_thread(path.resolve)).parents
     ):
-        return web.FileResponse(path)
+        return DistFileResponse(path)
     raise web.HTTPNotFound()
 
 
