@@ -435,3 +435,28 @@ describe('PipelineView — failed read', () => {
     expect(screen.getByText('IS-7')).toBeTruthy()
   })
 })
+
+describe('PipelineView — refresh button', () => {
+  it('names the disabled button for the refresh in flight, then restores it', async () => {
+    // A disabled "Refresh the pipeline" reads as unavailable; while the read
+    // runs its name and tooltip say it is busy instead.
+    crewFabric.mockResolvedValue(fabric([item({ number: 7 })]))
+    renderView()
+    await screen.findByText('IS-7')
+
+    let release: (v: CrewFabricResponse) => void = () => {}
+    crewFabric.mockReturnValue(new Promise(resolve => { release = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the pipeline' }))
+
+    const busy = await screen.findByRole('button', { name: 'Refreshing the pipeline…' })
+    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('title', 'Refreshing the pipeline…')
+    expect(screen.queryByRole('button', { name: 'Refresh the pipeline' })).toBeNull()
+
+    await act(async () => { release(fabric([item({ number: 7 })])) })
+
+    const idle = await screen.findByRole('button', { name: 'Refresh the pipeline' })
+    expect(idle).toBeEnabled()
+    expect(idle).toHaveAttribute('title', 'Refresh the pipeline')
+  })
+})

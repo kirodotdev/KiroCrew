@@ -82,6 +82,25 @@ describe('OverviewView', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('names the disabled refresh button for the refresh in flight, then restores it', () => {
+    // A disabled "Refresh issues" reads as unavailable; while a refresh runs the
+    // name and tooltip say it is busy instead.
+    setContext({ refreshing: true })
+    const { rerender } = render(<OverviewView />)
+
+    const busy = screen.getByRole('button', { name: 'Refreshing issues…' })
+    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('title', 'Refreshing issues…')
+    expect(screen.queryByRole('button', { name: 'Refresh issues' })).toBeNull()
+
+    setContext({ refreshing: false })
+    rerender(<OverviewView />)
+
+    const idle = screen.getByRole('button', { name: 'Refresh issues' })
+    expect(idle).toBeEnabled()
+    expect(idle).toHaveAttribute('title', 'Re-fetch issues + labels from GitHub')
+  })
+
   it('shows no Assigned to you tile when nobody is signed in', () => {
     setContext({ me: null })
     render(<OverviewView />)

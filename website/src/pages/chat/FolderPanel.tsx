@@ -397,8 +397,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             className={`flex items-center justify-center h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none aria-disabled:cursor-default ${
               reserveRefreshLabel ? 'gap-1 px-1.5' : 'w-[26px]'
             }`}
-            title={t('pages.chat.folderPanel.refresh')}
-            aria-label={t('pages.chat.folderPanel.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // listing read the press did not start leaves the control live and its name plain.
+            title={refreshing ? t('pages.chat.folderPanel.refreshing') : t('pages.chat.folderPanel.refresh')}
+            aria-label={refreshing ? t('pages.chat.folderPanel.refreshing') : t('pages.chat.folderPanel.refresh')}
           >
             <RotateCw size={14} className={refreshBusy ? 'animate-spin' : undefined} />
             {/* Laid out before it is needed, never animated: a 26px→auto morph cannot transition,

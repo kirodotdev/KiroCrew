@@ -5293,6 +5293,7 @@
         "no_files_match": "No files match",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
+        "refreshing": "Refreshing…",
         "refresh_retries": "Refresh to retry",
         "search_denied": "No access to this folder",
         "search_failed": "Search failed",
