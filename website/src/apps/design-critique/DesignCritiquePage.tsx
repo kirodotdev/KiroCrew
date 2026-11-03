@@ -4,7 +4,7 @@ import {
   Check, ChevronRight, Maximize2, Sparkle,
 } from 'lucide-react'
 
-import { sevOf, KIND_LABEL, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
+import { sevOf, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
 import Clickable from '../../components/Clickable'
 import { useMenuKeyboard } from '../../hooks/useMenuKeyboard'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -46,6 +46,17 @@ import { fmtNumber } from '../../i18n/format'
 // Errors flagged with why the poll loop gave up — distinguishes navigate-away and
 // timeout (both resumable) from a real failure.
 type Flagged = Error & { cancelled?: boolean; timeout?: boolean }
+/** The rail's "rendering it" line for a pasted link, one whole-sentence key per kind. */
+function railPendingLabel(kind: string): string {
+  switch (kind) {
+    case 'figma': return i18nT('apps.designCritique.designCritiquePage.rail_pending_figma')
+    case 'repo': return i18nT('apps.designCritique.designCritiquePage.rail_pending_repo')
+    case 'local': return i18nT('apps.designCritique.designCritiquePage.rail_pending_local')
+    case 'url': return i18nT('apps.designCritique.designCritiquePage.rail_pending_url')
+    default: return i18nT('apps.designCritique.designCritiquePage.rail_pending_design')
+  }
+}
+
 const CANCELLED = (): Flagged => Object.assign(new Error('cancelled'), { cancelled: true })
 const TIMEOUT = (): Flagged => Object.assign(new Error('still running'), { timeout: true })
 
@@ -1211,12 +1222,12 @@ export default function DesignCritiquePage() {
   } else if (busy) {
     railBody = (
       <>
-        <p key="w" style={S.readLine}>{phase === 'uploading' ? 'Uploading…' : 'Reading your design…'}</p>
+        <p key="w" style={S.readLine}>{phase === 'uploading' ? i18nT('apps.designCritique.designCritiquePage.rail_uploading') : i18nT('apps.designCritique.designCritiquePage.rail_reading')}</p>
         <div key="sub" style={S.health}>{screens.length > 1
-          ? 'A flow of ' + screens.length + ' screens — I’ll also check the jumps between them.'
-          : screens.length ? 'One screen.'
-          : pendingKind ? 'A ' + (KIND_LABEL[pendingKind] || 'design') + ' — rendering it before judging it.'
-          : 'Getting the screens ready.'}</div>
+          ? i18nT('apps.designCritique.designCritiquePage.rail_flow', { count: screens.length, n: fmtNumber(screens.length) })
+          : screens.length ? i18nT('apps.designCritique.designCritiquePage.rail_one_screen')
+          : pendingKind ? railPendingLabel(pendingKind)
+          : i18nT('apps.designCritique.designCritiquePage.rail_getting_ready')}</div>
         {screens.length ? (
           <div key="l">
             <div style={S.sectionH}>{screens.length > 1 ? i18nT('apps.designCritique.designCritiquePage.screens_in_order') : i18nT('apps.designCritique.designCritiquePage.screen_heading')}</div>

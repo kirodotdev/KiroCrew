@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import { Upload, Plus, X, ChevronLeft, ChevronRight, PencilRuler } from 'lucide-react'
-import { KIND_LABEL, kindLabel } from './constants'
+import { kindLabel } from './constants'
 import { detectKind, recognise } from './utils'
 import { S } from './styles'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -9,6 +9,23 @@ import type { Blocked, StagedItem } from './types'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
 import { useImeGuard } from '../../hooks/useImeGuard'
+
+/**
+ * The start button's label for a pasted link: one whole-sentence key per kind,
+ * so a translation can bend the noun and order the words its own way. Literal
+ * keys keep each one visible to the key-reference gate; an unknown kind reads
+ * "Critique this".
+ */
+function startKindLabel(kind: string | undefined): string {
+  switch (kind) {
+    case 'figma': return i18nT('apps.designCritique.composer.start_kind_figma')
+    case 'repo': return i18nT('apps.designCritique.composer.start_kind_repo')
+    case 'local': return i18nT('apps.designCritique.composer.start_kind_local')
+    case 'url': return i18nT('apps.designCritique.composer.start_kind_url')
+    default: return i18nT('apps.designCritique.composer.start_this')
+  }
+}
+
 interface Props {
   staged: StagedItem[]
   refText: string
@@ -44,15 +61,15 @@ export default function Composer(p: Props) {
   const startLabel = staged.length > 1
     ? i18nT('apps.designCritique.composer.critique_this_flow_count_screens', { count: staged.length })
     : staged.length === 1 ? i18nT('apps.designCritique.composer.critique_this_screen')
-    : refText.trim() ? 'Critique ' + (KIND_LABEL[(det || {}).kind as string] || 'this') : 'Critique'
+    : refText.trim() ? startKindLabel((det || {}).kind as string | undefined) : i18nT('apps.designCritique.composer.start_plain')
 
   // What did they paste? Worked out live so we can say it back before they commit.
   const recog = (!staged.length && refText.trim()) ? recognise(det) : null
 
   const subLine = staged.length
     ? (staged.length > 1
-        ? staged.length + ' screens · this order is the flow order — reorder or remove before you start.'
-        : '1 screen · add another to critique it as a flow.')
+        ? i18nT('apps.designCritique.composer.staged_flow_hint', { count: staged.length, n: fmtNumber(staged.length) })
+        : i18nT('apps.designCritique.composer.staged_one_hint'))
     : ''
 
   const middle = staged.length
@@ -103,7 +120,7 @@ export default function Composer(p: Props) {
           tabIndex={-1}
           aria-hidden="true"
         />
-        <h2 style={S.cardTitle}>{blocked ? 'I couldn’t get in' : 'What should I critique?'}</h2>
+        <h2 style={S.cardTitle}>{blocked ? i18nT('apps.designCritique.composer.title_blocked') : i18nT('apps.designCritique.composer.title_ask')}</h2>
         {blocked ? (
           <div style={S.blockedBox}>
             <div style={S.blockedSay}>{blocked.say}</div>
@@ -142,7 +159,8 @@ export default function Composer(p: Props) {
         <input
           style={{ ...S.linkInput, opacity: staged.length ? 0.45 : 1 }}
           value={refText} disabled={staged.length > 0 || busy}
-          placeholder={staged.length ? 'Using your screenshots — clear them to critique a link instead' : 'Figma link · git repo · a folder on this machine · a running URL (localhost or a deployed preview)'}
+          aria-label={i18nT('apps.designCritique.composer.link_label')}
+          placeholder={staged.length ? i18nT('apps.designCritique.composer.link_placeholder_staged') : i18nT('apps.designCritique.composer.link_placeholder')}
           onChange={(e) => p.setRefText(e.target.value)}
           {...ime.bindEnter({ onEnter: () => p.start() })}
         />
@@ -161,7 +179,7 @@ export default function Composer(p: Props) {
         ) : null}
         <p style={S.cardHint}>{recog
           ? null
-          : 'I render everything before judging it — never from code alone. If your app is already running, paste its URL and I can measure real colours and sizes instead of estimating them.'}</p>
+          : i18nT('apps.designCritique.composer.render_before_judging')}</p>
       </div>
     </div>
   )

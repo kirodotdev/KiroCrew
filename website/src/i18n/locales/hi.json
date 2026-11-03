@@ -1641,7 +1641,22 @@
         "step_n": "चरण {{n}}",
         "try_again": "फिर से कोशिश करें",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "इसके बजाय लोकल फ़ोल्डर इस्तेमाल करें"
+        "use_a_local_folder_instead": "इसके बजाय लोकल फ़ोल्डर इस्तेमाल करें",
+        "start_kind_figma": "Figma फ़ाइल की समीक्षा करो",
+        "start_kind_repo": "रिपॉज़िटरी की समीक्षा करो",
+        "start_kind_local": "स्थानीय कोड की समीक्षा करो",
+        "start_kind_url": "चल रहे ऐप की समीक्षा करो",
+        "start_this": "इसकी समीक्षा करो",
+        "start_plain": "समीक्षा करो",
+        "staged_one_hint": "1 स्क्रीन · इसे फ़्लो के रूप में समीक्षा करने के लिए एक और जोड़ो।",
+        "staged_flow_hint_one": "{{n}} स्क्रीन · यही क्रम फ़्लो का क्रम है — शुरू करने से पहले क्रम बदलो या हटाओ।",
+        "staged_flow_hint_other": "{{n}} स्क्रीन · यही क्रम फ़्लो का क्रम है — शुरू करने से पहले क्रम बदलो या हटाओ।",
+        "title_blocked": "मैं अंदर नहीं जा सका",
+        "title_ask": "मैं किसकी समीक्षा करूँ?",
+        "link_placeholder_staged": "तुम्हारे स्क्रीनशॉट इस्तेमाल हो रहे हैं — लिंक की समीक्षा के लिए उन्हें हटाओ",
+        "link_placeholder": "Figma लिंक · git रिपॉज़िटरी · इस मशीन का कोई फ़ोल्डर · कोई चल रहा URL (localhost या तैनात प्रीव्यू)",
+        "link_label": "समीक्षा के लिए लिंक",
+        "render_before_judging": "मैं आँकने से पहले सब कुछ रेंडर करता हूँ — सिर्फ़ कोड देखकर कभी नहीं। अगर तुम्हारा ऐप पहले से चल रहा है, तो उसका URL चिपकाओ, ताकि मैं अनुमान लगाने के बजाय असली रंग और आकार माप सकूँ।"
       },
       "constants": {
         "blocked_figma_app_missing_hint": "फ़ाइल को Figma डेस्कटॉप में खोलें और फिर कोशिश करें, या फ़्रेम को PNG के रूप में एक्सपोर्ट करके यहाँ छोड़ें।",
@@ -1730,7 +1745,18 @@
         "what_s_working": "क्या अच्छा चल रहा है",
         "what_you_ll_get": "तुम्हें क्या मिलेगा",
         "your_critiques": "तुम्हारी समीक्षाएँ",
-        "your_question_click_to_see_the_answer": "तुम्हारा सवाल — उत्तर देखने के लिए क्लिक करो"
+        "your_question_click_to_see_the_answer": "तुम्हारा सवाल — उत्तर देखने के लिए क्लिक करो",
+        "rail_uploading": "अपलोड हो रहा है…",
+        "rail_reading": "तुम्हारा डिज़ाइन पढ़ा जा रहा है…",
+        "rail_flow_one": "{{n}} स्क्रीन का फ़्लो — मैं उनके बीच के बदलाव भी जाँचूँगा।",
+        "rail_flow_other": "{{n}} स्क्रीन का फ़्लो — मैं उनके बीच के बदलाव भी जाँचूँगा।",
+        "rail_one_screen": "एक स्क्रीन।",
+        "rail_pending_figma": "एक Figma फ़ाइल — आँकने से पहले रेंडर हो रही है।",
+        "rail_pending_repo": "एक रिपॉज़िटरी — आँकने से पहले रेंडर हो रही है।",
+        "rail_pending_local": "स्थानीय कोड — आँकने से पहले रेंडर हो रहा है।",
+        "rail_pending_url": "एक चल रहा ऐप — आँकने से पहले रेंडर हो रहा है।",
+        "rail_pending_design": "एक डिज़ाइन — आँकने से पहले रेंडर हो रहा है।",
+        "rail_getting_ready": "स्क्रीन तैयार की जा रही हैं।"
       },
       "findingRow": {
         "based_on": "किस आधार पर",
@@ -1771,12 +1797,12 @@
         "what_should_i_audit": "मैं किसका ऑडिट करूँ?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "मैं इसे कैप्चर करके असली कंट्रास्ट और आकार मापूँगा।",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "मैं इसे क्लोन करके स्क्रीन की सूची बनाऊँगा। सिर्फ़ वही पेज दिखते हैं जो बिना सर्वर के रेंडर होते हैं।",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "मैं स्क्रीन की सूची बनाऊँगा। सिर्फ़ वही पेज दिखते हैं जो बिना सर्वर के रेंडर होते हैं।",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "इसे अभी चलना चाहिए। मैं इसे लाइव कैप्चर करके असली कंट्रास्ट और आकार मापूँगा।",
+        "not_something_i_recognise_give_me_a_figma_link_a": "मैं इसे नहीं पहचानता। मुझे Figma लिंक, GitHub रिपॉज़िटरी, पूरा स्थानीय पाथ या पहले से चल रहा URL दो।"
       },
       "waitingScreen": {
         "cancel_this_run": "यह रन रद्द करें",

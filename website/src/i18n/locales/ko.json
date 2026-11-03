@@ -1663,7 +1663,21 @@
         "step_n": "{{n}}단계",
         "try_again": "다시 시도",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "대신 로컬 폴더 사용"
+        "use_a_local_folder_instead": "대신 로컬 폴더 사용",
+        "start_kind_figma": "Figma 파일 비평",
+        "start_kind_repo": "저장소 비평",
+        "start_kind_local": "로컬 코드 비평",
+        "start_kind_url": "실행 중인 앱 비평",
+        "start_this": "이것 비평",
+        "start_plain": "비평",
+        "staged_one_hint": "화면 1개 · 하나를 더 추가하면 흐름으로 비평할 수 있습니다.",
+        "staged_flow_hint_other": "화면 {{n}}개 · 이 순서가 흐름 순서입니다. 시작하기 전에 순서를 바꾸거나 제거하세요.",
+        "title_blocked": "들어갈 수 없었습니다",
+        "title_ask": "무엇을 비평할까요?",
+        "link_placeholder_staged": "스크린샷을 사용하는 중입니다. 링크를 비평하려면 스크린샷을 지우세요",
+        "link_placeholder": "Figma 링크 · git 저장소 · 이 컴퓨터의 폴더 · 실행 중인 URL(localhost 또는 배포된 미리 보기)",
+        "link_label": "비평할 링크",
+        "render_before_judging": "판단하기 전에 모든 것을 렌더링합니다. 코드만 보고 판단하지 않습니다. 앱이 이미 실행 중이면 URL을 붙여 넣으세요. 색상과 크기를 추정하지 않고 실제로 측정할 수 있습니다."
       },
       "constants": {
         "blocked_figma_app_missing_hint": "Figma 데스크톱에서 파일을 열고 다시 시도하거나, 프레임을 PNG로 내보내 여기에 끌어다 놓으세요.",
@@ -1752,7 +1766,17 @@
         "what_s_working": "잘 되고 있는 점",
         "what_you_ll_get": "받게 될 내용",
         "your_critiques": "내 비평",
-        "your_question_click_to_see_the_answer": "내 질문 — 클릭하면 답변이 표시됩니다"
+        "your_question_click_to_see_the_answer": "내 질문 — 클릭하면 답변이 표시됩니다",
+        "rail_uploading": "업로드 중…",
+        "rail_reading": "디자인을 읽는 중…",
+        "rail_flow_other": "화면 {{n}}개의 흐름 — 화면 사이의 전환도 확인합니다.",
+        "rail_one_screen": "화면 1개.",
+        "rail_pending_figma": "Figma 파일 — 판단하기 전에 렌더링하는 중입니다.",
+        "rail_pending_repo": "저장소 — 판단하기 전에 렌더링하는 중입니다.",
+        "rail_pending_local": "로컬 코드 — 판단하기 전에 렌더링하는 중입니다.",
+        "rail_pending_url": "실행 중인 앱 — 판단하기 전에 렌더링하는 중입니다.",
+        "rail_pending_design": "디자인 — 판단하기 전에 렌더링하는 중입니다.",
+        "rail_getting_ready": "화면을 준비하는 중입니다."
       },
       "findingRow": {
         "based_on": "근거",
@@ -1792,12 +1816,12 @@
         "what_should_i_audit": "무엇을 점검할까요?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "캡처해서 실제 대비와 크기를 측정합니다.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "복제해서 화면 목록을 만듭니다. 서버 없이 렌더링되는 페이지만 볼 수 있습니다.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "화면 목록을 만듭니다. 서버 없이 렌더링되는 페이지만 볼 수 있습니다.",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "지금 실행 중이어야 합니다. 실시간으로 캡처해서 실제 대비와 크기를 측정합니다.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "인식할 수 없습니다. Figma 링크, GitHub 저장소, 로컬 절대 경로 또는 이미 서비스 중인 URL을 알려 주세요."
       },
       "waitingScreen": {
         "cancel_this_run": "이 실행 취소",

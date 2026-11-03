@@ -1730,7 +1730,22 @@
         "step_n": "Schritt {{n}}",
         "try_again": "Erneut versuchen",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "Stattdessen einen lokalen Ordner verwenden"
+        "use_a_local_folder_instead": "Stattdessen einen lokalen Ordner verwenden",
+        "start_kind_figma": "Figma-Datei kritisieren",
+        "start_kind_repo": "Repo kritisieren",
+        "start_kind_local": "Lokalen Code kritisieren",
+        "start_kind_url": "Laufende App kritisieren",
+        "start_this": "Das hier kritisieren",
+        "start_plain": "Kritisieren",
+        "staged_one_hint": "1 Bildschirm · füge einen weiteren hinzu, um sie als Ablauf zu kritisieren.",
+        "staged_flow_hint_one": "{{n}} Bildschirm · diese Reihenfolge ist die Ablaufreihenfolge — sortiere um oder entferne vor dem Start.",
+        "staged_flow_hint_other": "{{n}} Bildschirme · diese Reihenfolge ist die Ablaufreihenfolge — sortiere um oder entferne vor dem Start.",
+        "title_blocked": "Ich bin nicht hineingekommen",
+        "title_ask": "Was soll ich kritisieren?",
+        "link_placeholder_staged": "Deine Screenshots werden verwendet — entferne sie, um stattdessen einen Link zu kritisieren",
+        "link_placeholder": "Figma-Link · Git-Repo · ein Ordner auf diesem Rechner · eine laufende URL (localhost oder eine bereitgestellte Vorschau)",
+        "link_label": "Link zum Kritisieren",
+        "render_before_judging": "Ich rendere alles, bevor ich es beurteile — nie nur anhand des Codes. Wenn deine App schon läuft, füge ihre URL ein, dann kann ich echte Farben und Größen messen, statt sie zu schätzen."
       },
       "constants": {
         "blocked_figma_app_missing_hint": "Öffne die Datei in Figma Desktop und versuche es erneut, oder exportiere die Frames als PNGs und lege sie hier ab.",
@@ -1819,7 +1834,18 @@
         "what_s_working": "Was funktioniert",
         "what_you_ll_get": "Was Sie erhalten",
         "your_critiques": "Ihre Kritiken",
-        "your_question_click_to_see_the_answer": "Ihre Frage — zum Anzeigen der Antwort klicken"
+        "your_question_click_to_see_the_answer": "Ihre Frage — zum Anzeigen der Antwort klicken",
+        "rail_uploading": "Wird hochgeladen…",
+        "rail_reading": "Dein Design wird gelesen…",
+        "rail_flow_one": "Ein Ablauf aus {{n}} Bildschirm — ich prüfe auch die Übergänge dazwischen.",
+        "rail_flow_other": "Ein Ablauf aus {{n}} Bildschirmen — ich prüfe auch die Übergänge dazwischen.",
+        "rail_one_screen": "Ein Bildschirm.",
+        "rail_pending_figma": "Eine Figma-Datei — wird gerendert, bevor ich sie beurteile.",
+        "rail_pending_repo": "Ein Repo — wird gerendert, bevor ich es beurteile.",
+        "rail_pending_local": "Lokaler Code — wird gerendert, bevor ich ihn beurteile.",
+        "rail_pending_url": "Eine laufende App — wird gerendert, bevor ich sie beurteile.",
+        "rail_pending_design": "Ein Design — wird gerendert, bevor ich es beurteile.",
+        "rail_getting_ready": "Die Bildschirme werden vorbereitet."
       },
       "findingRow": {
         "based_on": "Basierend auf",
@@ -1860,12 +1886,12 @@
         "what_should_i_audit": "Was soll ich prüfen?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "Ich erfasse sie und messe echten Kontrast und echte Größen.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "Ich klone es und liste die Bildschirme auf. Nur Seiten, die ohne Server rendern, sind sichtbar.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "Ich liste die Bildschirme auf. Nur Seiten, die ohne Server rendern, sind sichtbar.",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "sie muss gerade laufen. Ich erfasse sie live und messe echten Kontrast und echte Größen.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "Das erkenne ich nicht. Gib mir einen Figma-Link, ein GitHub-Repo, einen absoluten lokalen Pfad oder eine URL, die bereits ausgeliefert wird."
       },
       "waitingScreen": {
         "cancel_this_run": "Diesen Lauf abbrechen",

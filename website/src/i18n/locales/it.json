@@ -1707,7 +1707,23 @@
         "step_n": "Passo {{n}}",
         "try_again": "Riprova",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "Usa invece una cartella locale"
+        "use_a_local_folder_instead": "Usa invece una cartella locale",
+        "start_kind_figma": "Critica il file Figma",
+        "start_kind_repo": "Critica il repository",
+        "start_kind_local": "Critica il codice locale",
+        "start_kind_url": "Critica l’app in esecuzione",
+        "start_this": "Critica questo",
+        "start_plain": "Critica",
+        "staged_one_hint": "1 schermata · aggiungine un’altra per criticarle come un flusso.",
+        "staged_flow_hint_one": "{{n}} schermata · questo è l’ordine del flusso — riordina o rimuovi prima di iniziare.",
+        "staged_flow_hint_many": "{{n}} schermate · questo è l’ordine del flusso — riordina o rimuovi prima di iniziare.",
+        "staged_flow_hint_other": "{{n}} schermate · questo è l’ordine del flusso — riordina o rimuovi prima di iniziare.",
+        "title_blocked": "Non sono riuscito a entrare",
+        "title_ask": "Cosa devo criticare?",
+        "link_placeholder_staged": "Sto usando i tuoi screenshot — rimuovili per criticare un link",
+        "link_placeholder": "Link Figma · repository git · una cartella su questo computer · un URL in esecuzione (localhost o un’anteprima distribuita)",
+        "link_label": "Link da criticare",
+        "render_before_judging": "Eseguo il rendering di tutto prima di giudicarlo, mai solo dal codice. Se la tua app è già in esecuzione, incolla il suo URL e potrò misurare colori e dimensioni reali invece di stimarli."
       },
       "constants": {
         "blocked_figma_app_missing_hint": "Apri il file in Figma desktop e riprova, oppure esporta i frame come PNG e trascinali qui.",
@@ -1796,7 +1812,19 @@
         "what_s_working": "Cosa funziona",
         "what_you_ll_get": "Cosa otterrai",
         "your_critiques": "Le tue critiche",
-        "your_question_click_to_see_the_answer": "La tua domanda — clicca per vedere la risposta"
+        "your_question_click_to_see_the_answer": "La tua domanda — clicca per vedere la risposta",
+        "rail_uploading": "Caricamento…",
+        "rail_reading": "Lettura del tuo design…",
+        "rail_flow_one": "Un flusso di {{n}} schermata — controllerò anche i passaggi tra loro.",
+        "rail_flow_many": "Un flusso di {{n}} schermate — controllerò anche i passaggi tra loro.",
+        "rail_flow_other": "Un flusso di {{n}} schermate — controllerò anche i passaggi tra loro.",
+        "rail_one_screen": "Una schermata.",
+        "rail_pending_figma": "Un file Figma — lo renderizzo prima di giudicarlo.",
+        "rail_pending_repo": "Un repository — lo renderizzo prima di giudicarlo.",
+        "rail_pending_local": "Codice locale — lo renderizzo prima di giudicarlo.",
+        "rail_pending_url": "Un’app in esecuzione — la renderizzo prima di giudicarla.",
+        "rail_pending_design": "Un design — lo renderizzo prima di giudicarlo.",
+        "rail_getting_ready": "Preparo le schermate."
       },
       "findingRow": {
         "based_on": "Basato su",
@@ -1838,12 +1866,12 @@
         "what_should_i_audit": "Cosa devo esaminare?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "La catturerò e misurerò contrasto e dimensioni reali.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "Lo clonerò ed elencherò le schermate. Sono visibili solo le pagine che si renderizzano senza server.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "Elencherò le schermate. Sono visibili solo le pagine che si renderizzano senza server.",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "deve essere in esecuzione adesso. La catturerò dal vivo e misurerò contrasto e dimensioni reali.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "Non lo riconosco. Dammi un link Figma, un repository GitHub, un percorso locale assoluto o un URL già servito."
       },
       "waitingScreen": {
         "cancel_this_run": "Annulla questa esecuzione",

@@ -486,5 +486,7 @@
   "pages.overviewPage.today_sessions",
   "pages.overviewPage.today_tokens",
   "apps.designCritique.composer.critique_this_flow_count_screens",
-  "apps.designCritique.scopingPicker.critique_this_flow_count_screens"
+  "apps.designCritique.scopingPicker.critique_this_flow_count_screens",
+  "apps.designCritique.composer.staged_flow_hint",
+  "apps.designCritique.designCritiquePage.rail_flow"
 ]

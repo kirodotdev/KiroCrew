@@ -1641,7 +1641,22 @@
         "step_n": "ধাপ {{n}}",
         "try_again": "আবার চেষ্টা করুন",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "পরিবর্তে একটি লোকাল ফোল্ডার ব্যবহার করুন"
+        "use_a_local_folder_instead": "পরিবর্তে একটি লোকাল ফোল্ডার ব্যবহার করুন",
+        "start_kind_figma": "Figma ফাইলের সমালোচনা করো",
+        "start_kind_repo": "রিপোজিটরির সমালোচনা করো",
+        "start_kind_local": "লোকাল কোডের সমালোচনা করো",
+        "start_kind_url": "চলমান অ্যাপের সমালোচনা করো",
+        "start_this": "এটির সমালোচনা করো",
+        "start_plain": "সমালোচনা করো",
+        "staged_one_hint": "1টি স্ক্রিন · ফ্লো হিসেবে সমালোচনা করতে আরেকটি যোগ করো।",
+        "staged_flow_hint_one": "{{n}}টি স্ক্রিন · এই ক্রমই ফ্লোর ক্রম — শুরু করার আগে ক্রম বদলাও বা সরাও।",
+        "staged_flow_hint_other": "{{n}}টি স্ক্রিন · এই ক্রমই ফ্লোর ক্রম — শুরু করার আগে ক্রম বদলাও বা সরাও।",
+        "title_blocked": "আমি ঢুকতে পারিনি",
+        "title_ask": "আমি কীসের সমালোচনা করব?",
+        "link_placeholder_staged": "তোমার স্ক্রিনশট ব্যবহার হচ্ছে — লিংকের সমালোচনা করতে সেগুলো সরাও",
+        "link_placeholder": "Figma লিংক · git রিপোজিটরি · এই মেশিনের একটি ফোল্ডার · একটি চলমান URL (localhost বা ডিপ্লয় করা প্রিভিউ)",
+        "link_label": "সমালোচনার লিংক",
+        "render_before_judging": "বিচার করার আগে আমি সবকিছু রেন্ডার করি — শুধু কোড দেখে কখনো নয়। তোমার অ্যাপ যদি আগে থেকেই চলে, তাহলে তার URL পেস্ট করো, আমি অনুমানের বদলে আসল রং আর মাপ মাপতে পারব।"
       },
       "constants": {
         "blocked_figma_app_missing_hint": "Figma ডেস্কটপে ফাইলটা খোলো আর আবার চেষ্টা করো, বা ফ্রেমগুলো PNG হিসেবে এক্সপোর্ট করে এখানে ফেলে দাও।",
@@ -1730,7 +1745,18 @@
         "what_s_working": "যা কাজ করছে",
         "what_you_ll_get": "আপনি যা পাবেন",
         "your_critiques": "আপনার ক্রিটিকগুলো",
-        "your_question_click_to_see_the_answer": "আপনার প্রশ্ন — উত্তর দেখতে ক্লিক করুন"
+        "your_question_click_to_see_the_answer": "আপনার প্রশ্ন — উত্তর দেখতে ক্লিক করুন",
+        "rail_uploading": "আপলোড হচ্ছে…",
+        "rail_reading": "তোমার ডিজাইন পড়া হচ্ছে…",
+        "rail_flow_one": "{{n}}টি স্ক্রিনের একটি ফ্লো — এদের মাঝের রূপান্তরও দেখব।",
+        "rail_flow_other": "{{n}}টি স্ক্রিনের একটি ফ্লো — এদের মাঝের রূপান্তরও দেখব।",
+        "rail_one_screen": "একটি স্ক্রিন।",
+        "rail_pending_figma": "একটি Figma ফাইল — বিচারের আগে রেন্ডার হচ্ছে।",
+        "rail_pending_repo": "একটি রিপোজিটরি — বিচারের আগে রেন্ডার হচ্ছে।",
+        "rail_pending_local": "লোকাল কোড — বিচারের আগে রেন্ডার হচ্ছে।",
+        "rail_pending_url": "একটি চলমান অ্যাপ — বিচারের আগে রেন্ডার হচ্ছে।",
+        "rail_pending_design": "একটি ডিজাইন — বিচারের আগে রেন্ডার হচ্ছে।",
+        "rail_getting_ready": "স্ক্রিন প্রস্তুত করা হচ্ছে।"
       },
       "findingRow": {
         "based_on": "যার ভিত্তিতে",
@@ -1771,12 +1797,12 @@
         "what_should_i_audit": "আমি কী অডিট করব?"
       },
       "utils": {
-        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
-        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
-        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "আমি এটি ক্যাপচার করে আসল কনট্রাস্ট আর মাপ মাপব।",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "আমি এটি ক্লোন করে স্ক্রিনগুলোর তালিকা করব। সার্ভার ছাড়া রেন্ডার হয় এমন পেজই শুধু দেখা যায়।",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "আমি স্ক্রিনগুলোর তালিকা করব। সার্ভার ছাড়া রেন্ডার হয় এমন পেজই শুধু দেখা যায়।",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
-        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "এটি এখনই চালু থাকতে হবে। আমি লাইভ ক্যাপচার করে আসল কনট্রাস্ট আর মাপ মাপব।",
+        "not_something_i_recognise_give_me_a_figma_link_a": "আমি এটি চিনতে পারছি না। আমাকে একটি Figma লিংক, GitHub রিপোজিটরি, পূর্ণ লোকাল পাথ বা ইতিমধ্যে চালু একটি URL দাও।"
       },
       "waitingScreen": {
         "cancel_this_run": "এই রানটি বাতিল করুন",
