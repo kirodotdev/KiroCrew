@@ -34,7 +34,7 @@
     "features": {
       "type": "array of string",
       "required": true,
-      "notes": "Features the Crew offers. Unique, at most 16, each at most 32 characters. Known in version 1: flow-credit, ws-flow, request-credit. \"opaque\" is reserved and never offered in version 1."
+      "notes": "Features the Crew offers. Unique, at most 16, each at most 32 characters. Known in version 1: flow-credit, ws-flow, request-credit, move-done. \"opaque\" is reserved and never offered in version 1."
     },
     "client": {
       "type": "object",

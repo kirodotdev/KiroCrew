@@ -29,14 +29,19 @@ MODE_HTTP = "http"
 #: credit for responses and its pause for WebSockets. ``request-credit`` is the
 #: client's own credit for request bodies (contract section 5.4): once the relay
 #: agrees it, the relay sends each request body only as far as the client has
-#: granted. ``opaque`` is reserved and never offered in version 1.
+#: granted. ``move-done`` asks the relay to say, on a connection it asked to
+#: move, when it will relay no more requests there (contract section 4.5), so
+#: the client closes that connection only once nothing more can be on its way.
+#: ``opaque`` is reserved and never offered in version 1.
 FEATURE_FLOW_CREDIT = "flow-credit"
 FEATURE_WS_FLOW = "ws-flow"
 FEATURE_REQUEST_CREDIT = "request-credit"
+FEATURE_MOVE_DONE = "move-done"
 OFFERED_FEATURES: Tuple[str, ...] = (
     FEATURE_FLOW_CREDIT,
     FEATURE_WS_FLOW,
     FEATURE_REQUEST_CREDIT,
+    FEATURE_MOVE_DONE,
 )
 
 # ── timing (contract section 11.2) ──
@@ -69,6 +74,10 @@ DRAIN_BACKSTOP_SECONDS = 90.0
 #: it stopped routing to it can still be on its way. Never past the drain backstop.
 #: Provisional, so it is the setting ``tunnel.relay_move_grace_seconds``.
 MOVE_QUIET_GRACE_SECONDS = 1.0
+#: Once ``move-done`` is agreed, how long after the new connection's ``ready``
+#: the old one waits for the relay's ``move-done`` before it falls back to the
+#: quiet grace above. Never past the drain backstop.
+MOVE_DONE_WAIT_SECONDS = 5.0
 #: The largest ``tunnel.relay_move_grace_seconds`` accepts.
 MOVE_QUIET_GRACE_MAX_SECONDS = 30.0
 
@@ -177,6 +186,7 @@ _INBOUND_TYPES = frozenset(
         "ping",
         "pong",
         "reconnect",
+        "move-done",
         "error",
         "request",
         "request-chunk",
@@ -475,6 +485,15 @@ def _check_reconnect(frame: Dict[str, Any]) -> None:
     _require_int(frame, "closeInSeconds", minimum=0)
 
 
+def _check_move_done(frame: Dict[str, Any]) -> None:
+    # ``lastId`` is for diagnostics only, so the client never depends on it. The
+    # contract still refuses a non-integer one with invalid_message, and a
+    # refused frame does not count as move-done, so the fallback timer keeps
+    # running.
+    if "lastId" in frame and (not _is_int(frame["lastId"]) or frame["lastId"] < 0):
+        raise FrameError(ERR_INVALID_MESSAGE, "move-done.lastId must be a stream id")
+
+
 def _check_error(frame: Dict[str, Any]) -> None:
     if not isinstance(frame.get("code"), str) or not frame["code"]:
         raise FrameError(ERR_INVALID_MESSAGE, "error frame without a code", answer=False)
@@ -501,6 +520,7 @@ _CHECKS = {
     "ping": _check_ping_pong,
     "pong": _check_ping_pong,
     "reconnect": _check_reconnect,
+    "move-done": _check_move_done,
     "error": _check_error,
     "request": _check_request,
     "request-chunk": _check_request_chunk,

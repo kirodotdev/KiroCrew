@@ -5,7 +5,8 @@ until it ends, classifies the end (:func:`~kiro_crew.relay_client.backoff.classi
 and either redials, backs off, renews the host token, or stops with a reason a
 person can read in ``/api/tunnel/status``. When the relay sends ``reconnect`` it opens
 the next connection before it lets go of the current one (make before break): the
-old connection finishes its open HTTP requests and then closes with 1000.
+old connection finishes its open HTTP requests and then closes with 1000: once the
+relay's ``move-done`` says nothing more comes there, when the relay agreed it.
 
 The client reports through the two callbacks the tunnel wrapper registers:
 ``on_connect(url)`` once the Crew's relay URL is live, so the wrapper adds it to the
@@ -112,6 +113,10 @@ class RelayClient:
         self._stopping = asyncio.Event()
         self._live: Set[HostConnection] = set()
         self._draining: Optional[HostConnection] = None
+        #: Moves whose old connection waited for ``move-done`` in vain and closed
+        #: on the quiet grace instead, since the client started. Not in tunnel
+        #: status: each fallback shows as its own warning in the log.
+        self.move_done_fallbacks = 0
         self._background: Set[asyncio.Task[Any]] = set()
         self._credential: Optional[HostCredential] = None
         self._state = STATE_STOPPED
@@ -477,6 +482,8 @@ class RelayClient:
             await old.drain_and_close(quiet=self._timings.move_grace)
             await asyncio.gather(old_run, return_exceptions=True)
         finally:
+            if old.move_done_fell_back:
+                self.move_done_fallbacks += 1
             self._live.discard(old)
             if self._draining is old:
                 self._draining = None

@@ -67,7 +67,12 @@ async def test_handshake_sends_hello_with_the_host_token_and_connects_on_ready()
             assert set(hello) <= set(shape["fields"])
             assert {k for k, v in shape["fields"].items() if v["required"]} <= set(hello)
             assert hello["protocolVersion"] == 1 and hello["mode"] == "http"
-            assert set(hello["features"]) == {"flow-credit", "ws-flow", "request-credit"}
+            assert set(hello["features"]) == {
+                "flow-credit",
+                "ws-flow",
+                "request-credit",
+                "move-done",
+            }
             assert leg.token == TOKEN
             assert leg.user_agent.startswith("kiro-crew/")
 
