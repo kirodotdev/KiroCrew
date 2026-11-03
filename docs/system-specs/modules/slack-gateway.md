@@ -773,6 +773,12 @@ take the hold in `cli.main` after argument parsing.
   step. A pause another update step holds is not taken. A restart that stops before `update_ownership.restart_committed()`
   (a cancel, a refusal) releases the pause through `DashboardState._restart_release`.
   A state with no wired admission (no orchestrator) restarts as before.
+  Past the fence it waits for an installed app updating itself
+  (`apps.auto_update.settle_for_restart`, up to `UPDATE_INSTALLER_STOP_SECS`) and
+  holds that loop off new updates until the exec, since the exec skips `_shutdown`'s
+  app-update drain and an app caught mid-swap would be left half replaced; the Slack
+  `/restart` command waits the same way. The census counts an applying app update as
+  background work. See app-kit-platform § 47.
 - **Update arms, the start applies.** `POST /api/update` (`updates_apply.api_update_apply`)
   installs nothing and restarts nothing, whatever is running. Body `{"when":
   "next-start"}`, or no `when`, arms the update through `kiro_crew.update_next_start`

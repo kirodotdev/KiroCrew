@@ -248,6 +248,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // decision model picker. Governed like the card it belongs to.
   'DecisionsHostedKeyField.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
+  // The App updates group AboutPanel mounts below the gateway's own update rows.
+  'AppUpdatesSection.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
   // install's Updates card body; the desktop app's Restart gateway row; the two
   // auto-update switches; the upcoming update notice). Mapped

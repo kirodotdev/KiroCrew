@@ -17,6 +17,7 @@ import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
 import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
 import ReleasesPanel from './ReleasesPanel'
 import { api } from '../../api/client'
+import { AppUpdatesSection } from './AppUpdatesSection'
 import { useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { fmtSpeed } from '../../api/helpers'
@@ -1486,6 +1487,10 @@ export function AboutPanel() {
         {/* Directly under the update controls, never a pop-up. */}
         <AboutPanelUpcomingUpdate />
       </Card>
+
+      {/* Installed apps' own updates, beside the gateway's: same page a user
+          opens to decide how this install stays current. */}
+      <AppUpdatesSection />
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
