@@ -11,6 +11,8 @@ import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { bestFilterMatch } from '../../utils/filterSelection'
 import type { SteeringFile, SteeringList } from '../../types'
 
@@ -593,6 +595,13 @@ export default function SteeringTab() {
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter changes the rows, not
+  // the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [filtered, remeasureList])
+
   // Keep a valid selection; suspended while editing so an unsaved draft is
   // never discarded by a background refetch reordering the list. A file the
   // user opened stays open while the filter still shows it; one this effect
@@ -835,9 +844,13 @@ export default function SteeringTab() {
         />
       ) : (
         <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
-            {filtered.map(renderRow)}
-            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
+              {filtered.map(renderRow)}
+              {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
+            </div>
           </div>}
 
           {showDetail && <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
