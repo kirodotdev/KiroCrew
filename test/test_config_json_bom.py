@@ -146,7 +146,6 @@ def test_a_bom_saved_non_object_knowledge_section_does_not_crash_the_embedder_se
     home: Path,
 ) -> None:
     from kiro_crew.dashboard.handlers import knowledge
-
     from kiro_crew.knowledge import embedder
 
     config_path().write_bytes(_BOM + b'{"knowledge": ["x"]}')
