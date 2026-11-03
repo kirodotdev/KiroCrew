@@ -8730,7 +8730,15 @@
       "preview_more_lines_many": "… ещё {{count}} строк",
       "preview_more_lines_one": "… ещё {{count}} строка",
       "preview_more_lines_other": "… ещё {{count}} строки",
-      "preview_gesture_hint": "Двойной щелчок вставляет весь текст · Backspace удаляет вставку"
+      "preview_gesture_hint": "Двойной щелчок вставляет весь текст · Backspace удаляет вставку",
+      "expand_pasted_lines_one": "Развернуть {{count}} вставленную строку",
+      "expand_pasted_lines_few": "Развернуть {{count}} вставленные строки",
+      "expand_pasted_lines_many": "Развернуть {{count}} вставленных строк",
+      "expand_pasted_lines_other": "Развернуть {{count}} вставленной строки",
+      "collapse_pasted_lines_one": "Свернуть {{count}} вставленную строку",
+      "collapse_pasted_lines_few": "Свернуть {{count}} вставленные строки",
+      "collapse_pasted_lines_many": "Свернуть {{count}} вставленных строк",
+      "collapse_pasted_lines_other": "Свернуть {{count}} вставленной строки"
     },
     "privacyChapter": {
       "continue": "Продолжить",
@@ -11349,6 +11357,12 @@
         "generic": "Разрешить в этом сеансе: это правило перестаёт блокировать любые команды, пока ты не закроешь этот чат (Параметры сессии → Закрыть сеанс) или {{productName}} не перезапустится"
       },
       "pill_blocked": "Ожидает подтверждения: {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}} в {{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (приостановлено) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (приостановлено)"
     }
   },
   "hooks": {
@@ -21202,7 +21216,8 @@
       "slots_open_many": "{{n}} свободных слотов",
       "slots_open_other": "{{n}} свободного слота",
       "summary": "{{present}} · {{active}} · {{open}}",
-      "scene_label": "Сцена"
+      "scene_label": "Сцена",
+      "scene_button": "Сцена {{label}}: {{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "Скрыть управление",

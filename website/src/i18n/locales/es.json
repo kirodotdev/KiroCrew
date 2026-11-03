@@ -8532,7 +8532,13 @@
       "preview_more_lines_many": "… {{count}} líneas más",
       "preview_more_lines_one": "… {{count}} línea más",
       "preview_more_lines_other": "… {{count}} líneas más",
-      "preview_gesture_hint": "Doble clic para insertar el texto completo · Retroceso quita lo pegado"
+      "preview_gesture_hint": "Doble clic para insertar el texto completo · Retroceso quita lo pegado",
+      "expand_pasted_lines_one": "Expandir {{count}} línea pegada",
+      "expand_pasted_lines_many": "Expandir {{count}} líneas pegadas",
+      "expand_pasted_lines_other": "Expandir {{count}} líneas pegadas",
+      "collapse_pasted_lines_one": "Contraer {{count}} línea pegada",
+      "collapse_pasted_lines_many": "Contraer {{count}} líneas pegadas",
+      "collapse_pasted_lines_other": "Contraer {{count}} líneas pegadas"
     },
     "privacyChapter": {
       "continue": "Continuar",
@@ -11118,6 +11124,12 @@
         "generic": "Permitir en esta sesión: esta regla deja de bloquear cualquier comando, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie"
       },
       "pill_blocked": "Esperando aprobación: {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}} a las {{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (en pausa) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (en pausa)"
     }
   },
   "hooks": {
@@ -20733,7 +20745,8 @@
       "slots_open_many": "{{n}} slots libres",
       "slots_open_other": "{{n}} slots libres",
       "summary": "{{present}} · {{active}} · {{open}}",
-      "scene_label": "Escena"
+      "scene_label": "Escena",
+      "scene_button": "Escena {{label}}: {{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar los controles",

@@ -8334,7 +8334,11 @@
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
       "preview_more_lines_other": "… আরও {{count}} লাইন",
-      "preview_gesture_hint": "পুরো লেখা বসাতে ডাবল-ক্লিক করো · Backspace পেস্টটি সরায়"
+      "preview_gesture_hint": "পুরো লেখা বসাতে ডাবল-ক্লিক করো · Backspace পেস্টটি সরায়",
+      "expand_pasted_lines_one": "পেস্ট করা {{count}}টি লাইন খোলো",
+      "expand_pasted_lines_other": "পেস্ট করা {{count}}টি লাইন খোলো",
+      "collapse_pasted_lines_one": "পেস্ট করা {{count}}টি লাইন বন্ধ করো",
+      "collapse_pasted_lines_other": "পেস্ট করা {{count}}টি লাইন বন্ধ করো"
     },
     "privacyChapter": {
       "continue": "চালিয়ে যান",
@@ -10887,6 +10891,12 @@
         "generic": "এই সেশনে অনুমতি দাও: যতক্ষণ না তুমি এই চ্যাট বন্ধ করো (সেশন অপশন → সেশন বন্ধ করো) বা {{productName}} আবার চালু হয়, এই নিয়ম আর কোনো কমান্ড থামাবে না"
       },
       "pill_blocked": "অনুমোদনের অপেক্ষায়: {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}}, {{time}} {{tz}}-এ",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (বিরতিতে) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (বিরতিতে)"
     }
   },
   "hooks": {
@@ -20264,7 +20274,8 @@
       "slots_open_one": "{{n}}টি স্লট খোলা",
       "slots_open_other": "{{n}}টি স্লট খোলা",
       "summary": "{{present}} · {{active}} · {{open}}",
-      "scene_label": "দৃশ্য"
+      "scene_label": "দৃশ্য",
+      "scene_button": "{{label}} দৃশ্য: {{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "কন্ট্রোল লুকাও",

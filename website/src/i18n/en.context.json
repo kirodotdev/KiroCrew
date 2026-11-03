@@ -1154,6 +1154,15 @@
     "pages.overviewPage.today_messages_one": "One part of the Today usage line. {{amount}} is the message count, already formatted compactly for the locale. Singular form.",
     "pages.overviewPage.today_messages_other": "One part of the Today usage line. {{amount}} is the message count, already formatted compactly for the locale. Plural form.",
     "pages.overviewPage.today_tokens_one": "One part of the Today usage line. {{amount}} is the token count, already formatted compactly for the locale (e.g. 1.2M). Singular form.",
-    "pages.overviewPage.today_tokens_other": "One part of the Today usage line. {{amount}} is the token count, already formatted compactly for the locale (e.g. 1.2M). Plural form."
+    "pages.overviewPage.today_tokens_other": "One part of the Today usage line. {{amount}} is the token count, already formatted compactly for the locale (e.g. 1.2M). Plural form.",
+    "components.pastedChip.expand_pasted_lines_one": "Screen-reader name of the chip for a pasted block in the composer, collapsed; {{count}} is its line count. Singular form.",
+    "components.pastedChip.expand_pasted_lines_other": "Screen-reader name of the chip for a pasted block in the composer, collapsed; {{count}} is its line count. Plural form.",
+    "components.pastedChip.collapse_pasted_lines_one": "Screen-reader name of the chip for a pasted block in the composer, expanded; {{count}} is its line count. Singular form.",
+    "components.pastedChip.collapse_pasted_lines_other": "Screen-reader name of the chip for a pasted block in the composer, expanded; {{count}} is its line count. Plural form.",
+    "components.weekGrid.job_at": "Screen-reader name of a scheduled job dot on the cron week grid. {{name}} is the job name, {{time}} its HH:MM run time, {{tz}} the time zone shown.",
+    "components.weekGrid.job_title": "Hover text of a scheduled job dot on the cron week grid: job name, then its HH:MM time and time zone.",
+    "components.weekGrid.job_title_paused": "Hover text of a PAUSED scheduled job dot on the cron week grid: job name, a paused marker, then its HH:MM time and time zone.",
+    "pages.worldsPage.scene_button": "Screen-reader name of a scene picker button on the Agent Worlds page. {{label}} is the scene name and {{desc}} its one-line description.",
+    "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker."
   }
 }

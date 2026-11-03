@@ -8136,7 +8136,9 @@
       "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 他{{count}}行",
-      "preview_gesture_hint": "ダブルクリックで全文を挿入 · Backspace で貼り付けを削除"
+      "preview_gesture_hint": "ダブルクリックで全文を挿入 · Backspace で貼り付けを削除",
+      "expand_pasted_lines_other": "貼り付けた {{count}} 行を展開",
+      "collapse_pasted_lines_other": "貼り付けた {{count}} 行を折りたたむ"
     },
     "privacyChapter": {
       "continue": "続行",
@@ -10656,6 +10658,12 @@
         "generic": "このセッションで許可：このチャットを閉じる（セッションのオプション → セッションを閉じる）か {{productName}} が再起動するまで、このルールはどのコマンドも止めなくなります"
       },
       "pill_blocked": "承認待ち: {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}}（{{time}} {{tz}}）",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}}（一時停止中）— {{time}} {{tz}}",
+      "job_name_paused": "{{name}}（一時停止中）"
     }
   },
   "hooks": {
@@ -19795,7 +19803,8 @@
       "agents_active_other": "{{n}} 件アクティブ",
       "slots_open_other": "空きスロット {{n}} 個",
       "summary": "{{present}}、{{active}}、{{open}}",
-      "scene_label": "シーン"
+      "scene_label": "シーン",
+      "scene_button": "{{label}} シーン：{{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "コントロールを隠す",
