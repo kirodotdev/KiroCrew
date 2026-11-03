@@ -293,6 +293,9 @@ async def _deliver_pending_decision(
         message_meta={"spec_decision_delivery_id": delivery_id},
         append_user=not already_relayed,
         directive_user_origin=True,
+        # Composed from the agent's decision title and options: the person only
+        # picked one, so it must not start an MCP sign-in.
+        message_is_typed=False,
         on_consumed=_on_consumed,
         on_irreversibly_consumed=_on_irreversibly_consumed,
     )

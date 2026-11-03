@@ -280,16 +280,20 @@ async def test_kas_still_sends_exactly_one_config_write():
     add two doomed writes after a failure that is already terminal, and would
     turn a refusal into a silent stay-on-default where today it raises -- so the
     dashboard would report a switch KAS never made.
+
+    The id is in KAS's own spelling. A claude_code spelling is changed to it
+    before the write (covered in test_kas_model_verb.py).
     """
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     handle = _make_handle(ACP_BACKEND_KAS)
     writes = _Writes()
     handle.set_config_option = writes  # type: ignore[method-assign]
+    kas_id = "claude-opus-4.8"
 
-    await handle.set_model(_THREE_RUNG)
+    await handle.set_model(kas_id)
 
-    assert writes.calls == [(MODEL_CONFIG_ID, _THREE_RUNG)]
-    assert handle.model == _THREE_RUNG
+    assert writes.calls == [(MODEL_CONFIG_ID, kas_id)]
+    assert handle.model == kas_id
     _mock(handle).send_request.assert_not_called()
 
 

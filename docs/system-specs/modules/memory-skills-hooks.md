@@ -5971,6 +5971,7 @@ supplies them, so a hook reads them with a default:
 | `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
 | `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
 | `agent_role` | the agent template the firing session runs |
+| `acp_session_id` | on an `extra_hooks` (agent spec) hook of a dashboard chat turn only: the session's ACP session id, also set as `KIRO_SESSION_ID` in that hook's env, the name kiro-cli uses for the hooks it runs itself. Absent (and the env var unset) before `session/new`, on stored hooks, and on subagent and task-runner events |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
 A hook deciding "did a person type this?" keys on `subagent_id`; it must not

@@ -389,6 +389,12 @@ class AcpSessionProvider(LLMProvider):
                         exc_info=True,
                     )
                 raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
+        # Accumulated across the swap: the old session's KAS launch snapshots are
+        # removed by this provider's shutdown, like the new one's.
+        new_handle.kas_launch_snapshots = [
+            *getattr(old, "kas_launch_snapshots", []),
+            *getattr(new_handle, "kas_launch_snapshots", []),
+        ]
         self._handle = new_handle
         # The fresh session launched fresh stubs carrying a fresh token, and
         # nothing has named it: an unnamed token is refused, not resolved from
@@ -496,7 +502,27 @@ class AcpSessionProvider(LLMProvider):
         - Parent sessions (owns_runtime=True): kill the entire runtime.
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
+
+        Either way the local MCP launch snapshots this session's projection wrote
+        go with it (``acp.kas_env_launch``): they hold env values, and a later
+        resume projects and writes new ones. Only the files this session's
+        projections wrote are removed (its registered batch, plus every name the
+        handle recorded before a ``session/load`` hoist and across a handle swap),
+        so another provider of the same session, and every other session, keeps
+        its own.
         """
+        handle = getattr(self, "_handle", None)
+        batch = getattr(handle, "kas_registered_agents", None)
+        written = list(getattr(handle, "kas_launch_snapshots", None) or [])
+        try:
+            await self._shutdown_session()
+        finally:
+            if batch or written:
+                from kiro_crew.acp import kas_env_launch
+
+                await asyncio.to_thread(kas_env_launch.discard_batch, list(batch or []), written)
+
+    async def _shutdown_session(self) -> None:
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.
@@ -627,7 +653,12 @@ class AcpSessionProvider(LLMProvider):
         return resolve_prompt_timeout_for_deadline(deadline)
 
     async def stream(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        sign_in_ask: str = "",
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
@@ -659,7 +690,10 @@ class AcpSessionProvider(LLMProvider):
             # Outside the turn's own try below, so its claim is released here.
             await self._end_shared_turn(claim)
             raise
+        # Bind only to this attempt's handle, after any re-injection replaced it.
         send = self._handle.prompt
+        if sign_in_ask:
+            send = functools.partial(send, sign_in_ask=sign_in_ask)
         if not allow_image:
             send = functools.partial(send, allow_image=False)
         if timeout is not None:

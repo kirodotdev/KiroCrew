@@ -282,3 +282,206 @@ class TestDashboardProbe:
             str(declared),
             "--stdio",
         ], "the probe rewrote an operator-declared absolute command"
+
+
+def _saved_launcher(tmp_path: Path) -> tuple[str, str]:
+    """A saved ``demo-mcp.EXE`` command whose directory entry is ``demo-mcp.exe``.
+
+    The ``.EXE`` file is real, so the resolvers' absolute-and-executable check
+    passes on any host. What a case-insensitive Windows directory would list
+    for it is described through ``os.scandir`` in :func:`_windows_saved`.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    saved = bin_dir / "demo-mcp.EXE"
+    saved.write_text("#!/bin/sh\n")
+    saved.chmod(0o755)
+    return str(bin_dir / "demo-mcp.exe"), str(saved)
+
+
+def _windows_saved(path: str, listing: tuple[str, ...] = ("demo-mcp.exe",)) -> str:
+    """The real ``saved_command_casing``, as on Windows, over a faked listing."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(platform_compat, "IS_WINDOWS", True)
+        mp.setattr(
+            env.os,
+            "scandir",
+            lambda parent: nullcontext(iter(SimpleNamespace(name=n) for n in listing)),
+        )
+        return env.saved_command_casing(path)
+
+
+class TestSavedCommandCasing:
+    """An absolute command an older build persisted heals only its extension."""
+
+    def test_a_saved_pathext_extension_is_healed(self, tmp_path: Path) -> None:
+        actual, saved = _saved_launcher(tmp_path)
+        assert _windows_saved(saved) == actual
+
+    def test_a_stem_the_operator_spelled_differently_is_kept(self, tmp_path: Path) -> None:
+        saved = str(tmp_path / "bin" / "DEMO-MCP.exe")
+        assert _windows_saved(saved) == saved
+
+    def test_a_stem_and_extension_both_differing_is_kept(self, tmp_path: Path) -> None:
+        saved = str(tmp_path / "bin" / "DEMO-MCP.EXE")
+        assert _windows_saved(saved) == saved
+
+    def test_an_exact_match_is_kept(self, tmp_path: Path) -> None:
+        actual, _ = _saved_launcher(tmp_path)
+        assert _windows_saved(actual) == actual
+
+    def test_posix_paths_are_never_touched(self, tmp_path: Path, monkeypatch) -> None:
+        _, saved = _saved_launcher(tmp_path)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        assert env.saved_command_casing(saved) == saved
+
+
+class TestSavedCommandAtEachResolver:
+    """Each resolver heals a saved ``.EXE`` absolute command on its absolute branch."""
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    def teardown_method(self) -> None:
+        _probe_cache.clear()
+
+    @pytest.mark.usefixtures("_pinned_kiro_cli_version")
+    def test_the_agent_config_resolver_persists_the_healed_spelling(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        actual, saved = _saved_launcher(tmp_path)
+        monkeypatch.setattr("kiro_crew.agent.saved_command_casing", _windows_saved)
+        cfg_dir = _bundled_defaults(tmp_path)
+
+        emitted = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"demo": {"command": saved}},
+            which_side_effect=lambda c, **kw: c,
+        )["mcpServers"]
+
+        assert emitted["demo"]["command"] == actual
+        spec = json.loads((tmp_path / "kiro_agents" / "kirocrew.json").read_text())
+        assert spec["mcpServers"]["demo"]["command"] == actual
+
+    @pytest.mark.asyncio
+    async def test_the_probe_spawns_the_healed_spelling(self, tmp_path: Path, monkeypatch) -> None:
+        actual, saved = _saved_launcher(tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.saved_command_casing", _windows_saved)
+        captured: list[list[str]] = []
+
+        def _wrap(argv, *a, env=None, **k):
+            captured.append(list(argv))
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+        server = McpServerInfo(name="demo", command=saved, args=["--stdio"])
+
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after argv capture"),
+        ):
+            await probe_server(server)
+
+        assert captured, "the probe never reached its spawn"
+        assert captured[0] == [actual, "--stdio"]
+
+    def test_the_gateway_rewriter_emits_the_healed_spelling(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.mcp_gateway import rewriter
+
+        actual, saved = _saved_launcher(tmp_path)
+        monkeypatch.setattr(rewriter, "saved_command_casing", _windows_saved)
+        assert rewriter._resolve_target_command(saved, {}, None) == actual
+
+
+class TestHealedCommandKeepsItsProvenance:
+    """A kept record names the healed command, so the next pass still owns it."""
+
+    @pytest.mark.usefixtures("_pinned_kiro_cli_version")
+    def test_a_kept_record_follows_the_healed_command(self, tmp_path: Path, monkeypatch) -> None:
+        """The source stops resolving while the saved ``.EXE`` path still exists.
+
+        The record is kept so a later PATH fix can rebind the server, but its
+        ``emitted`` value must be the healed spelling actually written. An
+        ``emitted`` value that differs from the command reads as a hand edit on
+        the next pass, and the record is then dropped.
+        """
+        from kiro_crew.mcp_provenance import DERIVED_KEY
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        actual, saved = _saved_launcher(tmp_path)
+        cfg_dir = _bundled_defaults(tmp_path)
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        spec_path = tmp_path / "kiro_agents" / "kirocrew.json"
+        cfg = json.loads(spec_path.read_text())
+        cfg["mcpServers"]["demo"] = {"command": "demo-mcp"}
+        spec_path.write_text(json.dumps(cfg))
+
+        # First rebuild: the bare source resolves to the PATHEXT spelling, unrepaired.
+        first = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={},
+            which_side_effect=lambda c, **kw: saved if c == "demo-mcp" else c,
+        )["mcpServers"]
+        assert first["demo"][DERIVED_KEY] == {"from": "demo-mcp", "emitted": saved}
+
+        # This build: the source does not resolve, and the saved path heals.
+        monkeypatch.setattr("kiro_crew.agent.saved_command_casing", _windows_saved)
+        second = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={},
+            which_side_effect=lambda c, **kw: None,
+        )["mcpServers"]
+        assert second["demo"]["command"] == actual
+        assert second["demo"][DERIVED_KEY] == {"from": "demo-mcp", "emitted": actual}
+
+    @pytest.mark.usefixtures("_pinned_kiro_cli_version")
+    def test_a_scope_owned_record_follows_the_healed_command(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """An inert record on a server another scope declares heals with it too.
+
+        The record is not acted on while the scope owns the command, but it must
+        still name the command written: once the scope entry goes away, the
+        server is agent-only again and only a matching ``emitted`` value lets a
+        later rebuild re-derive it.
+        """
+        from kiro_crew.mcp_provenance import DERIVED_KEY
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        actual, saved = _saved_launcher(tmp_path)
+        cfg_dir = _bundled_defaults(tmp_path)
+        _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers={})
+        spec_path = tmp_path / "kiro_agents" / "kirocrew.json"
+        cfg = json.loads(spec_path.read_text())
+        cfg["mcpServers"]["demo"] = {"command": "demo-mcp"}
+        spec_path.write_text(json.dumps(cfg))
+        first = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={},
+            which_side_effect=lambda c, **kw: saved if c == "demo-mcp" else c,
+        )["mcpServers"]
+        assert first["demo"][DERIVED_KEY] == {"from": "demo-mcp", "emitted": saved}
+
+        # The same server is now declared in mcp.json with the saved spelling.
+        monkeypatch.setattr("kiro_crew.agent.saved_command_casing", _windows_saved)
+        second = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"demo": {"command": saved}},
+            which_side_effect=lambda c, **kw: c,
+        )["mcpServers"]
+        assert second["demo"]["command"] == actual
+        assert second["demo"][DERIVED_KEY] == {"from": "demo-mcp", "emitted": actual}

@@ -1020,6 +1020,10 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         # the admission tests' 4.0 inputs set a floor, they do not pin a stored
         # 4.0 as supported, and the opt-out is 0, not the old default.
         "agent.spawn_min_memory_gb",
+        # A stored false asks for every remote MCP sign-in again in each new KAS
+        # session; false was the default until the flip, so nobody had a reason
+        # to write it, and a false set back after the adoption is kept.
+        "agent.kas_persist_mcp_sign_in",
     }
     # The other side as an exact set too, so an appended row has to be placed on
     # one side by name. Each of these keeps its old value because that value is a
@@ -1603,6 +1607,102 @@ def test_load_adopts_the_stale_spawn_floor_once_and_keeps_what_is_set_back(tmp_p
     _write_config(tmp_path, {"agent": {"spawn_min_memory_gb": 4.0}})
     assert KiroCrewConfig.load().agent.spawn_min_memory_gb == 4.0
     assert _on_disk(tmp_path)["agent"]["spawn_min_memory_gb"] == 4.0
+
+
+def test_load_adopts_the_stale_sign_in_opt_in_once_and_keeps_a_false_set_back(
+    tmp_path, monkeypatch
+):
+    """A materialized ``kas_persist_mcp_sign_in: false`` follows the true default once.
+
+    Every install that saved settings while false was the default holds it on disk,
+    so without the adoption the default change would reach almost nobody. A false
+    the owner sets after that is their opt-out and survives every later load.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": False}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.kas_persist_mcp_sign_in is True
+    assert "kas_persist_mcp_sign_in" not in _on_disk(tmp_path).get("agent", {})
+    assert SD.adopted_superseded() == {"agent.kas_persist_mcp_sign_in": False}
+
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": False}})
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert _on_disk(tmp_path)["agent"]["kas_persist_mcp_sign_in"] is False
+
+
+@pytest.fixture
+def explicit_cli_write(tmp_path, monkeypatch):
+    """Exercise the real CLI writer and loader in an isolated, never-adopted home."""
+    import argparse
+    from unittest.mock import Mock
+
+    from kiro_crew import cli_config
+
+    _point_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_config, "config_path", L.config_path)
+    monkeypatch.setattr(cli_config, "config_local_path", L.config_local_path)
+    monkeypatch.setattr(cli_config, "sel", Mock())
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": True}})
+    _write_local(tmp_path, {})
+    KiroCrewConfig.load()
+    assert SD.adopted_superseded() == {}
+
+    def run(mode):
+        agent = {"kas_persist_mcp_sign_in": False, "subagent_timeout_secs": 1800}
+        args = argparse.Namespace(
+            config_action="set",
+            key="agent.kas_persist_mcp_sign_in",
+            value="false",
+            local=mode.startswith("local"),
+            file=None,
+        )
+        if mode.endswith("section"):
+            args.key = "agent"
+            args.value = json.dumps(agent)
+        elif mode == "file":
+            fp = tmp_path / "input.json"
+            fp.write_text(
+                json.dumps({"agent": agent, "mcp_gateway": {"forward_declared_env": False}}),
+                encoding="utf-8",
+            )
+            args.file = str(fp)
+        cli_config._config_cmd(args)
+
+    return run
+
+
+@pytest.mark.parametrize("mode", ["base", "local", "base-section", "local-section", "file"])
+def test_cli_explicit_old_default_survives_load(tmp_path, explicit_cli_write, mode):
+    explicit_cli_write(mode)
+
+    # Check the load before the ledger: without the ack, base writes really flip
+    # back to True. An overlay already wins, but must record the explicit choice too.
+    L._invalidate_config_cache()
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    expected = {"agent.kas_persist_mcp_sign_in": False}
+    if mode.endswith("section") or mode == "file":
+        assert KiroCrewConfig.load().agent.subagent_timeout_secs == 1800
+        expected["agent.subagent_timeout_secs"] = 1800
+    assert SD.acked_superseded() == expected
+    assert SD.adopted_superseded() == {}
+    path = tmp_path / ("config.local.json" if mode.startswith("local") else "config.json")
+    assert json.loads(path.read_text(encoding="utf-8"))["agent"]["kas_persist_mcp_sign_in"] is False
+
+
+@pytest.mark.parametrize("mode", ["base", "local", "base-section", "local-section", "file"])
+def test_cli_ack_refusal_aborts_config_write(tmp_path, monkeypatch, explicit_cli_write, mode):
+    before = {name: (tmp_path / name).read_bytes() for name in ("config.json", "config.local.json")}
+
+    def refuse_ack(_mutate):
+        raise OSError("ack write refused")
+
+    monkeypatch.setattr(SD, "_update_acked", refuse_ack)
+    with pytest.raises(OSError, match="ack write refused"):
+        explicit_cli_write(mode)
+    assert {name: (tmp_path / name).read_bytes() for name in before} == before
 
 
 @pytest.mark.parametrize("stored", [3.0, 4, 0.0])

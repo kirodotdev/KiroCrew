@@ -79,3 +79,37 @@ def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
     from kiro_crew.acp import session_mcp
 
     return session_mcp.session_mcp_server_is_disabled(name, agent)
+
+
+def sweep_kas_launch_snapshots(boot_time: float) -> bool:
+    """Remove the KAS MCP launch snapshots last written a week before *boot_time*.
+
+    ``acp.kas_env_launch.sweep_stale``: the gateway's boot path starts it once,
+    on a background task, with the time it took after the previous run's agent
+    processes were ended. Blocking file I/O.
+
+    Skipped, and ``False`` returned, while ``kiro_session_pids.txt`` still names
+    another owner process: every KAS runtime records itself there under the pid
+    of the process that started it (a gateway or a ``kirocrew chat`` CLI on the
+    same data home), and ``cleanup_orphaned_sessions`` has already removed every
+    entry it could confirm dead, so an owner left there may still run a session
+    whose launcher reads a snapshot this sweep would delete. This process's own
+    entries do not count. An unreadable ledger raises, so the caller skips too.
+    """
+    import os
+
+    from kiro_crew.acp import kas_env_launch
+    from kiro_crew.session_pid import retained_gateway_pids
+
+    others = retained_gateway_pids() - {os.getpid()}
+    if others:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "KAS launch snapshot sweep skipped: %d other owner process(es) still hold "
+            "agent runtimes on this data home",
+            len(others),
+        )
+        return False
+    kas_env_launch.sweep_stale(boot_time)
+    return True

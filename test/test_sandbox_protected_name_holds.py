@@ -386,7 +386,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   binding, which the gateway writes on a person's action. Masked at the
     #:   data-home root beside ``crew-teams`` rather than under the sandbox
     #:   read-write ``trust/``, so leaf-only for the same reason.
-    EXPECTED: dict[str, int] = {"standard": 293, "cc": 300, "strict": 301}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``kas-mcp-launch`` -- the KAS MCP launch snapshots
+    #:   (``acp.kas_env_launch``), sealed read-only so the launcher a KAS child
+    #:   execs can read them while the agent cannot choose what a later server
+    #:   start runs. At the data-home root beside writable siblings, so leaf-only
+    #:   is the only hold, the same as ``pi-gate``.
+    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -34,6 +34,7 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
     ScriptHook,
     ScriptHookResult,
     ScriptHookStore,
@@ -317,6 +318,93 @@ def test_a_spec_pre_tool_use_hook_exit_2_blocks(tmp_path, agents_dir, monkeypatc
     # Blocks, and ran in the session workspace rather than the gateway's cwd.
     assert [(r.exit_code, r.blocked) for r in results] == [(2, True)]
     assert Path(results[0].stderr).resolve() == workspace.resolve()
+
+
+def _session_id_probe(tmp_path: Path, out_name: str) -> str:
+    """A hook command that writes its ``KIRO_SESSION_ID`` env and stdin ``acp_session_id``."""
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "event = json.load(sys.stdin)\n"
+        "out = sys.argv[1]\n"
+        "with open(out, 'w', encoding='utf-8') as f:\n"
+        "    json.dump({'env': os.environ.get('KIRO_SESSION_ID'),"
+        " 'stdin': event.get('acp_session_id', '<absent>')}, f)\n",
+        encoding="utf-8",
+    )
+    return f'"{sys.executable}" "{script}" "{tmp_path / out_name}"'
+
+
+def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path, monkeypatch):
+    """On KAS a spec hook sees the session id kiro-cli gives it as KIRO_SESSION_ID."""
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.delenv("KIRO_SESSION_ID", raising=False)
+    store = ScriptHookStore(tmp_path)
+    store._hooks["stored"] = ScriptHook(
+        id="stored", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command=_session_id_probe(tmp_path, "s")
+    )
+    spec = ScriptHook(
+        id="spec:a1:x",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command=_session_id_probe(tmp_path, "x"),
+    )
+    asyncio.run(
+        store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT,
+            "hi",
+            session_key="dashboard:1",
+            extra_hooks=[spec],
+            acp_session_id="sess_abc",
+        )
+    )
+    spec_seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+    stored_seen = json.loads((tmp_path / "s").read_text(encoding="utf-8"))
+    assert spec_seen == {"env": "sess_abc", "stdin": "sess_abc"}
+    assert stored_seen == {"env": None, "stdin": "<absent>"}
+
+
+def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkeypatch):
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.delenv("KIRO_SESSION_ID", raising=False)
+    spec = ScriptHook(
+        id="spec:a1:x",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command=_session_id_probe(tmp_path, "x"),
+    )
+    asyncio.run(
+        ScriptHookStore(tmp_path).fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], acp_session_id=None
+        )
+    )
+    seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+    assert seen == {"env": None, "stdin": "<absent>"}
+
+
+@pytest.mark.parametrize(("sid", "expected"), [("sess_abc", "sess_abc"), ("", None)])
+def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    seen: dict = {}
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            seen.update(kw)
+            return []
+
+    spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command="c")
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=SimpleNamespace(session_id=sid),
+        _spec_hooks=[spec],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, "hi"))
+    assert seen["acp_session_id"] == expected
 
 
 def test_a_governance_denied_spec_hook_does_not_spawn(tmp_path, monkeypatch):

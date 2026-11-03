@@ -147,15 +147,73 @@ def test_a_spec_without_allowed_commands_refuses_every_shell_call() -> None:
 
 
 @pytest.mark.parametrize(
-    "pattern", [r"^touch /tmp/probe-allowed-[a-z]+\.txt$", "ls [[:alpha:]]+", "make (a+)+"]
+    "pattern",
+    ["touch [[:alpha:]]+", r"touch /tmp/probe-allowed-\w+\.txt", "touch .{1,64}"],
 )
 def test_an_unusable_pattern_allows_nothing(pattern: str) -> None:
-    """Outside the subset Crew reads like kiro-cli (the reporter's own ``[a-z]+``
-    included), so a command only it would match is refused, never let through; the
-    session-start notice names the entry so the author can rewrite it."""
+    """Outside the syntax Crew reads like kiro-cli (a POSIX class, an alphanumeric
+    escape, a counted repeat), so a command only it would match is refused, never
+    let through; the session-start notice names the entry so the author can
+    rewrite it."""
     settings = {"shell": {"denyByDefault": True, "allowedCommands": [pattern]}}
     assert _judge(_own_request("touch /tmp/probe-allowed-a.txt", settings)).action == TOOL_DENY
     assert tools_settings_to_permissions(settings)[1] == ["shell.allowedCommands"]
+
+
+#: A shape real specs write: a path class, an alternation group, an optional
+#: argument tail whose class itself excludes chaining characters.
+_SCRIPTS = r"^python3 /[A-Za-z0-9_./-]*/scripts/(compute_signature|staleness)\.py( [^;|&`$]+)?$"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "command"),
+    [
+        (r"^touch /tmp/probe-allowed-[a-z]+\.txt$", "touch /tmp/probe-allowed-a.txt"),
+        (_SCRIPTS, "python3 /opt/probe/scripts/staleness.py"),
+        (_SCRIPTS, "python3 /opt/probe/scripts/compute_signature.py --days 7"),
+        ("^git (commit|status)( .*)?$", "git status"),
+        ("^git (commit|status)( .*)?$", "git commit -m x"),
+        ("^git commit -m .*$", 'git commit -m "docs(skills): weekly notes"'),
+        ("^git commit -m .*$", "git commit -m 'fix(gate): {quoted}'"),
+    ],
+)
+def test_a_command_a_class_or_group_pattern_matches_is_not_refused(
+    pattern: str, command: str
+) -> None:
+    """kiro-cli allows these under the same spec; so must the gate."""
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": [pattern]}}
+    assert _judge(_own_request(command, settings)).tier != "spec-shell-allowlist"
+    assert tools_settings_to_permissions(settings)[1] == []
+
+
+@pytest.mark.parametrize(
+    ("pattern", "command"),
+    [
+        (_SCRIPTS, "python3 /opt/probe/scripts/other.py"),
+        (_SCRIPTS, "python3 /opt/probe/scripts/staleness.pyc"),
+        (_SCRIPTS, "python3 /opt/probe/scripts/staleness.py; mkfifo /tmp/x"),
+        ("^git (commit|status)( .*)?$", "git pull"),
+        ("^git (commit|status)( .*)?$", "git statusx"),
+        # Alternation is whole-command: never "starts with git status OR ends with ls".
+        ("git status|ls", "git status --porcelain"),
+        ("git status|ls", "mkfifo /tmp/ls"),
+        # A grouping character outside a quoted argument is never granted.
+        ("^git commit -m .*$", "git commit -m (x)"),
+        ("^git commit -m .*$", "git commit -m {a,b}"),
+        ("^git commit -m .*$", 'git commit -m "docs(x)'),
+        ("^git commit -m .*$", 'git commit -m \\"(x)\\"'),
+        # Quoting never shelters a chaining or substitution character.
+        ("^git commit -m .*$", 'git commit -m "x(y)"; mkfifo /tmp/x'),
+        ("^git commit -m .*$", 'git commit -m "$(whoami)"'),
+        ("^git commit -m .*$", "git commit -m '(x)' && mkfifo /tmp/x"),
+    ],
+)
+def test_a_command_a_class_or_group_pattern_does_not_match_is_refused(
+    pattern: str, command: str
+) -> None:
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": [pattern]}}
+    verdict = _judge(_own_request(command, settings))
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
 
 
 def test_an_unrecovered_command_is_refused() -> None:

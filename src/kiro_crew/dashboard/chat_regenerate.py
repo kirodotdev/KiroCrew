@@ -254,6 +254,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 user_msg,
                 regenerate_hint=hint,
                 _directive_user_origin=not bool(request.get("app", "")),
+                # A regenerated row is not new typed text (it may be an API
+                # request's flattened prompt), so it never starts an MCP sign-in.
+                _message_is_typed=False,
                 # See ``api_chat``: an observed app must be NAMED, because the
                 # actor resolver's fallback is ``user``. ``""`` is the parameter's
                 # own default and reads as "not named".

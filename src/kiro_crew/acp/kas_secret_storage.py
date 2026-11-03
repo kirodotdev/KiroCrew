@@ -1,12 +1,19 @@
-"""Crew as the KAS engine's store for remote MCP sign-ins (opt-in).
+"""Crew as the KAS engine's store for remote MCP sign-ins (on by default).
 
-When ``agent.kas_persist_mcp_sign_in`` is on, the KAS handshake declares
-``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth state
-through three connection-level requests that name no session:
+When ``agent.kas_persist_mcp_sign_in`` is on (the default), the KAS handshake
+declares ``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth
+state through three connection-level requests that name no session:
 ``_kiro/secret/get {key}`` -> ``{value}``, ``_kiro/secret/store {key, value}``
-and ``_kiro/secret/delete {key}``. Off (the default), nothing is declared, the
-engine holds every grant in its own memory, and a stray request is answered
--32601 by the reader loop like any other unclaimed method.
+and ``_kiro/secret/delete {key}``. Off (a stored ``false``, any non-``true``
+value, or a config read that failed or degraded -- :func:`persistence_enabled`),
+nothing is declared, the engine holds every grant in its own memory, and a stray
+request is answered -32601 by the reader loop like any other unclaimed method.
+
+The vault is the gateway's, not one person's: every session the gateway runs
+reads the same grants. That is the access model the rest of Crew has (a Shared
+Crew collaborator can use everything the Crew can) and the one the ``kiro``
+backend has for the same sign-ins, which kiro-cli keeps host-wide in
+``~/.aws/sso/cache``.
 
 What is stored, and where:
 
@@ -93,18 +100,35 @@ class SecretStorageRefused(Exception):
 def persistence_enabled() -> bool:
     """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
 
-    Any failure to read config is OFF: the feature is opt-in, so a broken config
-    keeps today's in-memory behaviour rather than starting to store tokens.
+    On by default, so the read fails CLOSED: a load that raised, or one that came
+    back degraded, is OFF. A ``config.json`` or ``config.local.json`` that is
+    present but unreadable, or an ``agent`` section the loader discarded, builds
+    the field defaults, and the default here says "store tokens" -- the opposite of
+    a ``false`` the owner may have written in the file that could not be read.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
-        return bool(KiroCrewConfig.load().agent.kas_persist_mcp_sign_in)
+        cfg = KiroCrewConfig.load()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
         )
         return False
+    degraded = cfg.degraded_sections
+    if (
+        cfg._base_unreadable
+        or cfg._overlay_unreadable
+        or "agent" in degraded
+        or DEGRADED_WHOLE_CONFIG in degraded
+    ):
+        logger.warning(
+            "MCP sign-in persistence stays off: the config read was degraded, so the "
+            "agent settings are defaults rather than the owner's"
+        )
+        return False
+    return cfg.agent.kas_persist_mcp_sign_in is True
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:

@@ -1389,8 +1389,12 @@ provenance record's `emitted` value repaired, so `command_is_ours` still
 recognises the entry and re-derivation stays enabled.
 
 That narrow lookup preserves the lexical parent route (including a directory
-junction) and a file symlink's own name. Explicit absolute commands did not pass
-through `PATHEXT` and retain the operator's spelling unchanged. Empty or
+junction) and a file symlink's own name. Explicit absolute commands retain the
+operator's spelling, with one exception: `kiro_crew.env.saved_command_casing`
+heals an absolute command whose stem matches the directory entry exactly and
+whose extension differs only in case (`demo-mcp.EXE` -> `demo-mcp.exe`). That is
+the spelling an older build persisted from `PATHEXT`, so it repairs itself on
+the next rebuild; a stem written in different case is kept. Empty or
 unresolvable commands remain unwrapped; an `OSError` while reading the parent,
 or an ambiguous case-insensitive match in a case-sensitive directory, keeps the
 `which` result. POSIX paths are unchanged. The normal cache-hit and
@@ -4506,7 +4510,10 @@ pinned exactly as registration pins it, never read from the spec, and with
 `PYTHONPATH` and `KIROCREW_HOME` set from that pin over anything the spec
 declares. A user app, a shadowed builtin, or a builtin app that ships its own
 binary is not Kiro Crew's code and gets no element. gatewayd's set stays the
-managed servers: a pooled app server is not handed the token.
+managed servers: a pooled app server is not handed the token. KAS never reaches
+`kiro_control_plane_servers`; its hoist tokens the same app servers from the
+same manifest launch (`acp/kas_app_identity.py`, see
+[acp-client](../system-specs/modules/acp-client.md)).
 
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global

@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _config_key_for,
     _extra_mcp_scopes,
     _kirocrew_mcp_json,
+    _load_config_for_update,
     _load_json_or_empty,
     _resolve_key_from_read,
 )
@@ -308,10 +309,13 @@ def _set_scope_entry(
     clears the mute on that entry; removing deletes it; neither adds a second,
     alias-keyed copy beside a raw-keyed one. A read that stays ambiguous returns
     ``"ambiguous"`` and writes nothing: one of those keys may be a distinct
-    server.
+    server. A file that is not an MCP config document returns ``"corrupt"`` and
+    writes nothing: treating it as empty would replace every server in it.
     """
-    data = _load_json_or_empty(path)
-    servers = data.setdefault("mcpServers", {})
+    data = _load_config_for_update(path)
+    if data is None:
+        return "corrupt"
+    servers = data["mcpServers"]
     try:
         key = _resolve_key_from_read(servers, name, preferred)
     except AmbiguousServerKey:

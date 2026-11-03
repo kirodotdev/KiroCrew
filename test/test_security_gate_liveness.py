@@ -518,7 +518,9 @@ def _url_payload_command(n: int) -> str:
 #: takes the word a shell runs after the options and redirections that follow a shell's
 #: own ``-c`` (``bash -c -x '<script>'``). One forward scanner, its lazy per-position
 #: memos and the own-option-run scope; the reader only adds payloads. Re-measured.
-_PACKAGE_LINE_BUDGET = 32_714
+#: Raised by 3, from 32,714, for the ``kas-mcp-launch`` leaf on the read+write floor
+#: (``paths_lists``): one entry and its two-line note; the floor only grows.
+_PACKAGE_LINE_BUDGET = 32_717
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

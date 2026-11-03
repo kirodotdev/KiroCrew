@@ -286,6 +286,24 @@ async def _served_default_after_set_mode(self: AcpSessionHandle) -> None:
     await self.ensure_served_default(activated_model=activated)
 
 
+def _kas_model_spelling(model_id: str, advertised: list[str]) -> str:
+    """The kiro-cli spelling of *model_id* for a KAS session.
+
+    KAS reads models in the ``acp`` namespace (``claude-opus-5.5``). A pin
+    stored in another namespace's spelling -- the claude_code id
+    ``global.anthropic.claude-opus-5-5[1m]``, from a slot or an agent default
+    -- is accepted by KAS's ``model`` option and then fails the turn as an
+    improperly formed request. The registry names the kiro-cli id for any
+    spelling it knows, so that id is sent instead. An id the session
+    advertised verbatim, or one the registry does not know, is left as it is.
+    So is a version-less family alias (``opus``): it names no one model, and
+    the registry's answer for it would pick a generation for the user.
+    """
+    if not model_id or model_id in advertised or not any(c.isdigit() for c in model_id):
+        return model_id
+    return model_registry.acp_id_correction(model_id) or model_id
+
+
 async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     """Switch model via session/set_model.
 
@@ -311,6 +329,8 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     # must not survive a later one, or a read-after-call reports a pick that
     # landed (or inherited the default) as refused.
     self.model_pin_refused = ""
+    if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        model_id = _kas_model_spelling(model_id, self._advertised_model_ids())
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
     # list is the picker's vocabulary while the ``model`` config option's is
     # the BARE id, so a bare pin misses the list yet is exactly what the wire

@@ -106,7 +106,8 @@ def _handle(begun: list, accept: bool = True) -> AcpSessionHandle:
     )
     handle._mcp_sign_in_needed = set()
     handle._mcp_sign_in_completed = set()
-    handle._mcp_sign_in_last_offered = ""
+    handle._mcp_sign_in_wanted = set()
+    handle._mcp_sign_in_offered = set()
     handle._mcp_sign_in_dropped = 0
     handle._mcp_reattempt_waiting = set()
     handle._mcp_reattempt_counts = {}
