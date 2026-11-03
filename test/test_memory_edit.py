@@ -98,6 +98,20 @@ def test_paged_literal_search_and_atomic_batch(store):
     assert json.loads(store.get_semantic("user.language")["value_json"]) == "Chinese"
 
 
+@pytest.mark.parametrize(
+    "value, query",
+    [
+        (r"Projects live in C:\Users\rohan\src", r"C:\Users\rohan\src"),
+        ('Greets people with "good morning"', '"good morning"'),
+        ({"rule": r"Build under D:\work", "category": "knowledge"}, r"D:\work"),
+    ],
+)
+def test_literal_search_matches_stored_text_with_backslashes_and_quotes(store, value, query):
+    assert store.set_semantic("user.note", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": query})
+    assert listed["total"] == 1, (value, query, listed["total"])
+
+
 def test_every_preview_page_reuses_the_signed_operation_and_original_expiry(store, monkeypatch):
     seed(store)
     monkeypatch.setattr(memory_edit.time, "time", lambda: 1000)

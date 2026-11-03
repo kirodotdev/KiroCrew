@@ -43,6 +43,21 @@ def _json(value: Any) -> str:
     )
 
 
+def _search_text(value: Any) -> str:
+    """Return a decoded value as plain text for the literal filter.
+
+    Strings are kept as stored, so a backslash or a quote is not searched in its
+    JSON-escaped form. Dict keys and leaves are joined by spaces; other scalars use JSON.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(_search_text(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(f"{key} {_search_text(item)}" for key, item in value.items())
+    return _json(value)
+
+
 def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
@@ -193,7 +208,7 @@ def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = No
             text = row["text"]
             if row["value_json"] is not None:
                 try:
-                    text = _json(json.loads(row["value_json"]))
+                    text = _search_text(json.loads(row["value_json"]))
                 except (ValueError, TypeError):
                     pass
             searchable = f"{row['key'] or ''} {text} {row['tags']} {meta.get('category', '')} {meta.get('subject', '')} {meta.get('predicate', '')}"
