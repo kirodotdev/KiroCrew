@@ -23,6 +23,20 @@ SLOT_PATCH_CAPABILITY = "slot_patch"
 #: carries it; every other socket keeps receiving the full ``slots`` list.
 SLOT_PATCH_WS_FLAG = "_slot_patch"
 
+#: Capability a dashboard tab declares in ``?caps=`` (beside ``slot_patch``) when
+#: its bundle applies ``slots_diff`` frames: the rows of the slot list that changed
+#: since the last list frame it was sent (``state_parts/slots_diff.py``).
+SLOT_DIFF_CAPABILITY = "slot_diff.1"
+
+#: Socket attribute recording that declaration. A flagged socket gets every
+#: coalesced slot list as a ``slots_diff`` frame, or as a sequenced full frame
+#: when it holds no base; the generic and owner ``slots`` fan-outs skip it.
+SLOT_DIFF_WS_FLAG = "_slot_diff"
+
+#: Socket attribute holding the ``(view, seq)`` of the slot list a diff socket was
+#: last sent. Popping it makes the next coalesced list reach the socket in full.
+SLOT_DIFF_SEQ_KEY = "_slot_diff_seq"
+
 #: Capability a dashboard tab declares in ``?caps=`` when its bundle sends
 #: ``fold_watch`` and can live with slot-fold frames for only the boards it watches.
 FOLD_DELTA_CAPABILITY = "fold_delta.1"
@@ -585,6 +599,9 @@ class WebSocketHub:
                 continue
             if skip_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
                 continue
+            # A ``slots_diff`` socket receives the slot list from the diff sender.
+            if skip_owners and ws.get(SLOT_DIFF_WS_FLAG, False) is True:
+                continue
             if not client_allowed(ws, msg_type, data):
                 continue
             try:
@@ -606,7 +623,13 @@ class WebSocketHub:
         for ws in dead:
             remove(ws)
 
-    def _send_ws_owners(self, msg: str, *, skip_slot_patch_clients: bool = False) -> None:
+    def _send_ws_owners(
+        self,
+        msg: str,
+        *,
+        skip_slot_patch_clients: bool = False,
+        skip_slot_diff_clients: bool = False,
+    ) -> None:
         """Send a pre-serialized message only to owner-authenticated clients."""
         dead: list[web.WebSocketResponse] = []
         spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
@@ -616,6 +639,8 @@ class WebSocketHub:
                 dead.append(ws)
                 continue
             if skip_slot_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
+                continue
+            if skip_slot_diff_clients and ws.get(SLOT_DIFF_WS_FLAG, False) is True:
                 continue
             try:
                 spawn(ws, msg)

@@ -291,6 +291,11 @@ export function useWebSocket() {
           case 'shared_crew.people':
             applySharedCrewFrame(queryClient, data)
             break
+          case 'slots_diff':
+            slotList.onSlotsDiff(data, e.data as string, () => {
+              if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'slots_resync' }))
+            })
+            break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
             break

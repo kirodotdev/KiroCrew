@@ -400,9 +400,53 @@ def _slots_ws_frame(
     it through here would widen an app's payload, so it is a third shape by
     design, not a duplicate awaiting cleanup.
     """
-    frame = {
+    frame: dict[str, Any] = {
         "type": "slots",
         "data": slots,
+        **_slots_ws_envelope(
+            yolo=yolo,
+            channel_trusted=channel_trusted,
+            gitlab_hosts_gen=gitlab_hosts_gen,
+            folders=folders,
+            folders_gen=folders_gen,
+            governance_gen=governance_gen,
+            tags_gen=tags_gen,
+            slots_partial=slots_partial,
+            slots_held_keys=slots_held_keys,
+            slots_hold_channels=slots_hold_channels,
+        ),
+    }
+    # Same offender diagnostic as the coalesced broadcast: the
+    # dashboard-user frame serializes the ENRICHED projection, so a value that
+    # only enrichment adds raises here and nowhere else. Diagnosis only — the
+    # exception propagates unchanged. A clean-slots note ("no offending entry
+    # found") is itself evidence: the offender is in the envelope extras.
+    try:
+        return json.dumps(frame)
+    except (TypeError, ValueError) as exc:
+        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
+        raise
+
+
+def _slots_ws_envelope(
+    *,
+    yolo: bool,
+    channel_trusted: bool,
+    gitlab_hosts_gen: object,
+    folders: object,
+    folders_gen: object,
+    governance_gen: object,
+    tags_gen: object = None,
+    slots_partial: bool = False,
+    slots_held_keys: object = (),
+    slots_hold_channels: bool = False,
+) -> dict[str, Any]:
+    """The fields a ``slots`` WS frame carries beside ``type`` and ``data``, in frame order.
+
+    Shared by :func:`_slots_ws_frame` and the ``slots_diff`` sender, which ships
+    the same fields as a delta and so must name exactly the same ones.
+    """
+    frame: dict[str, Any] = {
         "yolo": yolo,
         "channelTrusted": channel_trusted,
         "gitlabHostsGeneration": gitlab_hosts_gen,
@@ -426,16 +470,7 @@ def _slots_ws_frame(
         frame["slotsHeldKeys"] = slots_held_keys
     if slots_hold_channels:
         frame["slotsHoldChannels"] = True
-    # Same offender diagnostic as the coalesced broadcast: the
-    # dashboard-user frame serializes the ENRICHED projection, so a value that
-    # only enrichment adds raises here and nowhere else. Diagnosis only — the
-    # exception propagates unchanged. A clean-slots note ("no offending entry
-    # found") is itself evidence: the offender is in the envelope extras.
-    try:
-        return json.dumps(frame)
-    except (TypeError, ValueError) as exc:
-        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
-        raise
+    return frame
 
 
 def _link_label(channel_type: str) -> str:
@@ -946,12 +981,13 @@ def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
 
 
 def serialize_slot_views(
-    self: DashboardState, *, owner: bool
+    self: DashboardState, *, owner: bool, user: bool = True
 ) -> tuple[list[dict], list[dict], list[dict] | None]:
     """One serialization pass, three audience views of the slot list.
 
     Returns ``(bare, dashboard_user, owner)``; ``owner`` is ``None`` when
-    ``owner`` is False (no owner socket to build it for).
+    ``owner`` is False (no owner socket to build it for), and ``dashboard_user``
+    is empty when ``user`` is False (nobody reads that view this pass).
 
     The three views the broadcast ships differ ONLY in each slot's
     ``source_links`` field -- the audience gates are read nowhere else in the
@@ -975,7 +1011,7 @@ def serialize_slot_views(
     bare = self.serialize_slots()
     return (
         bare,
-        self._reproject_slots(bare, dashboard_user=True),
+        self._reproject_slots(bare, dashboard_user=True) if user else [],
         self._reproject_slots(bare, include_check_status=True) if owner else None,
     )
 
