@@ -103,7 +103,12 @@ _DEVICE_LOGIN_CAPTURE_SLEEP = 1
 
 # Runs `kiro-cli login ...` under a pseudo-terminal on the instance and presses
 # Enter on each prefilled prompt (Identity Center asks for the start URL and the
-# region even when both are on the command line). Everything kiro-cli prints is
+# region even when both are on the command line). A prompt is recognised by its
+# LABEL, never by a caret or other decoration: kiro-cli 2.21 draws
+# `? Enter Start URL › <default>` and kiro-cli 3.0 draws
+# ` Enter Start URL  <default>` with no caret at all, and the label is the one
+# part both share. A label can straddle two reads, so each read is searched
+# together with the tail of the one before it. Everything kiro-cli prints is
 # forwarded to stdout -- which the launcher redirects to the login log -- EXCEPT
 # the prompt lines themselves: they echo the start URL, and a URL in the log is
 # what the capture loop and `parse_login_output` read as the verification URL.
@@ -116,11 +121,11 @@ cmd = sys.argv[1:]
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp(cmd[0], cmd)
-PROMPT_CARET = "\u203a".encode("utf-8")
 PROMPT_MARKERS = (b"Enter Start URL", b"Enter Region")
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\r")
 buf = b""
 answered = 0
+tail = b""
 out = os.fdopen(sys.stdout.fileno(), "wb", buffering=0)
 while True:
     try:
@@ -135,10 +140,14 @@ while True:
         break
     if not chunk:
         break
-    if PROMPT_CARET in chunk and answered < len(PROMPT_MARKERS):
-        time.sleep(0.2)
+    # The prompts come one at a time, so only the next unanswered label can
+    # be on screen; the pause lets kiro-cli finish drawing it and start
+    # reading keys before the Enter lands.
+    if answered < len(PROMPT_MARKERS) and PROMPT_MARKERS[answered] in tail + chunk:
+        time.sleep(0.5)
         os.write(fd, b"\r")
         answered += 1
+    tail = chunk[-64:]
     buf += ANSI.sub(b"", chunk)
     # Emit whole lines; drop the ones that are the prompt echo.
     while b"\n" in buf:
