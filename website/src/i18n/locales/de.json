@@ -7953,6 +7953,10 @@
       "contents": "Inhalt",
       "table_of_contents": "Inhaltsverzeichnis"
     },
+    "matesDock": {
+      "load_failed": "Deine mit einem Stern markierten Crewmates konnten nicht geladen werden.",
+      "reorder_failed": "Die neue Reihenfolge der Crewmates konnte nicht gespeichert werden."
+    },
     "mcpAppFrame": {
       "collapse": "Einklappen",
       "collapse_app": "App einklappen",

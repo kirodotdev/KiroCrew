@@ -446,6 +446,8 @@ async def api_members(request: web.Request) -> web.Response:
                 # bool (the user's own favourite mark, PUT /api/agents/{name}).
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
+                # The row's place in the left dock (1 = top, 0 = not placed).
+                "star_order": int(agent_cfg.star_order),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create

@@ -7790,6 +7790,10 @@
       "contents": "목차",
       "table_of_contents": "목차"
     },
+    "matesDock": {
+      "load_failed": "별표 표시한 크루메이트를 불러올 수 없습니다.",
+      "reorder_failed": "크루메이트의 새 순서를 저장할 수 없습니다."
+    },
     "mcpAppFrame": {
       "collapse": "접기",
       "collapse_app": "앱 접기",

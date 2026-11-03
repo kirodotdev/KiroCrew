@@ -8116,6 +8116,10 @@
       "contents": "Contenido",
       "table_of_contents": "Tabla de contenidos"
     },
+    "matesDock": {
+      "load_failed": "No se pudieron cargar tus compañeros marcados con una estrella.",
+      "reorder_failed": "No se pudo guardar el nuevo orden de tus compañeros."
+    },
     "mcpAppFrame": {
       "collapse": "Contraer",
       "collapse_app": "Contraer la aplicación",

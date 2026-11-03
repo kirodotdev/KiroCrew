@@ -7790,6 +7790,10 @@
       "contents": "目录",
       "table_of_contents": "目录"
     },
+    "matesDock": {
+      "load_failed": "无法加载你标星的队友。",
+      "reorder_failed": "无法保存队友的新顺序。"
+    },
     "mcpAppFrame": {
       "collapse": "收起",
       "collapse_app": "收起应用",

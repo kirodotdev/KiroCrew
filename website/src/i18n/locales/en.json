@@ -5077,6 +5077,10 @@
       "contents": "Contents",
       "table_of_contents": "Table of contents"
     },
+    "matesDock": {
+      "load_failed": "Couldn't load your starred mates.",
+      "reorder_failed": "Couldn't save the new order of your mates."
+    },
     "mcpBrowserModal": {
       "add_server": "Add Server",
       "and_enable_it_there_to_start_using_it": "and enable it there to start using it.",

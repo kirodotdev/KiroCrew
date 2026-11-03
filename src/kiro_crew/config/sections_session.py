@@ -19,6 +19,10 @@ from kiro_crew.config.sections_defaults import (
     SectionReader,
 )
 
+# Highest dock position a crew may hold. Far above any roster a person drags by
+# hand; it only bounds a hand-edited or hostile value.
+STAR_ORDER_MAX = 10_000
+
 
 def _archive_retention_days(session_data: dict) -> int:
     """Resolve session.archive_retention_days, normalizing the disable sentinel.
@@ -354,6 +358,16 @@ class KiroCrewAgentConfig:
             "crews, so the dozens of package-installed crews the agent sync "
             "writes here can be collapsed behind the few you actually drive. "
             "Never read by routing, spawning, or the orchestrator.",
+        ),
+    )
+    star_order: int = field(
+        default=0,
+        metadata=_meta(
+            "Star order",
+            "Position of this starred crew in the dashboard's left dock, set by "
+            "dragging its row there. 1 is the top; 0 means not placed yet, which "
+            "sorts after every placed crew. Cleared when the crew is unstarred. "
+            "Purely a display preference, like starred.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

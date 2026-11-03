@@ -19,13 +19,17 @@ import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
+import { DockMatesSection, useDockMates } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
+import { useLayoutEffect } from 'react'
 
 /**
  * The main navigation: the desktop rail, and the phone nav drawer with its scrim,
- * which share one body. Markup only: it calls no hook, and every value it reads
- * comes from {@link useAppShell}.
+ * which share one body. Mostly markup: apart from the docked mates and the app
+ * list's scroll-edge cue, every value it reads comes from {@link useAppShell}.
  */
 export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
@@ -39,6 +43,18 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
+  // A docked mate's row is the lit one while its chat is open; lighting the
+  // Mates page row too would mark two rows as "you are here".
+  const { openIsDocked, ordered: dockedMates } = useDockMates()
+  // With mates docked, the app list shrinks first and can end at its first
+  // row with the rest scrolled out of sight under a hidden scrollbar, so it
+  // fades its bottom edge while anything is below the fold, as the Mates group
+  // does. Only while mates are docked: with none, the scroller is not attached
+  // and the list renders exactly as it did before the Mates group existed.
+  // Rows changing inside an already-clipped box resize nothing the observer
+  // watches, hence the explicit remeasure.
+  const [attachAppScroller, appEdges, remeasureApps] = useScrollEdgesY<HTMLDivElement>()
+  useLayoutEffect(() => { remeasureApps() }, [remeasureApps, sortedAppGroup.length, appsExpanded, effectiveCollapsed, activePath, dockedMates.length])
 
   // Render one standard nav row (used by the top-fixed mains, the Apps list,
   // and the bottom-fixed section). Active-state, mobile close, chat pin
@@ -54,7 +70,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
       path={n.path}
       label={surfaceLabel(n)}
       icon={n.icon}
-      active={navRowActive(n.path)}
+      active={navRowActive(n.path) && !(n.id === 'members' && openIsDocked)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       // The chat row, while chat is the page on screen, toggles the sessions
@@ -137,6 +153,13 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               the big logo alone separates well). */}
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
+        </div>
+        {/* Starred mates sit between the fixed blocks but are not fixed: on a
+            short window this group and the app list below share the room left
+            over and each scrolls inside its share (see the app list's shrink
+            weight below), so neither the apps nor the footer is pushed off. */}
+        <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} onNavigate={closeMobileNav} />
+        <div className="shrink-0 flex flex-col gap-0.5 px-2">
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
               (installed-app management, /apps/library). Expanded keeps the
@@ -214,7 +237,17 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
             edge. overscroll-y-none kills the macOS rubber-band bounce;
             scrollbar-none + scrollbarWidth hide the scrollbar across
             Firefox, modern WebKit, and older Safari (<16). */}
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none px-2" style={{ scrollbarWidth: 'none' }}>
+        <div
+          ref={dockedMates.length ? attachAppScroller : undefined}
+          // No fade while an app is being dragged, as in the Mates group: the
+          // drag ghost renders inside this box, and a mask would fade it.
+          className={`flex-auto ${dockedMates.length ? 'min-h-[40px]' : 'min-h-0'} overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none px-2${dockedMates.length && appEdges.bottom && activeAppDragId === null ? ` ${MORE_BELOW_MASK}` : ''}`}
+          // With a Mates group above, this list gives up its room FIRST (the
+          // far larger shrink weight), down to one row; only then does the
+          // Mates group shrink, down to one row. Neither group, nor the
+          // footer, leaves the rail.
+          style={{ scrollbarWidth: 'none', flexShrink: dockedMates.length ? 1000 : undefined }}
+        >
           <div className="grid gap-0.5">
             {(() => {
               const fullList = sortedAppGroup

@@ -7953,6 +7953,10 @@
       "contents": "विषय-सूची",
       "table_of_contents": "विषय-सूची तालिका"
     },
+    "matesDock": {
+      "load_failed": "तुम्हारे तारे से चिह्नित साथियों को लोड नहीं किया जा सका।",
+      "reorder_failed": "साथियों का नया क्रम सहेजा नहीं जा सका।"
+    },
     "mcpAppFrame": {
       "collapse": "छोटा करें",
       "collapse_app": "ऐप छोटा करें",

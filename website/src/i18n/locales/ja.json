@@ -7790,6 +7790,10 @@
       "contents": "目次",
       "table_of_contents": "目次"
     },
+    "matesDock": {
+      "load_failed": "スターを付けたクルーメイトを読み込めませんでした。",
+      "reorder_failed": "クルーメイトの新しい並び順を保存できませんでした。"
+    },
     "mcpAppFrame": {
       "collapse": "折りたたむ",
       "collapse_app": "アプリを折りたたむ",

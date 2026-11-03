@@ -48,6 +48,8 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     patchConfig: vi.fn().mockResolvedValue({}),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
