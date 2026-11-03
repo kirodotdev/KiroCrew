@@ -317,6 +317,12 @@ async def wait_mcp_ready(
     other guard is unchanged: a failed, disabled, auth-failed or provenance-less
     server still raises, a foreign same-named entry or a server still connecting
     still times out at the deadline, and runtime death still raises.
+
+    A server the host's own snapshot lists as dropped by its MCP registry
+    (:attr:`KasMcpReadiness.registry_filtered`) is decided at once, with no
+    wait: governed, the session starts as soon as every pending server is such a
+    drop; undeclared, the start fails at once naming the servers and the
+    setting, instead of spending *timeout* on servers that cannot come.
     """
     readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
     self._mcp_report.include_configured(required)
@@ -367,6 +373,14 @@ async def wait_mcp_ready(
         readiness.record(msg)
         if readiness.failure:
             raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
+        if readiness.registry_filtered:
+            # The host said its registry dropped these: no wait makes them start.
+            if governed:
+                if readiness.all_pending_filtered:
+                    _record_drops(self._mcp_report, readiness, readiness.pending_names)
+                    return
+            else:
+                raise AcpRuntimeError(_registry_filtered_message(readiness))
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
@@ -379,12 +393,36 @@ def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, govern
     absent = readiness.never_reported if governed else ()
     if not absent:
         return False
+    _record_drops(report, readiness, absent)
+    return True
+
+
+def _record_drops(
+    report: McpSessionReport, readiness: KasMcpReadiness, absent: tuple[str, ...]
+) -> None:
+    """Record *absent* failed with :data:`GOVERNED_DROP_REASON`, the rest initialized."""
     for name in readiness.required:
         if name in absent:
             report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, GOVERNED_DROP_REASON)
         else:
             report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
-    return True
+
+
+def _registry_filtered_message(readiness: KasMcpReadiness) -> str:
+    """The start failure for servers the host's MCP registry dropped, undeclared.
+
+    The host named them itself, so this is a decided failure, not a timeout:
+    the session is not started without them (registry mode is not declared),
+    and the start budget is not spent waiting for servers that cannot come.
+    """
+    return (
+        "KAS managed MCP initialization failed: "
+        f"{readiness.filtered_detail}: filtered by this account's MCP registry. "
+        "The KAS backend cannot carry the registry marker for Crew's servers, so "
+        "the host drops them (see the enterprise MCP governance guide). To start "
+        "KAS sessions without Crew's servers, declare registry mode: "
+        "`kirocrew config set agent.mcp_registry_mode true`."
+    )
 
 
 def _readiness_timeout(readiness: KasMcpReadiness, timeout: float) -> AcpRequestTimeout:

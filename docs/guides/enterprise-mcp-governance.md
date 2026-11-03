@@ -196,6 +196,15 @@ all: no `spawn_run`, no `cron_add`, no `learn_add`, no artifacts, knowledge or
 monitoring, and no error from the host explaining it. Declaring registry mode
 does not fix it there, because the marker it writes cannot reach the filter.
 
+The limitation is tracked upstream as
+[kirodotdev/Kiro#12231](https://github.com/kirodotdev/Kiro/issues/12231).
+
+When the host names the servers it filtered (KAS lists them in its MCP status as
+`accessModeFilteredServers`), Kiro Crew acts on that at once instead of waiting
+out the session-start budget. With `agent.mcp_registry_mode` on, the session
+starts without those servers. With it off, the session start fails straight
+away with an error that names each filtered server and the setting to declare.
+
 Kiro Crew makes the failure visible rather than silent. Projecting an agent onto
 that backend under registry mode logs a warning naming exactly this, and the
 servers your spec declares are withheld with a line each instead of being sent to
