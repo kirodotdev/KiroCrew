@@ -118,12 +118,14 @@ class TestRelayUnusableReason:
     ):
         """Windows hands every candidate through ``realpath``, so an override set
         under an 8.3 short name (``C:\\Users\\RUNNER~1\\...`` on a GitHub-hosted
-        runner) resolves spelled long. A directory link stands in for the short name."""
+        runner) resolves spelled long. A directory link stands in for the short name;
+        it is not named ``RUNNER~1`` because NTFS may already give ``runneradmin``
+        that very alias."""
         long_dir = tmp_path / "runneradmin"
         long_dir.mkdir()
         (long_dir / "fake-acp-backend.cmd").write_text("@echo off\n")
-        make_dir_link(tmp_path / "RUNNER~1", long_dir)
-        override = str(tmp_path / "RUNNER~1" / "fake-acp-backend.cmd")
+        make_dir_link(tmp_path / "short-alias", long_dir)
+        override = str(tmp_path / "short-alias" / "fake-acp-backend.cmd")
         environ = {"KIROCREW_KIRO_BIN": override, "PATH": ""}
         resolved = find_kiro_cli_candidates("win32", tmp_path, environ)[0]
         assert resolved != override, "the resolver no longer canonicalises on Windows"
