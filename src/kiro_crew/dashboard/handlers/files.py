@@ -248,6 +248,7 @@ from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
     _project_tree_git_layout,
     _project_tree_has_gitmodules,
     _project_tree_identity,
+    _project_tree_ignored_dotfiles,
     _project_tree_in_nested_repo,
     _project_tree_is_link,
     _project_tree_listing,
@@ -1183,7 +1184,8 @@ async def api_browse_files(request: web.Request) -> web.Response:
     Mirrors api_browse_dirs security model (sensitive-path filtering, access logging,
     skip set for build artifacts) but returns files alongside directories. Entries
     are sorted dirs-first then alphabetically; hidden files and common build dirs
-    are skipped.
+    are skipped. ``hidden=1`` lists dot-files as well; the skip set and the
+    sensitive-path check are unchanged by it.
     """
     owner_denied = await require_owner_dashboard_request(request, "browse_files")
     if owner_denied is not None:
@@ -1209,7 +1211,9 @@ async def api_browse_files(request: web.Request) -> web.Response:
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
     skip |= _HIDDEN_TOOL_DIRS
     try:
-        dirs, files = await _run_path_probe(_browse_files_sync, base, skip, transfer=True)
+        dirs, files = await _run_path_probe(
+            _browse_files_sync, base, skip, request.query.get("hidden") == "1", transfer=True
+        )
     except _PathProbeBusy:
         return _probe_busy_response(resource=base, operation="browse_files", caller=caller)
     _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)

@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Files, Diff, Search, X, RefreshCw, FileText, Folder } from 'lucide-react'
+import { Files, Diff, Search, X, RefreshCw, FileText, Folder, Eye, EyeOff } from 'lucide-react'
 import { api } from '../../api/client'
+import { SHOW_HIDDEN_FILES_KEY } from '../../api/client/files'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ChatDropOverlay, { useChatFileDrop } from '../../components/ChatDropOverlay'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -564,6 +566,20 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   // `invalidateQueries`) so `refreshing` tracks the actual network round trip
   // and the spinner reflects real work.
   const qc = useQueryClient()
+
+  // "Show hidden files", off by default. The listings read it when they fetch
+  // (`api/client/files.ts`), so a flip -- here, in a sibling rail or in another tab --
+  // refetches both. The persisted write runs in the hook's own effect, declared before
+  // this one, so the refetch already sees the new value.
+  const [showHidden, setShowHidden] = usePersistedBool(SHOW_HIDDEN_FILES_KEY, false)
+  const listedHidden = useRef(showHidden)
+  useEffect(() => {
+    if (listedHidden.current === showHidden) return
+    listedHidden.current = showHidden
+    void qc.invalidateQueries({ queryKey: ['project-tree'] })
+    void qc.invalidateQueries({ queryKey: ['browse-files'] })
+  }, [showHidden, qc])
+
   const [refreshing, setRefreshing] = useState(false)
   const refresh = async () => {
     // A second press mid-flight is a no-op, not a restart: `refetchQueries` cancels and
@@ -707,6 +723,28 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               </button>
             )}
           </div>
+          <button
+            onClick={() => setShowHidden(v => !v)}
+            aria-pressed={showHidden}
+            className={cn(
+              'flex flex-none items-center justify-center gap-1 h-[26px] px-1.5 rounded-[7px] border cursor-pointer transition-colors',
+              // "On" is the accent fill; the tooltip names what a click does next.
+              showHidden
+                ? 'bg-accent/15 text-accent border-accent/30'
+                : 'bg-bg-elevated border-border text-muted hover:text-text hover:border-border-strong',
+            )}
+            title={showHidden
+              ? t('pages.chat.fileBrowserRail.hide_hidden_files')
+              : t('pages.chat.fileBrowserRail.show_hidden_files_hint')}
+            aria-label={t('pages.chat.fileBrowserRail.show_hidden_files')}
+            data-testid="file-browser-rail-show-hidden"
+          >
+            {showHidden ? <Eye size={12} className="shrink-0" /> : <EyeOff size={12} className="shrink-0" />}
+            {/* A word beside the eye: an eye alone reads as "preview". */}
+            <span aria-hidden className="text-[11px] leading-none">
+              {t('pages.chat.fileBrowserRail.hidden_files_short')}
+            </span>
+          </button>
           <button
             onClick={refresh}
             // Inert-but-focusable while busy, like FolderPanel's header Refresh and
