@@ -23,6 +23,8 @@ from kiro_crew.acp.harness.kas import KAS_BUNDLE_SPAWN_LABEL, KasHarness
 from kiro_crew.acp.kas_transport import build_kas_argv, build_kas_bundle_argv
 from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
 from kiro_crew.acp.session_handle import AcpRuntimeError
+from kiro_crew.kiro_cli import find_kiro_cli_candidates
+from kiro_crew.testing.links import make_dir_link
 
 #: The real rule-2 predicate, read at import: the conftest floor replaces the
 #: module attribute for every test, so a test of the rule itself calls this.
@@ -110,6 +112,48 @@ class TestRelayUnusableReason:
             crew_entry_skips_launcher=False,
         )
         assert reason == ""
+
+    def test_a_windows_override_through_a_short_name_is_still_the_operators(
+        self, tmp_path, monkeypatch
+    ):
+        """Windows hands every candidate through ``realpath``, so an override set
+        under an 8.3 short name (``C:\\Users\\RUNNER~1\\...`` on a GitHub-hosted
+        runner) resolves spelled long. A directory link stands in for the short name."""
+        long_dir = tmp_path / "runneradmin"
+        long_dir.mkdir()
+        (long_dir / "fake-acp-backend.cmd").write_text("@echo off\n")
+        make_dir_link(tmp_path / "RUNNER~1", long_dir)
+        override = str(tmp_path / "RUNNER~1" / "fake-acp-backend.cmd")
+        environ = {"KIROCREW_KIRO_BIN": override, "PATH": ""}
+        resolved = find_kiro_cli_candidates("win32", tmp_path, environ)[0]
+        assert resolved != override, "the resolver no longer canonicalises on Windows"
+
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: True)
+        monkeypatch.setattr(kas_route.sys, "platform", "win32")
+        assert kas_route.is_operator_override(resolved, environ) is True
+        reason = kas_route.relay_unusable_reason(
+            kiro_bin=resolved,
+            environ=environ,
+            home=tmp_path,
+            vault_identity=False,
+            crew_entry_skips_launcher=False,
+        )
+        assert reason == ""
+
+    def test_on_posix_another_path_to_the_same_file_is_not_the_override(
+        self, tmp_path, monkeypatch
+    ):
+        """POSIX keeps the operator's spelling, so only that path is theirs."""
+        real_dir = tmp_path / "install"
+        real_dir.mkdir()
+        target = real_dir / "kiro-cli"
+        target.write_text("#!/bin/sh\n")
+        make_dir_link(tmp_path / "named", real_dir)
+        link = tmp_path / "named" / "kiro-cli"
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        environ = {"KIROCREW_KIRO_BIN": str(link)}
+        assert kas_route.is_operator_override(str(link), environ) is True
+        assert kas_route.is_operator_override(str(target), environ) is False
 
     def test_an_unproven_sign_out_keeps_the_relay(self, tmp_path, monkeypatch):
         monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: False)

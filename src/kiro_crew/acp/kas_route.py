@@ -251,12 +251,25 @@ def resolve_kas_route(
 def is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
     """Is *binary* the operator's own ``KIROCREW_KIRO_BIN`` choice?
 
-    Compared as absolute paths, the way the resolver hands the override
-    through (``snapshot_trusted_acp_executable`` returns ``abspath`` of the
-    candidate). No ``realpath``: the operator named THIS path.
+    *binary* is matched against the override in each form the resolver hands it
+    through: its ``abspath`` (``snapshot_trusted_acp_executable`` on POSIX), and
+    on Windows its ``realpath`` too, because ``find_kiro_cli_candidates`` and the
+    Windows snapshot canonicalise every candidate. There an 8.3 short name, such
+    as the ``RUNNER~1`` in a GitHub-hosted runner's ``%TEMP%``, comes back spelled
+    long. No ``realpath`` on POSIX, where the resolver keeps the spelling: the
+    operator named THIS path, and another path that leads to the same file is
+    not it. Blocking on Windows (``realpath`` reads the filesystem).
     """
     override = (environ.get("KIROCREW_KIRO_BIN") or "").strip()
-    return bool(override) and os.path.abspath(binary) == os.path.abspath(override)
+    if not override:
+        return False
+    named = {os.path.abspath(override)}
+    if sys.platform == "win32":
+        try:
+            named.add(os.path.realpath(override))
+        except OSError:
+            pass
+    return os.path.normcase(os.path.abspath(binary)) in {os.path.normcase(p) for p in named}
 
 
 def crew_entry_skips_launcher(kiro_bin: str, environ: Mapping[str, str]) -> bool:
