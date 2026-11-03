@@ -568,7 +568,6 @@ test/test_notification_legacy_actions.py
 test/test_notification_phase5.py
 test/test_notifications_push.py
 test/test_official_catalog.py
-test/test_omc_ledger_sync_coverage.py
 test/test_onboarding_import.py
 test/test_one_conversation_one_session.py
 test/test_open_dm_retry.py
