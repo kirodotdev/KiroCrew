@@ -849,7 +849,9 @@ the walker's `secretish` names) inside a closed shadow root is out of every
 page-side walk, so the browser's own DOM is asked (`closed_secret_count`, and
 the live stream's replay mask asks the same through its session): any such
 field refuses the screenshot (`secret_field_on_page`) and the decision capture,
-and keeps that replay frame from being recorded as masked. `press_key` refuses
+and keeps that replay frame from being recorded as masked. A frame owner in a
+closed root whose document the browser did not hand back inline runs out of
+process and nothing looked inside it, so it counts as one such field. `press_key` refuses
 select, copy and cut chords on a focused, filled field `secretish` names, as it
 already does on a quick-ask field. While the census finds any secret field in a closed root, or cannot
 be taken, every modified key is refused, since focus inside a closed root reads

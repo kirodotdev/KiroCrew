@@ -242,13 +242,20 @@ def _local_closed_secret_count(helpers: Any) -> int:
     and the replay mask. Counted from the browser's own DOM by the walker's own
     rule (:func:`_secret_attrs`), whether or not the field holds a value (the DOM
     gives attributes, not the live value), so the guard refuses rather than passes.
+    A frame owner in a closed root with no document handed back inline runs out of
+    process: nothing here looked inside it, so it counts as one secret field.
     """
     root = _pierced_document(helpers, "closed_secret_count")
     return sum(
         1
         for node, closed in _walk_dom(root, "closed_secret_count")
-        if closed and _secret_attrs(node)
+        if closed and (_secret_attrs(node) or _uninspected_frame(node))
     )
+
+
+def _uninspected_frame(node: dict[str, Any]) -> bool:
+    """Whether *node* owns a document the browser did not hand back inline."""
+    return node["nodeName"].upper() in _FRAME_OWNERS and node.get("contentDocument") is None
 
 
 def _secret_attrs(node: dict[str, Any]) -> bool:

@@ -581,6 +581,39 @@ def test_the_census_counts_only_secret_fields_inside_closed_roots() -> None:
     )
 
 
+def test_an_out_of_process_frame_in_a_closed_root_counts_as_an_unchecked_secret() -> None:
+    """A cross-site frame's document is not handed back inline, so nothing looked
+    inside it. In a closed root it is one unknown secret, never zero."""
+
+    def shadow(kind: str, *kids: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "nodeName": "DIV",
+            "shadowRoots": [
+                {
+                    "nodeName": "#document-fragment",
+                    "shadowRootType": kind,
+                    "children": list(kids),
+                }
+            ],
+        }
+
+    out_of_process = {"nodeName": "IFRAME", "attributes": ["src", "https://other.example/"]}
+    inline = {
+        "nodeName": "IFRAME",
+        "contentDocument": {"nodeName": "#document", "children": [{"nodeName": "P"}]},
+    }
+    clean = {"nodeName": "#document", "children": [shadow("closed", inline)]}
+    assert dom_census.closed_secret_count(clean) == 0
+    for doc, expected in (
+        ({"nodeName": "#document", "children": [shadow("closed", out_of_process)]}, 1),
+        ({"nodeName": "#document", "children": [shadow("open", out_of_process)]}, 0),
+        ({"nodeName": "#document", "children": [out_of_process]}, 0),
+    ):
+        assert dom_census.closed_secret_count(doc) == expected
+        fake = _Cdp({"DOM.getDocument": {"root": doc}})
+        assert helper_worker._local_closed_secret_count(fake) == expected
+
+
 @pytest.mark.parametrize(
     ("attrs", "secret"),
     [

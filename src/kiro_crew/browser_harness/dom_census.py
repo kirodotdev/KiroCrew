@@ -75,6 +75,23 @@ def is_secret_field(node: dict[str, Any]) -> bool:
     return bool(SECRET_NAME_RE.search(named) or SECRET_NAME_RE.search(split_camel(named)))
 
 
+#: The elements that can hold a document of their own.
+FRAME_OWNERS = frozenset({"IFRAME", "FRAME", "OBJECT", "EMBED"})
+
+
+def uninspected_frame(node: dict[str, Any]) -> bool:
+    """Whether *node* owns a document the browser did not hand back inline."""
+    return node["nodeName"].upper() in FRAME_OWNERS and node.get("contentDocument") is None
+
+
 def closed_secret_count(root: Any) -> int:
-    """How many secret-looking fields sit inside closed shadow roots under *root*."""
-    return sum(1 for node, closed in walk(root) if closed and is_secret_field(node))
+    """How many secret-looking fields sit inside closed shadow roots under *root*.
+
+    A frame owner in a closed root with no document handed back inline runs out of
+    process and nothing looked inside it, so it counts as one secret field.
+    """
+    return sum(
+        1
+        for node, closed in walk(root)
+        if closed and (is_secret_field(node) or uninspected_frame(node))
+    )
