@@ -902,6 +902,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         overlay_pins,
         read_config_text,
         read_local_secret,
+        read_merged_config_files,
         registry_trust_path,
         resolve_agent_config_path,
         shared_crew_preview_path,

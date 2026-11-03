@@ -30,7 +30,7 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
-from kiro_crew.config.loader import read_config_text
+from kiro_crew.config.loader import read_merged_config_files
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -117,27 +117,28 @@ _VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
 
 
 def _read_config() -> dict:
-    """Read the data home's ``config.json`` once; ``{}`` on any error.
+    """Read the data home's config once; ``{}`` on any error.
 
     ``config_dir()`` resolves to ``~/.kiro/crew`` (or ``$KIROCREW_HOME``), so
-    this reads ``<data home>/config.json``.
+    this reads ``<data home>/config.json`` with ``config.local.json`` merged over
+    it, the way the loader merges the overlay.
 
     Synchronous disk read — call from a thread (e.g. ``asyncio.to_thread``) when
     on the event loop, then thread the returned dict into the pure parsers below
     so worker construction never blocks the loop.
     """
     try:
-        config_path = config_dir() / "config.json"
-        if config_path.exists():
-            data = json.loads(read_config_text(config_path))
-            if isinstance(data, dict):
-                # Coerce nested sections to dicts so the pure parsers' chained
-                # ``.get(...).get(...)`` never hits a hand-edited leaf value
-                # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
-                for key in ("agent", "knowledge"):
-                    if not isinstance(data.get(key, {}), dict):
-                        data[key] = {}
-                return data
+        home = config_dir()
+        # config.local.json is an overlay whose keys win, as the loader merges it.
+        data = read_merged_config_files(home / "config.json", home / "config.local.json")
+        if data:
+            # Coerce nested sections to dicts so the pure parsers' chained
+            # ``.get(...).get(...)`` never hits a hand-edited leaf value
+            # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
+            for key in ("agent", "knowledge"):
+                if not isinstance(data.get(key, {}), dict):
+                    data[key] = {}
+            return data
     except Exception:
         pass
     return {}

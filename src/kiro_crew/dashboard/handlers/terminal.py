@@ -1576,7 +1576,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew.config.loader import config_path, read_config_text  # noqa: F401
+    from kiro_crew.config.loader import (  # noqa: F401
+        config_local_path,
+        config_path,
+        read_config_text,
+        read_merged_config_files,
+    )
     from kiro_crew.executors import maintenance_executor  # noqa: F401
     from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.notifications.bus import NotificationPayload  # noqa: F401
