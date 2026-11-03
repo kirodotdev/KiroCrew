@@ -14955,6 +14955,10 @@
         "profile_blank_uses_default_chain": "Leer lassen, um die Standard-AWS-Anmeldedaten zu verwenden.",
         "remove_this_live_source": "Diese Knowledge-Base-Quelle entfernen? Lokal ist nichts gespeichert; die Knowledge Base selbst bleibt unverändert.",
         "region_example_placeholder": "z. B. us-east-1",
+        "word_count_one": "{{n}} Wort",
+        "word_count_other": "{{n}} Wörter",
+        "word_count_approx_one": "~{{n}} Wörter",
+        "word_count_approx_other": "~{{n}} Wörter",
         "items_count_one": "{{n}} Element",
         "items_count_other": "{{n}} Elemente"
       },

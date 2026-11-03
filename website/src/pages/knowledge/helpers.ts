@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fmtDateFields, fmtList } from '../../i18n/format'
+import { fmtDateFields, fmtList, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { copyToClipboard } from '../../utils/clipboard'
 import { localDaysAgo } from '../chat/sessionOrder'
@@ -15,12 +15,17 @@ export function formatDate(iso: string) {
   return fmtDateFields(iso, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
 export function formatRelativeDate(iso: string): string {
   // Local calendar days, not elapsed 24h periods: a sync at 23:00 seen at 00:30
   // is "yesterday". A future instant (clock skew) folds into today.
-  const days = Math.max(0, localDaysAgo(new Date(), new Date(iso)))
-  if (days === 0) return 'today'
-  if (days === 1) return 'yesterday'
+  const now = new Date()
+  const days = Math.max(0, localDaysAgo(now, new Date(iso)))
+  // "today" / "yesterday" come from the locale's own relative-time words: a
+  // pinned day unit with `numeric: 'auto'` renders 0 and -1 as those words, so
+  // no catalog key is needed and every language gets its idiomatic form.
+  if (days <= 1) return fmtRelative(now.getTime() - days * DAY_MS, { unit: 'day', now })
   if (days < 7) return i18nT('pages.knowledge.helpers.days_ago', { n: days })
   if (days < 30) return i18nT('pages.knowledge.helpers.weeks_ago', { n: Math.floor(days / 7) })
   return i18nT('pages.knowledge.helpers.months_ago', { n: Math.floor(days / 30) })

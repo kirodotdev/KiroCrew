@@ -379,6 +379,7 @@ describe('SourcesList — row metadata', () => {
         src({ id: 's1', name: 'Short', properties: JSON.stringify({ word_count: 500 }) }),
         src({ id: 's2', name: 'Long', properties: JSON.stringify({ word_count: 2500 }) }),
         src({ id: 's3', name: 'Unknown', properties: JSON.stringify({}) }),
+        src({ id: 's4', name: 'Single', properties: JSON.stringify({ word_count: 1 }) }),
       ]
       return { ok: true }
     }
@@ -386,8 +387,10 @@ describe('SourcesList — row metadata', () => {
     await screen.findByText('Short')
 
     expect(screen.getByText('500 words')).toBeTruthy()
-    expect(screen.getByText('~3k words')).toBeTruthy()
-    expect(screen.getAllByText(/words/)).toHaveLength(2)
+    expect(screen.getByText('~2.5K words')).toBeTruthy()
+    // The plural comes from the catalog, so one word is not "1 words".
+    expect(screen.getByText('1 word')).toBeTruthy()
+    expect(screen.getAllByText(/words?$/)).toHaveLength(3)
   })
 
   it('shows a summary topic even when the stored themes are unreadable', async () => {

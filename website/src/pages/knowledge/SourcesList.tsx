@@ -193,6 +193,15 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
   )
 }
 
+/** A source's word count: exact under 1000, compact and approximate above. The
+ *  count goes into the catalog so each language picks its own plural form. */
+export function sourceWordCountLabel(wordCount: number): string {
+  if (wordCount < 1000) {
+    return i18nT('pages.knowledge.sourcesList.word_count', { count: wordCount, n: fmtNumber(wordCount) })
+  }
+  return i18nT('pages.knowledge.sourcesList.word_count_approx', { count: wordCount, n: fmtCompact(wordCount) })
+}
+
 function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
   if (!lastSynced) return <span className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.never_synced')}</span>
   const daysSince = Math.floor((Date.now() - new Date(lastSynced).getTime()) / (1000 * 60 * 60 * 24))
@@ -1055,7 +1064,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   with the row's action buttons, where a third button breaks the
                   max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
-              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
+              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
               {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (

@@ -15264,6 +15264,12 @@
         "profile_blank_uses_default_chain": "Lascia vuoto per usare le credenziali AWS predefinite.",
         "remove_this_live_source": "Rimuovere questa origine della base di conoscenza? Nulla è archiviato in locale; la base di conoscenza stessa non viene modificata.",
         "region_example_placeholder": "ad es. us-east-1",
+        "word_count_one": "{{n}} parola",
+        "word_count_many": "{{n}} parole",
+        "word_count_other": "{{n}} parole",
+        "word_count_approx_one": "~{{n}} parole",
+        "word_count_approx_many": "~{{n}} parole",
+        "word_count_approx_other": "~{{n}} parole",
         "items_count_one": "{{n}} elemento",
         "items_count_many": "{{n}} elementi",
         "items_count_other": "{{n}} elementi"

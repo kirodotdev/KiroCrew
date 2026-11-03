@@ -14646,6 +14646,8 @@
         "profile_blank_uses_default_chain": "空欄の場合はデフォルトの AWS 認証情報を使用します。",
         "remove_this_live_source": "このナレッジベースのソースを削除しますか？ローカルには何も保存されていません。ナレッジベース自体は変更されません。",
         "region_example_placeholder": "例: us-east-1",
+        "word_count_other": "{{n}} 語",
+        "word_count_approx_other": "約 {{n}} 語",
         "items_count_other": "{{n}} 件のアイテム"
       },
       "settings": {
