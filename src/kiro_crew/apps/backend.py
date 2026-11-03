@@ -1495,8 +1495,8 @@ def _pid_alive(pid: int) -> bool:
 # The mutable state (``_processes``, ``_allocated_ports``, the locks, the lifecycle
 # generations) is ONE object per name, defined once in its owner and imported by the
 # owners that act on it, so a ``.clear()`` through the facade empties the table every
-# owner reads. The two flags rebound with ``global`` each have one holder: the spawn
-# body's ``_warned_unconfined_cache`` here, and ``startup._DEFERRED_BOUND_PORT_APPS``.
+# owner reads. The one flag rebound with ``global`` has one holder: the spawn
+# body's ``_warned_unconfined_cache`` here.
 #
 # Every owner is imported here, at the facade's own import. An owner's
 # ``from ... import`` bindings are therefore taken once, as the one-module backend
@@ -1715,13 +1715,11 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.backend_runtime.startup import (  # noqa: F401
         _BOOT_SPAWN_MAX_WORKERS,
-        _DEFERRED_BOUND_PORT_APPS,
         _preclaim_fixed_ports,
         _start_backends_concurrently,
         concurrent,
         list_apps,
         shipped_builtin_app_root,
-        start_deferred_app_backends,
         start_enabled_app_backends,
     )
     from kiro_crew.apps.backend_runtime.supervision import (  # noqa: F401

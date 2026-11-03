@@ -188,7 +188,6 @@ _RESOLVED_DYNAMIC_PATCHES: dict[tuple[str, str], frozenset[str]] = {
     ("test_dashboard_server_startup_coverage.py", "_neutralise_outside_process_work"): frozenset(
         {
             "start_enabled_app_backends",
-            "start_deferred_app_backends",
             "register_builtin_apps",
             "cleanup_migrated_builtin",
             "on_gateway_startup",
@@ -808,7 +807,7 @@ _DASHBOARD_BOOT = tuple("""
     _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
-    _kick_crewmate_prune _kick_pinned_order_load subprocess_executor _kick_default_app_installs
+    _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
     _kick_builtin_adoption_staging _start_unix_site _resolved_bound_port
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
@@ -838,7 +837,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
-    T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
+    T:register_builtin_apps T:rotate_dumps
     T:start_enabled_app_backends T:sweep_stale_dumps T:take_dropped_grant
     T:tighten_data_home T:warm_own_host_names
     """.split())

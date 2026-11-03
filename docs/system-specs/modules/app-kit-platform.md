@@ -4823,9 +4823,8 @@ that binds that name, and each owner reads its own bindings, so a
 reaches the call site in whichever owner makes the call. The mutable state is one
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
-through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
-`startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
+through the facade reaches every holder. The one flag rebound with `global` has one
+holder: `_warned_unconfined_cache` in `backend.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
 cannot undo, and a guard refuses it. The lock order is unchanged: `_health_reconcile_lock`
@@ -5850,8 +5849,9 @@ through one seam that is empty by default:
 - **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
   a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
   backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
-  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
-  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  `KIROCREW_BOUND_PORT` at spawn; it starts in the one boot wave, which runs after
+  `start_dashboard` has reserved the port and exported that value),
+  `backend_env_names` / `backend_env_prefixes`
   (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
   `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
   (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`
