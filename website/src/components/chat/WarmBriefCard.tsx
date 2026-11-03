@@ -51,6 +51,8 @@ export interface WarmBrief {
   waitingTotal: number
   /** HTML an older brief carried in its own field, or ''. New briefs have none. */
   widget: string
+  /** The gateway's link row: each pull request it read live, labelled `owner/repo#N`. */
+  links: { url: string; label: string }[]
 }
 
 // The gateway caps every field already; these are the renderer's own bound so
@@ -66,6 +68,9 @@ const MAX_BODY = 6000
 // A widget over this is dropped whole: cut HTML would draw broken.
 const MAX_WIDGET = 8000
 const STATUSES: readonly WarmBriefStatus[] = ['on_track', 'needs_you', 'blocked', 'done']
+// The gateway reads at most five PRs live, so its row holds at most five.
+const MAX_LINKS = 5
+const PR_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100})\/pull\/(\d{1,9})$/
 // A widget draws in its own frame, out of the chat search's reach.
 const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
 
@@ -76,6 +81,17 @@ function text(value: unknown): string {
 function items(value: unknown, limit = MAX_ITEMS): string[] {
   if (!Array.isArray(value)) return []
   return value.map(v => text(v)).filter(Boolean).slice(0, limit)
+}
+
+/** The link row: well-formed GitHub PR URLs only, each labelled from its own URL. */
+function linksOf(value: unknown): WarmBrief['links'] {
+  if (!Array.isArray(value)) return []
+  const links: WarmBrief['links'] = []
+  for (const url of value) {
+    const m = typeof url === 'string' ? PR_URL_RE.exec(url) : null
+    if (m && !links.some(l => l.url === url)) links.push({ url: url as string, label: `${m[1]}#${m[2]}` })
+  }
+  return links.slice(0, MAX_LINKS)
 }
 
 function waitingOf(value: unknown): WarmBriefCardItem[] {
@@ -126,6 +142,7 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     waiting,
     waitingTotal: Number.isInteger(total) && (total as number) > waiting.length ? (total as number) : waiting.length,
     widget: typeof b.widget === 'string' && b.widget.length <= MAX_WIDGET ? b.widget.trim() : '',
+    links: linksOf(b.links),
   }
 }
 
@@ -161,6 +178,7 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
   if (brief.remaining) lines.push(remainingText(brief))
   const body = brief.body.replace(MCWIDGET_RE, '').trim()
   if (body) lines.push(body)
+  lines.push(...brief.links.map(l => l.label))
   if (brief.asked) lines.push(askedText(brief))
   if (brief.done.length) lines.push(i18nT('components.warmBriefCard.done'), ...brief.done)
   if (brief.next.length) lines.push(i18nT('components.warmBriefCard.next'), ...brief.next)
@@ -257,6 +275,22 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
               <MarkdownRenderer content={brief.body} messageTs={messageTs} slotKey={slotKey} />
             </WidgetFrameProfileContext.Provider>
           </LinkOverrideCtx.Provider>
+        </div>
+      )}
+      {brief.links.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] leading-4" data-testid="warm-brief-links">
+          {/* The gateway's own row: PRs it read live, the URL from each read's repo. */}
+          {brief.links.map(link => (
+            <a
+              key={link.url}
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent break-all"
+            >
+              {link.label}
+            </a>
+          ))}
         </div>
       )}
       {brief.asked && (

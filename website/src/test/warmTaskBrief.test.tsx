@@ -115,7 +115,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [],
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -135,7 +135,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
+  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [],
 }
 
 describe('WarmBriefCard', () => {
@@ -469,6 +469,33 @@ describe('a picture the model chose', () => {
     const body = screen.getByTestId('warm-brief-body')
     expect(body.querySelector('a')).toBeNull()
     expect(body).toHaveTextContent('See the PR and https://evil.example/y')
+  })
+
+  it("draws the gateway's link row, one link per listed PR, labelled from its own URL", () => {
+    const ours = 'https://github.com/kirodotdev/KiroCrew/pull/12'
+    const theirs = 'https://github.com/acme/other/pull/12'
+    const m = brief({
+      status: 'needs_you', headline: 'Back.', body: `#12 is green. [x](${ours})`,
+      links: [ours, theirs, ours, 'https://evil.example/pull/1', 'https://github.com/a/b/pull/1?x=1', 42],
+    })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const row = screen.getByTestId('warm-brief-links')
+    const anchors = Array.from(row.querySelectorAll('a'))
+    expect(anchors.map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['kirodotdev/KiroCrew#12', ours],
+      ['acme/other#12', theirs],
+    ])
+    for (const a of anchors) expect(a).toHaveAttribute('rel', 'noopener noreferrer')
+    // The body is drawn as written: its #N and its link stay text.
+    const body = screen.getByTestId('warm-brief-body')
+    expect(body.querySelector('a')).toBeNull()
+    expect(body).toHaveTextContent('#12 is green. x')
+    expect(searchableText(m)).toContain('kirodotdev/KiroCrew#12\nacme/other#12')
+  })
+
+  it('draws no link row when the gateway read no PR', () => {
+    render(<WarmBriefCard brief={warmBriefOf(brief({ status: 'on_track', headline: 'Back.', body: '#12 is green.' }))!} />)
+    expect(screen.queryByTestId('warm-brief-links')).toBeNull()
   })
 
   it("leaves the widget's HTML out of chat search", () => {
