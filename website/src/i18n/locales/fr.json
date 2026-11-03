@@ -11150,6 +11150,7 @@
       "install_on_your_mac": "Installer sur votre Mac",
       "installed": "Installée :",
       "installed_version": "Installée (v{{version}})",
+      "more_actions": "Plus d'actions pour {{name}}",
       "installing": "Installation…",
       "keep_app_data": "Conserver les données de l'application",
       "lifecycle": "| Cycle de vie :",

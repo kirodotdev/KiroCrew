@@ -10790,6 +10790,7 @@
       "install_on_your_mac": "Mac에 설치",
       "installed": "설치됨:",
       "installed_version": "설치됨(v{{version}})",
+      "more_actions": "{{name}}의 추가 작업",
       "installing": "설치 중…",
       "keep_app_data": "앱 데이터 유지",
       "lifecycle": "| 수명 주기:",

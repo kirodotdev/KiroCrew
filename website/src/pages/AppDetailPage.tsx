@@ -12,8 +12,11 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star, ShieldAlert, ExternalLink,
+  Target, Settings2, Star, ShieldAlert, ExternalLink, MoreHorizontal,
 } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../components/ui/dropdown-menu'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
@@ -30,6 +33,7 @@ import { consentTierFor } from '../components/appstore/registryTier'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
+import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
@@ -146,6 +150,12 @@ export default function AppDetailPage() {
   const [serverHostname, setServerHostname] = useState('')
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false)
   const [keepData, setKeepData] = useState(true)
+  // The disabled self-managed app's overflow menu opens the uninstall confirm
+  // from a menu item: defer the open past the menu's close, skip its trigger
+  // restore, and have the dialog return focus to the trigger itself.
+  const overflowMenu = useMenuOpensDialog()
+  const overflowTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const uninstallOpenerRef = useRef<HTMLElement | null>(null)
 
   // Contributors row (Details panel). Resolved GitHub repo URL for the app's
   // source, its top contributors, and the fetch's loading state. The row hides
@@ -1130,7 +1140,8 @@ export default function AppDetailPage() {
         {showUninstallConfirm && app && (
           <AppStoreDialog
             className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-            onClose={() => setShowUninstallConfirm(false)}
+            onClose={() => { setShowUninstallConfirm(false); uninstallOpenerRef.current = null }}
+            returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
@@ -1240,8 +1251,45 @@ export default function AppDetailPage() {
               {app.installed && isSelfManaged && !isBuiltin && (
                 <>
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
-                  {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {app.enabled ? (
+                    <>
+                      {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                      {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                    </>
+                  ) : (
+                    /* A self-managed app can be disabled too (Library's menu, or
+                       the gateway holding it until the owner consents to a new
+                       sessionApproval). Without Enable here the consent notice
+                       above pointed at a control this branch never rendered
+                       (#23336). Same handler, label and dialog as the other
+                       branches. Update and Uninstall move into one overflow
+                       menu so the row stays at two controls. */
+                    <>
+                      <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                      {(app.updateAvailable || canUninstall) && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Btn ref={overflowTriggerRef} aria-label={i18nT('pages.appDetailPage.more_actions', { name: appDisplayName(app) })} disabled={actionBusy}><MoreHorizontal size={14} aria-hidden /></Btn>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" onCloseAutoFocus={overflowMenu.onCloseAutoFocus}>
+                            {app.updateAvailable && (
+                              <DropdownMenuItem disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} onSelect={() => { void handleInstall() }}>
+                                <ArrowUp size={12} aria-hidden /> {i18nT('pages.appDetailPage.update')}
+                              </DropdownMenuItem>
+                            )}
+                            {canUninstall && (
+                              <DropdownMenuItem disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')} onSelect={() => {
+                                uninstallOpenerRef.current = overflowTriggerRef.current
+                                overflowMenu.openLayer(() => { void handleAction('uninstall') })
+                              }}>
+                                <Trash2 size={12} aria-hidden /> {i18nT('pages.appDetailPage.uninstall')}
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </>
+                  )}
                 </>
               )}
               {app.installed && !isSelfManaged && !isBuiltin && (

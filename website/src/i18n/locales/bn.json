@@ -10970,6 +10970,7 @@
       "install_on_your_mac": "আপনার Mac-এ ইনস্টল করুন",
       "installed": "ইনস্টল করা হয়েছে:",
       "installed_version": "ইনস্টল করা হয়েছে (v{{version}})",
+      "more_actions": "{{name}}-এর জন্য আরও অ্যাকশন",
       "installing": "ইনস্টল করা হচ্ছে…",
       "keep_app_data": "অ্যাপের ডেটা রাখুন",
       "lifecycle": "| লাইফসাইকেল:",
