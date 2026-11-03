@@ -540,6 +540,9 @@ its own once the cache refreshes with a list that carries it.
   (`selectionCapabilitiesFailed` in `website/src/lib/effort.ts`): only a real
   fault (any error other than that 404, such as a 403 or transport failure) shows
   the "could not verify effort options" notice and hides the effort control.
+  The crew window's read of a peer slot follows the same rule. Every one of these
+  reads retries with `retryThroughRestart` (`website/src/api/queryClient.ts`), so a
+  gateway restart or a dropped link is re-read (1s, 2s, 4s) before the notice shows.
   Model and effort are ONE
   composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
   the model chip names the level in force, and the model picker embeds the effort

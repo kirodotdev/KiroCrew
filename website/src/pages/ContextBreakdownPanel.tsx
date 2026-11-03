@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { api } from '../api/client'
+import { retryThroughRestart } from '../api/queryClient'
 import { ACP_BACKEND_KIRO, acpBackendName } from '../api/acpBackend'
 import { contextTraceKey } from '../hooks/useWebSocket'
 import ErrorNotice from '../components/ErrorNotice'
@@ -980,6 +981,9 @@ function ContextBreakdownTabFor({ slot, subagents }: { slot: string; subagents?:
     queryKey: ['slot-selection-capabilities', slot],
     queryFn: () => api.chatSlotSelectionCapabilities(slot),
     enabled: !!slot && typeof api.chatSlotSelectionCapabilities === 'function',
+    // Same key as the composer's read, so the same retry: whichever observer
+    // fetches decides how a restart is ridden out.
+    retry: retryThroughRestart,
   })
   const backend = caps.data?.backend
   // Kiro CLI's runtime id is the empty string; the Agent Harness tab calls it `kiro`.

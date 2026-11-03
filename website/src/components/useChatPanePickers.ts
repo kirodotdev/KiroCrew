@@ -22,6 +22,7 @@ import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { retryThroughRestart } from '../api/queryClient'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
@@ -84,6 +85,9 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
     enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
+    // A failure is a standing "could not verify" notice, so a gateway restart or a
+    // dropped link is ridden out first (see `retryThroughRestart`).
+    retry: retryThroughRestart,
     refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
   })
   const ownModelsQuery = useAvailableModelsQuery({ backend: selectionCapabilitiesQ.data?.models_backend })
