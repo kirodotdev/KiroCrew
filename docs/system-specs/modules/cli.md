@@ -122,7 +122,10 @@ refused as a template of the same name.
 leaves the pin alone; `""` or `auto` stores `""` (inherit), through
 `normalize_agent_model`. An update publishes only the fields it was given
 (`persist_member_config(changed_fields=...)`), so a concurrent edit to another
-field survives. The value is judged on shape (`validation._MODEL_NAME_RE`, as
+field survives. An `agent update` given no `--kiro-agent`, `--workspace` (a blank one
+counts as none), `--display-name` or `--model`, and a `workspace update` given
+no `--dir`, change nothing, so each warns `nothing to update` on stderr, writes
+nothing, logs no success event, and exits 0 as it did before. The value is judged on shape (`validation._MODEL_NAME_RE`, as
 the cron job `--model` flag is), then, unless the provider is `claude_code`, refused
 when `model_registry.acp_id_correction` maps it to another served id or when
 `_model_rejected_reason` finds it display-only for the harness

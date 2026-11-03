@@ -342,6 +342,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
         if new_workspace is not None and not new_workspace.strip():
             print("Note: blank --workspace ignored; the workspace is unchanged", file=sys.stderr)
             new_workspace = None
+        if (
+            args.kiro_agent is None
+            and new_workspace is None
+            and getattr(args, "model", None) is None
+            and getattr(args, "display_name", None) is None
+        ):
+            # Nothing to write: saying "Updated" here would report a change
+            # that never happened. Exit 0 stays, so a script calling it keeps working.
+            print(
+                f"Warning: nothing to update for agent '{args.name}'; pass --kiro-agent, "
+                "--workspace, --display-name or --model",
+                file=sys.stderr,
+            )
+            return
         if new_workspace is not None:
             from kiro_crew.member_workspace import DEFAULT_WORKSPACE
 

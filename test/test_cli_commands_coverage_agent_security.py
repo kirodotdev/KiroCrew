@@ -199,6 +199,35 @@ class TestAgentCli:
         assert exc.value.code == 1
         assert "not found" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("workspace", [None, "", "  "])
+    def test_update_with_nothing_to_change_warns_and_writes_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], workspace: str | None
+    ) -> None:
+        cfg = _cfg_with(agents={"a": KiroCrewAgentConfig(kiro_agent="k", workspace="ws0")})
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        before = cfg_path.read_bytes()
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch.object(cc, "persist_member_config") as persist,
+        ):
+            cc._handle_agent(
+                _ns(
+                    agent_action="update",
+                    name="a",
+                    kiro_agent=None,
+                    workspace=workspace,
+                    memory_store=None,
+                    model=None,
+                    display_name=None,
+                )
+            )
+        out = capsys.readouterr()
+        assert "nothing to update" in out.err
+        assert "Updated agent" not in out.out
+        assert cfg_path.read_bytes() == before
+        persist.assert_not_called()
+
     def test_delete_removes_non_default(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -388,6 +417,25 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy1" / "memory" / "notes.md").read_text() == "hi"
         assert _read_doc(cfg_path)["workspaces"]["copy1"]["dir"] == "workspace-copy1"
         assert "Created workspace: copy1" in capsys.readouterr().out
+
+    def test_update_without_dir_warns_and_logs_no_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        before = cfg_path.read_bytes()
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel") as sel,
+        ):
+            cc._handle_workspace(_ns(workspace_action="update", name="src", dir=None))
+        out = capsys.readouterr()
+        assert "nothing to update" in out.err
+        assert "Updated workspace" not in out.out
+        assert cfg_path.read_bytes() == before
+        sel.return_value.log_api_access.assert_not_called()
 
     def test_copy_from_skips_sensitive_entries(self, tmp_path: Path) -> None:
         src = tmp_path / "workspace-src"
