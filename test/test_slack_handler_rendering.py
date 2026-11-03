@@ -472,6 +472,39 @@ class TestToSlackMrkdwnTruncation:
 
         assert to_slack_mrkdwn("hello world") == "hello world"
 
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        text = "Hi\n" + "x" * (SLACK_MAX_TEXT + 5000)
+        out = to_slack_mrkdwn(text)
+        assert out == text[:SLACK_MAX_TEXT] + f"\n\n_…truncated ({len(text)} chars total)_"
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        head = "a" * (SLACK_MAX_TEXT // 2)
+        text = head + "\n" + "b" * SLACK_MAX_TEXT
+        assert to_slack_mrkdwn(text) == head + f"\n\n_…truncated ({len(text)} chars total)_"
+
+
+class TestTruncatedOverflowCut:
+    """``_truncated`` keeps one message's worth of text and announces the rest."""
+
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "Hi\n" + "x" * 5000
+        notice = f"\n\n_…truncated ({len(text)} chars total)_"
+        assert _truncated(text, 3900) == [text[: 3900 - len(notice)] + notice]
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "a" * 2000 + "\n" + "b" * 3000
+        assert _truncated(text, 3900) == [
+            "a" * 2000 + f"\n\n_…truncated ({len(text)} chars total)_"
+        ]
+
 
 class TestToSlackMrkdwnInlineCode:
     """Slack shows inline code as written, so its markers are never rewritten."""

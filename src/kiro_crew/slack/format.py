@@ -930,12 +930,11 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
 
     if len(text) > SLACK_MAX_TEXT:
         # rfind returns -1 (no newline in window) or the last newline's index —
-        # NOT a bool. `rfind(...) or SLACK_MAX_TEXT` mishandles both: -1 is
-        # truthy so text[:-1] keeps ~39000 chars (Slack then rejects the
-        # message), and a newline at index 0 falls through to the cap. Use the
-        # explicit -1 check already used by split_message().
+        # NOT a bool, so it is compared, never used as one. A line break less
+        # than a quarter in (including none, -1) would keep almost nothing of
+        # the text, so the cut falls back to the cap.
         cut = text[:SLACK_MAX_TEXT].rfind("\n")
-        if cut <= 0:
+        if cut < SLACK_MAX_TEXT // 4:
             cut = SLACK_MAX_TEXT
         text = f"{text[:cut]}\n\n_…truncated ({len(text)} chars total)_"
 
@@ -1328,8 +1327,9 @@ def _truncated(text: str, limit: int, total: int | None = None) -> list[str]:
     """
     if len(text) <= limit:
         return [text]
+    # A line break less than a quarter in would keep almost nothing of the text.
     cut = text[:limit].rfind("\n")
-    if cut <= 0:
+    if cut < limit // 4 or cut <= 0:
         cut = limit
     notice = f"\n\n_…truncated ({len(text) if total is None else total} chars total)_"
     # Charge the notice against the ceiling so the result really fits.
