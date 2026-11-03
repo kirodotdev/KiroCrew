@@ -249,7 +249,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         kiro_internal_sandbox_enabled kiro_internal_sandbox_switch SANDBOX_LAYER_CREW
         SANDBOX_LAYER_HARNESS wrapped_by_crew_sandbox sandbox_init_remediation
         delegated_workspace_exposes_sealed_target _spawns_kiro_cli
-        _delegate_to_kiro_internal_sandbox _command_log_label
+        _delegate_to_kiro_internal_sandbox _command_log_label _first_json_value
+        _kiro_settings_concat_warned
         """.split()),
     "kiro_crew.sandbox_probe": tuple("""
         _CLONE_NEWUSER _CLONE_NEWNS _PROBE_MS_REC _PROBE_MS_PRIVATE _TRANSIENT_PROBE_ERRNOS
