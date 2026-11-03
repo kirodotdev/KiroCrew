@@ -27,6 +27,7 @@ from cloud_microvm_engine_helpers import (  # noqa: F401 -- the autouse fixture 
 
 from kiro_crew.cloud.microvm import api
 from kiro_crew.cloud.microvm.engine import MicroVmLaunchEngine, MicroVmLaunchSpec
+from kiro_crew.cloud.microvm.recipe import RecipeRefused
 from kiro_crew.cloud.microvm.record import CrewStore
 
 
@@ -309,7 +310,7 @@ class TestPreflightChecksTheBundle:
             spec=dataclasses.replace(self.BUILD_SPEC, bundle_dir=str(root)),
             store=CrewStore(tmp_path / "c.json"),
         )
-        with pytest.raises(Exception, match="missing"):
+        with pytest.raises(RecipeRefused, match="missing"):
             built.preflight("prof", "us-east-1")
 
     def test_a_complete_bundle_passes_preflight(self, tmp_path):

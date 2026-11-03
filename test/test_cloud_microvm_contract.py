@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.microvm import api
 
 botocore = pytest.importorskip(
@@ -276,5 +277,5 @@ class TestListPagination:
             {"microvmId": "mvm-1", "state": "RUNNING", "startedAt": "2026-10-06T00:00:00Z"}
         )
         assert vm.endpoint == ""
-        with pytest.raises(Exception, match="endpoint"):
+        with pytest.raises(AWSError, match="endpoint"):
             api.MicroVm.from_response({"microvmId": "mvm-1", "state": "RUNNING"})
