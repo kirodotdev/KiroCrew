@@ -29,6 +29,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import UNREADABLE_TIMEOUT, DivergenceUnreadable, count_divergence
+from kiro_crew.platform import release_apply
 from kiro_crew.platform.update_capability import MANAGED_BY_GIT, derive_capability
 from kiro_crew.platform.update_governance import (
     git_command_env,
@@ -128,17 +129,19 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     Returns ``True`` on success. On failure, pushes an error to ``state`` and
     returns ``False`` — caller should ``return``.
 
-    Delegates the choice of HOW to :func:`kiro_crew.dep_sync.sync_or_reinstall`:
-    an editable reinstall where it can run, and a dependency-only sync where it
-    cannot. This endpoint is one of the paths that cannot always run it — the
+    Installs the release through :func:`kiro_crew.platform.release_apply.apply_release`:
+    the code, then the KAS engine the new revision pins, so a restart happens only
+    when both landed. The choice of HOW the code goes in is
+    :func:`kiro_crew.dep_sync.sync_or_reinstall`'s: an editable reinstall where it
+    can run, and a dependency-only sync where it cannot. This endpoint is one of the paths that cannot always run it — the
     gateway it updates is normally started through the very console script pip
     would have to rewrite, which Windows locks, and a reinstall that dies there
     has already deleted the editable ``.pth`` and left the venv unable to import
     the package at all.
 
-    ``dep_sync`` is imported at MODULE level (see its docstring): this runs after
-    the pull, so an import deferred to here would parse the file the incoming
-    revision shipped.
+    ``dep_sync`` and ``release_apply`` are imported at MODULE level (see
+    dep_sync's docstring): this runs after the pull, so an import deferred to here
+    would parse the file the incoming revision shipped.
     """
     state.push_update_progress("building", "Installing package (pip)…")
     loop = asyncio.get_running_loop()
@@ -164,20 +167,23 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
 
     # Supervised: cancelling this coroutine (a gateway shutdown does) also cancels
     # the install, so one still queued, or cancelled before its last check ahead
-    # of pip, never starts pip. A pip already running is left to finish (see
-    # dep_sync.sync_or_reinstall_supervised for the exact window).
-    rc = await dep_sync.sync_or_reinstall_supervised(
+    # of pip, never starts pip, and an engine install in flight is killed. A pip
+    # already running is left to finish (see
+    # release_apply.apply_release_supervised for the exact window).
+    rc = await release_apply.apply_release_supervised(
         subprocess_executor(),
-        Path(proj),
-        Path(sys.executable),
-        _emit,
-        # 600s rather than 120s on `pip install -e .`: the bound covers a
-        # dependency install that may be resolving and downloading a set this
-        # venv has never seen — and building a wheel for one of them — where
-        # 120s is a routine, not an exceptional, overrun.
-        # It is a real bound either way: dep_sync kills the pip child on
-        # expiry rather than letting the step hang on a wedged index.
-        timeout=600,
+        release_apply.GitRelease(
+            Path(proj),
+            Path(sys.executable),
+            _emit,
+            # 600s rather than 120s on `pip install -e .`: the bound covers a
+            # dependency install that may be resolving and downloading a set this
+            # venv has never seen — and building a wheel for one of them — where
+            # 120s is a routine, not an exceptional, overrun.
+            # It is a real bound either way: dep_sync kills the pip child on
+            # expiry rather than letting the step hang on a wedged index.
+            timeout=600,
+        ),
     )
     return rc == 0
 

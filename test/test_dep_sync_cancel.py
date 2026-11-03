@@ -1,7 +1,7 @@
 """The git update route's install sees its caller's cancel before pip starts.
 
 The gateway auto-apply and the dashboard ``POST /api/update`` run the reinstall
-on an executor thread, which a cancelled await cannot stop. The install's cancel
+(``release_apply.apply_release_supervised``) on an executor thread, which a cancelled await cannot stop. The install's cancel
 event closes the part of that race that is safe to close: once the caller has
 stopped (a gateway shutdown cancels it), an install still in its probes never
 starts pip. A pip already running is left to finish, because killing it mid
@@ -17,7 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import dep_sync
+from kiro_crew import dep_sync, platform_compat
+from kiro_crew.platform import release_apply
 from kiro_crew.testing.wait import await_until
 
 
@@ -101,8 +102,11 @@ async def test_cancelling_the_supervised_install_during_its_probes_starts_no_pip
         patch.object(dep_sync.subprocess, "run", side_effect=record_pip),
     ):
         task = asyncio.create_task(
-            dep_sync.sync_or_reinstall_supervised(
-                None, tmp_path, Path("/venv/bin/python"), lambda m, e: None, timeout=60
+            release_apply.apply_release_supervised(
+                None,
+                release_apply.GitRelease(
+                    tmp_path, Path("/venv/bin/python"), lambda m, e: None, timeout=60
+                ),
             )
         )
         try:
@@ -120,11 +124,17 @@ async def test_cancelling_the_supervised_install_during_its_probes_starts_no_pip
 
 
 @pytest.mark.asyncio
-async def test_the_supervised_install_returns_the_install_result(tmp_path):
+async def test_the_supervised_install_returns_the_install_result(tmp_path, release_engine_installs):
     with patch.object(dep_sync, "sync_or_reinstall", return_value=0) as install:
-        rc = await dep_sync.sync_or_reinstall_supervised(
-            None, tmp_path, Path("/venv/bin/python"), lambda m, e: None, timeout=42
+        rc = await release_apply.apply_release_supervised(
+            None,
+            release_apply.GitRelease(
+                tmp_path, Path("/venv/bin/python"), lambda m, e: None, timeout=42
+            ),
         )
     assert rc == 0
     assert install.call_args.kwargs["timeout"] == 42
     assert isinstance(install.call_args.kwargs["cancel"], threading.Event)
+    # The engine step ran after the install, on the same interpreter.
+    trusted = platform_compat.trusted_system_path() is not None
+    assert release_engine_installs == [(Path("/venv/bin/python"), trusted)]
