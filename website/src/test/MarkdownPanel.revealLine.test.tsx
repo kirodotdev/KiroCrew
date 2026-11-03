@@ -129,19 +129,15 @@ describe('MarkdownPanel — a cited line forces the renderer that has lines', ()
     expect(hoisted.jumpToLine).not.toHaveBeenCalled()
   })
 
-  it('opens a cited rich file in its own viewer and drops the line', async () => {
-    // A deliberate scope line, not an oversight. `isRichType` gates the
-    // source/preview toggle, the line-number and diff controls and Cmd+S, so
-    // forcing a rich file into an editor produced a file in source mode with no
-    // way back to its viewer and no visible Save for a buffer the user had
-    // edited. Opening the viewer without jumping still beats the inert chip this
-    // replaced, and it strands nothing.
+  it('opens a cited text-backed rich file in source at the line, with Preview as the way back', async () => {
+    // A csv has a text source under its table viewer, so the citation lands in
+    // that source -- and the Preview toggle must be there, or the tab is stuck in
+    // an editor with no route back to its viewer.
     mount('/x/data.csv', 'a,b\n1,2\n', { line: 2, nonce: 1 })
+    expect(await screen.findByTestId('pierre-editor')).toBeInTheDocument()
+    await waitFor(() => expect(hoisted.jumpToLine).toHaveBeenCalledWith(2, undefined))
+    screen.getByText('Preview').click()
     await waitFor(() => expect(screen.queryByTestId('pierre-editor')).toBeNull())
-    expect(hoisted.jumpToLine).not.toHaveBeenCalled()
-    // And no half-built source-mode chrome is exposed for it.
-    expect(screen.queryByText(/view preview/i)).toBeNull()
-    expect(screen.queryByText(/view source/i)).toBeNull()
   })
 
   it('does NOT drag an image into an editor for a cited line', async () => {
