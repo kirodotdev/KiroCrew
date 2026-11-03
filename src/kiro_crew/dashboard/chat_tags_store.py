@@ -46,11 +46,12 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
     (chat_handlers), the folder create/PATCH validation (chat_folders), the
     channel first-filing path, and the channel restore read (channel_slots)
     so an inheritance-rule change cannot land on one path and miss the
-    others. (Three pre-existing slot-restore prunes elsewhere apply the same
-    shape guards inline, and ``api_chat_slot_tags``'s strict inline filter is
-    a fourth spelling differing only on the fail-open axis; consolidating all
-    four onto this helper — likely via a strict-mode flag — is deliberately
-    left to a follow-up. Those sites are outside this change.)
+    others. It reads the vocabulary through
+    :mod:`kiro_crew.dashboard.tag_vocabulary_read`, the one reader the slot
+    metadata restore and the sidebar-column boot prune use too, so the
+    UNKNOWN / KNOWN-EMPTY / KNOWN rule is decided in one place.
+    (``api_chat_slot_tags`` validates REQUEST input against the vocabulary,
+    strictly; it prunes no persisted value and stays its own filter.)
     Callers must invoke it AT THE POINT OF APPLICATION (immediately before the
     ids are written to a slot or persisted), never on a value resolved
     earlier — a tag deletion between resolve and apply would otherwise
@@ -60,7 +61,7 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
 
     * UNCONDITIONAL shape guards — ``raw`` must be a list (``folders.json``
       is hand-editable; anything else yields ``[]``), and each entry must be
-      a string BEFORE the membership test (a non-string entry is unhashable
+      a non-empty string BEFORE the membership test (a non-string entry is unhashable
       and the test itself would raise, turning a malformed store row into a
       500 on every chat created in that folder). Order-preserving,
       de-duplicated.
@@ -73,25 +74,14 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
       filing marker would block re-inheritance forever. A dangling id kept
       this way is pruned by the restore paths on the next authoritative boot.
     """
-    if not isinstance(raw, list):
-        return []
-    check_vocab = getattr(state, "_tags_authoritative", True)
-    # Only string ids enter the vocabulary set: a malformed persisted entry
-    # (e.g. a hand-edited tags.json with a list/dict id) must degrade to
-    # "unknown id" — not crash the set build with an unhashable type.
-    valid_ids = (
-        {i for t in state._tags if isinstance(i := t.get("id"), str)} if check_vocab else None
-    )
-    out: list[str] = []
-    seen: set[str] = set()
-    for tid in raw:
-        if not isinstance(tid, str) or tid in seen:
-            continue
-        if valid_ids is not None and tid not in valid_ids:
-            continue
-        seen.add(tid)
-        out.append(tid)
-    return out
+    # Imported here, not at module scope: a name this owner binds is served by
+    # the chat_tags facade, and the reader is not part of that surface.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
+    # Only string ids enter the vocabulary set (known_tag_ids): a malformed
+    # persisted entry (e.g. a hand-edited tags.json with a list/dict id) must
+    # degrade to "unknown id" — not crash the set build with an unhashable type.
+    return prune_tag_ids(raw, known_tag_ids(state))
 
 
 def _tags_write_lock(state: Any) -> LoopBoundLock:

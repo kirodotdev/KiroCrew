@@ -641,16 +641,18 @@ def _read_tags(r: _Read) -> None:
     raw = r.meta.get("tags")
     if not isinstance(raw, list):
         return
+    # Imported here: an owner of the chat_persistence facade imports at module
+    # scope only what the facade itself imports.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
     slot = r.slot
-    slot.tags = [str(t) for t in raw if isinstance(t, str) and t]
     # Prune ids missing from the vocabulary: tag deletion commits the vocab
     # write first (crash-atomic), so a crash mid-delete can leave dangling ids on
-    # the line. FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or
-    # I/O failure): pruning then would wipe EVERY assignment and the next save
-    # persists the loss. A legitimately-empty vocabulary IS authoritative.
-    if getattr(r.state, "_tags_authoritative", True):
-        known = {t.get("id") for t in r.state._tags}
-        slot.tags = [t for t in slot.tags if t in known]
+    # the line. The one vocabulary reader decides the rule for every prune site:
+    # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or I/O
+    # failure), since pruning then would wipe EVERY assignment and the next save
+    # persists the loss; a legitimately-empty vocabulary IS authoritative.
+    slot.tags = prune_tag_ids(raw, known_tag_ids(r.state))
     # "tags changed => revision changed" wherever tags are replaced. A resume
     # rotates through the tag module's helper, which also mints a revision for a
     # duck-typed slot without the method; the startup reads call the method only.
