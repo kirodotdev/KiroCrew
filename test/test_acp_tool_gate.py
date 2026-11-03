@@ -78,7 +78,7 @@ def test_codex_verdict_names_the_option_it_promises() -> None:
     """
     verdict, reason = gate.routing_verdict(ACP_BACKEND_CODEX)
     assert verdict is gate.Verdict.ROUTED
-    assert "mode=read-only" in reason
+    assert "mode=external-sandbox" in reason
 
 
 def test_claude_is_indeterminate_not_routed() -> None:

@@ -4436,6 +4436,27 @@ until the reap has settled, so being cancelled twice cannot skip it. Pinned by t
 `test/test_acp_runtime_death.py`, and `TestRuntimeRootTrackingOffLoop` in
 `test/test_acp_spawn_offload.py`.
 
+### Codex under Crew's OS sandbox
+
+Crew keeps its mandatory credential mask around the adapter. The spawn environment
+sets `CODEX_ACP_EXTERNAL_SANDBOX=true`, and the existing session-config routing
+requires `mode=external-sandbox` on both create and load. The adapter must advertise
+that value and accept the write before the first prompt. An old adapter is refused;
+there is no fallback to full access or to a mode that nests another OS sandbox.
+
+The adapter mode uses Codex's `externalSandbox` policy with `untrusted` approvals
+and the user reviewer. Unsafe commands and edits still reach Crew's permission gate;
+passive reads retain the existing residual and are covered by the unchanged host
+credential mask. Crew owns the filesystem and network boundary in this mode; it
+does not claim Codex's read-only filesystem or network-disabled view. Safe commands
+remain subject to the host's OS isolation, including credential masks, read-only
+ceilings and the namespace escape filter. No system sysctl or filter is relaxed.
+
+This avoids the Linux `bwrap: Failed to make / slave: Operation not permitted`
+failure: the outer namespace launcher's seccomp filter deliberately denies mount
+and unshare. It also avoids nesting Seatbelt on macOS. The env opt-in alone does
+not grant a sandbox waiver: the existing mask preflight and OS wrap still apply.
+
 ### Codex MCP result envelopes
 
 The parser extracts `rawOutput.result.content` text from successful Codex MCP

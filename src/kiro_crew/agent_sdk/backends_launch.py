@@ -44,10 +44,9 @@ from kiro_crew.agent_sdk.backends import (
 # below; its bundle route runs Node directly, with no kiro-cli in the chain, and
 # must keep Crew's layer.
 #
-# codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
-# is the only OS confinement a codex session gets. The Codex sandbox modes the
-# adapter can apply are in-process policy, not an OS sandbox that Crew's would
-# nest inside.
+# Codex keeps Crew's credential mask. Its required external-sandbox session mode
+# delegates OS isolation to that wrap rather than nesting bubblewrap or Seatbelt;
+# the adapter still requests approvals for untrusted commands and changes.
 #
 # opencode is excluded, and here the exclusion is load-bearing rather than
 # conservative: Crew's own sandbox layer carries the credential mask that is the

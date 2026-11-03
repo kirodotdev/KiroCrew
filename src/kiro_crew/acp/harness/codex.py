@@ -67,9 +67,10 @@ ACP v1 ``mode`` selector is the enforceable boundary, written over
 ``ACP_BACKEND_ROUTING``, which both drivers read for themselves. This harness
 declares no routing member: a second copy of that table would be free to disagree
 with the one that decides. There is no settings file to author first either, which
-is why this harness has no ordering constraint the claude one has. ``read-only``
-still permits passive READS; ACP v1 has no way to require a prompt for those, and
-what makes the residual gap survivable is that mask.
+is why this harness has no ordering constraint the claude one has. The required
+``external-sandbox`` mode keeps Crew's OS wrap and untrusted-action approvals
+without applying a second OS sandbox. Passive READS retain the existing gap;
+what makes it survivable is that mask.
 
 The session array is the whole tool surface, and one bad element costs all of it
 --------------------------------------------------------------------------------
@@ -352,6 +353,9 @@ class CodexHarness(MembershipHarness):
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
+        # The required session mode delegates isolation to Crew's mandatory wrap.
+        # An older adapter that cannot advertise it is refused before a prompt.
+        env["CODEX_ACP_EXTERNAL_SANDBOX"] = "true"
 
     @property
     def verifies_agent_activation(self) -> bool:

@@ -4316,3 +4316,17 @@ keep the existing factory. The adapter does not change argv, environment scrub,
 sandbox policy, suspended flags, resource Job settings or POSIX semantics.
 Cleanup bounds, borrowed-handle lifetime and the supported-transport limitation
 are specified in [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+
+
+### Codex external sandbox routing
+
+Codex sessions keep Crew's existing OS credential mask, read-only governance seals
+and namespace-escape filter. The harness enables the adapter's host-managed mode
+and requires `mode=external-sandbox` before prompting; an adapter without the option
+is refused. The mode uses Codex `externalSandbox` with `untrusted` approvals, so
+privileged commands and edits still route through the host gate without trying to
+mount a second sandbox inside Crew's seccomp boundary. Passive reads keep their
+existing mask-based compensation. This mode delegates filesystem and network
+isolation to Crew and does not promise a separate Codex read-only filesystem or
+network restriction. It never enables `sandbox_allow_unsandboxed_exec`, selects
+`dangerFullAccess`, or changes an AppArmor sysctl.

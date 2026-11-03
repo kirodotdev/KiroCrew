@@ -20,6 +20,7 @@
       "/opt/lib/codex-acp/index.js"
     ],
     "env_added": {
+      "CODEX_ACP_EXTERNAL_SANDBOX": "true",
       "CODEX_SQLITE_HOME": "<scratch>",
       "DISABLE_MCP_CONFIG_FILTERING": "true",
       "KIROCREW_RUNTIME_AGENT": "kirocrew",

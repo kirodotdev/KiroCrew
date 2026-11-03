@@ -968,7 +968,10 @@ class TestTheRuntimeCallSitesAreWired:
                     "sessionId": "sid-1",
                     "modes": {"currentModeId": "agent"},
                     "configOptions": [
-                        {"id": "mode", "options": [{"value": "read-only"}, {"value": "agent"}]}
+                        {
+                            "id": "mode",
+                            "options": [{"value": "external-sandbox"}, {"value": "agent"}],
+                        }
                     ],
                 }
             return {}

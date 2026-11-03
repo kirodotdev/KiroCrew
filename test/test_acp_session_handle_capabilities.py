@@ -366,7 +366,7 @@ async def test_a_config_option_harness_that_stays_on_default_touches_no_bookkeep
 # ── SESSION_CONFIG permission routing ─────────────────────────────────────────
 
 
-def _codex_options(value: str = "read-only") -> list[dict[str, Any]]:
+def _codex_options(value: str = "external-sandbox") -> list[dict[str, Any]]:
     option_id, _required = acp_tool_gate.permission_config_for(ACP_BACKEND_CODEX)
     return [{"id": option_id, "options": [{"value": value}]}]
 

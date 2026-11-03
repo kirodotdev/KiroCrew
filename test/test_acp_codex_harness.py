@@ -497,14 +497,14 @@ class TestPermissionRouting:
         peer = FakeCodexPeer()
         first = _open_session(peer, cwd="/w/one", mcp_servers=[])
         second = _open_session(peer, cwd="/w/two", mcp_servers=[])
-        option, value = ("mode", "read-only")
+        option, value = ("mode", "external-sandbox")
         for sid in (first, second):
             peer.request(
                 "session/set_config_option",
                 {"sessionId": sid, "optionId": option, "value": value},
             )
-        assert peer.sessions[first]["mode"] == "read-only"
-        assert peer.sessions[second]["mode"] == "read-only"
+        assert peer.sessions[first]["mode"] == "external-sandbox"
+        assert peer.sessions[second]["mode"] == "external-sandbox"
 
 
 class TestTeardown:
@@ -544,7 +544,7 @@ class TestTeardown:
         with pytest.raises(AssertionError, match="unknown session"):
             peer.request(
                 "session/set_config_option",
-                {"sessionId": first, "optionId": "mode", "value": "read-only"},
+                {"sessionId": first, "optionId": "mode", "value": "external-sandbox"},
             )
         peer.request("session/prompt", {"sessionId": second, "prompt": [{"text": "still here"}]})
 
@@ -1439,7 +1439,7 @@ def _codex_session_new_response(sid: str = "sid-codex") -> dict[str, Any]:
             {
                 "id": "mode",
                 "options": [
-                    {"value": "read-only"},
+                    {"value": "external-sandbox"},
                     {"value": "agent"},
                     {"value": "full-access"},
                 ],
@@ -1545,7 +1545,7 @@ class TestTheRuntimeArmsCodexPermissionRouting:
         writes = plane.params_for(METHOD_SET_CONFIG_OPTION)
         assert len(writes) == 1, plane.methods
         assert writes[0]["configId"] == "mode"
-        assert writes[0]["value"] == "read-only"
+        assert writes[0]["value"] == "external-sandbox"
         # After session/new, never before it: the option list it carries is what
         # decides whether the write is even applicable.
         assert plane.methods.index(METHOD_SESSION_NEW) < plane.methods.index(

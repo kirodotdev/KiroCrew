@@ -630,7 +630,7 @@ async def test_a_runtime_session_records_the_spec_and_wire_launches():
                 "sessionId": "sid-1",
                 "modes": {"currentModeId": "agent"},
                 "configOptions": [
-                    {"id": "mode", "options": [{"value": "read-only"}, {"value": "agent"}]}
+                    {"id": "mode", "options": [{"value": "external-sandbox"}, {"value": "agent"}]}
                 ],
             }
         return {}

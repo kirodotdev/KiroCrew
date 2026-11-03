@@ -436,16 +436,13 @@ ACP_BACKEND_ROUTING: dict = {
 #: needs, as advertised by ``session/new`` and applied through
 #: ``session/set_config_option``.
 #:
-#: codex-acp's default ``agent`` mode permits writes inside the workspace without
-#: asking. Its ACP v1 ``mode`` selector is the enforceable boundary: ``read-only``
-#: still permits passive READS -- ACP v1 has no way to require a prompt for those
-#: -- but commands and changes request approval. That residual read gap does not
-#: close and this option cannot close it; what makes it survivable is the
-#: OS-boundary mask in ``acp_tool_gate.adapter_hidden_credential_dirs``, which
-#: denies the child everything on the read-gate floor except the harness's own
-#: token store.
+#: Codex runs inside Crew's mandatory credential mask. A second OS sandbox
+#: cannot mount inside the namespace launcher's sealed seccomp boundary, and
+#: Seatbelt cannot nest on macOS. The opted-in adapter mode keeps the host wrap
+#: and uses ``untrusted`` approvals so privileged commands and edits still ask.
+#: Passive reads retain the existing gap; the OS credential mask covers it.
 ACP_BACKEND_PERMISSION_CONFIG: dict = {
-    ACP_BACKEND_CODEX: ("mode", "read-only"),
+    ACP_BACKEND_CODEX: ("mode", "external-sandbox"),
     # Copilot CLI's ``allow_all`` option: ``off`` is "Require approval for tool,
     # path, and URL requests", its own default -- but a user default (the
     # ``COPILOT_ALLOW_ALL`` environment variable, ``--allow-all`` in a wrapper, a
