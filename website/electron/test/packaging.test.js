@@ -1287,6 +1287,24 @@ describe("uninstall data preservation contract", () => {
     assert.equal(electronPkg.build.linux.syncDesktopName, true);
   });
 
+  it("makes both Linux packages depend on libgbm, which the desktop binary links", () => {
+    // The desktop binary links libgbm.so.1 directly, so the loader refuses to
+    // start it when the library is absent. No other declared package requires
+    // it: at most it arrives as a recommendation or weak dependency (on Ubuntu
+    // 22.04 not even that), so a minimal install gets a package that installs
+    // cleanly and then never starts. Each name is the same on every release of
+    // its distro family the app targets, so neither needs an alternative.
+    for (const [format, name] of [["deb", "libgbm1"], ["rpm", "mesa-libgbm"]]) {
+      const declared = electronPkg.build[format].depends.flatMap(entry =>
+        entry.split("|").map(alternative => alternative.trim())
+      );
+      assert.ok(
+        declared.includes(name),
+        `${format}.depends must name ${name}, or the app fails to start where nothing else installs it`
+      );
+    }
+  });
+
   it("reclaims the updater cache the generated uninstaller cannot reach", () => {
     // The uninstaller template only ever clears $APPDATA (Roaming), and only
     // under deleteAppDataOnUninstall -- which stays false here to protect
