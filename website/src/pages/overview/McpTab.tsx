@@ -34,9 +34,23 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { copyWithOutcome } from '../../utils/clipboard'
 import { SECRETS_GUIDE_ROUTING_URL } from '../../utils/docsLink'
 import { recordError, type ErrorReport } from '../../utils/errorReport'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { guideAnchor } from '../../uiLocations/targetRegistry'
 async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
+}
+
+// The server filter and the servers whose tool lists are open, kept for the
+// browser session. Not the URL: the sidebar's Customize entry reopens
+// `/capabilities` with no query string, so URL state would not survive the trip
+// to a chat and back that it exists for.
+const MCP_LIST_VIEW_KEY = 'kirocrew:mcp-servers-list-view'
+function loadListView(): { q: string; open: string[] } {
+  try {
+    const saved = JSON.parse(safeGetSessionItem(MCP_LIST_VIEW_KEY) || '{}')
+    const open = Array.isArray(saved.open) ? saved.open.filter((name: unknown): name is string => typeof name === 'string') : []
+    return { q: typeof saved.q === 'string' ? saved.q : '', open }
+  } catch { return { q: '', open: [] } }
 }
 
 // A scope key: the core scopes 'kirocrew' / 'kiroGlobal', or a provider scope
@@ -459,14 +473,18 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   // the SAME chat guidance a non-registry row shows — chat is again the only
   // authorize prompt (see useConnectionsUi docstring).
   const connectionsUi = useConnectionsUiEnabled()
-  const [mcpFilter, setMcpFilter] = useState('')
+  const [savedView] = useState(loadListView)
+  const [mcpFilter, setMcpFilter] = useState(savedView.q)
   // Multi-provider server browser (Add Server button) — discovery lives in
   // the modal so the installed config stays the page's primary content.
   const [browserOpen, setBrowserOpen] = useState(false)
   // Manual JSON management: add-custom modal + per-server spec editor.
   const [customOpen, setCustomOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<string | null>(null)
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(() => new Set(savedView.open))
+  useEffect(() => {
+    safeSetSessionItem(MCP_LIST_VIEW_KEY, JSON.stringify({ q: mcpFilter, open: [...expandedTools] }))
+  }, [mcpFilter, expandedTools])
   const [pending, setPending] = useState<Record<string, PendingChange>>({})
   // Per-server per-tool pending overrides.  Key = server name, value = map
   // from tool name to desired enabled state.  Staged via the same Apply
