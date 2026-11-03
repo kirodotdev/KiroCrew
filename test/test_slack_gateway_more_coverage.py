@@ -783,6 +783,7 @@ class TestDashboardPortSelection:
         assert start.await_args.kwargs["port"] == 0
         assert orch._dashboard_port == 54321
         assert ds.no_crons is True
+        orch.cron_svc.set_refresh_callback.assert_called_once_with(ds.push_refresh)
 
     @pytest.mark.asyncio
     async def test_literal_port_override_is_used_verbatim(self):
@@ -814,6 +815,7 @@ class TestDashboardPortSelection:
         assert start.await_args.kwargs["port"] == 0
         assert orch._dashboard_port == 45454
         assert ds.no_crons is True
+        orch.cron_svc.set_refresh_callback.assert_called_once_with(ds.push_refresh)
 
     @pytest.mark.asyncio
     async def test_api_server_literal_port_override(self):

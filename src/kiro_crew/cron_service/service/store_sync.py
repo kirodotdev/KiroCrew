@@ -125,7 +125,9 @@ def _snapshot(jobs: list[CronJob], include_disabled: bool) -> list[CronJob]:
     return [j for j in jobs if j.enabled]
 
 
-def _synced_snapshot(self: CronService, include_disabled: bool) -> list[CronJob]:
+def _synced_snapshot(
+    self: CronService, include_disabled: bool, *, strict: bool = False
+) -> list[CronJob]:
     """Refresh from disk under the store lock, then snapshot. WORKER-THREAD ONLY.
 
     Runs the blocking read/hash/parse + bounded lock spin OFF the event
@@ -136,11 +138,61 @@ def _synced_snapshot(self: CronService, include_disabled: bool) -> list[CronJob]
     ``_sync()`` may reach ``_arm_timer``, which hands the (re)arm back to
     the bound event loop thread-safely (see :meth:`_arm_timer`), so no
     caller-side drain is required.
+
+    ``strict=True`` is for a caller whose decision must rest on the store
+    itself, such as the owner re-check of an app-triggered run: there the
+    cache is exactly what must not be trusted, so NO way the refresh can
+    fail to produce store-backed state degrades to it -- a contended lock
+    raises :class:`CronStoreBusy`, an unreadable store raises
+    :class:`CronStoreUnreadable`, and a store that is GONE yields the empty
+    snapshot it actually holds rather than the cache ``_sync`` keeps for the
+    reaper's sake.
     """
     try:
         with self._file_lock():
             self._sync()
+            if strict:
+                # The second failure, and the quiet one. _sync() LATCHES an
+                # unreadable store (an OSError from read_bytes, a corrupt
+                # parse) and RETURNS normally, deliberately keeping the
+                # cached _jobs so an unsaved reaper mutation is not lost --
+                # so without this the strict promise above held for the
+                # contended lock only, and the one caller that must not
+                # trust the cache was handed it back indistinguishable from
+                # a store-backed read. For the owner re-check that means a
+                # job reassigned on disk still matching its FORMER owner's
+                # expected_owner, and that owner's run starting.
+                #
+                # Inside the lock and straight after the sync that set the
+                # latch, as raise_if_store_unreadable's own contract
+                # requires: read outside, the answer is one poll stale.
+                self.raise_if_store_unreadable()
+                if not self._path.exists():
+                    # The third failure, and the one neither of the two
+                    # above covers. A GONE store is not an unreadable one,
+                    # so _sync's missing-file branch CLEARS the latch and
+                    # returns, keeping the cached _jobs for the same reason
+                    # the unreadable branch does -- an unsaved reaper
+                    # mutation must survive. The refusal above therefore has
+                    # nothing to fire on, and the cache reaches the owner
+                    # re-check as if the store had been read and had named
+                    # that owner.
+                    #
+                    # Worse than the unreadable case, because the run would
+                    # not just start: _merge_job_result saves afterwards, so
+                    # the cached job is written back and a job an external
+                    # writer deleted comes back from the dead.
+                    #
+                    # The empty list IS the store-backed answer here: no
+                    # file, no jobs, so run_job resolves nothing and the
+                    # caller takes its documented missing-from-the-store
+                    # refusal. Only under strict -- an ordinary read keeps
+                    # degrading to the cache, which is what the reaper and
+                    # a not-yet-saved first job rely on.
+                    return []
     except CronStoreBusy:
+        if strict:
+            raise
         pass  # too contended for a guaranteed-fresh read — use the cache
     return self._snapshot(list(self._jobs), include_disabled)
 
@@ -502,10 +554,14 @@ def raise_if_store_unreadable(self: CronService) -> None:
     whether to write by first comparing the loaded jobs against a desired state
     never gets that far: an unreadable store loads as an EMPTY list — :meth:`_load`
     warns, empties, latches ``_load_failed`` and RETURNS rather than raising, and
-    :meth:`_synced_snapshot` only translates :class:`CronStoreBusy` — so there is
+    nothing on the read path raises on its own — so there is
     no job to diverge, no mutation is attempted, and such a caller reports a
     successful no-op over a corrupt file. That is the quiet-versus-broken
     conflation, and it is invisible to :meth:`_sync_for_write`.
+
+    :meth:`_synced_snapshot` calls this for ``strict=True``, which is how a
+    caller that must not be served the cache — the owner re-check of an
+    app-triggered run — gets a refusal rather than stale jobs that look read.
 
     Reads the latch only, so it is safe on the event loop and adds no second read
     after a :meth:`list_jobs_async` — which has just refreshed the latch under the
