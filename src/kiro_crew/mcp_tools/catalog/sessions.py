@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The most of one stored tool output ``get_chat_session(tool_call_id=...)`` returns.
+TOOL_CALL_OUTPUT_MAX_CHARS = 8_000
+
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the sessions tools."""
@@ -75,7 +78,8 @@ def schemas() -> list[dict[str, Any]]:
                 "identified by a session_key returned from search_chat_history. "
                 "Returns the messages as role/content pairs, tail-capped at "
                 "max_messages. Use after search_chat_history when a snippet hit "
-                "looks like the thread you need. Refuses incognito/temporary "
+                "looks like the thread you need. With tool_call_id, returns that one "
+                "tool call's stored output instead. Refuses incognito/temporary "
                 "sessions. This is a READ — it never modifies memory or history."
             ),
             "inputSchema": {
@@ -102,6 +106,15 @@ def schemas() -> list[dict[str, Any]]:
                             "instance id or name) instead of local history. Pair with a "
                             "session_key returned by search_chat_history/list_sessions run "
                             "with the same crew. The crew must be connected."
+                        ),
+                    },
+                    "tool_call_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional: return only the stored output (up to "
+                            f"{TOOL_CALL_OUTPUT_MAX_CHARS:,} "
+                            "chars) of the tool call with this id in that session, as "
+                            "listed after a context trim. Local transcripts only."
                         ),
                     },
                 },

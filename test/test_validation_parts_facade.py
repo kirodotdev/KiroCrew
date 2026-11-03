@@ -134,7 +134,7 @@ _BASE_DEFINED = frozenset("""
     _PATTERN_CHILD_SRC
     _PATTERN_MAX_LEN _PATTERN_TIMEOUT_SECS _PATTERN_VALUE_MAX_LEN
     _QUALIFIED_MODEL_MAX_CHARS _SEND_MESSAGE_SESSION_RE _SLACK_TS_RE _SUPPORTED_SCHEMA_KEYWORDS
-    _TARGET_ID_RE _WATCH_WORK_LEDGER _WF_RUN_ID_RE _WM_LIFECYCLE_STATUSES _WM_LIST_CAP
+    _TARGET_ID_RE _TOOL_CALL_ID_CHARS _WATCH_WORK_LEDGER _WF_RUN_ID_RE _WM_LIFECYCLE_STATUSES _WM_LIST_CAP
     _WM_PROFILE_RE _WM_SLUG_RE _WM_URL_RE _WORK_ITEM_STATES _WORK_RECORD_ACTIONS _WORK_STATUSES
     _WORK_VERDICTS _bounded_pattern_search _coerce_number_to_string_for_string_field
     _cu_coord_field _drop_hidden_except_marks _integral_float_as_int _json_equal _json_type_ok
@@ -142,7 +142,8 @@ _BASE_DEFINED = frozenset("""
     _trim_edges _validate_artifact_save _validate_artifact_tags _validate_channel_routing
     _validate_chat_tag
     _validate_cron_add_requires_message_or_script _validate_cron_secret_request
-    _validate_dashboard_write_tool _validate_followup_items _validate_hook_create
+    _validate_dashboard_write_tool _validate_followup_items _validate_get_chat_session
+    _validate_hook_create
     _validate_hook_has_action _validate_hook_regex _validate_hook_update
     _validate_monitor_runtime _validate_session_set_model
     _validate_set_project _validate_webapp_metadata_shape _validate_work_artifacts
