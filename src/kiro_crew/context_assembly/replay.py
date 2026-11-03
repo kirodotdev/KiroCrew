@@ -96,6 +96,12 @@ _STEER_STATE_REQUEUED = "requeued"
 _STEER_STATE_RETRACTED = "retracted"
 _STEER_STATES_NOT_TAKEN = frozenset({_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED})
 
+# The ``meta.injectKind`` values of an ``inject`` row that continues the turn above
+# it rather than opening one: a recovery (a Resume press, an automatic retry) and a
+# replay of the user's own words (``_TURN_CONTINUING_INJECT_KINDS`` in the
+# dashboard's transcript rows; same reason for the spelling, and a test pins them).
+_CONTINUING_INJECT_KINDS = frozenset({"recovery", "user_replay"})
+
 
 def _is_steer_row(row: dict) -> bool:
     """Whether *row* is a mid-turn steer: a ``user`` row whose ``meta.steer`` is True,
@@ -595,13 +601,20 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
     # A steer is a user row, but it was injected into the turn rather than opening
     # it. When the newest user row is one, the request the turn answered is the
     # nearest row before it that could have opened a turn, provided that row is a
-    # plain user row. A nudge, a sub-agent completion or an inject row (whether it
-    # opens a turn depends on its kind) may be the opener, and a window that holds
-    # no opener has none to name: both keep the steer as the request.
+    # plain user row. A recovery or user-replay inject continues the turn, so the
+    # walk steps past it. A nudge, a sub-agent completion or any other inject row
+    # may be the opener, and a window that holds no opener has none to name: both
+    # keep the steer as the request.
     if user_idx >= 0 and _is_steer_row(recent[user_idx]):
         for i in range(user_idx - 1, -1, -1):
             role = recent[i].get("role")
-            if role == "inject" or (role in _TURN_OPENER_ROLES and not _is_steer_row(recent[i])):
+            meta = recent[i].get("meta")
+            continuing = (
+                isinstance(meta, dict) and meta.get("injectKind") in _CONTINUING_INJECT_KINDS
+            )
+            if (role == "inject" and not continuing) or (
+                role in _TURN_OPENER_ROLES and not _is_steer_row(recent[i])
+            ):
                 if role == "user":
                     user_idx = i
                 break

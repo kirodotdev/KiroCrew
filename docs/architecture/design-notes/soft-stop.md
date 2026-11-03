@@ -377,9 +377,11 @@ is carried in the partial assistant response, in order, as
 `meta.steerState` is `requeued` is left out: the Stop teardown moved it to the
 queue, where it runs as the next prompt, or the user dismissed it. The Resume
 restore reads its partial output through the same rule
-(`replay._partial_turn_output`). When a nudge, a sub-agent completion or an
-`inject` row sits between them, or the window holds no opener, the steer stays the
-request, because any of those may have opened the turn.
+(`replay._partial_turn_output`). A `recovery` or `user_replay` inject (a Resume
+press, a replay of the user's own words) continues the turn above it, so the walk
+steps past it. When a nudge, a sub-agent completion or any other `inject` row sits
+between them, or the window holds no opener, the steer stays the request, because
+any of those may have opened the turn.
 
 **`context._build_stop_event_notes`** separately injects up to
 `_STOP_EVENT_CAP` (3) short system notes for recent **resolved** `stop_event`
