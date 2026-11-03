@@ -23,6 +23,7 @@ import {
   resolveDirSegment,
   resolveFileSegment,
   restoreUnreferencedImages,
+  splitLeadingImageBlock,
 } from '../../utils/fileTokens'
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
 import { stripKnowledgeEnvelope } from '../../utils/knowledgeEnvelope'
@@ -192,16 +193,21 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
   // the main thread and freezes the tab. Re-collapse deterministically from the
   // blocks that travel with the message so the chip is restored regardless of
   // external state. See recollapsePastes.
-  let text = content
-  let ranges = findTokenRanges(text, pastes)
-  if (!ranges.length) {
+  //
+  let collapsedText = content
+  if (!findTokenRanges(content, pastes).length) {
     const collapsed = recollapsePastes(content, pastes)
-    if (collapsed !== content) {
-      text = collapsed
-      ranges = findTokenRanges(text, pastes)
-    }
+    if (collapsed !== content) collapsedText = collapsed
   }
-  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: text, keyBase: 'seg', dirMap: dirMentionMap })}</>
+  // The producer's leading image block (`[imgMd, body].join('\n\n')`) comes
+  // off next: the inline segments below are plain spans, so an image line
+  // left in them would show as raw `![image](…)` text (#22401). It is drawn
+  // through MarkdownRenderer ahead of the chip flow instead. The split runs
+  // AFTER the re-collapse, so a paste whose own text opens with an image
+  // line is still matched whole and stays a chip.
+  const { images, body: text } = splitLeadingImageBlock(collapsedText)
+  const ranges = findTokenRanges(text, pastes)
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: collapsedText, keyBase: 'seg', dirMap: dirMentionMap })}</>
 
   // Paste chips are inline by nature, so to keep them flowing with the
   // surrounding text (e.g. "hey [chip] thanks"), render each text segment
@@ -210,6 +216,9 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
   // blocks, headings) inside a message that also contains a paste will
   // render as literal text. That's a rare combination for user messages.
   const out: React.ReactNode[] = []
+  if (images) {
+    out.push(<MarkdownRenderer key="msg-images" content={images} softBreaks compactImages />)
+  }
   let lastIdx = 0
   ranges.forEach((r, i) => {
     // Consume one newline on each side of the token so the chip (inline) and
@@ -539,7 +548,11 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // so classification below is unambiguous.
   const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const parts = display.split(mentionSplitRe(tokPattern))
+  // The producer's leading image block would show as raw `![image](…)` text
+  // in the plain-span flow below, so it is drawn as markdown first (#22401).
+  const { images, body: caption } = splitLeadingImageBlock(display)
+  const parts = caption.split(mentionSplitRe(tokPattern))
+  const imageBlock = images ? <MarkdownRenderer key={`${keyBase}-images`} content={images} softBreaks compactImages /> : null
   const body = (
     <span key={`${keyBase}-body`} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
@@ -557,5 +570,5 @@ function renderFileSegment(opts: FileSegmentOpts) {
       })}
     </span>
   )
-  return <>{body}{cards}</>
+  return <>{imageBlock}{body}{cards}</>
 }
