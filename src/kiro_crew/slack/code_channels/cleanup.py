@@ -220,6 +220,11 @@ class _Moved:
     sessions: list[tuple[str, str]] = field(default_factory=list)  # (key, its old project)
     folder: tuple[str, str, str] | None = None  # (folder id, old project, new project)
     project: str = ""  # where the sessions were moved to
+    #: (turn running, turn generation) of each session checked idle in the tree,
+    #: as read BEFORE any await: :func:`_still_idle` compares it at removal.
+    marks: dict[str, tuple[bool, int]] = field(default_factory=dict)
+    folder_id: str = ""
+    folder_keys: frozenset[str] = frozenset()  # every session filed under it then
 
 
 async def _restore(moved: _Moved, setter: Any, reader: Any = None) -> None:
@@ -259,12 +264,36 @@ def _project_tools(service: Any) -> tuple[Any, Any]:
     )
 
 
-def _turn_running(state: Any, key: str, filed: dict[str, tuple[bool, int]]) -> bool:
-    """Whether session *key* is mid-turn (the folder scan's answer, else its slot's)."""
-    if key in filed:
-        return filed[key][0]
+def _turn_mark(state: Any, key: str) -> tuple[bool, int]:
+    """Session *key*'s live (turn running, turn generation); generation counts the
+    turns it started, so one that began and ended between two reads shows too."""
     slot = (getattr(state, "_slots", None) or {}).get(key) if state is not None else None
-    return bool(getattr(slot, "turn_running", False))
+    generation = getattr(slot, "_turn_generation", 0)
+    return (
+        bool(getattr(slot, "turn_running", False)),
+        generation if isinstance(generation, int) else 0,
+    )
+
+
+def _still_idle(moved: _Moved) -> str:
+    """Why the tree must stay after all ("" when it may go). Never awaits.
+
+    The sessions were checked idle before the awaits that moved them; a turn
+    started since (or a worker filed under the folder since) could be working
+    in the tree, so the removal runs only while every mark still holds.
+    """
+    from kiro_crew.slack.code_channels.workspace import folders
+
+    state = surface.dashboard_state()
+    for key, then in moved.marks.items():
+        now = _turn_mark(state, key)
+        if now[0] or now[1] != then[1]:
+            return "a session started a turn in it"
+    if moved.folder_id and state is not None:
+        filed = folders.sessions_in(state, folders.subtree_ids(state, moved.folder_id))
+        if set(filed) - moved.folder_keys:
+            return "a session joined its folder"
+    return ""
 
 
 async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, moved: _Moved) -> str:
@@ -279,7 +308,8 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
     from kiro_crew.slack.code_channels.workspace import folders
 
     tree = str(record.worktree)
-    project = await asyncio.to_thread(_home_project, binding, record)
+    # Every session's turn state is read here, before the first await, and
+    # compared again right before the removal (_still_idle).
     state = surface.dashboard_state()
     keys = {binding.session_key} if binding.session_key else set()
     filed: dict[str, tuple[bool, int]] = {}
@@ -287,6 +317,9 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
     if folder_id and state is not None:
         filed = folders.sessions_in(state, folders.subtree_ids(state, folder_id))
         keys |= set(filed)
+    marks = {key: filed[key] if key in filed else _turn_mark(state, key) for key in keys}
+    moved.folder_id, moved.folder_keys = folder_id, frozenset(filed)
+    project = await asyncio.to_thread(_home_project, binding, record)
     targets: list[tuple[str, str]] = []
     for key in sorted(keys):
         current = tree
@@ -298,8 +331,9 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
         # No such session, or one working elsewhere: nothing to move.
         if not await asyncio.to_thread(_inside, current, tree):
             continue
-        if _turn_running(state, key, filed):
+        if marks[key][0]:
             return "a session is mid-turn in it"
+        moved.marks[key] = marks[key]
         targets.append((key, current))
     if targets and (not project or setter is None):
         return "a session still works in it"
@@ -434,6 +468,10 @@ async def release_channel_workspace(binding: Binding, *, caller: str) -> tuple[s
                 # Only a tree that is about to go moves its sessions out.
                 if not reason:
                     reason = await _retarget(binding, record, setter, reader, moved)
+                if not reason:
+                    # No await from here to the removal's start: the sessions
+                    # are still as idle as when they were checked.
+                    reason = _still_idle(moved)
                 attempted = not reason
                 # A plain executor Future, not a Task: shutdown's cancel-all
                 # never cancels it, and nothing else holds it. So however often

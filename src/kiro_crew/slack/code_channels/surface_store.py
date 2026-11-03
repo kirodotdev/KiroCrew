@@ -53,6 +53,9 @@ class SurfaceRecord:
     context_bar: tuple[dict[str, str], ...] = ()
     #: The channel canvas this gateway created for the plan ("" before one).
     plan_canvas_id: str = ""
+    #: When a canvas create of ours may have landed with its answer lost (0 when
+    #: none): Slack's next "already exists" then names our canvas to adopt.
+    canvas_create_pending_since: float = 0.0
     #: The canvas view tab attached for it ("" before one).
     plan_view_id: str = ""
     #: Digest of the command set last registered with Slack.

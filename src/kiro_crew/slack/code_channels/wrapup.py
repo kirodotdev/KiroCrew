@@ -397,6 +397,10 @@ async def post_wrap_up(
             return ""
         if only_if_live and (settles is None or _requests.get(channel) != settles):
             return ""  # replaced or settled while the facts were read: not ours to post
+        if surface.channel_policy_refusal(
+            channel, operation="slack.code_channel.wrap_up", caller=caller
+        ):
+            return ""  # again at the commit point, after the facts and the lock
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
         except Exception:
@@ -602,6 +606,10 @@ async def _recover_archive(
                 return
             archived = await _still_archived(channel)
             if archived is False:
+                # A stamp the click wrote before handing over is taken back; a
+                # failed write is retried rather than left on a live channel.
+                if current.archived_at and not await _stamp_archived(channel, 0.0, attempts=1):
+                    continue
                 surface.unfence(channel)
                 surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
                 return
@@ -611,7 +619,8 @@ async def _recover_archive(
             # overwritten by it: ask again, and take the stamp back if so.
             again = await _still_archived(channel)
             if again is False:
-                await _stamp_archived(channel, 0.0, attempts=1)
+                if not await _stamp_archived(channel, 0.0, attempts=1):
+                    continue  # the next attempt sees it live and takes the stamp back
                 surface.unfence(channel)
                 surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
                 return
@@ -741,6 +750,10 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if not stale and await surface.fenced_unrecorded(binding):
             # Archived here but never recorded: record it now rather than
             # answer "already archived" with nothing cleaned up.
+            if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+                # The recovery stamps and removes the worktree: same ceiling.
+                await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+                return True
             surface.audit(user, operation, "allowed", f"{resources} result=archive_retry")
             _start_recovery(binding, user, time.time(), resources, await _worktree_path(binding))
             await _ephemeral(channel, user, ALREADY_ARCHIVED_TEXT)
@@ -752,6 +765,11 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if stale:
             surface.audit(user, operation, "denied", resources, "not the current wrap-up")
             await _ephemeral(channel, user, STALE_TEXT)
+            return True
+        if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+            # Again at the commit point, after the awaits above: no button
+            # retired, no archive and no worktree removal once it refuses.
+            await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
             return True
         client, slack = surface.client(), surface.slack()
         if client is None or slack is None:
@@ -799,6 +817,21 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
             path = await _worktree_path(binding)
             _notify_unrecorded(binding, path)
             _start_recovery(binding, user, now, resources, path)
+            return True
+        # An unarchive recorded between Slack's archive and the stamp above was
+        # just overwritten by it: ask Slack again, as the recovery does, and take
+        # the stamp back if the channel is live.
+        again = await _still_archived(channel)
+        if again is False and await _stamp_archived(channel, 0.0, attempts=1):
+            surface.unfence(channel)
+            surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
+            return True
+        if again is not True:
+            # Can't tell, or live but the stamp could not be taken back: remove
+            # nothing now. The fence stays and the bounded background retry asks
+            # again, taking the stamp back or cleaning up as Slack then says.
+            surface.audit(user, operation, "allowed", f"{resources} result=archive_retry")
+            _start_recovery(binding, user, now, resources, await _worktree_path(binding))
             return True
         await _finish_archive(binding, channel, user, now, resources)
     return True

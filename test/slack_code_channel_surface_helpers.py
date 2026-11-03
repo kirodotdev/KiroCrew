@@ -57,6 +57,12 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # No workspace service left installed by an earlier test (a gateway start in
+    # another module installs one with its own store): cleanup reads the
+    # default store these tests write, unless a test installs its own.
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    monkeypatch.setattr(workspace_core, "_SERVICE", None)
     gen = make_env(monkeypatch, tmp_path)
     e = next(gen)
     set_surface_store(SurfaceStore(tmp_path / "surface.json"))
@@ -97,6 +103,7 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     tools._canvas_locks.clear()
     tools._bar_locks.clear()
     tools._unsaved_canvas.clear()
+    tools._maybe_created.clear()
     from kiro_crew.messaging import identity
 
     e.inbound_ok = True
