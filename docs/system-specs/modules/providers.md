@@ -1557,12 +1557,16 @@ servers remain withheld. A granted gateway broker stub is also admitted through
 the same restriction checks; gatewayd verifies its claim and supplies per-call
 identity to the managed backend.
 
-The work ledger (`kirocrew-work`) is admitted only as that gateway broker stub,
-and only in its exact shape: a stdio element running the broker stub module
-under one `--server kirocrew-work`, whose `env` is exactly one stub-token pair
-equal to this session's nonempty token. The same restriction, `disabled` and
-`tools` checks apply. A spec-described work-ledger entry, an unbound or foreign
-stub, and every other identity-bound server stay withheld.
+Every other identity-bound Crew server (`kirocrew-work`, `kirocrew-guide`,
+`kirocrew-mate` and the rest) is admitted only as that gateway broker stub, and
+only in its exact shape: a stdio element running the broker stub module under
+one `--server <name>`, whose `env` is exactly one stub-token pair equal to this
+session's nonempty token. The server must also consume the per-call caller that
+gatewayd injects (`managed_server_is_session_bound` is false for it). The same
+restriction, `disabled` and `tools` checks apply. A spec-described entry for one
+of these servers, and an unbound or foreign stub, stay withheld. So a Codex user
+gets Crew's tools by listing those servers in `mcp_gateway.stub_servers`; without
+that setting nothing changes.
 
 On an enforced sandbox, credential-bearing host readers need the broker route:
 configure `mcp_gateway.stub_servers` to include `kirocrew-core` and
