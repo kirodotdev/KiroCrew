@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
@@ -112,6 +113,13 @@ if TYPE_CHECKING:
         _prepare_spec_hooks,
         _surface_agent_welcome,
     )
+
+#: A code channel turn refused because its worktree should exist and does not
+#: yet: shown on the dashboard row and posted to the channel.
+_WORKTREE_NOT_READY_TEXT = (
+    "This code channel's worktree is not ready, so the message was not run. "
+    "Send it again in a moment."
+)
 
 
 def _current_binding(turn) -> tuple:
@@ -320,6 +328,27 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
+    # A Slack code channel's session is moved into its workspace before the
+    # turn's bindings are read (a move after that would read as a binding
+    # change and refuse the turn), and the reset the move arms is consumed
+    # below, before the session is acquired: THIS turn starts there.
+    from kiro_crew.slack.code_channels.binding import notify_turn_prepare
+
+    if not await notify_turn_prepare(state, slot):
+        # The channel's worktree should exist and does not (a git error): the
+        # turn would run in the shared checkout, so it does not run at all.
+        slot.append(
+            "error",
+            _WORKTREE_NOT_READY_TEXT,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY),
+        )
+        # A message typed in the channel ends here before any turn hook runs,
+        # so the channel itself is told, or its sender sees nothing at all.
+        await _deliver_linked_slack_message(
+            state, slot, getattr(state, "sessions", None), session_key, _WORKTREE_NOT_READY_TEXT
+        )
+        return _Flow.END
 
     # A new turn supersedes whatever question the previous one ended on, so
     # any OPTIONS control still live in this session's Slack thread stops

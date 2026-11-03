@@ -346,6 +346,7 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     expect(resolveGatewayNotice(row('error', 'session_reconnect_give_up'), [], 0)).toEqual({ card: 'error', text: GN.session_reconnect_give_up })
     expect(resolveGatewayNotice(row('error', 'compaction_retrying'), [], 0)).toEqual({ card: 'error', text: GN.compaction_retrying })
     expect(resolveGatewayNotice(row('error', 'crew_name_undispatchable'), [], 0)).toEqual({ card: 'error', text: GN.crew_name_undispatchable })
+    expect(resolveGatewayNotice(row('error', 'code_channel_worktree_not_ready'), [], 0)).toEqual({ card: 'error', text: GN.code_channel_worktree_not_ready })
   })
 
   it('draws a cancelled replay, end-of-turn or queue row as an info NoticeCard', () => {
@@ -401,7 +402,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(64)
+    expect(backend).toHaveLength(65)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

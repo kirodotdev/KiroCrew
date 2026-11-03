@@ -13033,6 +13033,7 @@
         "agent_switch_blocked_channel": "Il passaggio a {{agent}} è stato bloccato — questa chat è collegata a un canale Slack servito da {{channel_agent}}. Il prossimo turno riparte su quell'agente.",
         "channel_message_not_run": "Un messaggio da un canale Slack non è stato eseguito: l'agente di questa sessione non è quello usato da quel canale.",
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il Bot.",
+        "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare."
       },
@@ -19580,7 +19581,7 @@
           "agent_sessions_note": "Attivarlo non cambia ancora nulla in Slack. Si aggiunge solo al manifest dell’app, il testo di configurazione che copi in Slack nei passaggi qui sotto.",
           "update_keeps_working": "Slack continua a funzionare come prima finché non aggiorni.",
           "code_channels": "Canali di codice",
-          "code_channels_desc": "Attivato: l’agente può aprire un canale Slack per ogni attività di programmazione, invitarti e pubblicare e tenere note lì con il proprio nome. Per questo la tua app Slack riceve 5 autorizzazioni. Disattivato: non cambia nulla e puoi rimuovere le autorizzazioni in Slack in seguito. Slack sta distribuendo i canali di codice gradualmente, quindi la tua area di lavoro potrebbe non averli ancora.",
+          "code_channels_desc": "Attivato: l’agente può aprire un canale Slack per ogni attività di programmazione, con una barra di contesto e una scheda diff, invitarti e pubblicare e tenere note lì con il proprio nome. Per questo la tua app Slack riceve 5 autorizzazioni. Disattivato: non cambia nulla e puoi rimuovere le autorizzazioni in Slack in seguito. Slack sta distribuendo i canali di codice gradualmente, quindi la tua area di lavoro potrebbe non averli ancora.",
           "stage_tag": "Anteprima",
           "defaults_title": "I nuovi canali di codice partono con",
           "defaults_desc": "Scegli una cartella, un agente o entrambi. Ciò che lasci vuoto usa l’impostazione della cartella o di Slack, così un canale di codice funziona sempre.",
