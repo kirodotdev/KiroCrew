@@ -229,6 +229,7 @@ from kiro_crew.skills_discovery import (  # noqa: F401
     _iter_skill_files,
     _open_project_dir_chain,
     _package_record_cache,
+    _plugin_skill_files,
     _project_skills_dir,
     _read_package_record,
     _record_stamp,
