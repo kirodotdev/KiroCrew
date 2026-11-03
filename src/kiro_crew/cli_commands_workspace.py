@@ -450,6 +450,15 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         if args.name not in cfg.workspaces:
             print(f"Error: workspace '{args.name}' not found", file=sys.stderr)
             sys.exit(1)
+        if args.dir is None:
+            # --dir is the one field an update writes; without it, saying
+            # "Updated" would report a change that never happened. Exit 0
+            # stays, so a script calling it keeps working.
+            print(
+                f"Warning: nothing to update for workspace '{args.name}'; pass --dir",
+                file=sys.stderr,
+            )
+            return
         if args.dir is not None:
             # Validated and composed in one step (refuses and exits on a dir
             # outside the data home); the locked mutate below checks this same
