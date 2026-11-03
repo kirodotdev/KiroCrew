@@ -297,9 +297,10 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         kind = resp.get("doc_kind") or "doc"
         return redact(
             f"\U0001f195 Opened the {kind} page `{resp.get('target')}` ({resp.get('title')})"
-            f"{filed}{on_model}.{made_note} Its file is docs/{resp['doc']}.md and its own "
-            "conductor is idle: send it its brief with session_send, and record it on your "
-            "work ledger. Link it from your page with its session key." + reply_line(resp)
+            f"{filed}{on_model}.{made_note} Its file is docs/{resp['doc']}.md and it is "
+            "idle: send it the work with session_send (it does the work itself), and record "
+            "it on your work ledger. Link it from your page with its session key."
+            + reply_line(resp)
         )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "

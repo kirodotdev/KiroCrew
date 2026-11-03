@@ -491,6 +491,9 @@ export interface BoardAdd {
 
 const GAP = 24
 
+/** Whether *o* lies wholly inside *p*. */
+const inside = (o: Shape, p: Shape) => o.x >= p.x && o.y >= p.y && o.x + o.w <= p.x + p.w && o.y + o.h <= p.y + p.h
+
 const overlaps = (a: { x: number; y: number; w: number; h: number }, b: Shape) =>
   a.x < b.x + b.w + 8 && a.x + a.w + 8 > b.x && a.y < b.y + b.h + 8 && a.y + a.h + 8 > b.y
 
@@ -524,6 +527,8 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
   const stacked = new Map<string, number>()
   // Cards headed for a section, by section, in the order given: laid out at the end.
   const into = new Map<string, string[]>()
+  // Sections headed for a section, by parent: placed inside it, side by side.
+  const nested = new Map<string, string[]>()
   for (const s of add.shapes ?? []) {
     // A session card names a session; without a valid key it is a plain sticky.
     const kind: ShapeKind = s.kind && KINDS.has(s.kind) && (s.kind !== 'session' || isSessionKey(s.session)) ? s.kind : 'sticky'
@@ -539,10 +544,21 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
       h: Math.max(24, num(s.h, DEFAULT_SIZE[kind].h)),
     }
     const near = s.near ? shapes.find(x => x.id === (refs.get(s.near!) ?? s.near)) : undefined
-    const home = s.in && kind !== 'section' ? shapes.find(x => x.kind === 'section' && x.id === (refs.get(s.in!) ?? s.in)) : undefined
+    const homeOf = () => (s.in ? shapes.find(x => x.kind === 'section' && x.id === (refs.get(s.in!) ?? s.in)) : undefined)
+    const home = kind !== 'section' ? homeOf() : undefined
+    // A section "in" a section goes inside it, as a card does, not off to the side.
+    const parent = kind === 'section' ? homeOf() : undefined
     let x: number
     let y: number
     if (home) { x = home.x; y = home.y }
+    else if (parent) {
+      const spot = clearSpot(
+        { x: parent.x + SECTION_PAD, y: parent.y + SECTION_TITLE_H + SECTION_PAD, w: size.w, h: size.h },
+        shapes.filter(o => o.id !== parent.id && inside(o, parent)), 'right',
+      )
+      x = spot.x
+      y = spot.y
+    }
     else if (typeof s.x === 'number' && typeof s.y === 'number') { x = s.x; y = s.y }
     else if (near) {
       // Below by default: a column of cards under its header. Each next card
@@ -572,10 +588,21 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
     if (text || kind === 'session') texts.add(mark)
     if (s.ref) refs.set(s.ref, shape.id)
     if (home) into.set(home.id, [...(into.get(home.id) ?? []), shape.id])
+    if (parent) nested.set(parent.id, [...(nested.get(parent.id) ?? []), shape.id])
   }
   let laid = shapes
   for (const [sec, ids] of into) laid = reflowSection(laid, sec, ids)
   shapes.splice(0, shapes.length, ...laid)
+  // A parent grows to hold what was put in it, never shrinks.
+  for (const [parentId, kids] of nested) {
+    const at = shapes.findIndex(x => x.id === parentId)
+    const held = shapes.filter(k => kids.includes(k.id))
+    if (at < 0 || !held.length) continue
+    const p = shapes[at]
+    const right = Math.max(...held.map(k => k.x + k.w)) + SECTION_PAD
+    const bottom = Math.max(...held.map(k => k.y + k.h)) + SECTION_PAD
+    shapes[at] = { ...p, w: Math.max(p.w, right - p.x), h: Math.max(p.h, bottom - p.y) }
+  }
   const ids = new Set(shapes.map(s => s.id))
   for (const c of add.connectors ?? []) {
     const from = refs.get(c.from) ?? c.from

@@ -9,7 +9,7 @@ import {
   applyBoardAdd, applyBoardEdit, boardAccess, boardAddsIn, boardEditsIn, conductorAccessOf, sectionMembers, summarizeBoard,
   type Board, type BoardAdd, type BoardEdit, type Shape,
 } from './boardModel'
-import { guardAdd, guardEdit } from './conductorGuard'
+import { guardAdd, guardEdit, guardOutcome } from './conductorGuard'
 
 /** What the conductor is told it may not touch (or, on a closed board, may touch), in words; empty when nothing is restricted. */
 export function describeAccess(b: Board): string {
@@ -35,8 +35,19 @@ export function describeTarget(board: Board, selection: Shape[]): string {
   return selection.map(s => s.id).join(', ')
 }
 
+/** How a Crew Mode board's conductor gets real work done: through workers, and pages. */
+const CONDUCTOR_WORK = `- Do not do the work yourself when it is real work. Start workers with session_create, seed each with session_send (what to do, the shapes' text it needs, and that you, not the board, get its result), record each on the work ledger (work_ledger_record create, then bind it to the worker), and arm monitor_start with watch="work-ledger" so you are woken when a worker reports. When the goal loop is already armed on you, arm and change nothing: it wakes you at the goal rate, and each goal check reads your work ledger. Tell the person in one line what you started.
+- A piece of work that deserves a page of its own (a GitHub issue to work through, a task with its own notes) can get one: open a doc with session_create kind="doc", a title naming the work, and content: its starting markdown, with what the board knows about it (the issue's number, title and text, links, what done means). Then session_send its conductor a short brief (what to do, and that it reports back to you with work_report), record it on your work ledger and bind it, and put a session card for it on the board in the section the work came from. Its conductor works the doc and may set a goal on a heading itself. A doc you opened can open a board of its own, one level further, and no more. Open one page per piece of work, never a page for each card at once without being asked.`
+
+/** How a plain board's conductor gets real work done: itself, on the board. */
+const WORKER_WORK = `- When the person asks for real work (a fix, a change, a piece of research), do it yourself, in this session: you are the one who does it, and this board is where it shows. Never open another session for it. For code, work in a git worktree of the repository on its own branch: one the board or the request names, or one you make with \`git worktree add\` from a local clone of it; if you cannot tell which repository or clone to use, ask in your answer before making one. Keep the board current as you go: move cards across sections, and keep a status indicator on the card you are working on. Commit locally; push or open a pull request only when the person asks you to. Tell the person in one line what you did.
+- When another page's conductor opened this board, its first message says what the work is, and work_brief returns your item: report back to that conductor with work_report as you go. When work_brief finds no item, the person is the one you work for.`
+
 export function buildBoardTurn(o: {
   id: string; request: string; board: Board; selected: string[]; followUp: boolean; title?: string; docId: string
+  /** The board is in Crew Mode: its conductor delegates. A plain board's conductor
+   *  is the worker, which does the work itself. */
+  conductor?: boolean
 }): string {
   const slug = overlaySlug(o.docId)
   const name = o.title || 'Untitled board'
@@ -70,8 +81,7 @@ ${describeAccess(o.board) ? `What you may change: ${describeAccess(o.board)}\n\n
 - Colour carries meaning, so use few: one colour for ordinary cards (yellow), another only for what stands out (rose for blocked, mint for done). Sections stay smoke unless the colour means something.
 - Show status in the overlay, not in the card's text: a corner badge on the card a worker is on, and on a section for its count ("3 of 7 done"). Then the board stays as the person would draw it, and status stays live without rewriting cards.
 
-- Do not do the work yourself when it is real work. Start workers with session_create, seed each with session_send (what to do, the shapes' text it needs, and that you, not the board, get its result), record each on the work ledger (work_ledger_record create, then bind it to the worker), and arm monitor_start with watch="work-ledger" so you are woken when a worker reports. When the goal loop is already armed on you, arm and change nothing: it wakes you at the goal rate, and each goal check reads your work ledger. Tell the person in one line what you started.
-- A piece of work that deserves a page of its own (a GitHub issue to work through, a task with its own notes) can get one: open a doc with session_create kind="doc", a title naming the work, and content: its starting markdown, with what the board knows about it (the issue's number, title and text, links, what done means). Then session_send its conductor a short brief (what to do, and that it reports back to you with work_report), record it on your work ledger and bind it, and put a session card for it on the board in the section the work came from. Its conductor works the doc and may set a goal on a heading itself. A doc you opened can open a board of its own, one level further, and no more. Open one page per piece of work, never a page for each card at once without being asked.
+${o.conductor === false ? WORKER_WORK : CONDUCTOR_WORK}
 
 The status overlay: show the person what is going on by drawing on top of the board. It is one HTML artifact you own: create it once with artifact_save (slug "${slug}", kind "html", name "Overlay: ${name}") and replace its content with artifact_update (slug "${slug}") whenever the picture changes: when you start work, when a worker reports, when something finishes or gets stuck. Each top-level element is one overlay item:
 - data-anchor="shape:<shape id>" pins the item to that shape; it moves with the shape as the person drags it. Leave it out for a status about the whole board.
@@ -117,7 +127,11 @@ export function applyReplyChecked(b: Board, change: { edits: BoardEdit[]; adds: 
   for (const a of change.adds) {
     const g = guardAdd(next, a)
     refused.push(...g.refused)
-    next = applyBoardAdd(next, g.value)
+    // Judged again where it landed: a shape can be asked for in an open section and
+    // be placed somewhere else.
+    const placed = guardOutcome(next, applyBoardAdd(next, g.value))
+    refused.push(...placed.refused)
+    next = placed.value
   }
   return { board: next, refused }
 }

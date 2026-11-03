@@ -243,6 +243,9 @@ describe('create-button caret menu', () => {
     expect(args[5]).toBe('Untitled doc')
     expect(args[12]).toBe(true)
     expect(args[13]).toBeUndefined()
+    // Plain: the worker does the work itself; Crew Mode is the page's own switch.
+    expect(args[1]).toBe('kirocrew-worker')
+    expect(args[8]).toBe('template')
   })
 
   it('"New board" creates a board: a doc of the board kind', async () => {
@@ -254,6 +257,7 @@ describe('create-button caret menu', () => {
     expect(args[5]).toBe('Untitled board')
     expect(args[12]).toBe(true)
     expect(args[13]).toBe('board')
+    expect(args[1]).toBe('kirocrew-worker')
   })
 
   // The Mates door is gone from this menu: every row here creates something and

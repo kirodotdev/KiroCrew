@@ -149,12 +149,13 @@ def _session_tools() -> tuple[Tool, ...]:
                         "enum": ["doc", "board"],
                         "description": (
                             "Open a PAGE instead of a chat: a document ('doc') or a "
-                            "whiteboard ('board'), with its own conductor, which is "
-                            "this agent unless you name another. Only a doc or board "
+                            "whiteboard ('board'). It runs on the worker agent unless "
+                            "you name another, so it does its work itself, in its own "
+                            "session, and keeps its page current. Only a doc or board "
                             "session's conductor may, and a page opened this way may "
-                            "open at most one more level of pages. Send the new page's "
-                            "conductor its brief with session_send, and record it on "
-                            "your work ledger like any worker."
+                            "open at most one more level of pages. Send it the work "
+                            "with session_send, and record it on your work ledger "
+                            "like any worker."
                         ),
                     },
                     "content": {

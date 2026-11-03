@@ -390,7 +390,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
         at the bottom left as on the board: Trust here carries to the workers it
         starts, so they stop asking too. */}
     {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
-    <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+    <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)} crewSwitch
       className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" testid="doc-approval-mode" />
     <div className="flex-1 min-h-0 overflow-y-auto relative" data-testid="doc-pane">
       {/* The overlay's animations; the board mounts the same copy. */}

@@ -15,6 +15,9 @@
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
 export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
 
+/** The agent a plain doc or board runs on: it does the work itself, on its page. */
+export const PAGE_WORKER_AGENT = 'kirocrew-worker'
+
 /** The longest steer a person may type into a worker: the server's
  *  `MAX_SEND_MESSAGE_CHARS`, which the steer route and the worker's own composer
  *  send both refuse past (`message_too_long`). */

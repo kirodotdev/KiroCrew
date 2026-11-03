@@ -8,7 +8,7 @@ import { unwrapResult } from '@reduxjs/toolkit'
 import { captureForkOrigin, createSlot, forkMayOpen, type ForkOrigin, requestSlotFolderOpen } from '../../store/chatSlice'
 import { focusComposer } from '../chat/composerFocus'
 import { i18nT } from '../../i18n/t'
-import { crewModeAgent } from '../../lib/crewMode'
+import { PAGE_WORKER_AGENT, crewModeAgent } from '../../lib/crewMode'
 import type { Slot } from './types'
 import type { AppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
@@ -417,9 +417,12 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     // both are docs drawn another way.
     mutationFn: (kind?: 'board' | 'codebase' | 'dashboard') => {
       setNewChatError('')
-      // A doc runs on the conductor agent: the document is how you talk to it.
+      // A doc or a board is plain: it runs on the worker, which does the work itself
+      // and keeps the page current. Crew Mode (the conductor) is the page's own switch.
+      // A codebase or a dashboard page stays on the conductor.
       const title = i18nT(kind === 'board' ? 'pages.chatSidebar.untitled_board' : kind === 'codebase' ? 'pages.chatSidebar.untitled_codebase' : kind === 'dashboard' ? 'pages.chatSidebar.untitled_dashboard' : 'pages.chatSidebar.untitled_doc')
-      return dispatch(createSlot({ doc: true, docKind: kind, agent: crewModeAgent(), agent_kind: 'template', title, defaultFolder: true })).unwrap()
+      const agent = !kind || kind === 'board' ? PAGE_WORKER_AGENT : crewModeAgent()
+      return dispatch(createSlot({ doc: true, docKind: kind, agent, agent_kind: 'template', title, defaultFolder: true })).unwrap()
     },
     onSuccess: (slot) => {
       if (slot?.key && store.getState().chat.activeSlot === slot.key) onSelectSlot?.(slot.key)

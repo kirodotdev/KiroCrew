@@ -1071,8 +1071,20 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew.skill_scope_pin import pin_session_skill_spec
 
     pin_session_skill_spec(session_key, _pinned_spec)
-    # Same hold, same reason: a doc session's contract carries its doc's brief.
-    pin_doc_session(session_key, getattr(slot, "_doc", "") or None)
+    # Same hold, same reason: a doc session's contract carries its doc's brief, a
+    # conductor's in Crew Mode and a worker's otherwise.
+    from kiro_crew import crew_mode
+
+    pin_doc_session(
+        session_key,
+        getattr(slot, "_doc", "") or None,
+        conductor=crew_mode.runs_crew_mode(
+            slot.agent,
+            slot.agent_kind,
+            getattr(slot, "mode", ""),
+            getattr(slot, "crew_mode_agent", ""),
+        ),
+    )
     # The acquired provider is the final authority for harness-specific slash
     # gates. A dead live row can be replaced during the get_or_create call
     # above. The positive capability fails closed for unknown adapters and

@@ -16,6 +16,7 @@ import json
 import pytest
 from chat_test_helpers import _make_state
 from session_control_helpers import (  # noqa: F401 -- the autouse fixtures register by import
+    _agent_resolves,
     _enabled_fixture,
     _fresh_create_budget,
     _fresh_stop_windows,
@@ -31,6 +32,8 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 @pytest.fixture(autouse=True)
 def _docs_home(tmp_path, monkeypatch):
     monkeypatch.setattr(doc_files, "data_home", lambda: tmp_path)
+    # A page opens on the worker template, which this home has no file for.
+    _agent_resolves(monkeypatch, "default")
     # The goal sync a new page schedules is not what these tests are about.
     monkeypatch.setattr("kiro_crew.dashboard.doc_goal_loop.schedule_goal_sync", lambda *a: None)
 
@@ -151,3 +154,15 @@ def test_the_tool_schema_takes_a_kind_and_content():
         validate_tool_args({"kind": "codebase"}, SESSION_CREATE_SCHEMA)
     with pytest.raises(ValidationError):
         validate_tool_args({"content": "x" * 200_001}, SESSION_CREATE_SCHEMA)
+
+
+def test_a_page_runs_on_the_worker_unless_the_conductor_names_an_agent(tmp_path):
+    state = _make_state(tmp_path)
+    board = _page(state, "chat-1")
+    board.agent = "kirocrew-conductor"
+    plain = state.get_slot(_create(state, board, doc_kind="doc")["target"])
+    assert plain.agent == "kirocrew-worker" and plain.agent_kind == "template"
+    chat = state.get_slot(_create(state, board)["target"])
+    assert (
+        chat.agent == "kirocrew-conductor"
+    ), "an ordinary session still inherits the caller's agent"

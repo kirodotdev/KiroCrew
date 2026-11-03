@@ -48,6 +48,29 @@ export function guardEdit(b: Board, edit: BoardEdit): Guarded<BoardEdit> {
   return { value: { ...edit, shapes, delete: del, arrange, deleteConnectors }, refused: [...new Set(refused)] }
 }
 
+/**
+ * The board after an addition, with whatever the addition PLACED where the conductor
+ * may not change taken out, and the connectors to it. `guardAdd` judges what a reply
+ * asks for; this judges where it ended up, because a shape can be asked for in one
+ * place and land in another. Only what is new is judged: nothing already on the
+ * board is touched.
+ */
+export function guardOutcome(before: Board, after: Board): Guarded<Board> {
+  const known = new Set(before.shapes.map(s => s.id))
+  const fresh = after.shapes.filter(s => !known.has(s.id))
+  const out = fresh.filter(s => conductorAccessOf(after, s) !== 'allow')
+  if (!out.length) return { value: after, refused: [] }
+  const gone = new Set(out.map(s => s.id))
+  return {
+    value: {
+      ...after,
+      shapes: after.shapes.filter(s => !gone.has(s.id)),
+      connectors: after.connectors.filter(c => !gone.has(c.from) && !gone.has(c.to)),
+    },
+    refused: [...new Set(out.map(s => s.text.trim() || s.id))],
+  }
+}
+
 /** The additions with every shape that would land in a protected place, and every connector to a protected shape, taken out. */
 export function guardAdd(b: Board, add: BoardAdd): Guarded<BoardAdd> {
   const byId = new Map(b.shapes.map(s => [s.id, s]))

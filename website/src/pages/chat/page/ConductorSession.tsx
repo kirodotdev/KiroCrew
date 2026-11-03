@@ -8,18 +8,83 @@
  * gateway adds to each turn (system prompt, memory, skills), which no row carries.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, ScrollText, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Lock, ScrollText, User, Users, X } from 'lucide-react'
 import ApprovalModePicker from '../../../components/ApprovalModePicker'
 import { Btn } from '../../../components/ui'
-import { useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector } from '../../../store'
 import { selectSlotMessages } from '../../../store/chat/selectors'
 import type { ChatMessage } from '../../../types'
 import { openedThread } from './docThreads'
+import ErrorNotice from '../../../components/ErrorNotice'
+import { PAGE_WORKER_AGENT, crewModeAgent, runsCrewMode } from '../../../lib/crewMode'
+import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
+import { slotRowByKey } from '../../../store/slotIndex'
+
+/** The two ways a page can run, as the person reads them. */
+const PAGE_MODES = [
+  { id: 'plain', label: 'Plain', icon: User, help: 'One agent does the work itself, on this page.' },
+  { id: 'crew', label: 'Crew', icon: Users, help: 'A conductor runs a crew of workers for this page.' },
+] as const
+
+/**
+ * How the page runs: Plain (the worker does the work itself) or Crew (the conductor
+ * runs a crew). Chosen before the page is first asked anything; from then on it is
+ * fixed, in either direction, and shows as a label.
+ */
+function PageModeChoice({ slotKey }: { slotKey: string }) {
+  const dispatch = useAppDispatch()
+  const row = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
+  const asked = useAppSelector(s => selectSlotMessages(s, slotKey).some(m => m.role === 'user'))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const current = runsCrewMode(row?.agent, row?.agent_kind, row?.crew_mode_agent) ? 'crew' : 'plain'
+  const mode = PAGE_MODES.find(m => m.id === current)!
+  const choose = (id: 'plain' | 'crew') => {
+    if (id === current || busy) return
+    setError('')
+    setBusy(true)
+    performAgentSlotSwitch(slotKey, id === 'crew' ? crewModeAgent() : PAGE_WORKER_AGENT, dispatch, 'template')
+      .catch(err => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false))
+  }
+  if (asked) {
+    const Icon = mode.icon
+    return (
+      <span data-testid="page-mode" data-mode={current} title={`${mode.help} Set when this page was first asked; it stays.`}
+        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted">
+        <Icon size={14} aria-hidden /> {mode.label}
+        <Lock size={11} aria-hidden className="opacity-60" />
+      </span>
+    )
+  }
+  return (
+    <>
+      <span role="radiogroup" aria-label="How this page runs" data-testid="page-mode" data-mode={current}
+        className="flex items-center rounded-lg border border-border p-0.5">
+        {PAGE_MODES.map(m => {
+          const Icon = m.icon
+          const on = m.id === current
+          return (
+            <Btn key={m.id} type="button" role="radio" aria-checked={on} disabled={busy} title={m.help}
+              data-testid={`page-mode-${m.id}`} onClick={() => choose(m.id)}
+              className={`h-6 border-none px-2 text-[12px] ${on ? 'bg-bg-hover text-text' : 'text-muted'}`}>
+              <Icon size={13} aria-hidden /> {m.label}
+            </Btn>
+          )
+        })}
+      </span>
+      {/* No hand-off: choosing again is one press, and nothing is pending. */}
+      {error && <ErrorNotice title="The page's mode could not be changed" message={error} className="absolute bottom-full left-0 mb-2 w-[320px]" />}
+    </>
+  )
+}
 
 /** The page's trust picker with the session view's toggle beside it. Positioned by
  *  the caller, which keeps its own corner and test id. */
-export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggleSession, className, style, testid }: {
+export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggleSession, className, style, testid, crewSwitch = false }: {
   slotKey: string
+  /** Offer the page's Plain / Crew choice (docs and boards). */
+  crewSwitch?: boolean
   approvalMode?: string
   sessionOpen: boolean
   onToggleSession: () => void
@@ -30,6 +95,7 @@ export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggle
   return (
     <div className={`${className} flex items-center gap-1`} style={style} data-testid={testid}>
       {approvalMode && <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />}
+      {crewSwitch && <PageModeChoice slotKey={slotKey} />}
       <Btn
         type="button"
         onClick={onToggleSession}

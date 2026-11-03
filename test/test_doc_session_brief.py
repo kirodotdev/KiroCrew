@@ -86,3 +86,21 @@ def test_the_brief_names_the_doc_by_id_only() -> None:
 @pytest.mark.parametrize("kind", ["doc", "board", "codebase", "dashboard"])
 def test_doc_kind_reads_back_the_kind_an_id_was_minted_for(kind: str) -> None:
     assert doc_kind(mint_doc_id(kind)) == kind
+
+
+def test_a_plain_page_gets_the_worker_brief_and_a_crew_mode_page_the_conductor_s(
+    builder: ContextBuilder,
+) -> None:
+    doc_id = mint_doc_id("doc")
+    doc_session_brief.pin_doc_session(_KEY, doc_id, conductor=False)
+    plain = _resolve(builder)
+    assert "do it yourself, in this session" in plain
+    assert "Never open another session for it" in plain
+    assert "git worktree" in plain
+    assert "Start workers with session_create" not in plain
+    assert "### Being opened by another page" in plain
+    doc_session_brief.pin_doc_session(_KEY, doc_id, conductor=True)
+    crew = _resolve(builder)
+    assert "Start workers with session_create" in crew
+    assert "do it yourself, in this session" not in crew
+    assert "### Opening another page" in crew

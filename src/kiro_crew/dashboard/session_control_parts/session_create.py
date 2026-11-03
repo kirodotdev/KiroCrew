@@ -368,6 +368,11 @@ async def create_session(
         )
     if own_worker:
         agent, agent_kind = MATE_WORKER_AGENT, "template"
+    elif doc_kind and not agent.strip():
+        # A page a conductor opens is plain unless it names an agent: it runs on the
+        # worker and does its work itself, as a page a person makes does. Crew Mode
+        # (the conductor) is the page's own switch to turn on.
+        agent, agent_kind = WORKER_AGENT_FILENAME.removesuffix(".json"), "template"
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
     # The selection namespace, validated HERE and not left to the HTTP route or
     # the MCP schema: `create_session` is also reached in-process, and a kind

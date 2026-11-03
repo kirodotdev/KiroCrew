@@ -3,7 +3,7 @@
  * edit naming the version it read, reports an edit made elsewhere instead of
  * overwriting it, and sends a highlight's question to the doc slot's conductor.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -26,6 +26,7 @@ import DocPane from '../pages/chat/page/DocPane'
 import { parseMarkers } from '../pages/chat/page/docConductor'
 import { cycleDirection, shortLabel, stepId } from '../pages/chat/page/ConversationBar'
 import { DOC_ICONS } from '../pages/chat/page/docMeta'
+import { resetCrewModeCatalog, setCrewModeCatalog } from '../lib/crewMode'
 
 const getDoc = api.getDoc as unknown as ReturnType<typeof vi.fn>
 const saveDoc = api.saveDoc as unknown as ReturnType<typeof vi.fn>
@@ -455,5 +456,36 @@ describe('DocPane', () => {
     await editor()
     expect(screen.queryByTestId('doc-icon')).toBeNull()
     expect(saveDoc).not.toHaveBeenCalled()
+  })
+
+  it('the page picks Plain or Crew before it is asked anything, and the choice is fixed after', async () => {
+    getDoc.mockResolvedValue({ content: '# Plan\n', version: 'v1' })
+    // The gateway's catalog names its conductors; the page reads Crew Mode from it.
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    onTestFinished(() => resetCrewModeCatalog())
+    act(() => { store.dispatch(sseSlots([{ key: 'doc-slot', title: 'Plan', agent: 'kirocrew-worker', agent_kind: 'template' } as ChatSlot])) })
+    const view = renderPane()
+    await editor()
+    expect(screen.getByTestId('page-mode').getAttribute('data-mode')).toBe('plain')
+    expect(screen.getByTestId('page-mode-plain').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByTestId('page-mode-crew').getAttribute('aria-checked')).toBe('false')
+    view.unmount()
+    // Asked once, in Plain: no choice any more, in either direction.
+    act(() => {
+      store.dispatch(setActiveSlot('doc-slot'))
+      store.dispatch(replaceMessages([{ role: 'user', content: '[Doc ask q1]\nwhy?', cls: '' }]))
+    })
+    const asked = renderPane()
+    await editor()
+    expect(screen.getByTestId('page-mode').textContent).toContain('Plain')
+    expect(screen.queryByTestId('page-mode-crew')).toBeNull()
+    asked.unmount()
+    // A Crew page reads as Crew once asked.
+    act(() => { store.dispatch(sseSlots([{ key: 'doc-slot', title: 'Plan', agent: 'kirocrew-conductor', agent_kind: 'template' } as ChatSlot])) })
+    renderPane()
+    await editor()
+    expect(screen.getByTestId('page-mode').getAttribute('data-mode')).toBe('crew')
+    expect(screen.queryByTestId('page-mode-plain')).toBeNull()
+    act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)); store.dispatch(sseSlots([])) })
   })
 })

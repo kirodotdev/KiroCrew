@@ -121,9 +121,10 @@ def goal_instruction(kind: str, doc_id: str, title: str) -> str:
     return (
         "<<goals>>\n"
         f'Goal check for the {kind} "{name}". {where} For each goal, look at its section '
-        "as it is now and do what the goal asks: start or steer workers for real work "
-        "and keep them on your work ledger, never a second worker for something one of "
-        f"yours already has. {write} Never touch anything outside a goal's section. Keep "
+        "as it is now and do what the goal asks: do the work yourself, or, if you are a "
+        "conductor, start or steer workers for it and keep them on your work ledger, "
+        f"never a second worker for something one of yours already has. {write} Never "
+        "touch anything outside a goal's section. Keep "
         f"one item per goal in your status overlay artifact ({anchor}): what it is doing "
         "now, moving while work runs (ov-running) and still once settled.\n"
         "Reply with one block per goal, each opened by a line of its own, [goal <id>], "

@@ -10,6 +10,7 @@ import {
   BOARD_ID_PREFIX, applyBoardAdd, applyBoardEdit, boardAddsIn, boardEditsIn, conductorAccessOf, emptyBoard, isBoardId, labelScale, parseBoard, sectionMembers, serializeBoard, shapeAt, summarizeBoard, toSwatch, wheelPanStep, wheelZoomFactor,
   type Board, type Shape,
 } from '../pages/chat/page/board/boardModel'
+import { guardOutcome } from '../pages/chat/page/board/conductorGuard'
 import { applyReplyChanges, applyReplyChecked, boardAddsFromMessages, boardChangesFromMessages, buildBoardTurn } from '../pages/chat/page/board/boardTurn'
 import type { OverlayItem } from '../pages/chat/page/docOverlay'
 import { deriveThreads } from '../pages/chat/page/docThreads'
@@ -132,6 +133,15 @@ describe('board model', () => {
     expect(next.shapes[1].session).toBe('chat-27-1793737827')
     const again = applyBoardAdd(next, { shapes: [{ ...card, text: 'renamed' }] })
     expect(again.shapes).toHaveLength(2)
+  })
+
+  it('a plain board does the work itself; a Crew Mode board delegates', () => {
+    const turn = (conductor?: boolean) => buildBoardTurn({ id: 'q', request: 'fix it', board: emptyBoard(), selected: [], followUp: false, docId: 'b0a4d1', conductor })
+    expect(turn(false)).toContain('do it yourself, in this session')
+    expect(turn(false)).toContain('Never open another session for it')
+    expect(turn(false)).not.toContain('Start workers with session_create')
+    expect(turn(true)).toContain('Start workers with session_create')
+    expect(turn(undefined)).toContain('Start workers with session_create')
   })
 
   it('side right puts new shapes beside their neighbour, and no new shape lands on another', () => {
@@ -1069,6 +1079,54 @@ describe('the canvas', () => {
     expect(summarizeBoard(board)).toMatch(/- a \| sticky[^\n]*\| protected/)
     expect(summarizeBoard(board)).not.toMatch(/- b \| sticky[^\n]*\| protected/)
     expect(buildBoardTurn({ id: 'q', request: 'x', board, selected: [], followUp: false, docId: 'd' })).toContain('Protected, off limits to you: A "A"')
+  })
+
+  it('sections a conductor puts "in" an open section land inside it, side by side, and the section grows to hold them', () => {
+    const sec = (id: string, x: number, y: number, w: number, h: number, conductor?: 'allow'): Shape => ({ id, kind: 'section', x, y, w, h, text: id, color: 'smoke', ...(conductor ? { conductor } : {}) })
+    const closed: Board = { ...emptyBoard(), conductorDefault: 'closed', shapes: [sec('issue', 0, 0, 520, 440), sec('ai', 900, 600, 1200, 500, 'allow')] }
+    const { board, refused } = applyReplyChecked(closed, { edits: [], adds: [{
+      shapes: [
+        { ref: 'r', kind: 'section', text: 'Researched', in: 'ai' }, { ref: 'f', kind: 'section', text: 'Fixing', in: 'ai' }, { ref: 'd', kind: 'section', text: 'Done', in: 'ai' },
+        { text: '#1 first', in: 'r' }, { text: '#2 second', in: 'r' }, { text: 'Nothing yet', in: 'f' },
+      ],
+    }] })
+    expect(refused).toEqual([])
+    const ai = board.shapes.find(x => x.id === 'ai')!
+    const added = ['Researched', 'Fixing', 'Done'].map(t => board.shapes.find(x => x.text === t)!)
+    for (const a of added) {
+      expect(a.x).toBeGreaterThanOrEqual(ai.x)
+      expect(a.y).toBeGreaterThanOrEqual(ai.y)
+      expect(a.x + a.w).toBeLessThanOrEqual(ai.x + ai.w)
+      expect(a.y + a.h).toBeLessThanOrEqual(ai.y + ai.h)
+      expect(conductorAccessOf(board, a)).toBe('allow')
+    }
+    // Side by side, none on another.
+    expect(added[1].x).toBeGreaterThanOrEqual(added[0].x + added[0].w)
+    expect(added[2].x).toBeGreaterThanOrEqual(added[1].x + added[1].w)
+    // Their cards are inside them, so inside the open section.
+    const first = board.shapes.find(x => x.text === '#1 first')!
+    expect(sectionMembers(board.shapes, added[0]).map(m => m.id)).toContain(first.id)
+    expect(conductorAccessOf(board, first)).toBe('allow')
+    // Nothing the closed board protects was touched.
+    expect(board.shapes.find(x => x.id === 'issue')).toEqual(closed.shapes[0])
+    // A section too wide for its parent grows it.
+    const small: Board = { ...closed, shapes: [sec('ai', 0, 0, 300, 200, 'allow')] }
+    const grown = applyBoardAdd(small, { shapes: [{ kind: 'section', text: 'Wide', in: 'ai' }] })
+    const gai = grown.shapes.find(x => x.id === 'ai')!
+    const wide = grown.shapes.find(x => x.text === 'Wide')!
+    expect(gai.x + gai.w).toBeGreaterThanOrEqual(wide.x + wide.w)
+    expect(gai.y + gai.h).toBeGreaterThanOrEqual(wide.y + wide.h)
+  })
+
+  it('a shape that lands where the conductor may not change is taken out, whatever it asked for', () => {
+    const closed: Board = { ...emptyBoard(), conductorDefault: 'closed', shapes: [{ id: 'ai', kind: 'section', x: 0, y: 0, w: 400, h: 400, text: 'ai', color: 'smoke', conductor: 'allow' }] }
+    const landed: Board = { ...closed, shapes: [...closed.shapes, sticky('in', 50, 50, 'Inside'), sticky('out', 2000, 2000, 'Outside')], connectors: [{ id: 'c1', from: 'in', to: 'out' }] }
+    const g = guardOutcome(closed, landed)
+    expect(g.value.shapes.map(x => x.id)).toEqual(['ai', 'in'])
+    expect(g.value.connectors).toEqual([])
+    expect(g.refused).toEqual(['Outside'])
+    // What was already there is never judged.
+    expect(guardOutcome(landed, landed).value).toBe(landed)
   })
 
   it('on a closed board only opened sections can be changed, and the nearest setting decides', () => {

@@ -20,6 +20,7 @@ import { useAppDispatch, useAppSelector } from '../../../../store'
 import { switchSlot } from '../../../../store/chatSlice'
 import { selectSlotMessages } from '../../../../store/chat/selectors'
 import { slotRowByKey } from '../../../../store/slotIndex'
+import { runsCrewMode } from '../../../../lib/crewMode'
 import { toApiDecision } from '../../../../utils/approvalDecision'
 import { ANSWER_STYLE, type ThreadView } from '../docConductor'
 import { OVERLAY_CLASS_STYLE, OVERLAY_KEYFRAMES, overlaySlug, parseOverlay, type OverlayItem } from '../docOverlay'
@@ -141,7 +142,10 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
   const messages = useAppSelector(s => selectSlotMessages(s, slotKey))
   const slots = useAppSelector(s => s.dashboard.slots)
   const sessionRefs = useSessionRefs(slots)
-  const running = !!slotRowByKey(slots, slotKey)?.running
+  const row = slotRowByKey(slots, slotKey)
+  const running = !!row?.running
+  // Crew Mode (the conductor) delegates; a plain board's agent does the work itself.
+  const conductor = runsCrewMode(row?.agent, row?.agent_kind, row?.crew_mode_agent)
   const threads = useMemo(() => deriveThreads(messages), [messages])
   // Each section goal's latest report, by section id: a check's reply is split per goal.
   const goalReport = useCallback((sectionId: string) => latestGoalReport(threads, sectionId), [threads])
@@ -160,7 +164,7 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
     setSendError('')
     void save()
     const ask = b.asks.find(a => a.id === id)
-    const message = buildBoardTurn({ id, request, board: b, selected: ask?.shapeIds ?? [], followUp, title, docId })
+    const message = buildBoardTurn({ id, request, board: b, selected: ask?.shapeIds ?? [], followUp, title, docId, conductor })
     void sendTurn({ message, slot: slotKey }).then(r => {
       if (r.status === 'refused') setSendError(r.reason || i18nT('pages.chatPage.send_failed'))
       else if (r.status === 'transport-error') setSendError(i18nT('pages.chatPage.send_failed'))
@@ -271,7 +275,7 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       {/* The conductor's approval mode, the same control as the chat composer's:
           Trust here carries to the workers it starts, so they stop asking too. */}
       {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
-      <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+      <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)} crewSwitch
         className="absolute bottom-5 left-5 rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" style={{ zIndex: 25 }} testid="board-approval-mode" />
       {approvals.length > 0 && (
         <div className="absolute bottom-20 right-5 w-[380px] max-w-[90vw] flex flex-col gap-2" style={{ zIndex: 30 }} data-testid="board-approvals">
