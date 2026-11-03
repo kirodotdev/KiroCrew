@@ -38,6 +38,7 @@ from kiro_crew.apps.routes import (
     _resolve_app_backend_url,
     invalidate_app_secret_cache,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 # ---------------------------------------------------------------------------
 # POST /api/apps/{name}/open
@@ -132,8 +133,7 @@ class TestOpenApp:
             return argv, None
 
         async def _spawn(*argv: str, **kwargs: Any) -> Any:
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing spawn stand-in moved verbatim; the open route only logs and returns this pid and nothing signals it
-            return SimpleNamespace(pid=4321)
+            return SimpleNamespace(pid=UNALLOCATABLE_PID)
 
         monkeypatch.setattr(routes_mod, "wrap_argv", _wrap)
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -142,7 +142,7 @@ class TestOpenApp:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
             body = await resp.json()
-        assert body == {"ok": True, "name": APP, "pid": 4321}
+        assert body == {"ok": True, "name": APP, "pid": UNALLOCATABLE_PID}
         # The command is sandboxed and cgroup-capped, never bare.
         assert wrapped["argv"] == ["/bin/sh", "-c", "open-my-app"]
         assert wrapped["mode"] == "standard"
