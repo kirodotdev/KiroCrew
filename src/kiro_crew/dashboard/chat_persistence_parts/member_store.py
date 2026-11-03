@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_persistence import (
+        _DEFER_MEMBER_RESTORE,
         _SKIP_MEMBER_RESTORE,
         DashboardState,
         KiroCrewConfig,
@@ -296,9 +297,10 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     """Resolve a member slot's restore identity from its binding.
 
     Returns ``None`` for ordinary keys (caller restores normally),
-    ``(member, "member")`` when ``dm.json`` names a dispatchable crew, and
-    :data:`_SKIP_MEMBER_RESTORE` when the key has no binding or its stored
-    member name cannot be dispatched. The BINDING is the authority — transcript
+    ``(member, "member")`` when ``dm.json`` names a dispatchable crew,
+    :data:`_DEFER_MEMBER_RESTORE` when an intact binding names a crewmate id the
+    config did not resolve, and :data:`_SKIP_MEMBER_RESTORE` when the key has no
+    binding or its stored member name cannot be dispatched. The BINDING is the authority — transcript
     metadata lives in the same operator-editable JSONL it would otherwise re-pin
     from, so it is never consulted for a member key's agent or mode.
     """
@@ -313,6 +315,16 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
         return None
     binding = members_mod.read_dm_binding_for_slot(slot_name)
     member = (binding or {}).get("member", "")
+    if binding is None and members_mod.dm_binding_depends_on_config(slot_name):
+        # The binding is intact; the config read found no crewmate with its id.
+        # That answer can change with the next config write, so the thread is
+        # kept for a later pass rather than dropped for the life of the process.
+        logger.warning(
+            "restore: member slot %r names a crewmate the Crew config did not "
+            "resolve; keeping it for a later restore",
+            redact_log_via_context(slot_name),
+        )
+        return _DEFER_MEMBER_RESTORE
     if not members_mod.is_dispatchable_member_name(member):
         logger.warning(
             "restore: member slot %r has no dispatchable dm binding; leaving it "

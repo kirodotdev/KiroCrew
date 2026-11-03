@@ -22,6 +22,7 @@ error chains and tracebacks still name the path callers import it from.
 |---|---|
 | `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on request, response and notification writes, and the failure-path stderr settle (`settle_drain`) |
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
+| `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
@@ -2307,6 +2308,23 @@ adds a pointer to `kirocrew doctor`, whose MCP Governance section checks the
 account's identity before advising the setting. A server the host did report
 (still connecting, or a same-named entry that is not `client` origin) gets the
 plain timeout.
+
+A governed host is not always silent. KAS 0.66.62 under an enterprise registry
+sends a `_kiro/mcp/status` snapshot for the session with `servers` empty and the
+dropped name in `accessModeFilteredServers`. (`unresolvedRegistryServers` is
+not read: no capture shows whether a server listed there is final or still
+resolving.) That is the host's own positive answer, so a required
+server listed there is decided on that frame, with no settle and no deadline,
+unless the same snapshot also has a status entry under that name, of any state
+or origin (then the usual states and timeout rule, so a foreign same-named
+server still times out).
+With registry mode on, the session starts as soon as every pending server is
+such a listed drop, recorded failed with the governed-drop reason; a server
+still connecting beside it keeps the full budget. With registry mode off, the
+start fails at once with `AcpRuntimeError` naming each listed server and the
+field that listed it, and how to declare registry mode; it never starts
+without the servers and never waits out the budget for them. The upstream wire
+limitation is tracked as kirodotdev/Kiro#12231.
 Errors name the required server and sanitize backend failure text. On failure,
 runtime death, or cancellation, no handle escapes. A failed fresh `session/new`
 is terminated through the bounded per-session teardown, freeing its resident state
@@ -2991,14 +3009,18 @@ whose transport behaviour this module owns.
   `structural_terminal=True`, and `context_overflow=True` together in the
   data-field-only structural tag block. The JSON-RPC `message` field cannot set
   those tags, and same-session transient retry never receives this failure.
-  One exception is anchored, not free text: the claude adapter's own refusal,
+  Two exceptions are anchored, not free text. The claude adapter's own refusal,
   `Internal error: API Error: 400 Input is too long.` (or `Prompt is too long`),
   arrives in `message` with only `{"errorKind": "unknown"}` in `data`, so
   `_RE_ADAPTER_INPUT_TOO_LONG` matches it at the START of `message` and sets the
-  same three tags. It is terminal in `_is_transient_raw_error` too, so neither
-  the retry ladder nor the throttle fallback chain re-sends a history every model
-  refuses, and the formatter words it with the cause and the fix (start a fresh
-  session).
+  same three tags; the formatter words it with the cause and the fix (start a
+  fresh session). The model service's byte cap, `Request exceeds the maximum
+  allowed size (Request ID: ...)` (a `GenericValidationError`), may ride in
+  either field, so `_RE_REQUEST_SIZE_EXCEEDED` matches it at the START of `data`
+  or `message` (after the stream envelope or `Internal error:`) and sets the
+  same tags; its provider sentence is shown as is. Both are terminal in
+  `_is_transient_raw_error` too, so neither the retry ladder nor the throttle
+  fallback chain re-sends a history every model refuses.
 - `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ### `AcpProcessDied` on a stalled stdin write

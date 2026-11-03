@@ -2749,9 +2749,38 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   figures, plain words that agree with the readings, and the user's stated style
   over the crewmate's own. Written as principles; prompt-only, with no save-time
   look check on reports.
-  A check-in that fires with the thread not open or busy does nothing that time;
+  A check-in that finds no slot for the thread loads it first
+  (`goal_reminder._load_thread`: `rehydrate_slot_from_history_async` with
+  `adopt_closed`, the reopen the member-thread endpoint uses), so a thread a
+  restart left unloaded still gets its wake. The owner's rule is that a mate's
+  heartbeat always wakes the mate: the check-in is something the owner turned
+  on, and its switch, not the tab, stops it. So a mate's DM thread closed with
+  ✕ or by the idle sweep is reloaded and woken like an unloaded one; that
+  reopening applies to the crewmate's own DM key only, and every other kind of
+  thread keeps the restore's close-stays-closed rule. Only a thread that cannot
+  be built (no transcript, or a binding that resolves to no crewmate) skips,
+  logging `skipped: the mate's thread could not be loaded`. A check-in
+  that fires with the thread busy does nothing that time;
   the weekly and monthly ones check again after reading the work ledger, so a
-  turn that started meanwhile never carries the review mark.
+  turn that started meanwhile never carries the review mark. Every check-in's
+  outcome line (`started` or the skip) is the run's result in the job's history
+  (`cron_fire`, `job.set_run_result`), silent job or not. At boot, a crewmate
+  thread whose intact binding names a crewmate id the config read did not
+  resolve is not dropped: the restore keeps its key in the reopen seed
+  (`chat_persistence._DEFER_MEMBER_RESTORE`,
+  `members.dm_binding_depends_on_config`) and `dashboard.member_slot_retry`
+  tries it once more `MEMBER_RESTORE_RETRY_DELAY_S` after the restore. The key
+  leaves the seed when the retry builds it, when another path built or closed
+  it first (a check-in's load ends the deferral at once,
+  `member_slot_retry.end_deferral`), and when its binding still names no
+  crewmate, so a crewmate deleted for good is pruned by the next flush. A read
+  error or a transcript that does not build keeps the seed for the next boot's
+  restore to decide. The retry works only on the keys the restore deferred
+  (`state.deferred_member_slot_keys`); a seed kept for another reason (an
+  unreadable read, a remote-only transcript) is left alone. A thread built after the boot restore, by that retry or by a
+  check-in's load, gets the boot's parked-send pass
+  (`member_slot_retry.resume_parked_sends`, which runs
+  `drain_restored_parked_sends`), so an accepted parked send runs before the wake.
   The check-in jobs are not listed on the Schedule page or in the mate's
   Schedules tab (`GET /api/crons` drops them through
   `goal_reminder.is_reminder_job`); the switches are their only control;
@@ -2793,7 +2822,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   own bound ("Every 1 hr · up to 24 runs a day"). Only the owner's schedules route and an applied
   `crewmate.check_ins` card write the switch, so the mate proposes it with
   `set_check_ins` and cannot turn it on itself. A wake goes through the same
-  `goal_reminder.fire` path and the same skips (thread not open, a turn running
+  `goal_reminder.fire` path, loads an unloaded thread the same way, and takes
+  the same skips (thread cannot be loaded, a turn running
   or queued, switch off, no goal), checking the thread again after the
   off-loop tools check, and dispatches one hidden turn
   (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`)

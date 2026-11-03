@@ -32,6 +32,11 @@ from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
 )
+from kiro_crew.acp.oversized_request_errors import (
+    _RE_ADAPTER_INPUT_TOO_LONG,
+    _RE_OVERSIZED_REQUEST,
+    _is_request_size_exceeded,
+)
 from kiro_crew.acp.runtime_models import (
     DEFAULT_MODEL,
     advertised_model_ids,
@@ -1041,41 +1046,6 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
     re.IGNORECASE,
 )
 
-# kiro-cli's OWN refusal of a request no compaction round can make fit: "This
-# message is too large to send, and it contains no text that can be shortened.
-# Remove or reduce the attached content and try again." It is raised when the
-# context overflowed and the pending message is IRREDUCIBLE (image blocks have no
-# truncated form), and kiro-cli deliberately does not compact on the way to
-# saying so, nor does it append the failed message to the native history -- so the
-# conversation is byte-identical before and after the failure, and re-sending the
-# same context reproduces the verdict on every attempt. That makes it a
-# STRUCTURAL rejection in the same sense as _RE_MALFORMED_REQUEST (a size verdict
-# rather than a shape verdict, but equally deterministic), and a self-driving
-# caller that re-inlines the same attachment each cycle must stop rather than
-# re-fire it. Matched against the provider `data` field only, like its two
-# siblings: the ACP server hands the agent-loop error to `internal_error(text)`,
-# so the sentence rides in `data` beside the -32603 boilerplate `message`, and a
-# phrase echo carried only by `message` must not stamp an unrelated error. The
-# wording ends in "try again", so the terminal verdict is stated explicitly in
-# _is_transient_raw_error rather than left to the unknown fall-through: a
-# co-occurring retry hint or 5xx wrapper must not rescue a size verdict.
-_RE_OVERSIZED_REQUEST = re.compile(r"[Tt]his message is too large to send")
-
-# The claude adapter's spelling of a request larger than the model accepts:
-# ``Internal error: API Error: 400 Input is too long.`` (or ``Prompt is too
-# long``). Unlike kiro-cli it puts the sentence in the JSON-RPC ``message``, not
-# in ``data`` (which carries only ``{"errorKind": "unknown"}``), so this one is
-# matched against ``message`` -- anchored at its start, so it reads the adapter's
-# own wording and never a phrase echoed further into some other error. The
-# overflow is in the conversation history the adapter re-sends on every turn
-# (accumulated images are the usual cause), so the identical payload is refused
-# on every retry and on every model: a CONTEXT OVERFLOW in the same sense as
-# _RE_CONTEXT_WINDOW_OVERFLOW, and tagged the same way at raise time.
-_RE_ADAPTER_INPUT_TOO_LONG = re.compile(
-    r"^\s*(?:Internal error:\s*)?(?:API Error:\s*\d{3}\s+)?(?:Input|Prompt) is too long\b",
-    re.IGNORECASE,
-)
-
 # A preserved-thinking signature rejection whose own provider text says the block
 # is bound to another conversation is recoverable by replacing the NATIVE
 # conversation. Both clauses must appear IN ONE FIELD: the shorter
@@ -1190,7 +1160,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     unentitled-model(terminal) → usage-limit(terminal) →
     malformed-request(terminal) → context-window-overflow(terminal) →
     unsupported-image(terminal) → oversized-request(terminal) →
-    adapter input-too-long(terminal) →
+    adapter input-too-long(terminal) → request-size-exceeded(terminal) →
     model-unavailable → throttle →
     credential-propagation(transient) → auth(terminal) →
     session-expiry(terminal) → connection failure(transient) → generic 5xx /
@@ -1263,6 +1233,11 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # every attempt and every model, so neither a retry nor the fallback
         # chain can make it fit. Stated explicitly so a 5xx token or retry hint
         # added to the same frame cannot rescue a size verdict.
+        return False
+    if _is_request_size_exceeded(data, message):
+        # Terminal: the model service's byte cap refuses the same re-sent
+        # history on every attempt. Stated explicitly for the same reason as the
+        # adapter's overflow above.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -1912,18 +1887,23 @@ def _raise_acp_error(
     )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Five
-    # answers carry the tag: context-window overflow, malformed request, image
-    # validation failure, the many-image pixel-dimension cap, and kiro-cli's own
-    # refusal of a request it could not shrink to fit -- each reproduced exactly
-    # by re-sending the same context.
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except
+    # for the two anchored overflow sentences named below. The tag covers
+    # context overflow (kiro-cli's window, the claude adapter's input-too-long,
+    # the model service's request size cap), malformed request, image validation
+    # failure, the many-image pixel-dimension cap, and kiro-cli's own refusal of a
+    # request it could not shrink to fit -- each reproduced exactly by re-sending
+    # the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
     # The claude adapter's overflow rides in ``message`` (anchored match, see
-    # _RE_ADAPTER_INPUT_TOO_LONG); every other tag below stays data-scoped.
+    # _RE_ADAPTER_INPUT_TOO_LONG), and the model service's size cap may ride in
+    # either field (anchored, see _RE_REQUEST_SIZE_EXCEEDED); every other tag
+    # below stays data-scoped.
     _context_overflow = bool(
         _RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field)
         or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
+        or _is_request_size_exceeded(raw_data_field, raw_message_field)
     )
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
     _image_dimension_wedge = is_many_image_dimension(raw_data_field)
