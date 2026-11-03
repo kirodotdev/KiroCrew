@@ -37,6 +37,11 @@ ESSENTIAL_LINKED_SKIP_SOURCE = "essential-context#linked-skipped"
 #: Source-label prefix of the in-band notice that names declared literal
 #: resources skipped because they do not exist; the full label appends ``:<template>``.
 ESSENTIAL_MISSING_SKIP_SOURCE = "essential-context#missing-skipped"
+#: Source-label prefix of the in-band notice that names paths an ABSOLUTE
+#: declaration reaches through a link whose target is outside the admitted root
+#: (home, reached through a linked folder such as ``~/workplace``), left out unread
+#: instead of refusing the whole turn; the full label appends ``:<template>``.
+ESSENTIAL_OUTSIDE_SKIP_SOURCE = "essential-context#outside-skipped"
 #: Source-label prefix of the in-band notice that names steering documents the
 #: no-follow descriptor read refused (a hard link, a reparse point that is not a
 #: link) and that were left out instead of refusing the whole turn; the full
@@ -569,6 +574,34 @@ def _missing_declared_note(missing: list[Path], template: str) -> tuple[str, str
     )
 
 
+def _outside_declared_note(outside: list[Path], template: str) -> tuple[str, str] | None:
+    """The in-band note naming absolute declarations left out as outside home, or ``None``.
+
+    On a cloud desktop a folder under home (such as ``~/workplace``) is often
+    a link to another volume. kiro-cli follows the link and loads what the
+    template declares there; the snapshot does not read outside its root, so the
+    link is left out unread and named here, and the member still starts.
+    """
+    unique = list(dict.fromkeys(outside))
+    if not unique:
+        return None
+    listed = ", ".join(str(path) for path in unique[:_MAX_SKIPPED_LISTED])
+    more = len(unique) - _MAX_SKIPPED_LISTED
+    if more > 0:
+        listed += f", and {more} more"
+    return (
+        f"{ESSENTIAL_OUTSIDE_SKIP_SOURCE}:{template}",
+        f"DECLARED RESOURCES NOT IN THIS SNAPSHOT. {len(unique)} "
+        f"path{'' if len(unique) == 1 else 's'} the agent template declares by absolute "
+        f"path {'resolves' if len(unique) == 1 else 'resolve'} outside the home folder "
+        f"(for example through a linked folder) and {'was' if len(unique) == 1 else 'were'} "
+        f"left out unread: {listed}. The host may still load them natively, so their text "
+        "can appear elsewhere in your context; this note only says the snapshot does not "
+        "carry them. To load one here, ask the user to keep a regular copy of it inside "
+        "the home folder and declare that path.",
+    )
+
+
 def _matches(
     root: Path,
     pattern: str,
@@ -577,6 +610,7 @@ def _matches(
     missing: list[Path] | None = None,
     *,
     confined: bool = False,
+    outside: list[Path] | None = None,
 ) -> list[Path]:
     """Expand a declared glob with bounded directory work and no link traversal.
 
@@ -586,6 +620,13 @@ def _matches(
     points. A declared steering glob also passes *confined*: only a link whose
     target the path screen resolves inside *root* is left out, and any other link
     still refuses.
+
+    An ABSOLUTE declaration also passes *outside*: a link the path screen resolves
+    to a target outside *root* (``~/workplace`` linked to another volume) is appended
+    there and left out, unread and not descended into, instead of refusing. A
+    target that is managed memory state still refuses, and so does a link the
+    screen refuses or that stays inside *root* under a glob that does not leave it
+    out.
 
     A glob-free *pattern* naming a path that does not exist is appended to
     *missing*, when given, and matches nothing -- kiro-cli skips an absent
@@ -617,6 +658,22 @@ def _matches(
             return False
         target = validate_file_path(str(link))
         return target is None or not Path(target).is_relative_to(admitted_root)
+
+    def _left_out_outside(link: Path) -> bool:
+        """Whether *outside* leaves *link* out; it is then appended there, unread.
+
+        Nothing under the target is opened or listed. A managed-state target
+        raises: a link must not turn another member's store into a quiet skip.
+        """
+        if outside is None:
+            return False
+        target = validate_file_path(str(link))
+        if target is None or Path(target).is_relative_to(admitted_root):
+            return False
+        _refuse_managed_source(Path(target))
+        logger.warning("Essential source %s left out: it links outside %s", link, root)
+        outside.append(link)
+        return True
 
     if not any(c in pattern for c in "*?["):
         path = admitted_root / pattern
@@ -650,6 +707,8 @@ def _matches(
             if is_link_or_junction(path):
                 if linked is not None and not _escapes(path):
                     linked.append(path)
+                    continue
+                if _left_out_outside(path):
                     continue
                 raise MemberEssentialContextError(
                     f"Essential source {path}: linked document or directory"
@@ -716,6 +775,8 @@ def _matches(
                                 or entry.is_dir()
                             ):
                                 linked.append(path)
+                            continue
+                        if _left_out_outside(path):
                             continue
                         raise MemberEssentialContextError(
                             f"Essential source {path}: linked document or directory"
@@ -956,6 +1017,7 @@ def documents_for_member(
     seen: set[Path] = set()
     skipped: list[Path] = []
     linked: list[Path] = []
+    outside: list[Path] = []
     missing: list[Path] = []
     unreadable: list[Path] = []
     oversized: list[tuple[Path, int]] = []
@@ -973,6 +1035,7 @@ def documents_for_member(
             if native_only
             else (
                 _skipped_linked_note(linked),
+                _outside_declared_note(outside, template),
                 _skipped_unreadable_note(unreadable, template),
                 _skipped_oversized_note(oversized, template),
                 _skipped_managed_note(skipped, template),
@@ -1182,7 +1245,7 @@ def documents_for_member(
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
         for match, root in _resource_paths(
-            resources, source_root, absolute_root, skipped, missing, linked=linked
+            resources, source_root, absolute_root, skipped, missing, linked=linked, outside=outside
         ):
             add(match, root, steering="steering" in match.parts)
     return _finish()
@@ -1243,6 +1306,7 @@ def _resource_paths(
     *,
     linked: list[Path] | None = None,
     markdown_only: bool = True,
+    outside: list[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     """Declared ``file://`` matches; an absent literal one goes to *missing* instead.
 
@@ -1251,6 +1315,10 @@ def _resource_paths(
     link that stays inside its root out and name it there, as the implicit steering
     scan does. A link that resolves elsewhere, and a link under any other glob,
     still refuses, as it does for a caller that passes none.
+
+    A caller that passes *outside* has an ABSOLUTE declaration leave out a link
+    whose target resolves outside its root and name it there (see
+    :func:`_matches`). A relative declaration never does.
     """
     paths: list[tuple[Path, Path]] = []
     absent: list[Path] = [] if missing is None else missing
@@ -1268,7 +1336,10 @@ def _resource_paths(
         else:
             pattern = str(path)
         left_out = linked if "steering" in Path(pattern).parts else None
-        for match in _matches(root, pattern, skipped, left_out, absent, confined=True):
+        escaping = outside if path.is_absolute() else None
+        for match in _matches(
+            root, pattern, skipped, left_out, absent, confined=True, outside=escaping
+        ):
             wanted = not markdown_only or match.suffix.lower() == ".md"
             if wanted and (match, root) not in paths:
                 paths.append((match, root))
@@ -1291,13 +1362,23 @@ def _declared_file_size(path: Path) -> int:
 
 
 def _projected_resource_paths(
-    definition: dict, cwd: str, *, markdown_only: bool = True, linked: list[Path] | None = None
+    definition: dict,
+    cwd: str,
+    *,
+    markdown_only: bool = True,
+    linked: list[Path] | None = None,
+    outside: list[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     resources = definition.get("resources", [])
     if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
         raise MemberEssentialContextError("Projected resources must be a list of declarations")
     return _resource_paths(
-        resources, Path(cwd), Path.home(), linked=linked, markdown_only=markdown_only
+        resources,
+        Path(cwd),
+        Path.home(),
+        linked=linked,
+        markdown_only=markdown_only,
+        outside=outside,
     )
 
 
@@ -1361,7 +1442,7 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     non-link reparse point).
     """
     documents: dict[str, str] = {}
-    for path, root in _projected_resource_paths(definition, cwd, linked=[]):
+    for path, root in _projected_resource_paths(definition, cwd, linked=[], outside=[]):
         if str(path) in documents:
             continue
         try:
