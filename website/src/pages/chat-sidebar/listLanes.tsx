@@ -21,6 +21,8 @@ import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, S
 import type { Slot } from './types'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
+import { crewSignalsFrom, foldCodeChannelCrews } from './codeChannelCrew'
+import { CodeChannelCrewWorkers } from './CodeChannelCrewWorkers'
 import { COLLAPSE_FLOOR_ATTR } from './collapseFloor'
 import { PinnedSessionDivider, dateSegment } from './chrome'
 import type { LaneRows } from './laneRows'
@@ -71,7 +73,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     folderDragWithheld, folderNameMatchIds, folderReorderable, folderSubtrees, folders,
     handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragOver, handleSidebarDragStart,
     heldDisplacedRef, heldLane, hiddenByContainer, hoverPinRef, isActiveRow, kindSections, laneRowWindow, laneScrollMemory,
-    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef,
+    laneSlots, lineage, listNarrowed, localGroupHeader, localSlots, onDropSessionRef, pinned,
     renderCrewGroups, renderFolderBlock, renderFolderCreateError, renderHiddenReveal,
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
@@ -511,7 +513,16 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                              *  no empty space. */}
                             {draggingNestedFolder && <RootDropHint />}
                             {(() => {
-                              const { fresh: freshRootRaw, stale: staleRoot } = splitStale(ungroupedSlots)
+                              const rootSplit = splitStale(ungroupedSlots)
+                              // Slack code channel crews among the ungrouped rows fold
+                              // under their conductor, as they do inside a folder.
+                              const rootFold = foldCodeChannelCrews(ungroupedSlots, rootSplit.fresh, rootSplit.stale, {
+                                narrowed: listNarrowed || slotFilter.trim() !== '', expanded: conductorExpanded,
+                                keepShown: w => isActiveRow(w) || pinned.has(w.key),
+                                signals: crewSignalsFrom({ isRunning: sidebarRows.isRunning, subagentApprovalCounts, unreadSet }),
+                              })
+                              const freshRootRaw = rootFold.fresh
+                              const staleRoot = rootFold.stale
                               const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(sectionRows(freshRootRaw, sidebarRows.isPinned, kindSections), 'list', 'tree:root', undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
                               const rootHeaders = sectionHeaders(freshRoot, sidebarRows.isPinned, kindSections)
                               return (
@@ -526,11 +537,21 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                                     const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
                                       && !startsAutomaticSection(freshRoot, i + 1) && !rootHeaders[i + 1]
                                     const kindHeader = rootHeaders[i]
+                                    const crew = rootFold.viewOf(s)
+                                    const openWorkers = crew ? rootFold.openWorkersOf(s) : null
+                                    // Their own hold container, as inside a folder.
+                                    const crewHold = openWorkers ? heldLane(openWorkers, treeRootScope, `${treeRootContainer}:crew:${sessionRowIdentity(s)}`) : null
+                                    const crewWorkers = crewHold ? crewHold.rows : null
                                     return (
                                       <Fragment key={sessionRowIdentity(s)}>
                                         {startsAutomaticSection(freshRoot, i) && <PinnedSessionDivider />}
                                         {kindHeader && <KindSectionHeader kind={kindHeader} />}
-                                        {renderSessionRow(s, 0, showDivider, treeRootScope, treeRootScope, treeRootContainer)}
+                                        {renderSessionRow(s, 0, showDivider && !crewWorkers, treeRootScope, treeRootScope, treeRootContainer, undefined, undefined, crew)}
+                                        {crewWorkers && (
+                                          <CodeChannelCrewWorkers conductorId={sessionRowIdentity(s)}>
+                                            {crewWorkers.map((w, j) => renderSessionRow(w, 1, j < crewWorkers.length - 1 && !isActiveRow(w) && !isActiveRow(crewWorkers[j + 1]), treeRootScope, treeRootScope, crewHold!.container))}
+                                          </CodeChannelCrewWorkers>
+                                        )}
                                       </Fragment>
                                     )
                                   })}
