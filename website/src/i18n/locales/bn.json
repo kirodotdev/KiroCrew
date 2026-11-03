@@ -14938,6 +14938,10 @@
         "profile_blank_uses_default_chain": "ডিফল্ট AWS ক্রেডেনশিয়াল ব্যবহার করতে খালি রাখো।",
         "remove_this_live_source": "এই নলেজ বেস সোর্সটি সরানো হবে? স্থানীয়ভাবে কিছুই সংরক্ষিত নেই; নলেজ বেসটি নিজে অপরিবর্তিত থাকবে।",
         "region_example_placeholder": "যেমন us-east-1",
+        "word_count_one": "{{n}}টি শব্দ",
+        "word_count_other": "{{n}}টি শব্দ",
+        "word_count_approx_one": "~{{n}}টি শব্দ",
+        "word_count_approx_other": "~{{n}}টি শব্দ",
         "items_count_one": "{{n}}টি আইটেম",
         "items_count_other": "{{n}}টি আইটেম"
       },

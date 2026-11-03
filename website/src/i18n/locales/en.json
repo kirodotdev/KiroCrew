@@ -8194,6 +8194,10 @@
         "web_page_hosts_unavailable": "Couldn't load the allowed sites. Close and reopen this form to try again.",
         "web_page_no_hosts_allowed": "No sites are allowed yet, so nothing can be fetched. To allow a site, type it below, run the command in a terminal, then close and reopen this form.",
         "web_page_site_not_allowed": "{{site}} isn't an allowed site yet. Allowed sites: {{hosts}}. To allow it, run the command below in a terminal, then close and reopen this form.",
+        "word_count_one": "{{n}} word",
+        "word_count_other": "{{n}} words",
+        "word_count_approx_one": "~{{n}} words",
+        "word_count_approx_other": "~{{n}} words",
         "items_count_one": "{{n}} item",
         "items_count_other": "{{n}} items"
       }

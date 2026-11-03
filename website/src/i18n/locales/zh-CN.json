@@ -14629,6 +14629,8 @@
         "profile_blank_uses_default_chain": "留空则使用默认的 AWS 凭证。",
         "remove_this_live_source": "移除此知识库来源？本地未存储任何内容；知识库本身不受影响。",
         "region_example_placeholder": "例如 us-east-1",
+        "word_count_other": "{{n}} 个词",
+        "word_count_approx_other": "约 {{n}} 个词",
         "items_count_other": "{{n}} 个条目"
       },
       "settings": {

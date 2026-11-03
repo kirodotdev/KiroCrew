@@ -238,6 +238,8 @@
   "pages.knowledge.index.stats_sources",
   "pages.knowledge.sourcesList.files_failed_count",
   "pages.knowledge.sourcesList.items_count",
+  "pages.knowledge.sourcesList.word_count",
+  "pages.knowledge.sourcesList.word_count_approx",
   "pages.knowledge.sourcesList.supported_file_found",
   "pages.mcpManagement.assessment.measure_finished",
   "pages.mcpManagement.assessment.measure_unmeasured",

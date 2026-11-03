@@ -14629,6 +14629,8 @@
         "profile_blank_uses_default_chain": "비워 두면 기본 AWS 자격 증명을 사용합니다.",
         "remove_this_live_source": "이 지식 기반 소스를 제거하시겠습니까? 로컬에 저장된 항목은 없으며, 지식 기반 자체는 변경되지 않습니다.",
         "region_example_placeholder": "예: us-east-1",
+        "word_count_other": "{{n}}단어",
+        "word_count_approx_other": "약 {{n}}단어",
         "items_count_other": "{{n}}개 항목"
       },
       "settings": {
