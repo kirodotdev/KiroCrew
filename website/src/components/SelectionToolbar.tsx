@@ -5,6 +5,7 @@ import { MessageSquareQuote, MessageCircleQuestionMark, MessageSquarePlus, X, Co
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { containedSelectionRange } from '../utils/selectionContainment'
+import { selectionTouchesHostOnly } from '../utils/visibleText'
 import { codePassagePosition, plainCodeFenceAtRangeStart, shadowSelectionRange } from '../utils/pierreShadow'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { measureAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
@@ -667,6 +668,13 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // its host is (`shadowSelectionRange` looked only under the container).
     const measureRange = inCode ?? containedSelectionRange(sel.getRangeAt(0), container)
     if (!measureRange) {
+      setVisible(false)
+      return
+    }
+    // Host-only content (the owner's revealed credential) never feeds Quote,
+    // Ask or an app's selection action: a selection touching it gets no
+    // toolbar. The owner's own Copy button and the browser's copy still work.
+    if (selectionTouchesHostOnly(sel, container)) {
       setVisible(false)
       return
     }

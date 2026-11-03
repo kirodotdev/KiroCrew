@@ -88,6 +88,10 @@ export interface TranscriptRendererOptions {
   /** Slot these rows belong to. The tool line keys its per-slot log off it;
    *  omitted (the single-chat surface) it reads the active slot's. */
   slot?: string
+  /** The LOCAL slot whose replies may draw lock tags with the owner's reveal.
+   *  A host showing this gateway's own session passes its key; the crew
+   *  window (another gateway's rows) never does. */
+  revealSlot?: string
   /** Whether a tool row animates as "running". Default: the transcript's
    *  running flag. ChatPage narrows it to the trailing group -- rows after the
    *  last assistant text while the slot is in `tool_running`. */
@@ -676,6 +680,7 @@ export function createTranscriptRenderers(
               sessions: o.sessions,
               activeSession: o.activeSession,
               messageTs: m.ts,
+              redactionSlot: o.revealSlot,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -819,6 +824,18 @@ export function createTranscriptRenderers(
             </>,
             true,
           ),
+        } satisfies MessageRenderer]
+      : []),
+    // A host showing this gateway's own session (not a crewmate's chat, which
+    // has its own entry above) draws the reply with its lock tags and reveal.
+    ...(!crewmate && o.revealSlot
+      ? [{
+          id: 'assistant',
+          roles: ['assistant', 'streaming'],
+          render: (m: ChatMessage, ctx: MessageRenderContext) => {
+            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot })
+            return bubble === null ? null : ctx.wrapper(bubble)
+          },
         } satisfies MessageRenderer]
       : []),
   ]

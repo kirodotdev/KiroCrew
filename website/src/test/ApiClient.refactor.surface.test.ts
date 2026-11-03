@@ -162,7 +162,7 @@ const API_KEY_ORDER = [
   'deleteTheme', 'themeDetail', 'themeBoot', 'updateThemeConfig',
   'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
   'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',
-  'setCredentialRedaction', 'voiceSynthesize', 'voiceCancel', 'channelsList',
+  'setCredentialRedaction', 'revealRedactedValue', 'voiceSynthesize', 'voiceCancel', 'channelsList',
   'channelPresets', 'channelGet', 'channelCreate', 'channelClose',
   'channelPost', 'channelAddAgent', 'channelUpdateAgent', 'channelDismissAgent',
   'channelWakeAgent', 'channelApproveAgent', 'channelClearContext', 'listApps',
