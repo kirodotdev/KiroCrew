@@ -3283,6 +3283,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.slide-up-and-right-to-send",
+    "label": "Slide up and right to send",
+    "labelKey": "pages.settings.sttSettings.slide_to_send",
+    "hint": "On the phone's hold-to-talk bar, slide up and to the right before letting go to send, or to steer the agent while it works. Sliding straight up still cancels. Only while 'Send when I stop recording' is off.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.slide_to_send"
+  },
+  {
     "id": "voice.speed",
     "label": "Speed",
     "labelKey": "pages.settings.voicePanel.speed",

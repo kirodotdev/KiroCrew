@@ -22,6 +22,7 @@ export function createVoiceEndpoints({ post, put, j, jfetch: fetch }: ClientTran
       partial_interval_ms?: number
       endpointing?: boolean
       submit_on_release?: boolean
+      slide_to_send?: boolean
       dictation_panel?: boolean
       transcribe_region?: string
       transcribe_profile?: string

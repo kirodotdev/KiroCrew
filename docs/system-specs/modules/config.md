@@ -3403,6 +3403,7 @@ class SttConfig:
     threads: int = 0               # local decode threads; 0/"auto" = half the cores capped at 16; KIROCREW_STT_THREADS wins
     endpointing: bool = False      # semantic auto-submit on a complete utterance; needs streaming
     submit_on_release: bool = False  # a deliberate stop sends once the transcript settles; any provider
+    slide_to_send: bool = False    # phone hold bar: up-right sends or steers; only while submit_on_release is off
     polish: bool = False           # hand the FINISHED transcript (never the audio) to a fast model; off = nothing leaves the machine
     dictation_panel: bool = True   # animated recording panel; falls back to the status bar
     timeout_secs: int = 300

@@ -620,6 +620,16 @@ class SttConfig:
             "with streaming and batch transcription; off by default.",
         ),
     )
+    slide_to_send: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slide up and right to send",
+            "On the phone's hold-to-talk bar, slide up and to the right before you let "
+            "go to send what you said, or to steer the agent while it works. Sliding "
+            "straight up or to the left still cancels. Only while 'Send when I stop "
+            "recording' is off; with it on, letting go already sends. Off by default.",
+        ),
+    )
     dictation_panel: bool = field(
         default=True,
         metadata=_meta(

@@ -117,6 +117,27 @@ describe('submit on release: batch', () => {
     expect(t.onAutoSubmit).not.toHaveBeenCalled()
   })
 
+  it('a send stop sends with the setting off, once the transcript lands', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+    t.batchAnswers('hello there')
+    expect(t.sent).toEqual(['hello there'])
+    t.render(); t.render()
+    expect(t.onAutoSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('a send stop keeps a draft when the person typed before it settled', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.inputRef.current = 'typed by hand'
+    t.batchAnswers('hello there')
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
   it.each([[undefined]])('keeps a draft for a stop with no intent (%s)', async intent => {
     const t = mount()
     await t.startRecording()

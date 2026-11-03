@@ -1027,7 +1027,19 @@ from the release position. The hard cap, blur, a hidden page, `pointercancel`,
 an orphaned startup and unmount also stop with no intent, and Esc and slide-up
 cancel discard, so none of them send.
 
-`useComposerVoice` arms one pending release at a `'finish'` stop over a live
+With the setting off, a plain hold-bar release only transcribes. With
+`stt.slide_to_send` also on (off by default, so the single slide-up-to-cancel
+stays unless the person opts in), the bar's up zone splits: sliding up and
+also right by `SEND_SIDE_PX` arms send, and any other upward slide still arms
+cancel. `stt.slide_to_send` has no effect while `stt.submit_on_release` is on. Its release stops with the
+`StopIntent` `'send'`, which sends whatever the setting says. Like a
+`'finish'` under the setting, it goes through the host's auto-submit and so
+takes the composer's default busy decision: it steers a running turn where
+Send would, and the cue and bar say "steer" then. Only a hold can send; a tap
+that ends in the zone still discards.
+
+`useComposerVoice` arms one pending release at a `'send'` stop, or a `'finish'`
+stop under the setting, over a live
 capture that no send has already ended. It sends once, through the host's
 auto-submit, after capture, drain, transcription and any polish have settled.
 It keeps the draft instead when the transcript is empty or failed, when the
