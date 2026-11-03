@@ -354,6 +354,7 @@ export const CodeBlock = memo(function CodeBlock(
   }, [annotations])
 
   return (
+    // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <div className="flex items-center gap-1.5 min-w-0">
