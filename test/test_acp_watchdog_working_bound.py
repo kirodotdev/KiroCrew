@@ -1,7 +1,9 @@
-"""The tool watchdog bounds an opaque MCP tool's WORKING reading.
+"""The tool watchdog bounds the WORKING readings that cannot be tied to the tool.
 
 An opaque MCP tool reads WORKING on any movement in the runtime's tree, which
-a warm sibling MCP server produces too. So that one reading is bounded by
+a warm sibling MCP server produces too, and a Windows shell tool reads WORKING
+on movement in any process started since its dispatch, which another
+session's process can produce. So those readings are bounded by
 ``watchdog.tool_stall_hard_cap_secs``; a matched shell child, the declared
 ``wait`` verdict and a kirocrew-core tool that pings the session keepalive
 keep deferring. Recovery is the session-scoped ``session/cancel``.
@@ -19,6 +21,7 @@ from test_acp_stale_recovery import _SilentQueue
 
 from kiro_crew.acp.liveness import (
     EVIDENCE_MCP_SUBTREE_ACTIVE,
+    EVIDENCE_WINDOWS_TREE_MOVED,
     VERDICT_WORKING,
     ToolCallState,
 )
@@ -127,6 +130,22 @@ async def test_opaque_mcp_working_is_cancelled_past_the_hard_cap():
     assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
     assert "verdict=working" in events[-1].text
     assert ("cancel", VERDICT_WORKING, "working_cap") in metrics
+
+
+@pytest.mark.asyncio
+async def test_windows_shell_tree_working_is_cancelled_past_the_hard_cap():
+    reading = (
+        VERDICT_WORKING,
+        f"{EVIDENCE_WINDOWS_TREE_MOVED} (cpu +50000000ns over 2 process(es))",
+    )
+    tool = ToolCallState(title="shell", command="npm init", is_shell=True)
+    handle = _handle(_settings(hard_cap=0.05), reading, tool)
+
+    events = await _drain(handle, timeout=5.0)
+
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+    assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
+    assert "verdict=working" in events[-1].text
 
 
 @pytest.mark.asyncio
