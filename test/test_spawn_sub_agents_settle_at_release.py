@@ -89,6 +89,7 @@ def _surfaced(*keys: str):
 #: (parent key, the key its tab publishes) for each tab-routed parent.
 _CRON_TAB = ("cron:j1", "cron:j1")  # a persistent_session job shown in chat
 _SLACK_TAB = ("slack:C1:1700000000.1", "slack:C1:1700000000.1")  # a channel-born tab
+_DASHBOARD_TAB = ("dashboard:chat-7-1785396512", "dashboard:chat-7-1785396512")  # dashboard-born
 
 
 async def _drive_tab_parent(
@@ -197,7 +198,31 @@ async def test_a_channel_parent_with_an_open_tab_whose_turn_is_stopped_still_get
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("parent", [_CRON_TAB, _SLACK_TAB], ids=["cron-tab", "slack-tab"])
+async def test_a_dashboard_born_tab_whose_turn_is_stopped_still_gets_its_result(
+    done: Any,
+) -> None:
+    """A dashboard tab's own turn called ``spawn_sub_agents``, the reply
+    carrying the child reached kiro-cli, and the user pressed Stop before the turn
+    landed. The completion is parked under the live turn, not acknowledged, and the
+    release with no landing noted delivers it once."""
+    seen = await _drive_tab_parent(done, _DASHBOARD_TAB, lands=False)
+
+    assert seen["marked"] == {"child-1"}
+    assert seen["acked_while_live"] is False, (
+        "the tab route acknowledged a dashboard tab's returned result while the turn "
+        "that received the reply could still be stopped"
+    )
+    assert seen["gate_open_while_live"] is False
+    assert len(seen["chats"]) == 1, f"delivered {seen['chats']!r} after the stopped turn"
+    assert done.orch._inline_parked == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent",
+    [_CRON_TAB, _SLACK_TAB, _DASHBOARD_TAB],
+    ids=["cron-tab", "slack-tab", "dashboard-tab"],
+)
 async def test_a_tab_parents_landed_turn_plays_no_duplicate_and_settles_at_its_release(
     done: Any, parent: tuple[str, str]
 ) -> None:

@@ -5307,8 +5307,8 @@ the same identity installed: `written` is True only when `respond()` reports the
 whole frame written to the client's own pipe, and never for a pooled backend,
 whose frame lands in the broker. `spawn_sub_agents` marks the children its reply
 carries collected only there, on True -- never in its collect step, in
-`on_settled`, or for an abandonment reply. For every parent that is not
-dashboard-born that mark is held only under the attempt that spawned the child,
+`on_settled`, or for an abandonment reply. For every parent, a dashboard tab's
+own turn included, that mark is held only under the attempt that spawned the child,
 the token `(key, task, epoch)` opened at the parent tool's spawn, done read or
 landing note and ended by `settle_turn` or `release`, and only an attempt that
 landed confirms it (`kiro_crew.parent_turns`). The spawn names the attempt that
