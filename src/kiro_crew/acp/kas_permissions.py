@@ -181,8 +181,8 @@ _MAX_ALLOWED_COMMANDS = 64
 def allowed_command_pattern(raw: Any) -> str | None:
     """One kiro-cli ``allowedCommands`` entry as Crew records it, or ``None``.
 
-    Only the subset :mod:`kiro_crew.platform.allowed_commands` reads the same way
-    kiro-cli does, and matches in linear time, is kept (stripped); any other entry
+    Only the syntax :mod:`kiro_crew.platform.allowed_commands` reads the same way
+    kiro-cli does, and matches in linear time, is kept; any other entry
     is ``None`` and its commands keep prompting. Kept verbatim, as kiro-cli reads it.
     """
     if allowed_commands_mod.parse(raw) is None:

@@ -520,6 +520,22 @@ def _declared_dashboard_routes() -> dict[str, set[str]]:
     return out
 
 
+#: The one handler every tool a built-in declares as data runs
+#: (``mcp_tools.apps.builtin_agent_tool``). Its URL is the declared tool's own, read off
+#: the declaration, so the walk cannot resolve it from source.
+_BUILTIN_AGENT_TOOL_SITE = "apps.py:builtin_agent_tool"
+
+
+def _declared_agent_tool_routes() -> dict[str, set[str]]:
+    """``{gateway path: {"<tool>:POST"}}`` over every tool a built-in app declares."""
+    from kiro_crew.apps import builtin_agent_tools
+
+    out: dict[str, set[str]] = {}
+    for tool in builtin_agent_tools.agent_tools():
+        out.setdefault(tool.url, set()).add(f"{tool.name}:POST")
+    return out
+
+
 def _loopback_verbs() -> dict[str, str]:
     """``{"dashboard_client.py:<verb>": METHOD}`` for each verb of the loopback client.
 
@@ -582,8 +598,8 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 # is anchored at its first ``/api/``. One shape is
                                 # NOT ``/api``-rooted: the dashboard app reverse
                                 # proxy ``/apps/{name}/api/{path}`` (handle_app_api_proxy),
-                                # which an internal-secret MCP caller
-                                # (design_tweak_update_thread) now reaches. Slicing
+                                # which an internal-secret MCP caller (a tool a
+                                # built-in declares as data) reaches. Slicing
                                 # that at its inner ``/api/`` would check a fragment
                                 # (``/api/thread``) instead of the real admitted
                                 # path, so a ``/apps/`` route is kept whole and must
@@ -625,6 +641,14 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
             for site in sites:
                 if site.endswith(f":{method}"):
                     paths.setdefault(path, set()).add(f"{key}<-{site}")
+
+    # The declared-tool handler posts only to a declared tool's URL, which it reads off
+    # the declaration by the tool's name, so its site reaches exactly those URLs.
+    if _BUILTIN_AGENT_TOOL_SITE in unresolved:
+        unresolved.discard(_BUILTIN_AGENT_TOOL_SITE)
+        for path, sites in _declared_agent_tool_routes().items():
+            for site in sites:
+                paths.setdefault(path, set()).add(f"{_BUILTIN_AGENT_TOOL_SITE}<-{site}")
     return paths, unresolved
 
 
@@ -686,6 +710,29 @@ def _is_granted(path: str, methods: frozenset[str]) -> bool:
 def _methods_for(sites: set[str]) -> frozenset[str]:
     """The HTTP verbs recorded across a path's call sites (site tail ``:METHOD``)."""
     return frozenset(s.rsplit(":", 1)[1] for s in sites)
+
+
+class TestDeclaredAgentToolRoutes:
+    """The declared-tool handler's call site is every declared tool's URL."""
+
+    def test_each_declared_tool_url_is_a_resolved_post_site(self):
+        declared = _declared_agent_tool_routes()
+        assert declared, "no built-in declares an agent tool, so this check would pass free"
+        sites = _call_sites()
+        for path in declared:
+            assert path in sites, f"declared tool URL {path} is not a resolved call site"
+            assert _methods_for(sites[path]) >= {"POST"}, path
+
+    def test_the_resolved_site_is_the_handler_every_declared_tool_runs(self):
+        """A renamed handler leaves its new site unresolved, never silently granted."""
+        from kiro_crew.apps import builtin_agent_tools
+        from kiro_crew.mcp_tools import apps
+
+        handler = apps.builtin_agent_tool
+        assert _BUILTIN_AGENT_TOOL_SITE == f"apps.py:{handler.__name__}"
+        for tool in builtin_agent_tools.agent_tools():
+            assert apps.HANDLERS[tool.name] is handler
+        assert _BUILTIN_AGENT_TOOL_SITE not in _KNOWN_UNRESOLVED
 
 
 class TestDeclaredDashboardRoutes:

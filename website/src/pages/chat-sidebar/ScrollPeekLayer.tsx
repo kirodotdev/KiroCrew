@@ -20,7 +20,7 @@ const prefersReducedMotion = () =>
 
 /**
  * The scroll peek's floating layer: each clipped title in view, drawn in full
- * over its row and past the sidebar's edge.
+ * on one line over the title's first line and past the sidebar's edge.
  *
  * Portaled to the body-level overlay root and `position: fixed`, so neither the sidebar's
  * width nor its overflow is involved. `pointer-events: none` on the whole

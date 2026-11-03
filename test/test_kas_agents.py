@@ -960,6 +960,27 @@ class TestSpecLookup:
         assert "AlphaPackage-kirocrew.json" in message
         assert "BetaPackage-kirocrew.json" in message
 
+    def test_the_refusal_names_every_claimant_and_how_to_repair_it(self, tmp_path):
+        """Three installed packages each vend their own spec under one name.
+        The refused session start is all the user sees, so it names every file
+        with its full path and says the repair that works: keep one, delete
+        the others or change their declared ``name``. Renaming a file is not a
+        repair, because the scan matches the declared name, and the message
+        says so."""
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            self._write(tmp_path, f"{package}-kirocrew.json", description=package)
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        message = str(exc.value)
+        assert message.startswith("3 specs declare the name 'kirocrew' with differing content")
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            assert repr(str(tmp_path / f"{package}-kirocrew.json")) in message
+        assert "keep exactly one: delete the others" in message
+        assert 'change the "name" field inside all but one' in message
+        assert "Renaming a file alone does not help" in message
+
     def test_two_identical_specs_declaring_one_name_are_projected(self, tmp_path):
         """A package installer that flattens dependencies writes the same spec
         under two package prefixes. Both parse to one dict, so whichever the

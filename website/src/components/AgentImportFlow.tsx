@@ -749,7 +749,7 @@ export default function AgentImportFlow({
                   <input
                     id={inputId}
                     type="checkbox"
-                    aria-label={`${source.name}, ${count} items`}
+                    aria-label={i18nT('components.agentImportFlow.source_item_count', { name: source.name, count })}
                     className="mt-1 h-4 w-4 accent-[var(--accent)]"
                     checked={selectedSources.has(source.id)}
                     onChange={() => toggleSource(source.id)}

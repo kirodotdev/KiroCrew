@@ -375,8 +375,9 @@ class TestServerAppliers:
         async def reload_provider_factory(*, cfg: Any) -> None:
             calls.append(cfg)
             entered.set()
-            # flake-ok: pre-existing unbounded rendezvous inside the stubbed reload, moved verbatim; the test sets release once its bounded asserts pass
-            await release.wait()
+            # The test releases this once its bounded asserts pass; the bound only
+            # names a lost run if that release never comes.
+            await await_until(release, timeout=30, what="the stubbed provider reload")
 
         slot = SimpleNamespace(model="claude-x", _model_pick_gen=0)
         pushed: list[bool] = []

@@ -2691,7 +2691,11 @@ answers `tools/list` from):
   the agent can mark a batched visual-edit comment in progress or done as it
   applies it. `status` is restricted to `done` (forward progress only — no
   clear/dismiss), and the gateway admits only that one path for internal-secret
-  callers, never the app's state-mutating routes
+  callers, never the app's state-mutating routes. The tool is the app's own
+  data: its `agent_tools.py` declares the descriptor, the fields, the route and
+  the body, and the core builds the tool from that declaration and runs it with
+  one handler of its own (`mcp_tools/apps.py` `builtin_agent_tool`; see
+  [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-a-built-ins-agent-tool-is-the-built-ins-own-data))
 
 ### Server instructions travel with the server
 

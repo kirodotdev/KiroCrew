@@ -75,7 +75,8 @@ def enqueue(
     ``candidates`` are dicts ``{"text", "priority"?}`` or plain strings.
     De-duplicates (case/whitespace-insensitive) against everything already in
     the queue AND within the batch. Admits at most ``max_admit`` of the
-    survivors, highest ``priority`` first (stable for ties). Returns the items
+    survivors, highest ``priority`` first (stable for ties). A priority that
+    is not a finite number ranks as 0.0 (see ``_priority``). Returns the items
     actually admitted (so the caller can log/emit them).
     """
     known = _known_keys(queue)
@@ -86,7 +87,7 @@ def enqueue(
     for order, c in enumerate(candidates):
         if isinstance(c, dict):
             text = str(c.get("text", "")).strip()
-            priority = float(c.get("priority", 0.0))
+            priority = _priority(c)
         else:
             text = str(c).strip()
             priority = 0.0
@@ -122,7 +123,7 @@ def _priority(item: dict) -> float:
     """
     try:
         value = float(item.get("priority", 0.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return value if math.isfinite(value) else 0.0
 

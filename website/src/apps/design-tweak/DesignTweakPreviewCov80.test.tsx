@@ -11,12 +11,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, act } from '@testing-library/react'
-import DesignTweak from '../apps/design-tweak/DesignTweakPage'
-import { renderWithProviders } from './helpers'
+import DesignTweak from './DesignTweakPage'
+import { renderWithProviders } from '../../test/helpers'
 
 // Mock all api functions the component calls on mount and during interactions.
-vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../apps/design-tweak/api')>()),
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   fetchProjects: vi.fn(),
   fetchQueue: vi.fn(),
   fetchHistory: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock('../apps/design-tweak/api', async (importOriginal) => ({
 
 // The component uses i18nT for all visible strings. Passthrough returns the key
 // suffix so assertions remain readable without coupling to exact copy.
-vi.mock('../i18n/t', () => ({
+vi.mock('../../i18n/t', () => ({
   i18nT: (key: string, vars?: Record<string, unknown>) => {
     const last = key.split('.').pop() ?? key
     // Dimensions labels need to be distinguishable by preset name.
@@ -44,7 +44,7 @@ vi.mock('../i18n/t', () => ({
 
 // The delivery module is imported at the top level — stub it so it never tries
 // to read transcripts during these preview-focused tests.
-vi.mock('../apps/design-tweak/delivery', () => ({
+vi.mock('./delivery', () => ({
   deliveryVerdict: () => 'unknown',
   needsDeliveryRetry: () => false,
 }))
@@ -52,7 +52,7 @@ vi.mock('../apps/design-tweak/delivery', () => ({
 import {
   fetchProjects, fetchQueue, fetchHistory, fetchHealth,
   detectDevServer, startDevServer, stopDevServer, setPreviewUrl, selectProject,
-} from '../apps/design-tweak/api'
+} from './api'
 
 const mockFetchProjects = fetchProjects as ReturnType<typeof vi.fn>
 const mockFetchQueue = fetchQueue as ReturnType<typeof vi.fn>

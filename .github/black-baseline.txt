@@ -215,7 +215,6 @@ src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
@@ -292,10 +291,8 @@ test/test_bench_injection_cause.py
 test/test_bench_pinned_parent.py
 test/test_bench_retrieval_stats.py
 test/test_bench_round10.py
-test/test_bench_round15.py
 test/test_bench_round16.py
 test/test_bench_round17.py
-test/test_bench_round18.py
 test/test_bench_round5.py
 test/test_bench_round6.py
 test/test_bench_scorers.py
@@ -333,7 +330,6 @@ test/test_chat_slot_interrupt.py
 test/test_chat_title.py
 test/test_cli_desktop.py
 test/test_cli_lazy_imports.py
-test/test_close_guard_parity.py
 test/test_cloud_ec2.py
 test/test_collection_status_endpoint.py
 test/test_computer_use_apps.py
@@ -366,9 +362,7 @@ test/test_cron_thread_routing.py
 test/test_cron_timezone_display.py
 test/test_dashboard.py
 test/test_dashboard_branding.py
-test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_batch_delete_handler.py
-test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py
@@ -524,7 +518,6 @@ test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py
 test/test_mcp_core_wait.py
 test/test_mcp_cron_list_compact.py
-test/test_mcp_cron_orphan_validation.py
 test/test_mcp_cron_persistent_session.py
 test/test_mcp_gateway_apps_spool.py
 test/test_mcp_gateway_claim.py
@@ -546,7 +539,6 @@ test/test_mcp_probe_treadmill.py
 test/test_mcp_probe_warn_once.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
-test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
 test/test_mcp_stub_freeze_ratchet.py
 test/test_mcp_stub_migration.py
@@ -662,7 +654,6 @@ test/test_skill_pending.py
 test/test_skill_pending_notify.py
 test/test_skill_providers.py
 test/test_skill_script_validator.py
-test/test_skill_trigger_pointer.py
 test/test_skill_update_flow.py
 test/test_skill_versioning.py
 test/test_slack_dashboard_live_sync.py

@@ -1312,6 +1312,45 @@ class TestRecursiveExploration:
         assert _ingest_emergent_questions(cid) == []
         assert _activate_emergent(cid) == []
 
+    @pytest.mark.parametrize("priority,read_as", [
+        ("high", 0.5), (None, 0.5), ("nan", 0.5), ("inf", 0.5), (10**400, 0.5),
+        (-2, 0.0), (7, 1.0),
+    ])
+    def test_an_odd_priority_is_read_as_the_default_or_clamped(self, priority, read_as):
+        cid = self._agent_campaign(depth_decay=1.0)
+        self._write_emergent(cid, [
+            {"text": "odd", "priority": priority},
+            {"text": "real", "priority": 0.9},
+        ])
+        admitted = {a["text"]: a["priority"] for a in _ingest_emergent_questions(cid)}
+        assert admitted == {"odd": read_as, "real": 0.9}
+        assert not self._emergent_path(cid).exists()
+
+    def test_a_failed_round_keeps_the_file(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research.campaign import exploration
+
+        cid = self._agent_campaign()
+        self._write_emergent(cid, [{"text": "keep me", "priority": 0.9}])
+        real_save = exploration._sq.save_queue
+        failures = [OSError("disk full")]
+
+        def _fail_once(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return real_save(*args, **kwargs)
+
+        monkeypatch.setattr(exploration._sq, "save_queue", _fail_once)
+        with pytest.raises(OSError):
+            _ingest_emergent_questions(cid)
+        assert self._emergent_path(cid).exists()
+        assert [a["text"] for a in _ingest_emergent_questions(cid)] == ["keep me"]
+
+    def test_a_well_formed_empty_file_is_consumed(self):
+        cid = self._agent_campaign()
+        self._write_emergent(cid, [])
+        assert _ingest_emergent_questions(cid) == []
+        assert not self._emergent_path(cid).exists()
+
 
 class TestReserveAndFinalize:
     """RL v2 Stage 6: reserve trailing cycles for synthesis + FINALIZE MODE."""

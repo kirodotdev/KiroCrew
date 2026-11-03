@@ -188,6 +188,12 @@ export class FrameHost {
     }
   }
 
+  /** A once-pinned card the app unpinned is still on screen: it belongs to an
+   *  earlier hover, not the latest one. */
+  hasUnpinnedDetached(): boolean {
+    return this.detached.some((f) => !f.pinned)
+  }
+
   /** The app is gone (disabled, uninstalled): every frame of its provider goes. */
   disposeKey(key: string): void {
     for (const frame of this.frames()) if (frame.key === key) this.destroy(frame, 'disabled')

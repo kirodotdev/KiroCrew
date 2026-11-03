@@ -55,8 +55,7 @@ class TestARefreshReComposesTheWholeLadder:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's absent tiers, moved verbatim; tracked for a de-flake pass
-    def _only_the_tiers_a_test_declares(self, monkeypatch, tmp_path):
+    def _only_the_tiers_a_test_declares(self, _floor_monkeypatch, tmp_path):
         """Pin every tier this class does not set to ABSENT.
 
         The last bundled document outlives a test -- any earlier
@@ -67,7 +66,9 @@ class TestARefreshReComposesTheWholeLadder:
         the suite must not decide the answer.
         """
         governance.reset_process_state()
-        monkeypatch.setattr(governance, "_policy_home_path", lambda: tmp_path / "absent-home.json")
+        _floor_monkeypatch.setattr(
+            governance, "_policy_home_path", lambda: tmp_path / "absent-home.json"
+        )
 
     @staticmethod
     def _central(marker: str = "pushed", **extra: object):
@@ -604,8 +605,7 @@ class TestCompositionPreservesTheFetchChannel:
         return governance.replace(governance.parse_policy(_doc(marker, **extra)), tier=tier)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's accepting SEL, moved verbatim; tracked for a de-flake pass
-    def _working_sel(self, monkeypatch):
+    def _working_sel(self, _floor_monkeypatch):
         """A SEL that accepts every write, so a tier audit cannot refuse.
 
         The critical audit on the override path is fail-closed by design; stubbing it
@@ -616,7 +616,7 @@ class TestCompositionPreservesTheFetchChannel:
             def log_api_access(self, **kw):
                 return None
 
-        monkeypatch.setattr(governance, "sel", lambda: Stub())
+        _floor_monkeypatch.setattr(governance, "sel", lambda: Stub())
 
     def test_an_authority_with_no_pins_keeps_the_pins_beneath_it(self):
         """A fetched document may govern controls and say nothing about distribution.
