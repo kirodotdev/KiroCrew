@@ -1,5 +1,5 @@
 """Hosted feature videos: the same-origin media route (ranges, HEAD, link swaps refused),
-selection and ``/next`` making no request, same-origin source URLs, and which hosted
+selection and ``/library`` making no request, same-origin source URLs, and which hosted
 entries selection offers.
 ``test_feature_videos_hosted.py`` heads the suite and lists its parts.
 """
@@ -28,6 +28,11 @@ from kiro_crew import feature_videos_manifest as manifest_mod
 # ── serving ──
 
 
+def _first(running_version: str = "9.9.9") -> "fv.Offer | None":
+    """The first eligible offer, or None: what the Explore card can draw from."""
+    return next(iter(fv.eligible_offers(running_version)), None)
+
+
 def _file_request(
     release: str, name: str, *, headers: "dict[str, str] | None" = None, method: str = "GET"
 ) -> web.Request:
@@ -43,20 +48,6 @@ def _file_request(
 def _served_body(request: web.Request) -> bytes:
     """Everything the route wrote to the (mocked) transport."""
     return b"".join(call.args[0] for call in request._payload_writer.write.call_args_list)
-
-
-@pytest.fixture(autouse=True)
-def _default_on_intro_already_retired(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
-    """Take the bundled default-on intro out of the pool.
-
-    A bundled ``default_on`` entry (the Mates intro) joins the pool beside a
-    hosted manifest by design, and it ships no media, so the asset gate does
-    not withhold it in a test tree with no ``static/dist``. This module is
-    about hosted clips, so the intro is retired the way it would be on a
-    machine that already saw it; ``test_feature_videos.py`` covers the intro
-    riding beside a manifest.
-    """
-    _floor_monkeypatch.setitem(fv._PROBES, "crewmates_onboarded", lambda: True)
 
 
 class TestServingRoute:
@@ -440,7 +431,7 @@ class TestServingRoute:
 
 
 class TestNoEgressFromSelection:
-    """Selection and /next never make a request: every offer is on disk.
+    """Selection and /library never make a request: every offer is on disk.
 
     There is deliberately no remote-src path — a CDN url in a ``src`` would have
     the BROWSER fetch bytes the sha256 pin never checked and follow redirects the
@@ -453,8 +444,7 @@ class TestNoEgressFromSelection:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed())
             with patch.object(manifest_mod, "download_denied", return_value=False):
-                assert fv.select_next("9.9.9") is None
-                assert fv._offer_pool("9.9.9") == ()
+                assert fv.eligible_offers("9.9.9") == ()
 
     def test_the_module_imports_no_url_client(self) -> None:
         """No urllib, no opener: the module has nothing to reach the network WITH."""
@@ -518,7 +508,7 @@ class TestHostedSelection:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _write_media("0.6.0")
             _seed(_parsed())
-            picked = fv.select_next("9.9.9")
+            picked = _first()
             assert picked is not None
             assert "source" not in picked.payload(), "a field that could only say local"
             assert picked.src == "/feature-videos/0.6.0/hosted-clip.mp4"
@@ -528,14 +518,14 @@ class TestHostedSelection:
         """Not from the CDN, not from anywhere: the browser never plays unverified bytes."""
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed())
-            assert fv.select_next("9.9.9") is None
+            assert _first() is None
 
     def test_only_the_cached_entries_of_a_mixed_manifest_are_offered(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _write_media("0.6.0", "cached-one")
             _seed(_parsed(entries=[_entry("uncached-one"), _entry("cached-one")]))
             for _ in range(20):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
                 assert picked is not None
                 assert picked.id == "cached-one"
 
@@ -544,10 +534,10 @@ class TestHostedSelection:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed())
             with patch.object(manifest_mod, "download_denied", return_value=True):
-                assert fv.select_next("9.9.9") is None
+                assert _first() is None
             _write_media("0.6.0")
             with patch.object(manifest_mod, "download_denied", return_value=True):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
             assert picked is not None and picked.src.startswith(cache_mod.SERVE_PREFIX)
 
     def test_a_manifest_replaces_the_static_catalog(self, tmp_path: Path) -> None:
@@ -557,7 +547,7 @@ class TestHostedSelection:
             _seed(_parsed())
             with patch.object(fv, "_asset_exists", lambda _p: True):
                 for _ in range(20):
-                    picked = fv.select_next("9.9.9")
+                    picked = _first()
                     assert picked is not None and picked.id == "hosted-clip"
 
     def test_the_static_catalog_serves_when_no_manifest_was_ever_fetched(
@@ -565,36 +555,34 @@ class TestHostedSelection:
     ) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "_asset_exists", lambda _p: True):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
             assert picked is not None
             assert picked.id in {e.id for e in fv.CATALOG}
             assert picked.src.startswith(fv.ASSET_PREFIX)
 
-    def test_a_manifest_with_nothing_landed_yet_offers_nothing_that_launch(
-        self, tmp_path: Path
-    ) -> None:
-        """The stated trade: one quiet launch, never a fall-back to the bundled set.
+    def test_a_manifest_with_nothing_landed_yet_offers_nothing(self, tmp_path: Path) -> None:
+        """The stated trade: a short wait, never a fall-back to the bundled set.
 
-        Falling back would offer a bundled clip and its hosted successor across two
-        launches, and a verdict on one would not retire the other — the same reason
+        Falling back would offer a bundled clip and its hosted successor as two
+        clips, and a verdict on one would not retire the other — the same reason
         the manifest replaces the catalog instead of extending it.
         """
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed())
             with patch.object(fv, "_asset_exists", lambda _p: True):
-                assert fv.select_next("9.9.9") is None
+                assert _first() is None
 
     def test_recorded_state_and_probes_still_withdraw_a_hosted_entry(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed(entries=[_entry("recorded"), _entry("probed", used_when=["always"])]))
             fv.save_state(fv.FeatureVideoState(videos={"recorded": {"status": "seen", "ts": 1.0}}))
             with patch.dict(fv._PROBES, {"always": lambda: True}):
-                assert fv.select_next("9.9.9") is None
+                assert _first() is None
 
     def test_a_version_floor_withdraws_a_hosted_entry(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed(entries=[_entry("future", min_version="99.0.0")]))
-            assert fv.select_next("1.2.3") is None
+            assert _first("1.2.3") is None
 
     def test_a_hosted_id_can_record_a_verdict(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):

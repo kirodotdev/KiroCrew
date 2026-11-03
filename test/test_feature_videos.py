@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import random
 import stat
 import sys
 import threading
@@ -54,6 +53,11 @@ def _entry(video_id: str, **kwargs: object) -> fv.VideoEntry:
     return fv.VideoEntry(id=video_id, **defaults)  # type: ignore[arg-type]
 
 
+def _first(running_version: str = "9.9.9") -> "fv.Offer | None":
+    """The first eligible offer, or None: what the Explore card can draw from."""
+    return next(iter(fv.eligible_offers(running_version)), None)
+
+
 @pytest.fixture(autouse=True)
 def _fresh_video_cache() -> "object":
     """Drop the process-wide cache singleton around every test.
@@ -64,17 +68,6 @@ def _fresh_video_cache() -> "object":
     cache_mod.reset_feature_video_cache()
     yield None
     cache_mod.reset_feature_video_cache()
-
-
-@pytest.fixture(autouse=True)
-def _deterministic_pick(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the selector's RNG so a uniform pick is reproducible.
-
-    Seeded rather than stubbed to "always the first": the tests that assert WHICH
-    entry comes back must still go through the real ``random.choice``, or they
-    would stop covering it.
-    """
-    monkeypatch.setattr(fv, "_rng", random.Random(1234))
 
 
 @pytest.fixture(autouse=True)
@@ -140,44 +133,15 @@ class TestShippedCatalog:
         assert len(ids) == len(set(ids))
 
     def test_seeded_with_the_expected_entries(self) -> None:
-        assert [e.id for e in fv.CATALOG] == [
-            "feature-tips",
-            "monitor-loops",
-            "crewmates",
-            "kiro-crew-intro",
-        ]
+        assert [e.id for e in fv.CATALOG] == ["feature-tips", "monitor-loops"]
 
-    def test_only_the_explore_intro_stays_out_of_the_startup_popup(self) -> None:
-        """RFC 8.2: the Explore panel's card is the intro clip's only home."""
-        assert [e.id for e in fv.CATALOG if not e.startup] == ["kiro-crew-intro"]
-
-    def test_only_crewmates_carries_a_cta(self) -> None:
-        """ "Try now" opens the first Mate's chat, never the main ``default`` agent."""
-        assert {e.id: e.cta_route for e in fv.CATALOG if e.cta_route} == {
-            "crewmates": f"/members?member={ASSISTANT_MEMBER_NAME}"
-        }
-
-    def test_crewmates_is_the_rendered_intro_and_ships_no_media(self) -> None:
-        """The dashboard draws the Meet your Mates poster for this id; nothing to 404."""
-        rendered = {e.id: e.component for e in fv.CATALOG if e.component}
-        assert rendered == {"crewmates": "crewmates"}
-        entry = next(e for e in fv.CATALOG if e.id == "crewmates")
-        assert (entry.src, entry.poster, entry.duration_s) == ("", "", 0.0)
-
-    def test_crewmates_copy_matches_the_dashboard_catalog(self) -> None:
-        """StartupVideoModal's INTRO_COPY shows the bundle's translation of these."""
-        entry = next(e for e in fv.CATALOG if e.id == "crewmates")
-        assert entry.title == "Meet your Mates."
-        assert entry.description == ("They find the work, do it, and ask only when they need you.")
-
-    def test_a_component_intro_naming_media_is_a_catalog_mistake(self) -> None:
-        bad = _entry("drawn", component="drawn", poster="")
-        with patch.object(fv, "CATALOG", (bad,)):
-            assert fv.catalog() == ()
-
-    def test_a_component_intro_needs_no_media_to_be_valid(self) -> None:
-        with patch.object(fv, "CATALOG", (_entry("drawn", component="drawn", src="", poster=""),)):
-            assert [e.id for e in fv.catalog()] == ["drawn"]
+    def test_the_intro_clip_is_not_bundled(self) -> None:
+        """The intro ships through the signed CDN manifest like every other clip."""
+        assert "kiro-crew-intro" not in {e.id for e in fv.CATALOG}
+        repo = Path(__file__).resolve().parent.parent
+        bundled = repo / "website" / "public" / "app-assets" / "feature-videos"
+        assert not (bundled / "kiro-crew-intro.mp4").exists()
+        assert not (bundled / "kiro-crew-intro.jpg").exists()
 
     def test_a_clip_still_needs_its_media(self) -> None:
         with patch.object(fv, "CATALOG", (_entry("clip", src=""),)):
@@ -206,31 +170,6 @@ class TestShippedCatalog:
     def test_rejects_anything_that_could_leave_the_dashboard(self, route: str) -> None:
         assert not fv._CTA_ROUTE_RE.fullmatch(route)
 
-    def test_entry_with_unsafe_cta_route_is_filtered(self) -> None:
-        with patch.object(fv, "CATALOG", (_entry("bad-cta", cta_route="https://evil.example"),)):
-            assert fv.catalog() == ()
-
-    def test_the_offer_carries_the_cta_route(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (_entry("with-cta", cta_route="/members"),)):
-                picked = fv.select_next("9.9.9")
-        assert picked is not None and picked.payload()["cta_route"] == "/members"
-
-    def test_an_entry_without_a_cta_sends_an_empty_route(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (_entry("plain"),)):
-                picked = fv.select_next("9.9.9")
-        assert picked is not None and picked.payload()["cta_route"] == ""
-
-    def test_an_intro_whose_cta_page_is_blocked_leaves_the_draw(self, tmp_path: Path) -> None:
-        catalog = (_entry("with-cta", cta_route="/members?member=default"), _entry("plain"))
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", catalog):
-                picks = {
-                    fv.select_next("9.9.9", False, frozenset({"/members"})).id for _ in range(20)
-                }
-        assert picks == {"plain"}
-
     def test_docs_are_in_the_tips_allowlist(self) -> None:
         from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
@@ -239,8 +178,6 @@ class TestShippedCatalog:
 
     def test_assets_point_at_the_entry_id(self) -> None:
         for entry in fv.CATALOG:
-            if entry.component:
-                continue  # a rendered intro ships no media
             assert entry.src == f"{fv.ASSET_PREFIX}{entry.id}.mp4"
             assert entry.poster == f"{fv.ASSET_PREFIX}{entry.id}.jpg"
 
@@ -282,10 +219,11 @@ class TestShippedCatalog:
         and bundled shapes cannot drift.
         """
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            picked = fv.select_next("9.9.9")
+            picked = _first()
         assert picked is not None
         payload = picked.payload()
         assert "used_when" not in payload
+        assert "cta_route" not in payload and "component" not in payload
         assert payload["id"] in {e.id for e in fv.CATALOG}
         assert "source" not in payload
 
@@ -320,34 +258,13 @@ class TestAssetExistenceGate:
     def test_entry_with_no_shipped_media_is_withheld_not_offered(
         self, asset_root: Path, tmp_path: Path
     ) -> None:
-        # The frontend cannot catch this: its <video> is preload="none", so no
-        # fetch -- and no error -- happens before the user presses play, and the
-        # dialog opens on the JSON alone. An unshipped entry must not reach it.
+        # The frontend cannot catch this: the Explore card fetches nothing before
+        # the user presses Watch, and it shows on the JSON alone. An unshipped
+        # entry must not reach it.
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("unshipped"),)):
                 assert fv.offerable() == ()
-                assert fv.select_next("9.9.9") is None
-
-    def test_a_component_intro_is_offered_with_nothing_on_disk(
-        self, asset_root: Path, tmp_path: Path
-    ) -> None:
-        # The dashboard bundle answering the request is what draws it, so there
-        # is no file for ``offerable()`` to look for.
-        drawn = _entry("drawn", component="drawn", src="", poster="")
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (drawn,)):
-                assert [e.id for e in fv.offerable()] == ["drawn"]
-                picked = fv.select_next("9.9.9")
-        assert picked is not None
-        payload = picked.payload()
-        assert (payload["component"], payload["src"], payload["poster"]) == ("drawn", "", "")
-
-    def test_a_clip_sends_an_empty_component(self, asset_root: Path, tmp_path: Path) -> None:
-        self._ship(asset_root, "ready")
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (_entry("ready"),)):
-                picked = fv.select_next("9.9.9")
-        assert picked is not None and picked.payload()["component"] == ""
+                assert _first() is None
 
     def test_a_missing_poster_alone_withholds_the_entry(self, asset_root: Path) -> None:
         self._ship(asset_root, "half", poster=False)
@@ -358,7 +275,7 @@ class TestAssetExistenceGate:
         self._ship(asset_root, "ready")
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("ready"),)):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "ready"
 
     def test_selection_skips_past_an_unshipped_entry_to_a_shipped_one(
@@ -367,32 +284,8 @@ class TestAssetExistenceGate:
         self._ship(asset_root, "second")
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "second"
-
-    def test_a_clip_kept_out_of_startup_is_never_picked_even_when_shipped(
-        self, asset_root: Path, tmp_path: Path
-    ) -> None:
-        # Shipped, valid and unseen: everything the popup checks says yes, and
-        # it is still not picked, with the kill switch on or off.
-        self._ship(asset_root, "kiro-crew-intro")
-        intro = next(e for e in fv.CATALOG if e.id == "kiro-crew-intro")
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (intro,)):
-                assert [e.id for e in fv.offerable()] == ["kiro-crew-intro"]
-                assert fv.select_next("9.9.9") is None
-                assert fv.select_next("9.9.9", default_on_only=True) is None
-
-    def test_the_explore_intro_never_reaches_the_popup_beside_other_clips(
-        self, asset_root: Path, tmp_path: Path
-    ) -> None:
-        self._ship(asset_root, "kiro-crew-intro")
-        self._ship(asset_root, "ready")
-        intro = next(e for e in fv.CATALOG if e.id == "kiro-crew-intro")
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (intro, _entry("ready"))):
-                picks = {fv.select_next("9.9.9").id for _ in range(30)}  # type: ignore[union-attr]
-        assert picks == {"ready"}
 
     def test_withholding_is_recoverable_once_the_clip_lands(
         self, asset_root: Path, tmp_path: Path
@@ -400,9 +293,9 @@ class TestAssetExistenceGate:
         # The whole point: nothing is written, so the entry comes back by itself.
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("late"),)):
-                assert fv.select_next("9.9.9") is None
+                assert _first() is None
                 self._ship(asset_root, "late")
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "late"
 
     def test_catalog_membership_ignores_shipping_so_a_verdict_can_still_land(
@@ -420,34 +313,6 @@ class TestProbes:
     @pytest.mark.parametrize(
         ("agents", "fires"),
         [
-            ({}, False),
-            ({"default": object()}, False),
-            # Every install carries the first Mate without anyone asking for one.
-            ({"default": object(), ASSISTANT_MEMBER_NAME: object()}, False),
-            ({"default": object(), ASSISTANT_MEMBER_NAME: object(), "radar": object()}, True),
-            ({"default": object(), "radar": object()}, True),
-        ],
-    )
-    def test_crewmates_exist_ignores_the_built_in_members(self, agents: dict, fires: bool) -> None:
-        cfg = MagicMock()
-        cfg.agents = agents
-        with patch.object(fv.KiroCrewConfig, "load", return_value=cfg):
-            assert fv.probe_fires("crewmates_exist") is fires
-
-    @pytest.mark.parametrize("done", [True, False])
-    def test_crewmates_onboarded_reads_the_value_not_presence(self, done: bool) -> None:
-        cfg = MagicMock()
-        cfg.dashboard.crewmates_onboarded = done
-        with patch.object(fv.KiroCrewConfig, "load", return_value=cfg):
-            assert fv.probe_fires("crewmates_onboarded") is done
-
-    def test_only_the_crewmates_intro_ignores_the_kill_switch(self) -> None:
-        """A second default-on entry must be a deliberate change to this set."""
-        assert {e.id for e in fv.CATALOG if e.default_on} == {"crewmates"}
-
-    @pytest.mark.parametrize(
-        ("agents", "fires"),
-        [
             ({"default": object(), ASSISTANT_MEMBER_NAME: object()}, False),
             # Mate deleted: "Try now" would open a chat that is gone.
             ({"default": object()}, True),
@@ -461,11 +326,6 @@ class TestProbes:
         cfg.agents = agents
         with patch.object(fv.KiroCrewConfig, "load", return_value=cfg):
             assert fv.probe_fires("mate_missing") is fires
-
-    def test_crewmates_intro_retires_once_the_user_has_been_introduced(self) -> None:
-        entry = next(e for e in fv.CATALOG if e.id == "crewmates")
-        assert set(entry.used_when) == {"crewmates_exist", "crewmates_onboarded", "mate_missing"}
-        assert entry.default_on is True
 
     def test_unknown_signal_does_not_fire(self) -> None:
         assert fv.probe_fires("no_such_probe") is False
@@ -527,7 +387,7 @@ class TestProbes:
             state_file.parent.mkdir(parents=True, exist_ok=True)
             state_file.write_text(json.dumps({"opted_out": True}), encoding="utf-8")
             with patch.object(fv, "CATALOG", (fv.CATALOG[0], control)):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "control"
 
     def test_opted_out_false_does_not_fire(self, tmp_path: Path) -> None:
@@ -750,18 +610,13 @@ class TestVersionGate:
         assert fv._version_ok("1.0.0", "unknown") is True
 
 
-class TestSelectNext:
-    def test_returns_an_eligible_entry(self, tmp_path: Path) -> None:
-        """The pick is one of the eligible entries, drawn at random.
-
-        Catalog order is publication order, so it says nothing about the user (see
-        the module docstring): under a first-in-order rule the first entry always
-        wins and the rest is reachable only by retiring it.
-        """
+class TestEligibleOffers:
+    def test_lists_every_eligible_entry(self, tmp_path: Path) -> None:
+        """The whole eligible set goes to the card, which draws one at random."""
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))):
-                picked = fv.select_next("9.9.9")
-        assert picked is not None and picked.id in {"first", "second"}
+                ids = [o.id for o in fv.eligible_offers("9.9.9")]
+        assert ids == ["first", "second"]
 
     def test_skips_seen_and_dismissed(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -774,7 +629,7 @@ class TestSelectNext:
                 )
             )
             with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"), _entry("third"))):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "third"
 
     def test_skips_a_used_feature(self, tmp_path: Path) -> None:
@@ -787,7 +642,7 @@ class TestSelectNext:
                 ),
                 patch.dict(fv._PROBES, {"always": lambda: True}),
             ):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "unused"
 
     def test_any_firing_signal_withdraws_the_entry(self, tmp_path: Path) -> None:
@@ -800,7 +655,7 @@ class TestSelectNext:
                 ),
                 patch.dict(fv._PROBES, {"always": lambda: True, "never": lambda: False}),
             ):
-                picked = fv.select_next("9.9.9")
+                picked = _first()
         assert picked is not None and picked.id == "unused"
 
     def test_probes_are_not_run_for_an_already_seen_entry(self, tmp_path: Path) -> None:
@@ -816,7 +671,7 @@ class TestSelectNext:
                 patch.object(fv, "CATALOG", (_entry("first", used_when=("p",)),)),
                 patch.dict(fv._PROBES, {"p": probe}),
             ):
-                assert fv.select_next("9.9.9") is None
+                assert _first() is None
         assert calls == []
 
     def test_skips_a_version_gated_entry(self, tmp_path: Path) -> None:
@@ -824,44 +679,17 @@ class TestSelectNext:
             with patch.object(
                 fv, "CATALOG", (_entry("future", min_version="99.0.0"), _entry("now"))
             ):
-                picked = fv.select_next("1.2.3")
+                picked = _first("1.2.3")
         assert picked is not None and picked.id == "now"
 
     def test_returns_none_when_everything_is_exhausted(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             fv.save_state(fv.FeatureVideoState(videos={"only": {"status": "seen", "ts": 1.0}}))
             with patch.object(fv, "CATALOG", (_entry("only"),)):
-                assert fv.select_next("9.9.9") is None
-
-    def test_every_eligible_entry_is_reachable(self, tmp_path: Path) -> None:
-        """Repeated calls reach the WHOLE eligible set, not just its first member.
-
-        This is the property that replaced stability: a user's first launch must
-        be able to show any of the eligible clips, which a fixed order cannot do.
-        Eligibility itself is unchanged and still deterministic — every other test
-        in this class pins one of its rules.
-        """
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (_entry("a"), _entry("b"), _entry("c"))):
-                picks = {(fv.select_next("9.9.9") or _entry("x")).id for _ in range(60)}
-        assert picks == {"a", "b", "c"}
-
-    def test_the_draw_is_roughly_uniform(self, tmp_path: Path) -> None:
-        """No entry is starved. Seeded, so this is a fact rather than a coin flip."""
-        counts: dict[str, int] = {"a": 0, "b": 0, "c": 0}
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with patch.object(fv, "CATALOG", (_entry("a"), _entry("b"), _entry("c"))):
-                for _ in range(300):
-                    picked = fv.select_next("9.9.9")
-                    assert picked is not None
-                    counts[picked.id] += 1
-        # 300 draws over 3 entries: 100 each in expectation. A band this wide
-        # passes for any sane uniform generator and fails for order-biased
-        # selection (which would put 300 in one bucket and 0 in the others).
-        assert all(40 <= n <= 180 for n in counts.values()), counts
+                assert _first() is None
 
 
-class TestNextRoute:
+class TestLibraryRoute:
     def test_kill_switch_reports_disabled_and_no_video(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -870,82 +698,34 @@ class TestNextRoute:
                     patch.object(fv, "CATALOG", (_entry("first"),)),
                 ):
                     cfg_cls.load.return_value = _cfg(enabled=False)
-                    resp = await fv.api_feature_videos_next(
-                        _request("GET", "/api/feature-videos/next")
+                    resp = await fv.api_feature_videos_library(
+                        _request("GET", "/api/feature-videos/library")
                     )
             assert resp.status == 200
             return json.loads(resp.body)  # type: ignore[arg-type]
 
         body = asyncio.run(run())
-        assert body == {"video": None, "enabled": False}
+        assert body == {"videos": [], "enabled": False}
 
-    def test_kill_switch_still_offers_a_default_on_intro(self, tmp_path: Path) -> None:
-        """The Crewmates intro replaces a first-run chapter, which had no switch."""
-
+    def test_serves_every_eligible_entry(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
                 with (
                     patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
-                    patch.object(
-                        fv, "CATALOG", (_entry("clip"), _entry("chapter", default_on=True))
-                    ),
-                ):
-                    cfg_cls.load.return_value = _cfg(enabled=False)
-                    resp = await fv.api_feature_videos_next(
-                        _request("GET", "/api/feature-videos/next")
-                    )
-            return json.loads(resp.body)  # type: ignore[arg-type]
-
-        body = asyncio.run(run())
-        assert body["enabled"] is False
-        assert isinstance(body["video"], dict)
-        assert body["video"]["id"] == "chapter"
-
-    def test_a_manifest_does_not_retire_a_default_on_intro_it_omits(self, tmp_path: Path) -> None:
-        hosted = fv.Offer(
-            id="hosted",
-            feature="hosted",
-            title="t",
-            description="d",
-            src="/feature-videos/1.0.0/hosted.mp4",
-            poster="/feature-videos/1.0.0/hosted.jpg",
-            duration_s=5.0,
-            doc="feature-tips.md",
-            min_version="",
-            used_when=(),
-        )
-        catalog = (_entry("bundled"), _entry("chapter", default_on=True))
-        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-            with (
-                patch.object(fv, "CATALOG", catalog),
-                patch.object(
-                    cache_mod.FeatureVideoCache, "current_manifest", return_value=object()
-                ),
-                patch.object(fv, "_hosted_offers", return_value=(hosted,)),
-            ):
-                ids = {o.id for o in fv._offer_pool("99.0.0")}
-        assert ids == {"hosted", "chapter"}
-
-    def test_serves_the_first_eligible_entry(self, tmp_path: Path) -> None:
-        async def run() -> dict[str, object]:
-            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-                with (
-                    patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
-                    patch.object(fv, "CATALOG", (_entry("first"),)),
+                    patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))),
                 ):
                     cfg_cls.load.return_value = _cfg()
-                    resp = await fv.api_feature_videos_next(
-                        _request("GET", "/api/feature-videos/next")
+                    resp = await fv.api_feature_videos_library(
+                        _request("GET", "/api/feature-videos/library")
                     )
             return json.loads(resp.body)  # type: ignore[arg-type]
 
         body = asyncio.run(run())
         assert body["enabled"] is True
-        assert isinstance(body["video"], dict)
-        assert body["video"]["id"] == "first"
-        assert "used_when" not in body["video"]
+        assert [v["id"] for v in body["videos"]] == ["first", "second"]
+        assert all("used_when" not in v for v in body["videos"])
 
-    def test_restricted_session_gets_null_but_stays_enabled(self, tmp_path: Path) -> None:
+    def test_restricted_session_gets_nothing_but_stays_enabled(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
                 with (
@@ -954,14 +734,14 @@ class TestNextRoute:
                     patch.object(fv, "CATALOG", (_entry("first"),)),
                 ):
                     cfg_cls.load.return_value = _cfg()
-                    resp = await fv.api_feature_videos_next(
-                        _request("GET", "/api/feature-videos/next", session_key="chat-1")
+                    resp = await fv.api_feature_videos_library(
+                        _request("GET", "/api/feature-videos/library", session_key="chat-1")
                     )
             return json.loads(resp.body)  # type: ignore[arg-type]
 
-        assert asyncio.run(run()) == {"video": None, "enabled": True}
+        assert asyncio.run(run()) == {"videos": [], "enabled": True}
 
-    def test_null_when_catalog_is_exhausted(self, tmp_path: Path) -> None:
+    def test_empty_when_every_clip_is_finished(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
                 fv.save_state(
@@ -972,13 +752,13 @@ class TestNextRoute:
                     patch.object(fv, "CATALOG", (_entry("only"),)),
                 ):
                     cfg_cls.load.return_value = _cfg()
-                    resp = await fv.api_feature_videos_next(
-                        _request("GET", "/api/feature-videos/next")
+                    resp = await fv.api_feature_videos_library(
+                        _request("GET", "/api/feature-videos/library")
                     )
             return json.loads(resp.body)  # type: ignore[arg-type]
 
         body = asyncio.run(run())
-        assert body == {"video": None, "enabled": True}
+        assert body == {"videos": [], "enabled": True}
 
 
 class TestStatusRoute:
@@ -1089,21 +869,6 @@ class TestFeedbackRoute:
         assert recorded == status
         assert isinstance(ts, float) and ts >= before
 
-    @pytest.mark.parametrize("status", ["seen", "dismissed"])
-    def test_the_explore_intro_verdict_is_accepted_and_recorded(
-        self, tmp_path: Path, status: str
-    ) -> None:
-        """The Explore card has no ``/next`` offer behind it; catalog membership admits it."""
-
-        async def run() -> tuple[int, str]:
-            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-                resp = await fv.api_feature_videos_feedback(
-                    _feedback_request({"id": "kiro-crew-intro", "status": status})
-                )
-                return resp.status, fv.load_state().status_of("kiro-crew-intro")
-
-        assert asyncio.run(run()) == (200, status)
-
     def test_recorded_video_is_not_offered_again(self, tmp_path: Path) -> None:
         async def run() -> object:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -1114,28 +879,26 @@ class TestFeedbackRoute:
                     cfg_cls.load.return_value = _cfg()
                     first = json.loads(
                         (
-                            await fv.api_feature_videos_next(
-                                _request("GET", "/api/feature-videos/next")
+                            await fv.api_feature_videos_library(
+                                _request("GET", "/api/feature-videos/library")
                             )
                         ).body  # type: ignore[arg-type]
                     )
-                    shown = first["video"]["id"]
-                    assert shown in {"first", "second"}
+                    assert [v["id"] for v in first["videos"]] == ["first", "second"]
+                    shown = "first"
                     await fv.api_feature_videos_feedback(
                         _feedback_request({"id": shown, "status": "dismissed"})
                     )
                     second = json.loads(
                         (
-                            await fv.api_feature_videos_next(
-                                _request("GET", "/api/feature-videos/next")
+                            await fv.api_feature_videos_library(
+                                _request("GET", "/api/feature-videos/library")
                             )
                         ).body  # type: ignore[arg-type]
                     )
-            return (shown, second["video"]["id"])
+            return [v["id"] for v in second["videos"]]
 
-        first_id, second_id = asyncio.run(run())  # type: ignore[misc]
-        assert second_id != first_id
-        assert {first_id, second_id} == {"first", "second"}
+        assert asyncio.run(run()) == ["second"]
 
     def test_state_file_written_by_feedback_is_owner_only(self, tmp_path: Path) -> None:
         if sys.platform.startswith("win"):
@@ -1203,7 +966,7 @@ class TestFeedbackRoute:
         assert asyncio.run(run()) is False
 
     def test_a_restricted_session_records_nothing(self, tmp_path: Path) -> None:
-        """The write side needs the same gate /next has — it is where the trace lands."""
+        """The write side needs the same gate /library has — it is where the trace lands."""
 
         async def run() -> tuple[int, dict[str, object], bool]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -1230,7 +993,7 @@ class TestFeedbackRoute:
 class TestIssuedIdSurvivesACatalogChange:
     """A verdict on the clip in front of the user must not be thrown away.
 
-    The catalog can change under an open dialog: a background manifest refresh
+    The catalog can change under an open card: a background manifest refresh
     replaces it. Without the issued-id ledger the feedback POST 400s,
     the permanent verdict is lost, and the clip comes back -- the one thing a
     permanent verdict promises it will not do.
@@ -1246,13 +1009,13 @@ class TestIssuedIdSurvivesACatalogChange:
                     cfg_cls.load.return_value = _cfg()
                     offered = json.loads(
                         (
-                            await fv.api_feature_videos_next(
-                                _request("GET", "/api/feature-videos/next")
+                            await fv.api_feature_videos_library(
+                                _request("GET", "/api/feature-videos/library")
                             )
                         ).body  # type: ignore[arg-type]
                     )
-                    assert offered["video"]["id"] == "about-to-vanish"
-                # The catalog changes under the open dialog.
+                    assert [v["id"] for v in offered["videos"]] == ["about-to-vanish"]
+                # The catalog changes under the open card.
                 with patch.object(fv, "CATALOG", ()):
                     resp = await fv.api_feature_videos_feedback(
                         _feedback_request({"id": "about-to-vanish", "status": "dismissed"})
@@ -1276,6 +1039,29 @@ class TestIssuedIdSurvivesACatalogChange:
 
         assert asyncio.run(run()) == 400
 
+    def test_one_library_answer_never_evicts_an_id_it_offers(self, tmp_path: Path) -> None:
+        """Every listed clip stays acceptable, even in a library past 64 clips."""
+        from kiro_crew import feature_videos_manifest as manifest_mod
+
+        assert fv._ISSUED_ID_LIMIT >= manifest_mod._MAX_ENTRIES
+        catalog = tuple(_entry(f"clip-{i}") for i in range(70))
+
+        async def run() -> list[str]:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                with (
+                    patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
+                    patch.object(fv, "CATALOG", catalog),
+                ):
+                    cfg_cls.load.return_value = _cfg()
+                    resp = await fv.api_feature_videos_library(
+                        _request("GET", "/api/feature-videos/library")
+                    )
+            return [v["id"] for v in json.loads(resp.body)["videos"]]  # type: ignore[arg-type]
+
+        ids = asyncio.run(run())
+        assert len(ids) == 70
+        assert all(fv._was_issued(i) for i in ids)
+
     def test_the_ledger_is_bounded(self, tmp_path: Path) -> None:
         """It is the only thing keeping the state file's key set closed."""
         for i in range(fv._ISSUED_ID_LIMIT * 3):
@@ -1293,8 +1079,8 @@ class TestIssuedIdSurvivesACatalogChange:
                 with patch.object(fv, "CATALOG", (_entry("recorded-once"),)):
                     with patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls:
                         cfg_cls.load.return_value = _cfg()
-                        await fv.api_feature_videos_next(
-                            _request("GET", "/api/feature-videos/next")
+                        await fv.api_feature_videos_library(
+                            _request("GET", "/api/feature-videos/library")
                         )
                     await fv.api_feature_videos_feedback(
                         _feedback_request({"id": "recorded-once", "status": "seen"})
@@ -1309,7 +1095,8 @@ class TestRouteRegistration:
         source = (
             Path(fv.__file__).resolve().parent / "dashboard" / "routes" / "realtime.py"
         ).read_text(encoding="utf-8")
-        assert '"/api/feature-videos/next", api_feature_videos_next' in source
+        assert '"/api/feature-videos/library", api_feature_videos_library' in source
+        assert "/api/feature-videos/next" not in source
         assert '"/api/feature-videos/status", api_feature_videos_status' in source
         assert '"/api/feature-videos/feedback", api_feature_videos_feedback' in source
 

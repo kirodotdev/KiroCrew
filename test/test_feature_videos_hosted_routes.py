@@ -1,4 +1,4 @@
-"""Hosted feature videos: the ``/next``, ``/status`` and ``/fetch-all`` dashboard routes,
+"""Hosted feature videos: the ``/library``, ``/status`` and ``/fetch-all`` dashboard routes,
 and the governance probe they read.
 ``test_feature_videos_hosted.py`` heads the suite and lists its parts.
 """
@@ -21,7 +21,7 @@ from kiro_crew import feature_videos as fv
 from kiro_crew import feature_videos_cache as cache_mod
 from kiro_crew import feature_videos_manifest as manifest_mod
 
-# ── next, status and fetch-all ──
+# ── library, status and fetch-all ──
 
 
 def _dashboard_request(path: str = "/api/feature-videos/status") -> MagicMock:
@@ -36,23 +36,21 @@ def _dashboard_request(path: str = "/api/feature-videos/status") -> MagicMock:
     return request
 
 
-def _next_body(tmp_path: Path) -> dict[str, object]:
+def _library_body(tmp_path: Path) -> dict[str, object]:
     cfg = MagicMock()
     cfg.dashboard.feature_videos_enabled = True
     with patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls:
         cfg_cls.load.return_value = cfg
         resp = asyncio.run(
-            fv.api_feature_videos_next(_dashboard_request("/api/feature-videos/next"))
+            fv.api_feature_videos_library(_dashboard_request("/api/feature-videos/library"))
         )
     return json.loads(resp.body)  # type: ignore[arg-type]
 
 
-class TestNextRouteReportsNoDownloadPolicy:
-    """``/next`` answers what to play; whether bytes may be pulled is ``/status``'s.
+class TestLibraryRouteReportsNoDownloadPolicy:
+    """``/library`` answers what may play; whether bytes may be pulled is ``/status``'s.
 
-    The frontend's ``FeatureVideoNext.download_enabled`` is optional and an
-    absent value reads as off, so nothing is owed here — and the governance memo
-    is not read on a route that authorizes no egress.
+    The governance memo is not read on a route that authorizes no egress.
     """
 
     def test_an_offer_carries_only_the_clip_and_the_switch(self, tmp_path: Path) -> None:
@@ -63,27 +61,28 @@ class TestNextRouteReportsNoDownloadPolicy:
                 patch.object(manifest_mod, "download_permitted_cached", side_effect=AssertionError),
                 patch.object(manifest_mod, "download_denied", side_effect=AssertionError),
             ):
-                body = _next_body(tmp_path)
-        assert set(body) == {"video", "enabled"}
+                body = _library_body(tmp_path)
+        assert set(body) == {"videos", "enabled"}
         assert body["enabled"] is True
-        assert body["video"]["id"] == "hosted-clip"  # type: ignore[index]
-        assert "source" not in body["video"]  # type: ignore[operator]
-        assert body["video"]["src"] == "/feature-videos/0.6.0/hosted-clip.mp4"  # type: ignore[index]
+        (video,) = body["videos"]  # type: ignore[misc]
+        assert video["id"] == "hosted-clip"
+        assert "source" not in video
+        assert video["src"] == "/feature-videos/0.6.0/hosted-clip.mp4"
 
     def test_a_denied_ceiling_still_offers_nothing_uncached(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _seed(_parsed())
             with patch.object(manifest_mod, "download_denied", return_value=True):
-                body = _next_body(tmp_path)
-        assert body == {"video": None, "enabled": True}
+                body = _library_body(tmp_path)
+        assert body == {"videos": [], "enabled": True}
 
     def test_a_cached_clip_under_a_denial_still_plays_locally(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _write_media("0.6.0")
             _seed(_parsed())
             with patch.object(manifest_mod, "download_denied", return_value=True):
-                body = _next_body(tmp_path)
-        assert body["video"]["src"] == "/feature-videos/0.6.0/hosted-clip.mp4"  # type: ignore[index]
+                body = _library_body(tmp_path)
+        assert body["videos"][0]["src"] == "/feature-videos/0.6.0/hosted-clip.mp4"  # type: ignore[index]
 
     def test_without_a_manifest_no_governance_is_consulted(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -92,9 +91,9 @@ class TestNextRouteReportsNoDownloadPolicy:
                 patch.object(manifest_mod, "download_permitted_cached", side_effect=AssertionError),
                 patch.object(manifest_mod, "download_denied", side_effect=AssertionError),
             ):
-                body = _next_body(tmp_path)
-        assert body["video"] is not None
-        assert set(body) == {"video", "enabled"}
+                body = _library_body(tmp_path)
+        assert body["videos"]
+        assert set(body) == {"videos", "enabled"}
 
     def test_the_kill_switch_answer_is_the_same_two_fields(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -107,9 +106,9 @@ class TestNextRouteReportsNoDownloadPolicy:
             ):
                 cfg_cls.load.return_value = cfg
                 resp = asyncio.run(
-                    fv.api_feature_videos_next(_dashboard_request("/api/feature-videos/next"))
+                    fv.api_feature_videos_library(_dashboard_request("/api/feature-videos/library"))
                 )
-        assert json.loads(resp.body) == {"video": None, "enabled": False}  # type: ignore[arg-type]
+        assert json.loads(resp.body) == {"videos": [], "enabled": False}  # type: ignore[arg-type]
 
 
 class TestStatusRoute:
