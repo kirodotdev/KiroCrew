@@ -157,8 +157,8 @@ async def _session_replay_history(
                 window_for_provider_client,
             )
 
-            # The cold start a conductor context-cap trim began (context_cap)
-            # replays a longer tail, behind the trim note and the ledger snapshot.
+            # The cold start a context-cap trim began (context_cap) replays a longer
+            # tail, behind the trim note, the ledger snapshot and the tool pointers.
             _trim_seed = _take_context_cap_seed(session_key)
             _budget = {"budget_chars": _context_cap_tail_chars(session_key)} if _trim_seed else {}
             # Merge the disk transcript and a frozen live-window tail
@@ -180,7 +180,10 @@ async def _session_replay_history(
             )
             if _trim_seed and compressed:
                 _note_context_cap_tail(session_key, len(compressed))
-                compressed = await _context_cap_seed_head(session_key) + compressed
+                compressed = (
+                    await _context_cap_seed_head(session_key, context_builder.conversation_log)
+                    + compressed
+                )
             logger.info(
                 "Session replay: key=%s result=%s",
                 session_key,

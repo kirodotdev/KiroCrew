@@ -1282,6 +1282,21 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
+def build_tool_pointers(conversation_log: "ConversationLog | None", session_key: str) -> str:
+    """The tool-result pointer list a context-cap trim's seed carries, redacted, or ``""``.
+
+    Read off the same chained transcript :func:`build_session_replay` reads; see
+    ``context_assembly.replay.tool_pointer_text``.
+    """
+    rows = conversation_log.read_messages_chained(session_key) if conversation_log else []
+    text = _replay.tool_pointer_text(rows, session_key)
+    if not text:
+        return ""
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text.translate(_MULTIBYTE_TABLE)
+
+
 def _skills_injection_plan(
     agent: str | None,
     *,

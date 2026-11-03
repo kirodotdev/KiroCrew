@@ -1,7 +1,7 @@
 """The conductor context cap (``docs/request-for-change/rfc-conductor-context-cap.md``).
 
-Section 5 of the RFC asks for a test per rule and per hold, each failing first: Rule
-A, Rule B, the 300-s clock read from the previous turn's release rather than its
+Section 5 of the RFC asks for a test per rule and per hold, each failing first: the
+cold-only gate (a warm cache is never trimmed), the 300-s clock read from the previous turn's release rather than its
 acquire, the damping guard, an unknown reading, a slash command, a queued reset, a
 pending question, attached sub-agents, a refused teardown and the off switch; and
 for the seed, its budget, its note, its snapshot and the notice row its replay
@@ -82,7 +82,7 @@ class _Sessions:
     """
 
     def __init__(
-        self, provider: _Provider | None, *, idle_secs: float = 0.0, sid: str = "sid-1"
+        self, provider: _Provider | None, *, idle_secs: float = 3_600.0, sid: str = "sid-1"
     ) -> None:
         self.provider = provider
         self.sid = sid
@@ -127,14 +127,14 @@ class _Sessions:
         self.provider, self.sid = None, ""
         return True
 
-    def start_session(self, tokens: int, *, sid: str, idle_secs: float = 0.0) -> None:
+    def start_session(self, tokens: int, *, sid: str, idle_secs: float = 3_600.0) -> None:
         """The session the next turn's claim starts, as it reads at a later turn start."""
         self.provider, self.sid = _Provider(tokens), sid
         self.set_idle(idle_secs)
 
 
-def _cfg(on: bool = True) -> Any:
-    return SimpleNamespace(session=SimpleNamespace(context_cap=on))
+def _cfg(on: bool = True, *, worker: bool = False) -> Any:
+    return SimpleNamespace(session=SimpleNamespace(context_cap=on, worker_context_cap=worker))
 
 
 def _conductor(tmp_path, sessions: _Sessions) -> tuple[Any, Any]:
@@ -160,24 +160,37 @@ def _notices(slot) -> list[dict]:
 @pytest.mark.parametrize(
     ("tokens", "idle", "rule"),
     [
-        (400_001, 0.0, "A"),
-        (400_000, 0.0, None),
-        (400_000, None, None),
+        (400_001, 0.0, None),
+        (900_000, 299.9, None),
+        (900_000, None, None),
         (200_001, 300.0, "B"),
         (200_000, 300.0, None),
         (200_001, 299.9, None),
         (200_001, None, None),
-        (900_000, None, "A"),
+        (900_000, 300.0, "B"),
     ],
 )
-def test_the_rules_fire_only_past_their_marks(tokens, idle, rule):
-    """Rule A past 400K whatever the cache; Rule B past 200K once 300 s have passed."""
+def test_only_a_cold_cache_over_the_line_trims(tokens, idle, rule):
+    """Past 200K once 300 s have passed; a warm or unknown cache never, at any size."""
     assert chat_runner._context_cap_rule(tokens, idle) == rule
 
 
+@pytest.mark.parametrize("tokens", [412_000, 900_000])
 @pytest.mark.asyncio
-async def test_rule_a_trims_a_session_over_400k_at_a_turn_start(tmp_path):
-    sessions = _Sessions(_Provider(412_000), idle_secs=0.0)
+async def test_a_warm_conductor_over_400k_is_never_trimmed(tmp_path, tokens):
+    """No warm-cache line: the window and KAS compaction carry a warm chat."""
+    sessions = _Sessions(_Provider(tokens), idle_secs=0.0)
+    state, slot = _conductor(tmp_path, sessions)
+
+    assert await _check(state, slot) == "below_marks"
+
+    assert sessions.discards == []
+    assert chat_runner._take_context_cap_seed(KEY) is False
+
+
+@pytest.mark.asyncio
+async def test_a_cold_conductor_over_400k_is_trimmed(tmp_path):
+    sessions = _Sessions(_Provider(412_000), idle_secs=300.0)
     state, slot = _conductor(tmp_path, sessions)
 
     assert await _check(state, slot) == "trimmed"
@@ -193,7 +206,7 @@ async def test_a_trim_appends_no_transcript_row(tmp_path):
     from kiro_crew.dashboard.chat_backfill import _is_conversational
     from kiro_crew.dashboard.state_parts.transcript_rows import is_turn_interrupted
 
-    sessions = _Sessions(_Provider(412_000), idle_secs=0.0)
+    sessions = _Sessions(_Provider(412_000))
     state, slot = _conductor(tmp_path, sessions)
     slot.append("assistant", "done", "msg msg-a")
     slot.append("user", "next", "msg msg-u")
@@ -400,6 +413,18 @@ def test_the_cap_is_on_by_default_and_config_json_turns_it_off():
     assert getattr(KiroCrewConfig().session, "context_cap", None) is True
     assert _build_session_config({}).context_cap is True
     assert _build_session_config({"context_cap": False}).context_cap is False
+
+
+def test_the_worker_cap_is_off_by_default_and_config_json_turns_it_on():
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.config.loader_builders import _build_session_config
+
+    assert getattr(KiroCrewConfig().session, "worker_context_cap", None) is False
+    assert _build_session_config({}).worker_context_cap is False
+    assert _build_session_config({"worker_context_cap": True}).worker_context_cap is True
+    baseline = Path(__file__).resolve().parents[1] / "config-baseline.json"
+    entries = {e["path"]: e for e in json.loads(baseline.read_text(encoding="utf-8"))["entries"]}
+    assert entries["session.worker_context_cap"]["defaultValue"] is False
 
 
 def test_the_setting_is_published_with_its_default():
@@ -779,3 +804,115 @@ async def test_a_dashboard_turn_checks_the_cap_before_it_claims_its_session(monk
 
     assert seen == [("dashboard:chat-1", False, True, 0)]
     assert record.stop_reason == STOP_REASON_END_TURN
+
+
+# ── the worker cap (session.worker_context_cap) ────────────────────────────
+
+WORKER = "kirocrew-worker"
+
+
+def _worker(tmp_path, sessions: _Sessions) -> tuple[Any, Any]:
+    state, slot = _conductor(tmp_path, sessions)
+    slot.agent = WORKER
+    return state, slot
+
+
+@pytest.mark.parametrize(
+    ("tokens", "idle", "result"),
+    [
+        (300_001, 300.0, "trimmed"),
+        (900_000, 0.0, "below_marks"),
+        (300_001, 299.9, "below_marks"),
+        (300_000, 3_600.0, "below_marks"),
+        (250_000, 3_600.0, "below_marks"),
+    ],
+    ids=["cold-over", "warm-over", "just-warm", "cold-at-line", "cold-under"],
+)
+@pytest.mark.asyncio
+async def test_a_worker_trims_only_on_a_cold_cache_over_300k(
+    tmp_path, monkeypatch, tokens, idle, result
+):
+    sessions = _Sessions(_Provider(tokens), idle_secs=idle)
+    state, slot = _worker(tmp_path, sessions)
+    # The gap is pinned, so a slow runner cannot push 299.9 s past the cache life.
+    # The clock itself is covered by test_the_clock_is_the_previous_turns_release_not_its_acquire.
+    monkeypatch.setattr(  # flake-ok: pins the idle-gap reading; nothing waits on it
+        chat_runner, "_context_cap_idle_secs", lambda _state, _key: idle
+    )
+
+    assert await _check(state, slot, cfg=_cfg(worker=True)) == result
+
+    assert len(sessions.discards) == (1 if result == "trimmed" else 0)
+
+
+@pytest.mark.asyncio
+async def test_the_worker_cap_is_its_own_switch(tmp_path):
+    """The conductor's switch does not reach workers, and the worker's not conductors."""
+    sessions = _Sessions(_Provider(900_000))
+    state, slot = _worker(tmp_path, sessions)
+    assert await _check(state, slot, cfg=_cfg(on=True, worker=False)) == "cap_off"
+
+    state, slot = _conductor(tmp_path, sessions)
+    assert await _check(state, slot, cfg=_cfg(on=False, worker=True)) == "cap_off"
+    assert sessions.discards == []
+
+
+# ── the tool pointers (D2) ──────────────────────────────────────────────────
+
+
+def _tool_row(state, call_id: str, label: str, command: str, output: str) -> None:
+    state.conversation_log.append(
+        KEY,
+        "tool",
+        "\U0001f527 " + label,
+        extra_meta={
+            "tool_call_id": call_id,
+            "input": json.dumps({"command": command}),
+            "output": output,
+            "done": True,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_trimmed_seed_lists_each_stored_tool_result(tmp_path, snapshot_reads):
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    _transcript(state, rows=4, size=10)
+    _tool_row(state, "toolu_aaa", "Run the tests", "pytest test/x.py", "3 passed")
+    _tool_row(state, "toolu_bbb", "Check PR", "gh pr checks 1 | head", "y" * 1_234)
+    assert await _check(state, slot) == "trimmed"
+
+    seed = await _replay(state, slot)
+
+    head, _, tail = seed.partition("User: 0000")
+    assert head.startswith(chat_runner.CONTEXT_CAP_TRIM_NOTE + "\n\n" + SNAPSHOT + "\n\n")
+    assert f"session_key: {KEY}" in head
+    assert "toolu_aaa | Run the tests | pytest test/x.py | 8 chars" in head
+    # A "|" in the args cannot break the line's columns.
+    assert "toolu_bbb | Check PR | gh pr checks 1 / head | 1,234 chars" in head
+    assert head.index("toolu_aaa") < head.index("toolu_bbb")
+    assert "yyyy" not in seed
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_list_keeps_the_newest_100(tmp_path, snapshot_reads):
+    sessions = _Sessions(_Provider(412_000))
+    state, slot = _conductor(tmp_path, sessions)
+    _transcript(state, rows=2, size=10)
+    for i in range(105):
+        _tool_row(state, f"toolu_{i:03d}", "Read", f"cat f{i}", "z")
+    assert await _check(state, slot) == "trimmed"
+
+    seed = await _replay(state, slot)
+
+    assert "toolu_004 |" not in seed and "toolu_005 |" in seed and "toolu_104 |" in seed
+    assert "(5 older results not listed.)" in seed
+
+
+def test_the_trim_note_names_the_tools_that_really_return_tool_output():
+    """D3: get_chat_session(tool_call_id) for output, a fresh read for a file."""
+    note = chat_runner.CONTEXT_CAP_TRIM_NOTE
+    assert "tool_call_id" in note and "get_chat_session" in note
+    assert "re-read a file" in note
+    assert "search_chat_history searches it and get_chat_session reads it" not in note

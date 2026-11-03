@@ -324,6 +324,14 @@ GET_CHAT_SESSION_SCHEMA = ToolSchema(
         FieldSpec("max_messages", int, required=False, min_val=1, max_val=200, default=50),
         FieldSpec("all_workspaces", bool, required=False, default=False),
         FieldSpec("crew", str, required=False, max_len=MAX_SHORT_STRING, pattern=_CREW_RE),
+        FieldSpec(
+            "tool_call_id",
+            str,
+            required=False,
+            max_len=MAX_SHORT_STRING,
+            # A transcript tool row's ``meta.tool_call_id`` (``toolu_...``).
+            pattern=re.compile(rf"^[A-Za-z0-9_.:-]{{1,{MAX_SHORT_STRING}}}$"),
+        ),
     ],
 )
 
