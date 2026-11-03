@@ -673,6 +673,8 @@ class TestCronDeliversEmbeddedImages:
         orch.slack.upload_file.assert_not_awaited()
         orch.slack.post_blocks.assert_awaited_once()
         assert "Máy in bình thường, không ảnh." in orch.slack.post_blocks.await_args.args[2]
+        # A confirmed post advances the duplicate-suppression anchor.
+        assert job.last_posted_hash != ""
 
     @pytest.mark.asyncio
     async def test_posts_into_job_thread_ts(self, tmp_path):
@@ -693,6 +695,7 @@ class TestCronDeliversEmbeddedImages:
 
         # post_blocks(channel, blocks, fallback, thread_ts) — 4th arg is the thread.
         assert orch.slack.post_blocks.await_args.args[3] == "1789607951.617559"
+        assert job.last_posted_hash != ""
 
     @staticmethod
     def _png_bytes() -> bytes:

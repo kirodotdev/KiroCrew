@@ -196,6 +196,9 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=True, mandatory_key="k")
         await orch._retry_pending_update_restart()  # the coordinator loop's bare retry
 
+        # The deferred restart stays pending and still carries the floor's key.
+        assert orch._pending_update_respawn is not None
+        assert (orch._pending_update_mandatory, orch._pending_update_mandatory_key) == (True, "k")
         assert prepare.await_args_list == [
             call(mandatory=True, mandatory_key="k"),
             call(mandatory=True, mandatory_key="k"),
