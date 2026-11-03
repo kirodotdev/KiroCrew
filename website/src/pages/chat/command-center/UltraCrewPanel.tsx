@@ -82,12 +82,13 @@ export function summaryRecap(summary: SessionSummary | undefined, milestoneTitle
 
 const BOOKKEEPING = /\b(task limit|open-task|tasks used|cap|ledger|item id|session|dispatch|worker|round|retry|try|timed out|approval|auto-nudge|monitor|patrol)\b/i
 
-/** The milestone sentence: "4 of 8 done; A and B wait on you; C has stalled; D is running." */
-export function milestoneSentence(done: number, total: number, waiting: string[], running: string[], stalled: string[] = []): string {
+/** The milestone sentence: "4 of 8 done; A and B wait on you; C is stuck; E has gone quiet; D is running." */
+export function milestoneSentence(done: number, total: number, waiting: string[], running: string[], stuck: string[] = [], quiet: string[] = []): string {
   if (total === 0) return i18nT('components.crewMode.ultra_recap_empty')
   const parts = [i18nT('components.crewMode.ultra_recap_head', { done, total })]
   if (waiting.length) parts.push(i18nT(waiting.length === 1 ? 'components.crewMode.ultra_recap_wait_one' : 'components.crewMode.ultra_recap_wait', { names: joinNames(waiting) }))
-  if (stalled.length) parts.push(i18nT(stalled.length === 1 ? 'components.crewMode.ultra_recap_stalled_one' : 'components.crewMode.ultra_recap_stalled_many', { names: joinNames(stalled) }))
+  if (stuck.length) parts.push(i18nT(stuck.length === 1 ? 'components.crewMode.ultra_recap_stuck_one' : 'components.crewMode.ultra_recap_stuck_many', { names: joinNames(stuck) }))
+  if (quiet.length) parts.push(i18nT(quiet.length === 1 ? 'components.crewMode.ultra_recap_gone_quiet_one' : 'components.crewMode.ultra_recap_gone_quiet_many', { names: joinNames(quiet) }))
   if (running.length) parts.push(i18nT(running.length === 1 ? 'components.crewMode.ultra_recap_run_one' : 'components.crewMode.ultra_recap_run_many', { names: joinNames(running) }))
   return `${parts.join('; ')}.`
 }
@@ -175,7 +176,7 @@ export function goalScope(text: string): string {
   return m ? m[1].trim() : ''
 }
 
-type MilestoneState = 'done' | 'needs_you' | 'running' | 'waiting' | 'stalled' | 'next'
+type MilestoneState = 'done' | 'needs_you' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
 
 /** A report a worker said only a person can move (`reason` approval / needs_human). */
 const PERSON_REASONS = new Set(['approval', 'needs_human'])
@@ -213,11 +214,16 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // names a person. An answer -- the conductor's or the person's own steer -- ends it.
   if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item))) return 'needs_you'
   if (item.alive === 'running') return 'running'
-  // The worker stopped and nobody is moving it: its session closed on an open
-  // report, or the board's own stale / orphaned flag.
-  // Only an open report can stall: a done report or an unstarted item keeps its
-  // own state even when the whole board is orphaned (its conductor tab closed).
-  if (open && (item.alive === 'closed' || item.stale || item.orphaned)) return 'stalled'
+  // Stuck only when nothing is left to move it: its session closed on an open
+  // report, or the board is orphaned (no main chat reads its reports). A done
+  // report or an unstarted item keeps its own state even on an orphaned board.
+  if (open && (item.alive === 'closed' || item.orphaned)) return 'stuck'
+  // Quiet: the board's `stale` flag with the chat still there. Its worker is
+  // idle with no loop to wake it and the next move is its own, so it stays
+  // visible, but calmer than stuck: the chat can still be resumed. An item
+  // with no report yet stays Not started (it may have no worker bound at all),
+  // and raises only the quiet pulse below.
+  if (open && item.stale) return 'quiet'
   // An idle session after progress, or a question / blocked report the
   // conductor still owns, is waiting, as the List shows it.
   if (open) return 'waiting'
@@ -242,7 +248,8 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
-  stalled: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_20%,transparent)] crew-tone-muted"><Pause size={11} strokeWidth={2.5} /></span>,
+  quiet: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><Pause size={11} strokeWidth={2.5} /></span>,
+  stuck: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--danger)_18%,transparent)] text-[var(--danger)]"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
@@ -255,16 +262,34 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {item.pr != null && <span className="shrink-0 ultra-accent">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
       {link && <a className="shrink-0 ultra-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
     </>
-  } else if (state === 'stalled' || (state === 'waiting' && onConductor(item))) {
-    // Who acts next, not the worker's own words: a stalled row says how to
+  } else if (state === 'stuck' || (state === 'waiting' && onConductor(item))) {
+    // Who acts next, not the worker's own words: a stuck row says why and how to
     // restart it, and a row the conductor owns says the main chat is on it.
     const said = firstSentence(item.summary)
-    const text = i18nT(state === 'stalled' ? 'components.crewMode.ultra_ms_stalled_next' : 'components.crewMode.ultra_ms_main_chat_answering')
+    const text = i18nT(state === 'waiting' ? 'components.crewMode.ultra_ms_main_chat_answering'
+      : item.alive === 'closed' ? 'components.crewMode.ultra_ms_stuck_chat_closed' : 'components.crewMode.ultra_ms_stuck_unread')
     sub = <span className="truncate" title={said || text}>{text}</span>
-  } else if (state === 'waiting') {
+  } else if (state === 'quiet') {
+    // Why it is quiet and the PR it named on one line, the worker's own last
+    // words on the next, so a narrow panel keeps both: the PR number never
+    // shrinks, the reason and the words truncate.
     const said = firstSentence(item.summary)
+    const why = i18nT('components.crewMode.ultra_ms_quiet')
+    sub = <span className="flex flex-col min-w-0 w-full">
+      <span className="flex items-center gap-1 min-w-0">
+        <span className="min-w-0 truncate" title={why} data-testid="ultra-quiet-reason">{why}</span>
+        {item.pr != null && <span className="shrink-0">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
+      </span>
+      {said && <span className="truncate" title={said} data-testid="ultra-quiet-said">{said}</span>}
+    </span>
+  } else if (state === 'waiting') {
+    // What it waits on, only as far as the board knows: the PR it reported, then
+    // the worker's own words; with neither, a calm "no reason given".
+    const said = firstSentence(item.summary)
+    const head = item.pr != null ? i18nT('components.crewMode.ultra_ms_waiting_pr', { n: item.pr })
+      : said ? i18nT('commandCenter.worker_group_waiting') : i18nT('components.crewMode.ultra_ms_waiting_no_reason')
     sub = <>
-      <span className="shrink-0">{i18nT('commandCenter.worker_group_waiting')}</span>
+      <span className="shrink-0">{head}</span>
       {said && <span className="truncate" title={said}>· {said}</span>}
     </>
   } else {
@@ -475,11 +500,13 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const openMs = milestones.filter(m => m.state !== 'done')
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
-  // Stalled is the board's own `stale` flag on open work (quiet, not running,
-  // the move with the worker); a finished crew shows no pulse at all.
-  const stalled = openMs.some(m => m.item.stale)
-  // "moving" only while a milestone runs; with nothing running and nothing
-  // stale (blocked or next only) there is no pulse.
+  // Stuck (red): a milestone with nothing left to move it. Quiet (amber): one
+  // idle with nothing scheduled to wake it, whose chat can still be resumed.
+  const stuck = openMs.some(m => m.state === 'stuck')
+  // Any stale open item raises it, a not-started one included, as main's pulse did.
+  const quiet = openMs.some(m => m.state === 'quiet' || (m.state === 'next' && m.item.stale))
+  // "moving" only while a milestone runs; with nothing running, stuck or quiet
+  // (waiting or next only) there is no pulse.
   const moving = openMs.some(m => m.state === 'running')
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
@@ -487,7 +514,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   }
   const recap = summaryRecap(summary.data, items.map(i => i.title))
     || (items.length
-      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stalled').map(m => m.item.title))
+      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
       : ultraRecap(c, waitingNames, questionCount > 0))
 
   return (
@@ -522,11 +549,11 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
           <section data-testid="ultra-needs-you" className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_needs_input')} · ${needCount}`}</h3>
             {/* A milestone that needs the person without an approval card, or one
-                that stalled, is not counted here, but the line does not claim
+                that is stuck or quiet, is not counted here, but the line does not claim
                 nothing is wrong: it points at the rows below. */}
             {(needCount === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{needsYouRows.length
               ? i18nT(needsYouRows.length === 1 ? 'components.crewMode.ultra_needs_you_rows_one' : 'components.crewMode.ultra_needs_you_rows_many', { names: joinNames(needsYouRows) })
-              : i18nT(milestones.some(m => m.state === 'stalled') ? 'components.crewMode.ultra_needs_you_none_stalled' : 'components.crewMode.ultra_needs_you_none')}</p>}
+              : i18nT(stuck || quiet ? 'components.crewMode.ultra_needs_you_none_stuck' : 'components.crewMode.ultra_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="ultra-main-question">
                 <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>
@@ -543,10 +570,10 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
           <section data-testid="ultra-milestones">
             <div className="flex items-center gap-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_milestones', { done: msDone, total: items.length })}</h3>
-              {lastReport && (stalled || moving) && (
-                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stalled ? 'crew-tone-warn' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
+              {(stuck || quiet || (moving && lastReport)) && (
+                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck ? 'text-[var(--danger)]' : quiet ? 'crew-tone-warn' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
                   <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-current" />
-                  {stalled ? i18nT('components.crewMode.ultra_stalled') : i18nT('components.crewMode.ultra_moving', { when: fmtRelative(lastReport) })}
+                  {stuck ? i18nT('components.crewMode.ultra_stuck') : quiet ? i18nT('components.crewMode.ultra_quiet') : i18nT('components.crewMode.ultra_moving', { when: fmtRelative(lastReport || '') })}
                 </span>
               )}
             </div>
