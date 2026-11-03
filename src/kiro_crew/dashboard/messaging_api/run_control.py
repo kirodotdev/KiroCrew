@@ -724,6 +724,13 @@ async def _retry_failed_run(
             # The replacement sits where the failed run sat in its tree, even when
             # the parent's record is gone and admission cannot read it.
             _depth=getattr(old, "depth", None),
+            # And under the SAME spawn-tree root the failed run resolved, carried
+            # like its depth: re-resolving it from the parent key would read
+            # whatever records match that key now, which for a conversation
+            # continued by another chat can be a different root than the one this
+            # run ran under. Empty becomes None so admission re-resolves (a run
+            # that never had a root stamped).
+            _trust_root_key=(getattr(old, "trust_root_key", "") or None),
             **({"_preassigned_id": run_id} if run_id else {}),
         )
         import contextlib
