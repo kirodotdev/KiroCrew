@@ -79,8 +79,9 @@ class _FakeStderr:
     def __init__(self, data: bytes) -> None:
         self._data = data
 
-    async def read(self) -> bytes:
-        data, self._data = self._data, b""
+    async def read(self, n: int = -1) -> bytes:
+        cut = len(self._data) if n < 0 else n
+        data, self._data = self._data[:cut], self._data[cut:]
         return data
 
 
@@ -337,6 +338,30 @@ class TestCaptureStderr:
         tunnel._proc = _FakeProc(stderr=_FakeStderr(b"z" * 200))  # type: ignore[assignment]
         await tunnel._capture_stderr()
         assert len(tunnel._stderr_buf) == 16
+
+    @pytest.mark.asyncio
+    async def test_a_child_whose_stderr_never_closes_does_not_park_the_capture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No spawn-time drain, and a surviving helper holds the write end open.
+
+        The caller is ``_monitor``: an unbounded read here would keep the exit
+        from ever being reported, so self-heal would never run. The capture
+        returns within the grace and keeps what the child wrote.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        monkeypatch.setattr(stm, "_STDERR_DRAIN_GRACE_SECS", 0.05)
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"kex_exchange_identification: Connection closed\r\n")  # no EOF
+        tunnel = _tunnel()
+        tunnel._proc = _FakeProc(returncode=255, stderr=stream)  # type: ignore[assignment]
+        assert tunnel._stderr_task is None
+
+        await await_until(asyncio.ensure_future(tunnel._capture_stderr()))
+
+        assert "Connection closed" in tunnel._stderr_buf
+        assert _pending_tasks() == []
 
 
 # A stand-in tunnel child: it writes ``size`` bytes of the line ssh prints for
