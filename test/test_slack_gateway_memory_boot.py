@@ -201,6 +201,7 @@ class TestAutoMigrateMemory:
         ):
             await orch._auto_migrate_memory()
         # Migrated even though the model was absent; sweep ran after the wait.
+        assert orch._cfg.memory.migrated is True
         store.migrate_from_markdown.assert_called_once()
         store.backfill_missing_embeddings.assert_called_once()
 

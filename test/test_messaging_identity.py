@@ -209,13 +209,14 @@ def test_no_publish_when_pid_unavailable(pid_home: Path) -> None:
     assert sorted(p.name for p in pid_home.glob("session_pid_*")) == []
 
 
-def test_swallows_get_pid_error() -> None:
+def test_swallows_get_pid_error(pid_home: Path) -> None:
     sessions = MagicMock()
     sessions.get_pid.side_effect = RuntimeError("boom")
-    with patch.object(identity, "publish_session_pid") as pub:
+    with _spy_publish() as pub:
         # A get_pid / filesystem failure must never propagate out of a turn.
         asyncio.run(identity.publish_turn_identity(sessions, "discord:kirocrew:g:t"))
         pub.assert_not_called()
+    assert sorted(p.name for p in pid_home.glob("session_pid_*")) == []
 
 
 # ── Inbound channels-governance gate (HIGH: enforce on inbound dispatch) ──

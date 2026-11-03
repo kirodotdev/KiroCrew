@@ -32,6 +32,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.monitoring.models import (
     MonitorActionCompletion,
     MonitorActionDisposition,
@@ -600,30 +601,33 @@ class TestDeliverResult:
     async def test_dashboard_new_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
+        slot = _ChatSlot("new-slot")
         ds.get_or_create_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         await orch._deliver_result("Title", "task", "result", "dashboard")
-        slot.append.assert_called_once_with("assistant", "Title\n\nresult", "msg msg-a")
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
+        # The heartbeat seeds the slot's title from the task summary.
+        assert slot.title == "💓 task"
         ds.notify.assert_called_once_with(
-            "heartbeat", "Title", "task\n\nresult", meta={"slot": slot.key}
+            "heartbeat", "Title", "task\n\nresult", meta={"slot": "new-slot"}
         )
 
     @pytest.mark.asyncio
     async def test_dashboard_specific_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
-        slot.key = "my-slot"
+        slot = _ChatSlot("my-slot")
         ds.resolve_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "dashboard:my-slot")
         ds.resolve_slot.assert_called_with("my-slot")
-        slot.append.assert_called_once_with("assistant", "Title\n\nresult", "msg msg-a")
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
         ds.notify.assert_called_once_with(
             "heartbeat", "Title", "task\n\nresult", meta={"slot": "my-slot"}
         )
