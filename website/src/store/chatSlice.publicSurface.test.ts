@@ -79,7 +79,7 @@ const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
   'countMatchedFetchLimit', 'finishSideQueueEdit', 'floorForGen', 'forgetSideSteerSubmittedText', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
   'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
-  'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
+  'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryBanner', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
   'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',
   'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys',

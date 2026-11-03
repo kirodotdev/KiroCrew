@@ -13290,6 +13290,8 @@
         "steer_unsend": "Отозвать",
         "steer_edit": "Изменить в поле сообщения",
         "steer_queue_instead": "В очередь",
+        "show_full_message": "Показать сообщение целиком",
+        "hide_full_message": "Скрыть сообщение целиком",
         "steer_take_back_more": "Изменить или отозвать",
         "steer_unsend_in_flight": "Отзывается…",
         "steer_edit_in_flight": "Возвращается в поле сообщения…",

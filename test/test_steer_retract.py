@@ -439,6 +439,27 @@ class TestDropped:
         assert row["meta"][steer_retract.RETRACT_ACTION_META] == "queue"
 
     @pytest.mark.asyncio
+    async def test_queue_instead_keeps_the_steers_banner(self, harness):
+        async with TestClient(TestServer(harness.app)) as http:
+            resp = await http.post(
+                "/api/chat",
+                json={
+                    "slot": "test",
+                    "message": "the long scripted instruction",
+                    "banner": "short label",
+                    "steer": True,
+                },
+            )
+            assert resp.status == 200
+            await _retract(http, _mid_of(harness.slot, "the long scripted instruction"), "queue")
+
+        await steer_retract.on_dropped(harness.state, harness.slot)
+
+        (entry,) = harness.slot._queue
+        assert entry["content"] == "the long scripted instruction"
+        assert entry["meta"]["banner"] == "short label"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("owner", [True, False])
     async def test_queue_instead_keeps_the_steers_owner_mark(self, harness, owner):
         async with TestClient(TestServer(harness.app)) as http:

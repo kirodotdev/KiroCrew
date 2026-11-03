@@ -12423,6 +12423,8 @@
         "steer_unsend": "撤回",
         "steer_edit": "在消息框中编辑",
         "steer_queue_instead": "改为排队",
+        "show_full_message": "显示完整消息",
+        "hide_full_message": "隐藏完整消息",
         "steer_take_back_more": "编辑或撤回",
         "steer_unsend_in_flight": "正在撤回…",
         "steer_edit_in_flight": "正在移回消息框…",

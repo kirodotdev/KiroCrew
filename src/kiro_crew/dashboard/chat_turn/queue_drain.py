@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
+    banner_meta,
     queue_entry_is_user_origin,
     queued_text_for_display,
     quote_meta,
@@ -965,6 +966,7 @@ async def _start_next_queued_turn(
         _pop_meta = {
             **attachment_meta(item.get("meta")),
             **quote_meta(item.get("meta"), user_origin=queue_entry_is_user_origin(item)),
+            **banner_meta(item.get("meta")),
         }
         from kiro_crew.dashboard.chat_delivery import normalize_send_id
 

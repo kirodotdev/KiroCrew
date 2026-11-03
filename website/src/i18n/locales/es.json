@@ -13001,6 +13001,8 @@
         "steer_unsend": "Deshacer envío",
         "steer_edit": "Editar en el cuadro de mensaje",
         "steer_queue_instead": "Poner en cola",
+        "show_full_message": "Mostrar mensaje completo",
+        "hide_full_message": "Ocultar mensaje completo",
         "steer_take_back_more": "Editar o deshacer el envío",
         "steer_unsend_in_flight": "Anulando el envío…",
         "steer_edit_in_flight": "Devolviéndolo a tu cuadro de mensaje…",

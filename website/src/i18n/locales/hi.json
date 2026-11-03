@@ -12712,6 +12712,8 @@
         "steer_unsend": "वापस लो",
         "steer_edit": "संदेश बॉक्स में संपादित करो",
         "steer_queue_instead": "इसके बजाय कतार में डालो",
+        "show_full_message": "पूरा संदेश दिखाओ",
+        "hide_full_message": "पूरा संदेश छिपाओ",
         "steer_take_back_more": "संपादित करो या वापस लो",
         "steer_unsend_in_flight": "वापस लिया जा रहा है…",
         "steer_edit_in_flight": "वापस तुम्हारे संदेश बॉक्स में डाला जा रहा है…",

@@ -965,6 +965,9 @@ class SlotQueueRepository:
             meta = item.get("meta")
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
+                # The label summarized the old text; an edited row shows its own.
+                if previous != item["content"]:
+                    meta.pop("banner", None)
             if item["content"] != previous and isinstance(item.get("meta"), dict):
                 # A code channel's Slack sender names whose words these are;
                 # replacement text is the editor's, so the name goes.
