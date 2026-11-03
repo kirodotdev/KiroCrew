@@ -694,6 +694,12 @@ edit.
   `not is_<other>`, which would hand a branch to a later harness by default. The
   full invariant catalogue and its CI gate are in
   [harness-parity.md](harness-parity.md).
+- A user-level custom agent (a spec Crew did not write) gets `kirocrew-core` and
+  `kirocrew-cron` added to the spec `resolve_projected_spec` hands the projection,
+  by `acp/default_crew_servers.with_default_crew_servers`. kiro-cli's skill view
+  preparation calls the same helper, so the two backends add the same servers
+  under the same opt-outs; the rules are in
+  [agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md).
 
 Switching backends is a config write plus a restart, and affects only new
 sessions; `restart` reaps the prior runtime process, and `kirocrew doctor` reports

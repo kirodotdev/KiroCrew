@@ -40,6 +40,7 @@ from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
+from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
@@ -229,7 +230,9 @@ def resolve_projected_spec(
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
         spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-        return spec, agents_dir
+        # A user-level custom agent gets Crew's default servers, through the helper
+        # the kiro-cli skill view applies too, so the two paths cannot drift.
+        return with_default_crew_servers(agent, spec), agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -258,10 +261,8 @@ def resolve_projected_spec(
 
     if not declared:
         try:
-            return (
-                merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent)),
-                agents_dir,
-            )
+            spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+            return with_default_crew_servers(agent, spec), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.

@@ -793,6 +793,40 @@ not resurrected on the next boot.
 | your own `<name>.json` / `<name>.md` | yours | `model` / `skills` via the Template pane and `toolAliases` on rebuild; nothing else. `.md` is read-only to Crew entirely |
 | `<project>/.kiro/agents/*` | the checkout's | never rewritten; shadows the user-level spec of the same name on kiro-cli only |
 
+**Crew's servers on your own agent.** A Crew session on your own user-level
+spec (one Crew did not write: hand-authored, or installed by a tool) gets
+`kirocrew-core` and `kirocrew-cron` by default, because their launch command,
+data-home pin and session identity are Crew-internal and cannot be written into
+a spec by hand. Each one gets the managed `mcpServers` entry and an `@<server>`
+ref in `tools`, at spawn and never in your file, on kiro-cli (through the agent's
+skill view) and KAS (through the projected agent) by one helper,
+`acp/default_crew_servers.py`. When servers are added, the copy's `allowedTools`
+loses each entry that reaches an added server the governance ceiling withholds
+any tool of (`*`, `@*`, a server glob such as `@kirocrew-*`, `@<server>`,
+`@<server>/...`); every other entry, built-ins such as `fs_read` included, stays
+as written.
+The tools act on the session's own identity, so
+memory tools use the store that session is bound to. It is skipped for a server
+when:
+
+- `managedToolPolicy.excludeServers` names it, or `excludedTools` names
+  `@<server>` or `@<server>/*` (the opt-out); a per-tool exclusion such as
+  `@kirocrew-core/spawn_run` keeps the server and keeps that tool off;
+- your `mcpServers` already declares it, in any shape (a mute stays a mute);
+- `tools` is absent, malformed or `[]`: an agent that grants no tools stays tool-less;
+- the install is registry-governed (`agent.mcp_registry_mode`), where the admin's
+  catalog decides which servers run.
+
+`"*"` gets the entries only; a per-tool grant such as `@kirocrew-core/skill_search`
+is not widened. Crew's own specs, crewmate service agents, an app's agents (their
+containment is the app framework's), project-checkout specs and Crew's derived
+copies are left alone. Templates with a saved capability record, under any name,
+also keep their reviewed server and tool choices unchanged. If the capability
+record cannot be read, no default servers are added. `kirocrew-work` is not a
+default: it serves only a session bound to a work-ledger item. On kiro-cli the
+defaults ride the skill view, so a spawn that falls back to the authored agent
+(projection switched off, or the view ceiling reached) runs without them.
+
 Project shadowing is kiro-cli's rule, not a universal one. kiro-cli resolves
 `--agent` against its cwd before the user directory, which is why `list_agents`
 lets a project spec win. The KAS projection is handed `kiro_agents_dir()` alone
