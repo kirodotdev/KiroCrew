@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         _HEIC_HINT_EXT,
         _HEIF_BRANDS,
         _MAGIC_PREFIXES,
+        _MAX_STORED_NAME_BYTES,
         _MAX_UPLOAD_FILES,
         _MAX_VIDEO_UPLOAD_BYTES,
         _MEDIA_EXT_MIME,
@@ -42,6 +43,22 @@ if TYPE_CHECKING:
         sniff_raster_mime,
         upload_max_bytes,
     )
+
+
+def _fit_stored_name(safe_name: str) -> str:
+    """*safe_name* shortened to ``_MAX_STORED_NAME_BYTES`` UTF-8 bytes, keeping its extension.
+
+    The stem is cut on a character boundary so a multi-byte name never ends in a
+    broken sequence. A name already within the limit is returned unchanged.
+    """
+    limit = _MAX_STORED_NAME_BYTES
+    if len(safe_name.encode("utf-8")) <= limit:
+        return safe_name
+    path = Path(safe_name)
+    ext = path.suffix
+    budget = max(limit - len(ext.encode("utf-8")), 1)
+    stem = path.stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    return f"{stem}{ext}"
 
 
 def _upload_dir() -> Path:
@@ -293,6 +310,9 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # Sanitize: strip path components to prevent traversal
             safe_name = re.sub(r"[^\w.\-]", "_", Path(fname).name)
             ext = Path(safe_name).suffix.lower()
+            # A browser sends any length; past the file-system limit the open
+            # below raises "File name too long" and the upload answers 500.
+            safe_name = _fit_stored_name(safe_name)
             if ext not in allowed:
                 await _cleanup()
                 _sel().log_api_access(

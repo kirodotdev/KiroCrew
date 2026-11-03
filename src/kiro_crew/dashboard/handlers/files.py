@@ -289,6 +289,7 @@ from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
 from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
+    _fit_stored_name,
     _log_upload_diagnostic,
     _resolve_raster_ext,
     _sniff_media_type,
@@ -576,6 +577,10 @@ _DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: memory the way every other accepted type does.
 _MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB per video
 _MAX_UPLOAD_FILES = 20  # max files per request
+#: Longest stored-name tail of an upload, in UTF-8 bytes. A file name is capped
+#: at 255 bytes on ext4, APFS and NTFS, and the stored name adds a 32-hex UUID
+#: and ``_`` (``_fit_stored_name``).
+_MAX_STORED_NAME_BYTES = 200
 
 # Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
 # (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is
