@@ -5655,8 +5655,6 @@
       "more_waiting": "{{count}}개 더",
       "needs_you": "확인이 필요해요",
       "next": "다음 단계",
-      "progress": "진행",
-      "progress_count": "{{total}}개 중 {{accepted}}개 완료",
       "remaining": "남은 일",
       "show_fewer": "접기",
       "status_blocked": "막힘",

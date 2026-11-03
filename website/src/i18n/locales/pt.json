@@ -5923,8 +5923,6 @@
       "more_waiting": "Mais {{count}}",
       "needs_you": "Precisa de você",
       "next": "Próximos passos",
-      "progress": "Progresso",
-      "progress_count": "{{accepted}} de {{total}} concluídas",
       "remaining": "Falta",
       "show_fewer": "Mostrar menos",
       "status_blocked": "Travado",

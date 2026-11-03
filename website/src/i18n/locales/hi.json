@@ -5789,8 +5789,6 @@
       "more_waiting": "{{count}} और",
       "needs_you": "तुमसे चाहिए",
       "next": "आगे",
-      "progress": "प्रगति",
-      "progress_count": "{{total}} में से {{accepted}} पूरे",
       "remaining": "बाकी",
       "show_fewer": "कम दिखाएँ",
       "status_blocked": "अटका है",

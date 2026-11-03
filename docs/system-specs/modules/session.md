@@ -258,9 +258,34 @@ that do not need the owner, and what runs next. It returns one JSON object:
 `status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
 `needs_you` when `needs_you` has items, else `on_track`, and `on_track` or
 `done` beside `needs_you` items reads as `needs_you`), `headline` (at most
-240 characters), `needs_you` (at most four items of 200) and a plain-text
-`body` (lines kept, 2,400 characters, 32 lines), words only: the model draws no
-HTML, and a `widget` it returns anyway is ignored. Older fields (`asked`,
+240 characters), `needs_you` (at most four items of 200) and a markdown
+`body` (kept as source, defanged, trailing whitespace dropped, 6,000
+characters, 160 lines; the model's output budget is 40 KiB). Markdown images
+and `<img>` tags outside a widget or code fence draw as their alt text only
+(a widget frame allows no remote image). The secret and grounding
+scans run last, after every transform, on the exact strings the row would
+post: the secret scan on its whole `content` and each `meta.brief` field,
+the PR, SHA and time scans on the model-written strings only (each
+`meta.brief` field and the body as `content` carries it; the gateway's own
+waiting cards are not model text). Any grounding miss drops every model
+field, never masks or edits one. Every scanner reads the same three views
+of its text, built by one function: the canonical form (HTML entities
+decoded until stable, then NFKC) as written, with tags, comments and link
+syntax removed until none is left so the halves around them join, and that joined form with
+emphasis and code marks also removed; colour declaration values are removed
+in every view. A miss is a secret in any view, or a pull request outside
+the verified set (a live read, the snapshot or the owner's request, read by
+`inputs.pr_numbers`).
+Before posting, the gateway runs the RFC's section 3.9.6 output check over
+every model field, the whole body included: every commit SHA must appear in
+the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
+"as of" time. On a
+miss every model field is dropped and the card posts with the gateway's
+waiting cards and the fixed failure line as its headline. The body may carry one
+picture the model chooses when it helps the owner act: a mermaid block, a
+markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
+bare "N of M done" line, links and images. A separate `widget` field the model
+returns is ignored. Older fields (`asked`,
 `remaining`, `done`, `next`, `extra`) still parse; `headline` is required and
 an older `now` or `{"message"}` reply is read as it. The gateway lists
 `waiting` itself: every open work item whose status is `blocked` or `question`
@@ -268,10 +293,11 @@ with reason `approval` or `needs_human`, as `{title, ask}` (title and summary,
 cleaned like a model field), in ledger order, at most 50, with `waiting_total`
 counting them all; the prompt tells the model not to repeat them in
 `needs_you`, and a `done` or `on_track` status beside anything waiting reads as
-`needs_you`. `progress` is never the model's: the gateway stores
-`{accepted, total}` only over the current goal's work items after a `new_goal`
-write (the newest `goal_items_used`), and leaves it out when the board never
-recorded a goal or the goal's items cannot be told apart. Each text field is
+`needs_you`. The brief stores no progress count; `goal_progress` in the
+prompt is the gateway's own `{accepted, total}` over the current goal's work
+items after a `new_goal` write (the newest `goal_items_used`), null when the
+board never recorded a goal or the goal's items cannot be told apart, and the
+model reads it only as a fact. Each text field is
 redacted before and after whitespace is collapsed and `**` dropped, then
 control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any bracket form) are
 defanged, then the field is capped.
@@ -284,25 +310,34 @@ model-written field that neither the prompt's input nor the original
 request named fails the result, and the
 fixed failure line posts instead.
 The result is one mate message: `meta.brief` holds the fields and `content`
-holds the same brief as labelled plain text. The transcript draws `meta.brief`
-as a fixed card (`WarmBriefCard`) that renders every field as a plain text
-node, in the order status and headline, the progress orb (`WarmBriefOrb`),
-body, What you asked, Done, Next, then the `extra` sections. The orb is a
-fixed component: its liquid height and glow are `accepted / total`, sparkles
-show when the count is full, and a brief with no count (no current goal, or a
-goal with no items) draws no orb and no caption, only the cards and the status
-tag. Above it float the `waiting` items, then the model's
-`needs_you`, as wrapping cards; the first three show and the rest fold behind
-one "N more" toggle that also counts items past the gateway's list. Every orb
-animation sits inside `prefers-reduced-motion: no-preference`, colours are
-theme variables with a tighter halo on light themes, and the orb reads as a
-`progressbar` labelled with the count. A brief stored before the orb keeps its
-`widget` HTML, drawn last in the sandboxed `WidgetFrame`; an older `now` brief
-with no status and no count keeps its plain Needs you list. A row without a
+holds the same brief as labelled plain text; there the body's widget becomes a `[widget]` mention, links keep only their text and bare addresses become code, because a reply thread's parent and history draw `content` under the chat profile. The transcript draws `meta.brief`
+as a card (`WarmBriefCard`) in the order status and headline, the waiting
+cards (`WarmBriefWaiting`), body, What you asked, Done, Next, then the `extra`
+sections. Every field but `body` is a plain text node. The waiting cards are
+fixed code fed by gateway data: the `waiting` items, then the model's
+`needs_you`, as wrapping text cards with theme colours and no motion; the
+first three show and the rest fold behind one "N more" toggle that also counts
+items past the gateway's list. The card draws no progress picture or count,
+and a `progress` an older stored brief carries is ignored. The body is drawn
+by the same `MarkdownRenderer` an ordinary assistant reply uses, so a mermaid
+block renders as a diagram, a table as a table, and an `<mcwidget>` as a live
+widget: the same `WidgetFrame`, sandbox, message time and session key as one in
+an ordinary assistant reply, under the `welcome` frame profile
+(`components/widgetFrameProfile.ts`). It keeps page scripts and clicks, but
+its CSP names no CDN script origin (connect, image and font sources are local
+only, as for every widget), it has no link bridge and no bare-link rewrite,
+and the host ignores its `mc-widget-action`, so it never pre-fills the
+composer. It has no star, because an artifact page would draw it under the
+chat profile. Links in the body draw as plain text. The chat profile is
+unchanged. A page script can still navigate its own frame, which the sandbox
+and CSP cannot forbid. A cap that would cut inside a widget or code fence
+drops that block whole, and the prompt names both caps. A brief stored with a separate `widget` field keeps
+that HTML, drawn last in the same frame; an older `now` brief with no status
+keeps its plain Needs you list. A row without a
 valid `meta.brief` keeps the ordinary bubble. The card is the body of the
 ordinary assistant bubble, so the row keeps its timestamp and row actions, and
 Copy takes the plain-text `content`; chat search reads the card's own visible
-text. Only an assistant row draws it: any other role carrying the same
+text, with the body's `<mcwidget>` HTML left out as for any assistant reply. Only an assistant row draws it: any other role carrying the same
 `meta.kind` draws as its own role. These generated rows are excluded from the
 task fingerprint. A new user turn, slot replacement, reset, close, and a
 finished task drop a stale result unposted. The owner leaving drops the brief

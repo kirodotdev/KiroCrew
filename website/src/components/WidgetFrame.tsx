@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback, useContext, type RefObject } from 'react'
+import { WidgetFrameProfileContext, widgetFramePolicy } from './widgetFrameProfile'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight, clampFrameHeight } from '../utils/widgetHeights'
 import { Maximize2, Minimize2, ExternalLink, Download, RotateCw, Eye } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
@@ -79,6 +80,8 @@ export const MAX_WIDGET_BUILD_WAIT_MS =
 export function staggeredBuildWait(baseWait: number, slot: number): number {
   return baseWait + Math.min(slot, MAX_STAGGER_SLOTS) * BUILD_STAGGER_MS
 }
+// Stable empty list for a frame with no link bridge, so the hook's input never churns.
+const NO_FRAMES: ReadonlyArray<RefObject<HTMLIFrameElement | null>> = []
 let jumpBuildSlot = 0
 let jumpBuildResetAt = 0
 
@@ -111,6 +114,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   // wouldn't fire the memo. useTheme bumps themeVersion on every
   // loadCustomThemes completion and on every applyTheme.
   const { theme, colorTheme, themeVersion } = useTheme()
+  // `chat` unless a warm welcome brief wraps this widget (widgetFrameProfile.ts).
+  const policy = widgetFramePolicy(useContext(WidgetFrameProfileContext))
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
@@ -171,16 +176,17 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       themeVars,
       mode: theme,
       includeHeightReporter: true,
-      // Links open through the host (useFrameLinkBridge below, or the popped-out
-      // tab's own bridge); the frame itself grants no popups.
-      linkBridge: true,
+      // Chat: links open through the host (useFrameLinkBridge below, or the
+      // popped-out tab's own bridge); the frame itself grants no popups.
+      // Welcome: no bridge, no CDN script origin (widgetFrameProfile.ts).
+      ...policy.srcdoc,
       // Heavy widgets get an in-iframe indicator so a perceptible Tailwind
       // compile reads as progress rather than a broken render. The label is
       // passed in because the iframe cannot reach the parent's i18n catalog.
       showLoadingOverlay: complexity.needsProgressIndicator,
       loadingLabel: i18nT('components.widgetFrame.rendering'),
     }) : '',
-    [html, themeVars, theme, visible, complexity.needsProgressIndicator],
+    [html, themeVars, theme, visible, complexity.needsProgressIndicator, policy],
   )
 
   // Blob URL — only created when visible
@@ -192,7 +198,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   )
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
-  const linkChip = useFrameLinkBridge([iframeRef])
+  const linkChip = useFrameLinkBridge(policy.linkBridge ? [iframeRef] : NO_FRAMES)
   // Fade the iframe in once its document loads, so the reveal is a soft fade
   // instead of an abrupt blink-then-appear. Reset to false whenever a new blob
   // is built (first reveal, theme change, content rebuild) so each fresh render
@@ -252,7 +258,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
           }, HEIGHT_SHRINK_DEBOUNCE_MS)
         }
       }
-      if (e.data?.type === 'mc-widget-action') {
+      // A welcome widget never reaches the composer (widgetFrameProfile.ts).
+      if (e.data?.type === 'mc-widget-action' && policy.widgetActions) {
  // SECURITY: a widget action can ONLY pre-fill the composer
         // (see the mc-widget-send handler in ChatPage) — it can never submit a
         // user-role turn on its own. We still validate/sanitize the shape here
@@ -279,7 +286,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       // applyHeight → setHeight / setWidgetHeight / persist after unmount.
       if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null }
     }
-  }, [key])
+  }, [key, policy])
 
   const openInNewTab = useCallback(() => {
     // Build the wrapper via DOM API instead of template literals: the browser
@@ -308,16 +315,19 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     doc.body.appendChild(iframe)
     // The tab's own link bridge: the widget's links post to this wrapper, which
     // opens them after a real click in the frame. Fixed text; no widget content.
-    const linkBridge = doc.createElement('script')
-    linkBridge.textContent = popoutLinkBridgeScript(i18nT('hooks.frameLinkBridge.openHost', { host: '%HOST%' }))
-    doc.body.appendChild(linkBridge)
+    // A welcome widget has no link bridge, popped out or not.
+    if (policy.linkBridge) {
+      const linkBridge = doc.createElement('script')
+      linkBridge.textContent = popoutLinkBridgeScript(i18nT('hooks.frameLinkBridge.openHost', { host: '%HOST%' }))
+      doc.body.appendChild(linkBridge)
+    }
 
     const html = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     window.open(url, '_blank')
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  }, [srcdoc, title])
+  }, [srcdoc, title, policy])
 
   const downloadAsHtml = useCallback(() => {
     // Note: downloaded HTML runs with file:// origin when opened locally.
@@ -360,7 +370,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       <div className={`flex items-center justify-between px-3 py-2 ${expanded ? 'border-b border-border bg-bg-elevated' : ''}`}>
         <WidgetArtifactTitle title={title} artifact={artifact} />
         <IconButtonGroup reveal={!expanded}>
-          <WidgetStarButton artifact={artifact} />
+          {/* A welcome widget is not saved: an artifact page would draw it under the chat profile. */}
+          {policy.saveAsArtifact && <WidgetStarButton artifact={artifact} />}
           <IconButton onClick={downloadAsHtml} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
             <Download size={12} />
           </IconButton>
