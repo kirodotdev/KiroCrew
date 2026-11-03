@@ -198,7 +198,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   // >4,000px of it). The desktop rail is framer-free motion-wise, so it keeps
   // the row-reorder glide that `layout` buys there.
   const isMobileRow = useIsMobile()
-  const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
+  const iconEl = <span className={`app-icon-nav w-5 h-5 [&>*]:!w-5 [&>*]:!h-5 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip, pointerProps: tipPointerProps } = useNavTip<HTMLDivElement>(collapsed)
   // Derived from the shortcut registry by route, so a row with a bound panel
   // chord advertises it and a row without one is untouched. Null when the user
@@ -253,7 +253,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
       // (Crewmates, Customize) and an app's own icon (Task Runner) are spans
       // with an inline 16px `width`/`height` that a plain class cannot beat,
       // which would leave them smaller than the 20px Lucide tiles beside them.
-      className={`nav-item group/nav relative flex items-center min-w-0 cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 transition-colors duration-200 ${touch ? 'w-16 h-14 px-0.5 flex-col justify-center gap-0.5 rounded-xl shrink-0 [&_.app-icon-nav]:w-5 [&_.app-icon-nav]:h-5 [&_.app-icon-nav>*]:!w-5 [&_.app-icon-nav>*]:!h-5 [&_.app-icon-nav]:opacity-100' : 'rounded-md py-2 pl-3 pr-3'} ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
+      className={`nav-item group/nav relative flex items-center min-w-0 cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 transition-colors duration-200 ${touch ? 'w-16 h-14 px-0.5 flex-col justify-center gap-0.5 rounded-xl shrink-0 [&_.app-icon-nav]:w-5 [&_.app-icon-nav]:h-5 [&_.app-icon-nav>*]:!w-5 [&_.app-icon-nav>*]:!h-5 [&_.app-icon-nav]:opacity-100' : `rounded-md ${collapsed ? 'py-1.5' : 'py-2'} pl-2.5 pr-2.5`} ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       {...tipPointerProps}
@@ -334,10 +334,10 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
       {badge}
       {collapsed && tip && <OverlayPortal>
         <div
-          className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
+          className={`fixed flex items-center gap-2.5 pl-2.5 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
         >
-          <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
+          <span className={`app-icon-nav w-5 h-5 [&>*]:!w-5 [&>*]:!h-5 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
           {label}
           {/* Collapsed rail: the row carries no text label, so this flyout IS its
               hover affordance — and it already opens on focus as well as hover

@@ -184,7 +184,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 navId="apps"
                 path="/apps"
                 label={i18nT('nav.discover')}
-                icon={<Compass size={16} />}
+                icon={<Compass size={20} />}
                 active={discoverNavActive}
                 collapsed={false}
                 onClick={closeMobileNav}
@@ -194,7 +194,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 navId="apps-library"
                 path="/apps/library"
                 label={i18nT('nav.library')}
-                icon={<LayoutGrid size={16} />}
+                icon={<LayoutGrid size={20} />}
                 active={libraryNavActive}
                 collapsed={false}
                 onClick={closeMobileNav}
@@ -211,7 +211,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 navId="apps"
                 path="/apps"
                 label={i18nT('nav.discover')}
-                icon={<Compass size={16} />}
+                icon={<Compass size={20} />}
                 active={discoverNavActive}
                 collapsed
                 onClick={closeMobileNav}
@@ -221,7 +221,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 navId="apps-library"
                 path="/apps/library"
                 label={i18nT('nav.library')}
-                icon={<LayoutGrid size={16} />}
+                icon={<LayoutGrid size={20} />}
                 active={libraryNavActive}
                 collapsed
                 onClick={closeMobileNav}
@@ -329,7 +329,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <NavItem
                   path="#"
                   label={i18nT('app.terminal')}
-                  icon={<SquareTerminal size={16} />}
+                  icon={<SquareTerminal size={20} />}
                   /* This row TOGGLES the docked panel instead of navigating, so
                      "active" tracks the panel's open flag rather than the route.
                      Without it the row only lit on hover, leaving no indication
@@ -349,7 +349,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <NavItem
                   path="#"
                   label={i18nT('app.connect_your_phone')}
-                  icon={<Smartphone size={16} />}
+                  icon={<Smartphone size={20} />}
                   /* Toggles the connect dialog instead of navigating — same
                      contract as the terminal row above. */
                   active={mobileConnectOpen}
@@ -369,7 +369,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <NavItem
                   path="#"
                   label={slotOwners['quick-search'] ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
-                  icon={<SearchIcon size={16} />}
+                  icon={<SearchIcon size={20} />}
                   active={false}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
@@ -388,7 +388,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <NavItem
                   path="#"
                   label={i18nT('components.kiroAccountModal.kiro_account')}
-                  icon={<Coins size={16} />}
+                  icon={<Coins size={20} />}
                   active={kiroUsageOpen}
                   pressed={kiroUsageOpen}
                   collapsed={effectiveCollapsed}

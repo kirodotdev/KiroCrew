@@ -650,12 +650,12 @@ export function useAppShell() {
             const customIconUrl = target.iconUrl
             const builtinIcon = target.glyphAllowed ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl || target.iconUrlDark
-              ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={16} />
+              ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={20} />
               : target.pageIconUrl
-                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
+                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-5 h-5 rounded-sm object-contain" />
                 : builtinIcon
                   ? builtinIcon
-                  : <Package size={16} />
+                  : <Package size={20} />
             // An app that declares `ui.pages[].iconInactiveUrl` gets that file on
             // its row while the row is not selected, the way built-in icons go
             // grey (see AppNavStateIcon).
