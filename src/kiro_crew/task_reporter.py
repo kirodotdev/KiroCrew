@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol, Union, cast
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_exfiltration_urls
 from kiro_crew.task_models import (
@@ -148,7 +149,12 @@ def save_progress(run: Project) -> None:
         if run.error:
             lines.append(f"\n## Error\n{run.error}\n")
 
-        progress_path.write_text("\n".join(lines), encoding="utf-8")
+        # Atomic: write a temp sibling and rename over the target, so a save
+        # that fails part-way (ENOSPC, a crash mid-write) leaves the previous
+        # TASK_PROGRESS.md intact. ``write_text`` truncates in place, and a
+        # resume reads the truncated file as fewer passed steps and re-runs
+        # steps that were already done (``load_checkpoint``).
+        atomic_write(progress_path, "\n".join(lines))
     except Exception:
         logger.debug("Failed to save progress", exc_info=True)
 
