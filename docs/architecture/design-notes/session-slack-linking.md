@@ -56,6 +56,13 @@ outbound-only mirror. Slack never sets it, because Slack has its own inbound leg
 `slack_linked` / `slack_channel` / `slack_thread_ts`. `DashboardState` keeps
 `_slack_to_slot` (thread_ts -> slot name) for the inbound Slack lookup.
 
+A session born in a Slack thread (key `slack:<ts>` naming its own thread) is a
+self-link, not a mirror: it serializes `slack_linked: false` with empty
+`slack_channel` / `slack_thread_ts`, and instead carries that thread as
+`slack_origin_channel` / `slack_origin_thread_ts` so the session header can link
+to it (`dashboard/state_parts/slots_frame.py` `_slot_link_projection`). Every
+other session sends both origin fields empty.
+
 Both are caches over the session map, not the source of truth:
 
 - `get_or_create_slot` hydrates the three slot fields from
