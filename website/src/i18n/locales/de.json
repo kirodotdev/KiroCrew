@@ -12683,6 +12683,7 @@
         "agent_switch_blocked_channel": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist mit einem Slack-Kanal verknüpft, den {{channel_agent}} bedient. Die nächste Runde startet neu auf diesem Agenten.",
         "channel_message_not_run": "Eine Nachricht aus einem Slack-Kanal wurde nicht ausgeführt: Der Agent dieser Sitzung ist nicht der Agent, den dieser Kanal verwendet.",
         "crew_name_undispatchable": "Der Crew-Name dieses Threads kann nicht verwendet werden. Benenne das Crew-Mitglied um oder erstelle es neu.",
+        "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
         "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren."
       },
@@ -19028,7 +19029,7 @@
           "agent_sessions_note": "Das Einschalten ändert in Slack noch nichts. Es ergänzt nur das App-Manifest, den Einrichtungstext, den du in den Schritten unten in Slack kopierst.",
           "update_keeps_working": "Bis zum Update funktioniert Slack wie bisher.",
           "code_channels": "Code-Kanäle",
-          "code_channels_desc": "An: Der Agent kann pro Programmieraufgabe einen Slack-Kanal öffnen, dich einladen und dort unter seinem eigenen Namen posten und Notizen führen. Dafür erhält deine Slack-App 5 Berechtigungen. Aus: Es ändert sich nichts, und du kannst die Berechtigungen später in Slack entfernen. Slack führt Code-Kanäle schrittweise ein, daher hat dein Workspace sie vielleicht noch nicht.",
+          "code_channels_desc": "An: Der Agent kann pro Programmieraufgabe einen Slack-Kanal mit Kontextleiste und Diff-Tab öffnen, dich einladen und dort unter seinem eigenen Namen posten und Notizen führen. Dafür erhält deine Slack-App 5 Berechtigungen. Aus: Es ändert sich nichts, und du kannst die Berechtigungen später in Slack entfernen. Slack führt Code-Kanäle schrittweise ein, daher hat dein Workspace sie vielleicht noch nicht.",
           "stage_tag": "Vorschau",
           "defaults_title": "Neue Code-Kanäle starten mit",
           "defaults_desc": "Wähle einen Ordner, einen Agenten oder beides. Was du leer lässt, übernimmt die Einstellung des Ordners oder von Slack, sodass ein Code-Kanal immer funktioniert.",
