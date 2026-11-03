@@ -65,6 +65,11 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _extra_mcp_scopes,
     _is_valid_mcp_name,
     _kirocrew_mcp_json,
+    _load_config_for_update,
+    _mcp_config_corrupt,
+    _mcp_server_not_found,
+    _mcp_spec_invalid,
+    _mcp_write_failed,
     _offload_config_write,
     _refuse_commented_config,
     _string_identifier,
@@ -311,6 +316,8 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if not_owned is not None:
         return not_owned
     # Refuse before ANY write: the global file is rewritten below as plain JSON.
+    if await asyncio.to_thread(_load_config_for_update, _GLOBAL_MCP_JSON) is None:
+        return _mcp_config_corrupt()
     await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
 
     # One serialized discover→write pass (agent config + CC sidecar), off the
@@ -322,10 +329,9 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if to_sync:
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
-            try:
-                gdata = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-            except (FileNotFoundError, json.JSONDecodeError):
-                gdata = {"mcpServers": {}}
+            gdata = _load_config_for_update(_GLOBAL_MCP_JSON)
+            if gdata is None:
+                return _mcp_config_corrupt()
             gservers = gdata.setdefault("mcpServers", {})
             # The kiro-global mcp.json is NOT ours, and a name cannot say who
             # wrote an entry in it: the minimal ``{"url": ...}`` this emitter
@@ -511,7 +517,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         return err
     enabled = body.get("enabled", True)
     if not name:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
 
     # Ownership BEFORE the first mutation: the disabled flag lands in the
     # user-level registry ahead of the rendered spec, so a refusal found at
@@ -528,7 +534,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
-            return web.json_response({"error": "cannot parse global mcp.json"}, status=500)
+            return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
         # By the ONE key the row stands for -- raw or alias: the table asks for
@@ -553,7 +559,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
 
             known = {s.name for s in _ls()}
             if name not in known:
-                return web.json_response({"error": f"server {name!r} not found"}, status=404)
+                return _mcp_server_not_found(name)
             servers[name] = {}
             key = name
 
@@ -562,10 +568,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
             if isinstance(spec, str):
                 servers[key] = spec = {"command": spec}
             else:
-                return web.json_response(
-                    {"error": f"server {name!r} has invalid config type: {type(spec).__name__}"},
-                    status=500,
-                )
+                return _mcp_spec_invalid(name, spec)
         if enabled:
             spec.pop("disabled", None)
         else:
@@ -573,8 +576,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
 
         try:
             _write_mcp_json(data)
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+        except Exception:
+            return _mcp_write_failed("mcp toggle")
 
         # 2. Sync to kirocrew.json tools/allowedTools (lock prevents lost updates vs agents.py)
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -616,7 +619,10 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         return err
     enabled = body.get("enabled", True)
     if not server or not tool:
-        return web.json_response({"error": "server and tool are required"}, status=400)
+        return web.json_response(
+            {"error": "server and tool are required", "code": "server_and_tool_required"},
+            status=400,
+        )
 
     async with _get_mcp_lock():
         _refuse_commented_config(_GLOBAL_MCP_JSON)
@@ -625,7 +631,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
-            return web.json_response({"error": "cannot parse global mcp.json"}, status=500)
+            return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
         if server not in servers:
@@ -638,7 +644,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
             known = {s.name for s in _ls()}
             if server not in known:
-                return web.json_response({"error": f"server {server!r} not found"}, status=404)
+                return _mcp_server_not_found(server)
             servers[server] = {}
 
         spec = servers[server]
@@ -646,10 +652,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             if isinstance(spec, str):
                 servers[server] = spec = {"command": spec}
             else:
-                return web.json_response(
-                    {"error": f"server {server!r} has invalid config type: {type(spec).__name__}"},
-                    status=500,
-                )
+                return _mcp_spec_invalid(server, spec)
         disabled_tools: list[str] = spec.get("disabledTools", [])
         if enabled:
             disabled_tools = [t for t in disabled_tools if t != tool]
@@ -663,8 +666,8 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
         try:
             _write_mcp_json(data)
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+        except Exception:
+            return _mcp_write_failed("mcp toggle-tool")
     return web.json_response({"ok": True, "server": server, "tool": tool, "enabled": enabled})
 
 
@@ -699,7 +702,7 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
-            return web.json_response({"error": "cannot parse global mcp.json"}, status=500)
+            return _mcp_config_corrupt()
 
         servers = data.get("mcpServers", {})
         toggled: list[str] = []
@@ -714,8 +717,8 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
 
         try:
             _write_mcp_json(data)
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+        except Exception:
+            return _mcp_write_failed("mcp toggle-all")
 
         # Batch sync: single read-modify-write of kirocrew.json
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -756,7 +759,7 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     if err is not None:
         return err
     if not name:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -860,7 +863,9 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             return denied
     name = request.match_info["name"]
     if not name or not name.strip():
-        return web.json_response({"error": "server name is required"}, status=400)
+        return web.json_response(
+            {"error": "server name is required", "code": "name_required"}, status=400
+        )
     name = name.strip()
 
     # Ownership BEFORE the first mutation: this handler writes the
@@ -901,8 +906,12 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             outcome="completed" if removed else "not_found",
             resources=name,
         )
-        status = 200 if removed else 404
-        return web.json_response({"ok": removed, "name": name, "removed": removed}, status=status)
+        if not removed:
+            return web.json_response(
+                {"ok": False, "name": name, "removed": False, "code": "mcp_server_not_found"},
+                status=404,
+            )
+        return web.json_response({"ok": True, "name": name, "removed": True})
 
     # PUT — register or update
     #
@@ -936,7 +945,9 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
     command = body.get("command", "")
     if not command:
-        return web.json_response({"error": "command is required"}, status=400)
+        return web.json_response(
+            {"error": "command is required", "code": "command_required"}, status=400
+        )
 
     entry: dict[str, Any] = {"command": command}
     if body.get("args"):
@@ -957,10 +968,9 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _get_mcp_lock():
-        try:
-            data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {"mcpServers": {}}
+        data = _load_config_for_update(_GLOBAL_MCP_JSON)
+        if data is None:
+            return _mcp_config_corrupt()
         data.setdefault("mcpServers", {})[name] = entry
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _write_mcp_json(data)
@@ -1135,13 +1145,20 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     changes = body.get("changes")
     if not isinstance(changes, list):
-        return web.json_response({"error": "changes must be a list"}, status=400)
+        return web.json_response(
+            {"error": "changes must be a list", "code": "invalid_changes"}, status=400
+        )
     if len(changes) > _MCP_APPLY_MAX_CHANGES:
         return web.json_response(
-            {"error": f"too many changes (max {_MCP_APPLY_MAX_CHANGES})"}, status=400
+            {
+                "error": f"too many changes (max {_MCP_APPLY_MAX_CHANGES})",
+                "code": "too_many_changes",
+            },
+            status=400,
         )
 
     results: list[dict] = []
+    corrupt = False  # a scope file broke mid-batch: stop and refuse
 
     # ── Phase 1 (BEFORE the MCP file lock): companion package uninstalls ──
     # Run capability-manager uninstalls FIRST, off the lock, so:
@@ -1207,8 +1224,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         not_owned = await asyncio.to_thread(_agent_home_not_owned, ", ".join(change_names))
         if not_owned is not None:
             return not_owned
-        # A scope file holding JSONC cannot be written without dropping its
-        # comments, so the batch is refused before its first write.
+        # A broken provider global would be replaced, and a JSONC one would lose
+        # its comments, so the batch is refused before its first write.
+        for path in (_GLOBAL_MCP_JSON, *(scope.global_json for scope in _extra_mcp_scopes())):
+            if await asyncio.to_thread(_load_config_for_update, path) is None:
+                return _mcp_config_corrupt()
         await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
         change_keys, ambiguous = await asyncio.to_thread(_preflight_change_keys, change_names)
         if ambiguous:
@@ -1408,6 +1428,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         spec=resolved_spec,
                         preferred=keys.get(f"{scope.id}Global"),
                     )
+                if "corrupt" in outcome["actions"].values():
+                    corrupt = True
+                    results.append(outcome)
+                    break
 
                 # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
                 tool_overrides = change.get("toolOverrides")
@@ -1519,7 +1543,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
         _urls_clean, _ = redact_exfiltration_urls(str(exc))
         rebuild_error, _ = redact_credentials(_urls_clean)
         logger.warning("rebuild_agent_config failed after apply: %s", exc)
-
+    if corrupt:
+        return _mcp_config_corrupt()
     return web.json_response(
         {
             "ok": True,

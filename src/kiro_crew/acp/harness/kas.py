@@ -48,6 +48,7 @@ from kiro_crew.acp.harness.base import (
     TeardownPolicy,
 )
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
+from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -576,7 +577,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> tuple[list[dict[str, Any]], Any]:
+        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, dict[str, Any]]]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -684,22 +685,27 @@ class KasHarness(MembershipHarness):
             # registered and reads nothing -- so the check that proves the consumed spec
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
-            return (
-                kas_agents_mod.build_kas_custom_agents(
-                    prompt_dir,
-                    agent,
-                    spec,
-                    stub_server_names=stubbed,
-                    member_dispatch=member_dispatch,
-                    crew_panel=crew_panel,
-                    session_key=session_key,
-                ),
-                snapshot,
+            custom_agents = kas_agents_mod.build_kas_custom_agents(
+                prompt_dir,
+                agent,
+                spec,
+                stub_server_names=stubbed,
+                member_dispatch=member_dispatch,
+                crew_panel=crew_panel,
+                session_key=session_key,
             )
+            apps = resolve_app_identity_launches(
+                custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
+            )
+            return custom_agents, snapshot, apps
 
         try:
-            built, built_from = await asyncio.to_thread(_build)
-            return SessionExtras(custom_agents=built, derived_spec_snapshot=built_from)
+            built, built_from, app_launches = await asyncio.to_thread(_build)
+            return SessionExtras(
+                custom_agents=built,
+                derived_spec_snapshot=built_from,
+                app_launches=app_launches,
+            )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:

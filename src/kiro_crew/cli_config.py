@@ -26,6 +26,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
 from kiro_crew.config.sections import _migrate_workspaces
 from kiro_crew.config.superseded_defaults import (
+    ack_explicit_write,
     acked_superseded,
     adopt_coerced_keys,
     adopted_superseded,
@@ -120,6 +121,18 @@ def _refuse_missing_workspace_dirs(data: dict, current: dict) -> dict:
     return data
 
 
+def _ack_explicit_config_write(key: str, value: object) -> None:
+    """Ack only submitted keys, including children of a whole-section write.
+
+    Called under the destination config lock, before publication. Let an ack
+    refusal abort the write rather than save a choice the next load would adopt.
+    """
+    ack_explicit_write(key, value)
+    if isinstance(value, dict):
+        for child, child_value in value.items():
+            _ack_explicit_config_write(f"{key}.{child}", child_value)
+
+
 def _config_cmd(args: argparse.Namespace) -> None:
     """Get or set config values."""
     try:
@@ -187,10 +200,17 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+
+            def _mutate_from_file(cur: dict) -> dict:
+                _refuse_missing_workspace_dirs(data, cur)
+                for key, value in data.items():
+                    _ack_explicit_config_write(key, value)
+                return data
+
             try:
                 update_config_locked(
                     config_path(),
-                    mutate=lambda cur: _refuse_missing_workspace_dirs(data, cur),
+                    mutate=_mutate_from_file,
                     on_corrupt="reset",
                 )
             except ConfigWriteRefused as e:
@@ -334,6 +354,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 # single key from scratch. No second critical section needed.
                 def _mutate_local_overlay(_existing: dict) -> dict:
                     _dict_set_create(_existing, key, parsed)
+                    _ack_explicit_config_write(key, parsed)
                     return _existing
 
                 try:
@@ -362,6 +383,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # sections that were never written (still at defaults) get
                     # their intermediate keys created.
                     _dict_set_create(existing, key, parsed)
+                    _ack_explicit_config_write(key, parsed)
                     lp = config_local_path()
                     if lp.is_file():
                         try:

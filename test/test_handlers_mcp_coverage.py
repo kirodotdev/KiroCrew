@@ -178,7 +178,8 @@ class TestToggleServer:
         monkeypatch.setattr(mcp_mod, "_write_mcp_json", _boom)
         resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
         assert resp.status == 500
-        assert "disk full" in _payload(resp)["error"]
+        assert _payload(resp)["code"] == "config_write_failed"
+        assert "disk full" not in resp.text  # the exception stays in the server log
         assert sandbox.synced == []  # never syncs on a failed write
 
     @pytest.mark.asyncio
@@ -308,7 +309,8 @@ class TestToggleTool:
             _request({"server": "srv", "tool": "T", "enabled": False})
         )
         assert resp.status == 500
-        assert "read-only fs" in _payload(resp)["error"]
+        assert _payload(resp)["code"] == "config_write_failed"
+        assert "read-only fs" not in resp.text  # the exception stays in the server log
 
 
 # ── POST /api/mcp/toggle-all ────────────────────────────────────────────

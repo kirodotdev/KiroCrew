@@ -642,9 +642,9 @@ whose stored value equals the old default, comparing type as well as value so a
 stored `0` is not read as `False`.
 
 Every registered row is listed once, in the table under *Auto-adoption* below,
-with its change and the reason it adopts or only reports. **Three** carry
-`auto_adopt` -- the agent timeout budgets and the spawn memory floor -- and every
-other row is report-only.
+with its change and the reason it adopts or only reports. **Four** carry
+`auto_adopt` -- the agent timeout budgets, the spawn memory floor and the KAS
+MCP sign-in vault -- and every other row is report-only.
 `test_the_spec_table_lists_every_registered_row` keeps that table equal to the
 registry.
 
@@ -707,6 +707,7 @@ names that test; every other report-only row gives its plain reason:
 | `agent.subagent_timeout_secs` | 1800 -> 10800, #8891 | adopts | -- |
 | `agent.chat_turn_timeout_secs` | 7200 -> 14400, #8949 | adopts | -- |
 | `agent.spawn_min_memory_gb` | 4.0 -> 2.0, #15890 | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
+| `agent.kas_persist_mcp_sign_in` | false -> true, #28630 | adopts | -- (false was the default until this change, so the only value an owner had reason to write was true; a false set back after the one-shot adoption is kept as the opt-out) |
 | `session.autocompact_pct` | 90.0 -> 70.0, #4388 | reports | `test_a_persisted_ceiling_value_is_left_alone` |
 | `dashboard.loop_stall_exit_after_secs` | 25 -> unset, #6651 | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
 | `stt.streaming` | false -> true, 0.5.0 | reports | `test_put_persists_streaming` |
@@ -1016,9 +1017,12 @@ drop an ack stored in the config document. Three properties of that file matter:
 A settings save is itself an answer, exactly as `--keep` is. When a config PATCH
 writes the old default of an `auto_adopt` row, `api_kirocrew_config_patch` calls
 `ack_explicit_write` under the config write lock and BEFORE the write (the same
-config-then-ack order), so the value is acked and the next load does not
-un-materialize the choice the operator just made. A refused ack raises `OSError`
-and aborts the write, rather than persisting a value the next load would delete.
+config-then-ack order). CLI `config set` does the same in its locked mutate
+callbacks, for both the base config and `--local` overlay, and for `--file`.
+Whole-section and file writes acknowledge each submitted dotted key, not unrelated
+values already on disk. The next load therefore does not un-materialize the choice
+the operator just made. A refused ack raises `OSError` and aborts the write, rather
+than persisting a value the next load would delete.
 Only `auto_adopt` rows are acked this way; a report-only row loses nothing on
 load and is left untouched.
 
@@ -1762,7 +1766,8 @@ reader:
     `load()` they read their field default (when jsonschema is installed).
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
-    `agent.member_dispatch`, `agent.crew_panel` or `skills.project_skills_enabled`
+    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in` or
+    `skills.project_skills_enabled`
     as `false` before validation can remove it, and resolves `stt.provider` and
     `dashboard.default_memory_mode` by the builders' rules, so those keys load as
     above.

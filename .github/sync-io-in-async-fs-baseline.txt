@@ -45,7 +45,7 @@
 7 src/kiro_crew/dashboard/handlers/core.py
 3 src/kiro_crew/dashboard/handlers/diagnostics.py
 1 src/kiro_crew/dashboard/handlers/hooks_scripts.py
-8 src/kiro_crew/dashboard/handlers/mcp.py
+6 src/kiro_crew/dashboard/handlers/mcp.py
 4 src/kiro_crew/dashboard/handlers/mcp_probe.py
 1 src/kiro_crew/dashboard/handlers/memory_admin.py
 1 src/kiro_crew/dashboard/handlers/prompts_skill_catalog.py

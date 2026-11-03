@@ -1156,7 +1156,10 @@ class TestHoistManagedServers:
         spec = _spec(
             mcpServers={
                 "kirocrew-core": {"command": "kc", "args": ["mcp"], "env": {"SECRET": "s"}},
-                "third-party": {"command": "tp", "env": {"TOKEN": "t"}},
+                # No env of its own: a withheld value would route this entry
+                # through the local launcher (test_kas_env_launch), which is not
+                # what the hoist tests are about.
+                "third-party": {"command": "tp"},
                 **servers,
             },
             tools=["@kirocrew-core", "@third-party"],
@@ -1201,6 +1204,32 @@ class TestHoistManagedServers:
         monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", fake)
         monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/managed"})
         return calls
+
+    @staticmethod
+    def _stubs(*names):
+        return [{"name": n, "command": "stub", "args": [n], "env": []} for n in names]
+
+    def test_pooled_managed_stubs_lead_the_array(self):
+        # KAS starts servers in array order, a few at a time, and session start
+        # waits for Crew's own: a user server sorted ahead of them must not delay it.
+        pooled = self._stubs("alpha", "beta", "gamma", "kirocrew-core", "kirocrew-cron", "zz")
+        _, array = hoist_managed_servers([self._projected()], "kirocrew", pooled)
+        assert [e["name"] for e in array] == [
+            "kirocrew-core",
+            "kirocrew-cron",
+            "alpha",
+            "beta",
+            "gamma",
+            "zz",
+        ]
+        assert pooled[0]["name"] == "alpha", "the caller's list is not reordered in place"
+
+    def test_hoisted_managed_servers_lead_the_caller_entries(self):
+        pooled = self._stubs("alpha", "beta", "zz")
+        _, array = hoist_managed_servers([self._projected()], "kirocrew", pooled)
+        assert [e["name"] for e in array] == ["kirocrew-core", "alpha", "beta", "zz"]
+        assert array[0]["_meta"] == self._LEGACY["_meta"]
+        assert all("_meta" not in e for e in array[1:]), "user entries keep the host default"
 
     def test_hoisted_elements_carry_the_session_token(self, monkeypatch):
         # The runtime stamps the token before the hoist runs, so these elements

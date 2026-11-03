@@ -38,7 +38,9 @@ def test_resolution_preserves_platform_command_spelling(
         patch.setattr(rewriter.os.path, "realpath", lambda path: actual)
         resolved = rewriter._resolve_target_command(raw if absolute else "demo-mcp", {}, notes)
 
-    expected = actual if is_windows and not absolute else raw
+    # An absolute command heals too: its only flaw is the PATHEXT extension
+    # an older build persisted, the one spelling saved_command_casing repairs.
+    expected = actual if is_windows else raw
     assert resolved == expected
     assert notes.which_results == ({} if absolute else {f"demo-mcp\0{tmp_path}": expected})
 
@@ -159,7 +161,10 @@ def test_native_windows_stub_and_daemon_use_on_disk_casing(
     )
 
     assert wrapped == 1
-    expected_command = raw if absolute else str(exe)
+    # An absolute command heals only a PATHEXT extension on an exact stem
+    # (saved_command_casing); a stem spelled differently stays as written.
+    heals = not absolute or exe.stem == bare
+    expected_command = str(exe) if heals else raw
     flags = expand_stub_flags(result["mcpServers"]["demo"]["args"])
     assert flags[flags.index("--target-command") + 1] == expected_command
     targets: dict[str, str] = {}

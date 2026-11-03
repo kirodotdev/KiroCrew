@@ -138,7 +138,16 @@ def test_explicit_default_round_trips(
     ids=_ids,
 )
 def test_a_bool_key_flips(section: str, field: dataclasses.Field, tmp_path: Path) -> None:
+    from kiro_crew.config.superseded_defaults import SUPERSEDED_DEFAULTS
+
     flipped = not field.default
+    if any(
+        e.auto_adopt and e.dotted_key == f"{section}.{field.name}" and e.old_default is flipped
+        for e in SUPERSEDED_DEFAULTS
+    ):
+        # The first load adopts the superseded old default once; the flip written
+        # after that is the owner's choice and must load as written.
+        _loaded(tmp_path, {section: {field.name: flipped}})
     cfg = _loaded(tmp_path, {section: {field.name: flipped}})
     assert getattr(getattr(cfg, section), field.name) is flipped
 

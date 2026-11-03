@@ -522,14 +522,15 @@ def read_config_document() -> ConfigDocument:
     # build_config agrees by construction.
     if isinstance(data.get("resource_limits"), dict):
         data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
-    # Same fail-closed-before-validation reason for the three agent
+    # Same fail-closed-before-validation reason for the four agent
     # switches whose safe direction is FALSE.
     # `agent.session_control` is the operator's single withdrawal of
     # cross-session control, `agent.member_dispatch` gates whether
-    # a crew member bypasses that withdrawal, and `agent.crew_panel`
-    # gates the member's own webview. Schema validation pops a
+    # a crew member bypasses that withdrawal, `agent.crew_panel`
+    # gates the member's own webview, and `agent.kas_persist_mcp_sign_in`
+    # decides whether Crew stores remote MCP OAuth tokens. Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
-    # for all three, so a quoted `"false"` -- a routine operator quoting
+    # for all four, so a quoted `"false"` -- a routine operator quoting
     # mistake -- would silently ride that default back to the
     # capability staying enabled. Coerce a present non-bool to False
     # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -545,7 +546,12 @@ def read_config_document() -> ConfigDocument:
     # find missing later.
     _agent_section = data.get("agent")
     if isinstance(_agent_section, dict):
-        for _fail_closed_key in ("session_control", "member_dispatch", "crew_panel"):
+        for _fail_closed_key in (
+            "session_control",
+            "member_dispatch",
+            "crew_panel",
+            "kas_persist_mcp_sign_in",
+        ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool
             ):

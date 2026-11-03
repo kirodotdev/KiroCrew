@@ -374,6 +374,10 @@ async def _fire(
         )
         if not turn._spec_hooks:
             _spec_tool_names = None
+        # The ACP session id the agent's own shell sees as KIRO_SESSION_ID, read
+        # at fire time: a reset gives the session a new one. Empty before
+        # session/new, and then the spec hooks get none.
+        _acp_sid = getattr(turn.client, "session_id", "") if turn._spec_hooks else ""
         results = await state._hook_store.fire(
             event,
             context,
@@ -390,6 +394,7 @@ async def _fire(
             extra_hooks_cwd=turn._spec_hooks_cwd,
             extra_hooks_tool_names=_spec_tool_names,
             tool_match_names=_match_names,
+            acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the

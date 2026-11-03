@@ -117,6 +117,8 @@ class AcpSessionHandle:
     wait_for_declared_mcp = _sh_mcp.wait_for_declared_mcp
     _note_mcp_sign_in_status = _sh_mcp._note_mcp_sign_in_status
     _offer_mcp_sign_in = _sh_mcp._offer_mcp_sign_in
+    want_mcp_sign_in_named = _sh_mcp.want_mcp_sign_in_named
+    _match_mcp_sign_in_ask = _sh_mcp._match_mcp_sign_in_ask
     _sync_mcp_reattempting = _sh_mcp._sync_mcp_reattempting
     _runtime_reattempts_mcp = _sh_mcp._runtime_reattempts_mcp
     _reattempt_failed_mcp_servers = _sh_mcp._reattempt_failed_mcp_servers
@@ -575,10 +577,18 @@ class AcpSessionHandle:
         self._pending_oauth_requests: list[dict[str, str]] = []
         # Servers whose last ``_kiro/mcp/status`` entry for this session was an
         # authorization failure and that have not connected since. Kept across a
-        # timed-out sign-in, whose entry reports ``failedAuthorization`` false,
-        # so the next turn offers the sign-in again.
+        # timed-out sign-in, whose entry reports ``failedAuthorization`` false.
         self._mcp_sign_in_needed: set[str] = set()
-        self._mcp_sign_in_last_offered = ""
+        # Needed servers a user message named and whose sign-in the runtime
+        # has not started yet. Being needed alone never starts a sign-in; see
+        # ``want_mcp_sign_in_named``.
+        self._mcp_sign_in_wanted: set[str] = set()
+        # The user message that asked for this turn's sign-ins, matched again
+        # once the pre-turn drain or a mid-turn status tracks a server it
+        # names, and the servers it already marked wanted. One turn's only:
+        # ``_run_turn`` clears both when the turn ends.
+        self._mcp_sign_in_ask = ""
+        self._mcp_sign_in_asked: set[str] = set()
         # Tracked servers whose status reported ``connected`` and whose
         # completion the dispatch loop has not yet yielded. KAS sends no
         # server-initialized frame for a completed sign-in, so the loop yields
@@ -648,6 +658,10 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The KAS MCP launch snapshot names every projection of this session wrote
+        # (``acp.kas_env_launch``), read before ``session/load`` hoists servers out
+        # of the batch and carried across a handle swap, so shutdown removes them.
+        self.kas_launch_snapshots: list[str] = []
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").

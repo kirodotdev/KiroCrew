@@ -172,6 +172,12 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
     # handle defaults to the fail-closed False, which would auto-reject a routed
     # child permission request the dashboard can present.
     new_handle.child_fidelity_aware = old.child_fidelity_aware
+    # Accumulated, not replaced: the old handle's KAS launch snapshots are this
+    # session's too, and only this provider's shutdown removes them.
+    new_handle.kas_launch_snapshots = [
+        *getattr(old, "kas_launch_snapshots", []),
+        *getattr(new_handle, "kas_launch_snapshots", []),
+    ]
     self._handle = new_handle
     # The load relaunched this session's stubs with a fresh token nothing has
     # named yet; claim it against the session this provider serves.

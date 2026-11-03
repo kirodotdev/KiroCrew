@@ -261,17 +261,19 @@ class AgentConfig:
         ),
     )
     kas_persist_mcp_sign_in: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "KAS: keep remote MCP sign-ins across sessions",
-            "When true, the 'kas' backend lets Kiro Crew keep a remote MCP server's "
-            "OAuth sign-in (client registration and tokens) in a dedicated encrypted "
-            "vault under the data home (kas/mcp-grants/), so new sessions, subagents "
-            "and crons reuse it until the refresh token expires or is revoked. The "
+            "When true (the default), the 'kas' backend lets Kiro Crew keep a remote "
+            "MCP server's OAuth sign-in (client registration and tokens) in a "
+            "dedicated encrypted vault under the data home (kas/mcp-grants/), so new "
+            "sessions, subagents and crons reuse it until the refresh token expires or "
+            "is revoked, as the 'kiro' backend does with its own sign-in cache. The "
             "vault is not the Secrets vault: it is not listed there and cannot be "
-            "granted to a cron, and the agent cannot read it. When false (the "
-            "default), the engine keeps each sign-in in memory and a new session "
-            "asks again.",
+            "granted to a cron, and the agent cannot read it. When false, the engine "
+            "keeps each sign-in in memory and a new session asks again. Only a JSON "
+            "true turns it on: any other stored value, or a config file that cannot "
+            "be read, keeps sign-ins in memory.",
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,

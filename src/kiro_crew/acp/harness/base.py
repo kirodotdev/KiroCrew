@@ -286,6 +286,15 @@ class SessionExtras:
     nothing, or takes its agent at spawn time.
     """
 
+    app_launches: Mapping[str, Mapping[str, Any]] | None = None
+    """The shipped launch per builtin app server that gets a session identity.
+
+    Resolved off the loop with the payload by
+    ``kas_app_identity.resolve_app_identity_launches`` and handed to the same
+    hoist, which tokens those servers as it tokens the managed ones. ``None`` on
+    every other host.
+    """
+
 
 # ── Seam 5: notification aliases ──
 
