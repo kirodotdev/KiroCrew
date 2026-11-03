@@ -9,7 +9,7 @@ adapter error degrades — and the public Default seams stay behaviorally
 identical to the pre-wiring direct calls.
 
 The core never imports a companion: the overlay adapters below are inline test
-doubles, exactly as ``test_cpp_wiring_amazon`` does.
+doubles, exactly as ``test_cpp_wiring_enterprise`` does.
 """
 
 from __future__ import annotations

@@ -1355,11 +1355,9 @@ def test_a_credential_in_npms_own_output_is_scrubbed_from_log_and_tail(
 def test_the_windows_script_scrubs_its_log_too() -> None:
     """Same hazard, same obligation on the platform this suite cannot execute.
 
-    The obligation is that the log is scrubbed before it is PRINTED. An earlier
-    version of this test demanded it be scrubbed before it is CLASSIFIED, which is
-    a different claim and the wrong one -- redaction deletes a log it cannot
-    rewrite, so classifying afterwards can read nothing. See
-    test_both_installers_classify_before_they_redact.
+    The obligation is that the log is scrubbed before it is PRINTED, not before it
+    is CLASSIFIED: redaction deletes a log it cannot rewrite, so classifying
+    afterwards could read nothing.
     """
     body = INSTALLER_PS1.read_text(encoding="utf-8")
     assert "function Redact-Log" in body

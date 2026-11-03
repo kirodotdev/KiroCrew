@@ -135,11 +135,10 @@ def _fail_second_embed(pipeline):
 def _inject_foreign_item_during_extract(pipeline, kstore, source_id):
     """Land a foreign item in the same source WHILE the ingest is in flight.
 
-    The retired ``_before_ids`` snapshot was taken just before
-    ``extract_batch``, so an item committed inside it (as a concurrent
-    ``import_bundle`` would) landed strictly after the "before" read and was
-    misattributed to the ingest by the after-diff. With ids collected at the
-    write, it must survive the rollback.
+    An item committed inside ``extract_batch`` (as a concurrent
+    ``import_bundle`` would) lands after any "before" snapshot, so a
+    before/after diff would misattribute it to the ingest. With ids collected
+    at the write, it must survive the rollback.
     """
     foreign: dict[str, str] = {}
 

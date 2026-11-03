@@ -216,7 +216,7 @@ def test_feed_destination_is_pointer_prefix_yaml() -> None:
     # format and so names the FILE literally, but the directory is per BUILD
     # (``FEED_PREFIX``): the universal DMG at the channel root, a single-arch DMG
     # one level down -- electron-updater appends no arch suffix on darwin, so
-    # the directory is the only seam (see test_mac_single_arch_legs below).
+    # the directory is the only seam (see the test_mac_single_arch_legs_* tests below).
     for path, job, destination in (
         (MAC_WORKFLOW, "publish", "${FEED_PREFIX}/latest-mac.yml"),
         (LINUX_WORKFLOW, "publish-linux", "${FEED_PREFIX}/${FEED_FILE}"),

@@ -733,11 +733,10 @@ class TestStopTurnPreserveQueue:
 class TestQueuedMessageImagePaths:
     """A message with image attachments that arrives while the session is busy
     is enqueued with its clean_text embedding the downloaded image temp-file
-    paths. An enqueue path that calls _cleanup_image_temps() immediately,
-    os.unlink()ing those files before the queued turn ran — so at dispatch
-    p.is_file() was False and _send_prompt silently dropped the images. The fix
-    carries the paths in the queue kwargs and defers unlink to _dispatch_queued
-    (after the turn consumes them)."""
+    paths. Those files must outlive the enqueue: unlinked early, p.is_file()
+    is False at dispatch and _send_prompt silently drops the images. So the
+    paths ride in the queue kwargs and _dispatch_queued unlinks them after the
+    turn consumes them."""
 
     def test_enqueue_round_trips_image_temp_paths(self):
         mgr = SessionManager.__new__(SessionManager)

@@ -133,7 +133,6 @@ class TestConfigIntegration:
         assert cfg.tunnel.name_override == ""
 
     def test_tunnel_config_missing_section_uses_defaults(self, tmp_path):
-        """Missing tunnel section uses defaults."""
         import json
 
         from kiro_crew.config.loader import KiroCrewConfig

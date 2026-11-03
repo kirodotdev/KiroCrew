@@ -168,7 +168,6 @@ def test_palette_matches_frontend_source() -> None:
 def test_defaults_match_frontend_source() -> None:
     """DEFAULT_POSE and BLANK_LOOK_SEED mirror avatarPoses.ts."""
     src = _AVATAR_POSES_TS.read_text(encoding="utf-8")
-    # DEFAULT_POSE = POSE_IDS[0]
     assert DEFAULT_POSE == POSE_IDS[0]
     blank = re.search(r"BLANK_LOOK_SEED\s*=\s*'([^']+)'", src)
     assert blank, "could not find BLANK_LOOK_SEED in frontend source"

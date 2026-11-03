@@ -449,8 +449,7 @@ def test_search_total_failure_raises(monkeypatch):
 def test_validate_config_refuses_when_consent_withdrawn_mid_probe(monkeypatch):
     """A withdrawal landing between client creation and the probe raises the
     connector's RuntimeError — validate must REFUSE, not save the source as
-    accessible (review finding: local authorization failures are not
-    transient AWS weather)."""
+    accessible: local authorization failures are not transient AWS weather."""
     monkeypatch.setattr(
         bedrock_kb, "_get_client", lambda region, profile: (FakeClient(results_by_kb={}), None)
     )
@@ -797,7 +796,7 @@ def test_both_egress_sites_redact_through_the_platform_shim(monkeypatch, tmp_pat
     directly: on a host whose platform profile composes a companion
     credential policy, the companion's extra shapes must apply on top of the
     OSS baseline, or a companion-only shape in the query reaches AWS and one
-    in a planted name reaches the dashboard (review finding). A stub policy
+    in a planted name reaches the dashboard. A stub policy
     stands in for the companion; the baseline shape in the same text proves
     the stub runs on top of the baseline, not instead of it."""
     import dataclasses
@@ -995,7 +994,7 @@ def test_mid_search_withdrawal_audits_the_refusal_as_denied(monkeypatch):
     audit line. The gate audits the refusals it turns away up front and the
     withdrawal is audited as ``revoked``, but a request already past the gate
     is refused HERE, so without this line the Security Event Log would show a
-    revocation and no record of the request it stopped (review finding)."""
+    revocation and no record of the request it stopped."""
     hits = [_hit("hit", 0.9)]
     calls: list[str] = []
 
@@ -1037,7 +1036,7 @@ def test_a_delete_landing_mid_search_stops_the_remaining_retrieves(monkeypatch):
     grant. ``delete_source`` revokes the attestation and leaves the grant in
     place, so a recheck that read only the grant would let the rest of a
     search already past the enumeration keep billing for a source the owner
-    had just removed (review finding). Here the attestation vanishes after
+    had just removed. Here the attestation vanishes after
     the first KB's Retrieve: the second must not be issued, and the refusal's
     ``denied`` line names the registration, not the grant."""
     hits = [_hit("hit", 0.9)]

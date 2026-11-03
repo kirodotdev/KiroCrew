@@ -582,7 +582,7 @@ class TestAConcurrentEditIsNeverLost:
     def test_the_precondition_caller_cannot_resolve_an_empty_tag(self, monkeypatch):
         """Merging from displaced bytes stays out of reach of a caller with a precondition.
 
-        `_on_disk_tag` answers the default for a file that cannot be parsed, so a caller
+        The on-disk tag read answers the default for a file that cannot be parsed, so a caller
         naming the default tag would be the one way a precondition could be satisfied by a
         tag nobody read. The only production caller of `expect_last_tag` resolves its tag
         through a path that exits rather than yielding an empty one, which is what closes

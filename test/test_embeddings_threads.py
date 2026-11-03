@@ -60,7 +60,7 @@ class TestEmbedThreads:
         # The resolver clamps to the core count, so a host with fewer cores than
         # the default answers with its own core count and the assertion would pin
         # the runner. Pinned above the default, the same way
-        # ``test_clamped_to_the_core_count`` below pins it under one.
+        # ``test_clamped_to_core_count`` below pins it under one.
         _pin_cores(monkeypatch, 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         assert embeddings_mod._DEFAULT_EMBED_THREADS == 4

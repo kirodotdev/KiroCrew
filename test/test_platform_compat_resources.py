@@ -265,7 +265,7 @@ class TestResourceShimFailures:
         # The peak reading has ONE source per POSIX platform: VmHWM on Linux,
         # getrusage elsewhere. That source failing is a plain 0, and on Linux
         # the failure must not fall through to getrusage, whose ru_maxrss is
-        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm).
+        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm_never_getrusage).
         if not pc.IS_POSIX:
             pytest.skip("POSIX peak-RSS branch")
 

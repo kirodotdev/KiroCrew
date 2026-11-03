@@ -229,7 +229,6 @@ class TestResourceManagement:
             # Let the task start and block
             await await_until(started, what="the step to start and block")
 
-            # Cancel it
             runner.cancel("cancel1")
 
             # Wait for the task to fully complete (cancel + finally block)

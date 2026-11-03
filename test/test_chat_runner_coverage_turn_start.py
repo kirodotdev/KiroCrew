@@ -3,7 +3,7 @@
 Covers the turn-start fold of the session's privacy line, the member-context and
 memory refusals, the dispatch guard for an app-owned slot whose agent read cold,
 hook output beside the trusted rule block, generated skill and persona context
-ahead of the user's text, ``_drain_pending_context``, and the prompt-mention and
+ahead of the user's text, ``drain_pending_context``, and the prompt-mention and
 ``$skill`` expansions.
 ``test_chat_runner_coverage.py`` describes the two harnesses the family uses; the
 shared builders are in ``chat_runner_coverage_helpers.py``.
