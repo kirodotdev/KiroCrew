@@ -464,6 +464,47 @@ async def test_a_refused_effort_push_falls_back_to_a_cold_start_with_the_overrid
     assert sessions.created_efforts == ["high", "high"]
 
 
+class _LiveEffortSessions(_EffortProviderSessions):
+    """Reports a second acquire of a live key as not new, as SessionManager does."""
+
+    async def get_or_create(self, key, **kwargs):
+        was_live = key in self.live
+        provider, _is_new, resumed = await super().get_or_create(key, **kwargs)
+        return provider, not was_live, resumed
+
+
+@pytest.mark.asyncio
+async def test_a_named_session_reused_at_another_effort_gets_that_effort():
+    sessions = _LiveEffortSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef10", max_workers=1)
+    try:
+        await agent_fn("a", {"session": "chain-N", "effort": "low"})
+        provider = sessions.live["chain-N"]
+        assert provider.efforts_pushed == []
+        await agent_fn("b", {"session": "chain-N", "effort": "high"})
+        await agent_fn("c", {"session": "chain-N"})
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain-N")
+    assert sessions.created_efforts == ["low"]
+    assert provider.efforts_pushed == ["high"]
+
+
+@pytest.mark.asyncio
+async def test_a_raised_effort_push_on_a_named_session_fails_the_step():
+    sessions = _LiveEffortSessions(refuse=True)
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef11", max_workers=1)
+    try:
+        await agent_fn("a", {"session": "chain-R", "effort": "low"})
+        with pytest.raises(RuntimeError, match="effort push refused"):
+            await agent_fn("b", {"session": "chain-R", "effort": "high"})
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain-R")
+    # Both steps returned their lease without ending the named conversation.
+    assert sessions.releases == 2
+
+
 @pytest.mark.asyncio
 async def test_pooled_invalid_effort_fails_before_allocating():
     from kiro_crew.workflows.agent_exec import WorkflowEffortInvalid

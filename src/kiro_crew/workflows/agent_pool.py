@@ -58,6 +58,7 @@ from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    apply_step_effort,
     persist_step_usage_row,
     step_effort_kwargs,
     vet_step_spawn,
@@ -295,16 +296,11 @@ class _WorkflowSessionWorker:
         effort, which a cold start drops the same way; a raise sends the caller down
         the hard reset, which cold-starts with the override.
         """
-        level = self._effort_kwargs.get("reasoning_effort_override")
-        change_effort = getattr(self._provider, "change_effort", None)
-        if not level or change_effort is None:
-            return
-        # A level this session does not advertise is dropped on a cold start too;
+        # A level this session does not advertise is skipped, as on a cold start;
         # pushing it would raise and turn every reuse into a respawn for nothing.
-        accepts = getattr(self._provider, "accepts_effort_level", None)
-        if accepts is not None and not accepts(level):
-            return
-        await change_effort(level)
+        await apply_step_effort(
+            self._provider, self._effort_kwargs.get("reasoning_effort_override")
+        )
 
     async def shutdown(self) -> None:
         # A pooled worker owns an ephemeral ``wf-pool:`` session that can never
@@ -446,15 +442,20 @@ def build_pooled_agent_fn(
             if named is not None:
                 key = memory_scope.worker_key(f"named:{named}")
             await memory_scope.prepare(context_builder, key)
+        effort_kwargs = step_effort_kwargs(opts)
         provider, is_new, _resumed = await sessions.get_or_create(
             key,
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
             cwd=opts.get("cwd") or cwd,
             extra_env=extra_env,
-            **step_effort_kwargs(opts),
+            **effort_kwargs,
         )
         try:
+            if named is not None and not is_new:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
             # Same identity publication as the pooled worker (see
             # _WorkflowSessionWorker.send_message): a named ``session=`` chain
             # and the identity-cap overflow session both run on their own

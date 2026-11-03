@@ -74,6 +74,25 @@ def step_effort_kwargs(opts: dict) -> dict[str, str]:
     return {"reasoning_effort_override": effort}
 
 
+async def apply_step_effort(provider: Any, level: Optional[str]) -> None:
+    """Push ``level`` onto a live session through ``provider.change_effort``.
+
+    ``get_or_create`` applies ``reasoning_effort_override`` only when it starts a
+    session, so a session that is already live needs the step's effort pushed.
+    Nothing is pushed for an unset level or a provider without ``change_effort``.
+    A level the session does not advertise (``accepts_effort_level`` returns
+    False) is skipped, as a cold start drops it. A raise from ``change_effort``
+    propagates to the caller.
+    """
+    change_effort = getattr(provider, "change_effort", None)
+    if not level or change_effort is None:
+        return
+    accepts = getattr(provider, "accepts_effort_level", None)
+    if accepts is not None and not accepts(level):
+        return
+    await change_effort(level)
+
+
 async def vet_step_spawn(
     *, session_key: str, agent: Optional[str], cwd: Optional[str], app: str = ""
 ) -> Optional[str]:
@@ -279,12 +298,16 @@ def build_agent_fn(
             extra_env=extra_env,
             **effort_kwargs,
         )
-        # Wall clock for THIS agent turn only (not the whole workflow run):
-        # acp leaves TurnUsage.duration_ms at 0, so without this the row's
-        # duration_ms is a literal 0. Started after get_or_create so session
-        # setup is not charged to the turn.
-        _turn_t0 = time.monotonic()
         try:
+            if session is not None and not is_new:
+                # A live named session keeps the effort it started with; push
+                # this step's effort onto it before the turn is sent.
+                await apply_step_effort(provider, effort_kwargs.get("reasoning_effort_override"))
+            # Wall clock for THIS agent turn only (not the whole workflow run):
+            # acp leaves TurnUsage.duration_ms at 0, so without this the row's
+            # duration_ms is a literal 0. Started after get_or_create and the
+            # effort push so session setup is not charged to the turn.
+            _turn_t0 = time.monotonic()
             from kiro_crew.messaging.identity import publish_turn_identity
 
             await publish_turn_identity(sessions, key)
