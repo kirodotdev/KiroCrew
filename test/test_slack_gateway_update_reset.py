@@ -13,8 +13,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import sys
 import threading
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +31,7 @@ from slack_gateway_helpers import (
     _within_lost_run,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.slack import gateway as gw
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -220,12 +223,15 @@ class TestAutoApplyUpdateResetPath:
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
 
     @pytest.mark.asyncio
-    async def test_the_kas_bundle_route_skips_the_kiro_cli_update_and_says_why(self, caplog):
+    async def test_the_kas_bundle_route_skips_the_kiro_cli_update_and_says_why(
+        self, caplog, release_engine_installs
+    ):
         """KAS selected and ``agent.kas_bundle`` on: kiro-cli is not part of what
         runs, so ``kiro-cli update`` is neither pinned nor spawned, and the log
-        -- the only place an unattended apply reports -- names the reason and
-        ``kirocrew kas install``, since this apply does not install the engine.
-        The rest of the flow (reset, frontend, pip) is unchanged.
+        -- the only place an unattended apply reports -- names the reason. It no
+        longer sends the operator to ``kirocrew kas install``: the release install
+        runs the new revision's engine install itself, on the gateway's trusted
+        environment. The rest of the flow (reset, frontend, pip) is unchanged.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -260,7 +266,9 @@ class TestAutoApplyUpdateResetPath:
             r.getMessage() for r in caplog.records if "kiro-cli update skipped" in r.getMessage()
         ]
         assert len(skipped) == 1
-        assert "kirocrew kas install" in skipped[0]
+        assert "kirocrew kas install" not in skipped[0]
+        trusted = platform_compat.trusted_system_path() is not None
+        assert release_engine_installs == [(Path(sys.executable), trusted)]
 
     @staticmethod
     async def _run_git_apply(orch, *, sync=None, build=None, reset_rc=0, reset_spawn_error=None):

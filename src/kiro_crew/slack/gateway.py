@@ -363,7 +363,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn, settles_at_release
-from kiro_crew.platform import boot_platform
+from kiro_crew.platform import boot_platform, release_apply
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (
     PlatformCompositionError,
