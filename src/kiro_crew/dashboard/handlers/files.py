@@ -572,7 +572,7 @@ _DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: Video gets its own, larger ceiling: a 30-second retina screen recording is
 #: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
 #: case and make the feature read as broken. Safe to raise only because video
-#: parts STREAM to disk (:func:`_stream_video_part`) instead of accumulating in
+#: parts STREAM to disk (:func:`_stream_media_part`) instead of accumulating in
 #: memory the way every other accepted type does.
 _MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB per video
 _MAX_UPLOAD_FILES = 20  # max files per request

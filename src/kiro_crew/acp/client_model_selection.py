@@ -804,7 +804,7 @@ async def _reassert_adapter_resolved_model(self: AcpClient) -> None:
 async def _apply_startup_model(self: AcpClient) -> None:
     """Apply the configured model to a freshly initialized session.
 
-    Split out of ``_init_session`` step 5 so the withhold decision is
+    Split out of ``_initialize_session`` step 5 so the withhold decision is
     reachable without standing up a whole session.
 
     The model here was NOT chosen for this turn: it arrives from the agent

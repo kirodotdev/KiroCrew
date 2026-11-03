@@ -660,7 +660,7 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
     and rolls memory back. A crash between revoke and persist leaves the tag
     present but closed — fail-closed, never stale-open. A crash after the
     vocabulary commit leaves only dangling tag ids on slots/boards, which
-    are harmless and pruned on the next load (see ``_prune_unknown_tag_ids``).
+    are harmless and pruned on the next load (see ``prune_tag_ids``).
     """
     state: DashboardState = request.app["state"]
     tid = request.match_info["id"]

@@ -199,7 +199,7 @@ def type_holds(declared: str, value: Any) -> bool:
     THE SAME RULE as ``projection._dashboard_type_holds``, deliberately duplicated:
     the fold cannot import this module and this module cannot live in
     ``projection`` (the manifest imports the fold names, so the cycle closes the
-    other way). ``test_dashboard_agentic`` pins the two against one table of cases.
+    other way). ``test_dynamic_dashboard`` pins the two against one table of cases.
 
     A bool is NOT a number. Python says ``isinstance(True, int)``, so without the
     exclusion a crewmate writing ``true`` into a ``number`` field would pass and the

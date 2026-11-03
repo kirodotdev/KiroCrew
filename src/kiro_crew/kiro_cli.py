@@ -597,7 +597,7 @@ def known_kiro_cli_dirs(
         # function's result depend on state outside its arguments, which is exactly
         # what the ACP resolver's "the directories named in a not-found message are
         # the directories that were actually searched" contract relies on it NOT
-        # doing (see acp/client.py's `_resolve_kiro_cli_for_spawn` docstring).
+        # doing (see acp/client_spawn_env.py's `_resolve_kiro_bin_for_spawn` docstring).
         dirs.extend(
             part
             for part in augmented_path(environ.get("PATH", ""), home=str(home)).split(os.pathsep)

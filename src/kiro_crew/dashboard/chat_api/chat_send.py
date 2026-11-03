@@ -1297,7 +1297,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # goes idle while children run). Without the hold, this message would start a
     # main turn immediately and interleave with the [Subagent completion event]
     # injections. Queue it instead (reusing the slot queue) — the queue drain
-    # releases it after the last sub-agent finishes (see chat_runner _hold_users).
+    # releases it after the last sub-agent finishes (see subagents_hold_user_messages).
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
     # An app on a session it does not own has no opt-out (`steer` is None there),
@@ -1620,7 +1620,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if may_configure and not slot._titled and not slot._title_in_flight:
             _tt = asyncio.create_task(_maybe_auto_title(state, slot))
             # Expose the handle so chat_done's chained title→refresh pass can wait
-            # for this attempt to settle (see _title_then_refresh in chat_runner).
+            # for this attempt to settle (see title_then_refresh in chat_title).
             slot._title_task = _tt
             state._background_tasks.add(_tt)
             _tt.add_done_callback(state._background_tasks.discard)

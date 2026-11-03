@@ -785,17 +785,15 @@ def _render_shipped_agent(
     identically forever, so reporting them to a caller that retries would spin without
     ever converging. The ``OSError`` arm is the transient one.
 
-    **The gateway renders the template itself.** An earlier version of this took the
-    app's own provisioned copy from its install dir and verified it was "the template
-    with only placeholders substituted". A reviewer pointed out why that is unsound and
-    they were right: the check constrained WHERE a substitution could appear but not
-    WHAT it could contain, and `{UV_BIN}` is an executable path — so an agent with
-    write access to the engine dir could substitute its own binary and kiro-cli would
-    run it. Constraining the shape of an injection point is not the same as trusting
-    the value that lands in it.
+    **The gateway renders the template itself.** Verifying the app's own provisioned
+    copy as "the template with only placeholders substituted" is unsound: that check
+    constrains WHERE a substitution can appear but not WHAT it can contain, and
+    `{UV_BIN}` is an executable path — so an agent with write access to the engine
+    dir could substitute its own binary and kiro-cli would run it. Constraining the
+    shape of an injection point is not the same as trusting the value that lands in it.
     Since every value is computable here (:func:`_placeholder_values`), there is no
     reason to read any of them back from a directory the agent can write. Nothing on
-    the mutable side is trusted now — the bytes come from the immutable package, the
+    the mutable side is trusted — the bytes come from the immutable package, the
     values from the gateway.
 
     The output goes under the DATA HOME next to the agent symlinks, not into the app's
