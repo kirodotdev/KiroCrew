@@ -485,7 +485,11 @@ describe('a picture the model chose', () => {
       ['kirodotdev/KiroCrew#12', ours],
       ['acme/other#12', theirs],
     ])
-    for (const a of anchors) expect(a).toHaveAttribute('rel', 'noopener noreferrer')
+    for (const a of anchors) {
+      expect(a).toHaveAttribute('rel', 'noopener noreferrer')
+      // The chat's own PR pill, not a style of the card's.
+      expect(a.closest('.mc-md-ref-chip')).not.toBeNull()
+    }
     // The body is drawn as written: its #N and its link stay text.
     const body = screen.getByTestId('warm-brief-body')
     expect(body.querySelector('a')).toBeNull()

@@ -328,7 +328,7 @@ its CSP names no CDN script origin (connect, image and font sources are local
 only, as for every widget), it has no link bridge and no bare-link rewrite,
 and the host ignores its `mc-widget-action`, so it never pre-fills the
 composer. It has no star, because an artifact page would draw it under the
-chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
+chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3), as the chat's own PR pills (the bare URLs go through the same `MarkdownRenderer`, with link previews off): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
 unchanged. A page script can still navigate its own frame, which the sandbox
 and CSP cannot forbid. A cap that would cut inside a widget or code fence
 drops that block whole, and the prompt names both caps. A brief stored with a separate `widget` field keeps
