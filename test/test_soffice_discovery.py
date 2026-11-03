@@ -54,7 +54,9 @@ def linux_host(monkeypatch):
             fake = mock.Mock(return_value=release)
         monkeypatch.setattr(os_release.platform, "freedesktop_os_release", fake)
         monkeypatch.setattr(
-            os_release.shutil, "which", lambda name: f"/usr/bin/{name}" if name in managers else None
+            os_release.shutil,
+            "which",
+            lambda name: f"/usr/bin/{name}" if name in managers else None,
         )
 
     yield _set
