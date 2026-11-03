@@ -14,6 +14,7 @@ import { ApiError } from '../../../api/apiError'
 import { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
 import UltraCrewPanel from './UltraCrewPanel'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
+import { setCrewModeCatalog } from '../../../lib/crewMode'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -146,6 +147,25 @@ describe('Ultra Mode Crew tab', () => {
     await expect(reopenCrewSession(store.dispatch, store.getState, 'w-three', 'Worker G')).resolves.toEqual({ ok: false, activated: false, key: 'w-three' })
   })
 
+  it('shows the Ultra panel for a chat with messages that was just switched on, before its root stamp lands', async () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    try {
+      api.crewWorkers.mockResolvedValue({ root: 'mid', workers: [] })
+      renderWith(<CrewWorkersTab slot="mid" active />, [{ key: 'mid', messages: 3, agent: 'kirocrew-conductor', agent_kind: 'template' }])
+      expect(await screen.findByTestId('ultra-crew-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    } finally {
+      setCrewModeCatalog(undefined, undefined)
+    }
+  })
+
+  it('names the two views Status and Workers', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    expect(await screen.findByTestId('ultra-view-status')).toHaveTextContent(/^Status$/)
+    expect(screen.getByTestId('ultra-view-list')).toHaveTextContent(/^Workers$/)
+  })
+
   it('the Workers tab on a plain chat lists nothing', () => {
     // A plain chat with messages: a brand-new one shows its (empty) panel while
     // its Ultra Mode switch lands.
@@ -162,10 +182,13 @@ describe('Ultra Mode Crew tab', () => {
     ])
     await screen.findByTestId('ultra-crew-panel')
     const back = screen.getByTestId('crew-panel-back')
-    expect(back).toHaveTextContent('Back to main chat')
+    // The visible word is short; its accessible name still says where it goes.
+    expect(back).toHaveTextContent(/^Back$/)
     // One label, no title chip beside it.
     expect(back).not.toHaveTextContent('Sample goal')
-    expect(back).toHaveAccessibleName('Back to main chat')
+    // Label in name: the visible word is the accessible name; the long form is the tooltip.
+    expect(back).toHaveAccessibleName('Back')
+    expect(back).toHaveAttribute('title', 'Back to main chat')
     // A real button, so Tab and Enter reach it.
     expect(back.tagName).toBe('BUTTON')
     fireEvent.click(back)
