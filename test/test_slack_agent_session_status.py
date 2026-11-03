@@ -76,12 +76,12 @@ class Clock:
 
 @pytest.fixture(autouse=True)
 def _caps() -> Any:
-    """A clean capability record with the agent-sessions scope granted; yields latch notices."""
+    """A clean capability record with both scopes granted; yields latch notices."""
     from kiro_crew.slack import features
 
     seen: list[tuple[str, str]] = []
     features.reset_capabilities()
-    features.record_granted_scopes({"assistant:write"})
+    features.record_granted_scopes({"assistant:write", "code_channels:manage"})
     features.set_capability_notifier(lambda feature, reason: seen.append((feature, reason)))
     yield seen
     features.set_capability_notifier(None)

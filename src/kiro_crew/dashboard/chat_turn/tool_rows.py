@@ -503,9 +503,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 turn._mirror_stream_tried = True
                 # Top-level (``None``) for a code channel's own session.
                 _mirror_stream_ts = (
-                    await state.slack_client.start_stream(
-                        _mirror_chan, turn._mirror_post_ts or ""
-                    )
+                    await state.slack_client.start_stream(_mirror_chan, turn._mirror_post_ts or "")
                     or ""
                 )
                 turn._mirror_stream_ts = _mirror_stream_ts
