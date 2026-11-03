@@ -14820,7 +14820,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "अनदेखा करने के पैटर्न (हर लाइन में एक, उदा. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "सबडायरेक्टरी शामिल करें (रिकर्सिव)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "इंडेक्सिंग स्रोत के आकार के अनुपात में Kiro अनुरोध खर्च करती है, और नज़र रखे जा रहे फ़ोल्डर में फ़ाइलें आते रहने पर खर्च एक ही बार में नहीं, समय के साथ फैलकर लगता रहता है।",
-        "items": "आइटम",
         "kb_ids_comma_separated_id_or_arn": "अल्पविराम से अलग, उदा. KXABC12345 या arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "पूरा करने में ~{{calls}} Kiro अनुरोध और लगेंगे",
         "knowledge_base_ids": "नॉलेज बेस ID",
@@ -14891,7 +14890,9 @@
         "enter_region_to_add": "यह स्रोत जोड़ने के लिए AWS Region दर्ज करो।",
         "profile_blank_uses_default_chain": "डिफ़ॉल्ट AWS क्रेडेंशियल उपयोग करने के लिए खाली छोड़ें।",
         "remove_this_live_source": "क्या इस नॉलेज बेस स्रोत को हटाना है? स्थानीय रूप से कुछ भी संग्रहीत नहीं है; नॉलेज बेस स्वयं अप्रभावित रहेगा।",
-        "region_example_placeholder": "उदा. us-east-1"
+        "region_example_placeholder": "उदा. us-east-1",
+        "items_count_one": "{{n}} आइटम",
+        "items_count_other": "{{n}} आइटम"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15414,7 +15415,6 @@
         "status": "स्थिति",
         "tool_list_read_from_the_package_s_declaration_th": "टूल सूची पैकेज की घोषणा से पढ़ी गई है; सर्वर के शुरू होने की पुष्टि के लिए उसे चलाया नहीं गया।",
         "tools": "टूल",
-        "tools_2": "टूल",
         "undo": "अनडू",
         "uninstall": "अनइंस्टॉल करें",
         "unknown": "अज्ञात",
@@ -15463,7 +15463,9 @@
         "temp_refusal_sealed": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि यह केवल-पढ़ने योग्य रनटाइम फ़ोल्डर के अंदर है। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
         "temp_refusal_unclassifiable": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि इसके वास्तविक स्थान की पुष्टि नहीं हो सकी। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
         "temp_refusal_check_failed": "घोषित {{key}}={{path}} को अनदेखा किया गया, क्योंकि स्थान की जाँच विफल रही। जाँच ने इसके बजाय प्रबंधित अस्थायी फ़ोल्डर का उपयोग किया।",
-        "mcp_deny_spared": "यह {{productName}} का अपना सर्वर है, इसलिए {{name}} पर यहाँ एक टूल बंद करने से सिर्फ़ वही टूल रुकता है।"
+        "mcp_deny_spared": "यह {{productName}} का अपना सर्वर है, इसलिए {{name}} पर यहाँ एक टूल बंद करने से सिर्फ़ वही टूल रुकता है।",
+        "tools_count_one": "{{n}} टूल",
+        "tools_count_other": "{{n}} टूल"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",
@@ -18149,7 +18151,6 @@
         "block_list_rules": "ब्लॉक-सूची · {{rules}}",
         "built_in_rules_enforced_note": "तुम्हारे ऑप्ट-आउट और किसी भी नीति पिन के बाद, अभी {{total}} में से {{enabled}} अंतर्निहित नियम लागू हैं।",
         "cancel": "रद्द करें",
-        "categories": "श्रेणियाँ ·",
         "click_any_control_to_see_exactly_what_it_covers": "यह देखने के लिए कि कोई नियंत्रण ठीक क्या कवर करता है, उस पर क्लिक करें।",
         "collapse_all": "सभी संक्षिप्त करें",
         "collapse_category_rules": "{{category}} नियम समेटें",
@@ -18285,7 +18286,6 @@
         "rail_until_restart": "रीस्टार्ट तक",
         "rail_until_time": "{{time}} तक",
         "resolved_as_your_organization_s_policy_intersect": ", जो आपके संगठन की नीति और होस्ट प्रोफ़ाइल के प्रतिच्छेदन के रूप में हल किया गया है। किसी विशिष्ट सरफ़ेस, ऐप या टास्क (cron, Slack, सबएजेंट) से बंधी संकरी प्रोफ़ाइलें रनटाइम पर किसी स्कोप को और कड़ा कर सकती हैं। केवल-पठनीय — सीमा इसमें लिखी जाती है:",
-        "rules": "नियम",
         "search_rules_placeholder": "नियम, पैटर्न, श्रेणियाँ खोजें…",
         "section_group_enforced": "अनिवार्य",
         "section_group_reference": "संदर्भ",
@@ -18422,7 +18422,13 @@
         "redaction_revoke_failed": "वह होस्ट रद्द नहीं हो सका। वह अब भी अनुमत है।",
         "redaction_no_allowed_hosts": "कोई होस्ट अनुमत नहीं है। हर लिंक हर जाँच से गुज़रता है।",
         "redaction_workspace": "वर्कस्पेस: {{workspace}}",
-        "redaction_revoke": "रद्द करो"
+        "redaction_revoke": "रद्द करो",
+        "rules_matched_one": "{{matched}} / {{n}} नियम",
+        "rules_matched_other": "{{matched}} / {{n}} नियम",
+        "categories_count_one": "{{n}} श्रेणी ·",
+        "categories_count_other": "{{n}} श्रेणियाँ ·",
+        "rules_count_one": "{{n}} नियम",
+        "rules_count_other": "{{n}} नियम"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "चैट-टैब स्विचिंग को Option+अंक के बजाय Ctrl+अंक से बाइंड करें। जब किसी टेक्स्ट फ़ील्ड पर फ़ोकस हो, तब Option+अंक चैट नहीं बदलता।",
@@ -19606,19 +19612,19 @@
       "written_by_the": "लिखा गया"
     },
     "worldsPage": {
-      "active": "सक्रिय,",
-      "agent_one": "{{count}} एजेंट",
-      "agent_other": "{{count}} एजेंट",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "पॉपआउट पर फ़ोकस करें",
       "hide_controls": "नियंत्रण छिपाएँ",
-      "open": "खाली",
       "playing_in_popout_window": "पॉपआउट विंडो में चल रहा है",
       "pop_out_to_separate_window": "अलग विंडो में पॉप आउट करें",
-      "present": "मौजूद,",
       "show_controls": "नियंत्रण दिखाएँ",
-      "slot_one": "{{count}} स्लॉट",
-      "slot_other": "{{count}} स्लॉट"
+      "agents_present_one": "{{n}} एजेंट मौजूद",
+      "agents_present_other": "{{n}} एजेंट मौजूद",
+      "agents_active_one": "{{n}} सक्रिय",
+      "agents_active_other": "{{n}} सक्रिय",
+      "slots_open_one": "{{n}} स्लॉट खाली",
+      "slots_open_other": "{{n}} स्लॉट खाली",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",

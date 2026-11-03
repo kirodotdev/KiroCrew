@@ -14820,7 +14820,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Ignoriermuster (eines pro Zeile, z. B. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Unterverzeichnisse einbeziehen (rekursiv)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "Die Indexierung verbraucht Kiro-Anfragen im Verhältnis zur Größe jeder Quelle, und ein überwachter Ordner verbraucht weiter, sobald Dateien hinzukommen — die Kosten verteilen sich über die Zeit, statt alle auf einmal anzufallen.",
-        "items": "Elemente",
         "kb_ids_comma_separated_id_or_arn": "Durch Kommas getrennt, z. B. KXABC12345 oder arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "~{{calls}} Kiro-Anfragen bis zum Abschluss",
         "knowledge_base_ids": "Knowledge-Base-IDs",
@@ -14891,7 +14890,9 @@
         "enter_region_to_add": "Gib die AWS-Region ein, um diese Quelle hinzuzufügen.",
         "profile_blank_uses_default_chain": "Leer lassen, um die Standard-AWS-Anmeldedaten zu verwenden.",
         "remove_this_live_source": "Diese Knowledge-Base-Quelle entfernen? Lokal ist nichts gespeichert; die Knowledge Base selbst bleibt unverändert.",
-        "region_example_placeholder": "z. B. us-east-1"
+        "region_example_placeholder": "z. B. us-east-1",
+        "items_count_one": "{{n}} Element",
+        "items_count_other": "{{n}} Elemente"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15414,7 +15415,6 @@
         "status": "Status",
         "tool_list_read_from_the_package_s_declaration_th": "Die Tool-Liste stammt aus der Deklaration des Pakets; der Server wurde nicht gestartet, um seinen Start zu verifizieren.",
         "tools": "Werkzeuge",
-        "tools_2": "Werkzeuge",
         "undo": "Rückgängig",
         "uninstall": "Deinstallieren",
         "unknown": "Unbekannt",
@@ -15463,7 +15463,9 @@
         "temp_refusal_sealed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil es im schreibgeschützten Laufzeitordner liegt. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
         "temp_refusal_unclassifiable": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil sein tatsächlicher Ort nicht bestätigt werden konnte. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
         "temp_refusal_check_failed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil die Ortsprüfung fehlgeschlagen ist. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
-        "mcp_deny_spared": "Dies ist einer der eigenen Server von {{productName}}. Auf {{name}} stoppt das Ausschalten eines Tools hier nur dieses Tool."
+        "mcp_deny_spared": "Dies ist einer der eigenen Server von {{productName}}. Auf {{name}} stoppt das Ausschalten eines Tools hier nur dieses Tool.",
+        "tools_count_one": "{{n}} Werkzeug",
+        "tools_count_other": "{{n}} Werkzeuge"
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",
@@ -18149,7 +18151,6 @@
         "block_list_rules": "Verbotsliste · {{rules}}",
         "built_in_rules_enforced_note": "{{enabled}} von {{total}} integrierten Regeln sind derzeit aktiv, nach Ihren Abwahlen und etwaigen Richtlinien-Fixierungen.",
         "cancel": "Abbrechen",
-        "categories": "Kategorien ·",
         "click_any_control_to_see_exactly_what_it_covers": "Klicken Sie auf ein Steuerelement, um genau zu sehen, was es abdeckt.",
         "collapse_all": "Alle einklappen",
         "collapse_category_rules": "Regeln für {{category}} einklappen",
@@ -18285,7 +18286,6 @@
         "rail_until_restart": "Bis zum Neustart",
         "rail_until_time": "Bis {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", aufgelöst als die Richtlinie Ihrer Organisation, geschnitten mit dem Host-Profil. Engere Profile, die an eine bestimmte Oberfläche, App oder Aufgabe gebunden sind (Cron, Slack, Subagenten), können einen Bereich zur Laufzeit weiter einschränken. Nur lesbar — die Obergrenze wird definiert in",
-        "rules": "Regeln",
         "search_rules_placeholder": "Regeln, Muster, Kategorien suchen…",
         "section_group_enforced": "Erzwungen",
         "section_group_reference": "Referenz",
@@ -18422,7 +18422,13 @@
         "redaction_revoke_failed": "Dieser Host konnte nicht widerrufen werden. Er ist weiterhin erlaubt.",
         "redaction_no_allowed_hosts": "Keine Hosts sind erlaubt. Jeder Link durchläuft jede Prüfung.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Widerrufen"
+        "redaction_revoke": "Widerrufen",
+        "rules_matched_one": "{{matched}} / {{n}} Regel",
+        "rules_matched_other": "{{matched}} / {{n}} Regeln",
+        "categories_count_one": "{{n}} Kategorie ·",
+        "categories_count_other": "{{n}} Kategorien ·",
+        "rules_count_one": "{{n}} Regel",
+        "rules_count_other": "{{n}} Regeln"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Wechsel zwischen Chat-Tabs an Strg+Zahl statt Option+Zahl binden. Option+Zahl wechselt den Chat nicht, solange ein Textfeld den Fokus hat.",
@@ -19606,19 +19612,19 @@
       "written_by_the": "Geschrieben vom Tool"
     },
     "worldsPage": {
-      "active": "aktiv,",
-      "agent_one": "{{count}} Agent",
-      "agent_other": "{{count}} Agenten",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Ausgekoppeltes Fenster fokussieren",
       "hide_controls": "Steuerung ausblenden",
-      "open": "offen",
       "playing_in_popout_window": "Wird im ausgekoppelten Fenster abgespielt",
       "pop_out_to_separate_window": "In ein separates Fenster auskoppeln",
-      "present": "vorhanden,",
       "show_controls": "Steuerung anzeigen",
-      "slot_one": "{{count}} Slot",
-      "slot_other": "{{count}} Slots"
+      "agents_present_one": "{{n}} Agent vorhanden",
+      "agents_present_other": "{{n}} Agenten vorhanden",
+      "agents_active_one": "{{n}} aktiv",
+      "agents_active_other": "{{n}} aktiv",
+      "slots_open_one": "{{n}} Slot frei",
+      "slots_open_other": "{{n}} Slots frei",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Steuerung ausblenden",

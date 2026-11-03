@@ -14820,7 +14820,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "উপেক্ষা করার প্যাটার্ন (প্রতি লাইনে একটি, যেমন .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "সাব-ডিরেক্টরি অন্তর্ভুক্ত করুন (রিকার্সিভ)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "ইনডেক্সিং প্রতিটি সোর্সের আকারের অনুপাতে Kiro অনুরোধ খরচ করে, এবং নজরে রাখা ফোল্ডারে ফাইল এলে খরচ চলতেই থাকে, একবারে না নিয়ে সময়ের সাথে ছড়িয়ে পড়ে।",
-        "items": "আইটেম",
         "kb_ids_comma_separated_id_or_arn": "কমা দিয়ে আলাদা, যেমন KXABC12345 বা arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "শেষ করতে আরও ~{{calls}}টি Kiro অনুরোধ",
         "knowledge_base_ids": "নলেজ বেস ID",
@@ -14891,7 +14890,9 @@
         "enter_region_to_add": "এই উৎস যোগ করতে AWS Region লিখো।",
         "profile_blank_uses_default_chain": "ডিফল্ট AWS ক্রেডেনশিয়াল ব্যবহার করতে খালি রাখো।",
         "remove_this_live_source": "এই নলেজ বেস সোর্সটি সরানো হবে? স্থানীয়ভাবে কিছুই সংরক্ষিত নেই; নলেজ বেসটি নিজে অপরিবর্তিত থাকবে।",
-        "region_example_placeholder": "যেমন us-east-1"
+        "region_example_placeholder": "যেমন us-east-1",
+        "items_count_one": "{{n}}টি আইটেম",
+        "items_count_other": "{{n}}টি আইটেম"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15414,7 +15415,6 @@
         "status": "স্ট্যাটাস",
         "tool_list_read_from_the_package_s_declaration_th": "টুলের তালিকা প্যাকেজের ঘোষণা থেকে পড়া হয়েছে; সার্ভারটি চালু হয় কিনা যাচাই করতে এটি চালানো হয়নি।",
         "tools": "টুল",
-        "tools_2": "টুল",
         "undo": "আনডু",
         "uninstall": "আনইনস্টল",
         "unknown": "অজানা",
@@ -15463,7 +15463,9 @@
         "temp_refusal_sealed": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ এটি শুধু-পঠনযোগ্য রানটাইম ফোল্ডারের ভিতরে আছে। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
         "temp_refusal_unclassifiable": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ এর আসল অবস্থান নিশ্চিত করা যায়নি। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
         "temp_refusal_check_failed": "ঘোষিত {{key}}={{path}} উপেক্ষা করা হয়েছে, কারণ অবস্থান যাচাই ব্যর্থ হয়েছে। পরীক্ষাটি এর বদলে পরিচালিত অস্থায়ী ফোল্ডার ব্যবহার করেছে।",
-        "mcp_deny_spared": "এটি {{productName}}-এর নিজের সার্ভার, তাই {{name}}-এ এখানে একটি টুল বন্ধ করলে শুধু সেই টুলটিই থামে।"
+        "mcp_deny_spared": "এটি {{productName}}-এর নিজের সার্ভার, তাই {{name}}-এ এখানে একটি টুল বন্ধ করলে শুধু সেই টুলটিই থামে।",
+        "tools_count_one": "{{n}}টি টুল",
+        "tools_count_other": "{{n}}টি টুল"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",
@@ -18149,7 +18151,6 @@
         "block_list_rules": "নিষিদ্ধ-তালিকা · {{rules}}",
         "built_in_rules_enforced_note": "আপনার অপ্ট-আউট এবং যেকোনো নীতি পিনের পরে, এখন {{total}}টির মধ্যে {{enabled}}টি অন্তর্নির্মিত নিয়ম বলবৎ আছে।",
         "cancel": "বাতিল",
-        "categories": "বিভাগ ·",
         "click_any_control_to_see_exactly_what_it_covers": "কোনো নিয়ন্ত্রণ ঠিক কী কী অন্তর্ভুক্ত করে তা দেখতে সেটিতে ক্লিক করুন।",
         "collapse_all": "সব সংকুচিত করুন",
         "collapse_category_rules": "{{category}} নিয়ম সংকুচিত করো",
@@ -18285,7 +18286,6 @@
         "rail_until_restart": "রিস্টার্ট পর্যন্ত",
         "rail_until_time": "{{time}} পর্যন্ত",
         "resolved_as_your_organization_s_policy_intersect": ", যা আপনার প্রতিষ্ঠানের নীতি ও হোস্ট প্রোফাইলের ছেদ হিসেবে নির্ধারিত। নির্দিষ্ট সারফেস, অ্যাপ বা টাস্কের (cron, Slack, সাবএজেন্ট) সঙ্গে বাঁধা সংকীর্ণতর প্রোফাইল রানটাইমে কোনো স্কোপকে আরও কঠোর করতে পারে। কেবল-পঠনযোগ্য — সিলিং লেখা হয়েছে এখানে:",
-        "rules": "নিয়ম",
         "search_rules_placeholder": "নিয়ম, প্যাটার্ন, বিভাগ খুঁজুন…",
         "section_group_enforced": "বলবৎ",
         "section_group_reference": "রেফারেন্স",
@@ -18422,7 +18422,13 @@
         "redaction_revoke_failed": "সেই হোস্টটা ফিরিয়ে নেওয়া যায়নি। এটা এখনও অনুমোদিত।",
         "redaction_no_allowed_hosts": "কোনো হোস্ট অনুমোদিত নয়। প্রতিটি লিঙ্ক প্রতিটি চেকের মধ্য দিয়ে যায়।",
         "redaction_workspace": "ওয়ার্কস্পেস: {{workspace}}",
-        "redaction_revoke": "ফিরিয়ে নাও"
+        "redaction_revoke": "ফিরিয়ে নাও",
+        "rules_matched_one": "{{matched}} / {{n}}টি নিয়ম",
+        "rules_matched_other": "{{matched}} / {{n}}টি নিয়ম",
+        "categories_count_one": "{{n}}টি বিভাগ ·",
+        "categories_count_other": "{{n}}টি বিভাগ ·",
+        "rules_count_one": "{{n}}টি নিয়ম",
+        "rules_count_other": "{{n}}টি নিয়ম"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "চ্যাট-ট্যাব পরিবর্তনকে Option+সংখ্যার বদলে Ctrl+সংখ্যার সঙ্গে বাঁধুন। কোনো টেক্সট ফিল্ডে ফোকাস থাকলে Option+সংখ্যা চ্যাট পরিবর্তন করে না।",
@@ -19606,19 +19612,19 @@
       "written_by_the": "লিখেছে"
     },
     "worldsPage": {
-      "active": "সক্রিয়,",
-      "agent_one": "{{count}}টি এজেন্ট",
-      "agent_other": "{{count}}টি এজেন্ট",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "পপআউটে ফোকাস করুন",
       "hide_controls": "কন্ট্রোল লুকাও",
-      "open": "খোলা",
       "playing_in_popout_window": "পপআউট উইন্ডোতে চলছে",
       "pop_out_to_separate_window": "আলাদা উইন্ডোতে পপ আউট করুন",
-      "present": "উপস্থিত,",
       "show_controls": "কন্ট্রোল দেখাও",
-      "slot_one": "{{count}}টি slot",
-      "slot_other": "{{count}}টি slot"
+      "agents_present_one": "{{n}}টি এজেন্ট উপস্থিত",
+      "agents_present_other": "{{n}}টি এজেন্ট উপস্থিত",
+      "agents_active_one": "{{n}}টি সক্রিয়",
+      "agents_active_other": "{{n}}টি সক্রিয়",
+      "slots_open_one": "{{n}}টি স্লট খোলা",
+      "slots_open_other": "{{n}}টি স্লট খোলা",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "কন্ট্রোল লুকাও",

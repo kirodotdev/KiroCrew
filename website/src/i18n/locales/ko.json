@@ -14528,7 +14528,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "무시 패턴 (한 줄에 하나, 예: .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "하위 디렉터리 포함 (재귀)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "인덱싱은 각 소스의 크기에 비례해 Kiro 요청을 사용하며, 감시 중인 폴더는 파일이 추가되는 동안 비용이 한 번에 청구되지 않고 시간에 걸쳐 분산되는 형태로 계속 요청을 소비합니다.",
-        "items": "항목",
         "kb_ids_comma_separated_id_or_arn": "쉼표로 구분, 예: KXABC12345 또는 arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "완료까지 Kiro 요청 약 {{calls}}개",
         "knowledge_base_ids": "지식 기반 ID",
@@ -14598,7 +14597,8 @@
         "enter_region_to_add": "이 소스를 추가하려면 AWS 리전을 입력하세요.",
         "profile_blank_uses_default_chain": "비워 두면 기본 AWS 자격 증명을 사용합니다.",
         "remove_this_live_source": "이 지식 기반 소스를 제거하시겠습니까? 로컬에 저장된 항목은 없으며, 지식 기반 자체는 변경되지 않습니다.",
-        "region_example_placeholder": "예: us-east-1"
+        "region_example_placeholder": "예: us-east-1",
+        "items_count_other": "{{n}}개 항목"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15108,7 +15108,6 @@
         "status": "상태",
         "tool_list_read_from_the_package_s_declaration_th": "도구 목록은 패키지의 선언에서 읽었습니다. 서버가 실제로 시작되는지 확인하지 않았습니다.",
         "tools": "도구",
-        "tools_2": "도구",
         "undo": "실행 취소",
         "uninstall": "제거",
         "unknown": "알 수 없음",
@@ -15156,7 +15155,8 @@
         "temp_refusal_sealed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 읽기 전용 런타임 폴더 안에 있습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
         "temp_refusal_unclassifiable": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 실제 위치를 확인할 수 없습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
         "temp_refusal_check_failed": "선언된 {{key}}={{path}}이(가) 무시되었습니다. 이유: 위치 확인에 실패했습니다. 프로브는 대신 관리되는 임시 폴더를 사용했습니다.",
-        "mcp_deny_spared": "이 서버는 {{productName}}의 자체 서버이므로 {{name}}에서 여기의 도구 하나를 끄면 그 도구만 멈춥니다."
+        "mcp_deny_spared": "이 서버는 {{productName}}의 자체 서버이므로 {{name}}에서 여기의 도구 하나를 끄면 그 도구만 멈춥니다.",
+        "tools_count_other": "{{n}}개 도구"
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",
@@ -17781,7 +17781,6 @@
         "block_list_rules": "차단 목록 · {{rules}}",
         "built_in_rules_enforced_note": "사용자의 해제 설정과 정책 고정을 반영해 현재 기본 규칙 {{total}}개 중 {{enabled}}개가 적용되고 있습니다.",
         "cancel": "취소",
-        "categories": "카테고리 ·",
         "click_any_control_to_see_exactly_what_it_covers": "각 항목을 클릭하면 어떤 범위를 다루는지 정확히 확인할 수 있습니다.",
         "collapse_all": "모두 접기",
         "collapse_category_rules": "{{category}} 규칙 접기",
@@ -17917,7 +17916,6 @@
         "rail_until_restart": "재시작할 때까지",
         "rail_until_time": "{{time}}까지",
         "resolved_as_your_organization_s_policy_intersect": ", 조직의 정책과 호스트 프로필의 교집합으로 결정됩니다. 특정 표면·앱·작업(cron, Slack, 서브에이전트)에 연결된 더 좁은 프로필은 런타임에 범위를 더 좁힐 수 있습니다. 읽기 전용 — 상한은 다음에서 작성됩니다",
-        "rules": "규칙",
         "search_rules_placeholder": "규칙·패턴·카테고리 검색…",
         "section_group_enforced": "적용 중",
         "section_group_reference": "참고",
@@ -18054,7 +18052,10 @@
         "redaction_revoke_failed": "그 호스트를 취소하지 못했습니다. 여전히 허용된 상태입니다.",
         "redaction_no_allowed_hosts": "허용된 호스트가 없습니다. 모든 링크가 모든 검사를 거칩니다.",
         "redaction_workspace": "워크스페이스: {{workspace}}",
-        "redaction_revoke": "취소"
+        "redaction_revoke": "취소",
+        "rules_matched_other": "{{matched}} / {{n}}개 규칙",
+        "categories_count_other": "{{n}}개 카테고리 ·",
+        "rules_count_other": "{{n}}개 규칙"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "채팅 탭 전환을 Option+숫자 대신 Ctrl+숫자에 할당합니다. 텍스트 필드에 포커스가 있으면 Option+숫자로 채팅이 전환되지 않습니다.",
@@ -19231,17 +19232,16 @@
       "written_by_the": "작성 주체는"
     },
     "worldsPage": {
-      "active": "활동 중,",
-      "agent_other": "에이전트 {{count}}개",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "팝아웃 포커스",
       "hide_controls": "컨트롤 숨기기",
-      "open": "빈 시간",
       "playing_in_popout_window": "팝아웃 창에서 재생 중",
       "pop_out_to_separate_window": "별도 창으로 팝아웃",
-      "present": "참석,",
       "show_controls": "컨트롤 표시",
-      "slot_other": "슬롯 {{count}}개"
+      "agents_present_other": "에이전트 {{n}}개 참석",
+      "agents_active_other": "{{n}}개 활동 중",
+      "slots_open_other": "빈 슬롯 {{n}}개",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "컨트롤 숨기기",

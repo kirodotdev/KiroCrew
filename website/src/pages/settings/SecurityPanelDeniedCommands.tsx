@@ -16,6 +16,7 @@ import {
   api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { trustFailureMessage } from './SecurityPanelTrust'
 
@@ -584,12 +585,12 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             <div className="flex items-center justify-between mt-1 mb-0.5">
               {/* While filtering, report matched-of-total as a RATIO — but keep
                   every category badge on its full enabled/total, so a filter can
-                  never make the gate read as smaller than it is. A ratio also
-                  sidesteps count grammar, so this needs no plural forms. */}
+                  never make the gate read as smaller than it is. The noun agrees
+                  with the total, so the total is the plural count. */}
               <span className="text-[11px] text-muted tabular-nums">
                 {filtering
-                  ? <>{matchedRules} / {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>
-                  : <>{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>}
+                  ? i18nT('pages.settings.securityPanel.rules_matched', { matched: fmtNumber(matchedRules), count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })
+                  : <>{i18nT('pages.settings.securityPanel.categories_count', { count: Object.keys(grouped).length, n: fmtNumber(Object.keys(grouped).length) })} {i18nT('pages.settings.securityPanel.rules_count', { count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })}</>}
               </span>
               {/* Hidden while filtering: matches render open regardless, so both
                   controls would record state the user cannot see take effect. */}

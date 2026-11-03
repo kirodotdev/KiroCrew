@@ -15112,7 +15112,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Motifs à ignorer (un par ligne, ex. .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Inclure les sous-répertoires (récursif)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "L’indexation consomme des requêtes Kiro proportionnellement à la taille de chaque source, et un dossier surveillé continue d’en consommer à mesure que des fichiers arrivent — le coût s’étale dans le temps au lieu d’être facturé d’un seul coup.",
-        "items": "éléments",
         "kb_ids_comma_separated_id_or_arn": "Séparés par des virgules, p. ex. KXABC12345 ou leur ARN complet",
         "kiro_requests_left": "~{{calls}} requêtes Kiro pour terminer",
         "knowledge_base_ids": "IDs de la base de connaissances",
@@ -15184,7 +15183,10 @@
         "enter_region_to_add": "Saisis la région AWS pour ajouter cette source.",
         "profile_blank_uses_default_chain": "Laisse vide pour utiliser les identifiants AWS par défaut.",
         "remove_this_live_source": "Supprimer cette source de base de connaissances\u202f? Rien n'est stocké localement\u202f; la base de connaissances elle-même n'est pas modifiée.",
-        "region_example_placeholder": "ex. us-east-1"
+        "region_example_placeholder": "ex. us-east-1",
+        "items_count_one": "{{n}} élément",
+        "items_count_many": "{{n}} éléments",
+        "items_count_other": "{{n}} éléments"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15720,7 +15722,6 @@
         "status": "Statut",
         "tool_list_read_from_the_package_s_declaration_th": "La liste des outils provient de la déclaration du paquet ; le serveur n'a pas été lancé pour vérifier qu'il démarre.",
         "tools": "Outils",
-        "tools_2": "outils",
         "undo": "Annuler",
         "uninstall": "Désinstaller",
         "unknown": "Inconnu",
@@ -15770,7 +15771,10 @@
         "temp_refusal_sealed": "Le {{key}}={{path}} déclaré a été ignoré, car il se trouve dans le dossier d'exécution en lecture seule. La vérification a utilisé à la place le dossier temporaire géré.",
         "temp_refusal_unclassifiable": "Le {{key}}={{path}} déclaré a été ignoré, car son emplacement réel n'a pas pu être confirmé. La vérification a utilisé à la place le dossier temporaire géré.",
         "temp_refusal_check_failed": "Le {{key}}={{path}} déclaré a été ignoré, car la vérification de l'emplacement a échoué. La vérification a utilisé à la place le dossier temporaire géré.",
-        "mcp_deny_spared": "Ceci est l'un des serveurs propres à {{productName}}, donc sur {{name}} désactiver un outil ici n'arrête que cet outil."
+        "mcp_deny_spared": "Ceci est l'un des serveurs propres à {{productName}}, donc sur {{name}} désactiver un outil ici n'arrête que cet outil.",
+        "tools_count_one": "{{n}} outil",
+        "tools_count_many": "{{n}} outils",
+        "tools_count_other": "{{n}} outils"
       },
       "memoryGraphTab": {
         "all_count": "Tous ({{count}})",
@@ -18517,7 +18521,6 @@
         "block_list_rules": "Liste de refus · {{rules}}",
         "built_in_rules_enforced_note": "{{enabled}} règles intégrées sur {{total}} sont actuellement appliquées, après vos désactivations et les éventuels verrouillages de politique.",
         "cancel": "Annuler",
-        "categories": "catégories ·",
         "click_any_control_to_see_exactly_what_it_covers": "Cliquez sur un contrôle pour voir exactement ce qu'il couvre.",
         "collapse_all": "Tout replier",
         "collapse_category_rules": "Replier les règles de {{category}}",
@@ -18653,7 +18656,6 @@
         "rail_until_restart": "Jusqu’au redémarrage",
         "rail_until_time": "Jusqu'à {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", résolu comme l'intersection de la politique de votre organisation et du profil d'hôte. Des profils plus stricts liés à une surface, une app ou une tâche spécifique (cron, Slack, sous-agents) peuvent restreindre davantage une portée à l'exécution. Lecture seule — le plafond est défini dans",
-        "rules": "règles",
         "search_rules_placeholder": "Rechercher des règles, motifs, catégories…",
         "section_group_enforced": "Imposé",
         "section_group_reference": "Référence",
@@ -18790,7 +18792,16 @@
         "redaction_revoke_failed": "Impossible de révoquer cet hôte. Il est toujours autorisé.",
         "redaction_no_allowed_hosts": "Aucun hôte n’est autorisé. Chaque lien passe par toutes les vérifications.",
         "redaction_workspace": "Espace de travail : {{workspace}}",
-        "redaction_revoke": "Révoquer"
+        "redaction_revoke": "Révoquer",
+        "rules_matched_one": "{{matched}} / {{n}} règle",
+        "rules_matched_many": "{{matched}} / {{n}} règles",
+        "rules_matched_other": "{{matched}} / {{n}} règles",
+        "categories_count_one": "{{n}} catégorie ·",
+        "categories_count_many": "{{n}} catégories ·",
+        "categories_count_other": "{{n}} catégories ·",
+        "rules_count_one": "{{n}} règle",
+        "rules_count_many": "{{n}} règles",
+        "rules_count_other": "{{n}} règles"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associer le changement d'onglet de chat à Ctrl+chiffre au lieu de Option+chiffre. Option+chiffre ne change pas de chat tant qu'un champ de texte a le focus.",
@@ -19981,21 +19992,22 @@
       "written_by_the": "Écrit par l’outil"
     },
     "worldsPage": {
-      "active": "actifs,",
-      "agent_many": "{{count}} agents",
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Afficher la fenêtre détachée",
       "hide_controls": "Masquer les commandes",
-      "open": "ouvert",
       "playing_in_popout_window": "Lecture dans la fenêtre détachée",
       "pop_out_to_separate_window": "Détacher dans une fenêtre séparée",
-      "present": "présents,",
       "show_controls": "Afficher les commandes",
-      "slot_many": "{{count}} emplacements",
-      "slot_one": "{{count}} emplacement",
-      "slot_other": "{{count}} emplacements"
+      "agents_present_one": "{{n}} agent présent",
+      "agents_present_many": "{{n}} agents présents",
+      "agents_present_other": "{{n}} agents présents",
+      "agents_active_one": "{{n}} actif",
+      "agents_active_many": "{{n}} actifs",
+      "agents_active_other": "{{n}} actifs",
+      "slots_open_one": "{{n}} emplacement libre",
+      "slots_open_many": "{{n}} emplacements libres",
+      "slots_open_other": "{{n}} emplacements libres",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Masquer les commandes",

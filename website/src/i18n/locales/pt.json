@@ -15112,7 +15112,6 @@
         "ignore_patterns_one_per_line_e_g_trash_templates": "Padrões a ignorar (um por linha, ex.: .trash/*)\nTemplates/*",
         "include_subdirectories_recursive": "Incluir subdiretórios (recursivo)",
         "indexing_uses_kiro_requests_each_source_costs_mo": "A indexação consome requisições Kiro proporcionais ao tamanho de cada fonte, e uma pasta monitorada continua gastando conforme novos arquivos chegam — o custo se distribui ao longo do tempo em vez de ser cobrado de uma só vez.",
-        "items": "itens",
         "kb_ids_comma_separated_id_or_arn": "Separados por vírgulas, ex.: KXABC12345 ou arn:aws:bedrock:…:knowledge-base/KXABC12345",
         "kiro_requests_left": "~{{calls}} requisições Kiro para concluir",
         "knowledge_base_ids": "IDs da base de conhecimento",
@@ -15184,7 +15183,10 @@
         "enter_region_to_add": "Informe a região da AWS para adicionar esta fonte.",
         "profile_blank_uses_default_chain": "Deixe em branco para usar as credenciais padrão da AWS.",
         "remove_this_live_source": "Remover esta fonte de base de conhecimento? Nada está armazenado localmente; a base de conhecimento em si não é alterada.",
-        "region_example_placeholder": "ex.: us-east-1"
+        "region_example_placeholder": "ex.: us-east-1",
+        "items_count_one": "{{n}} item",
+        "items_count_many": "{{n}} itens",
+        "items_count_other": "{{n}} itens"
       },
       "settings": {
         "title": "Ingestion Settings",
@@ -15720,7 +15722,6 @@
         "status": "Status",
         "tool_list_read_from_the_package_s_declaration_th": "A lista de ferramentas foi lida da declaração do pacote; o servidor não foi iniciado para verificar se arranca.",
         "tools": "Ferramentas",
-        "tools_2": "ferramentas",
         "undo": "Desfazer",
         "uninstall": "Desinstalar",
         "unknown": "Desconhecido",
@@ -15770,7 +15771,10 @@
         "temp_refusal_sealed": "O {{key}}={{path}} declarado foi ignorado porque está dentro da pasta de execução somente leitura. A verificação usou a pasta temporária gerenciada no lugar.",
         "temp_refusal_unclassifiable": "O {{key}}={{path}} declarado foi ignorado porque não foi possível confirmar sua localização real. A verificação usou a pasta temporária gerenciada no lugar.",
         "temp_refusal_check_failed": "O {{key}}={{path}} declarado foi ignorado porque a verificação da localização falhou. A verificação usou a pasta temporária gerenciada no lugar.",
-        "mcp_deny_spared": "Este é um dos servidores do próprio {{productName}}, então no {{name}} desativar uma ferramenta aqui para só essa ferramenta."
+        "mcp_deny_spared": "Este é um dos servidores do próprio {{productName}}, então no {{name}} desativar uma ferramenta aqui para só essa ferramenta.",
+        "tools_count_one": "{{n}} ferramenta",
+        "tools_count_many": "{{n}} ferramentas",
+        "tools_count_other": "{{n}} ferramentas"
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",
@@ -18517,7 +18521,6 @@
         "block_list_rules": "Lista de bloqueio · {{rules}}",
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} regras integradas estão em vigor agora, depois das suas exclusões e de eventuais fixações por política.",
         "cancel": "Cancelar",
-        "categories": "categorias ·",
         "click_any_control_to_see_exactly_what_it_covers": "Clique em qualquer controle para ver exatamente o que ele abrange.",
         "collapse_all": "Recolher tudo",
         "collapse_category_rules": "Recolher as regras de {{category}}",
@@ -18653,7 +18656,6 @@
         "rail_until_restart": "Até reiniciar",
         "rail_until_time": "Até {{time}}",
         "resolved_as_your_organization_s_policy_intersect": ", resolvido como a política da sua organização interseccionada com o perfil do host. Perfis mais restritos vinculados a uma superfície, app ou tarefa específicos (cron, Slack, subagentes) podem restringir ainda mais um escopo em tempo de execução. Somente leitura — o teto é definido em",
-        "rules": "regras",
         "search_rules_placeholder": "Pesquisar regras, padrões, categorias…",
         "section_group_enforced": "Imposto",
         "section_group_reference": "Referência",
@@ -18790,7 +18792,16 @@
         "redaction_revoke_failed": "Não foi possível revogar esse host. Ele ainda está permitido.",
         "redaction_no_allowed_hosts": "Nenhum host é permitido. Todos os links passam por todas as verificações.",
         "redaction_workspace": "Workspace: {{workspace}}",
-        "redaction_revoke": "Revogar"
+        "redaction_revoke": "Revogar",
+        "rules_matched_one": "{{matched}} / {{n}} regra",
+        "rules_matched_many": "{{matched}} / {{n}} regras",
+        "rules_matched_other": "{{matched}} / {{n}} regras",
+        "categories_count_one": "{{n}} categoria ·",
+        "categories_count_many": "{{n}} categorias ·",
+        "categories_count_other": "{{n}} categorias ·",
+        "rules_count_one": "{{n}} regra",
+        "rules_count_many": "{{n}} regras",
+        "rules_count_other": "{{n}} regras"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Vincular a alternância de abas de chat a Ctrl+dígito em vez de Option+dígito. Option+dígito não troca de chat enquanto um campo de texto estiver em foco.",
@@ -19981,21 +19992,22 @@
       "written_by_the": "Escrito pela ferramenta"
     },
     "worldsPage": {
-      "active": "ativos,",
-      "agent_many": "{{count}} agentes",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agentes",
       "agent_worlds": "Agent Worlds",
       "focus_popout": "Focar janela destacada",
       "hide_controls": "Ocultar controles",
-      "open": "aberto",
       "playing_in_popout_window": "Reproduzindo na janela destacada",
       "pop_out_to_separate_window": "Abrir em janela separada",
-      "present": "presentes,",
       "show_controls": "Mostrar controles",
-      "slot_many": "{{count}} slots",
-      "slot_one": "{{count}} slot",
-      "slot_other": "{{count}} slots"
+      "agents_present_one": "{{n}} agente presente",
+      "agents_present_many": "{{n}} agentes presentes",
+      "agents_present_other": "{{n}} agentes presentes",
+      "agents_active_one": "{{n}} ativo",
+      "agents_active_many": "{{n}} ativos",
+      "agents_active_other": "{{n}} ativos",
+      "slots_open_one": "{{n}} slot livre",
+      "slots_open_many": "{{n}} slots livres",
+      "slots_open_other": "{{n}} slots livres",
+      "summary": "{{present}} · {{active}} · {{open}}"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar controles",
