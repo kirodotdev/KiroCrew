@@ -77,6 +77,7 @@ from kiro_crew import (
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agent_sdk import AgentTurnUsage
+from kiro_crew.agent_sdk.drivers.acp import continue_only
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
     declared_mcp_not_ready_note,
@@ -505,6 +506,7 @@ from kiro_crew.slack.gateway_runtime.cron_fire import (
     _cron_extra_env,
     _CronCapture,
 )
+from kiro_crew.slack.gateway_runtime.cron_turn import _end_failed_cron_turn
 from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _CRON_FAILURE_DETAIL_CAP,
     _EPOCH_RE,
@@ -572,6 +574,7 @@ from kiro_crew.slack.gateway_runtime.subagent_injection import (
     _inline_verdict,
     _notify_subagent_tab_gone,
     _ParkedCompletion,
+    _retire_finished_cron_key,
     _settle_owed,
     _skip_inline_collected,
 )

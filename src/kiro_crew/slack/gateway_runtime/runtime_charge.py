@@ -237,7 +237,11 @@ async def _inject_with_retry(
     retry doesn't hit 'Prompt already in progress'. A live backend
     that lost the parent's session is answered once by a reset and a
     fresh claim, which re-loads the same backend id; the caller's
-    single ``release(parent_key)`` balances against that claim.
+    single ``release(parent_key)`` balances against that claim. A
+    ``cron:`` parent is not re-loaded: its key is stateless, so the fresh
+    claim would start a session with none of the orchestration's history.
+    Its result is left undelivered and None returned, as the cron route
+    does for a parent it cannot claim.
     """
     _snf_reloaded = False
     attempt = 0
@@ -336,6 +340,16 @@ async def _inject_with_retry(
                 )
             return None
         except AcpError as exc:
+            if acp_error_is_session_not_found(exc) and parent_key.startswith("cron:"):
+                logger.warning(
+                    "Subagent %s: backend lost cron parent session %s during %s "
+                    "injection; result kept for the bell, not re-loaded",
+                    info.id,
+                    parent_key,
+                    label,
+                )
+                info._report_undelivered = True
+                return None
             if acp_error_is_session_not_found(exc):
                 if acp_error_after_tool_activity(exc):
                     raise AcpError(f"{SESSION_NOT_FOUND_NOT_REPLAYED_TEXT} {exc}") from exc

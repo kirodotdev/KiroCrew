@@ -1920,6 +1920,22 @@ against sweep completeness, and are torn down at `close_all`.
   and `try_acquire` (a non-blocking, no-`await`-suspension atomic take used by
   out-of-band `/compact`, which returns `False` on contention rather than
   waiting, so it has no stale-while-waiting window).
+- **Existing-only claim** (`claim_existing`, `session_allocation_parts/existing.py`):
+  the claim for a caller that may only CONTINUE a conversation, never start one. A
+  cron sub-agent's completion is that caller (`_finish_subagent_cron_or_notify`): a
+  `cron:` key is stateless, so a session started for the completion would hold none
+  of the orchestration and would act on the result as a new, unattended agent. It
+  takes the permit of the entry registered under the key when it is called, through
+  `_reacquire_and_validate` with an allocation reservation of its own, so it waits
+  out a busy turn and meets an ending fence that rose (and possibly lifted) during
+  the wait. It returns `(provider, is_new, resumed)` holding the permit, exactly as
+  `get_or_create` does, only when that same entry is still registered and its
+  process is alive by the allocator's own check (`provider_effectively_alive`),
+  asked when the claim is made and again, under the lock, when the permit wait
+  ends. Every other outcome is `None` with no permit
+  held: no session, the manager closing, a fenced key, an entry being recycled, an
+  entry replaced or popped while waiting, a dead process. A refusal evicts, retries,
+  joins and starts nothing, and the reservation is removed on every exit.
 - **Agent-model resolution cache** (`_resolve_agent_model`, class-level
   `_agent_model_cache`): the per-agent model pin resolved from agent JSON is
   cached but invalidated on BOTH the agents-dir mtime changing (a new agent
@@ -2382,6 +2398,7 @@ against sweep completeness, and are torn down at `close_all`.
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm sessions, and the background session on backends without a shared runtime; on a shared-runtime backend (`kiro`) the background session is created by `get_or_create` on its first turn. It is always created as the background agent (`kirocrew-lite`), whatever agent the first caller names, and concurrent first users share one cold start. `blocking=False` for non-blocking mode. |
 | `get_or_create(key, agent=None, channel_id=None, approval_policy="", model=None, cwd=None, extra_env=None, speculative=False, speculative_resume=False, wait_if_busy=True, start_priority=BACKGROUND, **factory_kwargs)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Before that decision, a `cwd` inside a directory bound in `aws.project_profiles` sets `AWS_PROFILE` and `AWS_DEFAULT_PROFILE` in `extra_env` unless the caller already set `AWS_PROFILE` / `AWS_DEFAULT_PROFILE`, so such a session takes `bypass_env`; an empty map or an unbound `cwd` hands the caller's `extra_env` through unchanged ([config](config.md) § Project AWS profiles). A caller that names no `model` gets the session layer's own default-model ladder, `session._session_model`, which answers through `config.loader.resolve_effective_model` (the resolver the model chip reads) from the manager's watcher-refreshed `_cfg`, never a fresh load: the crew's pin, then its template's pin (the named template when there is no crew; `kirocrew` tracks the global), then `apps.<name>.model` for an `app_name=` the caller passes (taken out of the factory kwargs), then `agent.model`, then the installed agent file; `""` and `"auto"` inherit at every tier. Each tier is scoped to the backend the factory will select for this key (`members.select_provider_backend`: a `backend_override`, the member-DM route, else the configured one). It runs off the event loop; every tier deferring, or a resolver error (logged), passes `model=None` and leaves the factory's own fallback to choose, so the ladder never fails a cold start. The value is the allocation's `requested_model` stamp. `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_turn.eager_spawn._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `claim_existing(key, *, wait_if_busy=True)` | Returns `(LLMProvider, is_new, resumed)` holding the permit of the session already registered under `key`, or `None` holding nothing; never starts, evicts or retries. A busy entry is waited for (`wait_if_busy=False` raises `SessionBusyError`). See **Existing-only claim** under the semaphore contract. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"compact_unsupported"` (the provider names a backend outside `ACP_BACKENDS_COMPACT`, so no `/compact` is dispatched and no semaphore is taken — checked AFTER the threshold so a declined backend keeps its per-turn usage log, #7812), `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -3385,13 +3402,16 @@ those callers are:
 | `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
 | `llm_helpers_parts/background_turns.py` — `_start_fresh_conversation`, reached from `background_turn(fresh_conversation=True)` | the turn's conversation is over; the reset is the fallback when `new_conversation` is unavailable |
 | `session_compaction.py` — critical reset after a failed compaction (`clear_conversation=True`) | the overflowed conversation is cleared, so it is over |
+| `slack/gateway_runtime/cron_turn.py` — `_end_failed_cron_turn`, reached from the final failure of `_cron_run_single` or of a `_cron_run_sequence` step | the run failed, so the orchestration its sub-agents report into is over; called before the turn's release, with `expect_session` naming the entry the turn holds |
 
 The default is the recycle because that is what the overwhelming majority of `reset`'s
 callers are, and the two mistakes do not cost the same — but a MISSED flag costs more than an
 orphan, which is the number a future caller has to weigh. It arms no delivery gate either, so
 the child's report still reaches `_on_done`, which resolves the parent through
 `get_or_create` and creates a session when none is live: the conversation the caller ended
-re-opens, seeded with that report. The miss is the headline defect in full, not a bounded
+re-opens, seeded with that report. (A `cron:` parent is the exception: its completion claims
+only a live session, `claim_existing`, so a missed flag there leaves the run's workers
+running, reporting only into a live session still registered under the key, never into a resurrected conversation.) The miss is the headline defect in full, not a bounded
 process. A wrong `True` destroys live work for a conversation that resumes next turn, which is
 why the default stays the recycle — but a new ending path that forgets the flag RESURRECTS,
 and nothing structural catches it, because a keyword is invisible to the AST ratchet. Until
@@ -4800,7 +4820,10 @@ for the fence's lift event (`SessionRegistryState.ending_lifted`, set by
 `end_ending`; `wait_for_ending_fence`) and then proceeds -- so a sub-agent
 completion that races the reap of its parent's run is delivered into the session
 that follows the record, as it was before the fence existed, never into the run
-being ended and never dropped. The wait is bounded by `ENDING_FENCE_WAIT_SECS`
+being ended and never dropped. A cron parent's completion is the exception: it
+claims through `claim_existing`, which a fence REFUSES rather than holds, both at
+its entry and when one rose during its permit wait, because the session that
+follows a reaped run's record is not the conversation the completion belonged to. The wait is bounded by `ENDING_FENCE_WAIT_SECS`
 (180 s: an independent caller-refusal bound, not a multiple of the fence's length
 -- a reset cancelled at its timeout still finishes its cleanup inside the pass, so
 no duration is derived from the passes -- fixed well inside the 1200 s the

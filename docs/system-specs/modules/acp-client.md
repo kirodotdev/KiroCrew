@@ -66,6 +66,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
+| `acp/continue_only.py` | not a member owner: the context a caller names a provider or client in when its prompts may only continue the live session (`continue_only`), the test the cold start and `session/new` make (`refuses_start`), and its refusal (`SessionStartRefused`; see *A prompt that may only continue*) |
 | `acp/relaunch_reload.py` | not a member owner: relaunching a live client's process and loading the same session in it, and the MCP mark a relaunch-reload harness applies at its next turn boundary (see *An MCP change applied by relaunch*) |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
@@ -1772,6 +1773,30 @@ clears the process and session id together, so every session-init path re-enters
 `_spawn` first. A per-prompt re-check could not repair external deletion for a
 live child anyway: kiro-cli's spawned shell inherits the client's cwd by inode,
 not by path, so re-creating the directory does not restore it.
+
+**A prompt that may only continue.** Past its warm path, `ensure_ready()` opens a
+new session: it spawns a replacement for an exited child, or initializes one that
+holds no session. A caller whose prompt may only continue the session it claimed
+names the provider (or the client it drives) in `acp.continue_only.continue_only`
+for the span of its prompts (application code reaches it as
+`agent_sdk.drivers.acp.continue_only`, since the agent-sdk boundary refuses it a
+direct ACP import), and that client then refuses to open a new session
+(`refuses_start`, which matches the named object or its `_client`), raising
+`SessionStartRefused`, an `AcpProcessDied`. A task the span creates inherits the
+context, so the match is by identity and other clients start as usual. The refusal
+sits where a new session would be opened: at `ensure_ready()`'s cold start when
+there is nothing of the client's own to restore (no resume id, no pending fork), so
+no child is spawned, and at `_initialize_session`'s `session/new`, which a load or
+fork that did not take falls back to (a resume id can be set by
+`relaunch_and_reload`, by the disposed-session path, or at allocation). A restore
+that does load the client's own session is not refused. `ensure_ready()` answers
+the refusal like `AcpToolGateUnroutable`: it ends the child it spawned for the
+attempt and does not retry, since a respawn meets the same refusal. The one caller is the cron completion route
+([subagent](subagent.md), *A cron completion never starts its parent's session*):
+a `cron:` key resumes nothing, so a replacement would hold none of the
+orchestration. The Kiro and KAS runtimes are not an `AcpClient`
+(`providers/acp_turns._ready_confirmed_session` calls `ensure_ready` on a direct
+client only), so they never reach this test.
 
 Steps 1–2 (`initialize`, `session/load` or `session/new`) block until a JSON-RPC
 response arrives (base 240s) because the session ID is required before proceeding.

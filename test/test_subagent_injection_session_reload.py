@@ -8,6 +8,9 @@ the replay's landing confirms only what the replay received.
 
 The reload is refused once a tool ran, so in production the first turn holds no
 marks; the pin drives the attempt rule directly rather than leaning on that guard.
+
+A ``cron:`` parent is never reloaded: its key is stateless, so the fresh claim would
+start a session holding none of the orchestration.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from test_spawn_sub_agents_duplicate_never_loss import (
@@ -26,7 +29,13 @@ from test_spawn_sub_agents_duplicate_never_loss import (
     _run_as_far_as_it_goes,
 )
 from test_spawn_sub_agents_settle_at_release import _nested_gateway, _settled
-from test_subagent_injection_live_turn import _HANG_CEILING_S
+from test_subagent_injection_live_turn import (
+    _HANG_CEILING_S,
+    _counting_sessions,
+    _cron_route,
+    _finished,
+    _gateway,
+)
 
 
 @pytest.mark.asyncio
@@ -71,3 +80,36 @@ async def test_the_reloaded_replay_does_not_confirm_what_the_lost_turn_received(
     )
     assert g._report_delivered is True
     assert gateway._inline_parked == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cron_parent_whose_backend_lost_its_session_is_not_reloaded() -> None:
+    """The cron parent's backend answers that it holds no session under the id. The
+    injection gives the result up to the bell instead of resetting and claiming the
+    key again, which would start a session with none of the orchestration."""
+    from kiro_crew.acp.client import AcpError
+
+    key = "cron:job-1:run-1"
+    sessions, started = _counting_sessions()
+    gateway = _gateway(sessions)
+    gateway.cron_svc = MagicMock(name="cron_svc")
+    info = _finished("child-1", key)
+    turns: list[str] = []
+
+    async def stream(_client: Any, message: str, **_kw: Any) -> str:
+        turns.append(message)
+        raise AcpError("Session not found")
+
+    try:
+        await sessions.get_or_create(key)  # the cron run's own session, left to its workers
+        sessions.release(key)
+        with patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream):
+            await asyncio.wait_for(_cron_route(gateway, info, key), _HANG_CEILING_S)
+
+        assert turns == ["child-1 done"], "the announce was replayed into a reloaded session"
+        assert len(started) == 1, "the injection started a session to reload the parent"
+        assert info._report_undelivered is True
+        assert info._report_delivered is False
+        gateway.subagent_mgr.notify_injection_failed.assert_not_called()
+    finally:
+        await sessions.close_all()

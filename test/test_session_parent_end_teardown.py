@@ -1035,6 +1035,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
             # ``clear_conversation`` throws the conversation away: sid cleared, replay
             # suppressed, so the successor cold-starts with none of its history.
             "session_compaction.py",
+            # A failed cron turn's run is over, so its orchestration conversation is.
+            "slack/gateway_runtime/cron_turn.py",
         }, f"the conversation-ending reset callers changed: {sorted(found)}"
 
     @pytest.mark.asyncio

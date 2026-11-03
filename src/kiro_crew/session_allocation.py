@@ -8,8 +8,9 @@ are supplied through :class:`AllocationDeps`.
 
 The class keeps its whole interface; the bodies of its two largest member groups
 live in the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create``
-(claiming or cold-starting the session for a key) and ``companions`` (companion and
-run runtimes). Each member there is a function whose first parameter is ``self``,
+(claiming or cold-starting the session for a key), ``existing`` (claiming only the
+session already registered for a key) and ``companions`` (companion and run runtimes).
+Each member there is a function whose first parameter is ``self``,
 bound on the class by name, and the refusals the class and ``get_or_create`` raise
 live in its ``errors`` module. Every project name this module bound before the owners
 existed still resolves here, and :mod:`kiro_crew._facade_mirror` carries a patch of
@@ -350,6 +351,7 @@ class _AllocationOwner(Protocol):
 # end of this module installs the mirror over them, so they load here.
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.session_allocation_parts import companions as _sa_companions  # noqa: E402
+from kiro_crew.session_allocation_parts import existing as _sa_existing  # noqa: E402
 from kiro_crew.session_allocation_parts import get_or_create as _sa_get_or_create  # noqa: E402
 
 
@@ -766,6 +768,9 @@ class SessionAllocationService:
     )
     _held_start_permit = _sa_get_or_create._held_start_permit
     get_or_create = _sa_get_or_create.get_or_create
+    # Claiming only the session already registered for a key, never starting one:
+    # ``kiro_crew.session_allocation_parts.existing``.
+    claim_existing = _sa_existing.claim_existing
     _remember_capability_failure = _sa_get_or_create._remember_capability_failure
     _get_or_create_impl = _sa_get_or_create._get_or_create_impl
 
@@ -1486,6 +1491,7 @@ _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.get_or_create",
+    "kiro_crew.session_allocation_parts.existing",
 )
 #: Project names this module bound before the owners existed that only the owners read.
 _SERVED_NAMES: frozenset[str] = frozenset(

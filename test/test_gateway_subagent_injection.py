@@ -9,8 +9,8 @@ flight that the synthesis gate reads.
 These tests drive those routes through the real ``on_done`` and pin what each one
 must keep: the inline-collected skips, the in-flight count across a wait and a
 cancellation, the turn's provenance, the per-attempt session wiring and its
-timeout bound, the cron session's reset decision, and which route marks the
-report delivered.
+timeout bound, the cron session's reset decision, a cron parent with no session
+starting none, and which route marks the report delivered.
 """
 
 from __future__ import annotations
@@ -609,6 +609,32 @@ async def test_a_cron_parent_gets_the_redacted_reply_and_its_session_reset(
     done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", key)
     assert done.orch._cron_injecting == {}
     assert info._report_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_a_cron_parent_with_no_session_is_told_by_the_bell_alone(done: _Done) -> None:
+    """The run's session is gone. The completion is not injected and starts no
+    session, rings the bell with its result, queues no failure text for a later
+    prompt, and leaves the record undelivered; the finished key is retired and no
+    reset is aimed at whatever the key may hold."""
+    done.parent_live = False
+    info = make_info(parent="cron:j1:r1")
+
+    await done.done(info)
+
+    key = "cron:j1:r1"
+    assert _owner_calls(done) == []
+    assert ("refused", key) in done.calls
+    done.sessions.get_or_create.assert_not_awaited()
+    assert not any(c[0] in ("build", "stream") for c in done.calls)
+    done.orch._deliver_cron_response.assert_not_awaited()
+    ((args, _kwargs),) = done.notices()
+    assert args[0] == "subagent"
+    done.mgr.notify_injection_failed.assert_not_called()
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    done.orch.cron_svc.retire_finished_session_key.assert_called_once_with("j1", key)
+    assert done.orch._cron_injecting == {}
 
 
 @pytest.mark.asyncio

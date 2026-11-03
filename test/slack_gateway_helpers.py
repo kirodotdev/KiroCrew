@@ -175,6 +175,8 @@ def _mock_sessions():
     """Return a mock SessionManager with common methods."""
     s = MagicMock()
     s.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    # The live parent a cron completion continues (``claim_existing`` claims it).
+    s.claim_existing = AsyncMock(return_value=(MagicMock(), False, False))
     s.release = MagicMock()
     s.reset = AsyncMock()
     s.cancel_current = AsyncMock()

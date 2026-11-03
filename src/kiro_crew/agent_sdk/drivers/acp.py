@@ -38,6 +38,7 @@ sandbox posture at their defining modules.
 from __future__ import annotations
 
 import logging
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ __all__ = [
     "goose_side_home_supported",
     "claude_adapter_install_command",
     "claude_components_resolve",
+    "continue_only",
     "derived_agent_permissions",
     "finish_suspended_spawn",
     "forget_cached_resolution",
@@ -129,6 +131,19 @@ def provider_error_client() -> object | None:
     except Exception:  # noqa: BLE001 - the adapter degrades to duck typing
         return None
     return acp_client
+
+
+def continue_only(target: object) -> AbstractContextManager[None]:
+    """Refuse *target* a new session for the span of the block.
+
+    A caller whose prompts may only continue the session it claimed (the cron
+    completion route) names the provider or client it drives here, so a direct
+    client that would open a new session for a prompt raises
+    ``SessionStartRefused`` instead (``kiro_crew.acp.continue_only``).
+    """
+    from kiro_crew.acp.continue_only import continue_only as _impl
+
+    return _impl(target)
 
 
 def resolve_pin_spelling(model_id: str, advertised: object) -> str:

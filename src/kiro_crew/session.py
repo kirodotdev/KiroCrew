@@ -584,6 +584,7 @@ class SessionManager:
     _has_allocation_reservation = _claims._has_allocation_reservation
     _spawn_in_flight = _claims._spawn_in_flight
     try_acquire = _claims.try_acquire
+    claim_existing = _claims.claim_existing
     capability_runtime_view = _claims.capability_runtime_view
     active_providers = _claims.active_providers
     any_active_turn = _claims.any_active_turn

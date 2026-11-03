@@ -145,17 +145,36 @@ async def test_a_lost_parent_session_is_reloaded_once_and_retried_on_the_new_cli
     fresh = MagicMock(name="fresh client")
     lost.clients = [lost.client, fresh]
     lost.stream_results = [AcpError("session gone"), "reply"]
-    info = make_info(parent="cron:j1")
+    key = "slack:C1:1700000000.1"
+    info = make_info(parent=key)
 
     await lost.done(info)
 
     assert lost.streamed_clients == [lost.client, fresh]
-    assert [c for c in lost.calls if c[0] in ("acquire", "reset")] == [
-        ("acquire", "cron:j1"),
-        ("reset", "cron:j1"),
-        ("acquire", "cron:j1"),
+    assert [c for c in lost.calls if c[0] in ("acquire", "reset")][:3] == [
+        ("acquire", key),
+        ("reset", key),
+        ("acquire", key),
     ]
     assert info._report_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_a_cron_parent_that_lost_its_session_is_not_reloaded(lost: _Done) -> None:
+    """A ``cron:`` key is stateless, so the reload's fresh claim would start a session
+    with none of the orchestration: the result goes to the bell instead."""
+    fresh = MagicMock(name="fresh client")
+    lost.clients = [lost.client, fresh]
+    lost.stream_results = [AcpError("session gone"), "reply"]
+    info = make_info(parent="cron:j1")
+
+    await lost.done(info)
+
+    assert lost.streamed_clients == [lost.client]
+    assert [c for c in lost.calls if c[0] == "acquire"] == [("acquire", "cron:j1")]
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    lost.mgr.notify_injection_failed.assert_not_called()
 
 
 @pytest.mark.asyncio

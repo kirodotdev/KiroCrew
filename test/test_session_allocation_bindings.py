@@ -43,6 +43,7 @@ _HOMES: dict[str, str] = {
     "facade": "kiro_crew.session_allocation",
     "companions": "kiro_crew.session_allocation_parts.companions",
     "get_or_create": "kiro_crew.session_allocation_parts.get_or_create",
+    "existing": "kiro_crew.session_allocation_parts.existing",
 }
 
 #: Member -> (kind, coroutine, signature digest, owner). Frozen at the split: the kind,
@@ -96,6 +97,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "begin_turn": ("function", False, "958babeb61c8", "facade"),
     "cancel_queued": ("function", False, "50fe52427d8c", "facade"),
     "capability_runtime_view": ("function", False, "de139dca2f5d", "facade"),
+    "claim_existing": ("function", True, "32ffd897f983", "existing"),
     "clear_queue": ("function", False, "1c7c5164c922", "facade"),
     "conversation_provider": ("function", False, "f1d40e624ae4", "facade"),
     "dequeue": ("function", False, "99f1d34018d7", "facade"),
@@ -378,6 +380,7 @@ def _listed(doc: str, label: str) -> set[str]:
     [
         "kiro_crew.session_allocation_parts.companions",
         "kiro_crew.session_allocation_parts.get_or_create",
+        "kiro_crew.session_allocation_parts.existing",
     ],
 )
 def test_each_owner_names_the_fields_it_writes_and_reads(owner: str) -> None:

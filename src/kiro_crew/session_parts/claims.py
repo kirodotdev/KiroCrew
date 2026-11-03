@@ -1,7 +1,7 @@
 """Claiming, leasing and reading live sessions through the allocation service.
 
-Key folding, registry reads, the per-key ending fence, ``get_or_create``, turn
-admission, the circuit breaker, continuable and resumable conversations, the message
+Key folding, registry reads, the per-key ending fence, ``get_or_create`` and
+``claim_existing``, turn admission, the circuit breaker, continuable and resumable conversations, the message
 queue behind a busy turn, and the per-session approval policy.
 
 Each function here whose first parameter is ``self`` is a ``SessionManager``
@@ -138,6 +138,17 @@ def _spawn_in_flight(self: SessionManager, key: str) -> str | None:
 async def try_acquire(self: SessionManager, key: str) -> bool:
     """Try to acquire an exact-key idle session."""
     return await self._allocation_boundary().try_acquire(key)
+
+
+async def claim_existing(
+    self: SessionManager, key: str, *, wait_if_busy: bool = True
+) -> tuple[LLMProvider, bool, bool] | None:
+    """Claim the session already registered for *key*, or None; never start one.
+
+    ``get_or_create`` for a caller that may only continue a live conversation: a
+    tuple holds the permit as ``get_or_create``'s does, and None holds nothing.
+    """
+    return await self._allocation_boundary().claim_existing(key, wait_if_busy=wait_if_busy)
 
 
 def capability_runtime_view(
@@ -298,7 +309,9 @@ def ending_key(self: SessionManager, key: str) -> Iterator[None]:
     hard-killed by the closing manager's own path, and the call then waits for
     the lift and allocates again. Nothing is dropped: a sub-agent completion
     that races the reap of its parent's run lands in the session that follows
-    the run's record, never in the run being ended. The cron reaper and
+    the run's record, never in the run being ended -- except a cron parent's,
+    which claims through :meth:`claim_existing`, refused by the fence. The cron
+    reaper and
     ``cancel()`` open this before their reset-then-kill passes and hold it
     until the run's terminal record is persisted and audited: a held caller
     wakes to a key whose run is RECORDED, never to one that is neither being
