@@ -2,6 +2,35 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.11.2] - 2026-11-03
+
+A hot patch for 0.11.1: the KAS engine starts and signs in to your MCP servers
+the way kiro-cli does, a broken MCP settings file is never overwritten, and a
+handful of Windows and start-up fixes land.
+
+### Notable fixes
+
+**KAS and MCP servers.** MCP servers that need environment values or remote
+headers start and connect on KAS, Crew's own servers start first so a session
+no longer waits behind a slow one, and builtin app servers get the session
+identity they need. A remote MCP sign-in is kept across sessions by default
+and is offered only when you name the server. Leftover launch files from a
+closed session are removed when it shuts down.
+
+**KAS agent specs.** Allowed shell commands written with character classes,
+groups or quoted parentheses match the way kiro-cli matches them, a long rule
+is split instead of refused, and `use_subagent` mounts the engine's sub-agent
+tool. Spec hooks see `KIRO_SESSION_ID` as they do on kiro-cli, a stored model
+id reaches the engine in its own spelling, and a web search through the
+engine's remote tool is judged as the built-in it is.
+
+**MCP settings and start-up.** A global `mcp.json` that does not parse is
+refused instead of replaced, and one that is not UTF-8 is skipped without
+hiding every other server. An absolute Windows command ending in `.EXE` starts
+again, MCP start-up survives a home folder on a masked mount, and
+`kirocrew kas remove` with a blank version refuses instead of removing every
+engine.
+
 ## [0.11.1] - 2026-10-31
 
 A hot patch for 0.11.0: memory stays fast and intact under load, the KAS
