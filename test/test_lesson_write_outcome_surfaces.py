@@ -31,6 +31,7 @@ from lesson_write_outcome_helpers import (
 )
 
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
 
@@ -220,8 +221,7 @@ class TestLessonsRouteReportsTheOutcome:
         ):
             resp = await cron.api_lessons_create(request)
         for task in list(state._background_tasks):
-            # flake-ok: pre-existing unbounded await of a background task the route under test scheduled, moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the background task the lessons route scheduled")
         return resp, state
 
     async def test_refusal_reports_not_ok_with_its_reason(self):
@@ -306,8 +306,7 @@ class TestLessonsRouteReportsTheOutcome:
             ):
                 resp = await cron.api_lessons_create(request)
             for task in list(state._background_tasks):
-                # flake-ok: pre-existing unbounded await of a background task the route under test scheduled, moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(task, what="the background task the lessons route scheduled")
 
             assert _json.loads(resp.text)["outcome"] == "inserted"
             assert PRIORITY_BULK not in priorities, f"bulk embed on the request path: {priorities}"
@@ -396,8 +395,7 @@ class TestLessonsRouteReportsTheOutcome:
             ):
                 await cron.api_lessons_create(request)
             for task in list(state._background_tasks):
-                # flake-ok: pre-existing unbounded await of a background task the route under test scheduled, moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(task, what="the background task the lessons route scheduled")
 
             # The write enriched the stored finding, so the effective tier is the
             # PERSISTED one and the guard has to fire. Filtering every candidate out
