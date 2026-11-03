@@ -37,14 +37,6 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset(
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
         ("code-review.yml", "pr-hygiene"),
-        # internal-content-scan.yml is a shared workflow_call target that
-        # handles pull_request, push AND merge_group events.  All three shapes
-        # supply different SHA pairs; migrating requires event-shaped fetch
-        # logic across a shared workflow.
-        ("internal-content-scan.yml", "scan"),
-        # release.yml stable-gate runs only on release events and reads the
-        # changelog history to verify the release is documented.
-        ("release.yml", "stable-gate"),
     }
 )
 
@@ -96,8 +88,6 @@ def test_guard_finds_violations_in_current_allowed_set() -> None:
     # that are expected to still be present (the ones not yet migrated).
     still_expected = {
         ("add-contributor.yml", "add"),
-        ("internal-content-scan.yml", "scan"),
-        ("release.yml", "stable-gate"),
     }
     missing = still_expected - found
     assert not missing, (
@@ -145,6 +135,8 @@ def test_full_history_jobs_moved_off_a_tight_budget_stay_blobless() -> None:
     clone finish inside the job budget, and the budget leaves headroom.
     """
     for workflow, job_id in (
+        ("internal-content-scan.yml", "scan"),
+        ("release.yml", "stable-gate"),
         ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
         ("security-scope-review.yml", "generate"),
         ("security-scope-review.yml", "validate"),

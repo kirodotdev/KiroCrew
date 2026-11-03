@@ -46,7 +46,9 @@ jobs:
     # GitHub's pending limit instead of running. See "Larger runners for the
     # review lanes and CodeQL" in docs/ci/ci-and-reviews.md.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # A full-history checkout on the CodeBuild fleet can take most of ten
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write # AWS OIDC; no long-lived keys exist for this role
@@ -56,6 +58,10 @@ jobs:
           persist-credentials: false
           # Both ends of the range have to be present to diff them.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the working tree is
+          # checked out in full; git fetches the blobs the diff needs on
+          # demand instead of downloading every historical blob up front.
+          filter: blob:none
 
       - name: Compute the diff
         env:
