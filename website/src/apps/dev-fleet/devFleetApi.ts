@@ -13,7 +13,7 @@
  * which already carries the status and the raw body: this module only needs the
  * error SHAPE, not that client's request pipeline.
  */
-import { toApiError } from '../api/client'
+import { toApiError } from '../../api/client'
 
 const BASE = '/apps/dev-fleet/api'
 export const GATEWAY_BASE = '/api/apps/dev-fleet'

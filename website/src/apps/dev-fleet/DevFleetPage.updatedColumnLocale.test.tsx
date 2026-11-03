@@ -7,11 +7,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders } from '../../test/helpers'
 // `/all` for the Japanese catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
+import { i18next } from '../../i18n/all'
 
-import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from './DevFleetPage'
 
 const nowSec = () => Math.floor(Date.now() / 1000)
 const row = (name: string, lastUpdatedAt: number) => ({

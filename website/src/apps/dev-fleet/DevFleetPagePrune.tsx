@@ -3,11 +3,11 @@
  * kept worktrees, and the per-worktree progress checklist.
  */
 import { type ReactNode, type Dispatch, type SetStateAction } from 'react'
-import { Btn, Checkbox, Badge } from '../components/ui'
-import Modal from '../components/Modal'
-import ErrorNotice from '../components/ErrorNotice'
+import { Btn, Checkbox, Badge } from '../../components/ui'
+import Modal from '../../components/Modal'
+import ErrorNotice from '../../components/ErrorNotice'
 import { LoaderCircle, Check, X, ShieldAlert } from 'lucide-react'
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 import {
   pruneVerdictLabel, PRUNE_STATUS_META, pruneStatusLabel, type FleetData, type PruneDialog,
   type PruneProgress,

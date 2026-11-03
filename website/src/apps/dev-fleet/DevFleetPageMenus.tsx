@@ -3,14 +3,14 @@
  * (`MenuBtn`) and the confirm-on-click button with its popover (`ConfirmBtn`).
  */
 import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import { OverlayPortal, useCloseWhenCrewHidden } from '../components/overlayRoot'
-import { Btn } from '../components/ui'
-import Clickable from '../components/Clickable'
-import { useDocumentImeLatch } from '../hooks/useImeGuard'
-import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
-import { handleMenuKeydown } from '../hooks/useMenuKeyboard'
+import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
+import { Btn } from '../../components/ui'
+import Clickable from '../../components/Clickable'
+import { useDocumentImeLatch } from '../../hooks/useImeGuard'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+import { handleMenuKeydown } from '../../hooks/useMenuKeyboard'
 import { Ellipsis } from 'lucide-react'
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 
 /* ─── Sub-components ─── */
 interface MenuItemDef { label: string; icon?: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; title?: string }

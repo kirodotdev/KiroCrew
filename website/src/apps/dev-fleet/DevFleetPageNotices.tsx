@@ -5,12 +5,12 @@
  * cards and the disk-usage failure.
  */
 import { type CSSProperties, type RefObject, type Dispatch, type SetStateAction } from 'react'
-import { Btn, StatCard } from '../components/ui'
-import Clickable from '../components/Clickable'
-import ErrorNotice from '../components/ErrorNotice'
+import { Btn, StatCard } from '../../components/ui'
+import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Server, X, Undo2, Info, AlertTriangle } from 'lucide-react'
-import { i18nT } from '../i18n/t'
-import { fmtBytes } from '../i18n/format'
+import { i18nT } from '../../i18n/t'
+import { fmtBytes } from '../../i18n/format'
 import { persistDismissedUndoKey, type Worktree, type UndoTarget, type FleetData } from './devFleetPageModel'
 import { iconLabel } from './DevFleetPageRow'
 

@@ -34,7 +34,7 @@ interface SourceFile {
  *
  * `'/aws-control': { component: lazy(() => import('./aws-control/AwsControlPage')),
  * appId: 'aws-control' }` yields `apps/aws-control`; a page filed outside `apps/`
- * (`import('../pages/DevFleetPage')`) yields `pages`. Deriving ownership from the
+ * (`import('../pages/WorldsPage')`) yields `pages`. Deriving ownership from the
  * registry rather than a hand-written list is the point — a new app is covered
  * the moment it is registered, with nothing to remember to update.
  */

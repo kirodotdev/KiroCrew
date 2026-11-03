@@ -3,9 +3,9 @@
 ``start_enabled_app_backends`` reaps a prior generation's orphans, scrubs the MCP
 entries of disabled apps, revokes the executable resources of apps no activation
 boundary admits any more, vets the rest fail-closed, and spawns the admitted set
-concurrently with their fixed ports reserved first. The Dev Fleet backend is vetted
-with the rest but spawned by ``start_deferred_app_backends`` once the gateway's bound
-port exists.
+concurrently with their fixed ports reserved first. A backend whose host grants ask
+for the gateway's bound port is vetted with the rest but spawned by
+``start_deferred_app_backends`` once that port exists.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 
+from kiro_crew.apps import builtin_host_grants as _host_grants
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.backend_runtime import _FACADE, _facade
 from kiro_crew.apps.backend_runtime.ports import (
@@ -36,23 +37,19 @@ logger = logging.getLogger(_FACADE)
 _BOOT_SPAWN_MAX_WORKERS = 8
 
 
-#: The one app backend that needs the gateway's ACTUALLY-bound port at spawn
-#: (``KIROCREW_BOUND_PORT``): it reads live-target pointer state through an
-#: in-gateway route. ``start_dashboard`` starts every other backend before
-#: ``runner.setup()`` so an app's startup hooks find its backend running, and starts
-#: this one only after ``_export_bound_port`` — the value does not exist before the bind.
-DEV_FLEET_APP_NAME: str = "dev-fleet"
-
-
 def start_enabled_app_backends() -> list[str]:
     """Start backends for all enabled apps that declare one.
 
     Called during gateway startup to restore app backends.
     Returns list of app names that were started.
 
-    The :data:`DEV_FLEET_APP_NAME` backend is vetted and reconciled like
-    every other app but NOT spawned here; ``start_dashboard`` starts it with
-    :func:`start_deferred_app_backends` once the bound port exists.
+    A backend whose host grants ask for the gateway's ACTUALLY-bound port
+    (``builtin_host_grants.bound_port_apps``, handed over as ``KIROCREW_BOUND_PORT``)
+    is vetted and reconciled like every other app but NOT spawned here:
+    ``start_dashboard`` starts every other backend before ``runner.setup()`` so an
+    app's startup hooks find its backend running, and starts these with
+    :func:`start_deferred_app_backends` only after ``_export_bound_port`` — the value
+    does not exist before the bind.
     """
     # Reap app backends left running by a prior (e.g. SIGKILLed) gateway
     # generation before starting the new one. See the RFC,
@@ -226,17 +223,18 @@ def start_enabled_app_backends() -> list[str]:
                 continue
         admitted.append(name)
 
-    global _DEV_FLEET_DEFERRED
-    _DEV_FLEET_DEFERRED = DEV_FLEET_APP_NAME in admitted
-    return _start_backends_concurrently([n for n in admitted if n != DEV_FLEET_APP_NAME])
+    global _DEFERRED_BOUND_PORT_APPS
+    bound_port = _host_grants.bound_port_apps()
+    _DEFERRED_BOUND_PORT_APPS = tuple(n for n in admitted if n in bound_port)
+    return _start_backends_concurrently([n for n in admitted if n not in bound_port])
 
 
-#: Whether the boot wave admitted Dev Fleet and held its spawn back for the bound port.
-_DEV_FLEET_DEFERRED: bool = False
+#: The apps the boot wave admitted and held back for the bound port, in boot order.
+_DEFERRED_BOUND_PORT_APPS: tuple[str, ...] = ()
 
 
 def start_deferred_app_backends() -> list[str]:
-    """Spawn the Dev Fleet backend ``start_enabled_app_backends`` held back.
+    """Spawn the bound-port backends ``start_enabled_app_backends`` held back.
 
     Its admission and reconcile work already ran in the same boot, but the deferral
     leaves a window (the rest of ``start_dashboard``) in which the operator can
@@ -245,25 +243,27 @@ def start_deferred_app_backends() -> list[str]:
     isolation as the main wave. Returns the names that started; a second call is a
     no-op.
     """
-    global _DEV_FLEET_DEFERRED
+    global _DEFERRED_BOUND_PORT_APPS
     from kiro_crew.apps.manager import _app_activation_denied
 
-    deferred, _DEV_FLEET_DEFERRED = _DEV_FLEET_DEFERRED, False
-    if not deferred:
+    deferred, _DEFERRED_BOUND_PORT_APPS = _DEFERRED_BOUND_PORT_APPS, ()
+    still_admitted: list[str] = []
+    for name in deferred:
+        # ``True`` only: an unreadable state (None) is not a licence to spawn.
+        if _app_enabled_state(name) is not True:
+            logger.info("Deferred boot: %s is no longer enabled — not started", name)
+            continue
+        try:
+            gov_denied = _app_activation_denied(name)
+        except Exception as exc:  # noqa: BLE001 — fail closed, never crash boot
+            gov_denied = f"activation re-vet error: {exc}"
+        if gov_denied:
+            logger.warning("Deferred boot: %s not started: %s", name, gov_denied)
+            continue
+        still_admitted.append(name)
+    if not still_admitted:
         return []
-    name = DEV_FLEET_APP_NAME
-    # ``True`` only: an unreadable state (None) is not a licence to spawn.
-    if _app_enabled_state(name) is not True:
-        logger.info("Deferred boot: %s is no longer enabled — not started", name)
-        return []
-    try:
-        gov_denied = _app_activation_denied(name)
-    except Exception as exc:  # noqa: BLE001 — fail closed, never crash boot
-        gov_denied = f"activation re-vet error: {exc}"
-    if gov_denied:
-        logger.warning("Deferred boot: %s not started: %s", name, gov_denied)
-        return []
-    return _start_backends_concurrently([name])
+    return _start_backends_concurrently(still_admitted)
 
 
 def _preclaim_fixed_ports(names: list[str]) -> None:

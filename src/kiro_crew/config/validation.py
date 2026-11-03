@@ -36,6 +36,7 @@ import logging
 import threading
 from typing import Iterable
 
+from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
 from kiro_crew.config.fields import _coerce_bool
 
 # Top-level config.json sections an app owns and reads from the file directly,
@@ -50,12 +51,12 @@ from kiro_crew.config.fields import _coerce_bool
 # itself tells the operator to write them -- so the unrecognized-top-level-key
 # warning below skips them, or every launch scolds the user for following Kiro
 # Crew's own instructions. Private to this module because that warning is the
-# only consumer; a second member is the point at which this wants to become an
-# app-declared registration rather than a longer literal.
-#   * dev_fleet -- ``dev_fleet.repo_path`` names the Kiro Crew checkout Dev Fleet
-#     manages; read by apps/builtins/dev_fleet/repository.py::_load_dev_fleet_cfg
-#     and prescribed by the dashboard's "no checkout found" banner.
-_APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
+# only consumer. The members are not spelled here: a shipped built-in declares its
+# own in its host grants (``config_top_keys``, read through
+# ``kiro_crew.apps.builtin_host_grants``), so this core names no app and the set is
+# empty when no built-in declares one. Read once at import, so validation itself
+# stays the in-memory-only consumer the extension registry below requires.
+_APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 
 # Top-level config.json sections THIS CORE itself writes and reads, but does not
 # model as a dataclass field. The settings UI persists them into config.json and
@@ -66,9 +67,8 @@ _APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
 # loader captures them into _extra_sections and re-emits them via to_dict(), so
 # they are NOT reserved (reserved keys are dropped on save). They differ from
 # _APP_OWNED_TOP_KEYS only in who owns the reader -- core here, a builtin app
-# there -- which is why they are a separate set and the "second member becomes a
-# registration mechanism" note on the app-owned set does not govern this one:
-# a core-owned section has no manifest to declare itself through.
+# there -- which is why they are a separate set and not a host-grant declaration:
+# a core-owned section has no app to declare itself through.
 # Excluded only in the shape the reader keeps -- a JSON object -- so a scalar
 # written by hand keeps the one warning that says it is being ignored.
 #   * voice_reply -- the dashboard/Slack voice settings block. Written by
