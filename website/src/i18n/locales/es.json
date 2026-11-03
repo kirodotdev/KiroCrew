@@ -13219,6 +13219,22 @@
         "title_named_resolved": "{{who}} te preguntó",
         "title_resolved": "Una herramienta te preguntó",
         "url_hint": "Abre el enlace, termina allí y vuelve para pulsar “He terminado”."
+      },
+      "initialPrompt": {
+        "copied": "Copiado",
+        "copy_failed": "No se pudo copiar el prompt",
+        "copy_failed_detail": "Tu navegador bloqueó el acceso al portapapeles. Selecciona el texto de arriba y cópialo a mano.",
+        "copy_prompt": "Copiar prompt",
+        "initial_prompt": "Prompt inicial",
+        "load_failed": "No se pudo cargar el prompt inicial",
+        "load_failed_detail": "No se pudo leer el historial de la sesión. La sesión en sí no se ve afectada.",
+        "loading": "Cargando el prompt inicial…",
+        "new_session_failed": "No se pudo iniciar una sesión nueva",
+        "new_session_failed_detail": "No se creó ninguna sesión. El prompt sigue aquí para copiarlo.",
+        "new_session_from_prompt": "Preparar una nueva sesión con este prompt",
+        "no_prompt_yet": "Todavía no se ha enviado ningún prompt en esta sesión.",
+        "retry": "Reintentar",
+        "starting": "Abriendo una nueva sesión de borrador…"
       }
     },
     "chatPage": {

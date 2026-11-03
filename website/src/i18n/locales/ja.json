@@ -12717,6 +12717,22 @@
         "title_named_resolved": "{{who}} からの質問でした",
         "title_resolved": "ツールからの質問でした",
         "url_hint": "リンクを開いてそこで完了し、戻ってきて「完了しました」を押してください。"
+      },
+      "initialPrompt": {
+        "copied": "コピーしました",
+        "copy_failed": "プロンプトをコピーできませんでした",
+        "copy_failed_detail": "ブラウザーがクリップボードへのアクセスをブロックしました。上のテキストを選択して手動でコピーしてください。",
+        "copy_prompt": "プロンプトをコピー",
+        "initial_prompt": "最初のプロンプト",
+        "load_failed": "最初のプロンプトを読み込めませんでした",
+        "load_failed_detail": "セッションの履歴を読み取れませんでした。セッション自体には影響ありません。",
+        "loading": "最初のプロンプトを読み込んでいます…",
+        "new_session_failed": "新しいセッションを開始できませんでした",
+        "new_session_failed_detail": "セッションは作成されていません。プロンプトはここからコピーできます。",
+        "new_session_from_prompt": "このプロンプトで新しいセッションを下書き",
+        "no_prompt_yet": "このセッションではまだプロンプトが送信されていません。",
+        "retry": "再試行",
+        "starting": "新しい下書きセッションを開いています…"
       }
     },
     "chatPage": {

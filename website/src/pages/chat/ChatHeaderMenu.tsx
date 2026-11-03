@@ -19,10 +19,11 @@ import { i18nT } from '../../i18n/t'
 import { deriveLoadedMcpTools } from '../../lib/mcpLoadedTools'
 import { useAppSelector } from '../../store'
 import type { McpServer } from '../../types'
+import InitialPromptSubmenu from './InitialPromptSubmenu'
 import McpToolsPanel from './McpToolsPanel'
 
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
- *  servers submenu and the rest of SessionActionsMenu. Header chrome, so it
+ *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
 export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
@@ -144,6 +145,9 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                 />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
+            // The session's first prompt, with Copy and "New session from this
+            // prompt" (#25977). Read lazily from the start of the transcript.
+            <InitialPromptSubmenu key="initial-prompt" slotKey={activeSlot} mode={mode} onStarted={() => setOpen(false)} />,
           ]}
           onReveal={onReveal}
           onAutoTitle={onAutoTitle}

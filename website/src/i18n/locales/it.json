@@ -13219,6 +13219,22 @@
         "title_named_resolved": "{{who}} ti ha chiesto",
         "title_resolved": "Uno strumento ti ha chiesto",
         "url_hint": "Apri il link, completa lì e torna a premere “Ho finito”."
+      },
+      "initialPrompt": {
+        "copied": "Copiato",
+        "copy_failed": "Impossibile copiare il prompt",
+        "copy_failed_detail": "Il browser ha bloccato l’accesso agli appunti. Seleziona il testo qui sopra e copialo a mano.",
+        "copy_prompt": "Copia prompt",
+        "initial_prompt": "Prompt iniziale",
+        "load_failed": "Impossibile caricare il prompt iniziale",
+        "load_failed_detail": "Non è stato possibile leggere la cronologia della sessione. La sessione in sé non è interessata.",
+        "loading": "Caricamento del prompt iniziale…",
+        "new_session_failed": "Impossibile avviare una nuova sessione",
+        "new_session_failed_detail": "Nessuna sessione è stata creata. Il prompt resta qui da copiare.",
+        "new_session_from_prompt": "Prepara una nuova sessione da questo prompt",
+        "no_prompt_yet": "In questa sessione non è ancora stato inviato nessun prompt.",
+        "retry": "Riprova",
+        "starting": "Apertura di una nuova sessione bozza…"
       }
     },
     "chatPage": {

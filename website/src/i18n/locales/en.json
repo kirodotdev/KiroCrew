@@ -7253,6 +7253,22 @@
         "title_named_resolved": "{{who}} asked you",
         "title_resolved": "A tool asked you",
         "url_hint": "Open the link, finish there, then come back and press “I've finished”."
+      },
+      "initialPrompt": {
+        "copied": "Copied",
+        "copy_failed": "Couldn’t copy the prompt",
+        "copy_failed_detail": "Your browser blocked clipboard access. Select the text above and copy it by hand.",
+        "copy_prompt": "Copy prompt",
+        "initial_prompt": "Initial prompt",
+        "load_failed": "Couldn’t load the initial prompt",
+        "load_failed_detail": "The session’s history could not be read. The session itself is unaffected.",
+        "loading": "Loading the initial prompt…",
+        "new_session_failed": "Couldn’t start a new session",
+        "new_session_failed_detail": "No session was created. The prompt is still here to copy.",
+        "new_session_from_prompt": "Draft a new session from this prompt",
+        "no_prompt_yet": "No prompt has been sent in this session yet.",
+        "retry": "Retry",
+        "starting": "Opening a new draft session…"
       }
     },
     "chatPage": {
