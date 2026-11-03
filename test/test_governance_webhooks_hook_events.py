@@ -237,7 +237,7 @@ class TestHookEvents:
         _install_policy(monkeypatch, _hook_events("PreToolUse"))
         script = tmp_path / "hooks" / "a.sh"
         script.parent.mkdir()
-        script.write_text("#!/bin/sh\nexit 0\n")
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         script.chmod(0o755)
         config: dict = {"hooks": {}}
         entry = [{"command": str(script)}]
