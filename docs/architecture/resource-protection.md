@@ -388,6 +388,11 @@ with, so this is configuration, not the victim's enforced limit). A new `oom_kil
 OOM killer, and an `oom` event raised above the slice does not reach it, so this is the
 host-wide OOM killer or a limit on an enclosing slice, and the kernel log says which. A
 victim scope already gone is pointed at the kernel log, which still names the killed process.
+The worker only adds a report to those waiting for the loop, never replaces them, so a kill
+found by a probe that outlived its timeout still reaches the bell on the next tick. At most
+`MAX_PENDING_OOM_REPORTS` reports wait; older ones are counted, and the count opens the next
+note. The loop pushes them as notes that each fit the bus body limit, and a report leaves the
+stash only once its note was pushed.
 
 A **task** breach has no comparable kernel event to observe: past `pids.max` the kernel
 fails `fork()` with `EAGAIN` in whichever scope asks next, logs nothing, and every agent
