@@ -1022,21 +1022,32 @@ def _restore_inline_code(line: str, spans: list[str]) -> str:
 
 def _convert_inline(line: str) -> str:
     """Convert a single non-code line from markdown to Slack mrkdwn."""
-    # Headings → bold
+    # Headings → bold. The heading text runs the same inline passes as any
+    # other line, so a link in it stays a link; its own ``**`` markers are
+    # dropped, since the whole heading is already bold and Slack does not
+    # nest bold.
     m = _HEADING_RE.match(line)
     if m:
-        return f"*{m.group(2).strip()}*"
+        return f"*{_convert_inline_markup(m.group(2).strip(), bold='')}*"
 
     # Horizontal rule → unicode line
     if _HR_RE.match(line):
         return "─" * 30
 
+    return _convert_inline_markup(line, bold="*")
+
+
+def _convert_inline_markup(line: str, *, bold: str) -> str:
+    """Bold, strike and link passes of :func:`_convert_inline`.
+
+    ``bold`` replaces each markdown ``**`` marker.
+    """
     # Inline code is shown as written, so its markers sit out the emphasis
     # passes: ``**kwargs`` and ``a~~b~~c`` inside backticks keep both chars.
     line, spans = _hide_inline_code(line)
 
     # **bold** → *bold*
-    line = line.replace("**", "*")
+    line = line.replace("**", bold)
 
     # ~~strike~~ → ~strike~
     line = _STRIKE_RE.sub(r"~\1~", line)
