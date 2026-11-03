@@ -295,7 +295,10 @@ describe('NotificationFeed: clear sits on what it clears', () => {
       await screen.findByRole('alert')
       expect(screen.queryByText('Second')).toBeNull()
       expect(clear.isConnected).toBe(false)
-      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: First' }))
+      // The refocus effect fires after React commits the refocusTick state
+      // update; waitFor awaits that commit rather than reading activeElement
+      // before the effect has run.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: First' })))
     })
   }
 
