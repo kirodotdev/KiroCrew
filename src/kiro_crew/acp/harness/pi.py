@@ -560,6 +560,18 @@ def _pi_gate_launcher_body(pi_bin: str, extension_path: str, program: tuple[str,
     return f'#!/bin/sh\nexec {run} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
 
 
+def _pi_gate_launcher_encoding() -> str:
+    """The codec the launcher's interpreter reads it with.
+
+    ``cmd.exe`` decodes a ``.cmd`` in the console code page, which is the system
+    OEM page (Python's ``oem`` codec) unless something ran ``chcp`` -- the same
+    rule ``pod/windows.py`` applies to its Task Scheduler wrapper and the PPTX
+    Maker ``pdftoppm.cmd`` launcher follows. ``/bin/sh`` passes the bytes through,
+    and UTF-8 is what the POSIX path bytes are.
+    """
+    return "oem" if platform_compat.IS_WINDOWS else "utf-8"
+
+
 def _ensure_pi_gate_launcher(
     pi_bin: str, extension_path: str, program: tuple[str, ...] = ()
 ) -> str:
@@ -578,14 +590,29 @@ def _ensure_pi_gate_launcher(
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
+    encoding = _pi_gate_launcher_encoding()
+    try:
+        # Strict: a path character outside the page would be read back by the
+        # shell as different bytes, and the launcher would name a path that does
+        # not exist. Bytes, so the body's own line endings are written exactly.
+        payload = _pi_gate_launcher_body(pi_bin, extension_path, program).encode(encoding)
+    except UnicodeEncodeError as exc:
+        # Refused before any file exists: every launcher is a fresh mkstemp name,
+        # cached only once written, so there is no earlier launcher to remove.
+        raise AcpError(
+            f"the pi gate launcher cannot be written in {encoding}, the encoding its "
+            f"shell reads it in: {pi_bin} or {extension_path} holds a character that "
+            "encoding cannot represent. Point KIROCREW_HOME and the pi install at "
+            "paths it can spell."
+        ) from exc
     artifact_dir = _pi_gate_artifact_dir()
     suffix = ".cmd" if platform_compat.IS_WINDOWS else ".sh"
     fd, tmp = tempfile.mkstemp(
         dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_pi_gate_launcher_body(pi_bin, extension_path, program))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
         if not platform_compat.IS_WINDOWS:
             os.chmod(tmp, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:

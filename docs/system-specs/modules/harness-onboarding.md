@@ -345,7 +345,10 @@ fixed sequence that the next such harness repeats verbatim rather than rediscove
    artifact sweep the family (owner-PID rule, never age).
 3. **Load it through a launcher** the adapter is told to run in place of the harness
    (its own override variable, `PI_ACP_PI_COMMAND` for pi-acp), written under
-   `mkstemp` and published only after the mode change.
+   `mkstemp` and published only after the mode change. Write it as bytes in the
+   encoding its shell reads: on Windows the `.cmd` is encoded strictly in the
+   system OEM code page, which `cmd.exe` reads it in by default (not UTF-8), and a
+   path that page cannot spell refuses the spawn before any launcher file is written.
 4. **Read the load back** from the harness's own registry before the first prompt,
    requiring the probe command AND its source path to be the sealed copy, compared as
    the same file (`realpath` + `normcase`), and refuse the session otherwise
