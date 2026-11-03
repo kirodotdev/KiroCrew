@@ -261,6 +261,60 @@ class TestSendReply:
         assert posted == ["https://example.com/resp"]
         assert closed["n"] == 0  # a reused (not owned) session must not be closed
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body", "accepted"),
+        [
+            (200, None, True),
+            (200, [], True),
+            (200, "ok", True),
+            (200, 7, True),
+            (500, None, False),
+            (500, ["x"], False),
+            (200, {"errcode": 0}, True),
+            (200, {}, True),
+            (200, {"errcode": 40001}, False),
+        ],
+    )
+    async def test_a_body_that_is_not_an_object_is_read_without_raising(
+        self, status, body, accepted
+    ) -> None:
+        """A 200 whose JSON body is null, a list or a scalar carries no errcode.
+
+        It reads like an object with no errcode, rather than raising
+        ``AttributeError`` out of the last-resort reply path.
+        """
+
+        class FakeResp:
+            async def json(self, content_type=None):
+                return body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+        FakeResp.status = status
+
+        class LiveSession:
+            closed = False
+
+            def post(self, url, json=None, proxy=None, timeout=None):
+                return FakeResp()
+
+            async def close(self):
+                pass
+
+        client = WeComClient(bot_id="b", secret="s", ws_url="wss://fake")
+        client._session = LiveSession()  # type: ignore[assignment]
+
+        try:
+            result = await client.send_reply("https://example.com/resp", "Hi")
+        except AttributeError as exc:
+            pytest.fail(f"send_reply raised on a {type(body).__name__} body: {exc}")
+        assert result is accepted
+
 
 # ------------------------------------------------------------------
 # Tests: inbound aibot_msg_callback dispatches to on_message
