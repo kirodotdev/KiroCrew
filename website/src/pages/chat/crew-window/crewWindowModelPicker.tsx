@@ -10,6 +10,8 @@ import { useCallback, useMemo, useState } from 'react'
 import { OverlayPortal } from '../../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
+import { retryThroughRestart } from '../../../api/queryClient'
+import { selectionCapabilitiesFailed } from '../../../lib/effort'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
 import type { ModelItem } from '../../../components/ModelDropdownList'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
@@ -41,6 +43,9 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
     queryKey: ['crew-window', instanceId, slotPath, 'selection-capabilities', slot?.model ?? ''],
     queryFn: () => api.crewPeerGet(instanceId, slotPath + '/selection-capabilities') as Promise<PeerSelectionCaps>,
     enabled,
+    // A failure shows the "could not verify" notice, so a restart or a dropped
+    // link is ridden out first (see `retryThroughRestart`).
+    retry: retryThroughRestart,
     // A peer session that has not started yet answers `known: false`; ask
     // again until it knows, so the effort control appears once it does.
     // A failed read is asked again too, so the effort control comes back once
@@ -119,6 +124,7 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
     />
   </OverlayPortal> : null
   // A failed capability read hides the effort level, so say so (as a split
-  // pane does) rather than let it look unsupported.
-  return { chipProps, portal, error, clearError: () => setError(null), effortCapsFailed: selectionQ.isError }
+  // pane does) rather than let it look unsupported. A 404 is a slot the peer has
+  // not registered yet, not a failure (`selectionCapabilitiesFailed`).
+  return { chipProps, portal, error, clearError: () => setError(null), effortCapsFailed: selectionCapabilitiesFailed(selectionQ) }
 }
