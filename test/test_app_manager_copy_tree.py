@@ -27,6 +27,7 @@ from kiro_crew.apps.manager import (
     registry_source_repository,
     update_app,
 )
+from kiro_crew.testing.wait import await_until, finished, wait_until
 
 # ---------------------------------------------------------------------------
 # _copy_app_tree — symlink / denylist / off-loop regression tests
@@ -138,8 +139,10 @@ class TestCopyAppTree:
         assert app_lifecycle_lock("app-b") is not lock_a
 
     @pytest.mark.asyncio
-    async def test_install_off_loop_does_not_block_event_loop(self, tmp_path, app_home):
-        """Heartbeat latency stays low while a many-file install runs off-loop."""
+    async def test_install_off_loop_does_not_block_event_loop(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """The heartbeat keeps running through a many-file install that runs off-loop."""
         import asyncio
         import time
 
@@ -161,17 +164,47 @@ class TestCopyAppTree:
                 gaps.append(now - prev)
                 prev = now
 
-        # flake-ok: heartbeat task cancelled in the finally and not awaited, pre-existing shape, moved verbatim; tracked for a de-flake pass
+        # The copy runs on a worker thread and stops at every 500th file until the loop
+        # has run one more heartbeat: a loop the install blocks never gets there, and the
+        # wait fails by name.
+        copied = 0
+        checkpoints = 0
+
+        def _copy_file(source, dest):
+            nonlocal copied, checkpoints
+            copied += 1
+            if copied % 500 == 0:
+                seen = len(gaps)
+                wait_until(
+                    lambda: len(gaps) > seen,
+                    describe=lambda: f"{len(gaps)} heartbeats after {copied} files copied",
+                )
+                checkpoints += 1
+            return shutil.copy2(source, dest)
+
+        real_copytree = shutil.copytree
+
+        def _copytree(source, dest, *args, **kwargs):
+            # The top-level call names its options; the recursive calls pass them
+            # positionally, copy function included.
+            if not args:
+                kwargs.setdefault("copy_function", _copy_file)
+            return real_copytree(source, dest, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "copytree", _copytree)
+
         hb = asyncio.ensure_future(heartbeat())
         try:
             result = await asyncio.to_thread(install_app, src)
         finally:
             hb.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(hb, what="the cancelled heartbeat")
         assert result.ok, result.error
-        # The watchdog threshold is 30s; anything close to that (or even 1s)
-        # would indicate the copy ran on the loop.
-        # flake-ok: real elapsed-time ceiling on loop latency, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        assert max(gaps) < 1.0
+        # The 2000 payload files alone pass four checkpoints; each one waits for a
+        # heartbeat the loop runs while the install is in flight.
+        assert checkpoints >= 4, f"the copy passed {checkpoints} checkpoints"
+        assert len(gaps) >= checkpoints
 
     def test_orphaned_partial_install_self_heals(self, tmp_path, app_home):
         """dest exists with junk but no installed metadata → fresh install wins."""
@@ -400,16 +433,20 @@ class TestCopyAppTree:
         """Concurrent installs cannot exchange their repository coordinates."""
         from kiro_crew.apps.manager import _effective_source_repository
 
+        rendezvous = asyncio.Barrier(2)
+
         async def _resolve(repository: str) -> str:
             with registry_source_repository(repository):
-                # Interleave both task contexts before copying them to workers.
-                # flake-ok: one yield that interleaves the two task contexts, pre-existing shape, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0)
+                # Both task contexts are open before either one is copied to a worker.
+                await rendezvous.wait()
                 return await asyncio.to_thread(_effective_source_repository, "")
 
-        first, second = await asyncio.gather(
-            _resolve("https://example.test/owner/first"),
-            _resolve("https://example.test/owner/second"),
+        first, second = await finished(
+            asyncio.gather(
+                _resolve("https://example.test/owner/first"),
+                _resolve("https://example.test/owner/second"),
+            ),
+            "both registry resolutions",
         )
 
         assert first == "https://example.test/owner/first"
