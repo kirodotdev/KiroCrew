@@ -206,6 +206,10 @@ class TestThreadTsWiring:
         assert "other thread chatter" not in msg
         mock_ch.context_for.assert_called_once_with("C1", thread_ts=None)
 
+        # A channel with no history adds no block: the turn is the raw user text.
+        quiet, _ = cb.build_message("test", is_new_session=False, channel_id="C2")
+        assert quiet.startswith("test")
+
 
 # ── Scenario: The original bug ──
 
