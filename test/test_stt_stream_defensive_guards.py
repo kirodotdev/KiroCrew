@@ -17,6 +17,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from stt_stream_helpers import transcribe_consented_fixture  # noqa: F401
 from stt_stream_helpers import _cfg, _make_app, _wait_for_operation
 
+from kiro_crew.testing.wait import await_until
+
 
 class TestDefensiveGuards:
     """Failures in the machinery AROUND the stream must not change its outcome.
@@ -219,8 +221,9 @@ class TestDefensiveGuards:
         )
 
         async def _results_until_end_stream(self) -> None:
-            # flake-ok: the stubbed result stream parks here until the stream ends; moved verbatim
-            await results_ended.wait()
+            # The stub parks until the handler's cleanup calls ``end_stream()``.
+            # The park is bounded, so a cleanup that never gets there fails by name.
+            await await_until(results_ended, what="the cleanup's end_stream() call")
 
         monkeypatch.setattr(
             TranscriptResultStreamHandler, "handle_events", _results_until_end_stream
@@ -246,15 +249,20 @@ class TestDefensiveGuards:
         fake_sel.log_api_access = lambda **kw: calls.append(kw)
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
 
-        async with TestClient(TestServer(_make_app())) as http_client:
-            ws = await http_client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json())["type"] == "ready"
-            await ws.send_str('{"type":"stop"}')
-            await ws.close()
-        # Wait for the end audit instead of assuming the handler already ran:
-        # the error frame / client close is not a barrier for it.
-        await _wait_for_operation(calls, "stt_stream_end")
-        ops = [c["operation"] for c in calls]
-        assert (
-            "stt_stream_start" in ops and "stt_stream_end" in ops
-        ), f"both start and end audit events required; got {ops}"
+        try:
+            async with TestClient(TestServer(_make_app())) as http_client:
+                ws = await http_client.ws_connect("/api/ws/stt")
+                assert (await ws.receive_json())["type"] == "ready"
+                await ws.send_str('{"type":"stop"}')
+                await ws.close()
+            # Wait for the end audit instead of assuming the handler already ran:
+            # the error frame / client close is not a barrier for it.
+            await _wait_for_operation(calls, "stt_stream_end")
+            ops = [c["operation"] for c in calls]
+            assert (
+                "stt_stream_start" in ops and "stt_stream_end" in ops
+            ), f"both start and end audit events required; got {ops}"
+        finally:
+            # The stubbed result stream returns once this is set, so a test that
+            # fails before the cleanup's end_stream() leaves nothing parked.
+            results_ended.set()
