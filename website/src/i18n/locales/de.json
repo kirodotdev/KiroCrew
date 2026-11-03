@@ -6539,6 +6539,7 @@
       "message_input": "Nachrichteneingabe",
       "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Nachricht an {{bot}}…",
+      "follow_up_tab_placeholder": "{{option}} - Tab drücken zum Einfügen",
       "message_placeholder_terminal": "Nachricht an {{bot}}… (/command · @file · $skill · ! Shell-Befehl)",
       "model": "Modell",
       "model_2": "Modell: {{name}}",

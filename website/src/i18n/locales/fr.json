@@ -6686,6 +6686,7 @@
       "message_input": "Saisie du message",
       "message_placeholder": "Envoyer un message à {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Envoyer un message à {{bot}}…",
+      "follow_up_tab_placeholder": "{{option}} - Appuie sur Tab pour remplir",
       "message_placeholder_terminal": "Envoyer un message à {{bot}}… (/command · @file · $skill · ! commande shell)",
       "model": "Modèle",
       "model_2": "Modèle : {{name}}",
