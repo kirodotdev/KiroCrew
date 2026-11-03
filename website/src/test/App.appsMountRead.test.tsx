@@ -4,7 +4,7 @@
  * second identical one; a refresh after `mc:apps-changed` still reads the
  * server again. Same isolation shape as App.appNavHiddenFilter.test.tsx.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -217,5 +217,69 @@ describe('App apps-nav mount read', () => {
     await act(async () => { resolveMigration({ plan: 'ok' }); await migrationFetch })
     await expect(migrationRead).resolves.toEqual({ plan: 'ok' })
     expect(qc.getQueryData(migrationKey)).toEqual({ plan: 'ok' })
+  })
+})
+
+// #28740: an app installed or removed OUTSIDE this tab (the CLI, another tab)
+// announces nothing here, so the shell re-reads the list when the user returns.
+describe('App apps list after a change made outside the tab', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.mocked(api.listApps).mockReset()
+    vi.mocked(api.listApps).mockResolvedValue([keeperApp])
+  })
+
+  it('picks up an app installed elsewhere when the tab regains focus, without a reload', async () => {
+    const qc = renderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keeper Demo' })).toBeInTheDocument())
+
+    // `kirocrew app install` in a terminal: the server list changes, no event here.
+    vi.mocked(api.listApps).mockResolvedValue([keeperApp, refreshedApp])
+    act(() => { window.dispatchEvent(new Event('focus')) })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refreshed Demo' })).toBeInTheDocument())
+    // The shared cache the link-preview layer reads is updated too.
+    expect(qc.getQueryData(['apps'])).toEqual([keeperApp, refreshedApp])
+  })
+
+  it('drops an app removed elsewhere when the tab becomes visible again', async () => {
+    const qc = renderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keeper Demo' })).toBeInTheDocument())
+
+    vi.mocked(api.listApps).mockResolvedValue([])
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Keeper Demo' })).not.toBeInTheDocument())
+    expect(qc.getQueryData(['apps'])).toEqual([])
+  })
+
+  it('reads once for the focus + visibilitychange pair of one return', async () => {
+    const qc = renderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keeper Demo' })).toBeInTheDocument())
+    // Each re-read synchronously cancels the list query before its GET, so
+    // counting those cancels right after dispatch counts re-reads without waiting.
+    const cancel = vi.spyOn(qc, 'cancelQueries')
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(cancel.mock.calls).toEqual([[{ queryKey: ['apps'], exact: true }]])
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toHaveTextContent('1'))
+  })
+
+  it('does not re-read when focus comes back from one of its own app iframes', async () => {
+    const qc = renderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Keeper Demo' })).toBeInTheDocument())
+    const cancel = vi.spyOn(qc, 'cancelQueries')
+    const frame = document.createElement('iframe')
+    document.body.appendChild(frame)
+    onTestFinished(() => frame.remove())
+    frame.focus()
+    expect(document.activeElement).toBe(frame)
+    act(() => {
+      window.dispatchEvent(new Event('blur'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(cancel).not.toHaveBeenCalled()
   })
 })

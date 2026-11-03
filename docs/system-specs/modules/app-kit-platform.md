@@ -4102,6 +4102,13 @@ second React. Apps receive host events as `CustomEvent`s on `window`
 rail listens for two window events: `mc:app:badge` sets an app row's badge
 (`website/src/shell/nav/railBadges.ts`), and `mc:apps-changed` re-reads the
 installed apps (`refreshAppNav` in `website/src/shell/appShell.tsx`).
+`mc:apps-changed` only fires for a change made in the same tab. A change made
+elsewhere (`kirocrew app install` or `uninstall`, another tab) sends no event to
+the tab, and CLI uninstall never reaches the gateway at all, so the shell also
+re-reads the list when the tab regains focus or becomes visible. Focus that
+returns from one of the page's own app iframes is skipped, and one return reads
+once. The shared `['apps']` query keeps `staleTime: Infinity`; this re-read is
+what keeps the rail and the link-preview layer current without a reload.
 
 This is a different mechanism from the MCP App (SEP-1865) `srcdoc` iframes, which
 load their own ESM runtime from a CDN through an import map and are confined by
