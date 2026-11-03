@@ -2157,7 +2157,21 @@ Resolving that invocation probes the filesystem and `PATH` for the `kirocrew`
 launcher, so the KAS harness does it in its `session_extras` thread
 (`kas_agents.resolve_managed_entries`) and carries the result on
 `SessionExtras.managed_entries`; the hoist itself does no I/O on the event loop
-(#15282). On `session/new` the move covers the active agent's managed names only; on
+(#15282). The builtin app servers that run Kiro Crew's own code (`mochi:mochi`)
+are hoisted and tokened the same way, because KAS never reaches
+`kiro_control_plane_servers` and without the element every call refuses as
+`identity_unattestable` (#19798 on kiro-cli, the same defect on KAS). The same
+thread resolves them (`kas_app_identity.resolve_app_identity_launches`, carried
+on `SessionExtras.app_launches`): the launch comes from the shipped manifest via
+`session_mcp.builtin_app_identity_launches`, never the spec, and a server a
+settings file restricts (`session_mcp.native_mount_withholding`), or every one
+when a settings file is unreadable, keeps its native declaration with no token.
+A tokened app element's env is the projected `KIROCREW_PORT` /
+`KIROCREW_SESSION_KEY`, the gateway's bound port, then the pinned `PYTHONPATH` /
+`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`. A settings-file
+name does not reserve an app server on load: the resolver already judged it.
+On `session/new` the move covers the active agent's managed names and those app
+servers only; on
 `session/load` it additionally hoists remaining user-declared names
 (`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
 re-initialises MCP servers from the session-level array only on load — not from
