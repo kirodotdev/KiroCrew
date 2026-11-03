@@ -174,8 +174,12 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         monkeypatch.setattr(svc_macos, "_loaded_domain", lambda: None)
+        live = tmp_path / "kirocrew-live"
+        live.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", live)
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.uninstall()
+            assert svc_macos.uninstall() is None
+        assert not live.exists()
         run.assert_not_called()
 
     def test_is_active_returns_false_when_launchctl_errors(self):
@@ -234,7 +238,7 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.stop()
+            assert svc_macos.stop() is False
         run.assert_not_called()
 
     def test_restart_kickstarts_the_service_target(self, tmp_path, monkeypatch):
@@ -283,7 +287,7 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.restart()
+            assert svc_macos.restart() is False
         run.assert_not_called()
 
     def test_status_returns_launchctl_output_when_loaded(self):

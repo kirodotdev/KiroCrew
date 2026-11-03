@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from kiro_crew.dashboard.handlers import usage as usage_mod
 from kiro_crew.llm_helpers import background_turn, provider_last_turn_usage
 from kiro_crew.providers.base import LLMProvider
 
@@ -148,11 +151,12 @@ class TestBackgroundTurnAccounting(unittest.IsolatedAsyncioTestCase):
 
     async def test_unbilled_turn_writes_no_row(self):
         sessions = _Sessions(_Client())
-        with patch(_USAGE_TARGET) as persist:
-            async with background_turn(sessions, task="skill_dedupe") as client:
-                client.begin_turn(0.0)
+        with tempfile.TemporaryDirectory() as shard_dir:
+            with patch.object(usage_mod, "_TOKEN_USAGE_DIR", Path(shard_dir)):
+                async with background_turn(sessions, task="skill_dedupe") as client:
+                    client.begin_turn(0.0)
 
-        persist.assert_not_awaited()
+            self.assertEqual(list(Path(shard_dir).rglob("*")), [])
 
     async def test_release_precedes_accounting_which_precedes_recycle(self):
         """Two invariants in one order: release is synchronous so it must land
@@ -727,11 +731,12 @@ class TestClaudeSeamBackgroundAccounting(unittest.IsolatedAsyncioTestCase):
         from kiro_crew.acp.types import TurnUsage
 
         sessions = _Sessions(_Client())
-        with patch(_USAGE_TARGET) as persist:
-            async with background_turn(sessions, task="consolidation") as client:
-                client.last_prompt_stats = _ClaudeStats(TurnUsage())
+        with tempfile.TemporaryDirectory() as shard_dir:
+            with patch.object(usage_mod, "_TOKEN_USAGE_DIR", Path(shard_dir)):
+                async with background_turn(sessions, task="consolidation") as client:
+                    client.last_prompt_stats = _ClaudeStats(TurnUsage())
 
-        persist.assert_not_awaited()
+            self.assertEqual(list(Path(shard_dir).rglob("*")), [])
 
 
 class TestSumUsageCarriesTheBilledDimensions(unittest.TestCase):

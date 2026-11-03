@@ -510,6 +510,8 @@ def test_require_backend_probes_real_task_creation(monkeypatch):
     the only honest check is to try."""
     monkeypatch.setattr(win, "_PROBE_OK", False)
     win.require_backend()  # must not raise on a normal user session
+    # A passing probe is cached, so the next verb does not spawn it again.
+    assert win._PROBE_OK is True
 
 
 def test_a_real_task_round_trips_through_create_run_and_delete(cfg):

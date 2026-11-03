@@ -146,18 +146,30 @@ def test_a_bom_saved_non_object_knowledge_section_does_not_crash_the_embedder_se
     home: Path,
 ) -> None:
     from kiro_crew.dashboard.handlers import knowledge
+    from kiro_crew.knowledge import embedder
 
     config_path().write_bytes(_BOM + b'{"knowledge": ["x"]}')
 
-    knowledge._create_embedder(None)
+    created = knowledge._create_embedder(None)
+
+    assert (created.timeout_secs, created.content_budget) == (
+        embedder.TIMEOUT,
+        embedder._EMBED_CONTENT_BUDGET,
+    )
 
 
 def test_a_bom_saved_non_object_config_does_not_crash_the_embedder_setup(home: Path) -> None:
     from kiro_crew.dashboard.handlers import knowledge
+    from kiro_crew.knowledge import embedder
 
     config_path().write_bytes(_BOM + b"[]")
 
-    knowledge._create_embedder(None)
+    created = knowledge._create_embedder(None)
+
+    assert (created.timeout_secs, created.content_budget) == (
+        embedder.TIMEOUT,
+        embedder._EMBED_CONTENT_BUDGET,
+    )
 
 
 def test_the_agent_spec_builder_reads_a_bom_saved_config(home: Path) -> None:

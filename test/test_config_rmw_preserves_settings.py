@@ -490,7 +490,10 @@ class TestWriteConfigAtomically:
             raise AssertionError("write_config_atomically must not spawn a subprocess")
 
         monkeypatch.setattr(subprocess, "run", _fail)
-        write_config_atomically(tmp_path / "config.json", {"auto_update": True})
+        path = tmp_path / "config.json"
+        write_config_atomically(path, {"auto_update": True})
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"auto_update": True}
 
     @pytest.mark.skipif(
         platform_compat.IS_POSIX,
