@@ -152,11 +152,14 @@ class TestUnownedBackgroundApprovalHasNoSlot:
         """The common case the old rule made vacuous: one trusted chat open."""
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-only": _slot(running=True, trust=True)}
+        # A refusing prompt makes the answer tell the prompt from a trust short-circuit.
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=False)
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
             approve_fn = gateway._interactive_approval("cron")
-            await approve_fn(_event("req-bg-3b"), "")
+            result = await approve_fn(_event("req-bg-3b"), "")
 
+        assert result is False, "one trusted chat must not auto-approve a cron command"
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -1133,7 +1133,9 @@ class TestDeferredCollectionCommit:
             max_wait=60, inline_result=lambda aid, text: text,
         )
         step.on_settled(step._collect())
+        assert step._answered_ids == ["a1"]
         step.on_answered(False)
+        assert step._answered_ids == [], "the unwritten answer still consumed its ids"
         step.on_answered(True)  # the ids went with the one answer they belonged to
         post.assert_not_called()
 
@@ -1153,6 +1155,8 @@ class TestDeferredCollectionCommit:
         text = step.abandon()
         step._collect()  # A stuck collect can finish after the abandonment decision.
         step.on_settled(text)
+        assert step.phase == "abandoned"
+        assert step._answered_ids == [], "an abandoned step hands no ids to the answer"
         step.on_answered(True)
         post.assert_not_called()
 

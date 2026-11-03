@@ -237,8 +237,11 @@ class TestPeakRssIsThisProcesss:
         assert pc.proc_cpu_nanos_for_pid(-1) is None
 
     def test_raise_nofile_soft_limit_is_safe(self):
-        # No-op on Windows; best-effort raise on POSIX. Must never raise.
+        # No-op on Windows; best-effort raise on POSIX. Must never raise, and must
+        # never lower a soft limit that is already above the target.
+        before = pc.nofile_soft_limit()
         pc.raise_nofile_soft_limit(4096)
+        assert pc.nofile_soft_limit() >= before
 
 
 class TestResourceShimFailures:
