@@ -5121,7 +5121,14 @@
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
       "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
-      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open."
+      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open.",
+      "auto_update_title": "Updates",
+      "auto_update_label": "Update automatically",
+      "auto_update_hint": "Always installs new versions of this app without asking. Never keeps it at this version. An update that asks for new permissions always waits for you.",
+      "auto_update_follow": "Follow app updates setting ({{mode}})",
+      "auto_update_always": "Always",
+      "auto_update_never": "Never",
+      "auto_update_save_failed": "Couldn't save the update setting for this app."
     },
     "appsPage": {
       "all_apps": "All apps",
@@ -9843,6 +9850,20 @@
         "row_label": "Mute sessions {{app}} opens",
         "failed_to_save": "Couldn't save the mute for {{app}}.",
         "config_load_failed": "Couldn't load your saved app mutes. The switches are unavailable until they load."
+      },
+      "appUpdates": {
+        "title": "App updates",
+        "mode_label": "Update apps automatically",
+        "mode_hint": "Off tells you once when a new version of an installed app is published. Ask adds an Update button to that note. Automatic installs it once the app is idle. An update that asks for new permissions always waits for you.",
+        "mode_off": "Off",
+        "mode_ask": "Ask",
+        "mode_on": "Automatic",
+        "interval_label": "Check for app updates",
+        "interval_hint": "How often the gateway refreshes the app registries while any app updates automatically.",
+        "interval_hours": "Every {{hours}} h",
+        "interval_days": "Every {{days}} d",
+        "save_failed": "Couldn't save the app update setting.",
+        "load_failed": "Couldn't load the app update settings."
       }
     },
     "worldsPage": {

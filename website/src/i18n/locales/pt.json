@@ -11761,7 +11761,14 @@
         "installed_needs_newer_host": "A versão instalada de {{name}} precisa de um {{productName}} mais recente. Atualize o {{productName}}; seus dados não mudam."
       },
       "grants_reconsent_composer_actions": "Botões do editor: permite que o app adicione estes botões ao menu + do editor. Um clique insere o texto do app no seu rascunho; o app não pode ver o rascunho nem enviá-lo.",
-      "grants_reconsent_selection_actions": "Ações sobre texto selecionado: permite que os itens do app recebam o texto que você seleciona nas respostas do chat e ofereçam um resultado para Copiar ou Abrir."
+      "grants_reconsent_selection_actions": "Ações sobre texto selecionado: permite que os itens do app recebam o texto que você seleciona nas respostas do chat e ofereçam um resultado para Copiar ou Abrir.",
+      "auto_update_title": "Atualizações",
+      "auto_update_label": "Atualizar automaticamente",
+      "auto_update_hint": "Sempre instala novas versões deste app sem perguntar. Nunca o mantém nesta versão. Uma atualização que pede novas permissões sempre espera por você.",
+      "auto_update_follow": "Seguir a configuração de atualizações ({{mode}})",
+      "auto_update_always": "Sempre",
+      "auto_update_never": "Nunca",
+      "auto_update_save_failed": "Não foi possível salvar a configuração de atualização deste app."
     },
     "appPage": {
       "loading_app": "Carregando app…",
@@ -20889,6 +20896,20 @@
         "row_label": "Silenciar sessões que {{app}} abre",
         "failed_to_save": "Não foi possível salvar o silenciamento de {{app}}.",
         "config_load_failed": "Não foi possível carregar os silenciamentos salvos dos seus apps. Os interruptores ficam indisponíveis até serem carregados."
+      },
+      "appUpdates": {
+        "title": "Atualizações de apps",
+        "mode_label": "Atualizar apps automaticamente",
+        "mode_hint": "Desligado avisa você uma vez quando uma nova versão de um app instalado é publicada. Perguntar adiciona um botão Atualizar a esse aviso. Automático instala a versão quando o app está ocioso. Uma atualização que pede novas permissões sempre espera por você.",
+        "mode_off": "Desligado",
+        "mode_ask": "Perguntar",
+        "mode_on": "Automático",
+        "interval_label": "Procurar atualizações de apps",
+        "interval_hint": "Com que frequência o gateway atualiza os registros de apps enquanto algum app se atualiza automaticamente.",
+        "interval_hours": "A cada {{hours}} h",
+        "interval_days": "A cada {{days}} d",
+        "save_failed": "Não foi possível salvar a configuração de atualização de apps.",
+        "load_failed": "Não foi possível carregar as configurações de atualização de apps."
       }
     },
     "settingsPage": {

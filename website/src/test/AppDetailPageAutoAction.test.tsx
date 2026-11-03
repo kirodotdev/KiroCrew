@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const getApp = vi.fn()
@@ -204,5 +204,47 @@ describe('AppDetailPage — auto-action deep links', () => {
     await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
     expect(await screen.findByText(/Updated Secretary from the registry/)).toBeInTheDocument()
     expect(screen.queryByText(/from its source directory/)).not.toBeInTheDocument()
+  })
+
+  it('updates the app a notification names, not the detail page that was already open', async () => {
+    // A notification's Update navigates from one detail page to another; the
+    // route keeps the page mounted, so for one render `app` is still the old one.
+    const installed = (name: string) => ({
+      name, displayName: name, version: '1.0.0', enabled: true,
+      source: `registry:${name}`, origin: 'registry',
+      resources: 'gateway', lifecycle: 'gateway', installedAt: '2026-07-01T00:00:00Z',
+      manifest: { displayName: name, description: `${name} description`, author: 'zezhexu' },
+    })
+    getApp.mockImplementation((name: string) => Promise.resolve(installed(name)))
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'darwin', arch: 'arm64' } })
+    function Jump() {
+      const navigate = useNavigate()
+      const go = (to: string) => navigate(`/apps/detail/${to}`, { state: { autoAction: 'update' } })
+      return (
+        <>
+          <button onClick={() => go('other')}>jump</button>
+          <button onClick={() => go('secretary')}>back</button>
+        </>
+      )
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/detail/secretary']}>
+          <Jump />
+          <Routes>
+            <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByText('secretary description')
+    fireEvent.click(screen.getByRole('button', { name: 'jump' }))
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalled())
+    expect(installFromRegistryStream.mock.calls.map((c) => c[0])).toEqual(['other'])
+    // A second notification action on the same mounted page still fires.
+    fireEvent.click(screen.getByRole('button', { name: 'back' }))
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(2))
+    expect(installFromRegistryStream.mock.calls.map((c) => c[0])).toEqual(['other', 'secretary'])
   })
 })

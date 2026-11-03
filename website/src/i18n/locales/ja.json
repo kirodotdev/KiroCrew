@@ -11263,7 +11263,14 @@
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
       "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
-      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。"
+      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。",
+      "auto_update_title": "更新",
+      "auto_update_label": "自動的に更新",
+      "auto_update_hint": "常に：確認せずにこのアプリの新しいバージョンをインストールします。しない：このバージョンのままにします。新しい権限を求める更新は常にあなたの確認を待ちます。",
+      "auto_update_follow": "アプリの更新設定に従う（{{mode}}）",
+      "auto_update_always": "常に",
+      "auto_update_never": "しない",
+      "auto_update_save_failed": "このアプリの更新設定を保存できませんでした。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -19913,6 +19920,20 @@
         "row_label": "{{app}} が開くセッションをミュート",
         "failed_to_save": "{{app}} のミュート設定を保存できませんでした。",
         "config_load_failed": "保存済みのアプリのミュート設定を読み込めませんでした。読み込まれるまでスイッチは使用できません。"
+      },
+      "appUpdates": {
+        "title": "アプリの更新",
+        "mode_label": "アプリを自動的に更新",
+        "mode_hint": "オフ：インストール済みアプリの新しいバージョンが公開されたときに一度だけ通知します。確認：その通知に「更新」ボタンを追加します。自動：アプリがアイドル状態になったらインストールします。新しい権限を求める更新は常にあなたの確認を待ちます。",
+        "mode_off": "オフ",
+        "mode_ask": "確認",
+        "mode_on": "自動",
+        "interval_label": "アプリの更新を確認",
+        "interval_hint": "自動更新するアプリがあるとき、ゲートウェイがアプリレジストリを更新する頻度です。",
+        "interval_hours": "{{hours}} 時間ごと",
+        "interval_days": "{{days}} 日ごと",
+        "save_failed": "アプリの更新設定を保存できませんでした。",
+        "load_failed": "アプリの更新設定を読み込めませんでした。"
       }
     },
     "settingsPage": {

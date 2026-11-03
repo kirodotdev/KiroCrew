@@ -6,6 +6,16 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
+    "id": "about.check-for-app-updates",
+    "label": "Check for app updates",
+    "labelKey": "pages.settings.appUpdates.interval_label",
+    "hint": "How often the gateway refreshes the app registries while any app updates automatically.",
+    "tab": "about",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "app_updates.check_interval_hours"
+  },
+  {
     "id": "about.install-app-updates-automatically",
     "label": "Install app updates automatically",
     "labelKey": "pages.settings.aboutPanel.install_app_updates_automatically",
@@ -13,6 +23,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "about",
     "type": "toggle",
     "occurrence": 1
+  },
+  {
+    "id": "about.update-apps-automatically",
+    "label": "Update apps automatically",
+    "labelKey": "pages.settings.appUpdates.mode_label",
+    "hint": "Off tells you once when a new version of an installed app is published. Ask adds an Update button to that note. Automatic installs it once the app is idle. An update that asks for new permissions always waits for you.",
+    "tab": "about",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "app_updates.mode"
   },
   {
     "id": "about.update-channel",
