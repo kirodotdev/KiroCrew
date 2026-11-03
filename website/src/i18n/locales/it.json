@@ -5598,6 +5598,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Puoi comunque avviare il backup manualmente, ma l’archivio delle sessioni viene caricato senza oscuramento.",
         "backup_archive": "Backup archiviati",
         "backup_restore": "Ripristina",
+        "backup_show_all_archives": "Mostra tutti ({{count}})",
         "backup_restore_caveat": "Il ripristino richiede l'accesso in lettura alla cartella dei backup. Il criterio con privilegi minimi consigliato concede intenzionalmente solo la scrittura, quindi verrà negato a meno che le credenziali dell'account non siano più ampie.",
         "backup_remote_error": "Al momento non è stato possibile leggere i backup archiviati.",
         "backup_status_failed": "Impossibile leggere lo stato dei backup.",

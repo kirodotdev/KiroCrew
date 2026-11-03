@@ -5598,6 +5598,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Aún puedes iniciar la copia de seguridad tú mismo, pero el archivo de sesiones se sube sin ocultar.",
         "backup_archive": "Copias almacenadas",
         "backup_restore": "Restaurar",
+        "backup_show_all_archives": "Mostrar todo ({{count}})",
         "backup_restore_caveat": "La restauración necesita acceso de lectura a la carpeta de copias de seguridad. La política de privilegios mínimos recomendada concede deliberadamente solo escritura, por lo que se denegará a menos que las credenciales de la cuenta sean más amplias.",
         "backup_remote_error": "No se pudieron leer las copias almacenadas ahora mismo.",
         "backup_status_failed": "No se pudo leer el estado de las copias de seguridad.",

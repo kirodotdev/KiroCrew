@@ -5474,6 +5474,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Du kannst die Sicherung weiterhin selbst starten, dabei wird das Sitzungsarchiv aber ohne Bereinigung hochgeladen.",
         "backup_archive": "Gespeicherte Sicherungen",
         "backup_restore": "Wiederherstellen",
+        "backup_show_all_archives": "Alle anzeigen ({{count}})",
         "backup_restore_caveat": "Für die Wiederherstellung ist Lesezugriff auf den Backup-Ordner erforderlich. Die empfohlene Richtlinie mit minimalen Rechten erteilt absichtlich nur Schreibzugriff, sodass sie abgelehnt wird, sofern die Anmeldedaten des Kontos nicht weiter gefasst sind.",
         "backup_remote_error": "Die gespeicherten Sicherungen konnten gerade nicht gelesen werden.",
         "backup_status_failed": "Der Sicherungsstatus konnte nicht gelesen werden.",

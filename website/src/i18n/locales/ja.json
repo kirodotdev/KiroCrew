@@ -5350,6 +5350,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "バックアップは自分で開始できますが、セッションのアーカイブは秘匿されずにアップロードされます。",
         "backup_archive": "保存済みバックアップ",
         "backup_restore": "復元",
+        "backup_show_all_archives": "すべてを表示（{{count}}）",
         "backup_restore_caveat": "復元にはバックアップフォルダーへの読み取りアクセスが必要です。推奨される最小権限ポリシーは意図的に書き込みのみを許可しているため、アカウントの認証情報がより広い権限を持たない限り拒否されます。",
         "backup_remote_error": "保存済みバックアップを今読み取れませんでした。",
         "backup_status_failed": "バックアップの状態を読み取れませんでした。",
