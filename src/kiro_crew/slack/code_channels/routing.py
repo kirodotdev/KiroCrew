@@ -667,6 +667,25 @@ async def _hydrate_origin_thread(orch: Any, origin_thread_ts: str) -> None:
         logger.info("origin thread overrides not hydrated", exc_info=True)
 
 
+class ChannelRefused(BindingUnavailable):
+    """The channel policy refuses the channel mid-bind: no session is bound.
+
+    Raised before the worktree is cut, or after the kickoff post and before the
+    session (then the cut tree and the kickoff stay, as on a failed kickoff).
+    """
+
+
+def _refuse_bind_if_policy_refuses(channel: str) -> None:
+    """The per-channel ceiling at a bind's commit points (audited by the policy
+    seam, fail-closed): no worktree is cut and no session bound once it refuses."""
+    from kiro_crew.slack.code_channels import surface
+
+    if surface.channel_policy_refusal(
+        channel, operation="slack.code_channel.bind", caller="slack_code_channel"
+    ):
+        raise ChannelRefused("channel refused by policy")
+
+
 async def _bind_channel(
     orch: Any,
     *,
@@ -701,6 +720,7 @@ async def _bind_channel(
     # worktree. The spec comes back unchanged off git or with the feature off.
     from kiro_crew.slack.code_channels.workspace.core import plan_session
 
+    _refuse_bind_if_policy_refuses(channel)  # after the awaits above, before the cut
     spec = await plan_session(
         state, spec, channel_id=channel, team_id=team_id, title=title, channel_name=channel_name
     )
@@ -743,6 +763,7 @@ async def _bind_channel(
             )
             stored.append(await asyncio.to_thread(write, binding))
 
+        _refuse_bind_if_policy_refuses(channel)  # after the kickoff, before the session
         await create_bound_session(
             state,
             spec,
@@ -1013,13 +1034,26 @@ async def deliver_directed(
     # Bound or not, a channel this process is still opening waits for its
     # opening request to be delivered first.
     await _wait_for_creation(event, result.info, store().get_binding(channel))
-    archived = False
+    from kiro_crew.slack.code_channels import surface
+
+    # The per-channel ceiling at each commit point after the waits above (a slash
+    # command and a message both arrive here; audited by the policy seam): no
+    # session is bound, no worktree cut and no turn run once it refuses.
+    operation = "slack.code_channel.message"
+    archived = refused = False
     try:
         async with _bind_lock(channel):
             binding = store().get_binding(channel)
-            archived = binding is not None and bool(binding.archived_at)
-            if archived:
-                pass  # nothing is adopted, rebound or prepared for an archived channel
+            # Archived when stamped, or fenced by this process (Slack archived it
+            # but the stamp is not written yet).
+            archived = surface.fenced_here(channel) or (
+                binding is not None and bool(binding.archived_at)
+            )
+            refused = bool(
+                surface.channel_policy_refusal(channel, operation=operation, caller=sender_id)
+            )
+            if archived or refused:
+                pass  # nothing is adopted, rebound or prepared for these
             elif binding is None:
                 # A code channel Slack's UI opened with us as its agent: adopt it.
                 info = result.info
@@ -1049,6 +1083,8 @@ async def deliver_directed(
                     created_by_us=binding.created_by_us,
                     replace=True,
                 )
+    except ChannelRefused:
+        return False  # refused mid-bind: nothing bound, and nothing to post into it
     except BindingUnavailable as exc:
         logger.info("code channel %s: no session to route to (%s)", channel, exc)
         await _post(orch, channel, UNROUTED_TEXT, None)
@@ -1056,6 +1092,8 @@ async def deliver_directed(
     except Exception:
         logger.exception("code channel %s: binding a session failed", channel)
         await _post(orch, channel, UNROUTED_TEXT, None)
+        return False
+    if refused:
         return False
     if archived:
         # An archived channel takes no more work. No turn, no new
@@ -1072,6 +1110,15 @@ async def deliver_directed(
     # spend the bind budget twice on one message.
     from kiro_crew.slack.handler import LinkedRoute
 
+    if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
+        return False  # again after the bind's awaits, right before the turn (and its worktree)
+    current = store().get_binding(channel)
+    if surface.fenced_here(channel) or (current is not None and current.archived_at):
+        # Archived during the bind's awaits (fenced, or already stamped and
+        # unfenced): no turn reaches it.
+        _audit(sender_id, "slack.code_channel.message", "denied", f"channel={channel}", "archived")
+        await _post(orch, channel, ARCHIVED_TEXT, None)
+        return False
     routed = await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event))
     if routed is LinkedRoute.UNROUTED:
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)
@@ -1461,6 +1508,18 @@ async def maybe_open_code_channel(
                     created_by_us=True,
                     channel_name=request.name,
                 )
+        except ChannelRefused:
+            # The policy refused the new channel while it was being bound: a
+            # retry there would be refused too, so do not suggest one.
+            logger.info("code channel %s: refused by the channel policy at bind", new_channel)
+            await _post(
+                orch,
+                channel,
+                f"I opened <#{new_channel}> but the channel policy doesn't admit it, "
+                "so no session was started there.",
+                thread_ts or msg_ts,
+            )
+            return True
         except Exception:
             logger.exception(
                 "code channel %s opened but its session could not be bound", new_channel
@@ -1658,6 +1717,14 @@ async def _stop_bound(
     source: str,
     say_idle: bool = True,
 ) -> str:
+    from kiro_crew.slack.code_channels import surface
+
+    # First, before any await: work admitted before this press (an in-flight
+    # tool call, a wrap-up) writes nothing more to Slack.
+    surface.mark_stopped(channel)
+    from kiro_crew.slack.code_channels.status import hold_after_turn
+
+    hold_after_turn(channel, None)  # a Stop clears the agent's "suspended" hold
     state = _dashboard_state()
     slot = bound_slot(state, binding) if binding is not None else None
     if state is None or slot is None or not getattr(slot, "running", False):

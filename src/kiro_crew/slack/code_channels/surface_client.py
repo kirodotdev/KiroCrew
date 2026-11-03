@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.slack.code_channels.client import CodeChannelsClient
+from kiro_crew.slack.code_channels.client import CodeChannelsClient, _error_code, _response_data
 from kiro_crew.slack.code_channels.models import (
     MAX_TITLE_CHARS,
     CodeChannelApiError,
@@ -39,6 +39,10 @@ def _check_size(text: str, what: str) -> None:
 
 #: The error a write gets when the channel policy refuses its channel.
 CHANNEL_REFUSED = "channel_not_allowed_by_policy"
+#: The error a call gets when the host's outbound profile denies Slack.
+OUTBOUND_REFUSED = "outbound_not_permitted"
+#: The error a call gets when a Stop of its channel landed after it was admitted.
+STOPPED = "stopped_by_person"
 
 
 class SurfaceClient(CodeChannelsClient):
@@ -52,16 +56,27 @@ class SurfaceClient(CodeChannelsClient):
         The raw ``agents.*`` API never reaches ``SlackClient``'s
         ``require_channel``, so the per-channel ceiling (``allowed_channel_ids``,
         tightest wins) is applied here, at the one seam all surface writes and
-        reads share, and every refusal is audited. Fails closed.
+        reads share, and every refusal is audited. Fails closed. The host's
+        outbound profile is checked at the same seam, so a background publish
+        (no tool call or command in front of it) meets it too.
         """
-        channel = str(body.get("channel_id") or body.get("channel") or "")
-        if channel:
-            from kiro_crew.slack.code_channels import surface
+        from kiro_crew.slack.code_channels import surface
 
-            if surface.channel_policy_refusal(
-                channel, operation="slack.code_channel.write", caller="slack_code_channel"
-            ):
-                raise CodeChannelApiError(method, CHANNEL_REFUSED)
+        # The outbound check awaits; the channel policy is read after it, with no
+        # await between that read and the send, so a withdrawal during the
+        # outbound check is still seen.
+        if not await surface.outbound_permitted():
+            raise CodeChannelApiError(method, OUTBOUND_REFUSED)
+        channel = str(body.get("channel_id") or body.get("channel") or "")
+        if channel and surface.channel_policy_refusal(
+            channel, operation="slack.code_channel.write", caller="slack_code_channel"
+        ):
+            raise CodeChannelApiError(method, CHANNEL_REFUSED)
+        # After the last await, right before the send: work admitted before a
+        # Stop of this channel (a tool call, a wrap-up, a command sync) sends
+        # nothing more, whichever await the Stop landed in.
+        if channel and not surface.commit_if_not_stopped(channel):
+            raise CodeChannelApiError(method, STOPPED)
         return await super()._call(method, body, query=query)
 
     async def set_view(
@@ -173,6 +188,58 @@ class SurfaceClient(CodeChannelsClient):
         channel = data.get("channel")
         state = channel.get("is_archived") if isinstance(channel, dict) else None
         return state if isinstance(state, bool) else None
+
+    async def channel_canvas_id(self, channel_id: str) -> str:
+        """The channel canvas Slack reports for *channel_id* (``conversations.info``);
+        ``""`` when the answer names none."""
+        _check_id(channel_id, "channel_id")
+        params = {"channel": channel_id}
+        team = self._team_for(channel_id) if self._team_for else ""
+        if team:
+            params["team_id"] = team
+        data = await self._call("conversations.info", params, query=True)
+        channel = data.get("channel")
+        props = channel.get("properties") if isinstance(channel, dict) else None
+        canvas = props.get("canvas") if isinstance(props, dict) else None
+        file_id = canvas.get("file_id") if isinstance(canvas, dict) else None
+        return file_id if isinstance(file_id, str) else ""
+
+    async def canvas_origin(self, canvas_id: str, *, channel_id: str) -> tuple[str, str, float]:
+        """Who made canvas *canvas_id* and when (``files.info``): ``(user, bot_id,
+        created)``, each empty or 0 when the answer doesn't say."""
+        _check_id(canvas_id, "canvas_id")
+        # Not through _call: its refusals feed the install-wide latch, and an app
+        # without files:read (a trimmed manifest) must lose only this adoption,
+        # never code channels. Any refusal here is just "unknown".
+        method = "files.info"
+        from kiro_crew.slack.code_channels import surface
+
+        if not await surface.outbound_permitted():
+            raise CodeChannelApiError(method, OUTBOUND_REFUSED)
+        if not surface.commit_if_not_stopped(channel_id):
+            raise CodeChannelApiError(method, STOPPED)
+        try:
+            resp = await self._api_call(method, http_verb="GET", params={"file": canvas_id})
+        except Exception as exc:
+            raise CodeChannelApiError(method, _error_code(exc) or "transport_error") from None
+        data = _response_data(resp)
+        if data.get("ok") is not True:
+            raise CodeChannelApiError(method, str(data.get("error") or "not_ok"))
+        file = data.get("file")
+        if not isinstance(file, dict):
+            return "", "", 0.0
+        user, bot, created = file.get("user"), file.get("bot_id"), file.get("created")
+        return (
+            user if isinstance(user, str) else "",
+            bot if isinstance(bot, str) else "",
+            (
+                float(created)
+                if isinstance(created, (int, float))
+                and not isinstance(created, bool)
+                and created > 0
+                else 0.0
+            ),
+        )
 
     async def rename(self, channel_id: str, title: str) -> str:
         """``agents.sessions.rename`` for a code channel (never a ``thread_ts``)."""

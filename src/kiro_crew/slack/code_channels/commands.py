@@ -175,15 +175,28 @@ def _digest(commands: list[dict[str, str]]) -> str:
 
 
 async def sync_commands(binding: Binding) -> None:
-    """Register the channel's command set when it changed (never raises)."""
+    """Register the channel's command set when it changed (never raises).
+
+    Admitted at the stop fence: a Stop during its reads sends nothing."""
     channel = binding.channel_id
+    token = surface.admit()
     try:
+        if surface.channel_stopped(channel):
+            return  # stopped earlier in this turn: the next turn syncs
         if not code_channels_on(live_config()) or await surface.is_archived(binding):
             return
         if not await surface.outbound_permitted():
             return
+        if surface.channel_policy_refusal(
+            channel, operation="slack.code_channel.commands", caller="slack_code_channel"
+        ):
+            return  # no gh probe and no store write for a refused channel
         async with _lock(channel):
             record = await surface_get(channel)
+            if surface.channel_policy_refusal(
+                channel, operation="slack.code_channel.commands", caller="slack_code_channel"
+            ):
+                return  # again after the lock and the read, before the gh probe
             # An install-wide code stored by an older build is not about this
             # channel: ignore it so the record recovers.
             if (
@@ -203,15 +216,19 @@ async def sync_commands(binding: Binding) -> None:
             try:
                 await client.set_commands(channel, commands)
             except CodeChannelApiError as exc:
-                if exc.code in _DISABLING:
+                if exc.code in _DISABLING and surface.commit_if_not_stopped(channel):
                     await surface_update(channel, commands_off=exc.code)
                     logger.info("code channel %s: commands off (%s)", channel, exc.code)
                 else:
                     logger.info("code channel %s: commands not set: %s", channel, exc.code)
                 return
-            await surface_update(channel, commands_digest=digest)
+            # Stopped during the send: the next turn's sync records it instead.
+            if surface.commit_if_not_stopped(channel):
+                await surface_update(channel, commands_digest=digest)
     except Exception:
         logger.warning("code channel %s: command sync failed", channel, exc_info=True)
+    finally:
+        surface.release(token)
 
 
 async def on_turn_start(binding: Binding, _event: Any) -> None:
@@ -317,14 +334,18 @@ async def handle_slash(
         )
         return True
     from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
 
-    if not await channel_inbound_permitted("slack"):
-        # The same ceiling the message path applies before any side effect.
+    # The pair every Slack inbound gate makes (events.py, interactions.dispatch):
+    # the channels ceiling and the per-channel one (allowed_channel_ids, audited
+    # at the policy seam), both before any side effect.
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation=operation, caller=user)
+    ):
+        # Dropped without a reply, as every other inbound gate drops: the
+        # response_url is Slack egress, and the transport may be the one refused.
         surface.audit(user, operation, "denied", resources, "channels governance policy")
-        return True
-    if surface.channel_policy_refusal(channel, operation=operation, caller=user):
-        # The per-channel ceiling the message path applies too (audited there).
-        await respond(NOT_AUTHORIZED_TEXT)
         return True
     binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
     if binding is None:
@@ -370,6 +391,11 @@ async def handle_slash(
             await respond(NO_PR_TEXT.get(reason, NO_PR_TEXT["not_a_repo"]))
             return True
         target = await _pr_target(binding)
+    if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+        # Again at the commit point: the policy may have changed during the
+        # awaits above, and nothing is armed or run until it still admits.
+        await respond(NOT_AUTHORIZED_TEXT)
+        return True
     surface.audit(user, operation, "allowed", resources)
     from kiro_crew.slack.code_channels import wrapup
 

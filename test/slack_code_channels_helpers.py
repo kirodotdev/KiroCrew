@@ -32,15 +32,35 @@ class FakeApi:
     def __init__(self) -> None:
         self.responses: dict[str, Any] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        #: Channels an accepted ``agents.conversations.archive`` archived, so
+        #: ``conversations.info`` reports them archived as Slack would.
+        self.archived: set[str] = set()
 
     async def api_call(self, method: str, **kwargs: Any) -> Any:
-        self.calls.append((method, kwargs.get("json") or kwargs.get("params") or {}))
+        body = kwargs.get("json") or kwargs.get("params") or {}
+        self.calls.append((method, body))
         resp = self.responses.get(method, {"ok": True})
         if callable(resp):
-            resp = resp(kwargs.get("json") or kwargs.get("params") or {})
+            resp = resp(body)
         if isinstance(resp, BaseException):
             raise resp
+        if method == "agents.conversations.archive" and isinstance(resp, dict) and resp.get("ok"):
+            self.archived.add(str(body.get("channel_id") or ""))
+        if method == "conversations.info":
+            resp = self._with_archived_state(str(body.get("channel") or ""), resp)
         return resp
+
+    def _with_archived_state(self, channel: str, resp: Any) -> Any:
+        """Add ``is_archived: True`` for a channel this fake archived, unless the
+        recorded answer already states the archived state itself."""
+        if channel not in self.archived or not isinstance(resp, dict) or not resp.get("ok"):
+            return resp
+        info = resp.get("channel")
+        info = dict(info) if isinstance(info, dict) else {"id": channel}
+        if "is_archived" in info:
+            return resp
+        info["is_archived"] = True
+        return {**resp, "channel": info}
 
     def methods(self) -> list[str]:
         return [m for m, _ in self.calls]

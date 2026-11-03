@@ -103,6 +103,13 @@ def _source_project(binding: Binding, record: Any) -> str:
         project = str(
             getattr(record, "project_dir", "") or getattr(record, "resolved_project", "") or ""
         )
+    root = str(getattr(record, "repo_root", "") or "")
+    if project and root and record.worktree and _inside(project, str(record.worktree)):
+        # A record rebuilt while the session ran in the tree names the tree in
+        # both project fields; the checkout it was cut from is ``repo_root``
+        # (validated by the rebuild, and against git's registration below).
+        subdir = str(getattr(record, "subdir", "") or "")
+        project = os.path.join(root, subdir) if subdir else root
     return project
 
 
@@ -111,15 +118,31 @@ def _keep_reason(record: Any) -> str:
     from kiro_crew.slack.code_channels.workspace import git_ops
 
     tree = str(record.worktree)
+    # --untracked-files=all on both: a status.showUntrackedFiles=no config must
+    # never hide untracked files that `git worktree remove` would delete.
     status = git_ops.run_git(
-        ["--no-optional-locks", "status", "--porcelain", "--ignore-submodules=all"], tree
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+        ],
+        tree,
     )
     if status.returncode != 0:
         return "git status unavailable"
     if status.stdout.strip():
         return "uncommitted changes"
     ignored = git_ops.run_git(
-        ["--no-optional-locks", "status", "--porcelain", "--ignored=matching"], tree
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
+        tree,
     )
     if ignored.returncode != 0:
         return "ignored-file listing unavailable"
@@ -130,19 +153,34 @@ def _keep_reason(record: Any) -> str:
     return ""
 
 
-def _safe_tip(root: str, branch: str) -> str:
-    """The tip of *branch* when every commit on it is on the default branch, else "".
+def _safe_tip(root: str, branch: str) -> tuple[str, str]:
+    """``(tip, "")`` when *branch* may go, else ``("", why it is kept)``.
 
+    It may go only when no worktree has it checked out, and every commit on it
+    is on ``origin/HEAD``, git's own record of the default branch. Never
+    ``HEAD``: in the source checkout that can be the branch itself, which would
+    "prove" any branch merged. Never the recorded base either: it is read from
+    the workspace store, a file that could be forged to vouch for any tip.
     The caller deletes the branch only at THIS sha (compare-and-delete), so a
     branch that moved after the check keeps its new commits. Blocking.
     """
     from kiro_crew.slack.code_channels.workspace import git_ops
 
+    held = git_ops._wt._worktree_branches(root)
+    if held is None:
+        return "", "the worktree list is unreadable"
+    holders = [path for path, name in held.items() if name == branch]
+    if holders:
+        return "", f"it is checked out in {holders[0]}"
     tip = git_ops.resolve_commit(root, f"refs/heads/{branch}")
-    trusted = git_ops.resolve_commit(root, git_ops._wt._resolve_base_ref(root))
-    if tip and trusted and git_ops.merge_base(root, tip, trusted) == tip:
-        return tip
-    return ""
+    if not tip:
+        return "", "its tip is unreadable"
+    trusted = git_ops.resolve_commit(root, "refs/remotes/origin/HEAD")
+    if not trusted:
+        return "", "there is no origin/HEAD to check it against"
+    if git_ops.merge_base(root, tip, trusted) != tip:
+        return "", "it has commits that are not on the default branch"
+    return tip, ""
 
 
 def _check_sync(binding: Binding, store: Any) -> tuple[Any, str]:
@@ -220,6 +258,34 @@ class _Moved:
     sessions: list[tuple[str, str]] = field(default_factory=list)  # (key, its old project)
     folder: tuple[str, str, str] | None = None  # (folder id, old project, new project)
     project: str = ""  # where the sessions were moved to
+    #: (turn running, turn generation) of each session checked idle in the tree,
+    #: as read BEFORE any await: :func:`_still_idle` compares it at removal.
+    marks: dict[str, tuple[bool, int]] = field(default_factory=dict)
+    folder_id: str = ""
+    folder_keys: frozenset[str] = frozenset()  # every session filed under it then
+    #: Every session counted as working on the tree when it was checked: the
+    #: bound one, the folder's, and any live session whose project lies in it.
+    population: frozenset[str] = frozenset()
+
+
+def _snapshot(state: Any, folder_id: str) -> tuple[list, frozenset[str]]:
+    """On the loop, no await: every live slot and the channel folder's subtree."""
+    from kiro_crew.slack.code_channels.workspace import folders
+
+    if state is None:
+        return [], frozenset()
+    subtree = folders.subtree_ids(state, folder_id) if folder_id else frozenset()
+    return folders.live_slots(state), subtree
+
+
+def _population(snapshot: tuple[list, frozenset[str]], tree: str) -> dict:
+    """Blocking: ``key -> (turn running, generation)`` for every live session
+    working on *tree*: filed under the channel's folder, or with its project
+    inside the tree (resolved) whatever folder it is filed in."""
+    from kiro_crew.slack.code_channels.workspace import folders
+
+    rows, subtree = snapshot
+    return folders.sessions_in(rows, subtree, tree)
 
 
 async def _restore(moved: _Moved, setter: Any, reader: Any = None) -> None:
@@ -259,12 +325,39 @@ def _project_tools(service: Any) -> tuple[Any, Any]:
     )
 
 
-def _turn_running(state: Any, key: str, filed: dict[str, tuple[bool, int]]) -> bool:
-    """Whether session *key* is mid-turn (the folder scan's answer, else its slot's)."""
-    if key in filed:
-        return filed[key][0]
+def _turn_mark(state: Any, key: str) -> tuple[bool, int]:
+    """Session *key*'s live (turn running, turn generation); generation counts the
+    turns it started, so one that began and ended between two reads shows too."""
     slot = (getattr(state, "_slots", None) or {}).get(key) if state is not None else None
-    return bool(getattr(slot, "turn_running", False))
+    generation = getattr(slot, "_turn_generation", 0)
+    return (
+        bool(getattr(slot, "turn_running", False)),
+        generation if isinstance(generation, int) else 0,
+    )
+
+
+def _still_idle(moved: _Moved) -> str:
+    """Why the tree must stay after all ("" when it may go). Never awaits.
+
+    The sessions were checked idle before the awaits that moved them; a turn
+    started since (or a worker filed under the folder since) could be working
+    in the tree, so the removal runs only while every mark still holds.
+    """
+    from kiro_crew.slack.code_channels.workspace import folders
+
+    state = surface.dashboard_state()
+    for key, then in moved.marks.items():
+        now = _turn_mark(state, key)
+        if now[0] or now[1] != then[1]:
+            return "a session started a turn in it"
+    if moved.folder_id and state is not None:
+        # Folder-only (no worktree): the read stays off the disk, so this never awaits.
+        filed = folders.sessions_in(
+            folders.live_slots(state), folders.subtree_ids(state, moved.folder_id)
+        )
+        if set(filed) - moved.folder_keys:
+            return "a session joined its folder"
+    return ""
 
 
 async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, moved: _Moved) -> str:
@@ -276,17 +369,40 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
     before anything moves; what did move is recorded in *moved*, so the caller
     moves it back whenever the tree is kept after all.
     """
+
     from kiro_crew.slack.code_channels.workspace import folders
 
     tree = str(record.worktree)
-    project = await asyncio.to_thread(_home_project, binding, record)
+    # Every session's turn state is read here, in one snapshot before the first
+    # await, and compared again right before the removal (_still_idle and the
+    # re-read in _remove_sync).
     state = surface.dashboard_state()
-    keys = {binding.session_key} if binding.session_key else set()
-    filed: dict[str, tuple[bool, int]] = {}
     folder_id = str(getattr(record, "folder_id", "") or "")
-    if folder_id and state is not None:
-        filed = folders.sessions_in(state, folders.subtree_ids(state, folder_id))
-        keys |= set(filed)
+    snapshot = _snapshot(state, folder_id)
+    rows, subtree = snapshot
+    row_marks = {key: (running, gen) for key, _f, _p, running, gen in rows}
+    # Folder membership alone (no worktree): no disk read, on the loop.
+    folder_keys = frozenset(folders.sessions_in(rows, subtree))
+    bound = binding.session_key or ""
+    # Filed in the folder, or working in the tree from anywhere else.
+    population = await asyncio.to_thread(_population, snapshot, tree)
+    keys = ({bound} if bound else set()) | set(population)
+    moved.folder_id, moved.folder_keys = folder_id, folder_keys
+    moved.population = frozenset(keys)
+    outside = sorted(set(population) - folder_keys - {bound})
+    if outside:
+        # Not the channel's: never moved, and never deleted under it.
+        return f"a session outside the channel ({outside[0]}) still uses it"
+    marks = {
+        key: population[key] if key in population else row_marks.get(key, (False, 0))
+        for key in keys
+    }
+    # Every member is idle and watched, wherever its project points now: a turn
+    # that moved its project out still runs in the tree until it ends.
+    if any(running for running, _gen in marks.values()):
+        return "a session is mid-turn in it"
+    moved.marks.update(marks)
+    project = await asyncio.to_thread(_home_project, binding, record)
     targets: list[tuple[str, str]] = []
     for key in sorted(keys):
         current = tree
@@ -298,8 +414,6 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
         # No such session, or one working elsewhere: nothing to move.
         if not await asyncio.to_thread(_inside, current, tree):
             continue
-        if _turn_running(state, key, filed):
-            return "a session is mid-turn in it"
         targets.append((key, current))
     if targets and (not project or setter is None):
         return "a session still works in it"
@@ -323,9 +437,58 @@ async def _retarget(binding: Binding, record: Any, setter: Any, reader: Any, mov
     return ""
 
 
-def _remove_sync(binding: Binding, store: Any, record: Any, reason: str) -> tuple[str, str]:
+#: How long the removal thread waits for the loop's session snapshot; past it
+#: the tree is kept (the loop is stalled or shutting down).
+_SNAPSHOT_SECS = 30.0
+
+
+def _recheck_reason(recheck: Any, tree: str) -> str:
+    """Blocking: why the tree must stay after all, from the snapshot taken after
+    the last await ("" when nobody the first check did not count works on it).
+    Turn starts of the sessions it did count are :func:`_still_idle`'s."""
+    from kiro_crew.slack.code_channels.workspace import folders
+
+    if recheck is None:
+        return ""
+    loop, folder_id, counted = recheck
+
+    async def take() -> tuple[list, frozenset[str]]:
+        return _snapshot(surface.dashboard_state(), folder_id)
+
+    try:
+        # The snapshot is the loop's own (the slots live there), taken now.
+        rows, subtree = asyncio.run_coroutine_threadsafe(take(), loop).result(
+            timeout=_SNAPSHOT_SECS
+        )
+    except Exception:
+        logger.warning("worktree cleanup: session list unreadable", exc_info=True)
+        return "the session list is unreadable"
+    # Every session was moved off by now: anyone still in the tree is using it,
+    # counted or not (a counted one may have been pointed back).
+    in_tree = sorted(folders.sessions_in(rows, frozenset(), tree))
+    if in_tree:
+        return f"a session ({in_tree[0]}) works in it"
+    joined = sorted(set(folders.sessions_in(rows, subtree)) - counted)
+    if joined:
+        return f"a session ({joined[0]}) joined its folder"
+    return ""
+
+
+def _remove_sync(
+    binding: Binding, store: Any, record: Any, reason: str, *, recheck: Any = None
+) -> tuple[str, str]:
     from kiro_crew.slack.code_channels.workspace import git_ops
 
+    if not reason:
+        # Again right before the removal: a file written while the sessions
+        # were moved off the tree would otherwise be deleted with it.
+        reason = _keep_reason(record)
+    if not reason:
+        # Last, right before git: who works on the tree now (git status above
+        # can take seconds on a large tree).
+        # shortcut: a set_project landing between this read and git's removal
+        # is not seen; closing that needs set_project to honour a cleanup lock.
+        reason = _recheck_reason(recheck, str(record.worktree))
     if not reason:
         removed = git_ops.run_git(["worktree", "remove", record.worktree], record.repo_root)
         if removed.returncode != 0:
@@ -340,17 +503,21 @@ def _remove_sync(binding: Binding, store: Any, record: Any, reason: str) -> tupl
         return KEPT, reason
     # The tree is gone: from here on nothing may report it kept, or the caller
     # would point sessions and the folder back at a deleted directory.
+    branch_kept = ""
     try:
-        tip = _safe_tip(record.repo_root, record.branch)
+        tip, why = _safe_tip(record.repo_root, record.branch)
         if tip:
             # Compare-and-delete at the checked sha: a branch that moved since stays.
             git_ops.run_git(
                 ["update-ref", "-d", f"refs/heads/{record.branch}", tip], record.repo_root
             )
+        elif record.branch:
+            branch_kept = f"branch {record.branch} kept: {why}"
     except Exception:
         logger.warning(
             "code channel %s: worktree removed, branch kept", binding.channel_id, exc_info=True
         )
+        branch_kept = f"branch {record.branch} kept: its safety check failed"
     try:
         record.worktree = ""
         store.put(record)
@@ -360,7 +527,8 @@ def _remove_sync(binding: Binding, store: Any, record: Any, reason: str) -> tupl
             binding.channel_id,
             exc_info=True,
         )
-    return REMOVED, ""
+    # REMOVED with a note when the branch stays: the tree is gone either way.
+    return REMOVED, branch_kept
 
 
 def _still_there(tree: str) -> bool:
@@ -434,6 +602,18 @@ async def release_channel_workspace(binding: Binding, *, caller: str) -> tuple[s
                 # Only a tree that is about to go moves its sessions out.
                 if not reason:
                     reason = await _retarget(binding, record, setter, reader, moved)
+                recheck = None
+                if not reason:
+                    # No await from here to the removal's start: the sessions
+                    # are still as idle as when they were checked.
+                    reason = _still_idle(moved)
+                    # Who is on the tree is read again by the removal's own
+                    # thread, from the loop, right before git removes it.
+                    recheck = (
+                        asyncio.get_running_loop(),
+                        moved.folder_id,
+                        moved.population,
+                    )
                 attempted = not reason
                 # A plain executor Future, not a Task: shutdown's cancel-all
                 # never cancels it, and nothing else holds it. So however often
@@ -441,7 +621,10 @@ async def release_channel_workspace(binding: Binding, *, caller: str) -> tuple[s
                 # blocking the event loop) for git's real result, and the
                 # restore below always matches the tree that is left.
                 removal = asyncio.get_running_loop().run_in_executor(
-                    None, functools.partial(_remove_sync, binding, store, record, reason)
+                    None,
+                    functools.partial(
+                        _remove_sync, binding, store, record, reason, recheck=recheck
+                    ),
                 )
                 while not removal.done():
                     try:

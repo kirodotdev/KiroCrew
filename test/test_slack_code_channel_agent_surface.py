@@ -11,6 +11,7 @@ off, the toggle on without the scope.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -250,13 +251,233 @@ def test_an_existing_canvas_is_never_retried_or_adopted(env: Any) -> None:
         "ok": False,
         "error": "channel_canvas_already_exists",
     }
+    # Slack names the channel's canvas, but no create of ours ever ran: not adopted.
+    env.api.responses["conversations.info"] = _canvas_info("F7")
     for _ in range(2):
         out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
         assert not out.ok and "did not create" in out.text
+        # A refused create leaves no intent, so the next refusal is not taken
+        # for a lost create of ours.
+        assert not surface_store().get(CH).canvas_create_pending_since
     # One create per call, never a retry inside a call, and nothing written.
     assert len(_calls(env, "conversations.canvases.create")) == 2
+    assert _calls(env, "files.info") == []  # no adoption was ever considered
     assert _calls(env, "agents.conversations.setCanvasContent") == []
-    assert surface_store().get(CH) is None or not surface_store().get(CH).plan_canvas_id
+    assert not surface_store().get(CH).plan_canvas_id
+
+
+def _canvas_info(canvas_id: str) -> dict[str, Any]:
+    props: dict[str, Any] = {"canvas": {"file_id": canvas_id}} if canvas_id else {}
+    return {"ok": True, "channel": {"id": CH, "properties": props}}
+
+
+@pytest.mark.parametrize("pending_survives", ["memory", "restart"])
+def test_a_canvas_whose_create_answer_was_lost_is_adopted_next_time(
+    env: Any, monkeypatch: Any, pending_survives: str
+) -> None:
+    """A create that may have landed (the answer was lost) is ours: the next call's
+    "already exists" adopts the channel's canvas instead of refusing it for good."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
+    assert not out.ok and "may have applied" in out.text
+    assert surface_store().get(CH).canvas_create_pending_since  # stored before the create
+    if pending_survives == "restart":
+        tools.forget_channel(CH)  # only the stored record carries it over
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch)  # our bot made it, just now
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert out.ok, out.text
+    assert _calls(env, "files.info")[0]["file"] == "F9"
+    assert surface_store().get(CH).plan_canvas_id == "F9"
+    assert not surface_store().get(CH).canvas_create_pending_since
+    assert _calls(env, "agents.conversations.setCanvasContent")[0]["canvas_id"] == "F9"
+    # Adopted once: the next call writes the stored canvas without a create.
+    assert _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v3"}).ok
+    assert len(_calls(env, "conversations.canvases.create")) == 2
+
+
+def _our_canvas(monkeypatch: Any, *, user: str = "UBOT", bot: str = "", age: float = 0.0) -> Any:
+    """files.info for the channel canvas: its creator and when it was made."""
+    import time as time_mod
+
+    from kiro_crew.slack import enterprise
+
+    monkeypatch.setattr(enterprise, "validated_self_user_id", lambda: "UBOT")
+    monkeypatch.setattr(enterprise, "validated_self_bot_id", lambda: "BBOT")
+    created = int(time_mod.time() + age)
+
+    def info(_params: dict) -> dict:
+        file: dict[str, Any] = {"id": "F9", "user": user, "created": created}
+        if bot:
+            file["bot_id"] = bot
+        return {"ok": True, "file": file}
+
+    return info
+
+
+@pytest.mark.parametrize(
+    "creator",
+    [
+        {"user": "UHUMAN"},  # a person's canvas
+        {"user": "UHUMAN", "bot": "BOTHER"},  # another app's canvas
+        {"user": "UBOT", "age": -3600.0},  # ours, but made long before the lost create
+    ],
+)
+def test_a_foreign_canvas_is_never_adopted_or_overwritten(
+    env: Any, monkeypatch: Any, creator: dict
+) -> None:
+    """A lost create of ours only lets the next "already exists" adopt a canvas
+    files.info says our bot made, after that create began: anything else is a
+    canvas someone else made, left untouched and refused as usual."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch, **creator)
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
+    assert _calls(env, "agents.conversations.setView") == []
+    assert not (surface_store().get(CH) and surface_store().get(CH).plan_canvas_id)
+
+
+@pytest.mark.parametrize("case", ["bot_id_only", "two_lost_creates"])
+def test_our_canvas_is_adopted_by_bot_id_and_after_two_lost_creates(
+    env: Any, monkeypatch: Any, case: str
+) -> None:
+    """Our bot id alone identifies our canvas, and a second lost create keeps the
+    first one's start, so a canvas the first one made still counts."""
+    import time as time_mod
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    first = time_mod.time()
+    user = "UOTHER" if case == "bot_id_only" else "UBOT"
+    # Made now, by the first create: read before the clock is moved below.
+    canvas = _our_canvas(monkeypatch, user=user, bot="BBOT")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    if case == "two_lost_creates":
+        # The second lost create starts long after the first one's canvas was made.
+        # Only tools' own clock binding moves: the stdlib time module is shared
+        # by the whole worker (every store write and log timestamp reads it).
+        from kiro_crew.testing.clock import ManualClock
+
+        ManualClock(start=first + 3600).install(monkeypatch, tools)
+        assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+        assert surface_store().get(CH).canvas_create_pending_since == pytest.approx(first, abs=5)
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = canvas
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert out.ok, out.text
+    assert surface_store().get(CH).plan_canvas_id == "F9"
+
+
+@pytest.mark.parametrize("unknown", ["missing_scope", "transport", "no_self_identity"])
+def test_an_unverifiable_canvas_is_refused_and_code_channels_stay_on(
+    env: Any, monkeypatch: Any, unknown: str
+) -> None:
+    """When who made the canvas can't be told (no files:read, a dropped read, our
+    own identity unknown) it is refused, nothing written, and the install-wide
+    latch is never tripped by that read."""
+    from kiro_crew.slack import enterprise, features
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch)
+    if unknown == "missing_scope":
+        env.api.responses["files.info"] = {"ok": False, "error": "missing_scope"}
+    elif unknown == "transport":
+        env.api.responses["files.info"] = ConnectionResetError("socket reset")
+    else:
+        monkeypatch.setattr(enterprise, "validated_self_user_id", lambda: "")
+        monkeypatch.setattr(enterprise, "validated_self_bot_id", lambda: "")
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
+    assert features.CODE_CHANNELS not in features.latched()
+
+
+def test_a_canvas_whose_id_write_failed_is_adopted_after_a_restart(
+    env: Any, monkeypatch: Any
+) -> None:
+    """The create succeeds, storing its id fails, and the gateway restarts: the
+    create's intent was stored before it ran, so the next call's "already exists"
+    adopts our canvas instead of refusing the channel's plan for good."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = {"ok": True, "canvas_id": "F9"}
+    real_update = tools.surface_update
+
+    async def id_write_fails(channel: str, **fields: Any) -> Any:
+        if fields.get("plan_canvas_id"):
+            raise OSError("disk full")
+        return await real_update(channel, **fields)
+
+    monkeypatch.setattr(tools, "surface_update", id_write_fails)
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    monkeypatch.setattr(tools, "surface_update", real_update)
+    tools.forget_channel(CH)  # the restart: nothing in memory survives
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("F9")
+    env.api.responses["files.info"] = _our_canvas(monkeypatch)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert out.ok, out.text
+    assert surface_store().get(CH).plan_canvas_id == "F9"
+
+
+def test_no_canvas_is_created_when_its_intent_cannot_be_stored(env: Any, monkeypatch: Any) -> None:
+    """Without a durable record that a create of ours ran, a lost answer could
+    never be adopted: the create is not attempted at all."""
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = {"ok": True, "canvas_id": "F9"}
+    real_update = tools.surface_update
+
+    async def intent_write_fails(channel: str, **fields: Any) -> Any:
+        if fields.get("canvas_create_pending_since"):
+            raise OSError("disk full")
+        return await real_update(channel, **fields)
+
+    monkeypatch.setattr(tools, "surface_update", intent_write_fails)
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    assert _calls(env, "conversations.canvases.create") == []
+
+
+def test_a_lost_create_answer_adopts_nothing_when_slack_names_no_canvas(env: Any) -> None:
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = ConnectionResetError("socket reset")
+    assert not _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"}).ok
+    env.api.responses["conversations.canvases.create"] = {
+        "ok": False,
+        "error": "channel_canvas_already_exists",
+    }
+    env.api.responses["conversations.info"] = _canvas_info("")
+    out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan v2"})
+    assert not out.ok and "did not create" in out.text
+    assert _calls(env, "agents.conversations.setCanvasContent") == []
 
 
 def test_context_bar_items_follow_the_workspace_items(env: Any) -> None:
@@ -326,6 +547,65 @@ def test_summarize_becomes_a_prompt_for_the_bound_session(env: Any) -> None:
         and "Summarize this session" in env.routed[0][1]
     )
     assert env.sel.ops("slack.code_channel.command")[-1]["outcome"] == "allowed"
+
+
+def test_an_archive_finished_during_the_rebind_runs_no_turn(env: Any, monkeypatch: Any) -> None:
+    """Stamped and unfenced while the message rebinds: the stored stamp stops it."""
+    from kiro_crew.slack.code_channels import routing
+
+    _bind(env)
+    stored = env.store.get_binding(CH)
+
+    async def rebind(*_a: Any, **_k: Any) -> Any:
+        env.store.replace_binding(dataclasses.replace(stored, archived_at=1.0))
+        return stored
+
+    monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)
+    monkeypatch.setattr(routing, "_bind_channel", rebind)
+    result = routing.InboundResult(routing.Gate.DIRECTED, binding=stored)
+    event = {"channel": CH, "team": "T1"}
+    assert not asyncio.run(routing.deliver_directed(env.orch, result, event, "hi", OWNER))
+    assert env.routed == []
+
+
+@pytest.mark.parametrize("when", ["before", "during_the_rebind"])
+def test_a_channel_fenced_as_archived_runs_no_turn(env: Any, monkeypatch: Any, when: str) -> None:
+    """Slack archived it but both stamp writes failed: the in-process fence alone
+    keeps an in-flight message from reaching the session."""
+    from kiro_crew.slack.code_channels import routing
+
+    _bind(env)
+    rebinds: list[int] = []
+    try:
+        if when == "before":
+            # Fenced before the message: no fresh session is bound for it either.
+            surface.fence_archived(CH)
+
+            async def no_rebind(*_a: Any, **_k: Any) -> Any:
+                rebinds.append(1)
+                return env.store.get_binding(CH)
+
+            monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)
+            monkeypatch.setattr(routing, "_bind_channel", no_rebind)
+        else:
+            # The session was closed, so the message rebinds it; the Archive
+            # lands during that bind's awaits, after the first fence read.
+            stored = env.store.get_binding(CH)
+
+            async def rebind(*_a: Any, **_k: Any) -> Any:
+                surface.fence_archived(CH)
+                return stored
+
+            monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)
+            monkeypatch.setattr(routing, "_bind_channel", rebind)
+        # A channel message: no entry check of its own in front of the router.
+        result = routing.InboundResult(routing.Gate.DIRECTED, binding=env.store.get_binding(CH))
+        event = {"channel": CH, "team": "T1"}
+        assert not asyncio.run(routing.deliver_directed(env.orch, result, event, "hi", OWNER))
+        assert env.routed == [] and rebinds == []
+        assert not env.store.get_binding(CH).archived_at  # only the fence says so
+    finally:
+        surface.unfence(CH)
 
 
 def test_a_redelivered_command_runs_once(env: Any) -> None:
@@ -590,6 +870,40 @@ def test_archive_failure_restores_the_button(env: Any) -> None:
     assert env.slack.updates[-1][3] == [{"type": "section"}]
 
 
+@pytest.mark.parametrize("slack_says", [True, None, False])
+def test_an_archive_whose_answer_was_lost_is_reconciled_with_slack(
+    env: Any, monkeypatch: Any, slack_says: bool | None
+) -> None:
+    """A transport failure may hide an archive Slack applied: Slack's own state
+    decides, and only a channel confirmed live gets its button back."""
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+    from kiro_crew.slack.code_channels.surface_client import SurfaceClient
+
+    async def lost(self: Any, *_a: Any, **_k: Any) -> None:
+        raise CodeChannelApiError(
+            "agents.conversations.archive", "transport_error", maybe_applied=True
+        )
+
+    async def says(_channel: str) -> bool | None:
+        return slack_says
+
+    recovered: list[str] = []
+    monkeypatch.setattr(SurfaceClient, "archive", lost)
+    monkeypatch.setattr(wrapup, "_still_archived", says)
+    monkeypatch.setattr(wrapup, "_start_recovery", lambda b, *_a: recovered.append(b.channel_id))
+    _bind(env)
+    _, ts = _wrap(env)
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    archived = bool(env.store.get_binding(CH).archived_at)
+    if slack_says is False:  # confirmed live: nothing recorded, the button is back
+        assert not archived and not recovered
+        assert env.slack.updates[-1][3] == [{"type": "section"}]
+    elif slack_says is None:  # can't tell: fenced, and the bounded recovery decides
+        assert recovered == [CH]
+    else:  # archived in Slack: recorded and cleaned up as a normal archive
+        assert archived and not recovered
+
+
 def test_a_newer_wrap_up_makes_the_older_button_stale_without_editing_it(env: Any) -> None:
     _bind(env)
     _, first = _wrap(env)
@@ -622,6 +936,9 @@ def test_archive_removes_a_clean_worktree(env: Any, worktree: Any) -> None:
     root, tree = worktree
     _bind(env, project=str(root))
     _register_workspace(root, tree)
+    main = _git("rev-parse", "main", cwd=root)  # a clone's origin/HEAD vouches for main
+    _git("update-ref", "refs/remotes/origin/main", main, cwd=root)
+    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
     _, ts = _wrap(env)
     assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
     assert not tree.exists()
@@ -885,7 +1202,8 @@ def test_the_wrap_up_start_hook_runs_before_every_other(monkeypatch: Any) -> Non
     monkeypatch.setattr(hooks, "_END_HOOKS", [])
     monkeypatch.setattr(surface, "_INSTALLED", False)
     surface.install(lambda: None)
-    assert hooks._START_HOOKS[0] is wrapup.on_turn_start
+    # The stop fence's turn mark first, then the wrap-up, then everything else.
+    assert hooks._START_HOOKS[:2] == [surface.note_turn_start, wrapup.on_turn_start]
 
 
 @pytest.mark.parametrize(
@@ -1148,7 +1466,9 @@ def test_archive_keeps_the_tree_while_a_worker_is_mid_turn_in_it(
     record.folder_id = "f1"
     WorkspaceStore().put(record)
     monkeypatch.setattr(cc_folders, "subtree_ids", lambda _s, fid: frozenset({fid}))
-    monkeypatch.setattr(cc_folders, "sessions_in", lambda _s, _ids: {"chat-7-1": (True, 3)})
+    monkeypatch.setattr(
+        cc_folders, "sessions_in", lambda _rows, _ids, _tree="": {"chat-7-1": (True, 3)}
+    )
     events: list[tuple[str, str]] = []
     _retarget_service(monkeypatch, tmp_path, events, applies=True)
     _, ts = _wrap(env)
@@ -1215,6 +1535,64 @@ def test_archive_keeps_the_tree_while_the_bound_session_is_mid_turn(
     assert tree.is_dir() and events == []
 
 
+@pytest.mark.parametrize("change", ["bound_turn", "worker_turn", "worker_joined"])
+def test_archive_keeps_the_tree_when_a_turn_starts_while_sessions_move(
+    env: Any, worktree: Any, monkeypatch: Any, tmp_path: Path, change: str
+) -> None:
+    """Idle when checked is not idle at removal: a turn started (or a worker filed)
+    while the sessions were being moved keeps the tree, and they move back."""
+    from kiro_crew.slack.code_channels.workspace import folders as cc_folders
+
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    record = WorkspaceStore().get("T1", CH)
+    record.folder_id = "f1"
+    WorkspaceStore().put(record)
+    bound = SimpleNamespace(turn_running=False, _turn_generation=1, folder_id="")
+    worker = SimpleNamespace(turn_running=False, _turn_generation=4, folder_id="f1")
+    slots = {SLOT: bound, "chat-7-1": worker}
+    monkeypatch.setattr(env.state, "_slots", slots, raising=False)
+    monkeypatch.setattr(cc_folders, "subtree_ids", lambda _s, fid: frozenset({fid}))
+    events: list[tuple[str, str]] = []
+    svc = _retarget_service(monkeypatch, tmp_path, events, applies=True)
+    moved = svc._set_project
+
+    projects: dict[str, str] = {}
+
+    async def set_project(key: str, path: str) -> bool:
+        ok = await moved(key, path)
+        projects[key] = path
+        if path == str(root):  # the move off the tree; a turn starts meanwhile
+            if change == "bound_turn":
+                bound.turn_running, bound._turn_generation = True, 2
+            elif change == "worker_turn":
+                worker._turn_generation = 5  # began and ended between the reads
+            else:
+                slots["chat-8-1"] = SimpleNamespace(
+                    turn_running=False, _turn_generation=0, folder_id="f1"
+                )
+        return ok
+
+    svc._set_project = set_project
+
+    async def reader(key: str) -> str:
+        return projects.get(key, str(tree))
+
+    svc._project_of = reader
+    _, ts = _wrap(env)
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    assert tree.is_dir()
+    assert not any(e[0] == "worktree_remove" for e in events)
+    assert ("set_project", f"{SLOT}->{tree}") in events  # moved back
+    kept = [
+        r
+        for r in env.sel.ops("slack.code_channel.worktree_release")
+        if "result=kept" in r["resources"]
+    ]
+    assert kept
+
+
 def test_a_retry_takes_its_stamp_back_when_slack_was_unarchived_meanwhile(
     env: Any, worktree: Any, monkeypatch: Any
 ) -> None:
@@ -1235,6 +1613,118 @@ def test_a_retry_takes_its_stamp_back_when_slack_was_unarchived_meanwhile(
         await wrapup.drain_recoveries()
 
     asyncio.run(click_then_wait())
+    assert not env.store.get_binding(CH).archived_at and tree.is_dir()
+    assert CH not in surface._archived_here
+    assert env.sel.ops("slack.code_channel.worktree_release") == []
+
+
+def test_a_click_takes_its_stamp_back_when_slack_was_unarchived_before_it(
+    env: Any, worktree: Any
+) -> None:
+    """An unarchive recorded between Slack's archive and the click's stamp is
+    not overwritten: the click asks Slack again and leaves the channel live."""
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    _, ts = _wrap(env)
+    # Someone unarchived it in Slack right after the click archived it.
+    env.api.responses["conversations.info"] = {
+        "ok": True,
+        "channel": {"id": CH, "is_archived": False},
+    }
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    assert _calls(env, "agents.conversations.archive")
+    assert not env.store.get_binding(CH).archived_at and tree.is_dir()
+    assert CH not in surface._archived_here
+    assert env.sel.ops("slack.code_channel.worktree_release") == []
+    assert "result=unarchived" in env.sel.ops("slack.code_channel.archive")[-1]["resources"]
+
+
+def test_a_click_that_cannot_read_slack_after_its_stamp_cleans_up_only_once_it_can(
+    env: Any, worktree: Any, monkeypatch: Any
+) -> None:
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    _, ts = _wrap(env)
+    _flaky_archive_stamp(env, monkeypatch, failures=0)
+    answers = iter([None, True, True])  # unreadable after the click's stamp, then archived
+
+    async def still_archived(_channel: str) -> bool | None:
+        return next(answers)
+
+    monkeypatch.setattr(wrapup, "_still_archived", still_archived)
+
+    async def click_then_wait() -> None:
+        assert await wrapup.handle_archive_click(env.orch, _click(OWNER, ts))
+        # Nothing removed on an unknown answer; the channel stays fenced.
+        assert tree.is_dir() and CH in surface._archived_here
+        assert env.sel.ops("slack.code_channel.worktree_release") == []
+        await wrapup.drain_recoveries()
+
+    asyncio.run(click_then_wait())
+    assert env.store.get_binding(CH).archived_at and not tree.exists()
+    assert CH not in surface._archived_here
+
+
+def test_the_retry_takes_back_the_clicks_stamp_when_slack_then_says_unarchived(
+    env: Any, worktree: Any, monkeypatch: Any
+) -> None:
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    _, ts = _wrap(env)
+    _flaky_archive_stamp(env, monkeypatch, failures=0)
+    answers = iter([None, False])  # unreadable after the click's stamp, then live
+
+    async def still_archived(_channel: str) -> bool | None:
+        return next(answers)
+
+    monkeypatch.setattr(wrapup, "_still_archived", still_archived)
+
+    async def click_then_wait() -> None:
+        assert await wrapup.handle_archive_click(env.orch, _click(OWNER, ts))
+        assert env.store.get_binding(CH).archived_at  # the click's stamp
+        await wrapup.drain_recoveries()
+
+    asyncio.run(click_then_wait())
+    assert not env.store.get_binding(CH).archived_at and tree.is_dir()
+    assert CH not in surface._archived_here
+    assert env.sel.ops("slack.code_channel.worktree_release") == []
+
+
+def test_a_click_whose_stamp_cannot_be_taken_back_stays_fenced_until_it_is(
+    env: Any, worktree: Any, monkeypatch: Any
+) -> None:
+    root, tree = worktree
+    _bind(env, project=str(root))
+    _register_workspace(root, tree)
+    _, ts = _wrap(env)
+    monkeypatch.setattr(wrapup, "_RECORD_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    env.api.responses["conversations.info"] = {
+        "ok": True,
+        "channel": {"id": CH, "is_archived": False},
+    }
+    real = env.store.update_binding
+    take_backs = [0]
+
+    def first_take_back_fails(channel: str, **fields: Any) -> Any:
+        if fields.get("archived_at") == 0.0:
+            take_backs[0] += 1
+            if take_backs[0] == 1:
+                raise OSError("busy")
+        return real(channel, **fields)
+
+    monkeypatch.setattr(env.store, "update_binding", first_take_back_fails)
+
+    async def click_then_wait() -> None:
+        assert await wrapup.handle_archive_click(env.orch, _click(OWNER, ts))
+        # Live in Slack but still stamped here: the fence holds until it is not.
+        assert env.store.get_binding(CH).archived_at and CH in surface._archived_here
+        await wrapup.drain_recoveries()
+
+    asyncio.run(click_then_wait())
+    assert take_backs[0] == 2
     assert not env.store.get_binding(CH).archived_at and tree.is_dir()
     assert CH not in surface._archived_here
     assert env.sel.ops("slack.code_channel.worktree_release") == []
