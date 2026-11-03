@@ -572,6 +572,56 @@ describe('Ultra Mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-note')).toBeNull()
   })
 
+  it('offers the mid-chat switch in an ongoing plain chat, directly right of the permission button', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    const sw = screen.getByTestId('crew-mode-switch')
+    expect(sw).toHaveAttribute('aria-pressed', 'false')
+    expect(sw).toHaveTextContent('Ultra Mode')
+    const perm = screen.getByRole('button', { name: /^Approval mode:/ })
+    expect(perm.nextElementSibling ?? perm.parentElement?.nextElementSibling).toBe(sw)
+  })
+
+  it('turns an ongoing plain chat into an Ultra Mode chat, and the switch goes', async () => {
+    chatSlotAgent.mockClear()
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    // Gone the moment it is pressed: there is no way back.
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
+    await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Ultra Mode')
+    // The Board shows the Ultra panel before the gateway's root stamp reaches the row.
+    expect(await screen.findByTestId('ultra-crew-panel', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+  })
+
+  it('leaves the chat a plain chat and puts the panel back when the mid-chat switch is refused', async () => {
+    chatSlotAgent.mockImplementationOnce(async () => { throw new Error('refused') })
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    await waitFor(() => expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument())
+    expect(store.getState().dashboard.slots[0].agent).toBe('default')
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('offers no mid-chat switch on a new chat, which keeps its own chip', async () => {
+    await renderWith({ messages: [] })
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+    expect(screen.getByTestId('crew-mode-chip')).toBeInTheDocument()
+  })
+
+  it('offers no mid-chat switch in an Ultra Mode chat', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+  })
+
+  it('offers no mid-chat switch in a crew member chat', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+  })
+
   it('is offered on the default template', async () => {
     await renderWith({ messages: [], agent: 'default', agentKind: 'template' })
     expect(screen.getByTestId('crew-mode-chip')).toBeInTheDocument()
@@ -654,6 +704,11 @@ describe('ChatPage with the Ultra Mode preview off', () => {
     localStorage.removeItem(PREVIEW_CREW_MODE)
   })
   afterEach(() => { localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
+
+  it('offers no mid-chat Ultra Mode switch in an ongoing chat', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+  })
 
   it('offers no Ultra Mode chip and no Ultra Mode welcome on a new chat', async () => {
     await renderWith({ messages: [] })

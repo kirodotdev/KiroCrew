@@ -250,24 +250,16 @@ describe('chat sidebar — conductor lane', () => {
     expect(bolt.getAttribute('width')).toBe('12')
     // The conductor's name is not shown: Crew Mode chooses it.
     expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
-    // The server's groups, not a guess from the rows: two sessions, none working.
-    // No ghost per worker: one small ghost with the counts.
-    await waitFor(() => {
-      const counts = within(container.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-root-counts')
-      // The words live in the accessible name and tooltip; the row shows the count.
-      expect(counts).toHaveAccessibleName('2 sessions')
-      expect(counts).toHaveAttribute('title', '2 sessions')
-      expect(counts).toHaveTextContent(/^2$/)
-      // The session count wears the chat icon, not the ghost.
-      expect(counts.querySelector('.lucide-message-square')).not.toBeNull()
-      expect(within(counts).queryByTestId('kiro-ghost-mark')).toBeNull()
-      // No running dot: the crew's working count says that.
-      expect(within(counts).queryByTestId('crew-root-running-dot')).toBeNull()
-    })
-    expect(within(container.querySelector('[data-crew-root="true"]') as HTMLElement).queryByTestId('crew-worker-stack')).toBeNull()
-    // The left side is one state word: an approval makes it "Needs you".
-    expect(getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/)
-    expect(getByTestId('crew-root-state')).not.toHaveClass('truncate')
+    // The server's groups, not a guess from the rows: W2 waits on an approval.
+    // Only what needs attention is drawn; the session total is gone from the row.
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 needs you$/))
+    const live = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(within(live).queryByTestId('crew-root-counts')).toBeNull()
+    expect(live.querySelector('.lucide-message-square')).toBeNull()
+    expect(within(live).queryByTestId('crew-root-state')).toBeNull()
+    expect(within(live).queryByTestId('crew-worker-stack')).toBeNull()
+    // The full counts stay in the tooltip.
+    expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '2 sessions, 1 needs you, and 1 waiting')
     // Only the root wears the eyebrow.
     expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
     // An idle crew's tag stays still: motion on the list means work is running.
@@ -295,19 +287,21 @@ describe('chat sidebar — conductor lane', () => {
     expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
   })
 
-  it('keeps an Ultra Mode row compact: its own state is one word, the sentence in the tooltip', async () => {
+  it('counts the root\'s own question with the crew\'s approvals as needs you', async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, needs_input: true, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-w2', title: 'W2', messages: 0, running: false, modified: 2000, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/))
-    expect(getByTestId('crew-root-state')).toHaveAttribute('title', 'Needs your answer')
+    // The root's own question plus W2's approval from the crew list.
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^2 need you$/))
     expect(getByTestId('crew-root-summary')).not.toHaveTextContent('Needs your answer')
+    // The tooltip carries the row's own total, the main chat's question included.
+    expect(getByTestId('crew-root-attention').getAttribute('title')).toContain('2 need you')
   })
 
-  it('reads "Running" with the working count, and no second running dot, while a crew member works', async () => {
+  it('reads "1 running" while a crew member works, with no session total', async () => {
     // The live rows stand in for a gateway that serves no crew list.
     mocks.crewWorkersNotServed = true
     const slots = [
@@ -315,16 +309,15 @@ describe('chat sidebar — conductor lane', () => {
       { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-counts')).toHaveAccessibleName('1 session'))
-    expect(getByTestId('crew-root-state')).toHaveTextContent(/^Running$/)
-    const counts = getByTestId('crew-root-counts')
-    // One number for the busy workers: the working count, not a second running dot.
-    expect(within(counts).queryByTestId('crew-root-running-dot')).toBeNull()
-    expect(counts).toHaveTextContent(/^1$/)
-    expect(getByTestId('crew-root-breakdown')).toHaveAccessibleName('1 working')
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 running$/))
+    const part = within(getByTestId('crew-root-attention')).getByTestId('crew-root-count')
+    expect(part).toHaveAttribute('data-bucket', 'running')
+    expect(part.querySelector('svg')?.getAttribute('class')).toContain('lucide-circle')
+    expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '1 session and 1 working')
+    expect(screen.queryByTestId('crew-root-counts')).toBeNull()
   })
 
-  it('counts the crew on the root row: working, waiting and needs you, each its own glyph and a number', async () => {
+  it('shows only what needs attention on the root row, needs you before running', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
@@ -335,68 +328,111 @@ describe('chat sidebar — conductor lane', () => {
       { key: 'k-w4', title: 'W4', messages: 2, running: false, pending_approval: true, modified: 2700, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId, queryByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-breakdown')).toHaveAccessibleName('1 needs you, 2 working, and 1 waiting'))
-    // A glyph of its own and a number each, no words: the words are each count's tooltip.
-    const parts = within(getByTestId('crew-root-breakdown')).getAllByTestId('crew-root-count')
-    expect(parts.map(p => [p.getAttribute('data-bucket'), p.textContent, p.getAttribute('title'), p.querySelector('svg')?.getAttribute('class')?.match(/lucide-(loader|hourglass|triangle-alert)\b/)?.[1]])).toEqual([
-      ['needs_you', '1', '1 needs you', 'triangle-alert'], ['working', '2', '2 working', 'loader'], ['waiting', '1', '1 waiting', 'hourglass'],
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '4 sessions, 1 needs you, 2 working, and 1 waiting'))
+    // Needs you first, then running; idle work is not drawn. Each glyph has its own shape.
+    const parts = within(getByTestId('crew-root-attention')).getAllByTestId('crew-root-count')
+    expect(parts.map(p => [p.getAttribute('data-bucket'), p.textContent, p.querySelector('svg')?.getAttribute('class')?.match(/lucide-(hand|circle|pause)\b/)?.[1]])).toEqual([
+      ['needs_you', '1 needs you', 'hand'], ['running', '2 running', 'circle'],
     ])
-    // One set with the session count: its 11px glyph and muted number; each
-    // glyph wears its group's colour (needs you warm, working the running green).
-    expect(parts.every(p => p.className.includes('crew-tone-muted') && p.className.includes('gap-1'))).toBe(true)
-    expect(parts.map(p => p.querySelector('svg')?.getAttribute('width'))).toEqual(['11', '11', '11'])
-    expect(parts[0].querySelector('svg')?.getAttribute('class')).toContain('crew-tone-warn')
-    expect(parts[1].querySelector('svg')?.getAttribute('class')).toContain('text-[var(--ok)]')
-    // The loader turns only where motion is allowed.
-    expect(parts[1].querySelector('svg')?.getAttribute('class')).toContain('motion-safe:animate-spin')
-    expect(parts[1].querySelector('svg')?.getAttribute('class')).not.toMatch(/(^|\s)animate-spin/)
-    expect(getByTestId('crew-root-breakdown')).toHaveAttribute('title', '1 needs you, 2 working, and 1 waiting')
-    // A count that does not fit is dropped whole, never cut in half; all fit here, so no ellipsis.
-    expect(getByTestId('crew-root-breakdown').className).toContain('flex-wrap')
-    expect(getByTestId('crew-root-breakdown').className).toContain('overflow-hidden')
-    expect(queryByTestId('crew-root-hidden')).toBeNull()
+    expect(parts.map(p => p.querySelector('svg')?.getAttribute('width'))).toEqual(['11', '11'])
+    expect(parts[0].className).toContain('crew-tone-warn')
+    expect(parts[1].className).toContain('text-[var(--ok)]')
+    expect(queryByTestId('crew-root-counts')).toBeNull()
   })
 
-  it('reads "Running", not "Waiting", beside a working count of a worker whose question sits with its conductor', async () => {
+  it('reads a worker whose question sits with its conductor as running, not needs you', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, needs_input: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-breakdown')).toHaveAccessibleName('1 working'))
-    expect(getByTestId('crew-root-state')).toHaveTextContent(/^Running$/)
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 running$/))
   })
 
-  it('shows an ellipsis when a narrow row wraps counts away, so a hidden count never looks like none', async () => {
+  it('drops a part that does not fit whole and shows an ellipsis, never a cut word', async () => {
     mocks.crewWorkersNotServed = true
-    // A narrow row: the waiting count wraps onto the hidden second line.
     const top = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.getAttribute('data-bucket') === 'waiting' ? 16 : 0
+      return this.getAttribute('data-bucket') === 'running' ? 16 : 0
     })
     try {
       const slots = [
         { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
         { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
-        { key: 'k-w2', title: 'W2', messages: 2, running: false, modified: 2900, created_by: 'k-root', crew_root: 'k-root' },
+        { key: 'k-w2', title: 'W2', messages: 2, running: false, pending_approval: true, modified: 2900, created_by: 'k-root', crew_root: 'k-root' },
       ]
-      const { findByTestId, getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+      const { findByTestId } = renderSidebar(slots, [], null, {}, [], slots)
       expect(await findByTestId('crew-root-hidden')).toHaveTextContent(/^…$/)
-      expect(getByTestId('crew-root-hidden')).toHaveAttribute('title', '1 working and 1 waiting')
     } finally {
       top.mockRestore()
     }
   })
 
-  it('shows no counts when every crew member is done', async () => {
+  it('says how many stalled, and who stalled longest and for how long, on a second line', async () => {
+    // A pinned clock (Date only; timers stay real for waitFor), so "40m" is exact.
+    const now = Date.UTC(2026, 10, 2, 12, 0)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(now)
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'Docs team', agent: '', status: 'idle', group: 'waiting', last_activity: new Date(now - 32 * 60_000).toISOString(), ledger_item: 'it_1', created_by: 'k-root' },
+      { key: 'k-w2', title: 'Menu team', agent: '', status: 'idle', group: 'waiting', last_activity: new Date(now - 40 * 60_000).toISOString(), ledger_item: 'it_2', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      // The ledger's own stale moments: Menu team went stale first.
+      crew_work: { open: 2, person: 0, items: [{ worker: 'k-w1', stale_at_ms: now - 2 * 60_000 }, { worker: 'k-w2', stale_at_ms: now - 10 * 60_000 }] } }]
+    const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    await waitFor(() => expect(within(getByTestId('crew-root-attention')).getByTestId('crew-root-count')).toHaveTextContent(/^2 stalled$/))
+    // Named and timed from the crew list once it has answered.
+    await waitFor(() => expect(getByTestId('crew-root-stalled-detail')).toHaveTextContent(/^Stalled: Menu team · 40m$/))
+    expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '2 sessions, 2 waiting, and 2 stalled')
+  })
+
+  it('reads Done, and nothing else, when every crew member is done', async () => {
     mocks.crewWorkersRows = [
       { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
       { key: 'k-w2', title: 'W2', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
     ]
     const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true }]
     const { getByTestId, queryByTestId } = renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(getByTestId('crew-root-counts')).toHaveAccessibleName('2 sessions'))
-    expect(queryByTestId('crew-root-breakdown')).toBeNull()
+    await waitFor(() => expect(getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+    expect(queryByTestId('crew-root-counts')).toBeNull()
+    expect(queryByTestId('crew-root-attention')).toBeNull()
+  })
+
+  it('never reads Done while the main chat itself is interrupted or still running', async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
+    ]
+    const interrupted = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, interrupted: true, modified: 4000, crew_mode_root: true }]
+    const first = renderSidebar(interrupted, [], null, {}, [], interrupted)
+    await waitFor(() => expect(first.getByTestId('crew-root-state')).toHaveTextContent(/^Paused$/))
+    expect(first.queryByTestId('crew-root-done')).toBeNull()
+    first.unmount()
+    const running = [{ ...interrupted[0], interrupted: false, running: true }]
+    const second = renderSidebar(running, [], null, {}, [], running)
+    await waitFor(() => expect(second.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('success'))
+    expect(second.queryByTestId('crew-root-done')).toBeNull()
+  })
+
+  it('counts one blocker once when a member waits on an approval its ledger item also reports', async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'needs_approval', group: 'approval', last_activity: '', ledger_item: 'it_1', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      crew_work: { open: 1, person: 1, person_workers: ['k-w1'], items: [] } }]
+    const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    await waitFor(() => expect(getByTestId('crew-root-attention')).toHaveTextContent(/^1 needs you$/))
+  })
+
+  it('counts separate blockers of different members separately', async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'needs_approval', group: 'approval', last_activity: '', ledger_item: 'it_1', created_by: 'k-root' },
+      { key: 'k-w2', title: 'W2', agent: '', status: 'idle', group: 'with_conductor', last_activity: '', ledger_item: 'it_2', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      crew_work: { open: 2, person: 1, person_workers: ['k-w2'], items: [] } }]
+    const { getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    await waitFor(() => expect(within(getByTestId('crew-root-attention')).getAllByTestId('crew-root-count')[0]).toHaveTextContent(/^2 need you$/))
   })
 
   it('marks the root row as the parent while one of its unlisted workers is in the pane', async () => {
@@ -446,17 +482,15 @@ describe('chat sidebar — conductor lane', () => {
       { key: 'k-w1', title: 'W1', messages: 2, running: false, pending_approval: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
     ]
     const { container } = renderSidebar(slots, [], null, {}, [], slots)
-    // The Ultra Mode row is compact: one word, the sentence in its tooltip.
     const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
-    expect(within(card).getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/)
-    expect(within(card).getByTestId('crew-root-state')).toHaveAttribute('title', 'Approval needed · 1')
-    // No approval waiting: the running word comes back.
+    expect(within(card).getByTestId('crew-root-attention')).toHaveTextContent(/^1 needs you$/)
+    // No approval waiting and no crew member running: the row's usual line, no counts.
     const { container: idle } = renderSidebar(slots.map(s => ({ ...s, pending_approval: false })), [], null, {}, [], slots.map(s => ({ ...s, pending_approval: false })))
-    expect(within(idle.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-root-state')).toHaveTextContent(/^Running$/)
-    // A question the conductor itself owes the person reads Needs you too.
+    expect(within(idle.querySelector('[data-crew-root="true"]') as HTMLElement).queryByTestId('crew-root-attention')).toBeNull()
+    // A question the conductor itself owes the person is one more.
     const asking = slots.map(s => s.key === 'k-root' ? { ...s, needs_input: true } : s)
     const { container: owed } = renderSidebar(asking, [], null, {}, [], asking)
-    expect(within(owed.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-root-state')).toHaveAttribute('title', 'Needs your answer')
+    expect(within(owed.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('crew-root-attention')).toHaveTextContent(/^2 need you$/)
   })
 
   it("folds the workers summary into the row's one status line, in place of its last message", async () => {
@@ -483,7 +517,7 @@ describe('chat sidebar — conductor lane', () => {
     const { qc } = renderSidebar(slots, [], null, {}, [], slots)
     await waitFor(() => expect(qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
     const summary = screen.getByTestId('crew-root-summary')
-    expect(summary).toHaveTextContent('Needs you')
+    expect(summary).toHaveTextContent('1 needs you')
     expect(summary).not.toHaveTextContent('Could not load the crew.')
     expect(summary.querySelector('[role="alert"]')).toBeNull()
   })
@@ -495,18 +529,19 @@ describe('chat sidebar — conductor lane', () => {
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
     ]
     renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Could not load the crew.'))
-    expect(screen.getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/)
+    // The read settles on its failure; both are said together then.
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Could not load the crew.')
+      expect(screen.getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/)
+    })
   })
 
   it('keeps an Ultra Mode row compact before it has any crew member', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, needs_input: true, modified: 4000, crew_mode_root: true }]
     renderSidebar(slots, [], null, {}, [], slots)
-    await waitFor(() => expect(screen.getByTestId('crew-root-state')).toHaveTextContent(/^Needs you$/))
+    await waitFor(() => expect(screen.getByTestId('crew-root-attention')).toHaveTextContent(/^1 needs you$/))
     expect(screen.queryByTestId('crew-root-counts')).toBeNull()
-    // No crew: no worker counts either.
-    expect(screen.queryByTestId('crew-root-breakdown')).toBeNull()
   })
 
   it('maps queued work to Waiting, never Done, and keeps its line as the tooltip', () => {
@@ -533,21 +568,23 @@ describe('chat sidebar — conductor lane', () => {
     const { qc, unmount } = renderSidebar(slots, [], null, {}, [], slots)
     // The row paints the store's own live row first (W1 idle: "Done 0/1"), then
     // the list route's answer, whose group wins for the key it names.
-    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Needs you'))
+    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('1 needs you'))
     mocks.crewWorkersFail = true
     await qc.refetchQueries({ queryKey: ['crew-workers', 'k-root'] })
     await waitFor(() => expect(qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
     const summary = screen.getByTestId('crew-root-summary')
     expect(summary).toHaveTextContent('Could not load the crew.')
-    expect(summary).not.toHaveTextContent('Needs you')
+    expect(summary).not.toHaveTextContent('needs you')
     expect(summary.querySelector('[role="alert"]')).not.toBeNull()
     unmount()
     // Never any data: the row still says the read failed, in place of its last message.
     const second = renderSidebar(slots, [], null, {}, [], slots)
     await waitFor(() => expect(second.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('error'))
     // The error lands in the query first and on the row a tick later.
-    await waitFor(() => expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Could not load the crew.'))
-    expect(screen.queryByText('Dispatched two workers')).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByTestId('crew-root-summary')).toHaveTextContent('Could not load the crew.')
+      expect(screen.queryByText('Dispatched two workers')).toBeNull()
+    })
   })
 
   it("leaves a Ultra Mode root's workers out of the person's list and keeps the root", () => {
@@ -1287,7 +1324,7 @@ describe('chat sidebar — conductor lane', () => {
       { key: 'k-w2', title: 'W2', messages: 2, running: false, modified: 2000, parent: { slot: 'k-root', key: 'k-root' }, crew_root: 'k-root' },
     ])
     expect(queryByText('W1')).toBeNull()
-    await waitFor(() => expect(getByTestId('crew-root-summary')).toHaveTextContent('Needs you'))
+    await waitFor(() => expect(getByTestId('crew-root-summary')).toHaveTextContent('1 needs you'))
   })
 
   it('pairs each aggregate count with the glyph its children show, not a tint alone', () => {

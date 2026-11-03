@@ -274,6 +274,9 @@ interface ComposerDockViewProps {
   composerSessionControls: ReturnType<typeof useSessionControlChips>
   /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its switch on. */
   crewModeOffered: boolean
+  /** A plain chat that already has messages: the same chip sits right of the
+   *  permission button and turns this chat into an Ultra Mode chat, one way. */
+  crewModeMidChatOffered?: boolean
   turnOnCrewMode: () => void
   /** Set only while Crew Mode is on and no message is sent yet: the composer's
    *  Crew Mode mark is then a toggle that turns it off. */
@@ -322,7 +325,7 @@ export default function ComposerDockView({
   effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock,
-  composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -758,6 +761,9 @@ export default function ComposerDockView({
               compacting={!!currentSlot?.compacting}
               stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
+              afterApprovalMode={crewModeMidChatOffered
+                ? <CrewModeChip testId="crew-mode-switch" onTurnOn={turnOnCrewMode} busy={crewModeBusy} disabled={memorySwitching || !!crewModeSwitching} />
+                : undefined}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
               effortIsDefault={!currentSlot?.reasoning_effort && !legacyCodexEffort(currentSlot?.model || '', '', codexPairModels) && !!defaultEffort}

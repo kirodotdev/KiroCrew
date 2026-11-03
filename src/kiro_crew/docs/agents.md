@@ -68,7 +68,9 @@ Kiro Crew owns and rewrites a fixed set of specs; [agent-spec-fields.md](agent-s
 
 The dashboard's Crew Mode is off until you turn on **Settings → Developer →
 Feature Previews → Ultra Mode**. It is a per-device switch, kept in this browser.
-On, a new chat's composer offers the Crew Mode switch, a Crew Mode chat shows its
+On, a new chat's composer offers the Crew Mode switch, an ongoing plain chat
+offers it right of the permission button (it turns that chat into a Crew Mode
+chat, one way), a Crew Mode chat shows its
 welcome, its side panel's **Crew** tab lists its crew members, and the Sessions
 list draws it as a crew card with a **Crew Mode** filter. Its crew members are
 listed there, not as rows of your list.

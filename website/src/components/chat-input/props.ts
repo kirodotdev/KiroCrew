@@ -322,6 +322,8 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** Drawn directly right of the approval-mode picker (the mid-chat Ultra Mode chip). */
+  afterApprovalMode?: React.ReactNode
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
    *  per-slot pick. Only the chip's hover / accessible name says so: outside

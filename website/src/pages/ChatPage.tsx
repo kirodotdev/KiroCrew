@@ -699,7 +699,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // offer to turn Crew Mode off, since the server refuses that once a message was
   // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
   const hasUserMessage = slotLoading || messages.some(m => m.role === 'user')
-  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
+  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
@@ -1198,6 +1198,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // is still loading: drawn alone first, the Crew Mode chip would slide
               // across the memory chip arriving beside it.
               crewModeOffered={crewModeEligible && !crewModeChosen && !slotLoading && showComposerMemoryChip} turnOnCrewMode={turnOnCrewMode}
+              crewModeMidChatOffered={crewModeMidChat && !slotLoading && !showComposerMemoryChip}
               crewChipPressed={crewChipPressed}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
               // With the preview off too: the raw `crew_mode_root` stamp is the gateway's

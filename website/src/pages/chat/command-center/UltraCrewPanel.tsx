@@ -16,7 +16,8 @@ import type { CrewWorker } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
 import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
 import { artifactEntries } from '../../crewBoardRows'
-import { fmtDuration, fmtList, fmtRelative } from '../../../i18n/format'
+import { fmtList, fmtRelative } from '../../../i18n/format'
+import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { isNotFoundError } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
@@ -234,11 +235,6 @@ function minutesBetween(a: string | null | undefined, b: string | number | null 
   return Number.isFinite(ta) && Number.isFinite(tb) ? Math.max(0, Math.round((tb - ta) / 60000)) : NaN
 }
 
-function fmtMinutes(mins: number): string {
-  if (!Number.isFinite(mins)) return ''
-  if (mins < 60) return fmtDuration([[Math.max(1, mins), 'minute']], { unitDisplay: 'narrow' } as never)
-  return fmtDuration([[Math.floor(mins / 60), 'hour'], [mins % 60, 'minute']], { dropZero: true, unitDisplay: 'narrow' } as never)
-}
 
 const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,

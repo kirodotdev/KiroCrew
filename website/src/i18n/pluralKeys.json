@@ -421,5 +421,7 @@
   "apps.codeReviewSage.components.prStatusChips.failing_count",
   "apps.autoResearch.researchLabPage.estimate",
   "apps.autoResearch.researchLabPage.findings_tally",
-  "apps.autoResearch.researchLabPage.cycles_count"
+  "apps.autoResearch.researchLabPage.cycles_count",
+  "components.crewMode.ultra_row_count_stalled",
+  "components.crewMode.ultra_row_count_running"
 ]
