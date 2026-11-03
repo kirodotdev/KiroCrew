@@ -50,6 +50,7 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { useSessionCardLines, cardLineClass } from './cardLines'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
 import { CrewRowCounts } from './CrewRowCounts'
@@ -388,6 +389,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // row, because the slot's lifecycle is owned elsewhere.
   const onOpenElsewhere = opensElsewhere != null ? () => openElsewhere(opensElsewhere) : undefined
   const titleGenerating = useSlotTitleGenerating(s.key)
+  const cardLines = useSessionCardLines()
   // Peer ownership, present only on a row sourced from a connected remote
   // instance. Every local-only affordance below is gated on its ABSENCE rather
   // than disabled: a control that looks actionable and silently does nothing is
@@ -1199,13 +1201,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // The row's tail line when no state claims it: the last message, led by the
     // unread dot. A crew card shows it too until its workers summary has an answer.
     const lastMessageLine = (s.last_message || unreadDot) ? (
-      <div className={ROW_STATUS_LINE_MUTED_CLS}>
+      <div className={cardLines.preview > 1 ? `${ROW_STATUS_LINE_MUTED_CLS} !items-start` : ROW_STATUS_LINE_MUTED_CLS}>
         {unreadDot}
         {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
             a flex item's `min-width: auto` floor keeps it at content width
             instead of letting `truncate` clip it (i18n render gate,
             layout/ellipsis-with-flex-parent). */}
-        {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
+        {s.last_message ? <span className={`${cardLineClass(cardLines.preview)} min-w-0`} data-session-preview>{s.last_message}</span> : null}
       </div>
     ) : null
     // Custom hex (color_hex) wins over the palette index. It is deliberately
@@ -1847,15 +1849,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 </span>
               ) : null}
             </div>
-            {/* NEVER wraps. `truncate` rather than a two-line clamp, so every row
-                is the same height. A clamped title also moved the whole
-                secondary line down by a full line box on some rows, which is what
-                made the list read as ragged. The full string stays reachable
-                through the `title` attribute, and the rename box below is the one
-                place it is shown in full. */}
+            {/* One line by default: `truncate`, so every row is the same height.
+                A clamped title moves the secondary line down by a full line box
+                on some rows, which reads as ragged, so wrapping to 2 or 3 lines
+                is the user's opt-in (Title Lines on Session Cards). The full
+                string stays reachable through the `title` attribute, and the
+                rename box below shows it in full. */}
             <div
               data-session-title
-              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
+              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}`}
               title={tooltipTitle}
             >
               {/* No separate fork glyph: forked titles already carry the
