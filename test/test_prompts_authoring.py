@@ -1285,6 +1285,24 @@ class TestARefusedUpdateIsNotReportedAsSuccess:
         assert _outcomes(mock_sel)[-1] == "blocked"
         assert (tmp_path / ".kiro" / "prompts" / "p.md").read_text() == "ORIGINAL\n"
 
+    def test_a_busy_file_answers_a_retryable_503_not_a_refusal(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """Another process holding the file at the rename is not a security refusal."""
+        _user_prompt(tmp_path, "p", "ORIGINAL\n")
+        monkeypatch.setattr(_prompts_mod, "verified_replace_file_nolink", lambda *a, **kw: "busy")
+        resp = asyncio.run(
+            api_prompt_detail(
+                _write_request(
+                    "PUT", "p", body={"content": "NEW\n", "base_hash": _sha("ORIGINAL\n")}
+                )
+            )
+        )
+        assert resp.status == 503
+        assert json.loads(resp.body)["code"] == "prompt_busy"
+        assert _outcomes(mock_sel)[-1] == "error"
+        assert (tmp_path / ".kiro" / "prompts" / "p.md").read_text() == "ORIGINAL\n"
+
     def test_a_non_os_failure_in_the_scoped_read_is_still_audited(
         self, tmp_path, mock_sel, monkeypatch
     ):
