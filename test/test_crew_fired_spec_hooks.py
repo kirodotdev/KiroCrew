@@ -32,6 +32,8 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.hooks import (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
@@ -368,10 +370,77 @@ def _session_id_probe(tmp_path: Path, out_name: str) -> str:
         "out = sys.argv[1]\n"
         "with open(out, 'w', encoding='utf-8') as f:\n"
         "    json.dump({'env': os.environ.get('KIRO_SESSION_ID'),"
-        " 'stdin': event.get('acp_session_id', '<absent>')}, f)\n",
+        " 'stdin': event.get('acp_session_id', '<absent>'),"
+        " 'stdin_session_id': event.get('session_id', '<absent>'),"
+        " 'secret': os.environ.get('KC_TEST_HOOK_SECRET'),"
+        " 'spawned': os.environ.get('KIROCREW_SPAWNED')}, f)\n",
         encoding="utf-8",
     )
     return f'"{sys.executable}" "{script}" "{tmp_path / out_name}"'
+
+
+_ALL_SPEC_HOOK_EVENTS = (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_STOP,
+)
+
+
+def _fire_one(tmp_path, event, sid):
+    spec = ScriptHook(id="spec:a1:x", event=event, command=_session_id_probe(tmp_path, "x"))
+    tool = event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE)
+    asyncio.run(
+        ScriptHookStore(tmp_path).fire(
+            event,
+            "ctx",
+            tool_name="shell" if tool else "",
+            tool_input={} if tool else None,
+            session_key="dashboard:1",
+            extra_hooks=[spec],
+            acp_session_id=sid,
+        )
+    )
+    return json.loads((tmp_path / "x").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("event", _ALL_SPEC_HOOK_EVENTS)
+def test_every_spec_hook_event_gets_the_session_id_as_kiro_cli_names_it(
+    tmp_path, monkeypatch, event
+):
+    """KIRO_SESSION_ID in env and ``session_id`` on stdin, kiro-cli's names, on every event.
+
+    The gateway's other env is still not forwarded (an ambient secret does not
+    reach the hook). KIROCREW_SPAWNED is the sandbox spawn's own marker, set on
+    the hook even when the gateway's env has none, as kiro-cli's hooks inherit it.
+    """
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.setenv("KIRO_SESSION_ID", "ambient_bogus")
+    monkeypatch.setenv("KC_TEST_HOOK_SECRET", "s3cret")
+    monkeypatch.delenv("KIROCREW_SPAWNED", raising=False)
+    seen = _fire_one(tmp_path, event, "sess_abc")
+    assert seen == {
+        "env": "sess_abc",
+        "stdin": "sess_abc",
+        "stdin_session_id": "sess_abc",
+        "secret": None,
+        "spawned": "1",
+    }
+
+
+@pytest.mark.parametrize("event", _ALL_SPEC_HOOK_EVENTS)
+@pytest.mark.parametrize("sid", [None, ""])
+def test_no_session_id_means_no_key_and_no_env_on_every_event(tmp_path, monkeypatch, event, sid):
+    """No id: both stdin keys absent, KIRO_SESSION_ID unset, the ambient one not leaked."""
+    _passthrough_sandbox(monkeypatch)
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    monkeypatch.setenv("KIRO_SESSION_ID", "ambient_bogus")
+    seen = _fire_one(tmp_path, event, sid)
+    assert seen["env"] is None
+    assert seen["stdin"] == "<absent>"
+    assert seen["stdin_session_id"] == "<absent>"
 
 
 def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path, monkeypatch):
@@ -399,8 +468,16 @@ def test_a_spec_hook_gets_the_acp_session_id_and_a_stored_hook_does_not(tmp_path
     )
     spec_seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
     stored_seen = json.loads((tmp_path / "s").read_text(encoding="utf-8"))
-    assert spec_seen == {"env": "sess_abc", "stdin": "sess_abc"}
-    assert stored_seen == {"env": None, "stdin": "<absent>"}
+    assert (spec_seen["env"], spec_seen["stdin"], spec_seen["stdin_session_id"]) == (
+        "sess_abc",
+        "sess_abc",
+        "sess_abc",
+    )
+    assert (stored_seen["env"], stored_seen["stdin"], stored_seen["stdin_session_id"]) == (
+        None,
+        "<absent>",
+        "<absent>",
+    )
 
 
 def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkeypatch):
@@ -418,7 +495,7 @@ def test_an_unknown_acp_session_id_leaves_kiro_session_id_unset(tmp_path, monkey
         )
     )
     seen = json.loads((tmp_path / "x").read_text(encoding="utf-8"))
-    assert seen == {"env": None, "stdin": "<absent>"}
+    assert (seen["env"], seen["stdin"], seen["stdin_session_id"]) == (None, "<absent>", "<absent>")
 
 
 @pytest.mark.parametrize(("sid", "expected"), [("sess_abc", "sess_abc"), ("", None)])
