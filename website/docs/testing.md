@@ -181,6 +181,27 @@ changed and whether only their identity did, or a parent re-render). Run one
 scenario with `node scripts/bench-render.mjs --scenario s2 --runs 1` after the
 first build; `--viewport mobile --cpu 4` approximates a phone.
 
+The benchmark hooks into the store through `window.__kcPerfMw` (a middleware
+that counts dispatches) and `window.__kcSelWrap` (a wrapper around every
+`useAppSelector` selector), read in `src/store/index.ts`. Only the profiling
+build defines `VITE_KC_PERF`, so other builds drop both seams.
+
+CI runs the same command in the `bench-render` job when a diff touches
+`website/src/**` or the benchmark's own files, on the `kirocrew-linux-4-core`
+runner the budgets were measured on, and uploads the JSON report as the
+`bench-render-report` artifact. The job is report-only for now
+(`continue-on-error`): an overrun reddens its own check but blocks no merge.
+Take new budgets from that report's per-run
+counts, not from a local run. Commits and renders depend on the host: a slower
+one batches more frames per commit and counts fewer, a faster one counts more.
+So the kirocrew-prepare-pr gate floor, which runs the benchmark when the diff
+touches the same inputs, passes `--fail-on dispatches,selectorCalls`. Those two
+follow the frames sent, so they mean the same on any host; commits and renders
+are printed as report only. A counter listed in a scenario's
+`report` array varies between runs on the runner by more than the tolerance; it
+is printed but never fails the job. Today that is `s1x5` selector calls, which
+follow how the five streams' frames batch into dispatches.
+
 ## CI gates
 
 - **jscpd** duplication check: copy-pasted code fails the build.
