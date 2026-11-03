@@ -15,8 +15,8 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
 ``model_pin_refused``.
 
-Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``,
-``request_vault_identity``.
+Instance fields read: ``_engine_fallback``, ``_runtime``, ``_session_id``,
+``last_prompt_stats``, ``request_vault_identity``.
 """
 
 from __future__ import annotations
@@ -422,6 +422,9 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
     # (otherwise the context meter converts pct against the stale session/new
     # model until the next session refresh).
     self._resolved_model_id = resolved
+    # The switch is what the session runs next, so the next prompt must
+    # not restore the model the last turn's engine hop moved off.
+    self._engine_fallback.note_model_set()
     # Also rebase the meter stats themselves — the old model's window and
     # its authoritative usage_update do not describe this session
     # (mirrors AcpClient.set_model).
