@@ -879,8 +879,12 @@ Two ways to draw:
   pointer leaves or the chat scrolls; the next hover then gets a fresh frame, and
   at most 8 cards stay pinned. `card.dragBy` moves it (use `screenX`/`screenY`
   deltas: the frame moves under the pointer) and `card.dock` sticks it to an edge.
-  A scroll inside the card stays in the frame and never closes it, and a scroll
-  elsewhere closes it only when it moved the hovered link.
+  A scroll inside the card stays in the frame and never closes it. A scroll
+  elsewhere never closes a card that is already open, even when it moves the
+  hovered link (a streaming reply pulling the chat along): the card stays where
+  it is, and the module gets `leave` on the first pointer move outside the card
+  and the link. A scroll that moves the link while its show is still in the
+  hover delay cancels that show.
 - **Overlay mode**, for a provider that keeps windows of its own (pinned cards, a
   dock, a settings dialog). Its first `ctx.setRegions` makes the frame cover the
   viewport, clipped to the rects it reports; outside them the page stays

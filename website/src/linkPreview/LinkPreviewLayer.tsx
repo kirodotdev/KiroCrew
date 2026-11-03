@@ -128,11 +128,20 @@ export default function LinkPreviewLayer() {
     // The link the latest card belongs to and where it was when the hover began.
     // Kept after the pointer moves on into the card: a scroll only dismisses the
     // card when it moved this link.
-    let watched: { el: HTMLElement; left: number; top: number } | null = null
-    const watch = (el: HTMLElement) => {
+    let watched: { el: HTMLElement; key: string; left: number; top: number } | null = null
+    const watch = (el: HTMLElement, key: string) => {
       const r = el.getBoundingClientRect()
-      watched = { el, left: r.left, top: r.top }
+      watched = { el, key, left: r.left, top: r.top }
     }
+    // True from a hover until its delay runs out: a scroll that moves the link
+    // may still cancel that show.
+    let pending = false
+    // Where the pointer last moved to in this document.
+    let pointer = { x: NaN, y: NaN }
+    // A scroll moved the hovered link out from under a shown card, and the
+    // pointer has not moved since. The pointer-out the browser fires for that
+    // scroll is not the user leaving; the next real move outside the link is.
+    let kept = false
 
     const linkOf = (e: Event) => {
       const path = e.composedPath()
@@ -156,18 +165,30 @@ export default function LinkPreviewLayer() {
       return p ? { a: sp, url: undefined as string | undefined, text: text as string | undefined, p } : null
     }
 
+    const moved = (e: PointerEvent) => Math.abs(e.clientX - pointer.x) >= 1 || Math.abs(e.clientY - pointer.y) >= 1
+
     const onOver = (e: PointerEvent) => {
+      if (kept && current) {
+        // A link the scroll slid under a still pointer is not a hover. A real
+        // move off the kept link is a leave first, so its card gets `leave`.
+        if (!moved(e)) return
+        if (e.composedPath().includes(current.a)) kept = false
+        else leave()
+      }
       const hit = linkOf(e)
       if (!hit || hit.a === current?.a) return
       const key = hit.p.key
       const lastFailed = failedAt.current.get(key)
       current = { a: hit.a, key }
       anchorRef.current = { el: hit.a, key }
-      watch(hit.a)
+      kept = false
+      watch(hit.a, key)
       window.clearTimeout(timer)
+      pending = true
       if (lastFailed !== undefined && Date.now() - lastFailed < RETRY_AFTER_MS) {
         // A failed frame is not final, but it is not retried on every hover either.
         timer = window.setTimeout(() => {
+          pending = false
           if (current?.a !== hit.a || !hit.a.isConnected) return
           const r = hit.a.getBoundingClientRect()
           setNotice({ key, left: Math.max(8, Math.min(r.left, window.innerWidth - 320)), top: r.bottom + 6 })
@@ -180,6 +201,7 @@ export default function LinkPreviewLayer() {
       const link = hit.url ? { url: hit.url } : { text: hit.text }
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey }
       timer = window.setTimeout(() => {
+        pending = false
         if (current?.a !== a || !a.isConnected) return
         host.hideUnpinned('other-provider', key)
         const r = a.getBoundingClientRect()
@@ -188,22 +210,41 @@ export default function LinkPreviewLayer() {
         })
       }, HOVER_DELAY_MS)
     }
-    const onOut = (e: PointerEvent) => {
+    const leave = () => {
       if (!current) return
+      setNotice(null)
+      window.clearTimeout(timer)
+      pending = false
+      kept = false
+      const key = current.key
+      current = null
+      anchorRef.current = null
+      host.leave(key)
+    }
+    const onOut = (e: PointerEvent) => {
+      if (!current || kept) return
       const to = e.relatedTarget instanceof Element ? e.relatedTarget.closest('a[href], [data-link-preview-text]') : null
       if (to === current.a) return
-      if (e.composedPath().includes(current.a)) {
-        setNotice(null)
-        window.clearTimeout(timer)
-        const key = current.key
-        current = null
-        anchorRef.current = null
-        host.leave(key)
-      }
+      if (e.composedPath().includes(current.a)) leave()
+    }
+    // A move inside a card's frame never reaches this document, so a move seen
+    // here is outside every card.
+    const onMove = (e: PointerEvent) => {
+      // While a card is kept, the baseline stays where the pointer was when the
+      // scroll kept it, so many tiny moves still add up to a real one.
+      if (kept && current && !moved(e)) return
+      pointer = { x: e.clientX, y: e.clientY }
+      if (!kept || !current) return
+      if (e.composedPath().includes(current.a)) { kept = false; return }
+      leave()
+      // The pointer may be resting on a link whose hover was skipped above.
+      onOver(e)
     }
     const hideAll = (reason: string) => {
       setNotice(null)
       window.clearTimeout(timer)
+      pending = false
+      kept = false
       current = null
       anchorRef.current = null
       watched = null
@@ -220,16 +261,26 @@ export default function LinkPreviewLayer() {
       if (isEditableTarget(e) || activeElementIsEditable()) return
       host.forwardKey(e)
     }
-    // Scrolling the chat moves the link away from its card. Scrolling inside a
-    // card happens in its frame and never reaches this window. Any other scroll
-    // (the sidebar, a transcript settling after load, a scroll that ends where it
-    // began) leaves the link where it was, and so leaves its card. Only the
-    // latest hover's link is known, so a card from an earlier hover (pinned,
-    // then unpinned) still goes on any scroll.
+    // Scrolling inside a card happens in its frame and never reaches this window.
+    // A scroll that leaves the link where it was (the sidebar, a transcript
+    // settling after load) leaves its card. A scroll that moves the link (the
+    // chat, or a streaming reply pulling it along) cancels a show still in its
+    // delay, but a card already shown stays where it is: it closes when the
+    // pointer moves off, through the usual leave. Only the latest hover's link
+    // is known, so a card from an earlier hover (pinned, then unpinned) still
+    // goes on any scroll.
     const onScroll = () => {
       if (watched && watched.el.isConnected && !host.hasUnpinnedDetached()) {
         const r = watched.el.getBoundingClientRect()
         if (Math.abs(r.left - watched.left) < 1 && Math.abs(r.top - watched.top) < 1) return
+        if (!pending && host.isShown(watched.key)) {
+          // The pointer is still where the link was: what the browser reports
+          // for this scroll is not the user leaving.
+          if (current?.a === watched.el) kept = true
+          // Every other card still hears the scroll; only this one stays.
+          host.hideUnpinned('scroll', watched.key)
+          return
+        }
       }
       hideAll('scroll')
     }
@@ -241,6 +292,7 @@ export default function LinkPreviewLayer() {
 
     doc.addEventListener('pointerover', onOver, true)
     doc.addEventListener('pointerout', onOut, true)
+    doc.addEventListener('pointermove', onMove, true)
     doc.addEventListener('keydown', onKey)
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('blur', onBlur)
@@ -251,6 +303,7 @@ export default function LinkPreviewLayer() {
       hideAllRef.current = () => {}
       doc.removeEventListener('pointerover', onOver, true)
       doc.removeEventListener('pointerout', onOut, true)
+      doc.removeEventListener('pointermove', onMove, true)
       doc.removeEventListener('keydown', onKey)
       window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('blur', onBlur)
