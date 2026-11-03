@@ -1079,6 +1079,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
         "pod/runtime.py::recent_journal",
+        # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
+        # place; Windows has no exec, so the CLI runs the same binary as a child
+        # and returns its exit code. Argv is the pod venv's entry point plus a
+        # verb that already passed require_pod_safe_verb, run from the user's own
+        # terminal, not from an agent turn.
+        "pod/runtime_boot.py::_run_in_pod_as_child",
         # Task Scheduler twin of launchctl above: the single chokepoint for
         # `schtasks.exe /<verb> /TN KiroCrewPod-<name> ...`. Argv is a fixed verb
         # set plus a task name built from a validate_name-checked pod name and a
