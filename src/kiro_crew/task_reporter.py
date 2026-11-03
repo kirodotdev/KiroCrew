@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
+import stat
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol, Union, cast
 
+from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_exfiltration_urls
 from kiro_crew.task_models import (
@@ -148,12 +151,52 @@ def save_progress(run: Project) -> None:
         if run.error:
             lines.append(f"\n## Error\n{run.error}\n")
 
-        progress_path.write_text("\n".join(lines), encoding="utf-8")
+        _write_progress_file(progress_path, "\n".join(lines))
     except Exception:
         logger.debug("Failed to save progress", exc_info=True)
 
 
 # ── Checkpoint Resume ──
+
+
+#: Whether replacing the progress file by rename keeps its access control. On
+#: Windows a rename cannot carry an explicit DACL onto the new file, so there the
+#: file keeps the in-place write, and only POSIX gets the atomic replace.
+_RENAME_KEEPS_ACCESS_CONTROL = os.name != "nt"
+
+
+def _write_progress_file(progress_path: Path, text: str) -> None:
+    """Replace *progress_path* whole, or leave the previous file as it was.
+
+    :func:`load_checkpoint` reads this file to skip passed steps on resume, so an
+    interrupted write must not leave a torn file. A missing spec directory is not
+    recreated, a symlinked file keeps its link (the target is replaced), and an
+    existing file keeps its permission bits and ACL across the replacement. Where
+    a rename cannot keep the access control, the file is written in place.
+    """
+    if not _RENAME_KEEPS_ACCESS_CONTROL:
+        progress_path.write_text(text, encoding="utf-8")
+        return
+    # A link, dangling or not, is written through to its target, as an in-place
+    # write would; resolving before the existence check keeps the link itself.
+    target = progress_path.resolve() if progress_path.is_symlink() else progress_path
+    if not target.parent.is_dir():
+        raise FileNotFoundError(f"progress directory {target.parent} is gone")
+    if not target.exists():
+        atomic_write(target, text)
+        return
+    src_fd = open_access_control_source(target)
+    try:
+        info = os.fstat(src_fd) if src_fd is not None else target.stat()
+        atomic_write(
+            target,
+            text,
+            mode=stat.S_IMODE(info.st_mode),
+            preserve_access_control_from=src_fd,
+        )
+    finally:
+        if src_fd is not None:
+            os.close(src_fd)
 
 
 def load_checkpoint(spec_path: Path) -> set[str] | None:
