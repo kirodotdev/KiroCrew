@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # ── Drift-parity fixes (AcpRuntime ↔ AcpClient): #1-#4 + #5b ──
@@ -554,10 +555,9 @@ async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
     rt._initialized = True
     proc = MagicMock()
     proc.returncode = None
-    # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on the fake process, moved verbatim; tracked for a de-flake pass
-    proc.pid = 4242
+    proc.pid = UNALLOCATABLE_PID
     rt._process = proc
-    rt._pid = 4242
+    rt._pid = UNALLOCATABLE_PID
 
     async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:

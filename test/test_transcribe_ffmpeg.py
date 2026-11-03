@@ -1143,10 +1143,9 @@ class TestFfmpegIsNotResolvedFromPath:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _without_the_optional_bundle(self, monkeypatch):
+    def _without_the_optional_bundle(self, _floor_monkeypatch):
         """Keep these fallback tests independent of installed optional extras."""
-        monkeypatch.setattr(transcribe, "_bundled_ffmpeg", lambda: None)
+        _floor_monkeypatch.setattr(transcribe, "_bundled_ffmpeg", lambda: None)
 
     @staticmethod
     def _plant(directory):

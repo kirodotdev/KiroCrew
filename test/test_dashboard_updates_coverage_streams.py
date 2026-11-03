@@ -300,11 +300,10 @@ class TestLogsStream:
     """``GET /api/logs`` — ring replay, then a live tail."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _own_shutdown_event(self, monkeypatch):
+    def _own_shutdown_event(self, _floor_monkeypatch):
         """The module binds ``shutdown_event`` at import, so patch it there."""
         event = asyncio.Event()
-        monkeypatch.setattr(updates, "shutdown_event", event)
+        _floor_monkeypatch.setattr(updates, "shutdown_event", event)
         return event
 
     @pytest.mark.asyncio
@@ -477,15 +476,13 @@ class TestDashboardStream:
     """The dashboard SSE endpoint — one event name per queued note type."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _own_shutdown_event(self, monkeypatch):
+    def _own_shutdown_event(self, _floor_monkeypatch):
         event = asyncio.Event()
-        monkeypatch.setattr(updates, "shutdown_event", event)
+        _floor_monkeypatch.setattr(updates, "shutdown_event", event)
         return event
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _warm_status_counts(self, monkeypatch):
+    def _warm_status_counts(self, _floor_monkeypatch):
         # The SSE `dashboard` frame routes its lesson/cron counts through the
         # shared status_counts cache now, not an inline status_snapshot call.
         # Seed it warm so the writer serves serializable counts without the
@@ -493,12 +490,12 @@ class TestDashboardStream:
         # ever running.
         from kiro_crew.dashboard import status_counts as sc
 
-        monkeypatch.setattr(sc, "_counts_cache", (0, 0))
+        _floor_monkeypatch.setattr(sc, "_counts_cache", (0, 0))
         clock = ManualClock()
-        clock.install(monkeypatch, sc)
-        monkeypatch.setattr(sc, "_counts_cache_ts", clock.monotonic())
-        monkeypatch.setattr(sc, "_counts_cache_failures", 0)
-        monkeypatch.setattr(sc, "_counts_refresh_inflight", False)
+        clock.install(_floor_monkeypatch, sc)
+        _floor_monkeypatch.setattr(sc, "_counts_cache_ts", clock.monotonic())
+        _floor_monkeypatch.setattr(sc, "_counts_cache_failures", 0)
+        _floor_monkeypatch.setattr(sc, "_counts_refresh_inflight", False)
 
     def _request_with_queue(
         self, notes: list[dict], *, is_dashboard_user: bool = True

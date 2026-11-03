@@ -50,10 +50,9 @@ class TestGrantEndpointPendingFlow:
     """The operator half: approve/deny via the dashboard endpoint."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _owner_view(self, monkeypatch):
+    def _owner_view(self, _floor_monkeypatch):
         """These tests exercise grant flow, not identity; grant is owner-only."""
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,
         )
@@ -967,10 +966,9 @@ class TestGrantEndpointBoundaries:
         return job.id
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _owner_view(self, monkeypatch):
+    def _owner_view(self, _floor_monkeypatch):
         """Default to owner view; the non-owner test overrides it."""
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
             lambda request: True,
         )

@@ -57,6 +57,7 @@ from kiro_crew.mcp_gateway.backend import (
     send_initialize,
     spawn_backend,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 # --- Cancellation / recycle / shutdown -------------------------------------
@@ -108,13 +109,12 @@ class TestCancelInFlight:
 
 class TestRecycleIfIdle:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of the class calls monkeypatch.undo()
-    def _no_real_signals(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(backend_mod, "SecurityEventLog", MagicMock())
-        monkeypatch.setattr(
+    def _no_real_signals(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(backend_mod, "SecurityEventLog", MagicMock())
+        _floor_monkeypatch.setattr(
             backend_mod.platform_compat, "kill_process_tree_async", AsyncMock(return_value=True)
         )
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             backend_mod.platform_compat, "kill_pid_async", AsyncMock(return_value=True)
         )
 
@@ -395,8 +395,7 @@ class _FakeProcess:
         with_stderr: bool = True,
         stderr_lines: bytes = b"",
     ) -> None:
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing mock pid moved verbatim; the process double is never signalled
-        self.pid = 5150
+        self.pid = UNALLOCATABLE_PID
         self.returncode: Optional[int] = None
         self.stdin = MagicMock() if with_pipes else None
         if self.stdin is not None:
@@ -453,7 +452,7 @@ class TestSpawnBackend:
         assert env[backend_mod.POOLED_BACKEND_ENV] == backend_mod.POOLED_BACKEND_VALUE
         assert env[backend_mod.POOLED_RESPAWN_COMMAND_ENV] == "/usr/bin/example-mcp"
         assert fake_spawn["kwargs"]["start_new_session"] is True
-        assert backend.pid == 5150
+        assert backend.pid == UNALLOCATABLE_PID
         assert backend._last_ping_response_mono > 0
         assert backend._stderr_task is not None
         await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
@@ -472,8 +471,8 @@ class TestSpawnBackend:
 
         monkeypatch.setattr(backend_mod.platform_compat, "get_process_start_id", _start_id)
         backend = await spawn_backend(_pool_key(), "cmd", [], {}, "/nonexistent-work-dir")
-        assert backend.start_id == "spawn-5150"
-        assert seen == [5150]
+        assert backend.start_id == f"spawn-{UNALLOCATABLE_PID}"
+        assert seen == [UNALLOCATABLE_PID]
         if backend._stderr_task is not None:
             await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
 
