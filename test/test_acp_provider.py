@@ -1737,6 +1737,9 @@ class TestStartKiroRuntimeModelEntitlement:
         handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
         assert handle.model_pin_refused == "claude-opus-4.8"
+        # Dropping a pin is a one-shot decision, so its revalidation forces a fresh
+        # probe rather than honour a failure the picker read path cached.
+        assert handle.refresh_available_models.await_args_list == [call(force=True)]
 
     @pytest.mark.asyncio
     async def test_an_applied_configured_model_records_no_refusal(self):
@@ -1768,28 +1771,9 @@ class TestStartKiroRuntimeModelEntitlement:
             ["claude-sonnet-4.6"],
             probe=["claude-sonnet-4.6", "claude-opus-4.8"],
         )
-        assert handle.refresh_available_models.await_count == 1
+        assert handle.refresh_available_models.await_args_list == [call(force=True)]
         assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
         assert handle.model_pin_refused == ""
-
-    @pytest.mark.asyncio
-    async def test_spawn_withhold_revalidation_forces_a_fresh_probe(self):
-        # D1: dropping a configured pin is a one-shot decision, not a burst, so
-        # its revalidation passes force=True — it must not honour a no-evidence
-        # failure the picker read path cached in the shared attempt-clock window.
-        handle = await self._run(
-            "claude-opus-4.8",
-            ["claude-sonnet-4.6"],
-            probe=["claude-sonnet-4.6", "claude-opus-4.8"],
-        )
-        handle.refresh_available_models.assert_awaited_once()
-        assert handle.refresh_available_models.await_args.kwargs.get("force") is True
-        # The probe agrees the pin is genuinely not entitled -> withhold as today.
-        handle = await self._run(
-            "claude-opus-4.8", ["claude-sonnet-4.6"], probe=["claude-sonnet-4.6"]
-        )
-        handle.refresh_available_models.assert_awaited_once()
-        handle.set_model.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_probe_failure_leaves_the_withhold_in_place(self):

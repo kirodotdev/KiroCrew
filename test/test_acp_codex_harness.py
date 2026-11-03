@@ -718,9 +718,11 @@ class TestSpawn:
 
         with patch.object(
             client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/index.js"], "/s")
-        ):
+        ) as resolver:
             plan = await adapter.resolve_spawn(_ctx())
         assert plan.argv == ["/n/node", "/p/index.js"]
+        # One resolution order, so "why did it pick that one?" has one answer.
+        assert resolver.call_count == 1
 
     @pytest.mark.asyncio
     async def test_no_agent_and_no_model_flag_is_appended(self, adapter, mask_resolved):
@@ -760,17 +762,6 @@ class TestSpawn:
         assert "@agentclientprotocol/codex-acp" in message
         assert "CODEX_ACP_BIN" in message
         assert "/one" in message and "/two" in message
-
-    @pytest.mark.asyncio
-    async def test_the_resolver_is_delegated_not_duplicated(self, adapter, mask_resolved):
-        """One resolution order, so "why did it pick that one?" has one answer."""
-        from kiro_crew.acp import client as client_mod
-
-        with patch.object(
-            client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/i.js"], "/s")
-        ) as resolver:
-            await adapter.resolve_spawn(_ctx())
-        assert resolver.call_count == 1
 
     def test_the_kiro_api_key_is_taken_out_of_the_child_environment(self, adapter):
         """A foreign adapter must never receive it. Same as the AcpClient path does."""
