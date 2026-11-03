@@ -24,6 +24,7 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
+    string_field_error,
 )
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _probe_busy_response, _run_path_probe
 from kiro_crew.dashboard.handlers.knowledge_access import (
@@ -1159,6 +1160,10 @@ async def retry_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
+    # The path check below runs Path() and is_sensitive_path(), which raise on a
+    # number, list, object or bool: caller error, so a 400 rather than a 500.
+    if (not_string := string_field_error("file_path", file_path)) is not None:
+        return not_string
     try:
         restricted = await _run_path_probe(_file_path_restricted, file_path)
     except _PathProbeBusy:
@@ -1190,6 +1195,8 @@ async def skip_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
+    if (not_string := string_field_error("file_path", file_path)) is not None:
+        return not_string
     try:
         restricted = await _run_path_probe(_file_path_restricted, file_path)
     except _PathProbeBusy:
