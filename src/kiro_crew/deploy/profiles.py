@@ -170,7 +170,7 @@ def _load_registry_for_update() -> dict[str, Any]:
         # A read that fails says nothing about the bytes, which may be a good registry:
         # moving it aside would hide every profile, so the write is refused instead.
         raise RegistryUnreadableError(f"{path} could not be read ({e}); not saving over it") from e
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:  # past the nesting limit
         _set_aside(path, e)
         return load_registry()
     # ``_parse_registry`` drops what it cannot use, so a ``profiles`` mapping or string
@@ -317,7 +317,10 @@ def load_registry() -> dict[str, Any]:
     registry) rather than inventing a second recovery, and it fixes every reader
     at once instead of asking each call site to guard a shape it did not parse.
     A file that is not UTF-8 takes the same path: its ``UnicodeDecodeError`` is a
-    ``ValueError``, not a ``json.JSONDecodeError``, so it is named separately.
+    ``ValueError``, as is ``json.JSONDecodeError`` and the plain ``ValueError``
+    ``json.loads`` raises for a number past the integer digit limit. A file nested
+    past the interpreter's recursion limit raises ``RecursionError``, which is not a
+    ``ValueError``, so it is named separately.
     Each read drops one leading UTF-8 byte-order mark (``utf-8-sig``), the form
     Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` saves.
 
@@ -327,14 +330,14 @@ def load_registry() -> dict[str, Any]:
     """
     try:
         return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8-sig")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
-            AttributeError, TypeError):
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
+            AttributeError, TypeError):  # past the nesting limit
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
         return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8-sig")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
-            AttributeError, TypeError):
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
+            AttributeError, TypeError):  # past the nesting limit
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
     try:
@@ -344,8 +347,8 @@ def load_registry() -> dict[str, Any]:
             name = str(legacy["profile"])
             return {"version": 2, "default": name,
                     "profiles": [make_entry(name, str(legacy.get("region", "")))]}
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
-            AttributeError, TypeError):
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
+            AttributeError, TypeError):  # past the nesting limit
         pass
     return {"version": 2, "profiles": [], "default": ""}
 
