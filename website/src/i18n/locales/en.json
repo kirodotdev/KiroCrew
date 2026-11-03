@@ -575,11 +575,12 @@
           "new_namespace_name": "New namespace name",
           "pattern_one": "{{count}} pattern",
           "pattern_other": "{{count}} patterns",
-          "pending": "pending",
           "read_namespace": "Read namespace {{name}}",
           "invalid_namespace_name": "Namespace names become folder names, so they can use only lowercase Latin letters (a–z), digits (0–9), dots, hyphens and underscores, must start and end with a letter or digit, and must be 2 to 64 characters long.",
           "invalid_namespace_name_char": "“{{char}}” can’t be used in a namespace name. Use lowercase a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) can’t be used in a namespace name. Use lowercase a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) can’t be used in a namespace name. Use lowercase a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} pending",
+          "pending_count_other": "{{count}} pending"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -722,7 +723,6 @@
         },
         "reportView": {
           "blast_radius": "Blast radius: {{scope}}",
-          "blocking": "blocking",
           "changes_reviewed_one": "{{count}} change reviewed",
           "changes_reviewed_other": "{{count}} changes reviewed",
           "clear": "Clear",
@@ -737,12 +737,15 @@
           "open_the_pull_request": "Open the pull request",
           "share": "Share",
           "sharing": "Sharing…",
-          "should_fix": "should-fix",
           "step_problem": "Problem",
           "step_solution_fit": "Solution fit",
           "step_why_it_matters": "Why it matters",
           "finding_dimension_in_file": "{{dimension}} in {{file}}",
-          "moved_to": "Now in {{band}}. Kept in place until you change the filter."
+          "moved_to": "Now in {{band}}. Kept in place until you change the filter.",
+          "blocking_count_one": "{{count}} blocking",
+          "blocking_count_other": "{{count}} blocking",
+          "should_fix_count_one": "{{count}} should-fix",
+          "should_fix_count_other": "{{count}} should-fix"
         },
         "reviewChat": {
           "error_generic": "The follow-up session could not be opened. Try again.",
@@ -779,7 +782,6 @@
           "delete_review_of": "Delete review of {{label}}",
           "delete_this_review": "Delete this review",
           "delete_this_review_2": "Delete this review?",
-          "more": "more",
           "needs_review_count_one": "{{count}} needs review",
           "needs_review_count_other": "{{count}} need review",
           "pull_requests": "pull requests",
@@ -788,13 +790,14 @@
           "review_of_with_more_one": "Review of {{label}} and {{count}} more",
           "review_of_with_more_other": "Review of {{label}} and {{count}} more",
           "worth_a_glance_count_one": "{{count}} worth a glance",
-          "worth_a_glance_count_other": "{{count}} worth a glance"
+          "worth_a_glance_count_other": "{{count}} worth a glance",
+          "more_count_one": "+{{count}} more",
+          "more_count_other": "+{{count}} more"
         },
         "runDetail": {
           "cancelled_before_any_finished": "It was cancelled before any pull request finished.",
           "finished": "finished",
           "loading_report": "Loading report…",
-          "more": "more",
           "nothing_to_report": "No pull request completed a review, so there was nothing to report.",
           "pull_request_one": "{{count}} pull request",
           "pull_request_other": "{{count}} pull requests",
@@ -803,25 +806,30 @@
           "skipped_inflight_other": "{{count}} pull requests were skipped because another review already had them.",
           "started": "started",
           "this_review_produced_no_report": "This review produced no report.",
-          "you_can_leave_this_page_a_notification_will_tell": "You can leave this page — a notification will tell you when it lands."
+          "you_can_leave_this_page_a_notification_will_tell": "You can leave this page — a notification will tell you when it lands.",
+          "more_count_one": "+{{count}} more",
+          "more_count_other": "+{{count}} more"
         },
         "runList": {
           "new_review": "New review"
         },
         "runProgress": {
           "cancel_review": "Cancel review",
-          "cancelled": "cancelled",
           "cancelling": "Cancelling…",
           "elapsed_time": "Elapsed time",
-          "failed": "failed",
           "median_of_past_runs_of_this_size": "Median of past runs of this size",
           "review_progress": "Review progress",
-          "reviewed": "reviewed",
           "reviewers_busy": "{{busy}} of {{max}} reviewers busy",
           "step": "· step",
           "stops_queued_prs_one_already_being_reviewed_will": "Stops queued PRs; one already being reviewed will finish.",
           "usually": "usually ~",
-          "working": "Working"
+          "working": "Working",
+          "reviewed_of_one": "{{done}} / {{count}} reviewed",
+          "reviewed_of_other": "{{done}} / {{count}} reviewed",
+          "failed_count_one": "{{count}} failed",
+          "failed_count_other": "{{count}} failed",
+          "cancelled_count_one": "{{count}} cancelled",
+          "cancelled_count_other": "{{count}} cancelled"
         },
         "runStatusPill": {
           "cancelled": "Cancelled",

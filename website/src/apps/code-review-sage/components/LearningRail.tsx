@@ -160,7 +160,7 @@ export default function LearningRail() {
                   <span className="block text-[11px] text-muted">
                     {i18nT('apps.codeReviewSage.components.learningRail.pattern', { count: ns.patterns })}
                     {ns.candidate > 0 && (
-                      <span className="text-warn"> · {ns.candidate} {i18nT('apps.codeReviewSage.components.learningRail.pending')}</span>
+                      <span className="text-warn"> · {i18nT('apps.codeReviewSage.components.learningRail.pending_count', { count: ns.candidate })}</span>
                     )}
                   </span>
                 </button>

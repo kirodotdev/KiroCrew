@@ -934,11 +934,13 @@
           "pattern_many": "{{count}} patrones",
           "pattern_one": "{{count}} patrón",
           "pattern_other": "{{count}} patrones",
-          "pending": "pendientes",
           "read_namespace": "Leer el namespace {{name}}",
           "invalid_namespace_name": "Los nombres de los namespaces se convierten en nombres de carpeta, así que solo pueden contener letras latinas minúsculas (a–z), dígitos (0–9), puntos, guiones y guiones bajos, deben empezar y terminar con una letra o un dígito y tener entre 2 y 64 caracteres.",
           "invalid_namespace_name_char": "“{{char}}” no se puede usar en el nombre de un namespace. Usa letras minúsculas a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) no se puede usar en el nombre de un namespace. Usa letras minúsculas a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) no se puede usar en el nombre de un namespace. Usa letras minúsculas a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} pendiente",
+          "pending_count_many": "{{count}} pendientes",
+          "pending_count_other": "{{count}} pendientes"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1092,7 +1094,6 @@
         },
         "reportView": {
           "blast_radius": "Alcance del impacto: {{scope}}",
-          "blocking": "bloqueante",
           "changes_reviewed_many": "{{count}} cambios revisados",
           "changes_reviewed_one": "{{count}} cambio revisado",
           "changes_reviewed_other": "{{count}} cambios revisados",
@@ -1111,10 +1112,15 @@
           "open_the_pull_request": "Abrir el pull request",
           "share": "Compartir",
           "sharing": "Compartiendo…",
-          "should_fix": "debería corregirse",
           "step_problem": "Problema",
           "step_solution_fit": "Idoneidad de la solución",
-          "step_why_it_matters": "Por qué importa"
+          "step_why_it_matters": "Por qué importa",
+          "blocking_count_one": "{{count}} bloqueante",
+          "blocking_count_many": "{{count}} bloqueantes",
+          "blocking_count_other": "{{count}} bloqueantes",
+          "should_fix_count_one": "{{count}} debería corregirse",
+          "should_fix_count_many": "{{count}} deberían corregirse",
+          "should_fix_count_other": "{{count}} deberían corregirse"
         },
         "reviewChat": {
           "error_generic": "No se pudo abrir la sesión de seguimiento. Inténtalo de nuevo.",
@@ -1151,7 +1157,6 @@
           "delete_review_of": "Eliminar la revisión de {{label}}",
           "delete_this_review": "Eliminar esta revisión",
           "delete_this_review_2": "¿Eliminar esta revisión?",
-          "more": "más",
           "needs_review_count_many": "{{count}} necesitan revisión",
           "needs_review_count_one": "{{count}} necesita revisión",
           "needs_review_count_other": "{{count}} necesitan revisión",
@@ -1163,13 +1168,15 @@
           "review_of_with_more_other": "Revisión de {{label}} y {{count}} más",
           "worth_a_glance_count_many": "{{count}} merecen un vistazo",
           "worth_a_glance_count_one": "{{count}} merece un vistazo",
-          "worth_a_glance_count_other": "{{count}} merecen un vistazo"
+          "worth_a_glance_count_other": "{{count}} merecen un vistazo",
+          "more_count_one": "+{{count}} más",
+          "more_count_many": "+{{count}} más",
+          "more_count_other": "+{{count}} más"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Se canceló antes de que ningún pull request terminara.",
           "finished": "terminada",
           "loading_report": "Cargando el informe…",
-          "more": "más",
           "nothing_to_report": "Ningún pull request completó una revisión, así que no hubo nada que informar.",
           "pull_request_many": "{{count}} pull requests",
           "pull_request_one": "{{count}} pull request",
@@ -1180,25 +1187,34 @@
           "skipped_inflight_other": "Se omitieron {{count}} pull requests porque otra revisión ya los tenía.",
           "started": "iniciada",
           "this_review_produced_no_report": "Esta revisión no generó ningún informe.",
-          "you_can_leave_this_page_a_notification_will_tell": "Puedes salir de esta página — una notificación te avisará cuando llegue."
+          "you_can_leave_this_page_a_notification_will_tell": "Puedes salir de esta página — una notificación te avisará cuando llegue.",
+          "more_count_one": "+{{count}} más",
+          "more_count_many": "+{{count}} más",
+          "more_count_other": "+{{count}} más"
         },
         "runList": {
           "new_review": "Nueva revisión"
         },
         "runProgress": {
           "cancel_review": "Cancelar la revisión",
-          "cancelled": "cancelada",
           "cancelling": "Cancelando…",
           "elapsed_time": "Tiempo transcurrido",
-          "failed": "fallidas",
           "median_of_past_runs_of_this_size": "Mediana de ejecuciones anteriores de este tamaño",
           "review_progress": "Progreso de la revisión",
-          "reviewed": "revisadas",
           "reviewers_busy": "{{busy}} de {{max}} revisores ocupados",
           "step": "· paso",
           "stops_queued_prs_one_already_being_reviewed_will": "Detiene los PR en cola; el que ya se está revisando terminará.",
           "usually": "normalmente ~",
-          "working": "Trabajando"
+          "working": "Trabajando",
+          "reviewed_of_one": "{{done}} / {{count}} revisada",
+          "reviewed_of_many": "{{done}} / {{count}} revisadas",
+          "reviewed_of_other": "{{done}} / {{count}} revisadas",
+          "failed_count_one": "{{count}} fallida",
+          "failed_count_many": "{{count}} fallidas",
+          "failed_count_other": "{{count}} fallidas",
+          "cancelled_count_one": "{{count}} cancelada",
+          "cancelled_count_many": "{{count}} canceladas",
+          "cancelled_count_other": "{{count}} canceladas"
         },
         "runStatusPill": {
           "cancelled": "Cancelado",
