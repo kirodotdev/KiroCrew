@@ -37,6 +37,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from kiro_crew import __version__, agent_scratch, platform_compat, release_channel
+from kiro_crew.cli_log_files import boot_log_paths
 from kiro_crew.config.loader import config_dir
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
@@ -1408,7 +1409,13 @@ def collect_bundle(
     text_sources: list[tuple[str, Path, bool]] = []
     if include_logs:
         text_sources.append(("gateway.log", home / "gateway.log", True))
-        text_sources.append(("gateway.log.prev", home / "gateway.log.prev", True))
+        # gateway.log.prev, then the older boots kept in logs/gateway-boots. Only
+        # boots that exist are listed; the loop below still refuses a symlink or
+        # non-file.
+        prev_log, *older_boot_logs = boot_log_paths(home / "gateway.log")
+        text_sources.append((prev_log.name, prev_log, True))
+        for boot_log in older_boot_logs:
+            text_sources.append((f"gateway-boots/{boot_log.name}", boot_log, True))
         chat = _kiro_cli_chat_log()
         if chat is not None:
             text_sources.append(("kiro-chat.log", chat, True))
