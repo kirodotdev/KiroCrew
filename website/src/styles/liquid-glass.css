@@ -79,19 +79,41 @@
 
 /* Settings icon tiles (SidePanelLayout `tile`): the coloured rounded square
  * behind each Settings section icon, as macOS / iOS System Settings draw them.
- * Fixed hues by design -- a tile is an identity mark for its section, and the
- * same section must look the same in every theme -- with a light polarity that
- * is a shade deeper so a white glyph keeps contrast on a white list. */
+ * The built-in themes use these fixed system hues -- a tile is an identity mark
+ * for its section -- with one white glyph ink, and a light polarity that is a
+ * shade deeper so that glyph keeps contrast on a white list. */
 :root {
   --tile-fg: #fff;
   --tile-gray: #8e8e93; --tile-blue: #0a84ff; --tile-green: #30d158; --tile-indigo: #5e5ce6;
   --tile-orange: #ff9f0a; --tile-pink: #ff375f; --tile-purple: #bf5af2; --tile-red: #ff453a;
   --tile-teal: #40c8e0;
+  --tile-gray-fg: var(--tile-fg); --tile-blue-fg: var(--tile-fg); --tile-green-fg: var(--tile-fg);
+  --tile-indigo-fg: var(--tile-fg); --tile-orange-fg: var(--tile-fg); --tile-pink-fg: var(--tile-fg);
+  --tile-purple-fg: var(--tile-fg); --tile-red-fg: var(--tile-fg); --tile-teal-fg: var(--tile-fg);
 }
 [data-mode="light"] {
   --tile-gray: #8e8e93; --tile-blue: #007aff; --tile-green: #34c759; --tile-indigo: #5856d6;
   --tile-orange: #ff9500; --tile-pink: #ff2d55; --tile-purple: #af52de; --tile-red: #ff3b30;
   --tile-teal: #32ade6;
+}
+/* A custom theme (an installed pack or an editor theme, `custom-*`) is one
+ * palette someone chose, and the fixed system hues on its Settings rail would
+ * read as a different app. There each tile takes a palette role and that role's
+ * own `-fg` ink, the pair the theme's filled buttons and badges already paint.
+ * An ink the pack omits is derived to read on its fill (`buildCustomThemeCss`);
+ * one it declares is used as written. Nine hues share seven roles: teal joins
+ * blue on --info, and pink joins purple on --aim. Sits after the light block
+ * so it wins on equal specificity. */
+[data-theme^="custom-"] {
+  --tile-gray: var(--muted);    --tile-gray-fg: var(--muted-fg);
+  --tile-blue: var(--info);     --tile-blue-fg: var(--info-fg);
+  --tile-teal: var(--info);     --tile-teal-fg: var(--info-fg);
+  --tile-green: var(--ok);      --tile-green-fg: var(--ok-fg);
+  --tile-indigo: var(--accent); --tile-indigo-fg: var(--accent-fg);
+  --tile-orange: var(--warn);   --tile-orange-fg: var(--warn-fg);
+  --tile-pink: var(--aim);      --tile-pink-fg: var(--aim-fg);
+  --tile-purple: var(--aim);    --tile-purple-fg: var(--aim-fg);
+  --tile-red: var(--danger);    --tile-red-fg: var(--danger-fg);
 }
 
 /* Crewmate goal marks (CrewGoals `goalColor`): the numbered dot that ties a
