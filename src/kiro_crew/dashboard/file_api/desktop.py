@@ -35,7 +35,9 @@ async def api_reveal_path(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     path = body.get("path", "")
     action = body.get("action", "reveal")  # "reveal" or "open"
-    if not path or ".." in Path(path).parts:
+    # A non-string path (a number, list or object) is caller error: Path() and
+    # the sensitive-path check below would raise TypeError, a 500.
+    if not isinstance(path, str) or not path or ".." in Path(path).parts:
         return web.json_response({"error": "invalid path"}, status=400)
     if is_sensitive_path(path):
         _sel().log_tool_invocation(

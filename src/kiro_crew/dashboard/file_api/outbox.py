@@ -76,6 +76,24 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
     raw_desc = body.get("description", "")
+    # A non-string field is caller error: redact() below would raise TypeError,
+    # a 500.
+    if not all(isinstance(v, str) for v in (raw_path, raw_filename, raw_desc)):
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="file_send",
+            tool_kind="notify",
+            outcome="denied",
+            error="invalid_field_type",
+        )
+        return web.json_response(
+            {
+                "error": "path, filename and description must be strings",
+                "code": "invalid_field_type",
+            },
+            status=400,
+        )
     # Reject files whose names/paths contain sensitive patterns
     if redact(raw_filename) != raw_filename or redact(raw_path) != raw_path:
 
