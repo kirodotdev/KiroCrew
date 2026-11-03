@@ -7177,6 +7177,9 @@
         "copied": "Copied",
         "copy_link": "Copy link to message",
         "unpin": "Unpin",
+        "copy_text_failed": "Couldn’t copy the text. Jump to the message and select the text to copy it.",
+        "copy_link_failed": "Couldn’t copy the link. Check that this page may use the clipboard, then try again.",
+        "jump_to_named_message": "Jump to message, {{author}}: {{label}}",
         "jump_to_message": "Jump to message"
       },
       "earlierMessagesBar": {
