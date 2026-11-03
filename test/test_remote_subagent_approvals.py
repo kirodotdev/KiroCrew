@@ -1007,9 +1007,10 @@ def test_a_floored_runs_session_identity_write_records_its_floor() -> None:
     continuation resumes from, so a resumable run always carries it."""
     import inspect
 
-    from kiro_crew.subagent_manager import run_turn
+    # The spawn-time state writes live in turn_session.persist_spawn_records.
+    from kiro_crew.subagent_manager import turn_session
 
-    source = inspect.getsource(run_turn)
+    source = inspect.getsource(turn_session.persist_spawn_records)
     _, after = source.split('"session_id": str(getattr(info, "_session_id", "")),', 1)
     write = after.split("_write_state_off_loop", 1)[0]
     assert 'state_update["approval_floor"] = info.approval_floor' in write

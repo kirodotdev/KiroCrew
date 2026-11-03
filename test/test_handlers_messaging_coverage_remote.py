@@ -287,8 +287,8 @@ class TestRemoteSpawnGovernance:
     ) -> None:
         service = self._arm(monkeypatch, opted_in=True)
 
-        async def known(raw: object) -> tuple[str | None, web.Response | None]:
-            return str(raw), None
+        async def known(raw: object) -> tuple[str | None, None, web.Response | None]:
+            return str(raw), None, None
 
         monkeypatch.setattr(mod, "_requested_backend", known)
         body = {"task": "x", "executor": "remote", "agent": "scout", "backend": "claude"}

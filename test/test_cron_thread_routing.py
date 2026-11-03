@@ -388,7 +388,7 @@ class TestSubagentDoneCronRouting:
             await subagent_done(info)
 
         if remote_done:
-            gateway.sessions.reset.assert_awaited_once_with("cron:j1")
+            gateway.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
         else:
             gateway.sessions.reset.assert_not_awaited()
 

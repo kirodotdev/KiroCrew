@@ -120,8 +120,8 @@ class TestApiSpawn:
         mgr = _mgr()
         body = {"task": "x", "approval_floor": "interactive", "backend": backend}
 
-        async def _named(_raw: object) -> tuple[str | None, None]:
-            return backend, None
+        async def _named(_raw: object) -> tuple[str | None, None, None]:
+            return backend, None, None
 
         with (
             patch.object(mod, "_requested_backend", _named),
