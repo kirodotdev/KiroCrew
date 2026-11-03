@@ -27,6 +27,7 @@ import {
 } from '../app-sdk/appQuery'
 import { APP_CACHE_RETENTION_MS } from '../apps/appCacheRetention'
 import { queryClient as sharedQueryClient } from '../api/queryClient'
+import { withInstalledApps } from './installedAppsTestUtils'
 
 function newClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -491,6 +492,7 @@ describe('BuiltinAppRoute', () => {
           <Route path="/:builtinApp" element={<BuiltinAppRoute />} />
         </Routes>
       </MemoryRouter>,
+      { wrapper: withInstalledApps() },
     )
     await screen.findByTestId('wired-page')
     expect(sharedQueryClient.getQueryDefaults(['wired-app-id']).gcTime).toBe(

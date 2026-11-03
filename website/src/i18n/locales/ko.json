@@ -10859,7 +10859,21 @@
       "link_open_remembered": "기억된 링크 선택",
       "link_open_choice_app": "{{name}}에서 열림",
       "link_open_choice_browser": "브라우저에서 열림",
-      "link_open_forget": "지우기"
+      "link_open_forget": "지우기",
+      "adoption": {
+        "network": "{{name}}이(가) 아직 App Store 버전을 다운로드하지 못했습니다. {{productName}}이(가) 자동으로 다시 시도합니다. 이 컴퓨터의 네트워크 연결을 확인하세요.",
+        "local": "{{name}}이(가) 이 컴퓨터에서 App Store 버전을 준비하지 못했습니다. 디스크가 가득 찼거나 설정 파일을 읽을 수 없습니다. {{productName}}이(가) 자동으로 다시 시도합니다.",
+        "policy": "{{name}}의 App Store 버전 전환이 보류되었습니다. 앱 허용 정책이 이 버전을 허용하지 않습니다. 전환을 마치려면 허용 정책에서 허용하세요.",
+        "trust": "{{name}}의 App Store 버전 전환이 보류되었습니다. 신뢰 설정이 다른 소스를 가리키거나 config.local.json에 설정되어 있어 {{productName}}이(가) 변경하지 않았습니다. 전환을 마치려면 신뢰 설정을 확인하세요.",
+        "permissions": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전은 현재 버전보다 더 많은 접근 권한을 요청합니다. 변경된 내용은 없습니다.",
+        "platform": "{{name}}은(는) App Store 버전으로 전환할 수 없습니다. 이 버전은 이 플랫폼을 지원하지 않습니다.",
+        "host": "{{name}}의 App Store 버전 전환이 보류되었습니다. 이 버전에는 더 새로운 {{productName}}이(가) 필요합니다. 전환을 마치려면 {{productName}}을(를) 업데이트하세요.",
+        "verification": "{{name}}은(는) App Store 버전으로 전환되지 않습니다. 이 버전이 검증을 통과하지 못했고, 이 릴리스의 {{productName}}은(는) 다시 시도하지 않습니다. 변경된 내용은 없습니다.",
+        "staged": "{{name}}의 App Store 버전이 다운로드되고 검증되었습니다. 다음에 {{productName}}을(를) 다시 시작하면 {{name}}이(가) 이 버전으로 전환됩니다.",
+        "keeps_builtin_until": "그때까지는 기본 제공 앱으로 유지됩니다.",
+        "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
+        "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
+      }
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

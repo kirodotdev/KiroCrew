@@ -284,6 +284,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.browser_cli import launch as browser_launch
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -1269,7 +1270,7 @@ def isolate_credentials(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
 @pytest.fixture
 def integration_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unpinned_agent_spec_home: Any
-) -> Path:
+) -> Iterator[Path]:
     """A fresh, isolated ``KIROCREW_HOME`` with the fake model wired in.
 
     Modelled on ``kiro_crew.testing.harness.spawn_feature_gateway``'s
@@ -1323,9 +1324,16 @@ def integration_home(
     # raise instead of warn, the same discipline the other gateway-booting jobs
     # enforce.
     monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_PERSIST", "1")
+    # The adoption pin table is this test's own (``harness_environment`` sets the
+    # same name for a subprocess gateway): absent, so empty, unless the test
+    # writes a fixture pin to ``tmp_path / "adoption-pins.json"``. Read once per
+    # process, so the cache is cleared on the way in and on the way out.
+    monkeypatch.setenv(HARNESS_PINS_ENV, str(tmp_path / "adoption-pins.json"))
+    load_adoption_pins.cache_clear()
     # Nor any credential the environment carries (``isolate_credentials``).
     isolate_credentials(monkeypatch, home)
-    return home
+    yield home
+    load_adoption_pins.cache_clear()
 
 
 @pytest.fixture

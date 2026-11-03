@@ -646,7 +646,7 @@ export function useAppShell() {
             // nav. Fall back to a page-relative ui/ icon (installed apps), then
             // the builtin lucide glyph, then the generic package icon.
             const customIconUrl = target.iconUrl
-            const builtinIcon = target.builtin ? getBuiltinIcon(iconName) : undefined
+            const builtinIcon = target.glyphAllowed ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl || target.iconUrlDark
               ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={16} />
               : target.pageIconUrl

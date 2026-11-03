@@ -731,6 +731,7 @@ if _typing.TYPE_CHECKING:
         NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
         StreamingLogLines,
+        _adoption_pending,
         _install_script_platform_refusal,
         _official_entry,
         _remote_controlled_url,

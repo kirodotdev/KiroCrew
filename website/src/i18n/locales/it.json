@@ -11251,7 +11251,21 @@
       "link_open_remembered": "Scelte dei link memorizzate",
       "link_open_choice_app": "Si apre in {{name}}",
       "link_open_choice_browser": "Si apre nel browser",
-      "link_open_forget": "Dimentica"
+      "link_open_forget": "Dimentica",
+      "adoption": {
+        "network": "{{name}} non è ancora riuscita a scaricare la sua versione dell’App Store. {{productName}} riprova automaticamente; controlla la connessione di rete di questo computer.",
+        "local": "{{name}} non è riuscita a preparare la sua versione dell’App Store su questo computer: il disco è pieno o un file di impostazioni non è leggibile. {{productName}} riprova automaticamente.",
+        "policy": "Il passaggio di {{name}} alla sua versione dell’App Store è in sospeso: la tua politica di ammissione delle app non ammette quella versione. Consentila nella politica di ammissione per completare il passaggio.",
+        "trust": "Il passaggio di {{name}} alla sua versione dell’App Store è in sospeso: la sua impostazione di attendibilità indica un’altra origine, oppure è definita in config.local.json, quindi {{productName}} non l’ha modificata. Controlla l’impostazione di attendibilità per completare il passaggio.",
+        "permissions": "Il passaggio di {{name}} alla sua versione dell’App Store è in sospeso: quella versione chiede più accesso di quella che hai ora. Non è stato modificato nulla.",
+        "platform": "{{name}} non può passare alla sua versione dell’App Store: quella versione non supporta questa piattaforma.",
+        "host": "Il passaggio di {{name}} alla sua versione dell’App Store è in sospeso: quella versione richiede un {{productName}} più recente. Aggiorna {{productName}} per completare il passaggio.",
+        "verification": "{{name}} non passa alla sua versione dell’App Store: quella versione non ha superato la verifica, e questa versione di {{productName}} non riprova. Non è stato modificato nulla.",
+        "staged": "La versione dell’App Store di {{name}} è scaricata e verificata. {{name}} passa a quella versione al prossimo riavvio di {{productName}}.",
+        "keeps_builtin_until": "Fino ad allora resta un’app integrata.",
+        "keeps_builtin": "Resta un’app integrata.",
+        "installed_needs_newer_host": "La versione installata di {{name}} richiede un {{productName}} più recente. Aggiorna {{productName}}; i tuoi dati restano invariati."
+      }
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",

@@ -1,0 +1,377 @@
+{
+  "detail": {
+    "adopted": {
+      "adoption": {
+        "legacyNav": {
+          "icon": "ShoppingBag",
+          "route": "/fixture-former"
+        },
+        "state": "adopted"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "gateway",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "entry": "dist/index.mjs",
+          "pages": [
+            {
+              "label": "F",
+              "route": "/apps/fixture-former"
+            }
+          ]
+        },
+        "version": "0.1.0"
+      },
+      "name": "fixture-former",
+      "origin": "registry",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "registry:fixture-former",
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceUrl": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+      "trustRepository": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+      "version": "0.1.0"
+    },
+    "adopted_host_too_old": {
+      "adoption": {
+        "hostTooOld": true,
+        "legacyNav": {
+          "icon": "ShoppingBag",
+          "route": "/fixture-former"
+        },
+        "state": "adopted"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "gateway",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "minKiroCrewVersion": "999.0.0",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "entry": "dist/index.mjs",
+          "pages": [
+            {
+              "label": "F",
+              "route": "/apps/fixture-former"
+            }
+          ]
+        },
+        "version": "9.0.0"
+      },
+      "name": "fixture-former",
+      "origin": "registry",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "registry:fixture-former",
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceUrl": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+      "trustRepository": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+      "version": "9.0.0"
+    },
+    "blocked_admission": {
+      "adoption": {
+        "reason": "admission_denied",
+        "state": "blocked"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "locked",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "pages": [
+            {
+              "icon": "Box",
+              "label": "Fixture Former",
+              "route": "/fixture-former"
+            }
+          ]
+        },
+        "version": "0.1.0"
+      },
+      "name": "fixture-former",
+      "origin": "builtin",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "builtin",
+      "version": "0.1.0"
+    },
+    "blocked_verification": {
+      "adoption": {
+        "reason": "tree_digest_mismatch",
+        "state": "blocked"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "locked",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "pages": [
+            {
+              "icon": "Box",
+              "label": "Fixture Former",
+              "route": "/fixture-former"
+            }
+          ]
+        },
+        "version": "0.1.0"
+      },
+      "name": "fixture-former",
+      "origin": "builtin",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "builtin",
+      "version": "0.1.0"
+    },
+    "pending_network": {
+      "adoption": {
+        "reason": "network_timeout",
+        "state": "pending"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "locked",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "pages": [
+            {
+              "icon": "Box",
+              "label": "Fixture Former",
+              "route": "/fixture-former"
+            }
+          ]
+        },
+        "version": "0.1.0"
+      },
+      "name": "fixture-former",
+      "origin": "builtin",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "builtin",
+      "version": "0.1.0"
+    },
+    "staged": {
+      "adoption": {
+        "state": "staged"
+      },
+      "approvedGrantsStored": false,
+      "defaultOnBackfilled": false,
+      "dev": false,
+      "displayName": "Fixture Former",
+      "enabled": true,
+      "lifecycle": "locked",
+      "manifest": {
+        "author": "kirocrew",
+        "defaultEnabled": false,
+        "description": "A former built-in used by the adoption tests.",
+        "displayName": "Fixture Former",
+        "name": "fixture-former",
+        "permissions": {
+          "api": [
+            "/api/apps/fixture-former",
+            "/api/apps/fixture-former/*"
+          ],
+          "storage": true
+        },
+        "platform": {
+          "os": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "ui": {
+          "pages": [
+            {
+              "icon": "Box",
+              "label": "Fixture Former",
+              "route": "/fixture-former"
+            }
+          ]
+        },
+        "version": "0.1.0"
+      },
+      "name": "fixture-former",
+      "origin": "builtin",
+      "resources": "gateway",
+      "schemaVersion": 2,
+      "sessionApprovalConsentPending": false,
+      "source": "builtin",
+      "version": "0.1.0"
+    }
+  },
+  "list": {
+    "adopted": [
+      {
+        "adoption": {
+          "legacyNav": {
+            "icon": "ShoppingBag",
+            "route": "/fixture-former"
+          },
+          "state": "adopted"
+        },
+        "approvedGrantsStored": false,
+        "defaultOnBackfilled": false,
+        "dev": false,
+        "displayName": "Fixture Former",
+        "enabled": true,
+        "lifecycle": "gateway",
+        "manifest": {
+          "author": "kirocrew",
+          "defaultEnabled": false,
+          "description": "A former built-in used by the adoption tests.",
+          "displayName": "Fixture Former",
+          "name": "fixture-former",
+          "permissions": {
+            "api": [
+              "/api/apps/fixture-former",
+              "/api/apps/fixture-former/*"
+            ],
+            "storage": true
+          },
+          "platform": {
+            "os": [
+              "macos",
+              "linux",
+              "windows"
+            ]
+          },
+          "ui": {
+            "entry": "dist/index.mjs",
+            "pages": [
+              {
+                "label": "F",
+                "route": "/apps/fixture-former"
+              }
+            ]
+          },
+          "version": "0.1.0"
+        },
+        "name": "fixture-former",
+        "origin": "registry",
+        "resources": "gateway",
+        "schemaVersion": 2,
+        "sessionApprovalConsentPending": false,
+        "source": "registry:fixture-former",
+        "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceUrl": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+        "trustRepository": "https://github.com/FixtureOrg/kirocrew-app-fixture-former",
+        "version": "0.1.0"
+      }
+    ]
+  }
+}

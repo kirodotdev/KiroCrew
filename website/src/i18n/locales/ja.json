@@ -10859,7 +10859,21 @@
       "link_open_remembered": "記憶したリンクの選択",
       "link_open_choice_app": "{{name}} で開く",
       "link_open_choice_browser": "ブラウザーで開く",
-      "link_open_forget": "削除"
+      "link_open_forget": "削除",
+      "adoption": {
+        "network": "{{name}} は App Store 版をまだダウンロードできていません。{{productName}} が自動で再試行します。このコンピューターのネットワーク接続を確認してください。",
+        "local": "{{name}} はこのコンピューターで App Store 版を準備できませんでした。ディスクがいっぱいか、設定ファイルを読み取れません。{{productName}} が自動で再試行します。",
+        "policy": "{{name}} の App Store 版への切り替えは保留中です。アプリの受け入れポリシーがこの版を許可していません。切り替えを完了するには、受け入れポリシーで許可してください。",
+        "trust": "{{name}} の App Store 版への切り替えは保留中です。信頼設定が別のソースを指しているか、config.local.json で設定されているため、{{productName}} は変更しませんでした。切り替えを完了するには、信頼設定を確認してください。",
+        "permissions": "{{name}} の App Store 版への切り替えは保留中です。この版は現在の版より多くのアクセスを求めています。何も変更されていません。",
+        "platform": "{{name}} は App Store 版に切り替えられません。この版はこのプラットフォームに対応していません。",
+        "host": "{{name}} の App Store 版への切り替えは保留中です。この版には新しい {{productName}} が必要です。切り替えを完了するには、{{productName}} を更新してください。",
+        "verification": "{{name}} は App Store 版に切り替わりません。この版は検証に通らず、このリリースの {{productName}} は再試行しません。何も変更されていません。",
+        "staged": "{{name}} の App Store 版はダウンロードと検証が完了しています。次に {{productName}} を再起動したときに、{{name}} は App Store 版に切り替わります。",
+        "keeps_builtin_until": "それまではビルトインアプリのままです。",
+        "keeps_builtin": "ビルトインアプリのままです。",
+        "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
+      }
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
