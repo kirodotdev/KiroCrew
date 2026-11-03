@@ -21,7 +21,7 @@
  * outside the allowlist. Overlays and audio additionally respect
  * prefers-reduced-motion and a user mute toggle.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
 import {
@@ -53,6 +53,7 @@ import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound
 import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
 import { useReducedMotion } from '../hooks/useReducedMotion'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { OVERLAY_Z_MAX, useThemeDecorBehindSlot, useThemeDecorSlot } from '../lib/themeDecorLayer'
 import { useAppSelector } from '../store'
 
@@ -194,6 +195,34 @@ function partLabel(part: ExperiencePart): string {
   if (part === 'sounds') return i18nT('components.themeExperienceLayer.sounds')
   if (part === 'overlays') return i18nT('components.themeExperienceLayer.overlays')
   return i18nT('components.themeExperienceLayer.persona')
+}
+
+/**
+ * The consent dialog's modal shell. It mounts only while the dialog shows, so
+ * `useDialogFocusTrap` captures the element focused before the dialog opened,
+ * keeps Tab inside the dialog, maps Escape to `onEscape`, and hands focus back
+ * when the dialog closes. Focus then lands on `initialFocusRef` (the Save
+ * button) instead of the first checkbox.
+ */
+function ConsentDialogShell({ onEscape, initialFocusRef, children }: {
+  onEscape: () => void
+  initialFocusRef: RefObject<HTMLButtonElement | null>
+  children: ReactNode
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, onEscape)
+  useEffect(() => { initialFocusRef.current?.focus({ preventScroll: true }) }, [initialFocusRef])
+  return (
+    <div
+      ref={dialogRef}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="theme-consent-title"
+    >
+      {children}
+    </div>
+  )
 }
 
 export default function ThemeExperienceLayer() {
@@ -744,18 +773,9 @@ export default function ThemeExperienceLayer() {
     })
   }, [])
 
+  // ConsentDialogShell focuses this primary action on open; Escape presses the
+  // decline button. The backdrop already blocks pointer interaction.
   const saveBtnRef = useRef<HTMLButtonElement>(null)
-  // Consent-modal a11y: focus the primary action on open and let Escape press
-  // the decline button. Backdrop already blocks pointer interaction.
-  useEffect(() => {
-    if (!showConsent) return
-    saveBtnRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') keepColors()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [showConsent, keepColors])
 
   // A remote Crew owns the viewport: unmount every overlay/topbar iframe, the mute
   // button and the consent modal. `display: none` on App's local-dashboard wrapper
@@ -765,12 +785,7 @@ export default function ThemeExperienceLayer() {
 
   if (showConsent) {
     return (
-      <div
-        className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="theme-consent-title"
-      >
+      <ConsentDialogShell onEscape={keepColors} initialFocusRef={saveBtnRef}>
         <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-text shadow-2xl">
           <h2 id="theme-consent-title" className="text-base font-semibold text-text-strong">
             {i18nT('components.themeExperienceLayer.enable_named_experience', { name: active?.name })}
@@ -822,7 +837,7 @@ export default function ThemeExperienceLayer() {
             </Btn>
           </div>
         </div>
-      </div>
+      </ConsentDialogShell>
     )
   }
 
