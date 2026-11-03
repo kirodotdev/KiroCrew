@@ -63,7 +63,7 @@ const API_KEY_ORDER = [
   'kirocrewAgents', 'agentResolvedModel', 'agentCatalog', 'createKirocrewAgent',
   'members', 'memberThread', 'memberGreet', 'memberFreshStart',
   'memberExportPreview', 'memberExportLessonsDraft', 'memberExportFile', 'memberActivity', 'memberProjections',
-  'memberDashboard', 'memberDashboardPreviewApply', 'memberDashboardPreviewDiscard', 'memberDashboardLock', 'sessionDashboard', 'memberDashboardRefetch',
+  'memberDashboard', 'memberDashboardPreviewApply', 'memberDashboardPreviewDiscard', 'sessionDashboard', 'memberDashboardRefetch',
   'memberBriefing', 'memberGoals', 'teams', 'updateKirocrewAgent',
   'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models', 'harnessModels',
   'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands', 'chatSlotAgent',

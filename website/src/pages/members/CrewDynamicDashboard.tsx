@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Lock, RotateCw } from 'lucide-react'
+import { RotateCw } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
-import { Badge, Btn } from '../../components/ui'
+import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
@@ -226,7 +226,7 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
@@ -247,8 +247,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   /** Told the `staged_ms` of the staged page the frame has drawn (0 until it has),
    *  so the host's Keep and Discard name exactly that page. */
   onPreviewLoaded?: (stagedMs: number) => void
-  /** Called when the person clicks the Locked badge to jump to the Profile tab. */
-  onOpenProfileTab?: () => void
   /** The `kind="dashboard"` package to show instead of the crewmate's template page.
    *  Empty shows the template instance, which is every crewmate today: no caller
    *  resolves a package slug yet (that lookup is #18707). Carried here so the frames
@@ -446,8 +444,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // readable from inside a long-lived callback, which is what it exists for.
       // NO PACKAGE OF MINE IS ALSO AN ANSWER, so the empty case is a drop and not a
       // pass. This tab shows a template page -- because none is bound, or because the
-      // person locked the layout and the gateway stopped selecting one -- while the
-      // (crewmate, package) page can still be armed from before. Letting its pushes
+      // record released packages -- while the (crewmate, package) page can still be armed from before. Letting its pushes
       // through gave the template's bootstrap a generation it cannot place, so it asked
       // for a whole read with no package to name, the gateway answered 400
       // `missing_dashboard`, and the page refetched on every push.
@@ -474,10 +471,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // flip an unadopted crewmate's tab onto the default page that answer carries.
   const suggestions = liveMember && data?.suggestions === true
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
-
-  // The person's layout lock, read off the same body the page comes from. This tab
-  // only SHOWS it: the switch that sets it is on the crewmate's Profile card.
-  const locked = target.kind === 'member' && !!data && 'structure_locked' in data && data.structure_locked === true
 
   /**
    * The page currently believed to work, and the candidate waiting to prove it.
@@ -578,7 +571,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // grant it loaded under. Several reads arrive that way and none of them is evidence
     // that the held page is still the record's: a bound package with nothing applied
     // (`state: empty` -- version pruned, or nobody approved one), and a record whose
-    // locked `template_id` the catalog no longer has, which resolves to no package slug
+    // `template_id` the catalog no longer has, which resolves to no package slug
     // and composes nothing. Under any of them a reader goes on looking at a page the
     // record does not have, and if an admin ceiling has since restricted the owner
     // agent's egress that document still holds `allow-scripts` and can navigate its own
@@ -1048,43 +1041,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // could never promote the page it just re-minted.
   }, [probating, candidate, probe.url])
 
-  // A badge-button ("Layout locked — unlock on Profile") that opens the Profile tab
-  // when clicked (via onOpenProfileTab), so the person can unlock in one tap. When
-  // onOpenProfileTab is absent the badge falls back to a non-interactive Badge.
-  // Drawn in EVERY view that has a read, not only the page view: a
-  // page locked while its record was healthy can later read as broken or empty, and
-  // the person should still see why the crewmate is not changing it. Not on a staged
-  // preview: that read is not the page the lock holds, so it carries no lock.
-  const lockBadge = locked && !preview ? (
-    <div className="shrink-0 flex justify-end px-2 pt-1">
-      {onOpenProfileTab ? (
-        // Clickable: goes straight to the Profile tab where the lock switch lives.
-        // Uses the shared Btn primitive for consistent interactive semantics.
-        <Btn
-          type="button"
-          onClick={onOpenProfileTab}
-          className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium whitespace-nowrap bg-[var(--bg-hover)] text-accent underline hover:opacity-80 focus-ring"
-          aria-label={i18nT('pages.membersPage.dashboard_locked_badge_label')}
-          data-testid="crew-dashboard-lock-badge"
-        >
-          <Lock size={11} aria-hidden="true" />
-          {i18nT('pages.membersPage.dashboard_locked_badge')}
-        </Btn>
-      ) : (
-        <Badge
-          variant="muted"
-          role="status"
-          aria-label={i18nT('pages.membersPage.dashboard_locked_badge_label')}
-          data-testid="crew-dashboard-lock-badge"
-          style={{ cursor: 'default' }}
-        >
-          <Lock size={11} aria-hidden="true" />
-          {i18nT('pages.membersPage.dashboard_locked_badge')}
-        </Badge>
-      )}
-    </div>
-  ) : null
-
   // `!shown`: a new query key (a language switch) loads with nothing cached, and
   // a page already on screen stays mounted through it. Unmounting it here meant a
   // failed read for that key remounted the frame on its spent document url.
@@ -1148,7 +1104,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   if (suggestions) {
     return (
       <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-none">
-        {lockBadge}
         <CrewDashboardEmpty
           member={target.kind === 'member' ? target.member : ''}
           displayName={displayName}
@@ -1164,7 +1119,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // Nothing good to keep, so the frame is not drawn at all rather than drawn from
       // markup the gateway refused to fill.
       <div className="p-4 space-y-1.5">
-        {lockBadge}
         {/* No hand-off: this tab sits on the Members page, which holds unsaved
             Profile and crew-editor drafts; the hand-off navigates to /chat and
             unmounts them past the page's leave guard. Reasoned in full at the
@@ -1190,7 +1144,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // the same empty answer and a button that cannot change anything reads as a
       // fault the reader could clear.
       <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
-        {lockBadge}
         {i18nT('pages.membersPage.dashboard_none_yet')}
       </div>
     )
@@ -1205,7 +1158,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // nothing, because this tab renders the dashboard and no longer renders a
       // published document.
       <div className="p-4 space-y-1.5">
-        {lockBadge}
         {/* No hand-off: the Members page's unsaved Profile and crew-editor drafts,
             as at the isError branch above. */}
         <ErrorNotice
@@ -1222,7 +1174,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
 
   return (
     <div className="relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
-      {lockBadge}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.
