@@ -144,6 +144,10 @@ def register_external_app(
     # activate with no admission control. Pass the self-reported manifest (when
     # provided) so a correctly-signed app is admitted under require_signature.
     admission_manifest = None
+    # The manifest arrives from the request body. An empty value is no manifest,
+    # as before; a non-empty one that is not a JSON object cannot be parsed.
+    if manifest_data and not isinstance(manifest_data, dict):
+        return AppResult(ok=False, name=name, error="manifest must be a JSON object")
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
         # Self-registration parses without validating, and parsing records a
