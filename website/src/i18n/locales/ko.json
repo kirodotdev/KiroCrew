@@ -5879,7 +5879,6 @@
       "credentials_remain_with_their_source_rules_hooks": "자격 증명은 원래 소스에 남습니다. 대화 기록·훅·에이전트 정의·소스의 페르소나 신원은 가져오지 않습니다. 작성한 규칙과 지침은 우선순위가 높은 메모리로 가져옵니다.",
       "deduplicated": "중복 제거됨",
       "existing_kirocrew_setup_is_never_overwritten_mat": "기존 {{productName}} 설정은 기본적으로 덮어쓰지 않습니다. 일치하는 항목은 중복 제거되며, 충돌하는 항목은 가져온 뒤 달리 선택하지 않는 한 현재 버전을 유지합니다.",
-      "found": "발견됨",
       "import_agent_setup": "에이전트 설정 가져오기",
       "import_all_your_supported_work_or_handpick_what": "지원되는 작업을 모두 가져오거나 가져올 항목을 직접 고르세요.",
       "import_another": "다른 항목 가져오기",
@@ -5889,7 +5888,6 @@
       "imported": "가져옴",
       "importing": "가져오는 중",
       "items_already_exist_with_different_content": "개 항목이 다른 콘텐츠로 이미 존재합니다.",
-      "items_selected": "개 항목 선택됨",
       "keep_both": "둘 다 유지",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}}이(가) 이 게이트웨이 호스트에서 에이전트 설정을 찾았습니다. 검토할 소스를 선택하세요.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}}은(는) 이 게이트웨이 호스트에서 가져올 지원되는 설정을 찾지 못했습니다.",
@@ -5920,7 +5918,11 @@
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 {{productName}} 설정은 영향을 받지 않습니다.",
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다.",
       "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계",
-      "source_item_count_other": "{{name}}, 항목 {{count}}개"
+      "source_item_count_other": "{{name}}, 항목 {{count}}개",
+      "category_count_other": "카테고리 {{count}}개",
+      "source_categories": "{{name}} 카테고리",
+      "items_selected_count_other": "항목 {{count}}개 선택됨",
+      "found_count_other": "{{count}}개 발견됨"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "저장했지만 이 {{productName}}에서 에이전트 구성을 업데이트하지 못해 새 채팅은 이전 설정을 사용합니다. 이유는 '로그' 페이지에서 확인하세요."
@@ -14408,7 +14410,6 @@
         "search_explore_and_manage_your_knowledge_base": "지식 베이스를 검색하고 탐색하고 관리하세요",
         "search_knowledge_press_enter_to_search": "지식 검색… (Enter로 검색)",
         "select_all": "모두 선택",
-        "selected": "선택됨",
         "sources_tab": "소스",
         "status_active": "활성",
         "status_archived": "보관됨",
@@ -14426,7 +14427,8 @@
         "bulk_delete_failed": "선택한 항목을 삭제할 수 없습니다",
         "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
         "error_no_reason": "이유 없이 요청이 실패했습니다.",
-        "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?"
+        "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?",
+        "selected_count_other": "{{count}}개 선택됨"
       },
       "itemCard": {
         "copied": "복사했습니다!",

@@ -1,6 +1,7 @@
 [
   "components.gitPanel.repos_omitted",
   "components.redaction.coach_title",
+  "pages.knowledge.index.selected_count",
   "pages.overview.vectorMemoryCard.repair_deferred",
   "pages.overview.vectorMemoryCard.repair_invalidation",
   "pages.overview.vectorMemoryCard.repair_vectors",
@@ -103,6 +104,9 @@
   "apps.workflows.workflowsRuns.agents",
   "apps.workflows.workflowsRuns.events",
   "apps.workflows.workflowSourcePanel.lines",
+  "components.agentImportFlow.category_count",
+  "components.agentImportFlow.found_count",
+  "components.agentImportFlow.items_selected_count",
   "components.agentImportFlow.source_item_count",
   "components.agentSkillsEditor.mapping_unresolved_count",
   "components.agentTemplateDetail.changes_count",

@@ -6148,7 +6148,6 @@
       "credentials_remain_with_their_source_rules_hooks": "Le credenziali restano presso la loro origine. Cronologia delle conversazioni, hook, definizioni degli agenti e l'identità della persona di un'origine non vengono importati. Le tue regole e istruzioni scritte vengono importate come memoria ad alta priorità.",
       "deduplicated": "Deduplicato",
       "existing_kirocrew_setup_is_never_overwritten_mat": "La configurazione esistente di {{productName}} non viene mai sovrascritta per impostazione predefinita. Gli elementi corrispondenti vengono deduplicati e, in caso di conflitto, viene mantenuta la tua versione attuale salvo diversa scelta dopo l'importazione.",
-      "found": "trovato",
       "import_agent_setup": "Importa la configurazione dell'agente",
       "import_all_your_supported_work_or_handpick_what": "Importa tutto il lavoro supportato o scegli a mano cosa portare.",
       "import_another": "Importa un altro",
@@ -6158,7 +6157,6 @@
       "imported": "Importato",
       "importing": "Importazione in corso",
       "items_already_exist_with_different_content": "elementi esistono già con contenuto diverso.",
-      "items_selected": "elementi selezionati",
       "keep_both": "Mantieni entrambi",
       "kiro_crew_found_agent_setup_on_this_gateway_host": "{{productName}} ha trovato una configurazione di agenti su questo host gateway. Seleziona le origini da esaminare.",
       "kirocrew_did_not_find_supported_setup_to_import": "{{productName}} non ha trovato alcuna configurazione supportata da importare su questo host gateway.",
@@ -6191,7 +6189,17 @@
       "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}",
       "source_item_count_one": "{{name}}, {{count}} elemento",
       "source_item_count_many": "{{name}}, {{count}} elementi",
-      "source_item_count_other": "{{name}}, {{count}} elementi"
+      "source_item_count_other": "{{name}}, {{count}} elementi",
+      "category_count_one": "{{count}} categoria",
+      "category_count_many": "{{count}} categorie",
+      "category_count_other": "{{count}} categorie",
+      "source_categories": "Categorie di {{name}}",
+      "items_selected_count_one": "{{count}} elemento selezionato",
+      "items_selected_count_many": "{{count}} elementi selezionati",
+      "items_selected_count_other": "{{count}} elementi selezionati",
+      "found_count_one": "{{count}} trovato",
+      "found_count_many": "{{count}} trovati",
+      "found_count_other": "{{count}} trovati"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvato, ma questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat mantengono la configurazione precedente. Apri la pagina «Log» per vedere il motivo."
@@ -14966,7 +14974,6 @@
         "search_explore_and_manage_your_knowledge_base": "Cerca, esplora e gestisci la tua base di conoscenze",
         "search_knowledge_press_enter_to_search": "Cerca nelle conoscenze... (premi Invio per cercare)",
         "select_all": "Seleziona tutto",
-        "selected": "selezionati",
         "sources_tab": "Origini",
         "status_active": "Attivo",
         "status_archived": "Archiviate",
@@ -14994,7 +15001,10 @@
         "error_no_reason": "La richiesta non è riuscita senza indicare un motivo.",
         "delete_items_permanently_one": "Eliminare definitivamente {{count}} elemento?",
         "delete_items_permanently_many": "Eliminare definitivamente {{count}} elementi?",
-        "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?"
+        "delete_items_permanently_other": "Eliminare definitivamente {{count}} elementi?",
+        "selected_count_one": "{{count}} selezionato",
+        "selected_count_many": "{{count}} selezionati",
+        "selected_count_other": "{{count}} selezionati"
       },
       "itemCard": {
         "copied": "Copiato!",
