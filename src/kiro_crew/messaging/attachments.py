@@ -186,8 +186,10 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     VIDEO here and a "video is not supported" note lands beside the transcript.
     The knowledge belongs to the channel, so the channel supplies it rather than
     this module accumulating per-channel special cases.
+
+    Parameters after ``;`` are dropped first (see :func:`base_mimetype`).
     """
-    mt = (mimetype or "").lower()
+    mt = base_mimetype(mimetype)
     if mt in IMAGE_MIMETYPES:
         return IMAGE
     if any(mt.startswith(p) for p in (*audio_mimetypes, *_AUDIO_PREFIXES)):
@@ -199,6 +201,16 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     if is_parseable_document(mimetype=mt, filename=name):
         return DOCUMENT
     return OTHER
+
+
+def base_mimetype(mimetype: str) -> str:
+    """*mimetype* lowercased with any ``;`` parameters dropped.
+
+    Discord sends a JSON file as ``application/json; charset=utf-8``: the type is
+    the part before the parameters. :func:`classify` and the document parser read
+    this same value, so a type the classifier admits is one the parser can match.
+    """
+    return (mimetype or "").split(";", 1)[0].strip().lower()
 
 
 def sniff_image_mime(path: str) -> str | None:
@@ -509,7 +521,7 @@ async def ingest_attachments(
                     # free to recover from a wedged kernel resource. Parking a slow
                     # document parse there would undermine that isolation.
                     raw = await asyncio.to_thread(
-                        extract_text, dest, mimetype=att.mimetype, filename=att.name
+                        extract_text, dest, mimetype=base_mimetype(att.mimetype), filename=att.name
                     )
                     if not raw:
                         out.rejections.append(

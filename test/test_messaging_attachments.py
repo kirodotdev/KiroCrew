@@ -83,6 +83,47 @@ class TestClassify:
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER
 
+    @pytest.mark.parametrize(
+        "mime,expected",
+        [
+            # Discord's content_type for a JSON or XML file carries a charset.
+            ("application/json; charset=utf-8", TEXT),
+            ("application/xml; charset=utf-8", TEXT),
+            ("text/plain;charset=UTF-8", TEXT),
+            ("IMAGE/PNG ; foo=bar", IMAGE),
+            ("application/octet-stream; charset=utf-8", OTHER),
+        ],
+    )
+    def test_parameters_after_the_type_are_ignored(self, mime, expected):
+        assert classify(mime) == expected
+
+    def test_a_parameter_cannot_make_svg_an_image(self):
+        assert classify("image/svg+xml; charset=utf-8") == OTHER
+
+
+class TestParameterizedDocumentReachesTheParser:
+    @pytest.mark.asyncio
+    async def test_the_parser_gets_the_same_base_type_the_classifier_read(self, monkeypatch):
+        """``application/pdf; charset=binary`` on a name with no extension is parsed as a PDF."""
+        import kiro_crew.messaging.attachments as mod
+
+        seen: list[str] = []
+
+        def _extract(path: str, *, mimetype: str = "", filename: str = "") -> str:
+            seen.append(mimetype)
+            return "page one"
+
+        monkeypatch.setattr(mod, "extract_text", _extract)
+        att = Attachment(
+            name="report", mimetype="application/pdf; charset=binary", url="https://x/1"
+        )
+        result = await ingest_attachments([att], download=_writer(b"%PDF-1.4\n"), source="test")
+        try:
+            assert seen == ["application/pdf"]
+            assert result.rejections == []
+        finally:
+            cleanup(result.temp_paths)
+
 
 class TestSafeSuffix:
     @pytest.mark.parametrize(
