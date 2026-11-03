@@ -369,7 +369,6 @@ test/test_dashboard.py
 test/test_dashboard_branding.py
 test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_batch_delete_handler.py
-test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py
