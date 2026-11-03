@@ -1511,6 +1511,7 @@ def _subagent_ladder(
     hook=TOOL_ALLOW,
     spec=None,
     consult=None,
+    approval_floor: str = "",
 ):
     manager = SubagentManager(
         sessions=MagicMock(),
@@ -1518,7 +1519,9 @@ def _subagent_ladder(
         on_tool_approval=callback,
         on_tool_approval_factory=factory,
     )
-    info = SubagentInfo(id="a1", task="t", parent_session_key="dashboard:chat-1")
+    info = SubagentInfo(
+        id="a1", task="t", parent_session_key="dashboard:chat-1", approval_floor=approval_floor
+    )
     log: list = []
     policy = manager._run_events._permission_policy(
         info,
@@ -1878,6 +1881,11 @@ async def test_every_rung_the_subagent_ladder_can_settle_on_has_its_row():
     refusals, approvals = await _ladder_rungs(policy, Ask(_event(), RecordingWire([]), "k"))
     # The run bails at its own limits.
     refusals |= set(get_args(tool_permission.BailReason))
+    # A floored run swaps every person on this gateway for the remote hub's.
+    floored, _info, _log = _subagent_ladder(approval_floor="interactive")
+    for responder in (*floored.responders, floored.child.responder):
+        refusals.add(responder.name)
+        approvals.add(responder.name)
     assert refusals == set(tool_permission._SUBAGENT_REFUSALS)
     assert approvals == set(tool_permission._SUBAGENT_APPROVALS)
 

@@ -153,6 +153,13 @@ def _interactive_approval(
             if request_id.startswith("spawn:")
             else f"{request_id}-{uuid.uuid4().hex[:12]}"
         )
+        # A run under a remote hub's interactive approval floor: every
+        # non-human shortcut below is gated on ``_child_grant_eligible``, so
+        # clearing it leaves only the person's answer. Strict equality, as
+        # for the probes above.
+        _floored = getattr(event, "approval_floor", "") == "interactive"
+        if _floored:
+            _child_grant_eligible = False
         # Background callers pass the authoritative parent session key. Prefer it
         # over a request-ID resolver because a tool permission ID names no agent,
         # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
@@ -198,10 +205,10 @@ def _interactive_approval(
                 # deny anyway. Fail closed fast instead (an approve is
                 # still never allowed on agent-authored context).
                 logger.warning(
-                    "Fast-denying low-fidelity child request under "
-                    "auto-approve source %s (unattended; title is "
-                    "agent-authored)",
+                    "Fast-denying %s request under auto-approve source %s (unattended; %s)",
+                    "approval-floored" if _floored else "low-fidelity child",
                     source,
+                    "a remote hub requires a person" if _floored else "title is agent-authored",
                 )
                 return False
             logger.info("Auto-approving tool %s from source %s", event.title, source)

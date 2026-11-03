@@ -109,6 +109,28 @@ class SpawnApprovalCallback(Protocol):
         pass
 
 
+class ExternalPlacement(Protocol):
+    """The placement service that owns peer-run records (``executor != "local"``).
+
+    Bound once with :meth:`SubagentManager.bind_external_placement`. External
+    records never enter the local task/reaper path, so the manager reaches their
+    owner through these three calls instead:
+
+    * ``cancel`` stops one live peer run;
+    * ``dismiss`` durably records an operator dismissal of a finished one before
+      the manager forgets it;
+    * ``acknowledge_delivered`` is told when results the gateway parked in a wave
+      digest or a busy slot's queue have reached their parent, the only point
+      that knows they did.
+    """
+
+    async def cancel(self, info: SubagentInfo) -> bool: ...
+
+    async def dismiss(self, info: SubagentInfo) -> bool: ...
+
+    async def acknowledge_delivered(self, agent_ids: list[str]) -> None: ...
+
+
 # ── Delivery routing state: enumerated from the PRODUCING side ────────────────
 #
 # Every ``SubagentInfo`` attribute that the modules owning terminal-outcome routing

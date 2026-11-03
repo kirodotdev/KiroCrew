@@ -193,6 +193,27 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         revive_task = asyncio.create_task(_retake_hops_then_revive(registry, manager, state))
         state._background_tasks.add(revive_task)
         revive_task.add_done_callback(state._background_tasks.discard)
+        # Remote subagent runs that were in flight before a restart resume
+        # polling and deliver their results now, not on the next /api/spawn
+        # request. Background for the same reason as the revive above; the
+        # restore reads only local mapping files, and its monitors retry
+        # until the tunnels are back.
+        restore_task = asyncio.create_task(_restore_remote_subagents())
+        state._background_tasks.add(restore_task)
+        restore_task.add_done_callback(state._background_tasks.discard)
+
+    async def _restore_remote_subagents() -> None:
+        from kiro_crew.dashboard.remote_subagents import (
+            RemoteSubagentError,
+            get_remote_subagent_service,
+        )
+
+        try:
+            await get_remote_subagent_service(state).ensure_restored()
+        except RemoteSubagentError:
+            logger.debug("Remote subagent restore skipped: no subagent manager")
+        except Exception:
+            logger.warning("Remote subagent restore failed at startup", exc_info=True)
 
     async def _instances_shutdown(app_: web.Application) -> None:
         if unregister_pre_exec_stop is not None:
