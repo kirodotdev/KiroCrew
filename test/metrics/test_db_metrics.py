@@ -89,7 +89,9 @@ class TestTimedQuery:
         with caplog.at_level("DEBUG", logger="kiro_crew.metrics.db_metrics"):
             with db_metrics.timed_query("memory", "search"):
                 pass  # must not raise
-        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.db_metrics"]
+        logged = [
+            r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.db_metrics"
+        ]
         assert logged == ["db query timing failed"]
 
 
