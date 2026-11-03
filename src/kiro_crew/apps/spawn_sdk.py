@@ -130,6 +130,11 @@ class SpawnError(RuntimeError):
 #: ``(spawn_id) -> bool`` — True once that agent has finished (any outcome).
 DoneProbe = Callable[[str], bool]
 
+#: Optional probe the gateway injects alongside the impl:
+#: ``(spawn_id) -> bool`` — True only once that agent finished and the host
+#: reports it completed (not failed, not stopped, not an unknown id).
+SuccessProbe = Callable[[str], bool]
+
 
 class SpawnSDK:
     """App-scoped view of the host's background-agent spawning."""
@@ -140,11 +145,13 @@ class SpawnSDK:
         impl: SpawnImpl,
         done_probe: DoneProbe | None = None,
         continue_impl: ContinueImpl | None = None,
+        success_probe: SuccessProbe | None = None,
     ) -> None:
         self._app_name = app_name
         self._impl = impl
         self._done_probe = done_probe
         self._continue_impl = continue_impl
+        self._success_probe = success_probe
 
     def is_done(self, spawn_id: str) -> bool:
         """True once the spawned agent has finished (success OR failure).
@@ -159,6 +166,22 @@ class SpawnSDK:
             return False
         try:
             return bool(self._done_probe(spawn_id))
+        except Exception:  # noqa: BLE001 — a probe failure must not break the caller
+            return False
+
+    def succeeded(self, spawn_id: str) -> bool:
+        """True only when the host reports the spawned agent finished successfully.
+
+        ``is_done`` cannot tell a success from a failure, and it reads an id the
+        host does not know as done. A caller that records work as done asks
+        this instead. A failed, stopped, still running or unknown run returns
+        False, and so does a host that injected no probe, so the caller treats
+        an outcome it cannot confirm as not done.
+        """
+        if self._success_probe is None:
+            return False
+        try:
+            return bool(self._success_probe(spawn_id))
         except Exception:  # noqa: BLE001 — a probe failure must not break the caller
             return False
 
@@ -413,6 +436,7 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
     # build_app_context reads it back via getattr.
     _impl.done_probe = build_done_probe(subagents)  # type: ignore[attr-defined]
     _impl.continue_impl = build_continue_impl(subagents)  # type: ignore[attr-defined]
+    _impl.success_probe = build_success_probe(subagents)  # type: ignore[attr-defined]
     return _impl
 
 
@@ -569,5 +593,25 @@ def build_done_probe(subagents: object) -> DoneProbe:
         if callable(is_queued) and is_queued(spawn_id):
             return False  # accepted, not started: pending work holds the guard
         return True
+
+    return _probe
+
+
+def build_success_probe(subagents: object) -> SuccessProbe:
+    """Adapt a live ``SubagentManager`` to :data:`SuccessProbe`.
+
+    True only for a tracked run that is done with ``outcome`` ``"completed"``.
+    A failed or stopped run, one still going, and an id the manager does not
+    track (pruned, or a queued spawn whose wait expired before it started) all
+    read as False: whether that work ran is not known.
+    """
+
+    def _probe(spawn_id: str) -> bool:
+        if subagents is None or not spawn_id:
+            return False
+        info = subagents.get(spawn_id)  # type: ignore[attr-defined]
+        if info is None or not getattr(info, "done", False):
+            return False
+        return getattr(info, "outcome", "") == "completed"
 
     return _probe

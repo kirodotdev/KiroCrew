@@ -154,6 +154,12 @@ class _PollerCallbacks:
     async def spawn_agent(self, task_prompt: str) -> str:
         return await _spawn_agent(task_prompt)
 
+    def agent_succeeded(self, spawn_id: str) -> bool:
+        # The poller stamps a freestyle task done only on a success the host
+        # reports. No spawn capability means no outcome to read, so no success.
+        spawn = getattr(self._rt._ctx, "spawn", None)
+        return spawn is not None and spawn.succeeded(spawn_id)
+
     def get_due_watch_items(self) -> list[dict[str, Any]]:
         return self._rt.due_watch_items()
 
