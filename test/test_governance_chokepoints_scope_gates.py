@@ -339,6 +339,92 @@ class TestHelpers:
         d = gp.governance_permits("capabilities.memory_writes", "x", session_key="cli_chat")
         assert not d.permitted
 
+    def test_remote_placement_is_a_capability_a_policy_can_deny(self):
+        # A remote child runs under the peer's approval policy, so a ceiling
+        # must be able to refuse remote placement without denying spawn itself.
+        from kiro_crew.subagent import _vet_remote_placement_governance, _vet_spawn_governance
+
+        _install(None)
+        assert _vet_remote_placement_governance("cli_chat") is None
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "spawn": {"enabled": True},
+                    "remote_spawn": {"enabled": False},
+                },
+            }
+        )
+        assert _vet_remote_placement_governance("cli_chat")
+        assert _vet_spawn_governance("cli_chat", "") is None
+
+    def test_a_profile_bound_to_the_parent_agent_can_deny_remote_placement(self):
+        # The parent's own agent selects its profile, as it does for the parent's
+        # tool gate; the requested child agent does not.
+        import json
+
+        from kiro_crew.subagent import _vet_remote_placement_governance
+
+        _install(None)
+        (gp._PROFILES_DIR / "researcher.json").write_text(
+            json.dumps(
+                {
+                    "name": "researcher",
+                    "bind": {"type": "task", "id": "researcher"},
+                    "capabilities": {"remote_spawn": {"enabled": False}},
+                }
+            )
+        )
+        gp.reset_store()
+        assert _vet_remote_placement_governance("cli_chat", agent="researcher")
+        assert _vet_remote_placement_governance("cli_chat", agent="writer") is None
+        assert _vet_remote_placement_governance("cli_chat") is None
+
+    def test_a_profile_bound_to_the_parent_agent_can_deny_spawn_itself(self):
+        # The spawn capability is judged for the agent the PARENT runs as, as the
+        # parent's own tool gate is; the requested child agent does not select it.
+        import json
+
+        from kiro_crew.subagent import _vet_spawn_governance
+
+        _install(None)
+        (gp._PROFILES_DIR / "researcher.json").write_text(
+            json.dumps(
+                {
+                    "name": "researcher",
+                    "bind": {"type": "task", "id": "researcher"},
+                    "capabilities": {"spawn": {"enabled": False}},
+                }
+            )
+        )
+        gp.reset_store()
+        assert _vet_spawn_governance("cli_chat", "scout", parent_agent="researcher")
+        assert _vet_spawn_governance("cli_chat", "scout", parent_agent="writer") is None
+        assert _vet_spawn_governance("cli_chat", "scout") is None
+
+    def test_remote_placement_follows_the_absent_key_contract(self):
+        # Like every capability, an installed policy that leaves the row out
+        # leaves it ungoverned; the operator opt-in is the gate there.
+        from kiro_crew.subagent import _vet_remote_placement_governance
+
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}},
+            }
+        )
+        assert _vet_remote_placement_governance("cli_chat") is None
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"remote_spawn": {"enabled": True}},
+            }
+        )
+        assert _vet_remote_placement_governance("cli_chat") is None
+
     def test_governance_permits_ungoverned_is_permit(self):
         _install(None)
         d = gp.governance_permits("tools", "anything", session_key="cli_chat")

@@ -15,6 +15,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        _RESERVED_RUN_IDS,
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
         PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -122,6 +123,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
     if not info:
@@ -138,6 +142,17 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # The pump can register the run while that lookup awaited; the
         # registry then answers, not the half-written folder.
         info = state.subagents.get(agent_id)
+    if not info and agent_id in _RESERVED_RUN_IDS:
+        # A hub-chosen run id an admission still holds (its spawn is warming the
+        # project, say). A 404 here reads as "gone" to a hub polling it, which
+        # then stops watching a run that is about to start; say it is pending.
+        return web.json_response(
+            {
+                "error": f"run {agent_id} is still being admitted; ask again",
+                "code": "spawn_admission_pending",
+            },
+            status=409,
+        )
     if not info:
         # Fall back to persistence layer (orphaned/recovered agents)
         try:
@@ -213,6 +228,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     # Present only when ``agent.acp_failover`` moved the run, so the default
     # payload is unchanged: the backend asked for, and the one that ran.
     data.update(_failover_fields(info))
+    if getattr(info, "executor", "local") == "remote":
+        data["executor"] = "remote"
+        data["instance_id"] = info.instance_id
+        data["remote_id"] = info.remote_id
     if info.done:
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
@@ -244,6 +263,10 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        data["stopped"] = bool(getattr(info, "user_stopped", False))
+        data["stop_reason"] = str(getattr(info, "stop_reason", "") or "")
+        data["stop_class"] = str(getattr(info, "stop_class", "") or "")
+        data["partial"] = bool(getattr(info, "partial", False))
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -261,6 +284,15 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+        if getattr(info, "approval_floor", "") == "interactive":
+            # A floored run's tool requests wait for the remote hub's person;
+            # the hub reads them here and answers on .../approvals/{id}.
+            from kiro_crew.subagent_manager.hub_approvals import pending_for
+
+            data["approvals"] = [
+                {key: value if key == "id" else _redact(value) for key, value in item.items()}
+                for item in pending_for(info.id)
+            ]
     if (
         seen_under is not None
         and seen_under == getattr(info, "_spawned_under", None)
@@ -353,6 +385,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
     # Called for its REFUSAL: it rejects an internal caller whose execution
     # identity cannot be verified. The store it resolves is deliberately not kept
     # as the ownership gate -- a verified internal caller on the default store
@@ -396,6 +431,10 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         # Present only when ``agent.acp_failover`` moved the run, so the default
         # payload is unchanged: the backend asked for, and the one that ran.
         entry.update(_failover_fields(info))
+        if getattr(info, "executor", "local") == "remote":
+            entry["executor"] = "remote"
+            entry["instance_id"] = info.instance_id
+            entry["remote_id"] = info.remote_id
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

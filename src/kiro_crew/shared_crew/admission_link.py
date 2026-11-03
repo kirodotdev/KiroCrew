@@ -67,8 +67,11 @@ async def link(service: AdmissionService, work_id: str, execution_id: str) -> bo
     return True
 
 
-async def link_spawn(admission: Admission, subagents: object) -> str | None:
+async def link_spawn(admission: Admission, subagents: object, *, preferred: str = "") -> str | None:
     """Mint the child's run id and link it to *admission* before the spawn.
+
+    *preferred* is an id the caller already reserved (a hub that names the run
+    it places on this crew); it is linked instead of a freshly minted one.
 
     Returns the id to pass to the spawn as ``_preassigned_id``; ``""`` when
     there is nothing to link (admission is off, or the manager mints no ids);
@@ -79,9 +82,9 @@ async def link_spawn(admission: Admission, subagents: object) -> str | None:
         return ""
     service = admission.service
     mint = getattr(subagents, "_mint_agent_id", None)
-    if not callable(mint):
+    if not preferred and not callable(mint):
         return ""
-    run_id = str(mint())
+    run_id = preferred or str(mint())
     return run_id if await link(service, work.work_id, run_id) else None
 
 

@@ -131,6 +131,19 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "running_agents_for_impl": ("function", "(self, parent_key: 'str') -> 'list[dict]'", "run"),
     "get_impl": ("function", "(self, agent_id: 'str') -> 'SubagentInfo | None'", "run"),
+    # The approval floor for a run whose tool requests go to a person: the
+    # agent it launches as (its spec with backend tool grants emptied), and the
+    # refusal when that spec's project hooks are not trusted to run.
+    "_floored_agent": (
+        "coroutine",
+        "(self, info: 'SubagentInfo', agent: 'str', cwd: 'str') -> 'tuple[str, dict[str, Any] | None, str | None]'",
+        "run",
+    ),
+    "_untrusted_project_floor": (
+        "staticmethod",
+        "(info: 'SubagentInfo', base: 'str') -> 'RuntimeError'",
+        "run",
+    ),
     "is_queued_impl": ("function", "(self, agent_id: 'str') -> 'bool'", "run"),
     "_teardown_run_session_impl": (
         "coroutine",
