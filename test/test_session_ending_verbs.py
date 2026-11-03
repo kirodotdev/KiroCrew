@@ -933,6 +933,51 @@ class TestDiscardConversation:
         assert mgr.consume_replay_suppression("k1") is False
 
     @pytest.mark.asyncio
+    async def test_refuse_if_closes_a_window_skip_if_busy_cannot_see(self, cfg):
+        """A caller's busy can live off-session, so it is asked in the same lock hold as the pop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        assert provider.has_active_turn() is False
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: True
+        )
+        assert discarded is False
+        provider.shutdown.assert_not_awaited()
+        assert mgr.has_session("k1"), "the refusal must leave the session intact"
+        assert mgr.consume_replay_suppression("k1") is False, "nor move the replay flag"
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_answering_no_leaves_the_teardown_alone(self, cfg):
+        """Positive control: a hook wired to refuse always would strand every teardown."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: False
+        )
+        assert discarded is True
+        provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_is_asked_before_the_pop(self, cfg):
+        """Asked after the pop, a refusal could not undo it: the session must still be registered."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.release("k1")
+        still_registered: list[bool] = []
+
+        def ask() -> bool:
+            still_registered.append(mgr.has_session("k1"))
+            return True
+
+        assert (
+            await mgr.discard_conversation("k1", replay=False, skip_if_busy=True, refuse_if=ask)
+            is False
+        )
+        assert still_registered == [True]
+
+    @pytest.mark.asyncio
     async def test_skip_if_busy_proceeds_once_the_turn_releases(self, cfg):
         """The refusal is a wait, not a cancellation."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

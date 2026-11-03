@@ -154,7 +154,7 @@ async def _answer_slash_for_harness(
         )
     elif command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
-        torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True)
         # The consumer's True also covers a queued project reset; only a spent
         # discard flag means THIS conversation was dropped.
         cleared = torn_down and not slot._pending_discard_conversation_key
