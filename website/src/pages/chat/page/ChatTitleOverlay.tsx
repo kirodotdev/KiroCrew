@@ -2,6 +2,7 @@ import { forwardRef, type ComponentPropsWithoutRef, type MutableRefObject, type 
 import { CrewWorkerBreadcrumb } from '../../../components/crew/CrewWorkerBreadcrumb'
 import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import type { ErrorReport } from '../../../utils/errorReport'
@@ -53,7 +54,7 @@ interface ChatTitleOverlayProps {
   title: string
   activeIsSplitAnchor: boolean
   editingTitle: boolean
-  enterSplit: (anchor: string | null) => void
+  enterSplit: (anchor: string | null, dir?: SplitDir) => void
   setEditingTitleSlot: Dispatch<SetStateAction<string | null>>
   setSidebarPinned: Dispatch<SetStateAction<boolean>>
   sidebarAutoHidden: MutableRefObject<boolean | null>
@@ -184,6 +185,7 @@ export default function ChatTitleOverlay({
             mode={effectiveMode}
             sidebarOnScreen={sidebarOnScreen}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
+            onSplitDown={!embedMode && splitFeatureEnabled && activeSlot && !(splitAnchorForActive && !activeIsSplitAnchor) ? () => enterSplit(activeSlot, 'down') : undefined}
           />
           </div>
           {/* Shared with every split-view pane header (#9727). The editor
