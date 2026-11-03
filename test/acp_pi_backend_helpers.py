@@ -32,11 +32,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of test_acp_pi_backend.py and the suites split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _no_ambient_pi_env(monkeypatch):
+def _no_ambient_pi_env(_floor_monkeypatch):
     """Neither override may leak in from the developer's own shell."""
-    monkeypatch.delenv(_ENV_PI_ACP_BIN, raising=False)
-    monkeypatch.delenv(_ENV_PI_COMMAND, raising=False)
+    _floor_monkeypatch.delenv(_ENV_PI_ACP_BIN, raising=False)
+    _floor_monkeypatch.delenv(_ENV_PI_COMMAND, raising=False)
 
 
 def _registry(*entries: tuple[str, str | None]) -> list:

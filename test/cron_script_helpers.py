@@ -26,8 +26,7 @@ def _cron_caller_is_named(named_cron_caller):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim and no test in the cron script files calls monkeypatch.undo()
-def _crons_dir_tracks_patched_home(monkeypatch, tmp_path):
+def _crons_dir_tracks_patched_home(_floor_monkeypatch, tmp_path):
     """Keep ``cron_script.config_dir()`` pointed at ``<patched home>/.kirocrew``.
 
     The data home moved from the top-level ``~/.kirocrew`` to ``~/.kiro/crew``
@@ -65,4 +64,4 @@ def _crons_dir_tracks_patched_home(monkeypatch, tmp_path):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    monkeypatch.setattr("kiro_crew.cron_script.config_dir", _home_dir)
+    _floor_monkeypatch.setattr("kiro_crew.cron_script.config_dir", _home_dir)
