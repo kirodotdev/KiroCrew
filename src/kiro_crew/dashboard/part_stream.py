@@ -83,6 +83,10 @@ SNIFF_BYTES = 16
 #: worst caller. Raising it means re-arguing the trade above.
 CHUNK_BYTES = 64 * 1024
 
+#: Appended to the destination name for the file a part streams into before it is
+#: committed; a caller sizing names to a file-name limit must leave room for it.
+TEMP_SUFFIX = ".part"
+
 
 class PartTooLarge(Exception):
     """The part exceeded the caller's byte ceiling. Nothing was published."""
@@ -112,7 +116,7 @@ class _TempSink:
 
     def __init__(self, dest: Path) -> None:
         self.dest = dest
-        self.tmp = dest.with_name(dest.name + ".part")
+        self.tmp = dest.with_name(dest.name + TEMP_SUFFIX)
         self.sink: IO[bytes] | None = None
         self.committed = False
 
