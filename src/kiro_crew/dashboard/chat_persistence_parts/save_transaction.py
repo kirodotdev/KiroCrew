@@ -167,33 +167,36 @@ def _save_slot_to_history(
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
-    ``retired_rows``: with an explicit *messages* snapshot, the rows the
-    snapshot removes on purpose. The rewrite then still preserves rows another
-    writer appended after the snapshot was taken (see ``compose_payload``);
-    without it a rewrite drops every window-region line the snapshot lacks.
+    The session file is a **frozen prefix** (the first ``slot._disk_older_count``
+    lines, older than the in-memory window, copied verbatim and never rewritten,
+    so a restart that loaded only a recent window cannot destroy older history)
+    plus the **live window** ``slot.messages``, re-serialized in full on every
+    save so in-place edits and ``_flush_segment`` reordering persist.
 
-    ``refuse_stale_empty_merge``: let the empty-window merge of a message-less
-    slot refuse a stale queue snapshot or a replaced slot, as the full save
-    does. Only the periodic flush passes it, because it re-runs a refused pass
-    on its next tick. The forced route saves (tag, folder, pin, transfer) keep
-    committing their merge unconditionally, so none of them can newly report an
-    acknowledged edit as refused.
+    ``rewrite=True`` (implied by an explicit *messages* snapshot) is for
+    operations that truncate the window on purpose (rewind/regenerate/fork); the
+    dropped tail is archived first via ``_archive_dropped_lines``.
+    ``retired_rows`` names the rows such a snapshot removes on purpose, so rows
+    another writer appended after the snapshot survive (see ``compose_payload``).
 
-    The session file is modeled as **frozen prefix + live window**:
+    Concurrency: ``_flush_dirty_slots`` runs this in an executor thread while the
+    event loop mutates ``slot.messages``, so it works only on a snapshot of the
+    window and its matching ``_disk_older_count``. ``expected_disk_older_count``
+    is that count, read in the same synchronous stretch that froze *messages*: a
+    front trim in between would emit the trimmed rows twice, so drift refuses the
+    save instead. Ignored without *messages*.
 
-    - The **frozen prefix** is the first ``slot._disk_older_count`` on-disk
-      message lines — the turns OLDER than the in-memory window (set at
-      restore/resume). These bytes are read verbatim and NEVER rewritten, so a
-      restart that loaded only a recent window cannot destroy older
-      history.
-    - The **live window** is ``slot.messages`` (small, ~500 messages). It is
-      re-serialized in full on every save. Re-serializing the whole window means
-      in-place edits to already-shown messages (stop-event resolution, file-change
-      chips, mcp_oauth banner completion) and any reordering done by
-      ``_flush_segment`` all persist correctly — there is no position counter to
-      get out of sync.
+    ``rows_only`` leaves the metadata line's slot-owned fields as on disk (owning
+    only :data:`~kiro_crew.history.ROWS_ONLY_OWNED_META_KEYS`, deferring
+    :data:`~kiro_crew.history.ROWS_ONLY_DEFERRED_META_KEYS`, ``closed`` included).
+    It is for the close/cleanup hand-over drain writing onto a transcript a
+    same-key replacement now holds; it applies only when the line's ``tab_id``
+    shows another writer, since a popped slot is never flushed again.
 
-    The default save writes ``meta + frozen_prefix + serialize(window)``.
+    ``refuse_stale_empty_merge`` lets the empty-window merge refuse a stale queue
+    snapshot or a replaced slot. Only the periodic flush passes it, because it
+    retries next tick; forced route saves must never report an acknowledged edit
+    as refused.
 
     Pass ``rewrite=True`` (or an explicit *messages* snapshot, which implies it)
     for operations that INTENTIONALLY truncate the window (rewind/regenerate/
@@ -656,44 +659,20 @@ def _save_slot_to_history(
                     logger.debug(
                         "could not restore pre-close mtime for %s", history_key, exc_info=True
                     )
-            # The witnesses below all describe THIS file. They live on the live
-            # slot, so they may only be stamped while the slot still routes to
-            # the transcript this save wrote. The event loop can rebind the slot
-            # (a cron injection re-linking it) after the routing snapshot above
-            # and while this worker writes: the write itself stays correct (it
-            # lands on the authorized transcript), but stamping would then
-            # describe the OLD file on a slot that now writes the NEW one —
-            # clearing ``_pending_rewrite`` the new transcript still owes,
-            # over-claiming ``_disk_window_len`` rows as persisted, and handing
-            # the delete-won guard another file's identity. Skipping leaves every
-            # witness at its pre-save value, which is the conservative side of
-            # each one: the next save re-reads the prefix, re-takes the
-            # archive-safe path, and re-observes the file. The cache
-            # invalidations after this block are keyed on the file that WAS
-            # written, so they stay unconditional.
-            # Everything the stamping needs is computed BEFORE the routing
-            # re-check, so the stamped region is assignments only: this runs in a
-            # worker thread, and a syscall between the check and the last
-            # assignment is the realistic point at which the event loop gets to
-            # rebind the slot underneath a half-applied stamp. It cannot be made
-            # atomic against the loop from here (``slot._lock`` is an asyncio lock
-            # and no undo is right once the rebind path has recomputed these for
-            # its own transcript) -- collapsing the five fields into one
-            # assignable record carrying the key it describes is the real fix, and
-            # belongs with that record rather than here.
+            # The witnesses below describe THIS file, so stamp them only while the
+            # slot still routes to it: the loop can rebind the slot (a cron
+            # re-link) while this worker writes, and stamping would then clear the
+            # new transcript's ``_pending_rewrite``, over-claim ``_disk_window_len``
+            # and feed the delete-won guard another file's identity. Skipping
+            # leaves each witness at its conservative pre-save value. Everything is
+            # computed BEFORE the re-check so the stamped region is assignments
+            # only (no syscall for the loop to slip a rebind into).
             #
-            # The frozen-prefix cache records the post-write mtime (even when
-            # there is no frozen prefix, ``disk_older == 0``). It doubles as the
-            # "did another process touch this file since we last wrote it?"
-            # signal: a matching mtime on the next save proves THIS slot was the
-            # last writer, so the frozen prefix is reusable and no NEW
-            # cross-process append can have landed — letting the foreign-append
-            # scan take the O(window) fast path instead of re-reading the whole
-            # file. The foreign lines this save just preserved are cached
-            # alongside so the fast path re-emits them verbatim: they now live in
-            # the on-disk window region (after the frozen prefix), and because
-            # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
-            # save would otherwise silently delete them.
+            # The cached post-write mtime proves THIS slot was the last writer, so
+            # the next save may reuse the frozen prefix and take the O(window)
+            # foreign-append fast path. The foreign lines just preserved are cached
+            # too: they now sit in the window region, and a bare frozen+window
+            # rebuild would delete them.
             _post_write_cache: tuple[float, int, int, str, list[str]] | None
             try:
                 _st = path.stat()
@@ -770,16 +749,15 @@ async def save_slot_off_loop(
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
-    ``retired_rows``: forwarded to :func:`_save_slot_to_history`.
+    The history lock makes a single non-blocking acquire on the event loop and
+    raises :class:`~kiro_crew.history.HistoryLockTimeout` under any concurrent
+    holder, so like :func:`~kiro_crew.history.append_off_loop` this runs the save
+    in a worker thread (patient acquire) on a running loop, inline otherwise.
 
-    :func:`_save_slot_to_history` holds the per-session cross-process
-    ``_locked`` across its read-modify-``atomic_write``. That lock, invoked on
-    the gateway event loop, makes a single
-    non-blocking acquire and raises :class:`~kiro_crew.history.HistoryLockTimeout`
-    under any concurrent holder (e.g. a workflow/cron result appending via
-    :func:`~kiro_crew.history.append_off_loop`) — so calling the save inline on
-    the loop would both risk a disk write on the loop and drop the save under
-    benign contention, or surface the timeout into the aiohttp handler.
+    ``best_effort`` (default ``True``) logs a failure and marks the slot ``_dirty``
+    so the periodic flush retries; the pin/folder/tag/mode endpoints rely on that
+    re-arm, or a swallowed failure would lose an acknowledged edit on restart.
+    Close/cleanup pass ``False`` so the exception propagates and they keep the slot.
 
     This helper mirrors :func:`~kiro_crew.history.append_off_loop`: on a running
     loop it dispatches the save to a worker thread so it takes the *patient*
