@@ -11949,7 +11949,8 @@
         "fork_in_progress": "ফর্ক করা হচ্ছে…",
         "fork_other_in_progress": "আরেকটি ফর্ক শুরু হচ্ছে।",
         "copy_failed": "কপি ব্যর্থ হয়েছে",
-        "quote_message": "বার্তা উদ্ধৃত করো"
+        "quote_message": "বার্তা উদ্ধৃত করো",
+        "turn_credits": "{{credits}} ক্রেডিট"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -15778,7 +15779,6 @@
         "importing": "ইমপোর্ট হচ্ছে...",
         "checking_archive": "আর্কাইভ পরীক্ষা করা হচ্ছে... বড় ফাইলে কয়েক মিনিট লাগতে পারে।",
         "invalid_archive": "আর্কাইভটি বৈধ নয়",
-        "kb": "KB",
         "memory_db": "মেমরি DB:",
         "merge": "মার্জ",
         "mode": "মোড",
@@ -16468,11 +16468,9 @@
       "keeps": "· রাখে",
       "memory": "মেমরি",
       "memory_developer_link": "মেমরি গ্রাফ ও অভ্যন্তরীণ বিষয়",
-      "messages": "বার্তা",
       "overview": "ওভারভিউ",
       "reconnecting": "আবার কানেক্ট হচ্ছে…",
       "semantic_memory_active": "· সিমান্টিক মেমরি সক্রিয়",
-      "sessions": "সেশন ·",
       "stat_cron_jobs": "Cron জব",
       "stat_lessons": "শিক্ষা",
       "stat_messages": "বার্তা",
@@ -16480,8 +16478,6 @@
       "stat_subagents": "সাবএজেন্ট",
       "stat_uptime": "আপটাইম",
       "summarizes_chats_into_memory_after": "চ্যাট মেমরিতে সারসংক্ষেপ হয়",
-      "today": "আজ:",
-      "tokens": "টোকেন",
       "up": "চালু",
       "usage": "ব্যবহার",
       "usage_tracking_is_not_available_for": "ব্যবহার ট্র্যাকিং উপলব্ধ নয়",
@@ -16489,7 +16485,14 @@
       "view_details": "বিবরণ দেখুন",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "গত 7 দিন",
-      "wakatime_not_connected": "সংযুক্ত নয়"
+      "wakatime_not_connected": "সংযুক্ত নয়",
+      "today_line": "আজ: {{summary}}",
+      "today_sessions_one": "{{amount}}টি সেশন",
+      "today_sessions_other": "{{amount}}টি সেশন",
+      "today_messages_one": "{{amount}}টি বার্তা",
+      "today_messages_other": "{{amount}}টি বার্তা",
+      "today_tokens_one": "{{amount}}টি টোকেন",
+      "today_tokens_other": "{{amount}}টি টোকেন"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

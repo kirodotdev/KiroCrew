@@ -11713,7 +11713,8 @@
         "fork_in_progress": "正在分叉…",
         "fork_other_in_progress": "另一个分叉正在启动。",
         "copy_failed": "复制失败",
-        "quote_message": "引用消息"
+        "quote_message": "引用消息",
+        "turn_credits": "{{credits}} 额度"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -15413,7 +15414,6 @@
         "importing": "正在导入…",
         "checking_archive": "正在检查归档文件… 大文件可能需要几分钟。",
         "invalid_archive": "压缩包无效",
-        "kb": "KB",
         "memory_db": "记忆数据库：",
         "merge": "合并",
         "mode": "模式",
@@ -16085,11 +16085,9 @@
       "keeps": "· 保留",
       "memory": "记忆",
       "memory_developer_link": "记忆图谱与内部信息",
-      "messages": "条消息",
       "overview": "概览",
       "reconnecting": "正在重连…",
       "semantic_memory_active": "· 语义记忆已启用",
-      "sessions": "个会话 ·",
       "stat_cron_jobs": "定时任务",
       "stat_lessons": "经验",
       "stat_messages": "消息",
@@ -16097,8 +16095,6 @@
       "stat_subagents": "子代理",
       "stat_uptime": "运行时长",
       "summarizes_chats_into_memory_after": "将聊天总结进记忆，闲置",
-      "today": "今天：",
-      "tokens": "令牌",
       "up": "运行时长",
       "usage": "用量",
       "usage_tracking_is_not_available_for": "用量统计不适用于",
@@ -16106,7 +16102,11 @@
       "view_details": "查看详情",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "最近 7 天",
-      "wakatime_not_connected": "未连接"
+      "wakatime_not_connected": "未连接",
+      "today_line": "今天：{{summary}}",
+      "today_sessions_other": "{{amount}} 个会话",
+      "today_messages_other": "{{amount}} 条消息",
+      "today_tokens_other": "{{amount}} 个令牌"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

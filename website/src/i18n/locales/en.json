@@ -6891,7 +6891,8 @@
         "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",
         "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)",
         "pin_message": "Pin message",
-        "unpin_message": "Unpin message"
+        "unpin_message": "Unpin message",
+        "turn_credits": "{{credits}} credits"
       },
       "chatFooter": {
         "compacting": "Compacting…",
@@ -9044,7 +9045,6 @@
         "import_memory_only": "Import memory only",
         "import_memory_only_hint": "Brings in memory only; the rest of this instance stays as it is. Not available with Replace.",
         "import_memory_title": "Import memory",
-        "kb": "KB",
         "memory_db": "Memory DB:",
         "merge": "Merge",
         "plan_memory_files": "Plan memory files:",
@@ -9358,13 +9358,9 @@
       "h_idle": "h idle",
       "keeps": "· keeps",
       "memory": "Memory",
-      "messages": "messages",
       "overview": "Overview",
       "semantic_memory_active": "· semantic memory active",
-      "sessions": "sessions ·",
       "summarizes_chats_into_memory_after": "Summarizes chats into memory after",
-      "today": "Today:",
-      "tokens": "tokens",
       "up": "Up",
       "usage": "Usage",
       "usage_tracking_is_not_available_for": "Usage tracking is not available for",
@@ -9372,7 +9368,14 @@
       "view_details": "View details",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "Last 7 days",
-      "wakatime_not_connected": "Not connected"
+      "wakatime_not_connected": "Not connected",
+      "today_line": "Today: {{summary}}",
+      "today_sessions_one": "{{amount}} session",
+      "today_sessions_other": "{{amount}} sessions",
+      "today_messages_one": "{{amount}} message",
+      "today_messages_other": "{{amount}} messages",
+      "today_tokens_one": "{{amount}} token",
+      "today_tokens_other": "{{amount}} tokens"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

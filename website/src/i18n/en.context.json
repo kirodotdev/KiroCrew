@@ -501,7 +501,6 @@
     "pages.overview.memoryTab.lessons_refresh_failed": "Bold title of the error banner above the Memory tab's lessons table when the delete succeeded but re-reading the list failed; the server's message follows it. The deleted row may still be displayed.",
     "pages.overview.memoryTab.scope_unusable_hint": "Tooltip on the \"Unusable scope\" cell of the Memory tab's lessons table: explains the saved repository scope cannot be read, the lesson is applied nowhere, and deleting is the only remedy.",
     "pages.overview.memoryTab.scope_workspace": "Second line of the Scope cell in the Memory tab's lessons table for a lesson stored in a workspace's own lessons file; {{name}} is the workspace name. Noun phrase, no verb.",
-    "pages.overview.portabilityTab.kb": "The unit \"KB\" = kilobytes, rendered after a numeric size. NOT \"knowledge base\", which is a separate feature in this product that shares the abbreviation in English.",
     "pages.overview.tokenDailyChart.all": "Filter option meaning no filter — show every item. A quantifier over the list beside it, not the adjective \"whole\".",
     "pages.overview.tokenDailyChart.in": "Label for the number of input tokens in a chart tooltip, paired with the sibling \"Out:\". \"In\" is short for input, not the preposition.",
     "pages.overview.usageTab.credits_used": "Column header in the Usage tab's Daily History table: the plan credits billed on that calendar day. 'Credits' is the billing unit the Billing card above the table already names in this locale; reuse that word.",
@@ -968,12 +967,11 @@
     "crewWorkerKit.done_replaced": "Sentence in the confirmation after an add succeeds, shown when it replaced the crewmate's behavior directions. May follow the \"Added N to NAME.\" sentence or stand alone.",
     "crewEditorNext.band_remove_stale": "Error in the mate abilities view when Remove is refused because the displayed revision changed; nothing was removed, the list refreshes, and the user must check it and press the Remove button again.",
     "pages.developer.agentBackendTab.pi": "Name of the Pi coding-agent harness, shown wherever an agent harness is named (Settings > Agent Harness, a mate's Harness setting). A product name: keep it in Latin script, unchanged; not the mathematical constant.",
-    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row on the Ultra Mode Board tab (Status view): the work is happening at this moment. Not a request to act now.",
+    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row on the Ultra Mode Board side-panel tab (Status view): the work is happening at this moment. Not a request to act now.",
     "pages.settings.instancesPanel.not_active_until_restart": "Tail of the sentence \"Remote crew management is enabled\", shown when the setting is on but the app has not restarted yet. Keep the leading dash; agree in gender with the translated subject (\"management\").",
     "pages.settings.notificationsPanel.priority_critical": "Notification priority level in a per-channel select: the alert always interrupts. Adjective describing a priority, not a severity of a bug.",
     "pages.settings.notificationsPanel.priority_default": "Notification priority level in a per-channel select: the normal level. Adjective describing a priority.",
     "pages.settings.notificationsPanel.priority_passive": "Notification priority level in a per-channel select: the alert is only recorded in history, never interrupts and is not counted on the bell. Adjective describing a priority; a word like \"quiet\" is fine.",
-    "components.crewMode.ultra_ms_now": "Right-hand label on a running milestone row on the Ultra Mode Board side-panel tab (Status view): the work is happening at this moment. Not a request to act now.",
     "sharedCrew.invite_restart_needed": "Notice after the first accepted invite when tailnet identity checks need one restart.",
     "sharedCrew.send_race_send_now": "Button in the lost-send notice that sends the kept draft as a new message queued after the one that was accepted first; it does not interrupt or merge with that message. {{name}} is the display name of who sent first.",
     "sharedCrew.invite_key_expires_soon": "Badge: the API key expires within a week.",
@@ -1115,6 +1113,14 @@
     "components.bottomTerminalPanel.find": "Terminal overflow-menu item: open the find bar to search the active terminal's scrollback; the VERB 'find', as in find-in-page.",
     "components.approvalCard.title_wants_to_run": "Chat approval card heading, after a package icon. <title/> is the command or tool the agent asks to run, shown in bold and kept verbatim; the sentence says it is waiting for approval.",
     "components.codeBlock.code_label": "Generic name for a code block whose language is unknown: the small header label and the screen-reader name of the block. A noun, lower case like a language tag.",
-    "components.codeBlock.code_region": "Screen-reader name of a code block. {{lang}} is the language tag as written, such as python or tsx, kept verbatim."
+    "components.codeBlock.code_region": "Screen-reader name of a code block. {{lang}} is the language tag as written, such as python or tsx, kept verbatim.",
+    "pages.overviewPage.today_line": "Overview usage line. {{summary}} is the day's counts joined by ' · ', e.g. '3 sessions · 42 messages · 1.2K tokens · $0.40'.",
+    "pages.chat.assistantMessage.turn_credits": "Credits a chat turn used, in the small stats line under a reply. {{credits}} is a decimal number such as 0.25 or 12.5.",
+    "pages.overviewPage.today_sessions_one": "One part of the Today usage line. {{amount}} is the session count, already formatted compactly for the locale (e.g. 1.2K). Singular form.",
+    "pages.overviewPage.today_sessions_other": "One part of the Today usage line. {{amount}} is the session count, already formatted compactly for the locale (e.g. 1.2K). Plural form.",
+    "pages.overviewPage.today_messages_one": "One part of the Today usage line. {{amount}} is the message count, already formatted compactly for the locale. Singular form.",
+    "pages.overviewPage.today_messages_other": "One part of the Today usage line. {{amount}} is the message count, already formatted compactly for the locale. Plural form.",
+    "pages.overviewPage.today_tokens_one": "One part of the Today usage line. {{amount}} is the token count, already formatted compactly for the locale (e.g. 1.2M). Singular form.",
+    "pages.overviewPage.today_tokens_other": "One part of the Today usage line. {{amount}} is the token count, already formatted compactly for the locale (e.g. 1.2M). Plural form."
   }
 }

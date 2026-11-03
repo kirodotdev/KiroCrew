@@ -12185,7 +12185,8 @@
         "fork_in_progress": "Bifurcando…",
         "fork_other_in_progress": "Outra bifurcação está começando.",
         "copy_failed": "Falha ao copiar",
-        "quote_message": "Citar mensagem"
+        "quote_message": "Citar mensagem",
+        "turn_credits": "{{credits}} créditos"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -16143,7 +16144,6 @@
         "importing": "Importando...",
         "checking_archive": "Verificando o arquivo... Um arquivo grande pode levar alguns minutos.",
         "invalid_archive": "Arquivo inválido",
-        "kb": "KB",
         "memory_db": "BD de memória:",
         "merge": "Mesclar",
         "mode": "Modo",
@@ -16851,11 +16851,9 @@
       "keeps": "· mantém",
       "memory": "Memória",
       "memory_developer_link": "Grafo de memória e detalhes internos",
-      "messages": "mensagens",
       "overview": "Visão geral",
       "reconnecting": "Reconectando…",
       "semantic_memory_active": "· memória semântica ativa",
-      "sessions": "sessões ·",
       "stat_cron_jobs": "Tarefas cron",
       "stat_lessons": "Lições",
       "stat_messages": "Mensagens",
@@ -16863,8 +16861,6 @@
       "stat_subagents": "Subagentes",
       "stat_uptime": "Tempo ativo",
       "summarizes_chats_into_memory_after": "Resume os chats na memória após",
-      "today": "Hoje:",
-      "tokens": "tokens",
       "up": "Ativo há",
       "usage": "Uso",
       "usage_tracking_is_not_available_for": "O acompanhamento de uso não está disponível para",
@@ -16872,7 +16868,17 @@
       "view_details": "Ver detalhes",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "Últimos 7 dias",
-      "wakatime_not_connected": "Não conectado"
+      "wakatime_not_connected": "Não conectado",
+      "today_line": "Hoje: {{summary}}",
+      "today_sessions_one": "{{amount}} sessão",
+      "today_sessions_many": "{{amount}} sessões",
+      "today_sessions_other": "{{amount}} sessões",
+      "today_messages_one": "{{amount}} mensagem",
+      "today_messages_many": "{{amount}} mensagens",
+      "today_messages_other": "{{amount}} mensagens",
+      "today_tokens_one": "{{amount}} token",
+      "today_tokens_many": "{{amount}} tokens",
+      "today_tokens_other": "{{amount}} tokens"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

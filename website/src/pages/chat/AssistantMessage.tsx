@@ -32,6 +32,7 @@ import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
 import { fmtCredits, fmtCurrency, fmtElapsed } from '../../i18n/format'
+import { formatCost } from '../../utils/formatCost'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
@@ -775,8 +776,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           const credits = turnStats.credits ?? 0
           const cost = turnStats.cost_usd ?? 0
           const billed = credits > 0
-            ? `${fmtCredits(credits)} credits`
-            : cost > 0 ? `$${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ''
+            ? i18nT('pages.chat.assistantMessage.turn_credits', { credits: fmtCredits(credits) })
+            : cost > 0 ? formatCost(cost) : ''
           return <>
             {/* Model leads (what served), then cost (what it took), then time.
                 Trimmed for width; the untrimmed id is in the footer tooltip. */}

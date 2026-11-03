@@ -11949,7 +11949,8 @@
         "fork_in_progress": "फ़ोर्क हो रहा है…",
         "fork_other_in_progress": "एक और फ़ोर्क शुरू हो रहा है।",
         "copy_failed": "कॉपी विफल",
-        "quote_message": "संदेश उद्धृत करो"
+        "quote_message": "संदेश उद्धृत करो",
+        "turn_credits": "{{credits}} क्रेडिट"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -15778,7 +15779,6 @@
         "importing": "इंपोर्ट हो रहा है...",
         "checking_archive": "आर्काइव की जाँच हो रही है... बड़ी फ़ाइल में कुछ मिनट लग सकते हैं।",
         "invalid_archive": "अमान्य आर्काइव",
-        "kb": "KB",
         "memory_db": "मेमोरी DB:",
         "merge": "मर्ज करें",
         "mode": "मोड",
@@ -16468,11 +16468,9 @@
       "keeps": "· रखता है",
       "memory": "मेमोरी",
       "memory_developer_link": "मेमोरी ग्राफ़ और आंतरिक जानकारी",
-      "messages": "संदेश",
       "overview": "अवलोकन",
       "reconnecting": "फिर कनेक्ट हो रहा है…",
       "semantic_memory_active": "· सिमैंटिक मेमोरी सक्रिय",
-      "sessions": "सत्र ·",
       "stat_cron_jobs": "Cron जॉब",
       "stat_lessons": "सीख",
       "stat_messages": "संदेश",
@@ -16480,8 +16478,6 @@
       "stat_subagents": "सबएजेंट",
       "stat_uptime": "अपटाइम",
       "summarizes_chats_into_memory_after": "चैट को मेमोरी में सारांशित करता है",
-      "today": "आज:",
-      "tokens": "टोकन",
       "up": "चालू",
       "usage": "उपयोग",
       "usage_tracking_is_not_available_for": "इसके लिए उपयोग ट्रैकिंग उपलब्ध नहीं है:",
@@ -16489,7 +16485,14 @@
       "view_details": "विवरण देखें",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "पिछले 7 दिन",
-      "wakatime_not_connected": "कनेक्ट नहीं है"
+      "wakatime_not_connected": "कनेक्ट नहीं है",
+      "today_line": "आज: {{summary}}",
+      "today_sessions_one": "{{amount}} सत्र",
+      "today_sessions_other": "{{amount}} सत्र",
+      "today_messages_one": "{{amount}} संदेश",
+      "today_messages_other": "{{amount}} संदेश",
+      "today_tokens_one": "{{amount}} टोकन",
+      "today_tokens_other": "{{amount}} टोकन"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

@@ -11713,7 +11713,8 @@
         "fork_in_progress": "フォーク中…",
         "fork_other_in_progress": "別のフォークを開始しています。",
         "copy_failed": "コピーに失敗しました",
-        "quote_message": "メッセージを引用"
+        "quote_message": "メッセージを引用",
+        "turn_credits": "{{credits}} クレジット"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -15413,7 +15414,6 @@
         "importing": "インポート中…",
         "checking_archive": "アーカイブを確認しています… 大きなファイルは数分かかることがあります。",
         "invalid_archive": "無効なアーカイブ",
-        "kb": "KB",
         "memory_db": "メモリ DB:",
         "merge": "マージ",
         "mode": "モード",
@@ -16085,11 +16085,9 @@
       "keeps": "· 保持",
       "memory": "メモリ",
       "memory_developer_link": "メモリグラフと内部情報",
-      "messages": "メッセージ",
       "overview": "概要",
       "reconnecting": "再接続中…",
       "semantic_memory_active": "· 意味的メモリがアクティブ",
-      "sessions": "セッション ·",
       "stat_cron_jobs": "Cronジョブ",
       "stat_lessons": "レッスン",
       "stat_messages": "メッセージ",
@@ -16097,8 +16095,6 @@
       "stat_subagents": "サブエージェント",
       "stat_uptime": "稼働時間",
       "summarizes_chats_into_memory_after": "チャットをメモリに要約してから",
-      "today": "本日:",
-      "tokens": "トークン",
       "up": "稼働中",
       "usage": "使用量",
       "usage_tracking_is_not_available_for": "使用量追跡は以下では利用できません",
@@ -16106,7 +16102,11 @@
       "view_details": "詳細を表示",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "過去7日",
-      "wakatime_not_connected": "未接続"
+      "wakatime_not_connected": "未接続",
+      "today_line": "本日: {{summary}}",
+      "today_sessions_other": "{{amount}} セッション",
+      "today_messages_other": "{{amount}} 件のメッセージ",
+      "today_tokens_other": "{{amount}} トークン"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

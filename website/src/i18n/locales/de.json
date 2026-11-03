@@ -11949,7 +11949,8 @@
         "fork_in_progress": "Fork wird erstellt…",
         "fork_other_in_progress": "Eine andere Verzweigung wird gerade erstellt.",
         "copy_failed": "Kopieren fehlgeschlagen",
-        "quote_message": "Nachricht zitieren"
+        "quote_message": "Nachricht zitieren",
+        "turn_credits": "{{credits}} Credits"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -15778,7 +15779,6 @@
         "importing": "Wird importiert...",
         "checking_archive": "Archiv wird geprüft... Bei einer großen Datei kann das einige Minuten dauern.",
         "invalid_archive": "Ungültiges Archiv",
-        "kb": "KB",
         "memory_db": "Erinnerungs-DB:",
         "merge": "Zusammenführen",
         "mode": "Modus",
@@ -16468,11 +16468,9 @@
       "keeps": "· behält",
       "memory": "Erinnerung",
       "memory_developer_link": "Erinnerungsgraph und Interna",
-      "messages": "Nachrichten",
       "overview": "Übersicht",
       "reconnecting": "Neu verbinden…",
       "semantic_memory_active": "· semantische Erinnerung aktiv",
-      "sessions": "Sitzungen ·",
       "stat_cron_jobs": "Cron-Jobs",
       "stat_lessons": "Lektionen",
       "stat_messages": "Nachrichten",
@@ -16480,8 +16478,6 @@
       "stat_subagents": "Subagenten",
       "stat_uptime": "Betriebszeit",
       "summarizes_chats_into_memory_after": "Fasst Chats in die Erinnerung zusammen nach",
-      "today": "Heute:",
-      "tokens": "Tokens",
       "up": "Nach oben",
       "usage": "Verbrauch",
       "usage_tracking_is_not_available_for": "Die Verbrauchserfassung ist nicht verfügbar für",
@@ -16489,7 +16485,14 @@
       "view_details": "Details anzeigen",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "Letzte 7 Tage",
-      "wakatime_not_connected": "Nicht verbunden"
+      "wakatime_not_connected": "Nicht verbunden",
+      "today_line": "Heute: {{summary}}",
+      "today_sessions_one": "{{amount}} Sitzung",
+      "today_sessions_other": "{{amount}} Sitzungen",
+      "today_messages_one": "{{amount}} Nachricht",
+      "today_messages_other": "{{amount}} Nachrichten",
+      "today_tokens_one": "{{amount}} Token",
+      "today_tokens_other": "{{amount}} Tokens"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

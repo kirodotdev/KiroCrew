@@ -11713,7 +11713,8 @@
         "fork_in_progress": "포크 중…",
         "fork_other_in_progress": "다른 포크를 시작하는 중입니다.",
         "copy_failed": "복사 실패",
-        "quote_message": "메시지 인용"
+        "quote_message": "메시지 인용",
+        "turn_credits": "크레딧 {{credits}}"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -15413,7 +15414,6 @@
         "importing": "가져오는 중…",
         "checking_archive": "아카이브를 확인하는 중… 큰 파일은 몇 분 걸릴 수 있습니다.",
         "invalid_archive": "잘못된 아카이브",
-        "kb": "KB",
         "memory_db": "메모리 DB:",
         "merge": "병합",
         "mode": "모드",
@@ -16085,11 +16085,9 @@
       "keeps": "· 보관",
       "memory": "메모리",
       "memory_developer_link": "메모리 그래프와 내부 정보",
-      "messages": "메시지",
       "overview": "개요",
       "reconnecting": "다시 연결하는 중…",
       "semantic_memory_active": "· 의미 기억 활성",
-      "sessions": "세션 ·",
       "stat_cron_jobs": "cron 작업",
       "stat_lessons": "학습 내용",
       "stat_messages": "메시지",
@@ -16097,8 +16095,6 @@
       "stat_subagents": "서브에이전트",
       "stat_uptime": "가동 시간",
       "summarizes_chats_into_memory_after": "다음 시간이 지나면 채팅을 메모리로 요약",
-      "today": "오늘:",
-      "tokens": "토큰",
       "up": "정상",
       "usage": "사용량",
       "usage_tracking_is_not_available_for": "다음에서는 사용량 추적을 사용할 수 없습니다:",
@@ -16106,7 +16102,11 @@
       "view_details": "자세히 보기",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "최근 7일",
-      "wakatime_not_connected": "연결 안 됨"
+      "wakatime_not_connected": "연결 안 됨",
+      "today_line": "오늘: {{summary}}",
+      "today_sessions_other": "세션 {{amount}}개",
+      "today_messages_other": "메시지 {{amount}}개",
+      "today_tokens_other": "토큰 {{amount}}개"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",
