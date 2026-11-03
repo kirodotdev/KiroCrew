@@ -1533,6 +1533,24 @@ interface BuildSrcdocOptions {
    * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
    * able to run over the frame. Off by default. */
   relayWheel?: boolean
+  /** The Tailwind runtime's own text, written inline instead of the same-origin
+   *  `<script src>`, for a document opened away from the dashboard (a saved file).
+   *  Unset by default, so no rendered surface changes. */
+  inlineRuntime?: string
+}
+
+/** *js* with every casing of `</script` written `<\/script`, so it cannot end the
+ *  inline element it is serialized into. A plain scan, not a pattern. */
+export function escapeScriptClose(js: string): string {
+  const close = '</script'
+  const lower = js.toLowerCase()
+  let out = ''
+  let from = 0
+  for (let at = lower.indexOf(close); at !== -1; at = lower.indexOf(close, at + close.length)) {
+    out += js.slice(from, at) + '<\\/' + js.slice(at + 2, at + close.length)
+    from = at + close.length
+  }
+  return out + js.slice(from)
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -1553,6 +1571,7 @@ export function buildSrcdoc({
   pageScripts = true,
   relayTouches = false,
   relayWheel = false,
+  inlineRuntime,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -1638,10 +1657,19 @@ export function buildSrcdoc({
   // environments that lack a running dev server. Using a non-fetching placeholder
   // avoids the network dial entirely — the iframe's browser loads the script from
   // the serialized HTML string, never from a live DOM node in our process.
-  const tailwindPlaceholder = doc.createElement('meta')
-  tailwindPlaceholder.setAttribute('name', 'x-script-placeholder')
-  tailwindPlaceholder.setAttribute('data-src', scriptOrigin + TAILWIND_RUNTIME_PATH)
-  head.appendChild(tailwindPlaceholder)
+  if (inlineRuntime !== undefined) {
+    // A document that will be opened away from the dashboard (a saved file) cannot
+    // load the runtime by URL, so the caller hands in its text and it is written
+    // here, in the same place and under the same nonce as the script it replaces.
+    const runtime = hostScript()
+    runtime.textContent = escapeScriptClose(inlineRuntime)
+    head.appendChild(runtime)
+  } else {
+    const tailwindPlaceholder = doc.createElement('meta')
+    tailwindPlaceholder.setAttribute('name', 'x-script-placeholder')
+    tailwindPlaceholder.setAttribute('data-src', scriptOrigin + TAILWIND_RUNTIME_PATH)
+    head.appendChild(tailwindPlaceholder)
+  }
 
   // Loading overlay: shown while Tailwind JIT compiles, hidden once ready or
   // after a timeout. Only injected when showLoadingOverlay is set.

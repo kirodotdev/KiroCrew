@@ -75,7 +75,12 @@ over an ordinary session — the context you built up with it is where you left 
 Member threads are deliberately kept out of the Sessions list; the Bots
 page is their only home. The right-hand side panel is the chat page's panel with
 two standing tabs: **Dashboard** (the page the Bot publishes itself) and
-**Files** (its workspace). Artifacts is not offered here; Terminal, Browser and
+**Files** (its workspace). The Dashboard's **Download as HTML** button saves the
+page as it looks now as one file you can open anywhere, offline, or send to
+someone; it does not update after it is saved. Links on the page do not open
+from the saved file: the page runs with the same limits it has in the tab, where
+links open through the dashboard, and a saved file has no dashboard. Artifacts is
+not offered here; Terminal, Browser and
 the other views open from the panel's **+** menu.
 
 The identity pill in the thread header opens the Bot's **Profile** card,
