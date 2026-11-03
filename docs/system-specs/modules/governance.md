@@ -548,8 +548,12 @@ in an oss build). One fetch is the Kiro control plane's
   There is no signature layer.
 - **Answer.** `ENABLED` carries Trust V2 YAML, which
   `platform/enterprise_policy_translate.py` turns into a Crew document (today
-  `messaging_channel` to `channels.members`), re-read every 300 s. Only a deny
-  `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
+  `messaging_channel` to `channels.members`, `permission_mode` to `approval_modes`
+  with its floor kept, and the on/off `messaging` and `cron` to
+  `capabilities.messaging` and `capabilities.cron`), re-read every 300 s. An on/off
+  capability is off on any deny, on on an allow with no deny, and unnamed (baseline)
+  with no rule or with a rule shape it does not know. For a capability with a
+  resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
   baseline keeps it off. `DISABLED` answers
   a document that names no scope, so the baseline holds every control. `UNCHANGED`
   keeps the cache. `NOT_ELIGIBLE`, an HTTP error, an unreachable service, a malformed
