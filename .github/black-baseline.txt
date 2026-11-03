@@ -295,7 +295,6 @@ test/test_bench_round10.py
 test/test_bench_round15.py
 test/test_bench_round16.py
 test/test_bench_round17.py
-test/test_bench_round18.py
 test/test_bench_round5.py
 test/test_bench_round6.py
 test/test_bench_scorers.py
