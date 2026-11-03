@@ -312,6 +312,7 @@ class TestRewindSlot:
             expected_history_key,
             expected_disk_older_count,
             expected_slot_name,
+            takeover_basis=None,
         ):
             # Emulate the real save's post-write bookkeeping on the live slot.
             assert expected_slot_name == "src", "the write must carry the slot's map key"
@@ -376,6 +377,7 @@ class TestRewindSlot:
             expected_history_key,
             expected_disk_older_count,
             expected_slot_name,
+            takeover_basis=None,
         ):
             seen["boundary"] = expected_disk_older_count
             seen["slot_name"] = expected_slot_name
@@ -897,6 +899,66 @@ class TestRewindSlot:
         assert record["error"] == "history_save_exception"
         # Without the slot the record cannot be attributed to a conversation.
         assert f"slot={slot.key}" in record["resources"]
+        if slot.task:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_rewind_dispatch_verify_refusal_audits_as_a_refused_save(
+        self, tmp_path, monkeypatch
+    ):
+        """A key that changed hands before dispatch audits as ``history_save_refused``.
+
+        The dispatch verify runs after the native discard, so the context is
+        already gone: the record it leaves must say the save was REFUSED, not
+        that it raised. The replacement is minted during the sid flush, the
+        last await before the verify, so the handler reads a map whose key is
+        held by another slot and must settle the refusal without ever
+        dispatching a worker -- there is no task to await on that arm.
+        """
+        events: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_rewind.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        state.sessions._session_map.get = MagicMock(return_value="")
+        dispatched: list[object] = []
+
+        def _records_dispatch(*_args, **_kwargs):
+            dispatched.append(_args)
+            return True
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_rewind._save_slot_to_history", _records_dispatch
+        )
+
+        async def _replace_the_slot_during_the_flush():
+            state._slots.pop(slot.key, None)
+            replacement = state.get_or_create_slot(slot.key)
+            assert replacement is not slot
+
+        state.sessions.aflush = AsyncMock(side_effect=_replace_the_slot_during_the_flush)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": "edited first question"},
+            )
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "rewind_save_failed"
+
+        assert dispatched == [], "a refused dispatch must not reach the worker at all"
+        destroyed = [
+            event for event in events if "native_cleared=1" in str(event.get("resources", ""))
+        ]
+        assert len(destroyed) == 1
+        assert destroyed[0]["error"] == "history_save_refused"
+        assert destroyed[0]["outcome"] == "error"
+        assert f"slot={slot.key}" in destroyed[0]["resources"]
+        # The replacement keeps the key: the refused rewind commits nothing to it.
+        assert state._slots.get(slot.key) is not slot
         if slot.task:
             slot.task.cancel()
 

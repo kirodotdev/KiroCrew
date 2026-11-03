@@ -609,6 +609,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "last_consolidated",
         "closed",
         "closed_at",
+        "closed_id",
         "app",
         "forked_from",
         "linked_session_key",

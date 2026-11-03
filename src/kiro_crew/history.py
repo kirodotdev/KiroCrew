@@ -913,8 +913,16 @@ class ConversationLog:
     def mtime_of(self, key: str) -> float | None:
         return self._metadata_projection.mtime_of(key)
 
-    def clear_closed(self, key: str, *, only_if_closed_before: float | None = None) -> None:
-        self._metadata_projection.clear_closed(key, only_if_closed_before=only_if_closed_before)
+    def clear_closed(
+        self,
+        key: str,
+        *,
+        only_if_closed_before: float | None = None,
+        only_if_closed_id: str | None = None,
+    ) -> None:
+        self._metadata_projection.clear_closed(
+            key, only_if_closed_before=only_if_closed_before, only_if_closed_id=only_if_closed_id
+        )
 
     def _read_messages(self, key: str) -> list[dict]:
         return self._read_projection._read_messages(key)
@@ -1104,6 +1112,7 @@ class ConversationLog:
     _persist_inline_attachments = _history_append._persist_inline_attachments
     append = _history_append.append
     append_if_absent = _history_append.append_if_absent
+    _holds_identical_row = _history_append._holds_identical_row
 
     # -- Consolidation marker and retry ledger (``history_marker``).
     rotation_generation = _history_marker.rotation_generation

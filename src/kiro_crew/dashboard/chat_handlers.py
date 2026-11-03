@@ -78,6 +78,7 @@ from kiro_crew.dashboard.chat_api import slot_guards as _owner_slot_guards
 from kiro_crew.dashboard.chat_api import slot_lifecycle as _owner_slot_lifecycle
 from kiro_crew.dashboard.chat_api import slot_model as _owner_slot_model
 from kiro_crew.dashboard.chat_api import slot_note as _owner_slot_note
+from kiro_crew.dashboard.chat_api import slot_repair as _owner_slot_repair
 from kiro_crew.dashboard.chat_api import slot_settings as _owner_slot_settings
 from kiro_crew.dashboard.chat_api import slot_summary as _owner_slot_summary
 from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
@@ -151,6 +152,7 @@ from kiro_crew.dashboard.chat_api.handover_drain import (  # noqa: F401
     _owed_prompts_lost_on_line,
     _persist_handover_tail,
     _report_lost_queued_prompts,
+    _teardown_drain_basis,
 )
 from kiro_crew.dashboard.chat_api.pending_context import (  # noqa: F401
     _build_pending_context_entry,
@@ -198,6 +200,7 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _redact_history_rows,
     _resume_refusal_response,
     _resume_session_identity,
+    _resume_slot_from_history_noted,
     api_chat_slot_resume,
     resume_slot_from_history,
 )
@@ -279,12 +282,11 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
+    _restore_original_after_failed_close,
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
     _slot_still_ours,
     api_chat_slot_delete,
-    api_chat_slot_repair_images,
-    api_chat_slot_reset_conversation,
     api_chat_slots_cleanup,
     close_slot,
 )
@@ -305,6 +307,10 @@ from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
     _note_delivered_live,
     _persist_deferred_note_hold,
     api_chat_slot_note,
+)
+from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
+    api_chat_slot_repair_images,
+    api_chat_slot_reset_conversation,
 )
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
@@ -366,6 +372,8 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _await_takeover_ordering_settled,
+    _build_message_entry,
     _coerce_requested_mode,
     _has_validated_effort_marker,
     _load_restore_cfg,
@@ -379,7 +387,10 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
+    _slot_closed_before,
+    _transfer_basis_to_worker,
     _validate_autocompact_pct,
+    append_window_rows,
     cap_effort_capability_levels,
     get_reasoning_effort_ordered,
     get_reasoning_effort_values,
@@ -501,11 +512,28 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     slot_not_found,
     transcript_acquisition_reason,
 )
+from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
+    tighten_line_for_appends,
+)
+from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
+    close_metadata_under_lock,
+    record_deferred_dismissal,
+    retry_owed_unstamp,
+)
+from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: F401
+    drop_notes_authorized_elsewhere,
+    session_deletion_confirmed,
+)
 from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_registry import (  # noqa: F401
+    SlotRegistry,
+    TakeoverBasis,
+    TakeoverNote,
+)
 from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,
@@ -540,8 +568,10 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 )
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    ConversationLog,
     carry_provenance,
     is_incognito_transcript,
+    transcript_stems,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
@@ -1260,6 +1290,7 @@ _facade_compose(
         _owner_slot_lifecycle,
         _owner_slot_model,
         _owner_slot_note,
+        _owner_slot_repair,
         _owner_slot_settings,
         _owner_slot_summary,
         _owner_source_links,

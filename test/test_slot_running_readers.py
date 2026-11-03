@@ -168,12 +168,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A crewmate's harness change reloads its DM chat the same way,
                 # refusing the save while that slot is reserved.
                 ("agent_admin/crew_update.py", "api_kirocrew_agent_update"),
-                ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
+                ("chat_api/slot_repair.py", "api_chat_slot_reset_conversation"),
                 # Image repair rebuilds the session through the shared
                 # reload_slot_session path, so it refuses a reserved slot via
                 # _slot_replaced_while_queued before re-issuing the turn, the
                 # same reservation read reset_conversation and reload make.
-                ("chat_api/slot_lifecycle.py", "api_chat_slot_repair_images"),
+                ("chat_api/slot_repair.py", "api_chat_slot_repair_images"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),

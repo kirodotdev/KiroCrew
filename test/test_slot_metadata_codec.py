@@ -112,6 +112,7 @@ _BASE_LINE_ORDER = (
     "last_consolidated",
     "closed",
     "closed_at",
+    "closed_id",
     "memory_mode",
     "title",
     "title_origin",
@@ -206,6 +207,7 @@ _BASE_MERGE_ORDER = (
     "channel_folder_filed",
     "closed",
     "closed_at",
+    "closed_id",
     "dismissed_source_links",
     "deferred_notes",
 )
@@ -368,6 +370,7 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
         "last_user_at",
         "closed",
         "closed_at",
+        "closed_id",
         "rotation_generation",
     ]
 
@@ -388,6 +391,7 @@ def _full_folds(slot) -> codec.SaveFolds:
         created_at="2026-01-01T00:00:00",
         closed=True,
         closed_at=1767225600.0,
+        closed_id="close-1",
         dismissed_source_links=[K1],
         deferred_notes=[{"id": "n-1", "content": "held", "session": "dashboard:src"}],
         queued_prompts=list(_QUEUE),
