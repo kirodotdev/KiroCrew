@@ -633,6 +633,8 @@ async def test_the_title_poller_never_reports_gateway_paths_for_a_workspace_shel
     finally:
         poller.cancel()
         await asyncio.gather(poller, return_exceptions=True)
+    # Nothing was pushed, so the dedup markers still hold no gateway value.
+    assert (sess.last_title, sess.last_cwd) == (None, None)
     title.assert_not_called()
     cwd.assert_not_called()
     ws.send_str.assert_not_awaited()

@@ -448,6 +448,7 @@ class TestKiroUnchanged:
 
         await _run_chat(state, slot, command)
 
+        assert [(m["role"], m["content"]) for m in slot.messages] == [("inject", command)]
         calls.assert_called_once_with(command)
 
 
@@ -685,4 +686,5 @@ class TestKiroStillNative:
 
         await _run_chat(state, slot, command)
 
+        assert [(m["role"], m["content"]) for m in slot.messages] == [("inject", command)]
         calls.assert_called_once_with(command)

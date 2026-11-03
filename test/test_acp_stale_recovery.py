@@ -50,7 +50,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     extract_log_redirect_target,
 )
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Tight windows for tests: consult the oracle almost immediately and act on
 # UNKNOWN verdicts after 50ms idle.
@@ -1073,7 +1073,11 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
     handle._ingress_seq += 1
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1082,6 +1086,7 @@ async def test_toctou_path_b_ingress_seq_prevents_cancel():
 
     # _ingress_seq advanced → TOCTOU guard fired → first DEAD verdict skipped
     # → second call returned WORKING → no session/cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
@@ -1128,7 +1133,11 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
     )
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1137,6 +1146,7 @@ async def test_toctou_path_a_queue_depth_prevents_cancel():
 
     # qsize() grew → TOCTOU guard fired → first DEAD skipped → WORKING →
     # no session/cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
@@ -1173,7 +1183,11 @@ async def test_toctou_stale_eligible_path_also_guarded():
     )
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1181,6 +1195,7 @@ async def test_toctou_stale_eligible_path_also_guarded():
         pass
 
     # TOCTOU guard on the stale branch prevented the probe cancel.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
@@ -1220,7 +1235,11 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     handle._runtime._last_activity = time.monotonic()
 
     oracle_release.set()
-    await await_until(oracle_rechecked, what="the watchdog's second oracle consult")
+    # Either outcome ends the wait, so a missing guard fails on the cancel check below.
+    await async_wait_until(
+        lambda: oracle_rechecked.is_set() or handle._cancelled,
+        describe=lambda: "the watchdog's second oracle consult or a cancel",
+    )
     drain_task.cancel()
     try:
         await drain_task
@@ -1228,6 +1247,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
         pass
 
     # Runtime-clock arm fired → first DEAD skipped → WORKING → no probe.
+    assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
 
