@@ -78,11 +78,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
-# No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
-# dependency and reads CODEX_PATH itself only to run a DIFFERENT one. An operator
-# who sets it reaches the child through the ambient environment copy, so naming it
-# here would imply a wiring that does not exist (its claude counterpart,
-# CLAUDE_CODE_EXECUTABLE, IS explicitly forwarded — the asymmetry is deliberate).
+# No CODEX_PATH constant here: the codex harness owns it
+# (``acp.harness.codex.CODEX_PATH_ENV``) and fills it on the runtime spawn with the
+# host's ``codex`` when that is at least the version of the Codex the adapter
+# bundles, as the claude host fills CLAUDE_CODE_EXECUTABLE.
 
 
 # The adapter release the gate contract was OBSERVED on: the frame corpus
