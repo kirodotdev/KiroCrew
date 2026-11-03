@@ -21,10 +21,8 @@ import json
 import math
 import os
 import sys as _sys
-import threading
 import time as _time
 from collections.abc import Callable, Container, Iterable, Iterator
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +35,18 @@ from kiro_crew.history_index import (
     IndexRow,
     SessionSearchIndex,
     fold_texts,
+)
+from kiro_crew.history_search_listing import (  # noqa: F401 - facade re-exports
+    _CREW_CATALOG_FIELDS,
+    _MALFORMED,
+    _UNREADABLE,
+    ListingRow,
+    _apply_metadata,
+    _project_crew_fields,
+    _unreadable_session_files_lock,
+    _unreadable_session_files_warned,
+    _warn_unreadable_session_file,
+    listing_row,
 )
 from kiro_crew.history_search_memo import (  # noqa: F401 - facade re-exports
     _DIGEST_HEX_CHARS,
@@ -125,13 +135,9 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     tiered_first_hit,
 )
 from kiro_crew.jsonl_util import bounded_records
-from kiro_crew.shared_crew.attribution import public_attribution_from_meta
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
-
-#: ``_scan_head_title`` outcome for a head that raised while being read; never cached.
-_UNREADABLE = object()
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
@@ -192,43 +198,6 @@ def _jsonl_stem(name: str) -> str:
     return name[:-6] if len(name) > 6 else name
 
 
-#: Session files whose stat failed with something other than ENOENT, already
-#: warned about. One such file marks every listing incomplete, which keeps the
-#: dashboard's unread drain held for the process lifetime, so the warning must
-#: be visible; the listing runs every few seconds, so it is also logged only
-#: once per path per process rather than on every pass.
-_unreadable_session_files_warned: set[str] = set()
-#: Listings run on executor threads, so the check and the add share one lock.
-_unreadable_session_files_lock = threading.Lock()
-
-
-#: The metadata-line fields a catalog row carries so a reader can tell a Crew Mode
-#: root from a crew member without opening the file: the creator stamp, the agent's
-#: namespace and the Crew Mode stamp (``crew_mode.saved_row_is_root``).
-_CREW_CATALOG_FIELDS: tuple[str, ...] = ("created_by", "agent_kind", "crew_mode_agent")
-
-
-def _project_crew_fields(meta: dict, line: dict) -> None:
-    """Copy the non-empty :data:`_CREW_CATALOG_FIELDS` of metadata *line* onto catalog row *meta*."""
-    for field in _CREW_CATALOG_FIELDS:
-        value = line.get(field)
-        if isinstance(value, str) and value:
-            meta[field] = value
-
-
-def _warn_unreadable_session_file(path: str, error: OSError) -> None:
-    with _unreadable_session_files_lock:
-        if path in _unreadable_session_files_warned:
-            return
-        _unreadable_session_files_warned.add(path)
-    logger.warning(
-        "Session file %s cannot be stat'd (%s); the session list is reported "
-        "incomplete and unread dots stay held until it is readable or removed",
-        path,
-        error,
-    )
-
-
 class SessionCatalogProjection:
     """List, aggregate, search, and snippet-project conversation sessions."""
 
@@ -281,18 +250,28 @@ class SessionCatalogProjection:
         return f"dashboard_{stripped}" if stripped else key
 
     @staticmethod
-    def _scan_head_title(path: "str | Path") -> object:
-        """The first user message's content[:80] within the first 21 lines.
+    def _scan_head_title(path: "str | Path") -> tuple[object, bool | None]:
+        """``(title, has_messages)`` from the first 21 lines of the transcript.
 
-        Returns the title, ``None`` when the head holds none, or ``_UNREADABLE``
-        when reading or interpreting the head raised -- that outcome is not
-        cached, so a transient error is retried on the next listing exactly as
-        the uncached read always was.
+        The title is the first user message's content[:80], ``None`` when the head
+        holds none, ``_UNREADABLE`` when reading the head raised an I/O error, or
+        ``_MALFORMED`` when reading or interpreting it raised anything else (a JSON
+        line that is not an object). Neither outcome is cached; only the I/O error is
+        retried by the next indexed listing, since the other reads the same until the
+        file changes.
+
+        ``has_messages`` is what :meth:`ConversationLog.has_messages` answers, read
+        from the same lines: True once a record is not a metadata line (an
+        unparseable one counts, as there), False when the file ends first, None
+        when 21 lines held only metadata and the answer lies further down.
         """
+        content = False
         try:
             with open(path, encoding="utf-8") as f:
+                ended = True
                 for i, ln in enumerate(f):
                     if i > 20:
+                        ended = False
                         break
                     ln = ln.strip()
                     if not ln:
@@ -300,12 +279,18 @@ class SessionCatalogProjection:
                     try:
                         d = json.loads(ln)
                     except json.JSONDecodeError:
+                        content = True
                         continue
+                    content = content or d.get("_type") != "metadata"
                     if d.get("role") == "user" and d.get("content"):
-                        return d["content"][:80]
+                        return d["content"][:80], True
+        except OSError:
+            return _UNREADABLE, None
         except Exception:
-            return _UNREADABLE
-        return None
+            return _MALFORMED, None
+        if content:
+            return None, True
+        return None, (False if ended else None)
 
     def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
         """Return up to *max_entries* ``(stem, mtime)`` pairs, newest first.
@@ -338,6 +323,10 @@ class SessionCatalogProjection:
 
         newest = heapq.nlargest(max_entries, _stats())
         return [(stem, mtime) for mtime, stem in newest], counted > max_entries
+
+    def _listing_row(self, path: str, key: str, entry: "os.DirEntry[str] | None") -> ListingRow:
+        """The one place a catalog row is read: the scan and the listing index share it."""
+        return listing_row(self._log, path, key, entry, self._scan_head_title)
 
     def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
         return self._list_sessions_status(keys=keys)[0]
@@ -400,143 +389,18 @@ class SessionCatalogProjection:
                 p = self._log._path(key)
                 entries.append((os.fspath(p), p.stem, None))
         for path, key, entry in entries:
-            # Snapshot the invalidation generation BEFORE the stat: the
-            # The first-line fill records this stat's cache identity. The
-            # generation independently proves the stat → read → publish window
-            # stayed write-free for this process.
-            gen = self._log._cache_gen(key)
-            try:
-                # Windows DirEntry.stat() reports st_ino as 0, so its cache
-                # identity would never equal the one every other reader takes
-                # from path.stat(); there the entry answers only is_symlink.
-                stat = os.stat(path) if entry is None or os.name == "nt" else entry.stat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                _warn_unreadable_session_file(path, exc)
+            read = self._listing_row(path, key, entry)
+            if read.status == "unreadable":
                 complete = False
+            # A listing that holds a row whose read raised is not reused.
+            reusable = reusable and read.reusable
+            meta = read.row
+            if meta is None:
                 continue
-            identity = self._log._cache_identity(stat)
-            # Skip symlinks — these are handoff aliases pointing to the real session
-            if os.path.islink(path) if entry is None else entry.is_symlink():
-                continue
-            meta: dict = {
-                "key": key,
-                "messages": max(1, int(stat.st_size / 200)),
-                "modified": stat.st_mtime,
-                "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            }
-            # Try metadata cache first (populated by _read_metadata calls)
-            cached_meta = self._log._meta_cache.get(key)
-            if (
-                cached_meta
-                and cached_meta[0] == identity
-                and cached_meta[1] == self._log._cache_gen(key)
-            ):
-                d = cached_meta[2]
-                if d.get("created_at"):
-                    meta["created"] = d["created_at"]
-                if d.get("title"):
-                    meta["title"] = d["title"]
-                if d.get("agent"):
-                    meta["agent"] = d["agent"]
-                meta["memory_mode"] = d.get("memory_mode", "persistent")
-                if d.get("folder_id"):
-                    meta["folder_id"] = d["folder_id"]
-                _project_crew_fields(meta, d)
-                meta["attribution"] = public_attribution_from_meta(d, key=key)
-            else:
-                # Read only the first line for metadata
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        first_line = f.readline().strip()
-                    if first_line:
-                        d = json.loads(first_line)
-                        if d.get("_type") == "metadata":
-                            if d.get("created_at"):
-                                meta["created"] = d["created_at"]
-                            if d.get("title"):
-                                meta["title"] = d["title"]
-                            if d.get("agent"):
-                                meta["agent"] = d["agent"]
-                            meta["memory_mode"] = d.get("memory_mode", "persistent")
-                            if d.get("folder_id"):
-                                meta["folder_id"] = d["folder_id"]
-                            _project_crew_fields(meta, d)
-                            meta["attribution"] = public_attribution_from_meta(d, key=key)
-                            # Guarded publish — discard the fill if a write
-                            # invalidated this key inside the stat → read
-                            # window (see the generation snapshot above).
-                            self._log._publish_if_current(
-                                self._log._meta_cache,
-                                key,
-                                (identity, gen, d),
-                                key=key,
-                                gen=gen,
-                            )
-                        elif isinstance(d, dict):
-                            # A first line that is an object but not metadata
-                            # reads as no metadata, the same ``{}`` that
-                            # ``_read_metadata`` caches for it, so the next
-                            # listing answers from the cache instead of the file.
-                            self._log._publish_if_current(
-                                self._log._meta_cache,
-                                key,
-                                (identity, gen, {}),
-                                key=key,
-                                gen=gen,
-                            )
-                except Exception:
-                    reusable = False
-            # Ensure memory_mode is always present (old sessions lack it)
-            meta.setdefault("memory_mode", "persistent")
-            # A session with no readable metadata line predates attribution: it reads
-            # as the owner's, unless its key is a messaging channel's (Unattributed).
-            if "attribution" not in meta:
-                meta["attribution"] = public_attribution_from_meta(None, key=key)
-            # Extract first user message as title fallback
-            if "title" not in meta:
-                msg_cached = self._log._msg_cache.get(key)
-                if (
-                    msg_cached
-                    and msg_cached[0] == identity
-                    and msg_cached[1] == self._log._cache_gen(key)
-                ):
-                    for m in msg_cached[2]:
-                        if m.get("role") == "user" and m.get("content"):
-                            meta["title"] = m["content"][:80]
-                            break
-                else:
-                    scanned = self._log._title_scan_cache.get(key)
-                    if (
-                        scanned is not None
-                        and scanned[0] == (identity, stat.st_size)
-                        and scanned[1] == self._log._cache_gen(key)
-                    ):
-                        if scanned[2] is not None:
-                            meta["title"] = scanned[2]
-                    else:
-                        found = self._scan_head_title(path)
-                        if found is _UNREADABLE:
-                            # A failed head read is retried on the next listing.
-                            reusable = False
-                        else:
-                            if found is not None:
-                                meta["title"] = found
-                            # Guarded like the metadata fill above.
-                            self._log._publish_if_current(
-                                self._log._title_scan_cache,
-                                key,
-                                ((identity, stat.st_size), gen, found),
-                                key=key,
-                                gen=gen,
-                            )
-            if "title" not in meta:
-                meta["title"] = key
             # Deduplicate: keep newer entry per canonical key
             canon = self._log._canonical_key(key)
             existing = by_canon.get(canon)
-            if existing is None or stat.st_mtime >= existing["modified"]:
+            if existing is None or meta["modified"] >= existing["modified"]:
                 by_canon[canon] = meta
         sessions = list(by_canon.values())
         sessions.sort(key=lambda s: s.get("modified", 0), reverse=True)
@@ -1566,11 +1430,17 @@ class SessionCatalogProjection:
 #                               spellings, the one-string match rule
 #   ``history_search_memo``  -- the shared count and snippet memos, their byte
 #                               ceilings, the single-flight table, memo-gated counts
+#   ``history_search_listing`` -- one catalog row from one transcript, shared by the
+#                               directory scan and the listing index
 #
 # ``test/test_history_search_bindings.py`` pins the binding and the reach.
 # --------------------------------------------------------------------------- #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
-_OWNERS = ("kiro_crew.history_search_query", "kiro_crew.history_search_memo")
+_OWNERS = (
+    "kiro_crew.history_search_query",
+    "kiro_crew.history_search_memo",
+    "kiro_crew.history_search_listing",
+)
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
 #: Globals an owner rebinds at run time: the facade serves them and never binds them.

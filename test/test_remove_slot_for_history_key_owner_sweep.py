@@ -145,7 +145,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
         history_key = "slack_1785370133.085469"
         crons = CronService(base_dir=tmp_path)
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         request = self._request(self._state(crons, log))
 
         real_delete = sessions_module._delete_history_session
@@ -191,7 +191,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
         log = _FakeTranscriptStore(keys[0], "")
         for key in keys[1:]:
             log._meta[key] = {}
-        log.list_sessions = lambda: [{"key": key} for key in keys]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": key} for key in keys]  # type: ignore[attr-defined]
         request = self._request(self._state(crons, log))
 
         seen: list[list[str]] = []
@@ -219,7 +219,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
         crons = CronService(base_dir=tmp_path)
         job = crons.add_job("channel", "ping", every_secs=3600, session_key=channel_key)
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         request = self._request(self._state(crons, log))
 
         calls = {"n": 0}
@@ -505,7 +505,7 @@ class TestALinkedKeyMustNameItsOwnTranscript:
         crons = CronService(base_dir=tmp_path)
         victim_job = crons.add_job("victim", "ping", every_secs=3600, session_key=linked)
         log = _FakeTranscriptStore(history_key, linked)
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         request = self._request(self._state(crons, log))
 
         resp = await api_sessions_clear(request)
@@ -529,7 +529,7 @@ class TestALinkedKeyMustNameItsOwnTranscript:
         crons = CronService(base_dir=tmp_path)
         job = crons.add_job("channel", "ping", every_secs=3600, session_key=channel_key)
         log = _FakeTranscriptStore(history_key, channel_key, unreadable=True)
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         request = self._request(self._state(crons, log))
 
         resp = await api_sessions_clear(request)
@@ -731,7 +731,7 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
     async def test_the_bulk_clear_releases_each_cleared_rows_drain_hold(self, tmp_path):
         history_key = "dashboard_chat-9-gone"
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         state = self._state(None, log)
 
         resp = await api_sessions_clear(self._request(state))
@@ -889,7 +889,7 @@ class TestAStrippedNameCannotReleaseAnotherSessionsJobs:
         crons = CronService(base_dir=tmp_path)
         victim_job = crons.add_job("victim", "ping", every_secs=3600, session_key=victim_key)
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         state = _make_state({})
         state.crons = crons
         state.conversation_log = log
@@ -1122,7 +1122,7 @@ class TestTheOwnerSweepFailsByCause:
         history_key = "slack_1785370133.085469"
         crons = _SweepBlockedCrons()
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         state = _make_state({})
         state.crons = crons
         state.conversation_log = log
@@ -1146,7 +1146,7 @@ class TestTheOwnerSweepFailsByCause:
         job = crons.add_job("channel", "ping", every_secs=3600, session_key=channel_key)
         _break_the_owner_read(crons)
         log = _FakeTranscriptStore(history_key, "")
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         state = _make_state({})
         state.crons = crons
         state.conversation_log = log
@@ -1425,7 +1425,7 @@ class TestSlotlessChannelSessionReleasesItsExactOwnerKey:
         crons = CronService(base_dir=tmp_path)
         job = crons.add_job("channel", "ping", every_secs=3600, session_key=channel_key)
         log = _FakeTranscriptStore(history_key, channel_key)
-        log.list_sessions = lambda: [{"key": history_key}]  # type: ignore[method-assign]
+        log.list_sessions_indexed = lambda: [{"key": history_key}]  # type: ignore[attr-defined]
         state = _make_state({})
         state.crons = crons
         state.conversation_log = log

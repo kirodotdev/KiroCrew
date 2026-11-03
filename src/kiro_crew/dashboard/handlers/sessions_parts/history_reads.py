@@ -296,12 +296,18 @@ async def api_sessions(request: web.Request) -> web.Response:
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
     exclude_incognito = _wants_incognito_excluded(request)
+    request_app = str(request.get("app") or "")
     # list_sessions() globs, stats, and reads the first line of EVERY session file
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
     # the event loop freezes chat, heartbeat, and every other coroutine for the
-    # full duration. Offload to a worker thread.
-    all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
+    # full duration. Offload to a worker thread. The dashboard's own listing reads
+    # the listing index, which answers from memory once built and re-reads only
+    # the transcripts that changed. An app-scoped listing reads each row's owner
+    # marker below anyway, so it keeps the direct scan.
+    log = state.conversation_log
+    lister = log.list_sessions if request_app else log.list_sessions_indexed
+    all_sessions = await asyncio.to_thread(lister)
     if exclude_incognito:
         # BEFORE paging, so ``limit`` counts eligible rows and a restricted
         # session at the head of the list cannot hide an eligible one behind it.
@@ -315,7 +321,6 @@ async def api_sessions(request: web.Request) -> web.Response:
         all_sessions = _sessions_named(
             state.conversation_log._canonical_key, all_sessions, request.query["name"]
         )
-    request_app = str(request.get("app") or "")
     if request_app:
         # Before every count, so ``total`` and ``has_more`` describe the app's
         # own list rather than the size of everyone else's.

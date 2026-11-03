@@ -14,6 +14,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from session_storage_helpers import (  # noqa: F401 -- fixtures are requested by name
@@ -28,7 +29,9 @@ from session_storage_helpers import (  # noqa: F401 -- fixtures are requested by
 )
 
 from kiro_crew import session_storage
+from kiro_crew.dashboard.handlers.sessions import _clearable_history_keys
 from kiro_crew.history import ConversationLog
+from kiro_crew.history_listing_index import SessionListingIndex
 from kiro_crew.session_storage import SessionStorageError
 
 
@@ -1035,3 +1038,43 @@ class TestAttachmentsAreTheThirdHalf:
         crew_home, _ = stores
         origin = session_storage._canonical_origin("crew/dashboard_chat-1.attachments/a.png")
         assert origin == crew_home / "sessions" / "dashboard_chat-1.attachments" / "a.png"
+
+
+class TestTheListingIndexSeesTheTrash:
+    """The trash moves transcripts with no bump-journal record. The dashboard listing
+    reads ``SessionListingIndex``, which finds the move from the directory's stamp."""
+
+    def test_a_move_and_a_restore_show_on_the_next_listing(self, stores: tuple[Path, Path]) -> None:
+        crew_home, _ = stores
+        sessions = crew_home / "sessions"
+        mtime = _NOW - 40 * _DAY
+        for n in (1, 2, 3):
+            path = sessions / f"dashboard_chat-{n}.jsonl"
+            meta = {"_type": "metadata", "title": f"chat {n}"}
+            path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+            os.utime(path, (mtime + n, mtime + n))
+        log = ConversationLog(base_dir=sessions)
+        jobs: list = []
+        # A clock that never reaches the reconcile interval: no reconcile can run.
+        log._listing_index = SessionListingIndex(log, clock=lambda: 0.0, submit=jobs.append)
+
+        def listed() -> list[str]:
+            return [row["key"] for row in log.list_sessions_indexed()]
+
+        assert listed() == ["dashboard_chat-3", "dashboard_chat-2", "dashboard_chat-1"]
+        batch = session_storage.move_to_trash(
+            ["dashboard_chat-2"], reason="manual", index=_index(), now=_NOW
+        )
+        assert listed() == ["dashboard_chat-3", "dashboard_chat-1"]
+
+        assert session_storage.restore(batch.batch_id) == 1
+        shown = listed()
+        assert shown == ["dashboard_chat-3", "dashboard_chat-2", "dashboard_chat-1"]
+        assert jobs == []
+
+        # Delete all and its count take the rows the pane shows, no more.
+        state = MagicMock()
+        state.conversation_log = log
+        state._slots = {}
+        clearable, skipped, unreadable = _clearable_history_keys(state, log)
+        assert (sorted(clearable), skipped, unreadable) == (sorted(shown), 0, [])
