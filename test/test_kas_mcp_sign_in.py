@@ -1170,7 +1170,9 @@ async def test_an_ended_attempt_request_cannot_deduplicate_its_replacement(monke
 
     async def send_request(method, params):
         # Dispatch resumes with a connecting status queued ahead of the dead URL.
+        # The user names the server again, so a replacement sign-in is offered.
         handle._mcp_sign_in_needed = {"remote"}
+        handle._mcp_sign_in_wanted = {"remote"}
         queue.put_nowait(_status({"name": "remote", "status": "connecting"}))
         queue.put_nowait(stale)
         return 9
