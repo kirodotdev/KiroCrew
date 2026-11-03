@@ -786,7 +786,9 @@ class TestSubagentDone:
 
         mock_stream.assert_awaited_once()
         # The last sub-agent's cleanup never resets under a live turn.
-        orch.sessions.reset.assert_awaited_with("cron:job1", skip_if_busy=True)
+        orch.sessions.reset.assert_awaited_with(
+            "cron:job1", skip_if_busy=True, skip_if_injecting=True
+        )
         orch.dashboard_state.notify.assert_called_once()
         assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
         assert "llm response" in orch.dashboard_state.notify.call_args.args[2]

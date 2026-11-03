@@ -409,17 +409,27 @@ async def _cron_run_sequence(
                     else:
                         # skip_if_busy: as in the single-agent finally, a tab
                         # turn that took the key after the release above is
-                        # left running rather than killed.
-                        if not await self.sessions.reset(
-                            agent_session_key, skip_if_busy=True
-                        ) and self.sessions.is_busy(agent_session_key):
+                        # left running rather than killed. skip_if_injecting:
+                        # as there, a hand-off that began after the read above
+                        # keeps the session and its key.
+                        reset = await self.sessions.reset(
+                            agent_session_key, skip_if_busy=True, skip_if_injecting=True
+                        )
+                        if not reset and self._cron_injecting.get(agent_session_key, 0) > 0:
                             logger.info(
-                                "Cron '%s': not resetting %s, another turn holds it",
+                                "Cron '%s': deferring reset of %s, an injection began",
                                 job.name,
                                 agent_session_key,
                             )
-                        if self.cron_svc is not None:
-                            self.cron_svc.clear_active_session_key(job.id, agent_session_key)
+                        else:
+                            if not reset and self.sessions.is_busy(agent_session_key):
+                                logger.info(
+                                    "Cron '%s': not resetting %s, another turn holds it",
+                                    job.name,
+                                    agent_session_key,
+                                )
+                            if self.cron_svc is not None:
+                                self.cron_svc.clear_active_session_key(job.id, agent_session_key)
             if not _seq_snf_retry:
                 break
             # The finally above defers its reset while sub-agents
@@ -1003,16 +1013,23 @@ async def _cron_run_single(
                 # skip_if_busy: the job's dashboard tab runs on this same
                 # key, and a tab turn can take the session in the gap the
                 # release above opened. Declined, the reset leaves that
-                # turn running instead of killing it.
-                if not await self.sessions.reset(
-                    session_key, skip_if_busy=True
-                ) and self.sessions.is_busy(session_key):
-                    logger.info(
-                        "Cron '%s': not resetting %s, another turn holds it",
-                        job.name,
-                        session_key,
-                    )
-                # reset done, or declined for a turn that is not this
-                # run's → the reaper does not need this key.
-                if self.cron_svc is not None:
-                    self.cron_svc.clear_active_session_key(job.id, session_key)
+                # turn running instead of killing it. skip_if_injecting: a
+                # completion hand-off that began after the read above is
+                # seen under the reset's own lock, so the session and its
+                # key are left to that delivery's deferred reset.
+                reset = await self.sessions.reset(
+                    session_key, skip_if_busy=True, skip_if_injecting=True
+                )
+                if not reset and self._cron_injecting.get(session_key, 0) > 0:
+                    logger.info("Cron '%s': deferring reset, an injection began", job.name)
+                else:
+                    if not reset and self.sessions.is_busy(session_key):
+                        logger.info(
+                            "Cron '%s': not resetting %s, another turn holds it",
+                            job.name,
+                            session_key,
+                        )
+                    # reset done, or declined for a turn that is not this
+                    # run's → the reaper does not need this key.
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id, session_key)

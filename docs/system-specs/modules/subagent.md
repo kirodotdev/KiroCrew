@@ -3973,8 +3973,10 @@ when the parent's own call already returned every member it carries:
   `_delivered_inline`, asked at the same two points.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
-  `reset(parent_key, skip_if_busy=True)`, which declines while a turn holds the
-  session. Who holds it decides the rest. Every branch that retires a key goes
+  `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines
+  while a turn holds the session or while `_cron_injecting` counts the key.
+  Both are read under the reset's own lock, atomically with the pop. Who holds
+  it decides the rest. Every branch that retires a key goes
   through `CronService.retire_finished_session_key`, which leaves a key the job's
   live run registered (a newer run, waiting for the permit or holding it) to that
   run's own finalizer, unless that run is done with it. Each cron engine marks
@@ -3985,6 +3987,10 @@ when the parent's own call already returned every member it carries:
   again, by any run, takes the mark off:
   - the reset happened, or no session was left: the job's active-session key is
     retired;
+  - the reset declined while `_cron_injecting` still counts the key (another
+    delivery began after this cleanup's own read): the session and the key are
+    left to that delivery, whose own cleanup runs this reset again after it
+    delivers;
   - a cron run's own task holds the permit (`SessionManager.turn_holder` is in
     `_cron_runs_holding`, which `_cron_callback` fills from before the run's
     first acquire to its end): the session and the key are left to that run's

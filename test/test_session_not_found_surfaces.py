@@ -468,7 +468,7 @@ def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_
     gw.cron_svc = None
     held = {"cron:seqbusy:a"}
 
-    async def reset(key, *, skip_if_busy=False):
+    async def reset(key, *, skip_if_busy=False, skip_if_injecting=False):
         return not (skip_if_busy and key in held)
 
     gw.sessions.reset = AsyncMock(side_effect=reset)
@@ -487,7 +487,11 @@ def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_
     assert calls == 1
     resets = gw.sessions.reset.await_args_list
     assert [c.args[0] for c in resets] == ["cron:seqbusy:a", "cron:seqbusy:a"]
-    assert all(c.kwargs == {"skip_if_busy": True} for c in resets)
+    # The step's end-of-run reset, then the lost-session retry's own.
+    assert [c.kwargs for c in resets] == [
+        {"skip_if_busy": True, "skip_if_injecting": True},
+        {"skip_if_busy": True},
+    ]
 
 
 # ── subagent run ────────────────────────────────────────────────────────────
