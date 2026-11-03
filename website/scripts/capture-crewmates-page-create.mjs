@@ -286,10 +286,8 @@ for (const theme of ['dark', 'light']) {
     check(`02b-dialog-advanced-${theme} triggers`, await adv.getByLabel('Triggers').isVisible(), 'triggers field')
     check(`02b-dialog-advanced-${theme} triggers hint`, await adv.getByText(/^Situations when Kiro Crew should hand a task to this mate/).isVisible(), 'HEAD wording of the triggers hint (when-to-use, no schedule contrast)')
     check(`02b-dialog-advanced-${theme} no stale hint`, (await dlg.getByText(/not a schedule/).count()) === 0, 'old routing-vs-schedule sentence gone')
-    const colour = adv.getByLabel('Session color hex value')
-    check(`02b-dialog-advanced-${theme} colour`, await colour.isVisible(), 'session colour field')
-    const box = await colour.boundingBox()
-    check(`02b-dialog-advanced-${theme} colour in frame`, !!box && box.y + box.height <= 1100, `colour bottom=${box ? Math.round(box.y + box.height) : 'n/a'}`)
+    const colourHits = await adv.locator('input[type="color"]').count()
+    check(`02b-dialog-advanced-${theme} no colour`, colourHits === 0, `colour inputs=${colourHits}`)
     const legacy = await dlg.getByText(/this member|member color|crew member/i).count()
     check(`02b-dialog-advanced-${theme} vocabulary`, legacy === 0, `legacy-noun hits=${legacy}`)
     await page.waitForTimeout(500) // disclosure + modal motion

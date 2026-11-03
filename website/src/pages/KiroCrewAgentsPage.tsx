@@ -41,7 +41,6 @@ export {
   DisplayNameField,
   displayNameFallback,
   TriggersField,
-  SessionColorField,
 } from '../components/crew/crewFields'
 export type { MemberMemoryState } from '../components/crew/crewFields'
 

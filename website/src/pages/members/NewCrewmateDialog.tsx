@@ -16,7 +16,7 @@
  * directly under that line, and the unfolded region ends with a second
  * Create: its goal in plain words,
  * and everything the crew manager's form also asks (workspace, model, routing
- * triggers, session colour), rendered by the SAME `Field` frame and field
+ * triggers), rendered by the SAME `Field` frame and field
  * components the editor mounts, so the two forms cannot drift. The disclosure
  * starts folded (`startExpanded` opens it, for the doors that ask for every
  * setting up front: the "+" menu's Advanced row and the crew manager), and
@@ -80,7 +80,6 @@ import {
   INHERIT_MODEL,
   ModelField,
   OWN_WORKSPACE,
-  SessionColorField,
   TriggersField,
   WorkspaceField,
   WorkspaceModal,
@@ -320,7 +319,6 @@ export default function NewCrewmateDialog({
   const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null)
   const [model, setModel] = useState(INHERIT_MODEL)
   const [triggers, setTriggers] = useState('')
-  const [sessionColor, setSessionColor] = useState('')
   // The nested New workspace dialog: whether it is open, and the GENERATION
   // of that opening. `WorkspaceForm`'s create is an awaited POST whose
   // continuation calls `onCreated` when the answer lands — after Radix has
@@ -378,7 +376,7 @@ export default function NewCrewmateDialog({
     const draftGoal = initialDraft?.goal ?? ''
     setLook(null); setLookOpen(false)
     setName(draftName); setJob(draftGoal); setAdvanced(startExpanded || draftGoal.trim() !== '')
-    setWorkspace(OWN_WORKSPACE); setModel(INHERIT_MODEL); setTriggers(''); setSessionColor('')
+    setWorkspace(OWN_WORKSPACE); setModel(INHERIT_MODEL); setTriggers('')
     setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false); setPendingWorkspace(null)
     // The nested workspace form too: a draft left in it belongs to the
     // dismissed open, and `atStake` must not count it against the next one.
@@ -452,7 +450,7 @@ export default function NewCrewmateDialog({
   // not the user's work.
   const dirty = Boolean(
     name !== (initialDraft?.name ?? '') || job !== (initialDraft?.goal ?? '')
-    || workspace !== OWN_WORKSPACE || model !== INHERIT_MODEL || triggers || sessionColor
+    || workspace !== OWN_WORKSPACE || model !== INHERIT_MODEL || triggers
     || look !== null || lookOpen,
   )
 
@@ -752,7 +750,7 @@ export default function NewCrewmateDialog({
       memory_store: 'default',
       description: job.trim(),
       triggers,
-      session_color: sessionColor,
+      session_color: '',
       ...(model !== INHERIT_MODEL ? { model } : {}),
       avatar: effectiveLook,
       ...(firstGreeting ? { first_greeting: true as const } : {}),
@@ -917,7 +915,6 @@ export default function NewCrewmateDialog({
                   hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
                 />
                 <TriggersField value={triggers} onChange={setTriggers} subject="member" />
-                <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
               </div>
             </motion.div>
           )}
