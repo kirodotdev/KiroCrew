@@ -5715,12 +5715,16 @@
       "delete_this_custom_theme": "Delete this custom theme?",
       "editing": "Editing:",
       "emoji": "Emoji",
+      "json_invalid": "Invalid JSON — check syntax and try again.",
+      "json_needs_modes": "JSON must include \"dark\" and \"light\" objects.",
+      "json_needs_name": "JSON must include a \"name\" field.",
       "light_mode_colors": "Light Mode Colors",
       "my_custom_theme": "My Custom Theme",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"My Theme\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
       "paste_json": "📋 Paste JSON",
       "theme_json": "Theme JSON",
-      "theme_name": "Theme Name"
+      "theme_name": "Theme Name",
+      "theme_name_required": "Theme name is required."
     },
     "themeExperienceLayer": {
       "keep_colors_only": "Keep colors only",
