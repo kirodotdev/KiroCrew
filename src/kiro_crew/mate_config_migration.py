@@ -43,7 +43,7 @@ from kiro_crew.mate_config import (
     source_agents_dir,
     write_mate_spec,
 )
-from kiro_crew.mate_spec_policy import POLICY_KEYS, SpecPolicyUncarried
+from kiro_crew.mate_spec_policy import POLICY_KEYS, SpecPolicyUncarried, policy_of, without_held
 from kiro_crew.mate_worker import (
     MATE_CONDUCTOR_AGENT,
     MATE_WORKER_AGENT,
@@ -974,7 +974,12 @@ def uncarried_restrictions(source: dict[str, Any]) -> list[str]:
         merged: dict[str, Any] = {}
     else:
         try:
-            merged = merge_worker_spec(base, worker_additions(base, source))
+            # Match the kit copy: policy the base already holds needs no layering.
+            # Compare the full source below, so a restriction lost in the merge still fails.
+            additions = worker_additions(base, source)
+            policy = without_held(policy_of(source), base)
+            additions = {k: v for k, v in additions.items() if k not in POLICY_KEYS}
+            merged = merge_worker_spec(base, {**additions, **policy})
         except SpecPolicyUncarried as exc:
             return list(exc.fields)
     lost = {key for key, _ in _restrictions(source) - _restrictions(merged)}

@@ -4281,7 +4281,12 @@ rule or tool entry; they run on the crewmate's worker only. The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for
 one tool's entry), and `template_policy_backend_unsupported` when the
-crewmate's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS. An apply that changes the file's hooks, permissions or tool settings
+crewmate's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS.
+The preflight also subtracts policy the worker base already holds before layering
+(`without_held`), then compares the full template's restrictions with the merged
+worker. A held restriction is not a new addition, but must still survive the merge;
+unsupported new settings are refused, and an unreadable base still fails closed.
+An apply that changes the file's hooks, permissions or tool settings
 reloads the crewmate's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
 Other refusals: `not_a_mate_file`,

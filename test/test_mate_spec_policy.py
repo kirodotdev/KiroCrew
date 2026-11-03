@@ -582,6 +582,81 @@ def test_a_dedicated_worker_provider_fires_its_sessions_hooks(monkeypatch):
 # --- only what the template adds is carried ---------------------------------------
 
 
+@pytest.fixture
+def held_policy():
+    return {
+        "hooks": {"preToolUse": [HOOK]},
+        "permissions": {"rules": [DENY]},
+        "toolsSettings": {"fs_write": {"allowedPaths": ["/srv/**"], "fallbackAction": "deny"}},
+    }
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_preflight_judges_only_policy_not_held_by_the_base(monkeypatch, held_policy, held):
+    from kiro_crew import mate_config_migration as migration
+
+    base = {**WORKER_BASE, **(held_policy if held else {})}
+    source = {**TEMPLATE, **held_policy}
+    before = json.dumps([base, source], sort_keys=True)
+    monkeypatch.setattr(migration, "_worker_base", lambda: base)
+    lost = migration.uncarried_restrictions(source)
+    assert lost == (
+        []
+        if held
+        else ["toolsSettings.fs_write.allowedPaths", "toolsSettings.fs_write.fallbackAction"]
+    )
+    assert json.dumps([base, source], sort_keys=True) == before
+
+
+def test_preflight_refuses_restrictions_when_the_base_is_unreadable(monkeypatch, held_policy):
+    from kiro_crew import mate_config_migration as migration
+
+    def unreadable():
+        raise OSError("worker base unreadable")
+
+    monkeypatch.setattr(migration, "_worker_base", unreadable)
+    assert migration.uncarried_restrictions(held_policy) == [
+        "hooks",
+        "permissions",
+        "toolsSettings",
+    ]
+
+
+@pytest.mark.parametrize("field", mate_spec_policy.POLICY_KEYS)
+def test_preflight_still_detects_a_held_restriction_lost_by_the_merge(
+    monkeypatch, held_policy, field
+):
+    from kiro_crew import mate_config_migration as migration
+
+    base = {**WORKER_BASE, **held_policy}
+    merge = migration.merge_worker_spec
+
+    def dropping_merge(base, additions):
+        merged = merge(base, additions)
+        merged.pop(field)
+        return merged
+
+    monkeypatch.setattr(migration, "_worker_base", lambda: base)
+    monkeypatch.setattr(migration, "merge_worker_spec", dropping_merge)
+    assert migration.uncarried_restrictions(held_policy) == [field]
+
+
+def test_adding_a_server_with_policy_already_held_by_the_base_succeeds(home, held_policy):
+    user, mates = home
+    base = {**WORKER_BASE, **held_policy}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    server = {"command": "notes-mcp"}
+    _use(user, {**TEMPLATE, **held_policy, "mcpServers": {"notes": server}})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert not any(row["section"] in mate_spec_policy.POLICY_KEYS for row in preview["changes"])
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    written = _file(mates)
+    assert written["mcpServers"]["notes"] == server
+    assert not any(key in written for key in mate_spec_policy.POLICY_KEYS)
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, written))
+    assert mate_spec_policy.policy_of(merged) == held_policy
+
+
 def test_hooks_the_worker_base_already_holds_are_not_copied(home):
     """Crew's own hooks and the user's reach the worker through its base; the add
     writes only the template's own."""
