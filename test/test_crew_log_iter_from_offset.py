@@ -463,7 +463,7 @@ def test_a_point_read_while_a_cut_is_in_flight_is_refused():
     assert point.cuts is not None and point.cuts % 2 == 0, "a settled count is even"
 
     crew_log_store._open_cut(_dir(UNIT))
-    raw = (_dir(UNIT) / crew_log_store._CUTS_FILE).read_text().strip()
+    raw = (_dir(UNIT) / crew_log_store._CUTS_FILE).read_text(encoding="utf-8").strip()
     assert int(raw) % 2 == 1, "a cut in flight leaves an odd number on disk"
     assert crew_log_store.read_cuts(_dir(UNIT)) is None, "and it is reported as unproven"
 

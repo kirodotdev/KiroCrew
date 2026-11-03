@@ -454,7 +454,7 @@ def test_ring_trim_removes_the_oldest_first(spool: Path):
 def test_ring_trim_ignores_unrelated_files(spool: Path):
     """Only our own frames are eligible — the temp dir is shared."""
     spool.mkdir(parents=True)
-    (spool / "not-ours.txt").write_text("keep me")
+    (spool / "not-ours.txt").write_text("keep me", encoding="utf-8")
     for stamp in (1000, 2000, 3000):
         (spool / f"{SCREENSHOT_FILE_PREFIX}{stamp}{SCREENSHOT_FILE_SUFFIX}").write_bytes(_JPEG)
     capture_macos.trim_shots_dir(keep=1)
