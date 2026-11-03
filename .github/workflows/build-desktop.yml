@@ -308,7 +308,7 @@ jobs:
         shell: bash
         # No bundled kiro-cli (BUNDLE_KIRO_CLI defaults to 0 in the script): the
         # app detects the user's own install. packaging/kiro-cli-version is read
-        # only by a BUNDLE_KIRO_CLI=1 build.
+        # by a BUNDLE_KIRO_CLI=1 build here, and by every Docker image build.
         run: bash packaging/build-desktop.sh
         env:
           # Unsigned here by design: the signing service signs the .app downstream in

@@ -29,8 +29,9 @@
 #     direct-local sessions (docker exec).
 #   - kiro-cli binaries install to /usr/local/bin (outside the volume) so a
 #     user-mounted home can never shadow them with stale or tampered copies.
-#     The download is resolved through the release manifest and
-#     sha256-verified fail-closed; the resolved version is recorded at
+#     The release is the one pinned in packaging/kiro-cli-version and
+#     sha256-verified fail-closed against packaging/kiro-cli-sha256, the same
+#     two files the desktop build reads; the version is recorded at
 #     /usr/local/share/kirocrew/kiro-cli-version and (when the lane passes
 #     KIRO_CLI_VERSION) in the dev.kirocrew.kiro-cli.version OCI label.
 
@@ -44,11 +45,11 @@ ARG TARGETARCH
 ARG KIROCREW_VERSION=dev
 ARG VCS_REF=unknown
 
-# kiro-cli version the build MUST resolve to. The lanes resolve this from
-# the release manifest before the build (so it lands in an OCI label and a
-# moved manifest fails the build); "latest" accepts whatever the manifest
-# names at build time — bytes are checksum-verified either way.
-ARG KIRO_CLI_VERSION=latest
+# kiro-cli version the lane expects, for the OCI label. The build installs
+# the version pinned in packaging/kiro-cli-version; a lane that passes a
+# different one fails the build, so the label can never lie. Empty (the
+# default) skips that cross-check.
+ARG KIRO_CLI_VERSION=
 
 # Source repository for the OCI label. The publish lane passes the actual
 # repository (forks label their own images correctly instead of
@@ -83,35 +84,42 @@ RUN apt-get update \
 # dotfile/shell integrations that are meaningless in a container.
 #
 # Supply-chain discipline (image inputs must be verifiable):
-#   1. Resolve the version + per-arch sha256 from the release manifest
-#      (latest/manifest.json) — the manifest names VERSIONED download paths.
-#   2. If the lane pinned KIRO_CLI_VERSION, a manifest that moved between
-#      resolution and build FAILS the build (label can never lie).
-#   3. Download the VERSIONED zip and verify its sha256 fail-closed before
-#      executing anything from it.
-#   4. Record the resolved version at a fixed path for runtime audit
+#   1. Read the version from packaging/kiro-cli-version and the per-arch
+#      sha256 from packaging/kiro-cli-sha256 (keyed `<version>/<file>`), the
+#      pin the desktop build shares. Both are bind-mounted from the build
+#      context, so neither enters a layer; a rebuild of a tag reproduces it.
+#   2. If the lane passed KIRO_CLI_VERSION, a pin that disagrees FAILS the
+#      build (label can never lie).
+#   3. Download that version's zip and verify its sha256 fail-closed before
+#      executing anything from it. A pin with no sha line fails the build.
+#   4. Record the version at a fixed path for runtime audit
 #      (docker run --rm <image> cat /usr/local/share/kirocrew/kiro-cli-version).
-RUN set -eux; \
+RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
+    set -eux; \
     case "${TARGETARCH}" in \
         amd64) KIRO_ARCH="x86_64" ;; \
         arm64) KIRO_ARCH="aarch64" ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl --proto '=https' --tlsv1.2 -fsSL \
-        "https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json" \
-        -o /tmp/kirocli-manifest.json; \
-    RESOLVED="$(python3 -c 'import json;print(json.load(open("/tmp/kirocli-manifest.json"))["version"])')"; \
-    if [ "${KIRO_CLI_VERSION}" != "latest" ] && [ "${KIRO_CLI_VERSION}" != "${RESOLVED}" ]; then \
-        echo "kiro-cli manifest moved: pinned ${KIRO_CLI_VERSION}, manifest now ${RESOLVED}" >&2; exit 1; \
+    RESOLVED="$(tr -d '[:space:]' < /tmp/kiro-cli-pin/kiro-cli-version)"; \
+    case "${RESOLVED}" in \
+        ''|*[!0-9A-Za-z.+-]*) echo "bad kiro-cli pin: '${RESOLVED}'" >&2; exit 1 ;; \
+    esac; \
+    if [ -n "${KIRO_CLI_VERSION}" ] && [ "${KIRO_CLI_VERSION}" != "${RESOLVED}" ]; then \
+        echo "kiro-cli pin mismatch: lane expects ${KIRO_CLI_VERSION}, pin is ${RESOLVED}" >&2; exit 1; \
     fi; \
-    SHA256="$(KIRO_ARCH="${KIRO_ARCH}" python3 -c 'import json,os; m=json.load(open("/tmp/kirocli-manifest.json")); a=os.environ["KIRO_ARCH"]; print(next(p["sha256"] for p in m["packages"] if p["fileType"]=="zip" and p["architecture"]==a and "musl" not in p["download"]))')"; \
+    ARTIFACT="${RESOLVED}/kirocli-${KIRO_ARCH}-linux.zip"; \
+    SHA256="$(awk -v want="${ARTIFACT}" '$2 == want { print $1 }' /tmp/kiro-cli-pin/kiro-cli-sha256)"; \
+    if [ "$(printf '%s' "${SHA256}" | wc -w)" -ne 1 ]; then \
+        echo "packaging/kiro-cli-sha256 has no single line for ${ARTIFACT}" >&2; exit 1; \
+    fi; \
     curl --proto '=https' --tlsv1.2 -fsSL \
-        "https://desktop-release.q.us-east-1.amazonaws.com/${RESOLVED}/kirocli-${KIRO_ARCH}-linux.zip" \
+        "https://desktop-release.q.us-east-1.amazonaws.com/${ARTIFACT}" \
         -o /tmp/kirocli.zip; \
     echo "${SHA256}  /tmp/kirocli.zip" | sha256sum -c -; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
     Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 /tmp/kirocli/install.sh; \
-    rm -rf /tmp/kirocli /tmp/kirocli.zip /tmp/kirocli-manifest.json; \
+    rm -rf /tmp/kirocli /tmp/kirocli.zip; \
     mkdir -p /usr/local/share/kirocrew; \
     printf '%s\n' "${RESOLVED}" > /usr/local/share/kirocrew/kiro-cli-version; \
     kiro-cli --version

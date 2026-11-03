@@ -191,10 +191,10 @@ code.
      `release/X.Y` before the RC is cut. Rebuilt stable bytes already carry the
      bare stamp, but insider, legacy promoted installs, and the byte-reuse escape
      hatch still depend on the display contract.
-   - *kiro-cli pin (read only by a `BUNDLE_KIRO_CLI=1` desktop build; a
-     default release has no reader, so this step is skipped unless such a
-     build is planned)*: compare `packaging/kiro-cli-version` with the
-     version the release manifest names today
+   - *kiro-cli pin (every release: the published Docker image installs exactly
+     this version, and a `BUNDLE_KIRO_CLI=1` desktop build bundles it)*:
+     compare `packaging/kiro-cli-version` with the version the release
+     manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
      release, never blind. A bump is two files in one commit: the version in

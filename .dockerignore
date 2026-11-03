@@ -9,3 +9,9 @@ dist/*
 !docker
 docker/*
 !docker/entrypoint.sh
+# The kiro-cli pin the desktop build shares, bind-mounted by the kiro-cli
+# install step (never copied into a layer).
+!packaging
+packaging/*
+!packaging/kiro-cli-version
+!packaging/kiro-cli-sha256
