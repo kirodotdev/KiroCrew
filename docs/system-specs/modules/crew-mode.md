@@ -1661,6 +1661,42 @@ page mount; once Mate's thread holds anything, that rule answers nothing and the
 rules above apply unchanged. A create link followed while a chat is open lands
 on that chat, never on this rule.
 
+A starred mate is also a row in the left dock's Mates group, under the Main
+rows (`website/src/shell/nav/matesDock.tsx`). The star is the only switch: there
+is no separate pin. The group lists starred mates in `star_order` (1 is the top;
+0 is "not placed" and sorts after every placed mate, in roster order), shows the
+first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
+"N more" / "Show less" toggle (`NavToggle`) as the Apps list, persisted in
+`mc-dock-mates-expanded`. Unfolded, every starred mate is listed and every row
+is draggable, so a mate starred late (sorted to the bottom) can be dragged into
+the top three. As with the Apps list's active app, the open mate's row stays on
+screen while the group is folded, as a row that cannot be dragged or dropped
+on. The group sits between the rail's fixed top block
+and its Apps header, outside both, and shares the room left over with the app
+list: on a short window the app list gives up its room first (a far larger
+shrink weight) down to one row, then the group shrinks down to its header and
+one row, and each scrolls inside its share, so neither the installed apps nor
+the rail's footer is pushed off. While mates are docked, the app list fades its
+bottom edge whenever apps sit below its fold (not during an app drag), as the
+group does, so a list cut to one row does not read as complete. The phone
+rail beside the chat and Mates drawers shows the same mates as tiles AFTER the app tiles in its Apps scroller
+(`DockMatesTiles`), behind a divider and with no "N more" tile (plus the open
+mate's tile when it sits past the three), so they never spend that rail's app
+floor (`APPS_FLOOR_PX`); the tiles are not draggable.
+Dragging a row renumbers the whole starred list 1..n and writes every row,
+one `PUT /api/agents/{name}` with `star_order` each, because a cached value can
+be stale (another device, an unstar); unstarring on the roster zeroes the
+cached `star_order` too, as the server does. Drags are ignored while a
+reorder is saving, and every reorder refetches the roster when it settles, so
+the dock shows what the server holds; a failed reorder, or a roster that fails
+to load, shows an `ErrorNotice` beside the rail. A mate's working dot reads its
+live DM slot, falling back to the roster's `running`.
+`star_order` lives on the crew record next to `starred`, so it follows the
+person to every device; `PUT` refuses a non-integer or a value outside
+0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
+is not starred, so a re-star lands at the bottom. While a docked mate's chat is
+open its dock row is the lit one, not the Mates page row.
+
 Deleting a mate is available on this page: the mate's edit controls
 open `CrewEditorModal` in place, and its Danger pane deletes the
 mate. A row the listing rule hides is reached through search, or through

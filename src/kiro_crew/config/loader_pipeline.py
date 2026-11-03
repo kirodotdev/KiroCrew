@@ -114,6 +114,7 @@ from kiro_crew.config.section_builders import (
     _build_work_ledger_config,
 )
 from kiro_crew.config.sections import (
+    STAR_ORDER_MAX,
     AgentConfig,
     ChannelConfig,
     DecisionsConfig,
@@ -922,6 +923,9 @@ def build_config(
                     # must not become a truthy star, so only a real bool
                     # is honoured and anything else reads as un-starred.
                     starred=crew.read("starred", _safe_bool),
+                    # A junk or negative position collapses to 0 (not placed),
+                    # which only moves the row to the bottom of the dock.
+                    star_order=crew.read("star_order", _safe_int, lo=0, hi=STAR_ORDER_MAX),
                     # Strictly a bool, like ``starred``: a stray string reads as off.
                     dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
                     # Same guard family as model/triggers: config.json is

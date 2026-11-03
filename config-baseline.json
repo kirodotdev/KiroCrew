@@ -10704,6 +10704,20 @@
       "defaultValue": false
     },
     {
+      "path": "agents.*.star_order",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Star order",
+      "help": "Position of this starred crew in the dashboard's left dock, set by dragging its row there. 1 is the top; 0 means not placed yet, which sorts after every placed crew. Cleared when the crew is unstarred. Purely a display preference, like starred.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",

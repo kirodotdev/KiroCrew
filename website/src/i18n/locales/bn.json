@@ -7920,6 +7920,10 @@
       "contents": "বিষয়সূচি",
       "table_of_contents": "সূচিপত্র"
     },
+    "matesDock": {
+      "load_failed": "তোমার তারকাচিহ্নিত সঙ্গীদের লোড করা যায়নি।",
+      "reorder_failed": "সঙ্গীদের নতুন ক্রম সংরক্ষণ করা যায়নি।"
+    },
     "mcpAppFrame": {
       "collapse": "সংকুচিত করুন",
       "collapse_app": "অ্যাপ সংকুচিত করুন",

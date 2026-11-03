@@ -8081,6 +8081,10 @@
       "contents": "Contenuto",
       "table_of_contents": "Indice"
     },
+    "matesDock": {
+      "load_failed": "Impossibile caricare i tuoi compagni contrassegnati con una stella.",
+      "reorder_failed": "Impossibile salvare il nuovo ordine dei compagni."
+    },
     "mcpAppFrame": {
       "collapse": "Comprimi",
       "collapse_app": "Comprimi l'app",

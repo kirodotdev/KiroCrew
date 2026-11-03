@@ -8081,6 +8081,10 @@
       "contents": "Sommaire",
       "table_of_contents": "Table des matières"
     },
+    "matesDock": {
+      "load_failed": "Impossible de charger tes coéquipiers marqués d’une étoile.",
+      "reorder_failed": "Impossible d’enregistrer le nouvel ordre de tes coéquipiers."
+    },
     "mcpAppFrame": {
       "collapse": "Réduire",
       "collapse_app": "Réduire l'application",

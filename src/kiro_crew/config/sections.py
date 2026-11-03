@@ -339,6 +339,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
     DEFAULT_KIRO_TEMPLATE,
+    STAR_ORDER_MAX,
     KiroCrewAgentConfig,
     ResolvedBindings,
     SessionConfig,

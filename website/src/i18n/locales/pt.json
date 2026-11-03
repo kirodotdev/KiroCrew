@@ -8081,6 +8081,10 @@
       "contents": "Conteúdo",
       "table_of_contents": "Sumário"
     },
+    "matesDock": {
+      "load_failed": "Não foi possível carregar seus colegas marcados com uma estrela.",
+      "reorder_failed": "Não foi possível salvar a nova ordem dos colegas."
+    },
     "mcpAppFrame": {
       "collapse": "Recolher",
       "collapse_app": "Recolher o aplicativo",

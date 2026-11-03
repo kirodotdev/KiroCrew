@@ -97,8 +97,13 @@ export interface MemberRosterRow {
    *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
    *  legacy 'aim' spelling and any unknown value collapse to this). */
   source?: 'kirocrew' | 'builtin' | 'package' | string
-  /** User's favourite mark; toggled via PUT /api/agents/{name}. */
+  /** User's favourite mark; toggled via PUT /api/agents/{name}. A starred
+   *  crewmate is also a row in the left dock. */
   starred?: boolean
+  /** The starred crewmate's place in the left dock: 1 is the top, 0 is not
+   *  placed yet (sorts last). Written by dragging a dock row. Absent on an
+   *  older gateway. */
+  star_order?: number
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -320,7 +325,7 @@ export interface DashboardManifest {
   fields: Record<string, DashboardFieldSpec>
 }
 
-export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
+export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembers, sessionKeyHeader: _sk }: ClientTransport) {
   const crew = {
     // Agents
     agentsInstalled: () => fetch('/api/agents/installed').then(j),
@@ -388,8 +393,9 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       (extra ? post('/api/agents', body, undefined, extra) : post('/api/agents', body)).then(j),
     // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
     // cheap live-status fields the backend can answer without IO (richer live
-    // detail rides the already-subscribed WS `slots` frames).
-    members: () => fetch('/api/members').then(j) as Promise<{ members: MemberRosterRow[] }>,
+    // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
+    // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
+    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.
