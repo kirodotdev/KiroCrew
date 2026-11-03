@@ -12779,6 +12779,7 @@
         "agent_switch_blocked_channel": "A troca para {{agent}} foi bloqueada — este chat está vinculado a um canal do Slack atendido por {{channel_agent}}. O próximo turno reinicia nesse agente.",
         "channel_message_not_run": "Uma mensagem de um canal do Slack não foi executada: o agente desta sessão não é o agente que esse canal usa.",
         "crew_name_undispatchable": "Não é possível usar o nome da crew deste tópico. Renomeie ou recrie o membro da crew.",
+        "code_channel_worktree_not_ready": "O worktree deste canal de código ainda não está pronto, então a mensagem não foi executada. Envie-a de novo em instantes.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar."
       },
@@ -19081,7 +19082,7 @@
           "agent_sessions_note": "Ativar isso ainda não muda nada no Slack. Isso só entra no manifesto do app, o texto de configuração que você copia para o Slack nas etapas abaixo.",
           "update_keeps_working": "O Slack continua funcionando como antes até você atualizar.",
           "code_channels": "Canais de código",
-          "code_channels_desc": "Ativado: o agente pode abrir um canal do Slack por tarefa de programação, convidar você e publicar e manter notas lá com o próprio nome. Para isso, seu app do Slack recebe 5 permissões. Desativado: nada muda, e você pode remover as permissões no Slack depois. O Slack está liberando os canais de código aos poucos, então talvez seu espaço de trabalho ainda não os tenha.",
+          "code_channels_desc": "Ativado: o agente pode abrir um canal do Slack por tarefa de programação, com uma barra de contexto e uma aba de diff, convidar você e publicar e manter notas lá com o próprio nome. Para isso, seu app do Slack recebe 5 permissões. Desativado: nada muda, e você pode remover as permissões no Slack depois. O Slack está liberando os canais de código aos poucos, então talvez seu espaço de trabalho ainda não os tenha.",
           "stage_tag": "Prévia",
           "defaults_title": "Novos canais de código começam com",
           "defaults_desc": "Escolha uma pasta, um agente ou ambos. O que você deixar vazio usa a configuração da pasta ou do Slack, então um canal de código sempre funciona.",

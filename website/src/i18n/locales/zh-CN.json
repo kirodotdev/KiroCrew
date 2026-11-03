@@ -12279,6 +12279,7 @@
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该团队成员。",
+        "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
         "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。"
       },
@@ -18281,7 +18282,7 @@
           "agent_sessions_note": "开启后，Slack 中暂时不会有任何变化。它只会加入应用清单，也就是你在下方步骤中复制到 Slack 的设置文本。",
           "update_keeps_working": "在你更新之前，Slack 会照常工作。",
           "code_channels": "代码频道",
-          "code_channels_desc": "开启：代理可以为每个编码任务开启一个 Slack 频道，邀请你加入，并以自己的名义在其中发帖和记录笔记。为此你的 Slack 应用会获得 5 项权限。关闭：不会有任何变化，之后可以在 Slack 中移除这些权限。Slack 正在逐步推出代码频道，因此你的工作区可能尚未提供。",
+          "code_channels_desc": "开启：代理可以为每个编码任务开启一个带上下文栏和差异标签页的 Slack 频道，邀请你加入，并以自己的名义在其中发帖和记录笔记。为此你的 Slack 应用会获得 5 项权限。关闭：不会有任何变化，之后可以在 Slack 中移除这些权限。Slack 正在逐步推出代码频道，因此你的工作区可能尚未提供。",
           "stage_tag": "预览",
           "defaults_title": "新代码频道的初始设置",
           "defaults_desc": "选择文件夹、代理或两者。留空的项会使用文件夹或 Slack 的设置，因此代码频道始终可用。",
