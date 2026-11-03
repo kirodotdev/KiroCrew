@@ -695,6 +695,12 @@ async def _run_inner_impl(
         # "a slot/session-scoped equivalent" — the sticky marker for the
         # session lives on the provider via TURN_FALLBACK_ATTR.
         _fb_state = FallbackState(configured_fallback_chain())
+        # Every replay of the original prompt goes out through this, so a fallback
+        # swap below is stated in its [ACTIVE MODEL] line rather than the model the
+        # prompt was built on. A continuation prompt carries no such line.
+        from kiro_crew.llm_helpers import ActiveModelLine
+
+        _active_line = ActiveModelLine(full_message, client)
         msg = full_message
         while True:
             usage.begin(client)
@@ -738,10 +744,11 @@ async def _run_inner_impl(
                 _refused_turn: LLMEvent | None = None
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
+                _prompt = _active_line.current() if msg is full_message else msg
                 stream = (
-                    client.stream(msg)
+                    client.stream(_prompt)
                     if prompt_timeout is None
-                    else client.stream(msg, timeout=prompt_timeout)
+                    else client.stream(_prompt, timeout=prompt_timeout)
                 )
                 async for _ev in stream:
                     if not _ev.runtime_global:

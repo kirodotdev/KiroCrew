@@ -115,6 +115,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         FALLBACK_STORY_ATTR,
         ROUTE_BASELINE_ATTR,
         TURN_FALLBACK_ATTR,
+        ActiveModelLine,
         FallbackState,
         _bound_to_other_loop,
         _fallback_wire_spelling,

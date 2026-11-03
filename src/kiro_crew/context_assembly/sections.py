@@ -423,6 +423,35 @@ def active_model_block(model_id: str) -> str:
     )
 
 
+def restate_active_model(message: str, stated_id: str, served_id: str) -> str:
+    """*message* with its ``[ACTIVE MODEL]`` block for *stated_id* naming *served_id*.
+
+    A retry loop that switches the model and then re-sends a prompt it already built
+    calls this, so the replayed prompt names the model that will answer it. Only the
+    exact block :func:`active_model_block` rendered for *stated_id* is rewritten, every
+    other byte is kept. An empty *served_id* drops the block, since no model can be
+    named. A message without that block comes back unchanged, as the same object.
+
+    A :class:`~kiro_crew.prompt_segments.SegmentedPrompt` keeps its provenance: only its
+    injected segments are rewritten, never the user's own text.
+    """
+    from kiro_crew.prompt_segments import SOURCE_INJECTED, PromptSegment, SegmentedPrompt
+
+    stale = active_model_block(stated_id)
+    if not stale or stale not in message:
+        return message
+    fresh = active_model_block(served_id)
+    if not isinstance(message, SegmentedPrompt):
+        return message.replace(stale, fresh)
+    segments = [
+        PromptSegment(source, text.replace(stale, fresh) if source == SOURCE_INJECTED else text)
+        for source, text in message.segments
+    ]
+    if all(new.text == old.text for new, old in zip(segments, message.segments)):
+        return message
+    return SegmentedPrompt(segments)
+
+
 def workspace_identity_block(ws_name: str, ws_path: object) -> str:
     """The ``[WORKSPACE IDENTITY]`` block (the ``kirocrew`` agent only).
 

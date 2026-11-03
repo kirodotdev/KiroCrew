@@ -49,6 +49,7 @@ from kiro_crew.llm_helpers_parts.model_fallback import (
     FALLBACK_CANDIDATE_ATTEMPTS,
     FALLBACK_STORY_ATTR,
     TURN_FALLBACK_ATTR,
+    ActiveModelLine,
     FallbackState,
     advance_fallback_candidate,
     first_advertised_fallback,
@@ -226,6 +227,11 @@ async def stream_and_collect(
     # contract, but activity from that attempt remains sticky for a later
     # transient error.
     _turn_tool_activity = False
+    # Read the served model before the restore probe below can move it: the caller
+    # built *message* on the model serving now, and every attempt re-sends it through
+    # this, so a restore, a fallback swap or a rejected-model retry is stated in the
+    # prompt's [ACTIVE MODEL] line instead of the model that served at build time.
+    _active_line = ActiveModelLine(message, provider)
     # Sticky-restore probe (§restore policy): if an earlier turn on this
     # provider fell back, try ONCE to move back to the primary before this
     # turn streams. Quiet on success (log only); a still-throttled primary
@@ -263,6 +269,7 @@ async def stream_and_collect(
         # baseline an attempt that was billed and then failed is invisible.
         attempt_stats_before = _billing_stats(provider)
         try:
+            message = _active_line.current()
             events = (
                 provider.stream(message)
                 if allow_image
