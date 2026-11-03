@@ -20,6 +20,7 @@ import { recordEvent } from '../../rum'
 import { isSessionApprovalConsentRequiredError, useTrustGate } from '../../components/appstore/TrustAppModal'
 import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
 import { consentTierFor } from '../../components/appstore/registryTier'
+import { backendRefusedNotice } from '../../components/appstore/backendRefused'
 import type { AppsData } from './useAppsData'
 
 type AppActionsInput = Pick<
@@ -80,8 +81,9 @@ export function useAppActions({
 
   /** The single enable path — shared by the cards and the trust retry. */
   const runEnable = async (name: string) => {
+    let result: unknown
     try {
-      await api.enableApp(name)
+      result = await api.enableApp(name)
     } catch (e) {
       if (isSessionApprovalConsentRequiredError(e)) {
         openDetail(name)
@@ -91,6 +93,9 @@ export function useAppActions({
     }
     recordEvent('app_enable', { app: name })
     announceAppsChanged()
+    // Enabled, but the host refused its backend: say so in the page's notice.
+    const refused = backendRefusedNotice(apps.find(a => a.name === name)?.displayName || name, result)
+    if (refused) setError(refused)
   }
 
   const trust = useTrustGate(runEnable)

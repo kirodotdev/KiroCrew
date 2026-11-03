@@ -653,10 +653,10 @@ def test_find_ui_offers_a_destructive_control_with_its_caution() -> None:
 
 
 def test_find_ui_quotes_the_pages_own_words_for_what_a_deletion_removes() -> None:
-    # Delete crewmate only unbinds; Mate describes it from the page's own
-    # notice, never from a guess that it wipes chats and notes for good.
+    # Mate describes a delete from the page's own notice, which says what goes
+    # and what is kept, never from a guess that it wipes chats and notes for good.
     for locale, want in (
-        ("en", "Deleting a mate only unbinds it from new sessions."),
+        ("en", "Deleting a mate removes it, along with its picture and goal check-ins."),
         ("zh-CN", None),
     ):
         d = ui_index.find_ui("delete a mate", locale)

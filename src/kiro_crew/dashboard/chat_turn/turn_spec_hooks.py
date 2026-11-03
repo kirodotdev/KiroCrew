@@ -181,6 +181,10 @@ async def _prepare_spec_hooks(
         logger.warning("no agent is known for this KAS session; tool calls are blocked")
         return [], True, work_dir
     try:
+        # A crewmate's worker fires its session's merged spec: the
+        # session this turn holds, set at admission.
+        held = getattr(slot, "_active_turn_session_key", "")
+        by_session = {"session_key": held} if isinstance(held, str) and held else {}
         hooks, lost, unconfirmable = await asyncio.to_thread(
             functools.partial(
                 crew_fired_spec_hooks,
@@ -188,6 +192,7 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=capabilities_of(client).backend == ACP_BACKEND_KAS,
+                **by_session,
             )
         )
     except Exception:  # noqa: BLE001 - the caller fails PreToolUse closed

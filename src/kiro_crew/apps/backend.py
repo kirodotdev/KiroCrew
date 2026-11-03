@@ -263,6 +263,48 @@ def _is_shell_entry(entry: Path) -> bool:
     return first_line.startswith(b"#!") and b"python" not in first_line
 
 
+def _exec_backend_windows_refusal_text(app_name: str, entry_str: str) -> str:
+    """The one wording of the native-Windows exec backend refusal: the spawn body logs it
+    and :func:`exec_backend_platform_refusal` hands it to the enable and install routes."""
+    return (
+        f"App {app_name} declares an exec (shell launcher) backend ({entry_str}) which "
+        "is not supported on native Windows. Use a Python or Node entry point instead."
+    )
+
+
+def exec_backend_platform_refusal(app_name: str) -> str | None:
+    """Why *app_name*'s backend cannot start on this host, or None when nothing refuses it.
+
+    Answers only the native-Windows exec (shell launcher) refusal in
+    :func:`_start_app_backend_body`, with the same branch order: a module-style entry
+    point and a Node entry are never exec backends. ``start_app_backend`` returns the
+    None that also means "no backend declared", so the enable, install and update routes
+    call this after a None to put the reason in their response. On POSIX it is always
+    None.
+    """
+    if platform_compat.IS_POSIX:
+        return None
+    manifest = get_app_manifest(app_name)
+    if not manifest or not manifest.backend.entryPoint:
+        return None
+    root = app_dir(app_name)
+    entry_point = manifest.backend.entryPoint
+    # The spawn's own file-entry screen runs before anything touches the path, so
+    # nothing below follows an entry the spawn refuses (an absolute or UNC path, a
+    # '..' escape, a link out of the root). A module-style entry names no file under
+    # the root, so the screen answers "not found" for it too: it is never exec.
+    if file_entry_point_refusal(entry_point, root):
+        return None
+    entry = root / entry_point
+    entry_str = str(entry)
+    backend_type = manifest.backend.type
+    if backend_type == "node" or (not backend_type and entry_str.endswith((".js", ".mjs", ".cjs"))):
+        return None
+    if backend_type == "exec" or (not backend_type and _is_shell_entry(entry)):
+        return _exec_backend_windows_refusal_text(app_name, entry_str)
+    return None
+
+
 def _shebang_argv(entry: Path) -> list[str]:
     """Interpreter argv from a script's shebang, or ``["/bin/sh"]`` fallback.
 
@@ -1006,14 +1048,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         if not platform_compat.IS_POSIX:
             # Exec backends rely on POSIX shebang exec and /bin/sh — neither
             # exists on native Windows. Fail fast with a clear message instead
-            # of an undefined Popen crash.
-            logger.error(
-                "App %s declares an exec (shell launcher) backend (%s) which "
-                "is not supported on native Windows. Use a Python or Node "
-                "entry point instead.",
-                app_name,
-                entry_str,
-            )
+            # of an undefined Popen crash. The enable, install and update routes
+            # return the same text as ``backend_refused`` (exec_backend_platform_refusal).
+            logger.error("%s", _exec_backend_windows_refusal_text(app_name, entry_str))
             return None
         if os.access(entry, os.X_OK):
             cmd = [entry_str]

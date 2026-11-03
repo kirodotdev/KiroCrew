@@ -3029,6 +3029,9 @@ no approval card to fall back to: on a harness in `ACP_BACKENDS_SIDE_READONLY`
 the turn runs under `READ_ONLY` on the side chat's confinement (kiro-cli: the
 derived `<agent>--readonly` spec; claude: a `side_read_only` session and the
 no-shell boundary `THREAD_BOUNDARY_PROMPT_NO_SHELL`); elsewhere `REJECT_ALL`. Actions go through the main chat, and the boundary prompt says so.
+A shell-capable thread turn also gets `THREAD_BOUNDARY_PROMPT_NO_SHELL` while
+`name_grant.environment_refusal()` refuses every program name, since each shell
+read is then declined; the check runs off the loop.
 The envelope (`build_thread_message`) is always sent whole (the
 instructions, up to 6 chat messages before the parent as background, the parent
 itself, the thread so far as its newest 40 replies plus a count of the earlier

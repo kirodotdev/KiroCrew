@@ -1408,3 +1408,107 @@ test("managed auto-on-restart: the quit-time apply relaunches through relaunchPa
   assert.deepStrictEqual(relaunches, [{ execPath: exe, args: process.argv.slice(1) }]);
   assert.deepStrictEqual(exits, [0]);
 });
+
+// ---------------------------------------------------------------------------
+// Windows session-end notice. Windows shutdown, restart and sign-out emit
+// session-end on the window and never before-quit, so a found update gets a
+// notice there instead of an apply.
+// ---------------------------------------------------------------------------
+
+const { EventEmitter: SessionEndEmitter } = require("node:events");
+
+function sessionEndRig({ osPlatform = "win32", pref = () => true, checkCode = 0 } = {}) {
+  const win = new SessionEndEmitter();
+  win.isDestroyed = () => false;
+  const notices = [];
+  const made = makeDeps({
+    osPlatform,
+    externallyManaged: {
+      managedBy: "internal-registry",
+      updateCommand: "pkgtool update kirocrew",
+      checkCommand: "pkgtool check kirocrew",
+    },
+  });
+  made.deps.getMainWindow = () => win;
+  made.deps.Notification = function (opts) { return { show: () => notices.push(opts) }; };
+  made.deps.getAutoDownloadPreference = pref;
+  const result = { code: checkCode };
+  const spawned = stubSpawn((command) => (
+    command === "pkgtool check kirocrew"
+      ? { code: result.code, out: result.code === 0 ? "9.9.9\n" : "" }
+      : { code: 1, out: "" }
+  ));
+  return { ...made, win, notices, result, ...spawned };
+}
+
+test("managed session-end on win32 shows one pending-update notice and runs no updateCommand", async (t) => {
+  const { deps, win, notices, commands, restore, appOnce } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "a found update must arm a session-end listener on the main window");
+  assert.ok(appOnce.some((r) => r.ev === "before-quit"), "before-quit stays armed beside it");
+  win.emit("session-end");
+  assert.deepStrictEqual(notices, [{
+    title: "Kiro Crew update ready",
+    body: "An update (version 9.9.9) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.",
+  }]);
+  assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "session-end must never run the updateCommand");
+  assert.strictEqual(win.listenerCount("session-end"), 0, "the listener fires once");
+});
+
+test("managed session-end: a later check that finds nothing removes the window listener", async (t) => {
+  const { deps, win, notices, result, restore } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed after a found update");
+  result.code = 1;
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 0, "an up-to-date check must remove the listener");
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0);
+});
+
+for (const osPlatform of ["darwin", "linux"]) {
+  test(`managed session-end: no listener is armed on ${osPlatform}`, async (t) => {
+    const { deps, win, appOnce, restore } = sessionEndRig({ osPlatform });
+    t.after(restore);
+    const u = initAutoUpdate(deps);
+    await u.check();
+    assert.ok(appOnce.some((r) => r.ev === "before-quit"), "before-quit is armed as before");
+    assert.strictEqual(win.listenerCount("session-end"), 0, `${osPlatform} must not arm session-end`);
+  });
+}
+
+test("managed session-end: auto-download off at check time arms nothing", async (t) => {
+  const { deps, win, restore } = sessionEndRig({ pref: () => false });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 0);
+});
+
+test("managed session-end: auto-download turned off before session end shows no notice", async (t) => {
+  let pref = true;
+  const { deps, win, notices, restore } = sessionEndRig({ pref: () => pref });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed while auto-download was on");
+  pref = false;
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0, "a quit would not apply it, so the notice must not say it will");
+});
+
+test("managed session-end: a manual install starting removes the window listener", async (t) => {
+  const { deps, win, notices, restore } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed after a found update");
+  await u.install(); // the stubbed updateCommand exits 1: the install fails
+  assert.strictEqual(win.listenerCount("session-end"), 0, "an install owns the update and drops the notice");
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0);
+});

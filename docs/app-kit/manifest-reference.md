@@ -1144,7 +1144,10 @@ dashboard's link bridge.
 > line, so a compiled/binary launcher (e.g. an ELF executable) cannot be
 > auto-detected — declare `"type": "exec"` explicitly for those. Exec
 > backends are POSIX-only: on native Windows the backend is refused at spawn
-> with a logged error (use a Python or Node entry point instead).
+> with a logged error (use a Python or Node entry point instead). The enable,
+> install and update responses then carry a `backend_refused` field with that
+> reason; the app itself still enables, since its other parts do not need the
+> backend.
 
 App backends are accessible through the Gateway's reverse proxy at
 `/apps/{name}/api/{path}`, which avoids CORS issues for dashboard UI pages.

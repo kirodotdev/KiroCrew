@@ -2758,7 +2758,10 @@ so it does not depend on a hand-maintained segment list staying in sync with the
 route table. The
 dashboard's refresh button
 also posts `/api/apps/registries/refresh` (the external-registry index sweep),
-then refetches, so both of the store's sources are rebuilt by one click.
+then refetches, so both of the store's sources are rebuilt by one click. While
+that runs the button is disabled and its accessible name and tooltip read
+"Refreshing the store…" (`pages.appsPage.refreshing_store`) instead of the
+action, so the disabled state states its reason.
 
 User-configured external registries (`config.registries`) are a separate,
 always-present source: both `list_registry` and `list_catalog_apps` merge them

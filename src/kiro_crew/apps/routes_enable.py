@@ -43,6 +43,7 @@ from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.apps.routes_lifecycle import (
+    _backend_platform_refusal,
     _deregister_app_off_loop,
     _redact_warning,
     _refuse_while_startup_hook_runs,
@@ -378,6 +379,11 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
+            # A native-Windows exec backend is refused with the same None as "no
+            # backend"; name the refusal so the enable does not read as a clean start.
+            backend_refused = await _backend_platform_refusal(name, backend)
+            if backend_refused:
+                resp["backend_refused"] = backend_refused
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")
