@@ -500,6 +500,11 @@ already landed.
   (`vapid_keys.py`) live in the `web-push` directory of the data home, which is
   pre-created and masked in every sandbox and fenced from agents
   (`sandbox_leaves.py`, `sandbox_precreate.py`, `security/paths_lists.py`).
+  A subscriptions file the load cannot use reads as empty, but a subscribe never
+  saves over it unread: one leading UTF-8 byte-order mark reads normally, a file
+  that is not usable JSON is moved to `subscriptions.json.corrupt-<utc>` first,
+  and a read that fails leaves the file alone and the subscribe raises
+  `PushStoreUnreadable`.
 - **Routes.** Owner only: `GET /api/notifications/push/vapid-public-key`,
   `POST /api/notifications/push/subscribe` (HTTPS endpoint, vetted by
   `link_unfurl.vet_unfurl_url`) and `POST /api/notifications/push/unsubscribe`.
