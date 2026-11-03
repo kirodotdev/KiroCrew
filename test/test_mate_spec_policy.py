@@ -594,6 +594,13 @@ def test_hooks_the_worker_base_already_holds_are_not_copied(home):
     assert _file(mates)["hooks"] == {"preToolUse": [HOOK]}
 
 
+def test_a_base_event_holding_one_bare_hook_still_holds_it():
+    """A base event set to one hook, not a list of them, still holds that hook."""
+    base = {"hooks": {"stop": BASE_HOOK}}
+    policy = {"hooks": {"stop": [BASE_HOOK, HOOK]}}
+    assert mate_spec_policy.without_held(policy, base) == {"hooks": {"stop": [HOOK]}}
+
+
 def test_a_template_holding_only_the_bases_hooks_is_added_off_kas(home, monkeypatch):
     """Nothing of its own to carry, so a non-KAS worker is not refused for it."""
     user, mates = home
