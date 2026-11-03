@@ -67,6 +67,8 @@ set -euo pipefail
 # after it, a missing run is a real misconfiguration and fails.
 APPEAR_BUDGET="${APPEAR_BUDGET:-180}"
 TOTAL_BUDGET="${TOTAL_BUDGET:-720}"
+# Seconds between listing reads once the run is listed and still pending.
+POLL_INTERVAL=30
 
 # The clock and the wait, read through a seam that defaults to the real tools.
 # `now` is a function so the test can point it at a fake-clock command; without
@@ -395,5 +397,17 @@ while :; do
     exit 1
   fi
 
-  nap 10
+  # The steady-state wait, while the run is listed but not decided: this is
+  # the nap that sets how many listing reads every CI run spends against the
+  # repository's shared REST quota. It is clamped to the TOTAL budget left, so
+  # the budget is still checked at TOTAL_BUDGET rather than up to one interval
+  # past it, which keeps TOTAL_BUDGET plus CANCEL_WAIT inside the job's
+  # timeout-minutes. The other waits stay at 10s: the start-up race and a
+  # failed read are short and rare, and the cancel wait makes no API call.
+  left=$(( TOTAL_BUDGET - elapsed ))
+  if [ "$left" -gt 0 ] && [ "$left" -lt "$POLL_INTERVAL" ]; then
+    nap "$left"
+  else
+    nap "$POLL_INTERVAL"
+  fi
 done
