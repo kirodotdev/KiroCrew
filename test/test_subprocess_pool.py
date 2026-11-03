@@ -15,6 +15,7 @@ import time
 import types
 
 import pytest
+from path_gate_late_answer_helpers import LateAnswerClock
 
 from kiro_crew.security import _child_realpath as child_mod
 from kiro_crew.security.paths import _resolved_spellings_inline as _resolved_spellings
@@ -456,6 +457,130 @@ class TestCallerBudget:
             assert time.monotonic() - started < 30.0
         finally:
             executor.shutdown(wait=False)
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    def test_answer_in_pipe_at_deadline_is_read(self, tmp_path: pathlib.Path, monkeypatch) -> None:
+        # The calling thread can get the GIL back after its deadline although the
+        # child answered in time.  An answer already in the pipe is the child's
+        # completed realpath, so it is returned, and the healthy child is kept.
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        try:
+            before = self._spawned(executor)
+            clock = LateAnswerClock(monkeypatch)
+            answer = executor.realpath_spellings(str(link), timeout=5.0)
+            assert clock.late_reads >= 1, "the double never made the read late"
+            assert clock.drains == [0.0, executor_mod._ANSWERED_FRAME_DRAIN_SECS]
+            assert str(target.resolve()) in answer
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        finally:
+            executor.shutdown(wait=False)
+
+    def test_a_slot_leased_after_the_deadline_is_released_unused(
+        self, tmp_path: pathlib.Path, monkeypatch
+    ) -> None:
+        # The calling thread can get a slot only after its deadline has passed.  No
+        # answer can arrive in zero time and a timed-out child is killed, so no
+        # request is sent: the caller gets the plain ``TimeoutError`` of a lease that
+        # found no child in time, and the healthy child goes back to the queue.
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        try:
+            before = self._spawned(executor)
+            wait_until(
+                lambda: executor._free.qsize() >= len(before),
+                timeout=10.0,
+                describe=lambda: "reaper never queued all pool children",
+            )
+            caller = threading.get_ident()
+            offset = [0.0]
+            leased: list[int] = []
+            real_time = executor_mod.time
+            real_lease = executor._lease
+
+            class _CallerScopedTime:
+                """The ``time`` module, with ``monotonic`` shifted on the calling thread only."""
+
+                def __getattr__(self, name: str):
+                    return getattr(real_time, name)
+
+                @staticmethod
+                def monotonic() -> float:
+                    shift = offset[0] if threading.get_ident() == caller else 0.0
+                    return real_time.monotonic() + shift
+
+            def lease_then_pass_deadline(deadline):
+                child = real_lease(deadline)
+                leased.append(child.proc.pid)
+                if len(leased) == 1:
+                    offset[0] += 3600.0
+                return child
+
+            monkeypatch.setattr(executor_mod, "time", _CallerScopedTime())
+            monkeypatch.setattr(executor, "_lease", lease_then_pass_deadline)
+            with pytest.raises(TimeoutError) as raised:
+                executor.call_op(OP_REALPATH_SPELLINGS, b"/", timeout=5.0)
+            assert type(raised.value) is TimeoutError, type(raised.value)
+            assert leased and leased[0] in before
+            assert before[leased[0]].poll() is None
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+            assert executor._free.qsize() == len(before)
+
+            offset[0] = 0.0
+            answer = executor.realpath_spellings(str(tmp_path), timeout=5.0)
+            assert str(tmp_path.resolve()) in answer
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        finally:
+            executor.shutdown(wait=False)
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    @pytest.mark.parametrize("deadline_offset", [-1.0, 0.5])
+    def test_the_rest_of_an_answered_frame_is_drained_after_the_deadline(
+        self, monkeypatch, deadline_offset
+    ) -> None:
+        # An answer can arrive in pieces.  Once its header is in, the child's
+        # realpath is done, so each wait for a further piece gets at least
+        # ``drain_secs``, whether the deadline has passed (-1.0) or is about to
+        # (0.5).  The second piece is written only after the read has seen the
+        # pipe empty, so a shorter wait there would refuse.
+        read_fd, write_fd = os.pipe()
+        reader = os.fdopen(read_fd, "rb", buffering=0)
+        writer = os.fdopen(write_fd, "wb", buffering=0)
+        writer.write(b"a" * 8)
+        real_select = executor_mod.select.select
+        polls: list[float] = []
+
+        def select_then_write(rlist, wlist, xlist, timeout):
+            polls.append(timeout)
+            if len(polls) == 2:
+                assert real_select(rlist, [], [], 0) == ([], [], []), "second piece came early"
+                writer.write(b"b" * 8)
+            return real_select(rlist, wlist, xlist, timeout)
+
+        monkeypatch.setattr(executor_mod, "select", types.SimpleNamespace(select=select_then_write))
+        try:
+            deadline = time.monotonic() + deadline_offset
+            got = executor_mod._read_exactly(reader, 16, deadline, drain_secs=30.0)
+        finally:
+            writer.close()
+            reader.close()
+        assert got == b"a" * 8 + b"b" * 8
+        assert polls == [30.0, 30.0]
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    def test_a_spent_deadline_with_nothing_in_the_pipe_still_times_out(self) -> None:
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "rb", buffering=0) as reader, os.fdopen(write_fd, "wb"):
+            with pytest.raises(executor_mod._ChildTimeout):
+                executor_mod._read_exactly(reader, 4, time.monotonic() - 1.0)
 
     def test_a_timed_out_child_is_destroyed_rather_than_reused(
         self, tmp_path: pathlib.Path

@@ -290,6 +290,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         sensitive_path_refusal,
         sensitive_write_path_refusal,
     )
+    from kiro_crew.security.paths_resolver import bounded_judgment  # noqa: F401
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         command_invokes_git,
         is_read_only_bash,
