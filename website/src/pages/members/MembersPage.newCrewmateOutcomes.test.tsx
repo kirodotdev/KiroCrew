@@ -748,6 +748,8 @@ describe('New mate dialog', () => {
     const notice = await screen.findByTestId('crewmate-create-error')
     expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/lock held/)
+    // Not about the name, so the Name field does not point at it.
+    expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-describedby')
   })
 
   it('a name the server refuses as credential-shaped (400) is said in the error notice with its cause and marks the Name field, never as "nothing was created — try again"', async () => {
@@ -777,6 +779,7 @@ describe('New mate dialog', () => {
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-describedby', notice.id)
     expect(api.sendChat).not.toHaveBeenCalled()
     // Editing the field clears the notice and the mark; a different name goes out.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })

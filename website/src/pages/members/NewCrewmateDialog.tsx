@@ -805,7 +805,7 @@ export default function NewCrewmateDialog({
             value={name}
             onChange={(e) => { setName(e.target.value); setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false) }}
             aria-invalid={hint || nameRefused ? true : undefined}
-            aria-describedby={hint ? 'crewmate-create-name-hint' : undefined}
+            aria-describedby={hint ? 'crewmate-create-name-hint' : nameRefused && error ? 'crewmate-create-error' : undefined}
             placeholder={t('pages.membersPage.create_name_placeholder')}
             // The variant carries an attribute selector, so it outranks the
             // base `border-border` whatever order the stylesheet emits them in.
@@ -860,6 +860,7 @@ export default function NewCrewmateDialog({
               // a span's default display, so the wrap it buys changes nothing
               // on screen; it only gives the sentence its own element.
               messageClassName={unconfirmed ? 'inline' : undefined}
+              id="crewmate-create-error"
               testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
             />
           </div>
