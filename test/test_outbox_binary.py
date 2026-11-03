@@ -130,6 +130,22 @@ def outbox(tmp_path):
         shutil.rmtree(base, ignore_errors=True)
 
 
+class TestOutboxNotifyFieldTypes:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["path", "filename", "description"])
+    @pytest.mark.parametrize("value", [5, None, ["a"], {"a": 1}])
+    async def test_a_non_string_field_is_400(self, outbox, mock_sel, field, value):
+        """redact() raises on a non-string, so this was a 500 TypeError."""
+        body = {"path": str(outbox / "a.txt"), "filename": "a.txt", "description": "d"}
+        body[field] = value
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/outbox/notify", json=body)
+            assert resp.status == 400
+            assert (await resp.json())["error"] == (
+                "path, filename and description must be strings"
+            )
+
+
 class TestOutboxNotifyBinary:
     @pytest.mark.asyncio
     async def test_binary_mp3_accepted(self, outbox, mock_sel):
