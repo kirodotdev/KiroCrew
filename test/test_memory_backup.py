@@ -1225,7 +1225,9 @@ class TestRestoreIsNonDestructive:
         assert good is not None
         good.write_bytes(b"not a database either")
 
-        with pytest.raises(Exception):
+        # ValueError is what the dashboard answers 409 restore_refused for; any other
+        # type becomes a 500 that says the restore broke rather than the backup.
+        with pytest.raises(ValueError, match="not a readable memory database"):
             mb.restore_from_backup(good, DEFAULT_MEMORY_STORE)
 
         # Nothing displaced, and the store still works.

@@ -2641,6 +2641,11 @@ staged; only an explicitly missing original permits activation without a
 preserved prior tree. An existing directory with a missing or mismatched database identity is refused. This recovery exception never relaxes ordinary memory reads.
 Restore refusal responses retain the concrete reason (`restore_refused`), including
 an already-pending restore, rather than labeling every refusal as corruption.
+A damaged backup is a refusal too, not a failed restore: a V1 file SQLite cannot
+read as a database and a member zip whose compressed entry fails to decompress
+both raise `ValueError` before anything is displaced, so the dashboard answers 409
+`restore_refused`. An I/O or locking error (`sqlite3.OperationalError`) is not
+about the backup and still answers 500 `restore_failed`.
 
 **Global V1 keeps its single-DB backup format. Restore activation is staged for
 both versions so a live writer never loses its database or WAL.**

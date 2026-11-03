@@ -478,7 +478,17 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
                     closing(sqlite3.connect(_read_only_uri(backup), uri=True)) as src,
                     closing(sqlite3.connect(str(stage))) as dst,
                 ):
-                    if src.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    try:
+                        verdict = src.execute("PRAGMA integrity_check").fetchone()[0]
+                    except sqlite3.DatabaseError as exc:
+                        # "file is not a database" / "malformed" is the BACKUP being
+                        # bad; an OperationalError (I/O, locking) is not, and stays one.
+                        if isinstance(exc, sqlite3.OperationalError):
+                            raise
+                        raise ValueError(
+                            "Backup is not a readable memory database; refusing to restore"
+                        ) from exc
+                    if verdict != "ok":
                         raise ValueError("Backup fails its integrity check; refusing to restore")
                     _require_v1_restore_database(src, store)
                     src.backup(dst)
