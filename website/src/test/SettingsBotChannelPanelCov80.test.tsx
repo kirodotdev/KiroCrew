@@ -203,8 +203,14 @@ describe('BotChannelPanel save', () => {
     fireEvent.change(screen.getByPlaceholderText('80'), { target: { value: '0' } })
     const btn = await saveBtn()
     await act(async () => { fireEvent.click(btn) })
-    expect(await screen.findByText(/must be a number between 1 and 100/)).toBeInTheDocument()
+    const error = await screen.findByText(/must be a number between 1 and 100/)
     expect(saveConfig).not.toHaveBeenCalled()
+    // Announced, and tied to the field it is about.
+    const alert = error.closest('[role="alert"]') as HTMLElement
+    expect(alert).not.toBeNull()
+    const field = screen.getByPlaceholderText('80')
+    expect(field).toHaveAttribute('aria-invalid', 'true')
+    expect(field).toHaveAttribute('aria-describedby', alert.id)
   })
 
   it('refuses a non-numeric threshold', async () => {
