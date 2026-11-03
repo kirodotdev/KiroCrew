@@ -182,6 +182,10 @@ def test_persist_open_slots_handles_write_failure_gracefully(tmp_path, monkeypat
     with patch("kiro_crew.atomic_write.os.fchmod", side_effect=OSError("read-only filesystem")):
         # Should not raise
         state._persist_open_slots()
+    # fchmod_safe logs a permission failure and the write goes on, so the
+    # snapshot still lands.
+    snapshot = json.loads((tmp_path / "open_slots.json").read_text())
+    assert snapshot["keys"] == ["chat-1-foo"]
 
 
 def test_restore_open_slots_rejects_path_separator_keys(tmp_path, monkeypatch):

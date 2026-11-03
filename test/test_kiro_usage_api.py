@@ -850,6 +850,8 @@ class TestAuthStateClassification:
              patch.object(api, "_candidate_tokens", return_value=[]), \
              patch.object(api.logger, "warning") as warn:
             api.fetch_usage_limits(expected_arn=self.ARN)
+            # The once-per-process latch is armed, so this branch spent the WARN.
+            assert api._API_DEGRADED_WARNED is True
         assert warn.call_count == 1
 
     def test_unauthorized_on_get_usage_reports_rejected(self):

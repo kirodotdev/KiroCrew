@@ -115,21 +115,23 @@ async def test_nudge_port_noop_when_session_not_nudgeable() -> None:
 
 async def test_nudge_port_noop_when_no_authorizer() -> None:
     # No authorizer wired (e.g. non-dashboard host) → logged no-op, no crash.
-    _svc(None)._nudge_port(
-        run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke"
-    )
+    svc = _svc(None)
+    svc._nudge_port(run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke")
     await asyncio.sleep(0)
+    assert svc._nudge_tasks == {}, "no arm task may be scheduled without an authorizer"
 
 
-async def test_nudge_port_swallows_authorizer_failure() -> None:
+async def test_nudge_port_swallows_authorizer_failure(caplog) -> None:
     async def boom(*, slot_key, message, idle_secs, max_cycles):
         raise RuntimeError("authz exploded")
 
     # Arm failure must not propagate out of the fire-and-forget task.
-    _svc(boom)._nudge_port(
-        run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke"
-    )
-    await asyncio.sleep(0)
+    svc = _svc(boom)
+    caplog.set_level("WARNING", logger="kiro_crew.workflows.service")
+    svc._nudge_port(run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke")
+    await svc._drain_nudge_tasks("wf_t")
+    messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.workflows.service"]
+    assert messages == ["workflow ctx.nudge: failed to arm loop"]
 
 
 # --------------------------------------------------------------------------- #
