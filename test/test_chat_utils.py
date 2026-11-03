@@ -276,9 +276,9 @@ class TestRedactForDisplay:
             calls["exfiltration"] += 1
             return real_exfiltration(value, **kwargs)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -365,9 +365,9 @@ class TestRedactForDisplay:
             calls["exfiltration"] += 1
             return real_exfiltration(value, **kwargs)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["credentials"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -424,9 +424,9 @@ class TestRedactForDisplay:
             calls["n"] += 1
             return real_exfiltration(value, **kwargs)
 
-        def counted_credentials(value):
+        def counted_credentials(value, **kwargs):
             calls["n"] += 1
-            return real_credentials(value)
+            return real_credentials(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted_exfiltration)
         monkeypatch.setattr(chat_utils, "redact_credentials", counted_credentials)
@@ -471,9 +471,9 @@ class TestRedactForDisplay:
         calls = {"n": 0}
         real = chat_utils.redact_credentials
 
-        def counted(value):
+        def counted(value, **kwargs):
             calls["n"] += 1
-            return real(value)
+            return real(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_credentials", counted)
         monkeypatch.setattr(display_battery, "redact_credentials", counted)
