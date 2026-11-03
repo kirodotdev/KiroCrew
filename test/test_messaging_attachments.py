@@ -101,6 +101,28 @@ class TestSafeSuffix:
         assert out == expected
         assert "/" not in out and ".." not in out.strip(".")
 
+    def test_a_long_hint_is_bounded(self):
+        assert safe_suffix("x" * 300) == "." + "x" * 16
+
+
+class TestAttachmentSuffix:
+    @pytest.mark.parametrize(
+        ("name", "mimetype", "expected"),
+        [
+            ("report.pdf", "", ".pdf"),
+            ("report.pdf", "image/png", ".pdf"),
+            ("README", "text/plain", ".txt"),
+            ("README", "", ".bin"),
+            (".env", "", ".bin"),
+            ("clip", "video/mp4; codecs=avc1", ".mp4"),
+            ("voice", "audio/ogg; codecs=opus", ".ogg"),
+            ("x" * 300, "text/plain", ".txt"),
+            ("a." + "y" * 40, "", ".bin"),
+        ],
+    )
+    def test_name_extension_then_mimetype_then_bin(self, name, mimetype, expected):
+        assert attachments.attachment_suffix(name, mimetype) == expected
+
 
 class TestSniffImageMime:
     @pytest.mark.parametrize(
@@ -142,6 +164,28 @@ class TestIngestAttachments:
         assert result.rejections == []
         assert os.path.exists(result.image_paths[0])
         cleanup(result.temp_paths)
+
+    async def test_a_dotless_name_downloads_under_its_mimetype_extension(self):
+        """A channel that sends no hint (Discord, Telegram) for a dotless name left
+        the whole name as the temp suffix; a long one made the temp path too long
+        to create, so the file was refused as "download failed"."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "wb") as fh:
+                fh.write(b"hello")
+
+        for name in ("README", "n" * 300):
+            result = await ingest_attachments(
+                [Attachment(name=name, mimetype="text/plain", size=5, url="u")],
+                download=_download,
+                source="test",
+            )
+            assert result.rejections == []
+            assert len(result.text_blocks) == 1
+            cleanup(result.temp_paths)
+        assert [os.path.splitext(d)[1] for d in dests] == [".txt", ".txt"]
 
     async def test_size_enforced_on_downloaded_bytes_not_metadata(self):
         """The hole this closes: Slack trusted the channel's `size`, which
