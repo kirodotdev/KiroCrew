@@ -5671,7 +5671,10 @@ never on the gateway boot path — every failure degrades to the in-memory map b
 a lost routing hint must not stop delivery, a non-Connector row does not survive a
 reload, and the map is bounded by count with least-recently-seen eviction. A file
 that exists but cannot be read is never replaced by a smaller map: `flush` reads it
-again first and writes nothing while that read fails. A file that does not parse is
+again first and writes nothing while that read fails. An `identities` field that
+is not an object is dropped and the conversations are kept, as is a row whose
+`seen_at` is too large for a float. A file that does not parse, or whose load fails
+in any other way, is
 renamed to `teams_service_urls.json.corrupt-<UTC stamp>` before the write, and a
 UTF-8 BOM file reads (`test_teams_service_urls_unreadable.py`).
 
