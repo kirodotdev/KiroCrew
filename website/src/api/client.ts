@@ -134,8 +134,7 @@ export type {
   SuggestionKind,
   SuggestionItem,
   FeatureVideo,
-  FeatureVideoNext,
-  FeatureVideoProbe,
+  FeatureVideoLibrary,
   FeatureVideoStatus,
 } from './client/featureDiscovery'
 export type {
