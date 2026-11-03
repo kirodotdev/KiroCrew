@@ -255,14 +255,14 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Shell command for code-based cron execution "
                         "(bypasses LLM entirely). Mutually exclusive with 'script'. "
-                        "When set, 'message' is passed as arguments rather than "
-                        "being sent to an LLM.",
+                        "When set, 'message' is neither sent to an LLM nor passed "
+                        "to the command: put any arguments in the command itself.",
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Execution timeout in seconds. "
-                        "Defaults: 30s for scripts, 300s for commands. "
-                        "Set higher for long-running tasks.",
+                        "description": "Script/command subprocess timeout in "
+                        "seconds (0..3600; 0 = defaults: 30s script, 300s "
+                        "command). Set higher for long-running tasks.",
                     },
                     "timeout_secs": {
                         "type": "integer",
