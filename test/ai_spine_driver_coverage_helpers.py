@@ -131,8 +131,13 @@ class _Git:
             i += 1
         joined = " ".join(clean)
         self.calls.append(joined)
-        self.inputs.append(str(kwargs.get("input", "")))
+        payload = kwargs.get("input", "")
+        binary = isinstance(payload, bytes)
+        self.inputs.append(payload.decode("utf-8", "surrogateescape") if binary else str(payload))
         rc, out, err = self._take(joined)
+        if binary:
+            # Without text mode a real run answers in bytes; answer the same way.
+            out, err = out.encode(), err.encode()
         return subprocess.CompletedProcess(args=list(argv), returncode=rc, stdout=out, stderr=err)
 
     def seen(self, prefix: str) -> list[str]:
