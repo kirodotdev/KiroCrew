@@ -686,6 +686,16 @@ def _capture_runtime_served(
                 codex_harness_mod, "resolve_spawn_masks", new=AsyncMock(return_value=((), ()))
             ),
             patch.object(codex_harness_mod, "_sandbox_wrapper_generations", return_value=0),
+            # No bundled-Codex version and no host ``codex``, so the golden
+            # environment does not depend on what this machine has installed and
+            # no ``codex --version`` child runs.
+            patch.object(codex_harness_mod, "_bundled_codex_version", return_value=None),
+            patch.object(codex_harness_mod, "_resolve_host_codex", return_value=None),
+            patch.object(
+                codex_harness_mod,
+                "_host_codex_version",
+                new=AsyncMock(side_effect=AssertionError("no version child in a capture")),
+            ),
         ]
     )
     stack.extend(extra_patches)

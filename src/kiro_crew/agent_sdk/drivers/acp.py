@@ -714,10 +714,10 @@ def claude_adapter_honours_session_options() -> bool:
 def codex_adapter_resolves() -> bool:
     """Whether the codex-acp adapter resolves to a runnable argv.
 
-    ONE component, unlike claude's two: codex-acp ships a compatible Codex binary
-    as an npm dependency and reads ``CODEX_PATH`` itself only to run a DIFFERENT
-    one, so there is no second executable Crew hands it and no half-install to
-    distinguish.
+    ONE component, unlike claude's two: Crew hands the adapter the host's
+    ``codex`` as ``CODEX_PATH`` when it is at least the version of the Codex
+    codex-acp bundles, and the adapter runs that bundled Codex otherwise, so a
+    missing host ``codex`` is not a half-install.
     """
     from kiro_crew.acp.client import _resolve_codex_acp_bin
 
