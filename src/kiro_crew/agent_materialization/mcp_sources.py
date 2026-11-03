@@ -1039,8 +1039,20 @@ def resolve_mcp_servers(
     return ResolvedServers(_unresolved_this_pass, _oauth_client_targets)
 
 
-def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str, str]) -> None:
-    """Mount every user-installed server, strip disabled ones, and govern their grants."""
+def sync_shared_server_refs(
+    config: dict,
+    sources: McpSources,
+    mounted: dict[str, str],
+    *,
+    mount_only: frozenset[str] = frozenset(),
+) -> None:
+    """Mount every user-installed server, strip disabled ones, and govern their grants.
+
+    *mount_only* names servers recorded as mounted without approval (the default
+    agent's mid-chat additions). They take the same path as a governance-ceiling
+    withhold: the ``@server`` ref stays in ``tools`` so the server runs, and no
+    ``allowedTools`` grant is written, so every call asks.
+    """
     kirocrew_mcp = sources.kirocrew
     shared_mcp = sources.kiro_global
     extra_shared_mcp = sources.provider_global
@@ -1058,6 +1070,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
     _shared_added: list[str] = []
     _shared_removed: list[str] = []
     _shared_not_auto: list[str] = []
+    _shared_mount_only: list[str] = []
     # ``disabled`` is TIGHTEST-WINS across scopes, because the scopes disagree by
     # design: ``POST /api/mcp/toggle enabled:false`` writes ``disabled: true``
     # into the kiro global ONLY, so a same-named dashboard-store entry legitimately
@@ -1218,6 +1231,26 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             may_auto_approve = auto_approve._may_auto_approve(ref) and not any(
                 _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
             )
+            # A mount-only server (the default agent's mid-chat addition, see
+            # ``template_mcp_additions``) is mounted and never takes the rebuild's
+            # whole-server grant. Only the bare ``@server`` grant is the rebuild's
+            # own: a per-tool grant the user wrote is theirs, and the card that
+            # added the server lists it as still applying, so it is kept. When
+            # the ceiling withholds too, the ceiling's stricter arm below runs.
+            # Matched on the server's own name, never its alias family: a
+            # separately installed ``time-2`` is a different server, and its
+            # page approval is not this record's to withhold.
+            if may_auto_approve and (name in mount_only or alias in mount_only):
+                if ref not in config.get("tools", []):
+                    config.setdefault("tools", []).append(ref)
+                    if ref not in _shared_added:
+                        _shared_added.append(ref)
+                allowed_list = config.get("allowedTools")
+                if isinstance(allowed_list, list) and ref in allowed_list:
+                    allowed_list[:] = [t for t in allowed_list if t != ref]
+                if ref not in _shared_mount_only:
+                    _shared_mount_only.append(ref)
+                continue
             keys = ("tools", "allowedTools") if may_auto_approve else ("tools",)
             for key in keys:
                 if ref not in config.get(key, []):
@@ -1250,6 +1283,17 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             resources=(
                 f"{', '.join(_shared_not_auto)} mounted without auto-approve "
                 f"(governance ceiling); calls go through the approval gate"
+            ),
+        )
+    if _shared_mount_only:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source="install_agent",
+            resources=(
+                f"{', '.join(_shared_mount_only)} mounted without auto-approve "
+                f"(mount-only addition from a change card); calls go through the approval gate"
             ),
         )
     if _shared_removed:

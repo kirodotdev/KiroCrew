@@ -733,6 +733,25 @@ def rebuild_agent_config(
         # would name directories that were never searched.
         return resolved_command_casing(shutil.which(cmd, path=_search)) or None, _search
 
+    from kiro_crew import template_mcp_additions as _template_additions
+
+    # A server the user approved on a change card from a default-agent or worker
+    # chat: mounted, never granted (``template_mcp_additions``). The record is the
+    # source of truth, so a server whose record is gone (the card's Undo) leaves
+    # the spec here too, unless an MCP page scope launches that name.
+    _page_names = _template_additions.page_launched_names(
+        sources.kirocrew, sources.kiro_global, sources.provider_global
+    )
+    _mount_only_added, _mount_only_removed, _mount_only = (
+        _template_additions.reconcile_default_spec(config, _page_names)
+    )
+    if _mount_only_added or _mount_only_removed:
+        logger.info(
+            "kirocrew: card-added MCP server(s) merged %s, removed %s",
+            ", ".join(_mount_only_added) or "none",
+            ", ".join(_mount_only_removed) or "none",
+        )
+
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
 
@@ -740,7 +759,7 @@ def rebuild_agent_config(
     # These are explicitly installed by the user via AIM's installer or
     # manual mcp.json edits — unlike managed servers, they should always
     # be registered regardless of fresh/existing config state.
-    mcp_sources.sync_shared_server_refs(config, sources, mounted)
+    mcp_sources.sync_shared_server_refs(config, sources, mounted, mount_only=_mount_only)
     managed_mcp.register_managed_refs(config, fresh_install=fresh_install, gated_off=gated_off)
     guide_grant_pending = guide_platform.grant_guide_platform_once(
         config, fresh_install=fresh_install
