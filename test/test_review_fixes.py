@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from unittest.mock import patch
 
@@ -219,7 +221,9 @@ class TestSelForwardCallback:
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
 
-    def test_forward_callback_failure_silent(self, tmp_path: object) -> None:
+    def test_forward_callback_failure_silent(
+        self, tmp_path: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from pathlib import Path
 
         from kiro_crew.sel import SecurityEventLog
@@ -230,15 +234,23 @@ class TestSelForwardCallback:
         sel = SecurityEventLog(base_dir=Path(str(tmp_path)), sync=True)
         sel.set_forward_callback(lambda e: (_ for _ in ()).throw(RuntimeError("boom")))
 
-        sel.log_api_access(
-            caller="test",
-            operation="test.op",
-            outcome="allowed",
-            source="test",
-        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.sel"):
+            sel.log_api_access(
+                caller="test",
+                operation="test.op",
+                outcome="allowed",
+                source="test",
+            )
 
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
+        # Silent to the caller, not to the operator: the failed forward is logged,
+        # and the local record was written before the forward ran.
+        assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sel"] == [
+            "forward_callback failed"
+        ]
+        lines = (Path(str(tmp_path)) / "security_events.jsonl").read_text(encoding="utf-8")
+        assert [json.loads(line)["operation"] for line in lines.splitlines() if line] == ["test.op"]
 
     def test_forward_callback_redacts_credentials(self, tmp_path: object) -> None:
         from pathlib import Path
