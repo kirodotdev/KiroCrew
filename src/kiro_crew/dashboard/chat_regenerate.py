@@ -33,6 +33,7 @@ from kiro_crew.dashboard.slot_ownership import (
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.kiro_cli_handoff import HELD_TURN_REFUSAL, is_held_any_spelling
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -106,7 +107,15 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
         return web.json_response({"error": "slot is busy", "code": "slot_busy"}, status=409)
     if slot.is_closing:
         return web.json_response({"error": "slot is closing", "code": "slot_closing"}, status=409)
+    if _held_in_kiro_cli(slot):
+        return web.json_response({"error": HELD_TURN_REFUSAL, "code": "kiro_cli_open"}, status=409)
     return None
+
+
+def _held_in_kiro_cli(slot: "_ChatSlot") -> bool:
+    """Whether the chat's conversation is open in kiro-cli in the terminal: the
+    terminal is its one writer, so its history may not be rewritten."""
+    return is_held_any_spelling(effective_session_key(slot))
 
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
