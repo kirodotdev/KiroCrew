@@ -951,7 +951,10 @@ def test_a_spawn_that_cannot_resolve_its_binary_leaves_no_scratch_behind(
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     before = {p.name for p in root.iterdir()}
 
-    client = AcpClient(work_dir=tmp_path)
+    # The workspace sits beside the data home, not around it: on macOS the kiro arm
+    # first refuses a workspace that contains the voice runtime under KIROCREW_HOME,
+    # and that refusal is a RuntimeError, raised before the binary is resolved.
+    client = AcpClient(work_dir=tmp_path / "work")
     # The resolution the kiro arm performs, made to fail the way a host without
     # kiro-cli fails: resolved to nothing rather than raised, so the arm takes its
     # own not-found path instead of an exception from the resolver.
