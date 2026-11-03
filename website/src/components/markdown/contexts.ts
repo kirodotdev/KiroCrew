@@ -7,7 +7,8 @@ import { createContext } from 'react'
  * The six exported through `MarkdownRenderer.tsx` are public API: callers wrap
  * the renderer in their providers and the element overrides consume them. Each
  * is created exactly once, here, so a provider and the component reading it can
- * never hold two different objects. The other four carry the renderer root's
+ * never hold two different objects. `ChatProjectDirCtx` is provided by the chat
+ * transcript hosts, which import it from here. The other four carry the renderer root's
  * (and `MdAnchor`'s) state down to overrides that react-markdown instantiates
  * deep inside its own tree, where no prop can reach. The one context kept out of
  * this module, `MediaApprovedCtx`, is private to `remoteMedia.tsx`: its provider
@@ -16,6 +17,19 @@ import { createContext } from 'react'
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
+
+/**
+ * The project folder of the chat whose transcript is being rendered.
+ *
+ * A relative path the agent writes (`run/checkin.sh`) is relative to the chat's
+ * own project, but the backend's `resolve=1` joins it to the gateway-wide
+ * project directory, which in the desktop app is the app bundle. A chat
+ * transcript provides its slot's project here, so path chips and links join
+ * the relative text to it before they probe or open. `null` (the default, and
+ * a chat with no project or one that runs on another machine) keeps the
+ * backend's resolution.
+ */
+export const ChatProjectDirCtx = createContext<string | null>(null)
 
 /**
  * When true, markdown images render as small previews (a compact thumbnail the
