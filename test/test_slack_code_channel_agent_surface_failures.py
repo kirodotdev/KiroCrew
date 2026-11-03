@@ -7,6 +7,7 @@ recorded-payload harness, from ``slack_code_channel_surface_helpers``.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -52,6 +53,25 @@ from kiro_crew.slack.code_channels.surface_store import SurfaceStore
 from kiro_crew.slack.code_channels.surface_store import store as surface_store
 from kiro_crew.slack.code_channels.workspace import git_ops
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.links import make_dir_link
+from kiro_crew.testing.wait import await_until
+
+
+class _Delegating:
+    """A stand-in for one module's binding of a shared stdlib module: the named
+    attributes are overridden, everything else is the real module's.
+
+    Installed on the module under test (``monkeypatch.setattr(mod, "os", ...)``),
+    never on the stdlib module itself, which every thread and the event loop share.
+    """
+
+    def __init__(self, real: Any, **overrides: Any) -> None:
+        self._real = real
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
 
 # ── Failure and cancel paths leave nothing stuck ──────────────────────────
 
@@ -149,11 +169,12 @@ def test_a_canvas_whose_id_failed_to_store_is_stored_by_the_next_call(
     env.api.responses["conversations.canvases.create"] = {"ok": True, "canvas_id": "F1"}
     env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "VP"}
     real = ss.atomic_write
-    failures = [1]
+    writes = [0]
 
     def flaky(*a: Any, **k: Any) -> None:
-        if failures[0]:
-            failures[0] -= 1
+        # The first write (the create's intent) lands; the second (its id) fails.
+        writes[0] += 1
+        if writes[0] == 2:
             raise OSError("disk full")
         real(*a, **k)
 
@@ -230,10 +251,10 @@ def test_a_second_cancel_during_the_removal_still_reports_what_git_did(
     started, release = threading.Event(), threading.Event()
     real = cleanup._remove_sync
 
-    def slow_remove(*a: Any) -> tuple[str, str]:
+    def slow_remove(*a: Any, **k: Any) -> tuple[str, str]:
         started.set()
         release.wait(10)
-        return real(*a)
+        return real(*a, **k)
 
     monkeypatch.setattr(cleanup, "_remove_sync", slow_remove)
 
@@ -254,7 +275,7 @@ def test_a_second_cancel_during_the_removal_still_reports_what_git_did(
         finally:
             release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10)
+            await await_until(task, what="the cancelled call")
 
     asyncio.run(go())
     assert not tree.exists()
@@ -461,7 +482,7 @@ def test_a_symlink_planted_at_the_expected_path_does_not_vouch_for_a_forged_root
     real.mkdir()
     fake_root = tmp_path / "other"
     planted = tmp_path / f"other-wt-{wt._dir_slug(BRANCH)}"
-    planted.symlink_to(real, target_is_directory=True)
+    make_dir_link(planted, real)
     assert not cleanup._cut_from(str(fake_root), str(real), BRANCH)
     assert cleanup._cut_from(str(tmp_path / "proj"), str(_channel_tree(tmp_path / "proj")), BRANCH)
 
@@ -533,7 +554,8 @@ def test_an_unreadable_parent_counts_as_still_there(tmp_path: Path, monkeypatch:
         raise PermissionError("EACCES")
 
     with monkeypatch.context() as m:
-        m.setattr(cleanup.os, "lstat", denied)
+        # cleanup's own os binding: os.lstat is shared by the whole worker.
+        m.setattr(cleanup, "os", _Delegating(os, lstat=denied))
         there = cleanup._still_there(str(tmp_path / "x"))
     assert there
 
@@ -580,7 +602,7 @@ def test_a_shutdown_cancel_while_git_removes_the_tree_restores_nothing(
         finally:
             release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10)
+            await await_until(task, what="the cancelled call")
 
     asyncio.run(go())
     assert not tree.exists()
@@ -622,6 +644,118 @@ def test_agent_text_is_sanitized_by_the_shared_slack_display_sink() -> None:
         assert key not in redact(split).replace("*", "")
     assert "<!channel>" not in wrapup._redact("Done <!channel>")
     assert "re.compile" not in inspect.getsource(wrapup)
+
+
+_SPLIT = "ghp_" + "A" * 36  # a credential the redactor knows, only when whole
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {  # adjacent rich-text elements, shown as one run
+            "type": "block_kit",
+            "blocks": [
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "token " + _SPLIT[:18]},
+                                {"type": "text", "text": _SPLIT[18:], "style": {"bold": True}},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        {  # inline spans, joined by the browser
+            "type": "html",
+            "content": f"<p>token <span>{_SPLIT[:18]}</span><span>{_SPLIT[18:]}</span></p>",
+        },
+        {  # a label held apart from its value by markup: the raw scan takes the tag
+            "type": "html",
+            "content": "<p><b>aws_secret_access_key:</b> <code>" + "A" * 40 + "</code></p>",
+        },
+        {  # a text element run into a date element's shown fallback
+            "type": "block_kit",
+            "blocks": [
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "token " + _SPLIT[:18]},
+                                {"type": "date", "timestamp": 1, "fallback": _SPLIT[18:]},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        {  # the same, across Block Kit elements
+            "type": "block_kit",
+            "blocks": [
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "aws_secret_access_key:"},
+                                {"type": "text", "text": " " + "A" * 40, "style": {"code": True}},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    ],
+)
+def test_a_credential_split_across_display_elements_is_never_published(
+    env: Any, view: dict
+) -> None:
+    """Each fragment alone is harmless, the run Slack shows is a credential: the
+    view is screened on its joined display text and refused, nothing published."""
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    out = _run(env, tools.SET_VIEW, {"view_key": "r", **view})
+    assert not out.ok and out.code == "invalid_arguments" and "split" in out.text
+    assert _calls(env, "agents.conversations.setView") == []
+
+
+def test_a_whole_credential_in_one_element_is_redacted_not_refused(env: Any) -> None:
+    """Controls for the split screen: a credential the per-element pass already
+    removes publishes redacted, and ordinary text and mentions publish as before."""
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    section = {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"token {_SPLIT}, ask <@U123> or @here"},
+    }
+    plain = {"type": "section", "text": {"type": "mrkdwn", "text": "Build 1234 passed in 5m"}}
+    args = {"type": "block_kit", "view_key": "r", "blocks": [section, plain]}
+    out = _run(env, tools.SET_VIEW, args)
+    assert out.ok, out.text
+    sent = repr(_calls(env, "agents.conversations.setView")[0]["blocks"])
+    assert _SPLIT not in sent and "Build 1234 passed" in sent
+
+
+def test_a_block_kit_link_destination_is_not_mention_defanged(env: Any) -> None:
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    url = "https://www.npmjs.com/package/@aws-sdk/client-s3"
+    link = {"type": "link", "url": url, "text": "SDK"}
+    blocks = [
+        {
+            "type": "rich_text",
+            "elements": [{"type": "rich_text_section", "elements": [link]}],
+        }
+    ]
+    assert _run(env, tools.SET_VIEW, {"type": "block_kit", "view_key": "r", "blocks": blocks}).ok
+    sent = _calls(env, "agents.conversations.setView")[0]["blocks"]
+    assert sent[0]["elements"][0]["elements"][0]["url"] == url
 
 
 def test_html_views_and_bar_urls_are_not_mention_defanged(env: Any) -> None:
@@ -745,6 +879,23 @@ def test_a_failed_bar_publish_never_rolls_back_a_newer_calls_items(
     asyncio.run(go())
     assert calls == ["old", "new"]  # serialized: the newer call ran after the rollback
     assert [i["key"] for i in surface_store().get(CH).context_bar] == ["new"]
+
+
+def test_a_wrap_up_its_session_refused_is_not_left_armed(env: Any) -> None:
+    """A refused route was answered in the channel and reached no session: the
+    /wrap-up it carried is not delivered, so it is disarmed like an unrouted one."""
+    from kiro_crew.slack.handler import LinkedRoute
+
+    _bind(env)
+    env.route_result = LinkedRoute.REFUSED
+
+    async def respond(_text: str) -> None:
+        return None
+
+    assert asyncio.run(commands.handle_slash(env.orch, _slash("/wrap-up"), respond))
+    assert env.routed  # the slot was asked, and refused it
+    assert not wrapup._requests.get(CH)
+    assert not surface_store().get(CH) or not surface_store().get(CH).wrapup_pending_since
 
 
 def test_a_message_queued_ahead_of_wrap_up_does_not_take_its_turn(
@@ -963,24 +1114,68 @@ def test_a_cancel_during_the_first_bar_write_rolls_the_items_back(
         finally:
             release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10)
+            await await_until(task, what="the cancelled call")
 
     asyncio.run(go())
     assert [i["key"] for i in surface_store().get(CH).context_bar] == ["old"]
 
 
-def test_the_turn_start_reads_the_persons_text_not_the_runners_prepends() -> None:
+def test_the_turn_start_reads_the_persons_text_not_the_runners_prepends(
+    env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A cancelled-turn preamble can quote an older /wrap-up prompt; only the
     person's own text decides which turn is the /wrap-up turn."""
-    import inspect
+    import contextlib
 
-    from kiro_crew.dashboard.chat_turn import turn_dispatch_gates
+    from turn_harness import SlotSpec, TurnContext, TurnScript, run_turn
 
-    src = inspect.getsource(turn_dispatch_gates)
-    call = src[src.index("notify_code_channel_turn_start(") :]
-    call = call[: call.index(")\n")]
-    assert "prompt=str(turn._jev_route_text" in call
-    assert "turn.message" not in call
+    import kiro_crew.context as context_mod
+    from kiro_crew.acp.types import EVENT_COMPLETE, STOP_REASON_END_TURN, AcpEvent
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.skills import SkillsLoader
+    from kiro_crew.slack.code_channels import hooks
+
+    binding = _bind(env)
+    monkeypatch.setattr(
+        context_mod, "build_cancelled_turn_preamble", lambda *_a, **_k: "/wrap-up (older)"
+    )
+    seen: list[str] = []
+
+    async def _record(_binding: Any, event: Any) -> None:
+        seen.append(str(event.prompt))
+
+    def _setup(ctx: TurnContext) -> None:
+        ctx.state.slack_client = env.slack
+        ctx.state.sessions.batched_save.side_effect = lambda: contextlib.nullcontext()
+        ctx.state.link_slack(SLOT, binding.anchor_ts, CH)
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        # The preamble branch reads the builder's own log, and the runner reaches
+        # it only for a session the manager flags with ``prev_turn_cancelled``.
+        builder.conversation_log = ctx.state.conversation_log
+        ctx.state.context_builder = builder
+        ctx.state.sessions._sessions = {SESSION: SimpleNamespace(prev_turn_cancelled=True)}
+
+    hooks.on_turn_start(_record)
+    try:
+        record = asyncio.run(
+            run_turn(
+                TurnScript(
+                    events=[AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)],
+                    message="what changed?",
+                    setup=_setup,
+                ),
+                slot=SlotSpec(key=SLOT),
+            )
+        )
+    finally:
+        hooks.remove_hook(_record)
+    # The preamble did reach what the turn sent, so the hook had it to ignore.
+    assert "/wrap-up (older)" in repr(record.provider_calls)
+    assert seen == ["what changed?"]
 
 
 def test_a_wrap_up_posted_in_one_turn_leaves_a_newer_request_live(env: Any) -> None:
@@ -1038,8 +1233,11 @@ def test_a_command_in_a_channel_the_policy_refuses_runs_nothing(
         replies.append(text)
 
     assert asyncio.run(commands.handle_slash(env.orch, _slash(command), respond))
-    assert env.routed == [] and replies and "not authorized" in replies[0]
+    # Dropped at the inbound gate, as a message there is: no turn, and no reply.
+    assert env.routed == [] and replies == []
     assert not surface_store().get(CH) or not surface_store().get(CH).wrapup_pending_since
+    row = env.sel.ops("slack.code_channel.command")[-1]
+    assert row["outcome"] == "denied"
 
 
 def test_an_archive_click_in_a_channel_the_policy_refuses_archives_nothing(
@@ -1073,6 +1271,301 @@ def test_no_fallback_wrap_up_posts_into_a_channel_the_policy_refuses(
     assert env.slack.blocks_posts == []
 
 
+@pytest.fixture
+def refused_mid_await(monkeypatch: Any) -> Any:
+    """The channel is admitted at entry; the policy refuses it during the handler's
+    last await (the archived read every handler makes just before it acts)."""
+    from kiro_crew.slack import channel_policy
+
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    real = surface.is_archived
+
+    async def flips(binding: Any) -> bool:
+        archived = await real(binding)
+        verdict["refused"] = True
+        return archived
+
+    monkeypatch.setattr(surface, "is_archived", flips)
+    return verdict
+
+
+@pytest.mark.parametrize("command", ["/summarize", "/wrap-up", "/create-pr"])
+def test_a_command_refused_after_its_awaits_runs_nothing(
+    env: Any, refused_mid_await: Any, command: str, monkeypatch: Any
+) -> None:
+    _bind(env)
+
+    async def can_pr(_b: Any) -> tuple[bool, str]:
+        return True, ""
+
+    async def target(_b: Any) -> tuple[str, str]:
+        return "/tmp/wt", BRANCH
+
+    monkeypatch.setattr(commands, "pr_capability", can_pr)
+    monkeypatch.setattr(commands, "_pr_target", target)
+    replies: list[str] = []
+
+    async def respond(text: str) -> None:
+        replies.append(text)
+
+    assert asyncio.run(commands.handle_slash(env.orch, _slash(command), respond))
+    assert refused_mid_await["refused"]
+    assert env.routed == [] and replies == [commands.NOT_AUTHORIZED_TEXT]
+    assert not wrapup._requests.get(CH)
+    assert not surface_store().get(CH) or not surface_store().get(CH).wrapup_pending_since
+
+
+def test_an_archive_click_refused_after_its_awaits_touches_nothing(
+    env: Any, monkeypatch: Any
+) -> None:
+    from kiro_crew.slack import channel_policy
+
+    _bind(env)
+    _, ts = _wrap(env)  # posted while the channel was still allowed
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    real = surface.is_archived
+
+    async def flips(binding: Any) -> bool:
+        archived = await real(binding)
+        verdict["refused"] = True
+        return archived
+
+    monkeypatch.setattr(surface, "is_archived", flips)
+    env.slack.updates.clear()
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    assert verdict["refused"]
+    assert env.slack.updates == []  # the button is not retired either
+    assert _calls(env, "agents.conversations.archive") == []
+    assert not env.store.get_binding(CH).archived_at
+
+
+def test_a_wrap_up_refused_after_its_awaits_posts_nothing(env: Any, refused_mid_await: Any) -> None:
+    binding = _bind(env)
+    assert asyncio.run(wrapup.post_wrap_up(binding, "done", caller=OWNER)) == ""
+    assert refused_mid_await["refused"] and env.slack.blocks_posts == []
+
+
+def test_a_command_refused_while_its_turn_is_delivered_runs_nothing(
+    env: Any, monkeypatch: Any
+) -> None:
+    """A replacement session's bind awaits after the command's own checks: the
+    policy is read again right before the turn (whose admission cuts the worktree)."""
+    from kiro_crew.slack import channel_policy
+    from kiro_crew.slack.code_channels import routing
+
+    binding = _bind(env)
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    # The dashboard session was closed: delivery binds a fresh one first.
+    monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)
+
+    async def rebind(*_a: Any, **_k: Any) -> Any:
+        verdict["refused"] = True
+        return binding
+
+    monkeypatch.setattr(routing, "_bind_channel", rebind)
+
+    async def respond(_text: str) -> None:
+        return None
+
+    assert asyncio.run(commands.handle_slash(env.orch, _slash("/wrap-up"), respond))
+    assert verdict["refused"] and env.routed == []
+    assert not wrapup._requests.get(CH)  # not delivered, so not left armed
+
+
+@pytest.mark.parametrize("bind", ["replace", "adopt"])
+def test_no_session_is_bound_for_a_channel_refused_during_the_creation_wait(
+    env: Any, monkeypatch: Any, bind: str
+) -> None:
+    """A replacement session (the old one was closed) or an adopted channel binds a
+    worktree and a folder: never once the policy refuses the channel."""
+    from kiro_crew.slack import channel_policy
+    from kiro_crew.slack.code_channels import routing
+
+    if bind == "replace":
+        _bind(env)
+        monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+
+    async def wait(*_a: Any, **_k: Any) -> None:
+        verdict["refused"] = True
+
+    bound: list[Any] = []
+
+    async def bind_channel(*a: Any, **k: Any) -> Any:
+        bound.append(k)
+        raise AssertionError("bound a refused channel")
+
+    monkeypatch.setattr(routing, "_wait_for_creation", wait)
+    monkeypatch.setattr(routing, "_bind_channel", bind_channel)
+    result = routing.InboundResult(routing.Gate.DIRECTED, binding=env.store.get_binding(CH))
+    event = {"channel": CH, "team": "T1"}
+    assert not asyncio.run(routing.deliver_directed(env.orch, result, event, "hi", OWNER))
+    assert verdict["refused"] and bound == [] and env.routed == []
+
+
+@pytest.mark.parametrize("flip_at", ["session_spec", "kickoff"])
+def test_a_bind_refused_during_its_own_awaits_cuts_and_binds_nothing(
+    env: Any, monkeypatch: Any, flip_at: str
+) -> None:
+    """A replacement bind awaits before it cuts the worktree and before it binds the
+    session: the policy is read again before each, and a refusal posts nothing."""
+    from types import SimpleNamespace
+
+    from kiro_crew.slack import channel_policy
+    from kiro_crew.slack.code_channels import routing
+    from kiro_crew.slack.code_channels.workspace import core as workspace_core
+
+    _bind(env)
+    monkeypatch.setattr(routing, "bound_slot", lambda *_a: None)  # the session was closed
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    cut: list[str] = []
+    bound: list[str] = []
+    posts: list[str] = []
+
+    async def spec(*_a: Any, **_k: Any) -> Any:
+        verdict["refused"] = verdict["refused"] or flip_at == "session_spec"
+        return SimpleNamespace(project_dir="", folder_id="")
+
+    async def plan(_state: Any, s: Any, **k: Any) -> Any:
+        cut.append(k["channel_id"])
+        return s
+
+    async def post(_orch: Any, channel: str, text: str, _ts: Any) -> str:
+        posts.append(text)
+        verdict["refused"] = True  # refused while the kickoff was posted
+        return "400.000001"
+
+    async def create(*_a: Any, **k: Any) -> None:
+        bound.append(k["channel_id"])
+
+    async def nothing(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(routing, "_hydrate_origin_thread", nothing)
+    monkeypatch.setattr(routing, "_wait_for_creation", nothing)
+    monkeypatch.setattr(routing, "resolve_session_spec", spec)
+    monkeypatch.setattr(workspace_core, "plan_session", plan)
+    monkeypatch.setattr(routing, "_post", post)
+    monkeypatch.setattr(routing, "create_bound_session", create)
+    result = routing.InboundResult(routing.Gate.DIRECTED, binding=env.store.get_binding(CH))
+    event = {"channel": CH, "team": "T1"}
+    assert not asyncio.run(routing.deliver_directed(env.orch, result, event, "hi", OWNER))
+    assert bound == [] and env.routed == []
+    if flip_at == "session_spec":
+        assert cut == [] and posts == []  # no worktree, no kickoff, no "unrouted" reply
+    else:
+        assert cut == [CH] and len(posts) == 1  # only the kickoff went out before it
+
+
+def test_an_archive_retry_refused_after_its_awaits_starts_no_recovery(
+    env: Any, monkeypatch: Any
+) -> None:
+    from kiro_crew.slack import channel_policy
+
+    _bind(env)
+    _, ts = _wrap(env)
+    verdict = {"refused": False}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    real_get = wrapup.get_async
+
+    async def flips(channel: str) -> Any:
+        record = await real_get(channel)
+        verdict["refused"] = True
+        return record
+
+    async def unrecorded(_b: Any) -> bool:
+        return True
+
+    started: list[Any] = []
+    monkeypatch.setattr(wrapup, "get_async", flips)
+    monkeypatch.setattr(surface, "fenced_unrecorded", unrecorded)
+    monkeypatch.setattr(wrapup, "_start_recovery", lambda *a, **k: started.append(a))
+    assert asyncio.run(wrapup.handle_archive_click(env.orch, _click(OWNER, ts)))
+    assert verdict["refused"] and started == []
+
+
+@pytest.mark.parametrize("flip_at", ["entry", "read"])
+def test_a_command_sync_for_a_refused_channel_probes_and_sends_nothing(
+    env: Any, monkeypatch: Any, flip_at: str
+) -> None:
+    from kiro_crew.slack import channel_policy
+
+    binding = _bind(env)
+    verdict = {"refused": flip_at == "entry"}
+    monkeypatch.setattr(
+        channel_policy, "_verdict", lambda ch: "refused" if verdict["refused"] and ch == CH else ""
+    )
+    real_get = commands.surface_get
+    reads: list[str] = []
+
+    async def flips(channel: str) -> Any:
+        reads.append(channel)
+        record = await real_get(channel)
+        verdict["refused"] = True
+        return record
+
+    monkeypatch.setattr(commands, "surface_get", flips)
+    probed: list[Any] = []
+
+    async def can_pr(b: Any) -> tuple[bool, str]:
+        probed.append(b)
+        return True, ""
+
+    monkeypatch.setattr(commands, "pr_capability", can_pr)
+    asyncio.run(commands.sync_commands(binding))
+    assert probed == [] and _calls(env, "agents.conversations.setCommands") == []
+    assert reads == ([] if flip_at == "entry" else [CH])  # refused at entry: not even read
+
+
+def test_every_policy_gated_handler_checks_at_entry_and_at_its_commit_point() -> None:
+    """The audit list: each Slack action/interaction handler of the code channel
+    applies the shared channel-policy guard before any side effect and again after
+    its awaits; tools.run_tool's commit points are the policy-checked clients."""
+    import ast
+    import inspect
+
+    from kiro_crew.slack.code_channels import surface_client
+
+    for func, minimum in surface.policy_gated_handlers():
+        tree = ast.parse(inspect.getsource(func).lstrip())
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and (
+                # surface's fail-closed wrapper, or the policy seam itself where an
+                # inbound gate pairs it with channel_inbound_permitted
+                (isinstance(n.func, ast.Attribute) and n.func.attr == "channel_policy_refusal")
+                or (isinstance(n.func, ast.Name) and n.func.id == "channel_refusal")
+            )
+        ]
+        assert len(calls) >= minimum, f"{func.__qualname__}: {len(calls)} guard call(s)"
+    assert "channel_policy_refusal" in inspect.getsource(surface_client.SurfaceClient._call)
+    from kiro_crew.slack.code_channels import routing
+
+    bind = inspect.getsource(routing._bind_channel)
+    assert bind.count("_refuse_bind_if_policy_refuses(channel)") == 2
+    assert bind.index("_refuse_bind_if_policy_refuses") < bind.index("await plan_session(")
+    assert bind.rindex("_refuse_bind_if_policy_refuses") < bind.index("await create_bound_session(")
+
+
 def test_every_surface_client_call_meets_the_channel_policy(env: Any, refused: Any) -> None:
     """The seam itself: no raw agents.* call reaches Slack for a refused channel."""
     from kiro_crew.slack.code_channels.models import CodeChannelApiError
@@ -1095,6 +1588,111 @@ def test_every_surface_client_call_meets_the_channel_policy(env: Any, refused: A
     # Another channel is untouched by the refusal.
     asyncio.run(client.rename(OTHER_CH, "t"))
     assert _calls(env, "agents.sessions.rename") == [{"channel_id": OTHER_CH, "title": "t"}]
+
+
+def test_every_surface_client_call_meets_the_outbound_profile(env: Any) -> None:
+    """The seam applies the host's outbound profile too, so a background publish
+    (the workspace bar on a dashboard turn end) never writes once Slack is denied."""
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+    from kiro_crew.slack.code_channels.surface_client import OUTBOUND_REFUSED
+
+    env.outbound_ok = False
+    client = surface.client()
+    for coro in (client.set_context_bar(CH, []), client.rename(CH, "t")):
+        with pytest.raises(CodeChannelApiError) as exc:
+            asyncio.run(coro)
+        assert exc.value.code == OUTBOUND_REFUSED
+    assert env.api.calls == []
+    env.outbound_ok = True
+    asyncio.run(client.rename(CH, "t"))
+    assert _calls(env, "agents.sessions.rename") == [{"channel_id": CH, "title": "t"}]
+
+
+def test_a_channel_withdrawn_during_the_outbound_check_gets_nothing(
+    env: Any, monkeypatch: Any
+) -> None:
+    """The policy is read after the outbound check's await, never before it."""
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+    from kiro_crew.slack.code_channels.surface_client import CHANNEL_REFUSED
+
+    refusal = {"why": ""}
+    monkeypatch.setattr(surface, "channel_policy_refusal", lambda ch, **_k: refusal["why"])
+
+    async def outbound() -> bool:
+        refusal["why"] = "withdrawn"  # the admin withdraws the channel meanwhile
+        return True
+
+    monkeypatch.setattr(surface, "outbound_permitted", outbound)
+    with pytest.raises(CodeChannelApiError) as exc:
+        asyncio.run(surface.client().set_canvas_content(CH, "F1", "x"))
+    assert exc.value.code == CHANNEL_REFUSED and env.api.calls == []
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        # a credential written as numeric character references in an attribute
+        lambda s: "".join(f"&#{ord(c)};" for c in s),
+        lambda s: "".join(f"&#x{ord(c):x};" for c in s),
+        lambda s: s.replace("p", "&#112;").replace("_", "&lowbar;"),  # mixed, named
+        # a srcdoc document is decoded twice: once as the attribute, once parsed
+        lambda s: '"><iframe srcdoc="&lt;p>'
+        + "".join(f"&amp;#{ord(c)};" for c in s)
+        + '&lt;/p>"></iframe><b x="',
+    ],
+)
+def test_an_html_view_hiding_a_credential_in_character_references_is_refused(
+    env: Any, attr: Any
+) -> None:
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    secret = "ghp_" + "A" * 36
+    content = f'<input value="{attr(secret)}">'
+    out = _run(env, tools.SET_VIEW, {"view_key": "r", "content": content})
+    assert not out.ok and "nothing was published" in out.text
+    assert _calls(env, "agents.conversations.setView") == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # a credential split across inline elements inside a nested document
+        '<iframe srcdoc="<b>ghp_AAAAAAAAAAAAAAAAAA</b><b>AAAAAAAAAAAAAAAAAA</b>"></iframe>',
+        "<iframe title=\"a>b\" SRCDOC ='<b>x</b>'></iframe>",
+        '<iframe/srcdoc="<p>x</p>"></iframe>',
+    ],
+)
+def test_an_html_view_nesting_a_document_is_refused(env: Any, content: str) -> None:
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    out = _run(env, tools.SET_VIEW, {"view_key": "r", "content": content})
+    assert not out.ok and "srcdoc" in out.text
+    assert _calls(env, "agents.conversations.setView") == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '<a href="https://x.test/?a=1&amp;b=2">x</a> &copy; &nbsp; &hellip;',
+        "<p>&amp;amp;lt;b&amp;amp;gt;</p>",  # nested escapes, nothing sensitive
+        "<p>&amp;amp;amp;lt;</p>",  # four levels, the most allowed
+    ],
+)
+def test_ordinary_character_references_still_publish(env: Any, content: str) -> None:
+    _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": True, "view_id": "V1"}
+    assert _run(env, tools.SET_VIEW, {"view_key": "r", "content": content}).ok
+    assert _calls(env, "agents.conversations.setView")[0]["content"] == content
+
+
+def test_the_canvas_creator_read_meets_the_outbound_profile(env: Any) -> None:
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+    from kiro_crew.slack.code_channels.surface_client import OUTBOUND_REFUSED
+
+    env.outbound_ok = False
+    with pytest.raises(CodeChannelApiError) as exc:
+        asyncio.run(surface.client().canvas_origin("F0CANVAS", channel_id=CH))
+    assert exc.value.code == OUTBOUND_REFUSED and env.api.calls == []
 
 
 def test_a_refusal_is_audited_with_the_caller(env: Any, refused: Any, monkeypatch: Any) -> None:
@@ -1151,7 +1749,9 @@ def test_an_unreadable_recheck_after_the_stamp_removes_nothing(
     async def fast_sleep(_s: float) -> None:
         return None
 
-    monkeypatch.setattr(wrapup.asyncio, "sleep", fast_sleep)
+    # wrapup's own asyncio binding, delegating everything but sleep: asyncio
+    # itself is shared by the event loop and every other module in the worker.
+    monkeypatch.setattr(wrapup, "asyncio", _Delegating(asyncio, sleep=fast_sleep))
     binding = env.store.get_binding(CH)
     surface.fence_archived(CH)
     asyncio.run(wrapup._recover_archive(binding, OWNER, 1.0, f"channel={CH}", str(tree)))

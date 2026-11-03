@@ -53,6 +53,9 @@ class SurfaceRecord:
     context_bar: tuple[dict[str, str], ...] = ()
     #: The channel canvas this gateway created for the plan ("" before one).
     plan_canvas_id: str = ""
+    #: When a canvas create of ours may have landed with its answer lost (0 when
+    #: none): Slack's next "already exists" then names our canvas to adopt.
+    canvas_create_pending_since: float = 0.0
     #: The canvas view tab attached for it ("" before one).
     plan_view_id: str = ""
     #: Digest of the command set last registered with Slack.
@@ -66,6 +69,10 @@ class SurfaceRecord:
     summary_ts: str = ""
     #: The session the wrap-up was posted for; a replaced session's button is stale.
     summary_session_key: str = ""
+    #: When the channel was archived (0 while live): an archived channel's row
+    #: goes first past MAX_RECORDS. Any later write (an unarchived channel's
+    #: first) clears it.
+    archived_at: float = 0.0
     updated_at: float = field(default=0.0)
 
 
@@ -175,20 +182,28 @@ class SurfaceStore:
     def _commit(self, records: dict[str, SurfaceRecord], written: str = "") -> None:
         """Write *records*, then adopt them; a failed write raises and adopts nothing.
 
-        Past :data:`MAX_RECORDS` the record just *written* always stays, and
-        records pointing at something posted in Slack (the plan canvas, the
-        wrap-up) go last: losing one strands that canvas or button for good.
+        Past :data:`MAX_RECORDS` the record just *written* always stays,
+        archived channels' records go first, and among the rest records
+        pointing at something posted in Slack (the plan canvas, the wrap-up) go
+        last: losing one strands that canvas or button for good.
         """
         ordered = sorted(
             records.values(),
             key=lambda r: (
                 r.channel_id == written,
+                not r.archived_at,
                 bool(r.plan_canvas_id or r.summary_ts),
                 r.updated_at,
             ),
             reverse=True,
         )
         staged = {r.channel_id: r for r in ordered[:MAX_RECORDS]}
+        if len(ordered) > MAX_RECORDS:
+            logger.warning(
+                "code channel surface store over %d records: dropped %d (oldest first)",
+                MAX_RECORDS,
+                len(ordered) - MAX_RECORDS,
+            )
         payload = {
             "version": 1,
             "records": [
@@ -212,6 +227,7 @@ class SurfaceStore:
             raise TypeError(f"unknown surface fields: {sorted(unknown)}")
         if "context_bar" in changes:
             changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
+        changes.setdefault("archived_at", 0.0)  # a channel written to is live
         with self._lock:
             if not self._ensure_loaded():
                 raise SurfaceStoreUnavailable(str(self.path))
@@ -219,6 +235,22 @@ class SurfaceStore:
             stored = replace(current, **changes, updated_at=time.time())
             self._commit({**self._records, channel_id: stored}, written=channel_id)
             return stored
+
+    def retire(self, channel_id: str) -> None:
+        """Mark an archived channel's record to go first past the cap (raises
+        when the write fails).
+
+        Kept, not dropped: an unarchive brings the channel back with its canvas.
+        Unmarked, an archived channel's posted-in-Slack pointers would outrank
+        every live channel's record at :data:`MAX_RECORDS`.
+        """
+        with self._lock:
+            if not self._ensure_loaded():
+                raise SurfaceStoreUnavailable(str(self.path))
+            current = self._records.get(channel_id)
+            if current is not None:
+                retired = replace(current, archived_at=time.time())
+                self._commit({**self._records, channel_id: retired})
 
 
 _STORE: SurfaceStore | None = None
@@ -246,3 +278,8 @@ async def get_async(channel_id: str) -> SurfaceRecord | None:
 async def update_async(channel_id: str, **changes: Any) -> SurfaceRecord:
     """:meth:`SurfaceStore.update` off the event loop (raises when the write fails)."""
     return await asyncio.to_thread(lambda: store().update(channel_id, **changes))
+
+
+async def retire_async(channel_id: str) -> None:
+    """:meth:`SurfaceStore.retire` off the event loop (raises when the write fails)."""
+    await asyncio.to_thread(store().retire, channel_id)

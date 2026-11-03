@@ -38,7 +38,7 @@ from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.store import Binding, store
-from kiro_crew.slack.code_channels.surface_store import get_async, update_async
+from kiro_crew.slack.code_channels.surface_store import get_async, retire_async, update_async
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +247,11 @@ UNRECORDED_NOTE = "This wrap-up wasn't saved, so it can't archive the channel. R
 async def _retire_unrecorded(slack: Any, channel: str, ts: str, blocks: list[dict]) -> None:
     """Take the Archive button off a posted wrap-up whose ts could not be stored.
 
-    Its click would only ever answer "out of date", so the message says why instead.
+    Its click would only ever answer "out of date", so the message says why
+    instead. Not after a Stop: then the button stays and answers that itself.
     """
+    if not surface.commit_if_not_stopped(channel):
+        return
     try:
         await asyncio.shield(
             slack.update_message(
@@ -353,7 +356,27 @@ async def post_wrap_up(
     *only_if_live* (the facts-only fallback) posts nothing unless that request
     is still the live one when the channel's lock is held: a newer /wrap-up
     landing meanwhile replaces it.
+
+    Admitted at the stop fence (kept from an outer admission, e.g. the tool
+    call): a Stop landing anywhere below posts nothing.
     """
+    token = surface.admit()
+    try:
+        return await _post_wrap_up(
+            binding, summary, caller=caller, settles=settles, only_if_live=only_if_live
+        )
+    finally:
+        surface.release(token)
+
+
+async def _post_wrap_up(
+    binding: Binding,
+    summary: str,
+    *,
+    caller: str,
+    settles: str | None,
+    only_if_live: bool,
+) -> str:
     slack = surface.slack()
     if slack is None:
         return ""
@@ -397,6 +420,16 @@ async def post_wrap_up(
             return ""
         if only_if_live and (settles is None or _requests.get(channel) != settles):
             return ""  # replaced or settled while the facts were read: not ours to post
+        if surface.channel_policy_refusal(
+            channel, operation="slack.code_channel.wrap_up", caller=caller
+        ):
+            return ""  # again at the commit point, after the facts and the lock
+        if not surface.commit_if_not_stopped(channel):
+            # A Stop landed during the lock wait: post nothing (no await since).
+            surface.audit(
+                caller, "slack.code_channel.wrap_up", "denied", f"channel={channel}", "stopped"
+            )
+            return ""
         try:
             ts = str(await slack.post_blocks(channel, blocks, fallback) or "")
         except Exception:
@@ -506,7 +539,7 @@ ARCHIVE_FAILED_TEXT = "I couldn't archive this channel ({code}). Try again in a 
 
 async def _ephemeral(channel: str, user: str, text: str) -> None:
     slack = surface.slack()
-    if slack is None or not (channel and user):
+    if slack is None or not (channel and user) or not surface.commit_if_not_stopped(channel):
         return
     try:
         await slack.post_ephemeral(channel, user, text)
@@ -602,6 +635,10 @@ async def _recover_archive(
                 return
             archived = await _still_archived(channel)
             if archived is False:
+                # A stamp the click wrote before handing over is taken back; a
+                # failed write is retried rather than left on a live channel.
+                if current.archived_at and not await _stamp_archived(channel, 0.0, attempts=1):
+                    continue
                 surface.unfence(channel)
                 surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
                 return
@@ -611,7 +648,8 @@ async def _recover_archive(
             # overwritten by it: ask again, and take the stamp back if so.
             again = await _still_archived(channel)
             if again is False:
-                await _stamp_archived(channel, 0.0, attempts=1)
+                if not await _stamp_archived(channel, 0.0, attempts=1):
+                    continue  # the next attempt sees it live and takes the stamp back
                 surface.unfence(channel)
                 surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
                 return
@@ -672,6 +710,23 @@ def _notify_kept(binding: Binding, path: str, reason: str) -> None:
         )
     except Exception:
         logger.debug("worktree-kept notification failed", exc_info=True)
+
+
+def _notify_branch_kept(binding: Binding, reason: str) -> None:
+    """The worktree is gone but its branch stays (*reason* names it and why)."""
+    state = surface.dashboard_state()
+    notify = getattr(state, "notify", None)
+    if not callable(notify):
+        return
+    try:
+        notify(
+            "slack",
+            "Code channel archived; branch kept",
+            f"The worktree was removed, but the {reason}.",
+            meta={"channel_id": binding.channel_id, "session_key": binding.session_key},
+        )
+    except Exception:
+        logger.debug("branch-kept notification failed", exc_info=True)
 
 
 async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
@@ -741,6 +796,10 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if not stale and await surface.fenced_unrecorded(binding):
             # Archived here but never recorded: record it now rather than
             # answer "already archived" with nothing cleaned up.
+            if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+                # The recovery stamps and removes the worktree: same ceiling.
+                await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
+                return True
             surface.audit(user, operation, "allowed", f"{resources} result=archive_retry")
             _start_recovery(binding, user, time.time(), resources, await _worktree_path(binding))
             await _ephemeral(channel, user, ALREADY_ARCHIVED_TEXT)
@@ -752,6 +811,11 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         if stale:
             surface.audit(user, operation, "denied", resources, "not the current wrap-up")
             await _ephemeral(channel, user, STALE_TEXT)
+            return True
+        if surface.channel_policy_refusal(channel, operation=operation, caller=user):
+            # Again at the commit point, after the awaits above: no button
+            # retired, no archive and no worktree removal once it refuses.
+            await _ephemeral(channel, user, NOT_ALLOWED_TEXT)
             return True
         client, slack = surface.client(), surface.slack()
         if client is None or slack is None:
@@ -774,7 +838,15 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
         try:
             await client.archive(channel, summary_message_ts=msg_ts)
         except CodeChannelApiError as exc:
-            if exc.code != "already_archived":
+            # A lost answer may hide an archive Slack applied: unless Slack says
+            # the channel is live, go on as archived; the path below re-checks
+            # and leaves a "can't tell" to the bounded recovery.
+            lost_but_applied = exc.maybe_applied and await _still_archived(channel) is not False
+            if lost_but_applied:
+                surface.audit(
+                    user, operation, "error", resources, f"{exc.code}: answer lost, reconciling"
+                )
+            if exc.code != "already_archived" and not lost_but_applied:
                 surface.audit(user, operation, "error", resources, exc.code)
                 if original:
                     try:
@@ -799,6 +871,21 @@ async def handle_archive_click(orch: Any, payload: dict[str, Any]) -> bool:
             path = await _worktree_path(binding)
             _notify_unrecorded(binding, path)
             _start_recovery(binding, user, now, resources, path)
+            return True
+        # An unarchive recorded between Slack's archive and the stamp above was
+        # just overwritten by it: ask Slack again, as the recovery does, and take
+        # the stamp back if the channel is live.
+        again = await _still_archived(channel)
+        if again is False and await _stamp_archived(channel, 0.0, attempts=1):
+            surface.unfence(channel)
+            surface.audit(user, operation, "allowed", f"{resources} result=unarchived")
+            return True
+        if again is not True:
+            # Can't tell, or live but the stamp could not be taken back: remove
+            # nothing now. The fence stays and the bounded background retry asks
+            # again, taking the stamp back or cleaning up as Slack then says.
+            surface.audit(user, operation, "allowed", f"{resources} result=archive_retry")
+            _start_recovery(binding, user, now, resources, await _worktree_path(binding))
             return True
         await _finish_archive(binding, channel, user, now, resources)
     return True
@@ -830,6 +917,13 @@ async def _finish_archive(
             await asyncio.to_thread(_mark_wrapped, channel, now)
     except Exception:
         logger.exception("code channel %s: archive bookkeeping failed", channel)
+    try:
+        # Archived: its surface record goes first past the cap (kept for an unarchive).
+        await retire_async(channel)
+    except Exception:
+        logger.warning("code channel %s: surface record not retired", channel, exc_info=True)
     surface.push_slots(surface.dashboard_state())
     if outcome == KEPT:
         _notify_kept(binding, await _worktree_path(binding), reason)
+    elif reason:
+        _notify_branch_kept(binding, reason)

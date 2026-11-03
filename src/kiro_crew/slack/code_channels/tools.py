@@ -48,8 +48,11 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from html import unescape
+from html.parser import HTMLParser
+from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
@@ -171,7 +174,20 @@ async def resolve_caller(state: Any, session_key: str) -> tuple[Binding | None, 
 
 
 async def run_tool(state: Any, session_key: str, tool: str, args: Any) -> ToolOutcome:
-    """Run *tool* for the session *session_key* names (already transport-verified)."""
+    """Run *tool* for the session *session_key* names (already transport-verified).
+
+    Admitted at the stop fence first, before caller resolution: a Stop that
+    lands anywhere in the call (resolution, redaction, a canvas read) leaves it
+    sending nothing more (``SurfaceClient._call``).
+    """
+    token = surface.admit()
+    try:
+        return await _run_tool(state, session_key, tool, args)
+    finally:
+        surface.release(token)
+
+
+async def _run_tool(state: Any, session_key: str, tool: str, args: Any) -> ToolOutcome:
     operation = "slack.code_channel.tool"
     if tool not in TOOL_NAMES:
         surface.audit(session_key, operation, "denied", f"tool={tool[:64]}", "unknown tool")
@@ -207,6 +223,11 @@ async def run_tool(state: Any, session_key: str, tool: str, args: Any) -> ToolOu
         return ToolOutcome(False, STOPPED_TEXT, "stopped")
     if not await surface.outbound_permitted():
         surface.audit(session_key, operation, "denied", resources, "channels governance policy")
+        return ToolOutcome(False, GOVERNANCE_TEXT, "channels_policy")
+    if not await surface.caller_slack_permitted(session_key):
+        surface.audit(
+            session_key, operation, "denied", resources, "calling session's channels policy"
+        )
         return ToolOutcome(False, GOVERNANCE_TEXT, "channels_policy")
     if not surface.channel_admits(live_config(), binding):
         surface.audit(
@@ -244,6 +265,10 @@ async def run_tool(state: Any, session_key: str, tool: str, args: Any) -> ToolOu
 
 
 def _api_error_text(tool: str, exc: CodeChannelApiError) -> str:
+    from kiro_crew.slack.code_channels.surface_client import STOPPED
+
+    if exc.code == STOPPED:
+        return STOPPED_TEXT
     if exc.unavailable:
         return (
             f"Error: Slack answered {exc.code}: Slack code channels are not available to "
@@ -291,14 +316,302 @@ def _redact_payload(text: str) -> str:
     return redact(text)
 
 
-def _redact_tree(value: Any) -> Any:
+#: Block Kit keys whose value is a link destination, not text Slack parses.
+_URL_KEYS = frozenset({"url"})
+
+
+def _redact_tree(value: Any, key: str = "") -> Any:
     if isinstance(value, str):
-        return _redact(value)
+        # A destination gets every redaction pass but no mention defang, which
+        # would only break it (``/@scope/`` package links).
+        return _redact_payload(value) if key in _URL_KEYS else _redact(value)
     if isinstance(value, list):
-        return [_redact_tree(v) for v in value]
+        return [_redact_tree(v, key) for v in value]
     if isinstance(value, dict):
-        return {_redact(str(k)): _redact_tree(v) for k, v in value.items()}
+        return {_redact(str(k)): _redact_tree(v, str(k)) for k, v in value.items()}
     return value
+
+
+#: How many nested levels of character references an HTML view may carry; one
+#: still changing after this many is refused rather than published unscreened.
+_MAX_DECODE_ROUNDS = 4
+#: A ``srcdoc`` attribute: whitespace, ``/`` or a closing quote separates
+#: attributes, and attribute names are never character-reference decoded. Matched
+#: anywhere (not only inside a tag, which a ``>`` in a quoted value would cut
+#: short), so text that literally reads `` srcdoc=`` is refused too.
+_NESTED_DOCUMENT = re.compile(r"(?:^|[\s/\"'])srcdoc\s*=", re.IGNORECASE)
+
+#: Block Kit keys Slack shows as text: a text object's ``text``, a date element's
+#: ``format`` and ``fallback`` (a link with no ``text`` shows its ``url``, below).
+_SHOWN_KEYS = frozenset({"text", "format", "fallback"})
+
+
+def _shown_texts(value: Any) -> list[str]:
+    """Every Block Kit display string, in reading order."""
+    if isinstance(value, list):
+        return [t for v in value for t in _shown_texts(v)]
+    if isinstance(value, dict):
+        out: list[str] = []
+        if (
+            value.get("type") == "link"
+            and "text" not in value
+            and isinstance(value.get("url"), str)
+        ):
+            out.append(value["url"])
+        for k, v in value.items():
+            out.extend([v] if k in _SHOWN_KEYS and isinstance(v, str) else _shown_texts(v))
+        return out
+    return []
+
+
+#: Elements that open a nested document or plugin, which no screen here reads,
+#: and foreign content (SVG, MathML), which a browser parses by other rules
+#: (character references decoded inside ``<style>``, raw-text elements changed).
+_REFUSED_ELEMENTS = frozenset(
+    {
+        "iframe", "frame", "frameset", "object", "embed", "portal", "svg", "math",
+        # an external stylesheet (or a rebased URL) the CSS screen never reads
+        "link", "base",
+        # parsed as raw text when scripting is on, as markup when it is off
+        "noscript",
+    }
+)  # fmt: skip
+#: Attributes that hold a URL a browser loads or navigates to.
+_URL_ATTRS = frozenset(
+    {"src", "href", "srcset", "imagesrcset", "poster", "action", "formaction", "data",
+     "background", "cite", "longdesc", "ping", "xlink:href", "manifest", "content"}
+)  # fmt: skip
+#: Attributes holding a comma-separated list of URL candidates.
+_URL_LIST_ATTRS = frozenset({"srcset", "imagesrcset"})
+#: Raw-text elements: a browser ignores a self-closing slash on these and reads
+#: what follows as their text, where ``HTMLParser`` closes them at once.
+_RAW_TEXT_ELEMENTS = frozenset(
+    {"style", "script", "textarea", "title", "xmp", "noscript", "noembed", "noframes", "plaintext"}
+)
+#: Attributes a browser shows as text on the page or in a tooltip.
+_SHOWN_ATTRS = frozenset({"alt", "value", "placeholder", "label", "title"})
+#: What a browser drops anywhere in a URL (tab, LF, CR), and before it.
+_URL_NOISE = re.compile(r"[\t\n\r]")
+_URL_LEAD = re.compile(r"^[\x00-\x20]+")
+#: A marked section (``<![CDATA[``) in HTML is a bogus comment a browser ends at
+#: the first ``>``; ``HTMLParser`` would run it to ``]]>``.
+_MARKED_SECTION = re.compile(r"<!\[[^>]*(?:>|\Z)")
+_CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.S)
+_CSS_COMMENT = re.compile(r"/\*.*?(?:\*/|$)", re.S)
+#: CSS that can render author text or load another resource. With no string
+#: token, ``attr()``, ``@import`` or ``@counter-style``, no property (``content``,
+#: ``quotes``, ``list-style-type``, ...) has author text to show.
+_CSS_AUTHOR_TEXT = re.compile(
+    r"[\"']|(?<![-\w])attr\s*\(|@import|@counter-style|@font-face", re.IGNORECASE
+)
+_CSS_URL = re.compile(r"(?<![-\w])(?:url|src)\s*\(([^)]*)\)?", re.IGNORECASE)
+
+
+def _css_decoded(css: str, *, keep_comments: bool = False) -> str:
+    """*css* as a CSS parser reads it: escapes decoded, comments removed.
+
+    Character references are not decoded: an HTML ``<style>`` never decodes them
+    (foreign content, which does, is refused), and a ``style=`` value arrives
+    from ``HTMLParser`` already decoded."""
+
+    def one(m: re.Match[str]) -> str:
+        if m.group(1):
+            point = int(m.group(1), 16)
+            return chr(point) if 0 < point <= 0x10FFFF else "\ufffd"
+        return m.group(2)
+
+    decoded = _CSS_ESCAPE.sub(one, css)
+    return decoded if keep_comments else _CSS_COMMENT.sub(" ", decoded)
+
+
+def _css_refusal(css: str) -> str:
+    """Why *css* could show author text or load something (``""`` when it can't)."""
+    decoded = _css_decoded(css)
+    if _CSS_AUTHOR_TEXT.search(decoded):
+        return (
+            "an html view's CSS may not hold strings, attr(), @import, @counter-style "
+            "or @font-face"
+        )
+    for m in _CSS_URL.finditer(decoded):
+        if not _URL_NOISE.sub("", m.group(1)).strip().lower().startswith("https:"):
+            return "an html view's CSS may load only https: URLs"
+    return ""
+
+
+def _is_data_url(key: str, value: str) -> bool:
+    """Whether URL attribute *key* holds a ``data:`` URL (any ``srcset`` candidate)."""
+    if key not in _URL_ATTRS:
+        return False
+    clean = _URL_NOISE.sub("", value).lower()
+    parts = clean.split(",") if key in _URL_LIST_ATTRS else [clean]
+    # A meta ``content`` (``0;url=data:...``) names its URL after ``url=``.
+    if key == "content":
+        parts = [clean.partition("url=")[2]] if "url=" in clean else []
+    # A URL parser drops every leading C0 control or space.
+    return any(_URL_LEAD.sub("", part).startswith("data:") for part in parts)
+
+
+class _ViewAudit(HTMLParser):
+    """One pass over a view: what it shows beyond text nodes, and why to refuse.
+
+    ``HTMLParser`` hands attribute values back with character references
+    decoded, as the browser reads them.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.refusal = ""
+        self.shown: list[str] = []  # text and shown attribute text, in order
+        self.values: list[str] = []  # every attribute value
+        self.styles: list[str] = []  # <style> text and style= values
+        self._in_style = False
+        # In HTML content ``<![CDATA[`` is a bogus comment ending at ``>``. Newer
+        # CPython releases read it as CDATA unless told otherwise; older ones
+        # reach parse_marked_section below.
+        set_cdata = getattr(self, "_set_support_cdata", None)
+        if callable(set_cdata):
+            set_cdata(False)
+
+    def _refuse(self, why: str) -> None:
+        self.refusal = self.refusal or why
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _REFUSED_ELEMENTS:
+            self._refuse(f"an html view may not use <{tag}> (embedded, foreign or linked content)")
+        if tag == "style":
+            self._in_style = True
+        # Every value is screened, duplicates included (a browser keeps the first).
+        for key, value in attrs:
+            value = value or ""
+            self.values.append(value)
+            if key == "http-equiv" and value.strip().lower() == "refresh":
+                self._refuse("an html view may not redirect (meta refresh)")
+            if _is_data_url(key, value):
+                self._refuse("an html view may not load a data: URL")
+            if key == "style":
+                self.styles.append(value)
+            if key in _SHOWN_ATTRS and value:
+                self.shown.append(value)
+
+    def parse_comment(self, i: int, report: int = 1) -> int:
+        # Comments end where a browser ends them (``<!-->`` is empty), the same
+        # rule the shown-text projection uses, so both read one document.
+        from kiro_crew.dashboard.card_lifecycle import _COMMENT
+
+        end = _COMMENT.match(self.rawdata, i)
+        assert end is not None  # ``\Z`` ends any comment the tokenizer opened
+        return end.end()
+
+    def parse_marked_section(self, i: int, report: int = 1) -> int:
+        # Foreign content, the one place CDATA is real, is refused.
+        end = _MARKED_SECTION.match(self.rawdata, i)
+        return end.end() if end else i + 3
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _RAW_TEXT_ELEMENTS:
+            self._refuse(f"an html view may not self-close <{tag}>")
+        self.handle_starttag(tag, attrs)
+        self._in_style = False  # a self-closed tag opens no style text
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "style":
+            self._in_style = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_style:
+            self.styles.append(data)
+        else:
+            self.shown.append(data)
+
+
+def _audit_view(content: str, redacted: str) -> None:
+    """Refuse a view whose markup can show what the text screen never reads."""
+    original, published = _ViewAudit(), _ViewAudit()
+    original.feed(content)
+    original.close()
+    published.feed(redacted)
+    published.close()
+    # The original decides the structural refusals (redaction can only shorten
+    # values); the published document is what the value screen reads.
+    if original.refusal:
+        raise ArgumentError(f"{original.refusal}; nothing was published")
+    for css in original.styles:
+        why = _css_refusal(css)
+        if why:
+            raise ArgumentError(f"{why}; nothing was published")
+    hidden = (
+        "a credential or sensitive value is hidden in an attribute or CSS; nothing was published"
+    )
+    # Comments are kept for this screen: not shown, but published all the same.
+    for text in published.values + [
+        _css_decoded(css, keep_comments=True) for css in published.styles
+    ]:
+        if _redact_payload(text) != text:
+            raise ArgumentError(hidden)
+    _refuse_hidden_split(zip(_joined(original.shown), _joined(published.shown)))
+
+
+def _redact_html(content: str) -> str:
+    """An HTML view's document, redacted and then screened as a browser shows it.
+
+    The projection is the dashboard cards' own (both readings of a tag boundary:
+    an inline one joins words, a block one separates them), so the two HTML
+    sinks cannot read a page two ways.
+    """
+    from kiro_crew.dashboard.card_lifecycle import _html_texts
+
+    # A nested document (``srcdoc``) is markup inside an attribute, which no
+    # screen below reads as shown text; a display view never needs one.
+    if _NESTED_DOCUMENT.search(content):
+        raise ArgumentError("an html view may not nest a document (srcdoc); nothing was published")
+    redacted = _redact_payload(content)
+    _refuse_hidden_split(zip(_html_texts(content), _html_texts(redacted)))
+    # Nested documents, data: URLs, CSS that shows text, and attribute text.
+    _audit_view(content, redacted)
+    # The browser decodes character references anywhere, attributes included,
+    # which the raw redactor and the text projection never see. Screen every
+    # decoded reading, as the dashboard cards do for one level, without
+    # rewriting markup.
+    # shortcut: script escapes are not modelled, and neither is layout that
+    # reorders or hides text (bidi controls, <bdo>, display:none, row-reverse,
+    # text-transform); upgrade to a tag/attribute/CSS-property allowlist if
+    # Slack's HTML view runs scripts or the layout class must be closed.
+    reading = redacted
+    for _ in range(_MAX_DECODE_ROUNDS + 1):
+        decoded = unescape(reading)
+        if decoded == reading:
+            return redacted
+        if _redact_payload(decoded) != decoded:
+            break
+        reading = decoded
+    raise ArgumentError(
+        "a credential or sensitive value is hidden in character references; "
+        "nothing was published"
+    )
+
+
+def _joined(texts: list[str]) -> tuple[str, str]:
+    """Both readings of adjacent elements: run together, and word-separated."""
+    return "".join(texts), " ".join(texts)
+
+
+def _refuse_hidden_split(readings: Iterable[tuple[str, str]]) -> None:
+    """Refuse a view whose shown text hides something redaction should remove.
+
+    Each element is redacted on its own, but Slack shows adjacent elements (a
+    rich-text run, inline HTML spans) as one run: a credential cut between them,
+    or a label held apart from its value, passes every fragment and reads whole.
+    ``readings`` pairs each reading of the original with the same reading of what
+    would publish; the dashboard cards' own screen decides, with this surface's
+    redactor. A hit refuses the view rather than guess which fragments to rewrite.
+    """
+    from kiro_crew.dashboard.card_lifecycle import readings_hide_secret
+
+    if readings_hide_secret(readings, _redact_payload):
+        raise ArgumentError(
+            "a credential or sensitive value is split across display elements; "
+            "nothing was published"
+        )
 
 
 def _check_size(text: str, what: str) -> None:
@@ -339,7 +652,9 @@ def _blocks(args: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     if blocks_request_remote_media(raw):
         raise ArgumentError("blocks may not load remote images or video")
     _check_size(json.dumps(raw), "blocks")
-    return tuple(_redact_tree(raw))
+    redacted = _redact_tree(raw)
+    _refuse_hidden_split(zip(_joined(_shown_texts(raw)), _joined(_shown_texts(redacted))))
+    return tuple(redacted)
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────
@@ -376,7 +691,7 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
             raise ArgumentError("an html view needs content: a full, self-contained HTML document")
         _check_size(content, "content")
         # Up to MAX_CONTENT_BYTES through every display pass: off the event loop.
-        content = await asyncio.to_thread(_redact_payload, content)
+        content = await asyncio.to_thread(_redact_html, content)
         view_id = await call.client.set_view(
             call.binding.channel_id,
             type="html",
@@ -418,16 +733,35 @@ async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
 _canvas_locks: dict[str, asyncio.Lock] = {}
 #: Canvases created whose id could not be stored yet; written on the next call.
 _unsaved_canvas: dict[str, str] = {}
+#: Channels where a create of ours ran and its canvas id is not stored yet, and
+#: when the earliest such create began (stored first as
+#: ``canvas_create_pending_since``, so it outlasts a restart).
+_maybe_created: dict[str, float] = {}
+#: How far Slack's clock may run behind ours when a canvas's ``created`` is read.
+_CLOCK_SKEW_SECS = 120.0
 
 
 def forget_channel(channel_id: str) -> None:
     """Drop the in-memory canvas state of an archived channel (it takes no more calls)."""
     _canvas_locks.pop(channel_id, None)
     _unsaved_canvas.pop(channel_id, None)
+    _maybe_created.pop(channel_id, None)
     _bar_locks.pop(channel_id, None)
 
 
-async def _create_canvas(call: Call, channel: str, markdown: str, title: str) -> str:
+def _commit(channel: str) -> None:
+    """The commit point for a tool's writes: a stopped call raises, writing nothing."""
+    if not surface.commit_if_not_stopped(channel):
+        from kiro_crew.slack.code_channels.surface_client import STOPPED
+
+        raise CodeChannelApiError("code_channel.commit", STOPPED)
+
+
+def _may_have_landed(exc: BaseException | None) -> bool:
+    return isinstance(exc, CodeChannelApiError) and exc.maybe_applied
+
+
+async def _create_canvas(call: Call, channel: str, markdown: str, title: str, began: float) -> str:
     """Create the canvas; a cancel mid-call still keeps the id Slack hands back."""
     creating = asyncio.ensure_future(call.client.create_canvas(channel, markdown, title=title))
     try:
@@ -440,7 +774,59 @@ async def _create_canvas(call: Call, channel: str, markdown: str, title: str) ->
                 pass  # already cancelling: keep waiting for Slack's answer
         if not creating.cancelled() and creating.exception() is None and creating.result():
             _unsaved_canvas[channel] = str(creating.result())
-        raise
+        raise  # a lost answer is covered by the intent stored before the create
+
+
+def _made_by_us(user: str, bot: str) -> bool:
+    """Whether a canvas creator is this gateway's own bot (unknown identity: no)."""
+    from kiro_crew.slack.enterprise import validated_self_bot_id, validated_self_user_id
+
+    self_user, self_bot = validated_self_user_id(), validated_self_bot_id()
+    return bool((self_user and user == self_user) or (self_bot and bot == self_bot))
+
+
+async def _adopt_lost_create(call: Call, channel: str, began: float) -> str:
+    """The canvas a lost create of ours made ("" unless that is certain).
+
+    The channel's canvas is adopted only when ``files.info`` says this gateway's
+    bot made it, no earlier than the lost create began: a canvas anyone else
+    made, or one older than that create, is never written.
+    """
+    try:
+        canvas_id = await call.client.channel_canvas_id(channel)
+        if not canvas_id:
+            return ""
+        user, bot, created = await call.client.canvas_origin(canvas_id, channel_id=channel)
+    except (CodeChannelApiError, CodeChannelRequestError) as exc:
+        logger.info("code channel %s: channel canvas not verified: %s", channel, exc)
+        return ""
+    if not _made_by_us(user, bot):
+        # Named, so a creator Slack reports in a form we don't recognise shows here.
+        logger.info(
+            "code channel %s: channel canvas %s is not ours (user=%r bot_id=%r)",
+            channel,
+            canvas_id,
+            user[:32],
+            bot[:32],
+        )
+        return ""
+    if not began or not created or created < began - _CLOCK_SKEW_SECS:
+        logger.info("code channel %s: canvas %s predates the lost create", channel, canvas_id)
+        return ""
+    return canvas_id
+
+
+async def _drop_create_intent(channel: str) -> None:
+    """Clear the stored create intent once no create of ours can have landed.
+
+    Best-effort: a kept intent only lets a later "already exists" check the
+    channel canvas, which is still adopted only when this bot made it.
+    """
+    _maybe_created.pop(channel, None)
+    try:
+        await surface_update(channel, canvas_create_pending_since=0.0)
+    except Exception:
+        logger.info("code channel %s: canvas create intent not cleared", channel, exc_info=True)
 
 
 async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title: str) -> str:
@@ -450,28 +836,54 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
     )
     created = False
     if not canvas_id:
+        # Read before this create: only an EARLIER create's lost answer counts,
+        # and when it began bounds which canvas could be its.
+        lost_began = _maybe_created.get(channel) or (
+            record.canvas_create_pending_since if record is not None else 0.0
+        )
+        # The earliest create that may have landed: a second lost answer must not
+        # push the bound past a canvas the first one made.
+        began = min(lost_began, time.time()) if lost_began else time.time()
+        # Stored BEFORE the create and kept until the canvas id is: whatever is
+        # lost after this point (the answer, the id write, the process), the
+        # next "already exists" can tell the canvas may be ours. A create whose
+        # intent cannot be stored is not attempted (the write raises).
+        _commit(channel)
+        await surface_update(channel, canvas_create_pending_since=began)
+        _commit(channel)  # a stored intent alone adopts nothing that isn't ours
+        _maybe_created[channel] = began
         try:
-            canvas_id = await _create_canvas(call, channel, markdown, title)
+            canvas_id = await _create_canvas(call, channel, markdown, title, began)
             created = True
         except CodeChannelApiError as exc:
+            if _may_have_landed(exc):
+                raise  # the stored intent above already covers it
+            if not lost_began:
+                # Slack refused this create outright and no earlier one may have
+                # landed: no canvas of ours can exist, so the intent goes.
+                await _drop_create_intent(channel)
             if exc.code != CANVAS_ALREADY_EXISTS:
                 raise
-            # Never retried, and never adopted: a canvas this gateway did not
-            # create may be a shared document, and writing it would edit it
-            # everywhere it appears.
-            raise ToolRefusal(
-                "Error: this channel already has a canvas that Kiro Crew did not create, "
-                "so it was left alone. Share the plan as an html view instead.",
-                CANVAS_ALREADY_EXISTS,
-            ) from None
+            # Adopted only when a create of ours may have made it (its answer was
+            # lost); otherwise never retried and never adopted: a canvas this
+            # gateway did not create may be a shared document, and writing it
+            # would edit it everywhere it appears.
+            canvas_id = await _adopt_lost_create(call, channel, lost_began) if lost_began else ""
+            if not canvas_id:
+                raise ToolRefusal(
+                    "Error: this channel already has a canvas that Kiro Crew did not create, "
+                    "so it was left alone. Share the plan as an html view instead.",
+                    CANVAS_ALREADY_EXISTS,
+                ) from None
         if not canvas_id:
             raise CodeChannelApiError("conversations.canvases.create", "missing_canvas_id")
         _unsaved_canvas[channel] = canvas_id
     if _unsaved_canvas.get(channel) == canvas_id:
         # Held in memory until stored: a failed write raises, and the next call
         # stores it instead of creating a second canvas.
-        await surface_update(channel, plan_canvas_id=canvas_id)
+        await surface_update(channel, plan_canvas_id=canvas_id, canvas_create_pending_since=0.0)
         _unsaved_canvas.pop(channel, None)
+        _maybe_created.pop(channel, None)
     if not created:
         await call.client.set_canvas_content(channel, canvas_id, markdown)
     view_note = ""
@@ -580,6 +992,8 @@ async def _publish_bar_locked(
 ) -> None:
     previous = await surface_get(channel)
     before = previous.context_bar if previous else ()
+    # Not stored once stopped: a background republish would publish stored items.
+    _commit(channel)
     # The store write runs on in its thread whatever is cancelled: wait for it,
     # so a cancel here rolls back what was really stored, not nothing.
     writing, cancelled = await _settle_future(surface_update(channel, context_bar=items))
@@ -676,6 +1090,8 @@ async def _set_status(call: Call, args: dict[str, Any]) -> str:
     if value not in _STATUSES:
         raise ArgumentError("status must be processing, suspended or active")
     await call.client.set_status(call.binding.channel_id, value)
+    # A Stop during the send already cleared any hold: never put one back.
+    _commit(call.binding.channel_id)
     channel_status.hold_after_turn(call.binding.channel_id, value if value == "suspended" else None)
     if value == "suspended":
         return "Status set to suspended: the channel shows you are waiting on its people, and stays so after this turn."

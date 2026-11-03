@@ -960,9 +960,16 @@ class WorkspaceService:
         bound session runs again or nothing runs. A clear Slack did not take is
         kept and sent again on the next pass.
         """
+        from kiro_crew.slack.code_channels import status as channel_status
+
         bound_running = now.get(record.session_key, False)
         workers = any(run for k, run in now.items() if k != record.session_key)
         key = record.key
+        if not bound_running and channel_status.held(record.channel_id):
+            # The agent asked the channel's people and waits on them: its workers
+            # neither replace nor clear that, only its next turn does.
+            self._working.discard(key)
+            return
         want = "processing" if workers and not bound_running else ""
         if want and key not in self._working:
             if await _set_status(record.channel_id, "processing"):
@@ -1027,9 +1034,19 @@ class WorkspaceService:
             yield
 
     async def on_turn_start(self, binding: Any, _event: Any = None) -> None:
-        """Turn-start hook: make sure the workspace exists before the model runs."""
+        """Turn-start hook: make sure the workspace exists before the model runs.
+
+        Admitted at the stop fence: a Stop during it leaves its bar and diff
+        writes unsent (``SurfaceClient._call``); the tree itself is still cut.
+        """
+        from kiro_crew.slack.code_channels import surface
+
         self._forget_worker_status(binding)
-        await self.ensure(binding)
+        token = surface.admit()
+        try:
+            await self.ensure(binding)
+        finally:
+            surface.release(token)
 
     async def on_turn_end(self, binding: Any, _event: Any = None) -> None:
         """Turn-end hook: schedule :meth:`refresh` and return at once.
@@ -1066,7 +1083,24 @@ class WorkspaceService:
             await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     async def refresh(self, binding: Any) -> None:
-        """Republish the context bar and the diff after a turn, each only on change."""
+        """Republish the context bar and the diff after a turn, each only on change.
+
+        Nothing after a Stop of the turn it follows, and a Stop during its own
+        awaits leaves the rest unsent (admitted at the stop fence). The next
+        turn's refresh publishes whatever changed.
+        """
+        from kiro_crew.slack.code_channels import surface
+
+        channel = str(binding.channel_id or "")
+        if channel and surface.channel_stopped(channel):
+            return
+        token = surface.admit()
+        try:
+            await self._refresh(binding)
+        finally:
+            surface.release(token)
+
+    async def _refresh(self, binding: Any) -> None:
         team, channel = str(binding.team_id or ""), str(binding.channel_id or "")
         if not channel or not _gate_open():
             return

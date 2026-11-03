@@ -53,6 +53,11 @@ def hold_after_turn(channel_id: str, status: str | None) -> None:
         _held.pop(channel_id, None)
 
 
+def held(channel_id: str) -> str:
+    """The status the agent holds the channel at between its turns (``""`` = none)."""
+    return _held.get(channel_id, "")
+
+
 def _gate() -> bool:
     from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 
@@ -107,7 +112,9 @@ async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
-    await set_status(binding.channel_id, _held.pop(binding.channel_id, SESSION_STATUS_ACTIVE))
+    # The hold stays until the next bound turn starts, so the workers' status
+    # updates between turns honour it too (see held()).
+    await set_status(binding.channel_id, _held.get(binding.channel_id, SESSION_STATUS_ACTIVE))
 
 
 def install(slack_provider: Callable[[], Any]) -> None:
