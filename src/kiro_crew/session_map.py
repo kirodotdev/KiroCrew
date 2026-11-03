@@ -568,6 +568,12 @@ class SessionMap:
         self._snapshot_seq = 0
         self._written_seq = 0
         self._io_lock = threading.Lock()
+        # Set by ``_load`` when the file exists but could not be read; while set
+        # ``_write_payload`` raises, so the unread map on disk is never replaced.
+        self._load_failed = False
+        # Set by ``_load`` when the file exists but is not usable JSON; the first
+        # ``_write_payload`` moves it to ``<name>.corrupt-<utc>`` and clears it.
+        self._set_aside_owed = False
         self._load()
 
     async def _flush_async(self) -> None:

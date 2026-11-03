@@ -345,6 +345,13 @@ async def create_or_adopt_cron_folder(state: DashboardState, name: str) -> tuple
     if _FOLDER_ID_SHAPE.fullmatch(name):
         return "", f"cron folder not found: {name!r} looks like a folder id"
     async with _get_cron_folders_lock():
+        # A failed boot load leaves the in-memory list empty: re-read it before
+        # matching, or a name already on disk would be created a second time.
+        try:
+            await asyncio.to_thread(state._reload_cron_folders_if_unknown)
+        except Exception:
+            logger.warning("Failed to read cron folders before adopt", exc_info=True)
+            return "", "failed to save folder"
         matches = [f for f in state._cron_folders if f["name"].strip().lower() == name.lower()]
         if len(matches) > 1:
             return "", f"{len(matches)} cron folders are named {name!r}"
