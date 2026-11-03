@@ -748,7 +748,11 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_forget = mem_sub.add_parser(
         "forget",
         help="Delete one semantic memory key after you confirm it (owner only; "
-        "needs a terminal and the running gateway)",
+        "needs a terminal and the running gateway; not on native Windows)",
+        description="Delete one semantic memory key after you confirm it. Owner only: "
+        "it needs an interactive terminal and the running gateway, and it is not "
+        "available on native Windows, which has no dashboard Unix socket. There, "
+        "delete the key from the dashboard Memory page.",
     )
     mem_forget.add_argument("key", help="Semantic memory key to forget")
     mem_forget.add_argument(
