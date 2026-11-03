@@ -44,6 +44,7 @@ import sys  # noqa: F401
 import tempfile  # noqa: F401
 import threading  # noqa: F401
 import time
+import unicodedata  # noqa: F401 - owner: uploads
 import urllib.parse  # noqa: F401
 import uuid  # noqa: F401
 import zipfile  # noqa: F401
@@ -293,6 +294,7 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _log_upload_diagnostic,
     _name_max,
     _resolve_raster_ext,
+    _safe_upload_name,
     _sniff_media_type,
     _stream_media_part,
     _upload_dir,
