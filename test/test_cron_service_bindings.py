@@ -132,6 +132,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_sigkill_session": ("function", True, "2bd4ceeed5eb", "run_kill"),
     "_sigkill_sessions": ("function", True, "020bda9371ba", "run_kill"),
     "_snapshot": ("staticmethod", False, "e950d87d36c5", "store_sync"),
+    "_skipped_records": ("data", False, "", ""),
     "_spawn_in_flight": ("function", False, "57a0bf994fdd", "run_kill"),
     "_store_extra": ("data", False, "", ""),
     "_store_version": ("data", False, "", ""),
