@@ -3451,6 +3451,8 @@
         "allDone": "검토 완료",
         "archive": "보관",
         "archiveAll": "나머지 보관",
+        "archiveOthers_other": "나머지 {{count}}건 보관",
+        "archiveSkipsFiling": "등록 중인 항목은 제외됩니다",
         "archivedSection": "보관됨",
         "assignedTo": "{{name}}에게 할당됨",
         "backToMeeting": "회의로 돌아가기",

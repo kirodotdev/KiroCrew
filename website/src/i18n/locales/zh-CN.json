@@ -3347,6 +3347,8 @@
         "allDone": "全部已复核",
         "archive": "归档",
         "archiveAll": "归档其余",
+        "archiveOthers_other": "归档其余 {{count}} 项",
+        "archiveSkipsFiling": "正在提交的条目会被跳过",
         "archivedSection": "已归档",
         "assignedTo": "负责人：{{name}}",
         "backToMeeting": "返回会议",
