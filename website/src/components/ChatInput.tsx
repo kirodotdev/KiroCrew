@@ -58,6 +58,7 @@ import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
 import { useTextareaListContinuation } from './chat-input/listContinuation'
+import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
@@ -940,7 +941,11 @@ function ChatInput({
     return () => ro.disconnect()
   }, [inlineToolbarWhileFits, showGhost, composerCollapsed])
   const sizerPinned = inlineToolbarWhileFits && manualHeight === null && box !== null
-  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? typingLockLabel(typingLock) : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder
+  // Shown only where nothing above it in the chain below would win, so Tab never fills a box whose placeholder says something else.
+  const fillFromSuggestion = useCallback((v: string) => { valueFromUserRef.current = true; onChange(v) }, [onChange])
+  const followUpGhost = useFollowUpGhost({ options: followUpOptions, value, onUserEdit: fillFromSuggestion, composerControl, claimKey: ime.claimKey,
+    enabled: !touchInput && !!onFollowUpSelect && !showGhost && connected && !typingLock && !disabledProp && !voiceRecording && !transcribingIsHonest && !continuePlaceholder && !voiceModePlaceholder && !optimizing })
+  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? typingLockLabel(typingLock) : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
   // The sigil hint is a label and may be cut to one line. Every other
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
@@ -1469,7 +1474,7 @@ function ChatInput({
           // Composing in either editor (textarea or rich text) re-arms a
           // reclaimed session's resume prefetch; the sender throttles.
           onFocusCapture={() => emitComposeIntent(slotId)}
-          onKeyDownCapture={() => emitComposeIntent(slotId)}
+          onKeyDownCapture={e => { emitComposeIntent(slotId); followUpGhost.onKeyDownCapture(e) }}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the

@@ -6833,6 +6833,7 @@
       "message_input": "Поле ввода сообщения",
       "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Написать {{bot}}…",
+      "follow_up_tab_placeholder": "{{option}} - Нажми Tab, чтобы вставить",
       "message_placeholder_terminal": "Написать {{bot}}… (/command · @file · $skill · ! команда оболочки)",
       "model": "Модель",
       "model_2": "Модель: {{name}}",

@@ -6392,6 +6392,7 @@
       "message_input": "메시지 입력",
       "message_placeholder": "{{bot}}에게 메시지… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}}에게 메시지…",
+      "follow_up_tab_placeholder": "{{option}} - Tab 키를 눌러 입력",
       "message_placeholder_terminal": "{{bot}}에게 메시지… (/command · @file · $skill · ! 셸 명령어)",
       "model": "모델",
       "model_2": "모델: {{name}}",

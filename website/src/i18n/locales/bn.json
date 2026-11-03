@@ -6539,6 +6539,7 @@
       "message_input": "বার্তা ইনপুট",
       "message_placeholder": "{{bot}}-কে মেসেজ করুন… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}}-কে মেসেজ করো…",
+      "follow_up_tab_placeholder": "{{option}} - ভরতে Tab চাপুন",
       "message_placeholder_terminal": "{{bot}}-কে মেসেজ করো… (/command · @file · $skill · ! শেল কমান্ড)",
       "model": "মডেল",
       "model_2": "মডেল: {{name}}",
