@@ -125,7 +125,8 @@ async def test_a_shadowing_project_spec_changes_nothing_about_the_user_agent(lay
     entry = await _project("shared", checkout)
 
     assert entry["prompt"] == "user prompt"
-    assert entry["tools"] == ["@kept"]
+    # The user-level spec's grant, plus Crew's default servers it gets as a custom agent.
+    assert entry["tools"] == ["@kept", "@kirocrew-core", "@kirocrew-cron"]
     wire = json.dumps(entry.get("mcpServers"))
     assert "/usr/bin/kept-server" in wire
     assert "/usr/bin/muted-server" in wire
@@ -167,7 +168,10 @@ async def test_with_no_project_spec_the_user_level_agent_is_projected(layout):
     entry = await _project("solo", checkout)
 
     assert entry["prompt"] == "user prompt"
-    assert entry["tools"] == expand_kiro_cli_tool_names(["fs_read"])
+    # A user-level custom agent also gets Crew's default servers.
+    assert entry["tools"] == expand_kiro_cli_tool_names(
+        ["fs_read", "@kirocrew-core", "@kirocrew-cron"]
+    )
 
 
 @pytest.mark.asyncio
