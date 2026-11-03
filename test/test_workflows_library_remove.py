@@ -953,6 +953,8 @@ async def test_a_restored_copy_of_a_removed_record_is_reached_by_no_ref(tmp_path
         (gone["id"], ["debug-project", gone["id"]])
     ]
     assert command_ref(listed[0]) == ""
+    # No ref reaches it, so authoring never gets the removed source as an example.
+    assert library.search("debug project", limit=10) == []
 
 
 async def test_a_patch_through_a_restored_copys_free_slug_leaves_its_tombstone_intact(

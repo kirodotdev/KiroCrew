@@ -332,7 +332,13 @@ export default function WorkflowLibraryTab() {
         await api.removeWorkflowDefinition(workflowRef, definitionId)
       } catch (error) {
         const status = (error as { status?: unknown })?.status
-        if (!isNotFoundError(error) && status !== 409) throw error
+        // Every non-2xx arrives as an error carrying its status, so one with
+        // no status is a transport failure or a 2xx whose body was cut: the
+        // removal may have committed, and is reconciled like a 404 below.
+        const indeterminate = typeof status !== 'number'
+        if (!indeterminate && !isNotFoundError(error) && status !== 409) {
+          throw error
+        }
         // A 404 can mean another tab already removed it, the outcome the user
         // asked for, or that the ref no longer reaches a record still on disk;
         // a 409 means the ref now reaches a different workflow, which the
