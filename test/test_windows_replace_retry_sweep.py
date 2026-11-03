@@ -199,6 +199,89 @@ def test_pinned_source_write_by_name_survives_a_contended_rename(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["prompt.md"]
 
 
+def _save_during_backoff(target: Path, newer: str):  # type: ignore[no-untyped-def]
+    """Fail the first rename onto *target* the way a scanner on the temp does, and
+    land an outside save of *newer* on *target* while the retry backs off."""
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def _patched(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if os.path.basename(str(dst)) == target.name:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                with open(target, "a", encoding="utf-8") as handle:
+                    handle.write(newer)
+                raise PermissionError("[WinError 32] simulated sharing violation on the temp")
+        return real_replace(src, dst, *args, **kwargs)
+
+    return _patched, calls
+
+
+def test_pinned_write_does_not_overwrite_a_save_landing_during_the_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from kiro_crew import hooks
+
+    src = tmp_path / "prompt.md"
+    src.write_text("old", encoding="utf-8")
+    base = hashlib.sha256(b"old").hexdigest()
+    monkeypatch.setattr(os, "supports_dir_fd", set(), raising=False)
+    patched, calls = _save_during_backoff(src, " plus a newer save")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", patched)
+        outcome = hooks.verified_replace_file_nolink(
+            str(src), "stale edit", base, max_bytes=1 << 20, within_root=str(tmp_path)
+        )
+
+    assert outcome == "conflict"
+    assert calls["n"] == 1  # the re-check stopped the retry before a second rename
+    assert src.read_text(encoding="utf-8") == "old plus a newer save"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["prompt.md"]
+
+
+def test_transcript_repair_does_not_overwrite_an_append_landing_during_the_retry(
+    tmp_path: Path,
+) -> None:
+    from kiro_crew import session_image_repair as sir
+
+    path = tmp_path / "s.jsonl"
+    path.write_text('{"kind": "Prompt"}\n', encoding="utf-8")
+    st = path.stat()
+    appended = '{"kind": "Prompt", "late": true}\n'
+    patched, calls = _save_during_backoff(path, appended)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", patched)
+        with pytest.raises(sir.TranscriptMovedError):
+            sir.apply_repair(
+                path, [b'{"kind": "Prompt"}'], backup=False, expect=(st.st_size, st.st_mtime_ns)
+            )
+
+    assert calls["n"] == 1
+    assert path.read_text(encoding="utf-8").endswith(appended)
+    assert _temps(tmp_path) == []
+
+
+def test_before_each_runs_before_every_attempt_and_its_raise_stops_the_rename(
+    tmp_path: Path,
+) -> None:
+    src, dst = tmp_path / "a.tmp", tmp_path / "a.json"
+    src.write_text("new", encoding="utf-8")
+    seen: list[int] = []
+
+    def _check() -> None:
+        seen.append(len(seen))
+        if len(seen) == 3:
+            raise LookupError("changed")
+
+    with replace_sharing_violation(match="a.json", times=5), pytest.raises(LookupError):
+        aw.replace_with_retry_checked(src, dst, _check)
+
+    assert seen == [0, 1, 2]
+    assert src.exists() and not dst.exists()
+
+
 # Every converted writer: (file under src/kiro_crew, the function that publishes).
 _CONVERTED: list[tuple[str, str]] = [
     ("session_image_repair.py", "apply_repair"),
@@ -266,4 +349,7 @@ def test_converted_writer_renames_through_the_retry(rel: str, function: str) -> 
     calls = [n for scope in scopes for n in ast.walk(scope) if isinstance(n, ast.Call)]
     bare = [n.lineno for n in calls if _is_by_name_rename(n)]
     assert bare == [], f"{rel}: bare by-name rename at line(s) {bare}"
-    assert any(_call_name(n) in {"replace_with_retry", "_replace"} for n in calls), rel
+    assert any(
+        _call_name(n) in {"replace_with_retry", "replace_with_retry_checked", "_replace"}
+        for n in calls
+    ), rel

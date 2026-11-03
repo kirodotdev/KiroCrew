@@ -474,6 +474,27 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
     _retry_sharing_window(os.replace, src, dst)
 
 
+def replace_with_retry_checked(
+    src: Path | str, dst: Path | str, before_each: Callable[[], None]
+) -> None:
+    """:func:`replace_with_retry`'s count arm, running *before_each* before EVERY attempt.
+
+    For a writer that checks the destination is still the file it read (a
+    compare-and-swap, a transcript repair) right before it renames. A check made
+    once, before the retry, goes stale during the backoff: a scanner holding the
+    temp fails the rename while the destination stays writable, so a save can
+    land in between and the next attempt would overwrite it. Anything
+    *before_each* raises ends the call with no rename; a ``PermissionError`` from
+    it is retried like the rename's own.
+    """
+
+    def _checked_replace(source: str, target: str) -> None:
+        before_each()
+        os.replace(source, target)
+
+    _retry_sharing_window(_checked_replace, src, dst)
+
+
 def rename_with_retry(src: Path | str, dst: Path | str) -> None:
     """``os.rename(src, dst)``, retrying the same window as :func:`replace_with_retry`.
 

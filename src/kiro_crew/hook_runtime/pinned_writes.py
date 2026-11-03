@@ -24,7 +24,7 @@ if TYPE_CHECKING:
         is_sensitive_path,
         logger,
         platform_compat,
-        replace_with_retry,
+        replace_with_retry_checked,
         validate_file_path,
     )
 
@@ -421,43 +421,63 @@ def _pinned_replace(
         # expose (and which is Linux-only). The remaining window cannot be
         # closed with os.rename, so the caller keeps its own snapshot and the
         # user's newer file wins -- the safe direction.
-        try:
-            pre = (
-                os.stat(base, dir_fd=dfd, follow_symlinks=False)
-                if use_dir_fd
-                else os.stat(path, follow_symlinks=False)
-            )
-        except OSError:
-            return "refused"
-        if (pre.st_dev, pre.st_ino) != src_ident:
-            logger.warning(
-                "refusing source write to %r: the file changed on disk after validation "
-                "(concurrent save); not overwriting the newer content",
-                path,
-            )
-            return "conflict" if base_hash is not None else "refused"
-        if src_state is not None and (pre.st_mtime_ns, pre.st_size) != src_state:
-            # Same inode, different content: an IN-PLACE write landed after the
-            # descriptor-anchored verify. The identity check above cannot see
-            # it, but a changed mtime or size can — a narrowing on filesystems
-            # with coarse timestamps, never a widening, and the failure
-            # direction is the safe one: the newer file wins.
-            logger.warning(
-                "refusing verified replace of %r: the file was rewritten in place "
-                "after its base hash was verified (concurrent save)",
-                path,
-            )
-            return "conflict"
+        target: str = path
+
+        def _changed_since_verify() -> str | None:
+            try:
+                pre = (
+                    os.stat(base, dir_fd=dfd, follow_symlinks=False)
+                    if use_dir_fd
+                    else os.stat(target, follow_symlinks=False)
+                )
+            except OSError:
+                return "refused"
+            if (pre.st_dev, pre.st_ino) != src_ident:
+                logger.warning(
+                    "refusing source write to %r: the file changed on disk after validation "
+                    "(concurrent save); not overwriting the newer content",
+                    path,
+                )
+                return "conflict" if base_hash is not None else "refused"
+            if src_state is not None and (pre.st_mtime_ns, pre.st_size) != src_state:
+                # Same inode, different content: an IN-PLACE write landed after the
+                # descriptor-anchored verify. The identity check above cannot see
+                # it, but a changed mtime or size can — a narrowing on filesystems
+                # with coarse timestamps, never a widening, and the failure
+                # direction is the safe one: the newer file wins.
+                logger.warning(
+                    "refusing verified replace of %r: the file was rewritten in place "
+                    "after its base hash was verified (concurrent save)",
+                    path,
+                )
+                return "conflict"
+            return None
+
         if use_dir_fd:
+            changed = _changed_since_verify()
+            if changed is not None:
+                return changed
             os.rename(tmp_name, base, src_dir_fd=dfd, dst_dir_fd=dfd)
         else:
             # os.replace, not os.rename: on Windows rename REFUSES an existing
             # destination, while replace overwrites it -- and does so atomically,
-            # which is the property that matters here. Through the retry: on
-            # Windows a reader holding the destination open fails the rename, and
-            # the same hold fails any other writer's rename onto this name.
+            # which is the property that matters here. Through the retry, with the
+            # re-check run before EVERY attempt: a scanner holding the staged temp
+            # fails the rename while the destination stays writable, so a save can
+            # land during the backoff, and a check made once before the retry
+            # would let the next attempt overwrite it.
+            class _ChangedOnDisk(Exception):
+                pass
+
+            def _still_unchanged() -> None:
+                changed = _changed_since_verify()
+                if changed is not None:
+                    raise _ChangedOnDisk(changed)
+
             try:
-                replace_with_retry(os.path.join(parent, tmp_name), path)
+                replace_with_retry_checked(os.path.join(parent, tmp_name), path, _still_unchanged)
+            except _ChangedOnDisk as stale:
+                return str(stale)
             except PermissionError as exc:
                 # A Windows sharing or lock violation (ERROR_SHARING_VIOLATION 32,
                 # ERROR_LOCK_VIOLATION 33) that outlasts the retry is another handle
