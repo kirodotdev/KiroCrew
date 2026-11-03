@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kiro_crew.slack.code_channels.client import CodeChannelsClient
+from kiro_crew.slack.code_channels.client import CodeChannelsClient, _error_code, _response_data
 from kiro_crew.slack.code_channels.models import (
     MAX_TITLE_CHARS,
     CodeChannelApiError,
@@ -173,6 +173,52 @@ class SurfaceClient(CodeChannelsClient):
         channel = data.get("channel")
         state = channel.get("is_archived") if isinstance(channel, dict) else None
         return state if isinstance(state, bool) else None
+
+    async def channel_canvas_id(self, channel_id: str) -> str:
+        """The channel canvas Slack reports for *channel_id* (``conversations.info``);
+        ``""`` when the answer names none."""
+        _check_id(channel_id, "channel_id")
+        params = {"channel": channel_id}
+        team = self._team_for(channel_id) if self._team_for else ""
+        if team:
+            params["team_id"] = team
+        data = await self._call("conversations.info", params, query=True)
+        channel = data.get("channel")
+        props = channel.get("properties") if isinstance(channel, dict) else None
+        canvas = props.get("canvas") if isinstance(props, dict) else None
+        file_id = canvas.get("file_id") if isinstance(canvas, dict) else None
+        return file_id if isinstance(file_id, str) else ""
+
+    async def canvas_origin(self, canvas_id: str) -> tuple[str, str, float]:
+        """Who made canvas *canvas_id* and when (``files.info``): ``(user, bot_id,
+        created)``, each empty or 0 when the answer doesn't say."""
+        _check_id(canvas_id, "canvas_id")
+        # Not through _call: its refusals feed the install-wide latch, and an app
+        # without files:read (a trimmed manifest) must lose only this adoption,
+        # never code channels. Any refusal here is just "unknown".
+        method = "files.info"
+        try:
+            resp = await self._api_call(method, http_verb="GET", params={"file": canvas_id})
+        except Exception as exc:
+            raise CodeChannelApiError(method, _error_code(exc) or "transport_error") from None
+        data = _response_data(resp)
+        if data.get("ok") is not True:
+            raise CodeChannelApiError(method, str(data.get("error") or "not_ok"))
+        file = data.get("file")
+        if not isinstance(file, dict):
+            return "", "", 0.0
+        user, bot, created = file.get("user"), file.get("bot_id"), file.get("created")
+        return (
+            user if isinstance(user, str) else "",
+            bot if isinstance(bot, str) else "",
+            (
+                float(created)
+                if isinstance(created, (int, float))
+                and not isinstance(created, bool)
+                and created > 0
+                else 0.0
+            ),
+        )
 
     async def rename(self, channel_id: str, title: str) -> str:
         """``agents.sessions.rename`` for a code channel (never a ``thread_ts``)."""
