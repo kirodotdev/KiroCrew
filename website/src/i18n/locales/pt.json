@@ -15361,9 +15361,11 @@
       "pool_warm_hit_rate": "Taxa de acertos do pool",
       "ram_saved": "RAM economizada",
       "rss": "RSS",
-      "s": "s",
       "server": "Servidor",
       "shared_mcp_gateway": "Gateway MCP compartilhado",
+      "status_active": "ativo",
+      "status_stopped": "parado",
+      "status_unhealthy": "com falha",
       "with_shared_gateway_pooled": "Com gateway compartilhado (em pool)",
       "without_gateway_per_session_copies": "Sem gateway (cópias por sessão)"
     },

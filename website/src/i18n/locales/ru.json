@@ -15674,9 +15674,11 @@
       "pool_warm_hit_rate": "Доля тёплых попаданий в пул",
       "ram_saved": "Сэкономлено ОЗУ",
       "rss": "RSS",
-      "s": "s",
       "server": "Сервер",
       "shared_mcp_gateway": "Общий шлюз MCP",
+      "status_active": "активен",
+      "status_stopped": "остановлен",
+      "status_unhealthy": "неисправен",
       "with_shared_gateway_pooled": "С общим шлюзом (пул)",
       "without_gateway_per_session_copies": "Без шлюза (копия на каждую сессию)"
     },

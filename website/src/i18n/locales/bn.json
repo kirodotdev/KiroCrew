@@ -15048,9 +15048,11 @@
       "pool_warm_hit_rate": "পুল ওয়ার্ম-হিট হার",
       "ram_saved": "RAM সাশ্রয়",
       "rss": "RSS",
-      "s": "s",
       "server": "সার্ভার",
       "shared_mcp_gateway": "শেয়ার্ড MCP গেটওয়ে",
+      "status_active": "সক্রিয়",
+      "status_stopped": "বন্ধ",
+      "status_unhealthy": "ত্রুটিপূর্ণ",
       "with_shared_gateway_pooled": "শেয়ার্ড গেটওয়ে সহ (পুলড)",
       "without_gateway_per_session_copies": "গেটওয়ে ছাড়া (প্রতি-সেশন কপি)"
     },

@@ -15361,9 +15361,11 @@
       "pool_warm_hit_rate": "Taux de réutilisation à chaud du pool",
       "ram_saved": "RAM économisée",
       "rss": "RSS",
-      "s": "s",
       "server": "Serveur",
       "shared_mcp_gateway": "Passerelle MCP partagée",
+      "status_active": "actif",
+      "status_stopped": "arrêté",
+      "status_unhealthy": "défaillant",
       "with_shared_gateway_pooled": "Avec passerelle partagée (mutualisée)",
       "without_gateway_per_session_copies": "Sans passerelle (copies par session)"
     },

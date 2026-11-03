@@ -8243,9 +8243,11 @@
       "pool_warm_hit_rate": "Pool warm-hit rate",
       "ram_saved": "RAM saved",
       "rss": "RSS",
-      "s": "s",
       "server": "Server",
       "shared_mcp_gateway": "Shared MCP gateway",
+      "status_active": "active",
+      "status_stopped": "stopped",
+      "status_unhealthy": "unhealthy",
       "with_shared_gateway_pooled": "With shared gateway (pooled)",
       "without_gateway_per_session_copies": "Without gateway (per-session copies)"
     },

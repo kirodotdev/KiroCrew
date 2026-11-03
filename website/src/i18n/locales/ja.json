@@ -14735,9 +14735,11 @@
       "pool_warm_hit_rate": "プールウォームヒット率",
       "ram_saved": "RAM 節約",
       "rss": "RSS",
-      "s": "s",
       "server": "サーバー",
       "shared_mcp_gateway": "共有 MCP ゲートウェイ",
+      "status_active": "稼働中",
+      "status_stopped": "停止",
+      "status_unhealthy": "異常",
       "with_shared_gateway_pooled": "共有ゲートウェイあり (プール)",
       "without_gateway_per_session_copies": "ゲートウェイなし (セッションごとのコピー)"
     },
