@@ -813,10 +813,14 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_poll_idc_with_no_profiles_is_error_and_saves_nothing(tmp_path, monkeypatch):
+    # Discovery probes every known CPS host; an empty result everywhere means the
+    # identity is authenticated but has no entitled profile. One empty reply per
+    # host (us-east-1 then eu-central-1).
     service, _ = _service(
         tmp_path,
         responses=[
             _FakeResp(200, {"accessToken": "at-3", "expiresIn": 3600}),
+            _FakeResp(200, {"profiles": []}),
             _FakeResp(200, {"profiles": []}),
         ],
     )
@@ -832,10 +836,13 @@ async def test_poll_idc_with_no_profiles_is_error_and_saves_nothing(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_poll_idc_control_plane_failure_is_error(tmp_path, monkeypatch):
+    # Every known CPS host errors: nothing was reachable, so resolution fails hard
+    # (one error reply per host, us-east-1 then eu-central-1).
     service, _ = _service(
         tmp_path,
         responses=[
             _FakeResp(200, {"accessToken": "at-4", "expiresIn": 3600}),
+            _FakeResp(403, {"message": "forbidden"}),
             _FakeResp(403, {"message": "forbidden"}),
         ],
     )
@@ -844,6 +851,46 @@ async def test_poll_idc_control_plane_failure_is_error(tmp_path, monkeypatch):
     )
     assert await service.poll_device(begin["login_id"]) == {"status": "error"}
     assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_discovers_profile_on_second_control_plane(tmp_path, monkeypatch):
+    """An eu-west-1 IdC login whose profile lives on the EU control plane.
+
+    The login region (eu-west-1) has no CPS host of its own, so discovery probes
+    us-east-1 first (empty) and then eu-central-1, which returns the profile. This
+    is the case the old region->host map got wrong: it would send eu-west-1 to a
+    single control plane and miss a profile served from the other.
+    """
+    service, session = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-eu", "expiresIn": 3600}),
+            _FakeResp(200, {"profiles": []}),
+            _FakeResp(
+                200,
+                {
+                    "profiles": [
+                        {"arn": "arn:aws:kiro:eu-central-1:1:profile/eu", "profileName": "EU"}
+                    ]
+                },
+            ),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start", region="eu-west-1"
+    )
+    result = await service.poll_device(begin["login_id"])
+    assert result == {"status": "authorized", "provider": "Enterprise"}
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None
+    assert saved.profile_arn == "arn:aws:kiro:eu-central-1:1:profile/eu"
+    # Both control planes were probed, us-east-1 before eu-central-1.
+    cps_calls = [url for url, _, _ in session.calls_with_headers if "kiro.dev" in url]
+    assert cps_calls == [
+        "https://management.us-east-1.kiro.dev/",
+        "https://management.eu-central-1.kiro.dev/",
+    ]
 
 
 @pytest.mark.asyncio
@@ -921,31 +968,49 @@ async def test_begin_oidc_accepts_real_region_grammar(tmp_path, monkeypatch):
 
 
 def test_control_plane_url_is_the_regional_cps_host():
-    """IdC profile resolution must hit the CPS host kiro-cli uses, not a derived one.
+    """The post-login CPS host (keyed by the profile ARN's own region) is a real host.
 
     A hostname derived from the vendored client's service id has no DNS record: the
     device code gets redeemed, then the profile call dies in the resolver and the
-    dashboard reads a 502 for a login that succeeded. Pin the real hosts (kiro-cli
-    ``Endpoint::cps_for_region``) and the us-east-1 fallback for regions without a CPS.
+    dashboard reads a 502 for a login that succeeded. Pin the real hosts and the
+    us-east-1 fallback for regions without a dedicated CPS. (This function is used
+    AFTER sign-in, keyed by the resolved profile ARN's region; login itself uses
+    discovery -- see the discovery-host test below.)
     """
     assert control_plane.control_plane_url("us-east-1") == "https://management.us-east-1.kiro.dev/"
     assert (
         control_plane.control_plane_url("eu-central-1")
         == "https://management.eu-central-1.kiro.dev/"
     )
-    # eu-west-1 is the EU region the dashboard picker offers, and it has no CPS
-    # host of its own: its profiles live on the Frankfurt control plane. The
-    # us-east-1 fallback would answer zero profiles for it, and the sign-in
-    # would stall with "no available Kiro profiles" after a successful browser
-    # authorization.
-    assert (
-        control_plane.control_plane_url("eu-west-1") == "https://management.eu-central-1.kiro.dev/"
-    )
     # No dedicated CPS for that region: same fallback as kiro-cli's DEFAULT_ENDPOINT.
     assert control_plane.control_plane_url("ap-southeast-2") == control_plane.control_plane_url(
         "us-east-1"
     )
     assert "amazonaws.com" not in control_plane.control_plane_url("us-east-1")
+
+
+def test_discovery_hosts_probe_every_control_plane_region_first():
+    """Sign-in discovery probes every known CPS host, the login region's own first.
+
+    The login (IdC) region does not reliably name the profile's control plane, so
+    discovery must cover all of them. Ordering is a latency hint: a region with its
+    own CPS is probed first, but every known host is included exactly once.
+    """
+    us = "https://management.us-east-1.kiro.dev/"
+    eu = "https://management.eu-central-1.kiro.dev/"
+
+    # A region with its own CPS is probed first, then the rest.
+    assert control_plane._discovery_hosts("eu-central-1") == [eu, us]
+    assert control_plane._discovery_hosts("us-east-1") == [us, eu]
+
+    # eu-west-1 has no CPS of its own: it still probes BOTH control planes (the
+    # old region->host map would have pinned it to one and missed the other).
+    assert set(control_plane._discovery_hosts("eu-west-1")) == {us, eu}
+    # An unknown region likewise probes every known host -- no host is dropped.
+    assert set(control_plane._discovery_hosts("ap-southeast-2")) == {us, eu}
+    # Every host appears exactly once.
+    hosts = control_plane._discovery_hosts("eu-west-1")
+    assert len(hosts) == len(set(hosts)) == 2
 
 
 @pytest.mark.asyncio
