@@ -11201,7 +11201,6 @@
       "make_sure_the_gateway_s": "। सुनिश्चित करें कि gateway का",
       "make_the_default_profile": "{{name}} को डिफ़ॉल्ट प्रोफ़ाइल बनाएँ",
       "missing_sso_start_url_sso_region": "अनुपलब्ध … sso_start_url, sso_region",
-      "more": "अन्य",
       "never_boto3_so_credential_resolution_stays_in_yo": "(कभी boto3 नहीं),\n              ताकि क्रेडेंशियल का समाधान आपके OS क्रेडेंशियल स्टोर में ही रहे। {{productName}} कभी IAM नहीं लिखता और\n              खातों, उपयोगकर्ताओं या भूमिकाओं का प्रबंधन कभी नहीं करता — जनरेट की गई न्यूनतम-विशेषाधिकार पॉलिसी आप स्वयं लागू करते हैं।",
       "never_credentials": "— क्रेडेंशियल कभी नहीं)",
       "new_profile": "नई प्रोफ़ाइल",
@@ -11297,7 +11296,9 @@
       "col_actions": "कार्रवाइयाँ",
       "col_type": "प्रकार",
       "col_url": "लिंक",
-      "col_cost": "लागत"
+      "col_cost": "लागत",
+      "more_count_one": "+{{n}} अन्य",
+      "more_count_other": "+{{n}} अन्य"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} पर प्रकाशित",
@@ -12266,7 +12267,6 @@
         "aria_collapse_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची समेटें",
         "aria_expand_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची विस्तृत करें",
         "current_task": "मौजूदा टास्क",
-        "more": "और…",
         "task_completion": "कार्य पूर्णता",
         "aria_mark_done": "पूर्ण चिह्नित करो: {{task}}। एजेंट इसे दोबारा नहीं करेगा। पलटने के लिए फिर क्लिक करो।",
         "aria_mark_not_done": "अपूर्ण चिह्नित करो: {{task}}। एजेंट इसे अभी बाकी मानेगा। पलटने के लिए फिर क्लिक करो।",
@@ -12280,7 +12280,9 @@
         "set_by_you_done": "तुमने इसे हो गया चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "set_by_you_open": "तुमने इसे नहीं हुआ चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "sending": "भेजा जा रहा है",
-        "done_of_total": "{{total}} में से {{done}}"
+        "done_of_total": "{{total}} में से {{done}}",
+        "more_count_one": "+ {{n}} और…",
+        "more_count_other": "+ {{n}} और…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "मॉडल की रीज़निंग समेटें",
@@ -12495,7 +12497,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "स्नैपशॉट लोड नहीं हो सका:",
-        "events": "इवेंट"
+        "events_count_one": "{{n}} इवेंट",
+        "events_count_other": "{{n}} इवेंट"
       },
       "pins": {
         "pinned_messages": "पिन किए गए संदेश",

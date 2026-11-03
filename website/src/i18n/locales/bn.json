@@ -11201,7 +11201,6 @@
       "make_sure_the_gateway_s": ". নিশ্চিত করুন যে গেটওয়ের",
       "make_the_default_profile": "{{name}}-কে ডিফল্ট প্রোফাইল বানাও",
       "missing_sso_start_url_sso_region": "অনুপস্থিত … sso_start_url, sso_region",
-      "more": "আরও",
       "never_boto3_so_credential_resolution_stays_in_yo": "(কখনও boto3 নয়),\n              তাই ক্রেডেনশিয়াল রিজলিউশন আপনার OS ক্রেডেনশিয়াল স্টোরেই থাকে। {{productName}} কখনও IAM লেখে না এবং\n              কখনও অ্যাকাউন্ট, ইউজার বা রোল পরিচালনা করে না — তৈরি হওয়া least-privilege পলিসি আপনি নিজেই প্রয়োগ করেন।",
       "never_credentials": "— কখনও ক্রেডেনশিয়াল নয়)",
       "new_profile": "নতুন প্রোফাইল",
@@ -11297,7 +11296,9 @@
       "col_actions": "অ্যাকশন",
       "col_type": "ধরন",
       "col_url": "লিংক",
-      "col_cost": "খরচ"
+      "col_cost": "খরচ",
+      "more_count_one": "+আরও {{n}}টি",
+      "more_count_other": "+আরও {{n}}টি"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}-এ প্রকাশিত",
@@ -12266,7 +12267,6 @@
         "aria_collapse_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা সংকুচিত করো",
         "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো",
         "current_task": "বর্তমান টাস্ক",
-        "more": "আরও…",
         "task_completion": "টাস্ক সম্পন্নতা",
         "aria_mark_done": "সম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি আবার করবে না। ফিরিয়ে নিতে আবার ক্লিক করো।",
         "aria_mark_not_done": "অসম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি এখনো বাকি ধরবে। ফিরিয়ে নিতে আবার ক্লিক করো।",
@@ -12280,7 +12280,9 @@
         "set_by_you_done": "তুমি এটা সম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "set_by_you_open": "তুমি এটা অসম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "sending": "পাঠানো হচ্ছে",
-        "done_of_total": "{{done}} / {{total}}"
+        "done_of_total": "{{done}} / {{total}}",
+        "more_count_one": "+ আরও {{n}}টি…",
+        "more_count_other": "+ আরও {{n}}টি…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
@@ -12495,7 +12497,8 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "স্ন্যাপশট লোড করা যায়নি:",
-        "events": "ইভেন্ট"
+        "events_count_one": "{{n}}টি ইভেন্ট",
+        "events_count_other": "{{n}}টি ইভেন্ট"
       },
       "pins": {
         "pinned_messages": "পিন করা বার্তা",

@@ -11014,7 +11014,6 @@
       "make_sure_the_gateway_s": ". 게이트웨이의",
       "make_the_default_profile": "{{name}}을(를) 기본 프로필로 설정",
       "missing_sso_start_url_sso_region": "누락 … sso_start_url, sso_region",
-      "more": "더 보기",
       "never_boto3_so_credential_resolution_stays_in_yo": "(boto3는 사용하지 않습니다).\n 따라서 자격 증명 확인은 OS 자격 증명 저장소 안에서만 이루어집니다. {{productName}}은(는) IAM을 쓰지 않으며\n 계정, 사용자, 역할을 관리하지 않습니다 — 생성된 최소 권한 정책은 직접 적용하세요.",
       "never_credentials": "— 자격 증명은 저장하지 않음)",
       "new_profile": "새 프로필",
@@ -11108,7 +11107,8 @@
       "col_actions": "작업",
       "col_type": "유형",
       "col_url": "링크",
-      "col_cost": "비용"
+      "col_cost": "비용",
+      "more_count_other": "+{{n}}개 더"
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}}에 게시됨",
@@ -12041,7 +12041,6 @@
         "aria_collapse_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 접기",
         "aria_expand_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 펼치기",
         "current_task": "현재 작업",
-        "more": "개 더…",
         "task_completion": "작업 완료 현황",
         "aria_mark_done": "완료로 표시: {{task}}. 에이전트는 다시 하지 않습니다. 다시 클릭하면 되돌립니다.",
         "aria_mark_not_done": "미완료로 표시: {{task}}. 에이전트는 아직 남은 일로 봅니다. 다시 클릭하면 되돌립니다.",
@@ -12055,7 +12054,8 @@
         "set_by_you_done": "당신이 완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
         "set_by_you_open": "당신이 미완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
         "sending": "전송 중",
-        "done_of_total": "{{done}} / {{total}}"
+        "done_of_total": "{{done}} / {{total}}",
+        "more_count_other": "+ {{n}}개 더…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "모델 추론 접기",
@@ -12265,7 +12265,7 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "스냅샷을 불러올 수 없습니다:",
-        "events": "이벤트"
+        "events_count_other": "이벤트 {{n}}개"
       },
       "pins": {
         "pinned_messages": "Pinned messages",

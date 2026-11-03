@@ -11388,7 +11388,6 @@
       "make_sure_the_gateway_s": ". Assicurati che il gateway",
       "make_the_default_profile": "Imposta {{name}} come profilo predefinito",
       "missing_sso_start_url_sso_region": "mancante … sso_start_url, sso_region",
-      "more": "altri",
       "never_boto3_so_credential_resolution_stays_in_yo": "(mai boto3),\n              così la risoluzione delle credenziali resta nell'archivio credenziali del tuo sistema operativo. {{productName}} non scrive mai su IAM e\n              non gestisce mai account, utenti o ruoli — la policy con privilegi minimi generata la applichi tu.",
       "never_credentials": "— mai le credenziali)",
       "new_profile": "Nuovo profilo",
@@ -11486,7 +11485,10 @@
       "col_actions": "Azioni",
       "col_type": "Tipo",
       "col_url": "URL",
-      "col_cost": "Costo"
+      "col_cost": "Costo",
+      "more_count_one": "+{{n}} altro",
+      "more_count_many": "+{{n}} altri",
+      "more_count_other": "+{{n}} altri"
     },
     "artifactDetailPage": {
       "published_to_provider": "Pubblicato su {{provider}}",
@@ -12491,7 +12493,6 @@
         "aria_collapse_task_list": "{{done}} di {{total}} attività completate. Comprimi l’elenco delle attività",
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
         "current_task": "Attività corrente",
-        "more": "altri…",
         "task_completion": "Completamento dell'attività",
         "aria_mark_done": "Segna come completata: {{task}}. L'agente non la rifarà. Clicca di nuovo per annullare.",
         "aria_mark_not_done": "Segna come non completata: {{task}}. L'agente la considera ancora aperta. Clicca di nuovo per annullare.",
@@ -12505,7 +12506,10 @@
         "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
         "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
         "sending": "Invio in corso",
-        "done_of_total": "{{done}} di {{total}}"
+        "done_of_total": "{{done}} di {{total}}",
+        "more_count_one": "+ {{n}} altro…",
+        "more_count_many": "+ {{n}} altri…",
+        "more_count_other": "+ {{n}} altri…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",
@@ -12725,7 +12729,9 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossibile caricare lo snapshot:",
-        "events": "eventi"
+        "events_count_one": "{{n}} evento",
+        "events_count_many": "{{n}} eventi",
+        "events_count_other": "{{n}} eventi"
       },
       "pins": {
         "pinned_messages": "Messaggi fissati",

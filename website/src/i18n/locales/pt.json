@@ -11388,7 +11388,6 @@
       "make_sure_the_gateway_s": ". Verifique se o",
       "make_the_default_profile": "Definir {{name}} como perfil padrão",
       "missing_sso_start_url_sso_region": "faltando … sso_start_url, sso_region",
-      "more": "mais",
       "never_boto3_so_credential_resolution_stays_in_yo": "(nunca boto3),\n              então a resolução de credenciais permanece no repositório de credenciais do seu SO. O {{productName}} nunca escreve no IAM e\n              nunca gerencia contas, usuários ou funções — você mesmo aplica a política de privilégio mínimo gerada.",
       "never_credentials": "— nunca credenciais)",
       "new_profile": "Novo perfil",
@@ -11486,7 +11485,10 @@
       "col_actions": "Ações",
       "col_type": "Tipo",
       "col_url": "URL",
-      "col_cost": "Custo"
+      "col_cost": "Custo",
+      "more_count_one": "+{{n}} mais",
+      "more_count_many": "+{{n}} mais",
+      "more_count_other": "+{{n}} mais"
     },
     "artifactDetailPage": {
       "published_to_provider": "Publicado em {{provider}}",
@@ -12491,7 +12493,6 @@
         "aria_collapse_task_list": "{{done}} de {{total}} tarefas concluídas. Recolher a lista de tarefas",
         "aria_expand_task_list": "{{done}} de {{total}} tarefas concluídas. Expandir a lista de tarefas",
         "current_task": "Tarefa atual",
-        "more": "mais…",
         "task_completion": "Conclusão das tarefas",
         "aria_mark_done": "Marcar como concluída: {{task}}. O agente não a refará. Clique de novo para desfazer.",
         "aria_mark_not_done": "Marcar como não concluída: {{task}}. O agente a trata como pendente. Clique de novo para desfazer.",
@@ -12505,7 +12506,10 @@
         "set_by_you_done": "Você marcou isto como feito; o agente ainda não confirmou.",
         "set_by_you_open": "Você marcou isto como não feito; o agente ainda não confirmou.",
         "sending": "Enviando",
-        "done_of_total": "{{done}} de {{total}}"
+        "done_of_total": "{{done}} de {{total}}",
+        "more_count_one": "+ {{n}} mais…",
+        "more_count_many": "+ {{n}} mais…",
+        "more_count_other": "+ {{n}} mais…"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",
@@ -12725,7 +12729,9 @@
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Não foi possível carregar o snapshot:",
-        "events": "eventos"
+        "events_count_one": "{{n}} evento",
+        "events_count_many": "{{n}} eventos",
+        "events_count_other": "{{n}} eventos"
       },
       "pins": {
         "pinned_messages": "Mensagens fixadas",
