@@ -160,8 +160,8 @@ class AcpError(Exception):
         # Whether a TRANSIENT failure is the network path to the provider
         # (dispatch failure, connection reset or refused, DNS, TLS, connect
         # timeout) rather than a provider answer such as a 5xx or a throttle.
-        # Decided from the raw frame by :func:`_raise_acp_error`, because the
-        # formatter rewrites a dispatch failure into the generic 5xx prose.
+        # Decided from the raw frame by :func:`_raise_acp_error`, so the retry
+        # layer never parses the user-facing card wording.
         # ``None`` means unclassified: readers fall back to the message text.
         self.connection_failure: bool | None = None
         # Whether a TRANSIENT failure is the provider throttling (429, "Too many
@@ -584,10 +584,9 @@ _RE_CONNECTION = re.compile(
     r"|\bconnection (?:refused|reset|closed|error|timed ?out)\b",
     re.IGNORECASE,
 )
-# Connector-level failures that never produced a provider answer. Separate from
-# _RE_CONNECTION because a dispatch failure and a named connection reset sit in
-# the 5xx family for formatting, yet they say the network path dropped, not that
-# the provider answered with an error.
+# Connector-level failures that never produced a provider answer: the network
+# path dropped. They also match _RE_5XX_NAMED, so the formatter and classifier
+# both check this before the 5xx family (connection card, connection verdict).
 _RE_CONNECTOR_FAILURE = re.compile(
     rf"\b(?:dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
     re.IGNORECASE,
@@ -1639,7 +1638,7 @@ def _format_acp_error_worded(
                 "sign-in issue, not a backend error."
                 f"{req_id_suffix}"
             )
-        elif _RE_CONNECTION.search(haystack):
+        elif _RE_CONNECTION.search(haystack) or _RE_CONNECTOR_FAILURE.search(haystack):
             formatted = (
                 "Could not reach the model backend (connection refused, reset, "
                 "or timed out). Retry in a moment. If it keeps happening, check "

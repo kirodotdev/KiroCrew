@@ -172,7 +172,7 @@ which case it found.
 ## Chat shows "Connection unstable — please try again." behind a corporate proxy
 
 **Symptoms:** every chat turn fails with a "Connection unstable — please try
-again." banner (the gateway log calls it a "transient error (HTTP 5xx)"), while `kiro-cli` in a Terminal window and the
+again." banner (the error card reads "Could not reach the model backend"), while `kiro-cli` in a Terminal window and the
 Kiro IDE on the same machine work fine. The log shows `dispatch failure …
 error sending request for url (https://q.us-east-1.amazonaws.com/)`.
 
