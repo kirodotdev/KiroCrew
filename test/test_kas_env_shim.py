@@ -127,9 +127,10 @@ def _stub_resolve(monkeypatch) -> list[list[str]]:
 
     def _resolve(argv, _environ):
         refs.append(list(argv))
-        return list(_LAUNCH[0]), dict(_LAUNCH[1])
+        command, *args = _LAUNCH[0]
+        return SERVER, {"command": command, "args": args, "env": dict(_LAUNCH[1])}, {}
 
-    monkeypatch.setattr(kas_env_shim, "resolve_launch", _resolve)
+    monkeypatch.setattr(kas_env_shim, "_resolve_snapshot", _resolve)
     return refs
 
 

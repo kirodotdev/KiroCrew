@@ -12,8 +12,14 @@ the recorded env values added. Any mismatch, or a snapshot it cannot read, ends 
 launch with one line on stderr that names the reason; the server is never started
 with a partial environment.
 
+A snapshot that records a ``url`` instead of a command is a remote server whose
+``headers`` stayed local. The launcher then does not exec anything: it becomes
+the stdio server itself and relays each message to that url with the recorded
+headers added (:mod:`kiro_crew.kas_http_bridge`).
+
 Standard library only and at the top of the package: the engine starts this once
-per server, so it must not import the ACP stack. It prints no env value.
+per server, so it must not import the ACP stack. The bridge path adds only the
+package's trust bootstrap (:mod:`kiro_crew._ssl_compat`). It prints no env value.
 """
 
 from __future__ import annotations
@@ -115,6 +121,26 @@ def _read_snapshot(path: str, server: str) -> dict[str, Any]:
 
 def resolve_launch(argv: list[str], environ: dict[str, str]) -> tuple[list[str], dict[str, str]]:
     """The verified ``(argv, env)`` to exec for this reference, or a refusal."""
+    server, doc, environ = _resolve_snapshot(argv, environ)
+    return _stdio_launch(server, doc, environ)
+
+
+def resolve_bridge(server: str, doc: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """The verified ``(url, headers)`` of a remote server's snapshot, or a refusal."""
+    url, headers = doc.get("url"), doc.get("headers")
+    if not isinstance(url, str) or not url.lower().startswith(("https://", "http://")):
+        _refuse(server, "its launch snapshot names no http(s) url")
+    if not isinstance(headers, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+    ):
+        _refuse(server, "its launch snapshot has malformed headers")
+    return url, headers
+
+
+def _resolve_snapshot(
+    argv: list[str], environ: dict[str, str]
+) -> tuple[str, dict[str, Any], dict[str, str]]:
+    """``(server, snapshot, environ)`` once the snapshot matches the reference."""
     parser = argparse.ArgumentParser(prog=SHIM_MODULE, add_help=False)
     for flag in ("--session", "--agent", "--server", "--version"):
         parser.add_argument(flag, required=True)
@@ -135,6 +161,12 @@ def resolve_launch(argv: list[str], environ: dict[str, str]) -> tuple[list[str],
     for key in ("session", "agent", "server", "version"):
         if doc.get(key) != getattr(ns, key):
             _refuse(server, f"its launch snapshot belongs to a different {key}")
+    return server, doc, environ
+
+
+def _stdio_launch(
+    server: str, doc: dict[str, Any], environ: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
     command, args, env = doc.get("command"), doc.get("args"), doc.get("env")
     if not isinstance(command, str) or not command.strip():
         _refuse(server, "its launch snapshot names no command")
@@ -165,7 +197,21 @@ def _spawn_child(argv: list[str], env: dict[str, str]) -> NoReturn:
 
 
 def main(argv: list[str] | None = None) -> NoReturn:
-    launch, env = resolve_launch(list(sys.argv[1:] if argv is None else argv), dict(os.environ))
+    server, doc, environ = _resolve_snapshot(
+        list(sys.argv[1:] if argv is None else argv), dict(os.environ)
+    )
+    if "url" in doc:
+        # A remote server whose headers stayed local: this process becomes the
+        # stdio server the engine talks to, and adds them to every request.
+        # Platform trust comes first, as in every other Crew entry point, so a
+        # bundled interpreter verifies an https url against the system's CAs.
+        from kiro_crew._ssl_compat import _ensure_ssl_certs
+        from kiro_crew.kas_http_bridge import run_bridge
+
+        url, headers = resolve_bridge(server, doc)
+        _ensure_ssl_certs()
+        raise SystemExit(run_bridge(url, headers, server=server))
+    launch, env = _stdio_launch(server, doc, environ)
     if os.name == "nt":
         _spawn_child(launch, env)
     try:

@@ -97,8 +97,8 @@ class TestWritersPreserveAWrongShape:
         raw = _BOM + json.dumps({"mcpServers": [{"command": "x"}], "keep": 1}).encode("utf-8")
         path.write_bytes(raw)
         server = mcp_discovery.McpServerInfo(name="n", command="c", args=[])
-        with pytest.raises((AttributeError, TypeError)):
-            mcp_discovery.register_servers_for_cc([server], mcp_json_path=path)
+        # Refused with a warning, not crashed on: the writer skips the sidecar.
+        assert mcp_discovery.register_servers_for_cc([server], mcp_json_path=path) is False
         assert path.read_bytes() == raw
 
 

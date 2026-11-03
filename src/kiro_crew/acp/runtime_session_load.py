@@ -43,10 +43,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import (
-    session_mcp_server_is_disabled,
-    settings_server_names,
-)
+from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -324,6 +321,7 @@ async def load_session(
             include_user_servers=True,
             reserved_names=reserved,
             managed_entries=kas_extras.managed_entries,
+            app_launches=kas_extras.app_launches,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.
