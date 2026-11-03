@@ -5,7 +5,7 @@ another one, change its model, reload its agent process, color it, and take anot
 itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 40 of its tools, written for the agent that is about to use them.
+for all 39 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py` and its `mcp_dashboard_*`
 owner modules. Two halves:
@@ -18,7 +18,7 @@ owner modules. Two halves:
   `session_move_to_column`, `work_dispatch`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
-  `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`, `chat_session_pin_move`. These organize what the person
   sees in the sidebar.
@@ -51,7 +51,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | `title` | no | Short sidebar name. Say what the session is FOR. Follows `session_rename`'s character rules (`invalid_title`), then is cut to 200 characters; a title whose first 200 characters show nothing is refused |
 | `agent` | no (but always pass it) | Agent to bind the session to. In a crewmate's own chat it is not used: the session is always the crewmate's own worker, on the crewmate's memory and workspace with the worker's own tools plus whatever the crewmate's settings add. Naming another crewmate there is refused like any cross-workspace agent |
 | `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a crewmate carries the same name. Omit for name-first resolution (a crewmate wins, with its own memory). A bare `kirocrew-worker` already means `template`, because that worker needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
-| `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one) |
+| `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one). A folder with a project gives the new session that project; without one, the new session works in your own project |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omitted, it is filled as below |
 | `reasoning_effort` | no | Reasoning effort the session starts at, one of the five standard levels: `low`, `medium`, `high`, `xhigh`, `max`. Any other value is refused with `effort_rejected` before anything is created. Omitted, it is filled as below |
 | `autocompact_pct` | no | Context-usage percent (5 to 90) at which the NEW session auto-compacts, set as its own override as if the person set "Auto-compact at" in its context meter. Only the new session gets it; the global `session.autocompact_pct` and every other session are unchanged. The tool schema refuses an out-of-range value before any request reaches the dashboard. The reply is `Error: autocompact_pct: must be <= 90.0`, or `Error: autocompact_pct: must be >= 5.0` for a value below the range. Omit to follow the agent's own default, else the global value |
@@ -889,7 +889,6 @@ The sidebar tree the person organizes their sessions in.
 | `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Cannot set `project_dir`, `default_agent` or `steering_dirs`; for steering, `propose_change(kind="folder.steering")` asks the person on a change card |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
-| `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
 
 Read `chat_folder_tree` before you move anything: it renders folders in the order
 the person actually sees, which is what makes a `before` / `after` anchor safe to
@@ -918,17 +917,15 @@ the folder endpoint checks those links rather than the key, using the same
 predicate that gates creating peer sessions, and while one
 exists the person renames folders from the sidebar instead.
 
-`chat_folder_file_self` is the verb a conductor wants: file yourself in the
-goal's folder first, then create each worker with
-`folder="<goal>/<worker agent>"`, and the person finds the conductor and every
-worker under one heading. It can write no placement but its own, which is why it
-is safe to grant where `chat_folder_move_session` is withheld.
+Dispatchers (conductors and crewmates) get no folder tool without an approval,
+and their guidance does not use them: the person's folders are the person's to
+arrange. Ordinary agents keep every folder tool.
 
 Folder moves are metadata only: the session keeps its transcript, its model, and
 any running turn. Archived (history) sessions cannot be moved — bring one back
 with `session_revive` first.
 
-`chat_folder_delete` is how a conductor cleans up after its own work. It removes
+`chat_folder_delete` is how an agent cleans up after its own work. It removes
 only a folder that the calling session created and that has nothing in it.
 
 A folder created through an agent's MCP call records the creating session's key

@@ -124,63 +124,6 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
-def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
-    """The caller's OWN sidebar slot row, or why it has none to file.
-
-    Resolved from the VERIFIED caller key only, never from an argument: this is
-    what lets ``chat_folder_file_self`` be granted to an unattended conductor
-    where ``chat_folder_move_session`` is withheld — the one placement it can
-    write is its own.
-
-    Only a ``dashboard:<slot>`` key qualifies, and it must name a row that is
-    present. That key IS the slot: the slot key never changes for the life of
-    the tab, so the row this resolves and the row the PATCH lands on are the
-    same object (the endpoint re-checks identity under its lock). A slot bound
-    to a channel or a schedule presents its ``linked_session_key`` instead, and
-    that binding is REBOUND on live slots with no running gate — so a key that
-    matched one slot at this read could name a different conversation by the
-    time the write arrives. Filing on that match would file someone else's
-    session; those callers are refused rather than raced.
-
-    Two more refusals, both for what the placement would mean. A private
-    (incognito / temporary) session is kept out of the sidebar record by the
-    person's choice, and a folder placement is durable sidebar metadata. A crew
-    member's pinned DM thread (``mode == "member"``) is one thread that spans
-    every goal the member ever runs and lives on the Crew page, not in the
-    sidebar tree — so a conductor running AS a member does not file itself; its
-    workers still go under ``<goal>/<agent>`` via ``session_create``.
-    """
-    if not caller_key.startswith("dashboard:"):
-        return {}, (
-            "Error: this session has no sidebar slot to file — only a dashboard "
-            "chat session can be placed in a folder."
-        )
-    slot_key = caller_key.split(":", 1)[1]
-    row: dict | None = None
-    for r in rows:
-        if str(r.get("key") or "") == slot_key:
-            row = r
-            break
-    if row is None:
-        return {}, (
-            "Error: this session has no sidebar slot to file — only a dashboard "
-            "chat session can be placed in a folder."
-        )
-    if str(row.get("mode") or "") == "member":
-        return {}, (
-            "Error: a crew member's pinned DM thread lives on the Crew page and is "
-            "not filed in a sidebar folder — it spans every goal the member runs. "
-            "Skip filing yourself; create your workers with "
-            "session_create's `folder` set to `<goal>/<agent>` instead."
-        )
-    if str(row.get("memory_mode") or "persistent") != "persistent":
-        return {}, (
-            "Error: a private (incognito or temporary) session is kept out of the "
-            "sidebar record and cannot be filed."
-        )
-    return row, None
-
-
 #: What a folder argument becomes for a Crew Mode session: nothing, said once.
 CREW_MODE_FOLDER_NOTE = (
     " (folder ignored: this session is part of a Crew Mode chat, which keeps its "

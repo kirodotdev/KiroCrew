@@ -1926,7 +1926,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -4273,33 +4273,6 @@ the store lock and sees the authoritative tree, so a second copy of the rule in
 the tool layer could only drift or race. What the tool layer still decides is the
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
-
-**Filing your own session is a separate verb, `chat_folder_file_self`, because
-the grant is name-scoped.** `chat_folder_move_session` takes its target from an
-argument, so it is the one dashboard tool that writes a session OTHER than the
-caller's, and the conductor agents keep it behind an approval: they ingest
-untrusted content on unattended cycles, and `allowedTools` can name a tool but
-not an argument. That left the conductor unable to file ITSELF without a prompt,
-so it floated at the top level while its workers sat in the goal's folder.
-`chat_folder_file_self` has no `session` argument — the target is resolved from
-the verified caller key (`_own_chat_slot`: only a `dashboard:<slot>` key
-qualifies, because the slot key is stable for the tab's life while a
-channel- or cron-bound slot's `linked_session_key` can be rebound between the
-read and the write, so matching on it could file a different conversation;
-a private session and a crew member's pinned DM thread are refused too) — so the one
-placement it can write is the caller's own, which is exactly the placement the
-conductor grant invariant (create or read, never mutate what is not your own)
-admits. It resolves `folder` with `mkdir -p` semantics behind the same
-tree-shaping gate as `session_create`'s `folder`, and PATCHes the same
-`/api/chat/slots/<slot>/folder` route under the gate's verified key, carrying
-the slot's `created` stamp as `expected_created`: the endpoint's own identity
-re-check covers its own awaits, but the tool resolves the slot in an EARLIER
-request, and a tab that closes and is recreated under the same key in that gap
-would share the `dashboard:<key>` transcript key — so the endpoint refuses (409
-`session_gone`) when the token does not match the live slot's `created_at`. The
-conductors call it once in their first turn, then create every worker with
-`folder="<goal>/<agent>"`, giving one heading per goal with the conductor
-directly under it and one subfolder per agent kind.
 
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never

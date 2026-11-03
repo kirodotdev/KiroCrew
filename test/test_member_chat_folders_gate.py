@@ -5,9 +5,10 @@ The bug: a dashboard chat session whose agent is a crew member with a private V2
 memory store got ``member_scope_denied`` (403) from EVERY ``/api/chat/folders*``
 and ``/api/chat/tags*`` route, because ``private_chat_route_refusal`` refused any
 scoped caller except ``POST .../followup``. Meanwhile ``/api/session-control/*``
-admits the same member callers -- so a conductor could create workers but could
-not put them in a folder, which its operating procedure (``session_create`` with
-``folder=``, ``chat_folder_file_self``) requires.
+admits the same member callers -- so a member could create workers but could not
+file them with ``session_create`` ``folder=``. Dispatcher guidance passes no
+folder; the member admission stays until the member folder routes go
+(rfc-crewmate-workers-under-the-crewmate.md, step 8).
 
 These tests pin:
 

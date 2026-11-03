@@ -520,16 +520,6 @@ CHAT_SESSION_PIN_MOVE_SCHEMA = ToolSchema(
     ],
 )
 
-CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
-    tool_name="chat_folder_file_self",
-    fields=[
-        # No ``session`` field on purpose: the target is the caller's own slot,
-        # resolved server-side from the verified identity. The folder reference
-        # takes the same id-or-path shape as ``chat_folder_move_session.folder``.
-        FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
-    ],
-)
-
 # The tag endpoints store ``name[:60]`` (``chat_tags._NAME_MAX``); the cap is
 # mirrored here so the server refuses an overlong name instead of writing one
 # that no later ``chat_tag_assign`` name lookup can match.

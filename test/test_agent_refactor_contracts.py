@@ -65,8 +65,8 @@ BASE_SURFACE: dict[str, str] = {
     "_CC_MCP_JSON": "value host",
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
-    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 0b859d2b54e84503",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str b5cc1e761be155b8",
+    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str e43c6788708a4969",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -110,7 +110,7 @@ BASE_SURFACE: dict[str, str] = {
     "_MAX_TOTAL_USER_HOOKS": "value int f5ca38f748a1d6ea",
     "_MAX_USER_HOOKS_PER_EVENT": "value int 4a44dc15364204a8",
     "_MCP_REGISTRY_TYPE": "value str 06c63899e16a32c5",
-    "_MEMBER_DASHBOARD_GRANTS": "value tuple b4b6baeaae36470a",
+    "_MEMBER_DASHBOARD_GRANTS": "value tuple efcd95e405400991",
     # Moved for ``@kirocrew-panel/dashboard_types``, the dynamic dashboard's data-type
     # catalog. The readable pin for this tuple is
     # ``test_the_member_grants_extend_the_conductor_grants``, which spells the whole set
@@ -119,8 +119,8 @@ BASE_SURFACE: dict[str, str] = {
     "_NATIVE_PROMPT_STUB": "value str cf6d81ff1d0b3797",
     "_PIPELINE_CONDUCTOR_AGENT_FILENAME": "value str 3b5e111de6d1d305",
     "_PIPELINE_CONDUCTOR_CORE_GRANTS": "value tuple 1ad9ce711e266082",
-    "_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 3f7fb6d17a7f0ebc",
-    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str d7010e266b564182",
+    "_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
+    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str 7cedf60bfaff5e2d",
     "_PROVENANCE_SPEC_CAP_BYTES": "value int 54faea9b3eeffce2",
     "_PROVENANCE_TOTAL_BUDGET_BYTES": "value int 107f41ed92e01eb5",
     "_RESEARCH_AGENT_FILENAME": "value str 5cec351bc572af00",
@@ -128,10 +128,10 @@ BASE_SURFACE: dict[str, str] = {
     "_SAFE_MATCHER_RE": "value Pattern ac8a0d6bfee13169",
     "_SAFE_PATH_RE": "value platform",
     "_SECURITY_CONDUCTOR_AGENT_FILENAME": "value str ea0f45466289114a",
-    "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 4f02f1db82a878ee",
-    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 01f15cd404607d51",
+    "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
+    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 05c42bdf80ec1b4f",
     "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
-    "_TEAM_LEAD_SYSTEM_PROMPT": "value str e915f722ca817de6",
+    "_TEAM_LEAD_SYSTEM_PROMPT": "value str 13655a722e56ea1c",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
@@ -908,9 +908,6 @@ def test_every_conductor_prompt_carries_the_patrol_receipt_rule(prompt: str) -> 
 
 def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
     assert agent._CONDUCTOR_DASHBOARD_GRANTS == (
-        "@kirocrew-dashboard/chat_folder_tree",
-        "@kirocrew-dashboard/chat_folder_create",
-        "@kirocrew-dashboard/chat_folder_file_self",
         "@kirocrew-dashboard/session_create",
         "@kirocrew-dashboard/session_read_message",
         "@kirocrew-dashboard/session_status",
@@ -939,15 +936,42 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
 
 def test_the_security_grants_extend_the_pipeline_grants() -> None:
     assert agent._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS == (
-        "@kirocrew-dashboard/chat_folder_tree",
-        "@kirocrew-dashboard/chat_folder_create",
         "@kirocrew-dashboard/session_create",
         "@kirocrew-dashboard/session_read_message",
         "@kirocrew-dashboard/session_status",
     )
-    assert agent._SECURITY_CONDUCTOR_DASHBOARD_GRANTS == (
-        agent._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS + ("@kirocrew-dashboard/chat_folder_file_self",)
-    )
+    assert agent._SECURITY_CONDUCTOR_DASHBOARD_GRANTS == agent._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS
+
+
+def test_no_dispatcher_grant_names_a_folder_verb() -> None:
+    """Dispatchers stop managing folders (rfc-crewmate-workers-under-the-crewmate.md,
+    Design 6): no conductor or member grant tuple auto-approves a ``chat_folder_*``
+    verb."""
+    for grants in (
+        agent._CONDUCTOR_DASHBOARD_GRANTS,
+        agent._MEMBER_DASHBOARD_GRANTS,
+        agent._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
+        agent._SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
+    ):
+        assert not [g for g in grants if "chat_folder_" in g], grants
+
+
+def test_ordinary_agents_keep_the_folder_tools() -> None:
+    """The folder verbs stay on ``kirocrew-dashboard`` for any agent that mounts it,
+    behind an approval; only ``chat_folder_file_self``, which no one but a conductor
+    used, is gone."""
+    from kiro_crew import mcp_dashboard
+
+    names = {t["name"] for t in mcp_dashboard._tool_definitions()}
+    assert {
+        "chat_folder_tree",
+        "chat_folder_create",
+        "chat_folder_move",
+        "chat_folder_update",
+        "chat_folder_move_session",
+        "chat_folder_delete",
+    } <= names
+    assert "chat_folder_file_self" not in names
 
 
 def test_no_conductor_is_granted_a_fleet_write_or_a_model_switch() -> None:

@@ -216,18 +216,6 @@ def test_a_same_name_folder_the_caller_cannot_see_is_refused_not_forked() -> Non
     assert all(b.get("dry_run") for b in gw.create_posts), "no session may be created"
 
 
-def test_file_self_into_an_invisible_same_name_folder_is_refused() -> None:
-    """``chat_folder_file_self`` shares the walk, so it shares the refusal."""
-    gw = _Gateway([_OPS], visible=lambda f: f["id"] != _OPS["id"])
-    out = gw.run("chat_folder_file_self", {"folder": "Ops"})
-    assert out.startswith("Error:")
-    assert "no duplicate was created" in out
-    assert len(gw.named("Ops")) == 1
-
-
-# ── Gateway: the folder endpoint ─────────────────────────────────────────────
-
-
 def _folder_state(folders: list[dict[str, Any]]) -> DashboardState:
     state = MagicMock(spec=DashboardState)
     state._folders = folders

@@ -37,7 +37,6 @@ _DASHBOARD_TOOL_CALLS = {
     "chat_folder_update": {"folder": "Travel", "name": "Trips"},
     "chat_folder_move_session": {"session": "chat-3", "folder": "Travel"},
     "chat_folder_delete": {"folder": "Travel"},
-    "chat_folder_file_self": {"folder": "Travel"},
     "chat_tag_list": {},
     "chat_tag_create": {"name": "urgent"},
     "chat_tag_update": {"tag": "todo", "name": "later"},

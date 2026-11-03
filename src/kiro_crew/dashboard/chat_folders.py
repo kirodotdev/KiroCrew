@@ -218,7 +218,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         return mate_refusal
     # Optional generation token. The identity re-check below covers THIS
     # request's own awaits, but a caller that resolved the slot in an earlier
-    # request (``chat_folder_file_self`` reads ``/api/chat/slots`` first) has a
+    # request (an MCP tool that reads ``/api/chat/slots`` first) has a
     # gap this handler cannot see: its tab can close and the same slot key be
     # recreated for a different conversation before its PATCH arrives, and the
     # recreated slot carries the same ``dashboard:<key>`` transcript key, so the

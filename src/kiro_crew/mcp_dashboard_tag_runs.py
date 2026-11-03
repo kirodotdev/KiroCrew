@@ -351,7 +351,7 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
     # can be stale, so the route decides under its lock, after the
     # generation and ownership re-checks, and reports ``changed``.
     # ``expected_created`` pins the write to the slot generation resolved
-    # above, the same token chat_folder_file_self sends; the endpoint
+    # above, the same token the drop below sends; the endpoint
     # checks it under its lock, so a slot key recreated for a different
     # conversation in between is refused instead of pinned.
     pin_body: dict[str, Any] = {"pinned": want}

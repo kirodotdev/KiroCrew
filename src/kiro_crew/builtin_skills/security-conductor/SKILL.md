@@ -422,16 +422,9 @@ verifier outlasts them, raise either with `monitor_update` before it expires;
 `monitor_start` is create-only. Call `autonudge_stop` yourself when a stop
 condition fires; coasting into a cap is a failure, not a finish.
 
-**Before the first dispatch, file yourself in the audit's folder** — one
-`chat_folder_file_self` with `folder` set to a few-word name for the target
-under audit. It creates the folder if needed and moves only your own session,
-so it never prompts. Every session you then open goes to
-`<audit>/<agent>` via `session_create`'s `folder` argument — auditors,
-verifiers, the retrospective and fixers each under the subfolder named for
-the agent that runs them — so the person sees one heading for the audit, your
-session directly under it, and the fleet grouped by role beneath. A conductor
-floating at the top level while its fleet sits in a folder is the shape this
-step removes.
+**Do not manage folders.** Do not file yourself, create folders or pass
+`folder` to `session_create`. Leave each session you open where
+`session_create` puts it; the person's folders are theirs to arrange.
 
 Each cycle, in this order:
 

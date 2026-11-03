@@ -215,6 +215,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _dispatching_crewmate,
         _hands_off_to_own_worker,
         _inherited_pin_foreign_to_child,
+        _inherited_project_dir,
         _model_pin_refusal,
         _record_spawn,
         _register_spawn_pending_edge,
@@ -410,6 +411,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _unhide_folder  # noqa: F401
+    from kiro_crew.dashboard.chat_folders import _validate_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import note_folder_filed  # noqa: F401
     from kiro_crew.dashboard.chat_fork import _FORK_DIRECTION_HEAD  # noqa: F401
     from kiro_crew.dashboard.chat_fork import ForkResult  # noqa: F401
