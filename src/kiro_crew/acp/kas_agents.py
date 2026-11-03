@@ -1897,27 +1897,24 @@ def hoist_servers_for_session(
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
         # the token is per SESSION while the projection is per agent.
-        # Apply the token only to managed entries; user-declared servers hoisted
-        # via ``include_user_servers=True`` travel as projected with no session
-        # credential.
+        # Apply the token only to managed and app entries; user-declared servers
+        # hoisted via ``include_user_servers=True`` travel as projected with no
+        # session credential.
         from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
 
-        hoisted = [
-            (
-                _tokened_managed_element(
+        tokened: list[dict[str, Any]] = []
+        for element in hoisted:
+            name = element["name"]
+            if name in MANAGED_MCP_SERVER_NAMES:
+                element = _tokened_managed_element(
                     element, session_token, attach_stub_session_token, managed_entries
                 )
-                if element["name"] in MANAGED_MCP_SERVER_NAMES
-                else (
-                    tokened_app_element(
-                        element, apps[element["name"]], session_token, attach_stub_session_token
-                    )
-                    if element["name"] in apps
-                    else element
+            elif name in apps:
+                element = tokened_app_element(
+                    element, apps[name], session_token, attach_stub_session_token
                 )
-            )
-            for element in hoisted
-        ]
+            tokened.append(element)
+        hoisted = tokened
     return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
 
 
