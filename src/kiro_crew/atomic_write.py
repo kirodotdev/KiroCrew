@@ -471,9 +471,27 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
     if budget_s is not None:
         _replace_with_budget(src, dst, budget_s)
         return
+    _retry_sharing_window(os.replace, src, dst)
+
+
+def rename_with_retry(src: Path | str, dst: Path | str) -> None:
+    """``os.rename(src, dst)``, retrying the same window as :func:`replace_with_retry`.
+
+    For a move that must never overwrite: on Windows ``os.rename`` refuses an
+    existing *dst* with ``FileExistsError``, which is not retried. The retry
+    budget, the Windows-only gate, the no-sleep-on-the-event-loop rule and the
+    final attempt outside the loop are the count arm's, shared through one loop.
+    """
+    _retry_sharing_window(os.rename, src, dst)
+
+
+def _retry_sharing_window(
+    rename: Callable[[str, str], None], src: Path | str, dst: Path | str
+) -> None:
+    """The count arm of :func:`replace_with_retry`, for any by-name rename."""
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
-            os.replace(str(src), str(dst))
+            rename(str(src), str(dst))
             return
         except PermissionError:
             if not platform_compat.IS_WINDOWS:
@@ -492,7 +510,7 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
                 _REPLACE_MAX_ATTEMPTS,
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
-    os.replace(str(src), str(dst))
+    rename(str(src), str(dst))
 
 
 def _replace_with_budget(src: Path | str, dst: Path | str, budget_s: float) -> None:
