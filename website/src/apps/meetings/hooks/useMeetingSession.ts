@@ -737,7 +737,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // Also guarded on `connecting`: pausing the meeting between the worklet loading
   // and the server's 'ready' frame leaves `active` false, so without the `connecting`
   // check the stop() branch never fires and buffered PCM is flushed after 'ready',
-  // persisting pause-window speech into the notes and tasks.
+  // persisting pause-window speech into the notes and tasks. `isStarting()` covers
+  // the step before that: a pause while the permission prompt is open publishes
+  // neither flag, and stopping there is what releases the stream granted later.
   //
   // A TERMINAL server error frame (streaming off, no consent, ...) `halts` the
   // hook: its own `start()` refuses until `stop()` runs, whatever order the
@@ -756,7 +758,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     if (mayOpen && !t.active && !t.connecting && !t.halted) {
       void t.start()
     }
-    if (!mayOpen && (t.active || t.connecting || t.halted)) {
+    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting())) {
       t.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive, transcriptionConnecting, transcriptionHalted])
