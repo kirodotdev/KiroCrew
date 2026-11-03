@@ -12724,6 +12724,8 @@
         "memory_preparing": "La memoria è ancora in preparazione dopo il riavvio del gateway. I messaggi in coda verranno eseguiti quando sarà pronta.",
         "agent_switch_blocked_pinned": "Il passaggio a {{agent}} è stato bloccato — questo thread è fissato a {{member}}. Il turno successivo riparte sulla crew fissata.",
         "agent_switch_blocked_crew_mode": "Il passaggio a {{agent}} è stato bloccato — questa chat è in Crew Mode, che resta sul suo direttore. Il turno successivo riparte sul direttore.",
+        "agent_switch_blocked_channel": "Il passaggio a {{agent}} è stato bloccato — questa chat è collegata a un canale Slack servito da {{channel_agent}}. Il prossimo turno riparte su quell'agente.",
+        "channel_message_not_run": "Un messaggio da un canale Slack non è stato eseguito: l'agente di questa sessione non è quello usato da quel canale.",
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il membro della crew.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare."
@@ -13296,6 +13298,8 @@
       "could_not_set_the_agent_default_model": "Impossibile impostare il modello predefinito dell'agente",
       "could_not_switch_variant": "Impossibile cambiare versione",
       "side_chat_pane_gone": "Impossibile aprire una Chat laterale per quel riquadro: la sua sessione non è più disponibile: {{error}}",
+      "slack_link_agent_mismatch": "Questo canale Slack usa l'agente {{agent}}, quindi questa sessione non è stata collegata al suo thread. Il tuo messaggio è nel compositore e non è stato inviato: invialo qui senza Slack, oppure apri una sessione con {{agent}} e collega il thread da lì.",
+      "slack_link_agent_mismatch_unknown": "Questo canale Slack usa un altro agente, quindi questa sessione non è stata collegata al suo thread. Il tuo messaggio è nel compositore e non è stato inviato: invialo qui senza Slack, oppure apri una sessione con l'agente del canale e collega il thread da lì.",
       "could_not_start_a_new_session": "Impossibile avviare una nuova sessione",
       "could_not_start_session_message_restored": "Non è stato possibile avviare una nuova sessione: {{error}}. Il tuo messaggio è stato ripristinato — invialo di nuovo per riprovare.",
       "enter_split_view": "Attiva la vista divisa",

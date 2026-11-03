@@ -12228,6 +12228,8 @@
         "memory_preparing": "网关重启后仍在准备记忆。准备就绪后，队列中的消息将会运行。",
         "agent_switch_blocked_pinned": "已阻止切换到 {{agent}} — 此话题已绑定到 {{member}}。下一轮将在绑定的团队上重新开始。",
         "agent_switch_blocked_crew_mode": "已阻止切换到 {{agent}} — 此聊天处于 Crew Mode，会保持在其指挥者上。下一轮将在指挥者上重新开始。",
+        "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
+        "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该团队成员。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
         "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。"
@@ -12786,6 +12788,8 @@
       "could_not_set_the_agent_default_model": "无法设置代理的默认模型",
       "could_not_switch_variant": "无法切换版本",
       "side_chat_pane_gone": "无法为该分栏打开随手问——它的会话已不可用：{{error}}",
+      "slack_link_agent_mismatch": "此 Slack 频道使用 {{agent}} 智能体，因此此会话未关联到其话题。你的消息还在输入框中，没有发送：可以在此处发送而不经过 Slack，或用 {{agent}} 打开会话后从那里关联话题。",
+      "slack_link_agent_mismatch_unknown": "此 Slack 频道使用其他智能体，因此此会话未关联到其话题。你的消息还在输入框中，没有发送：可以在此处发送而不经过 Slack，或用该频道的智能体打开会话后从那里关联话题。",
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
       "enter_split_view": "进入分屏视图",

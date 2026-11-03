@@ -15,7 +15,7 @@ import json
 from enum import Enum
 from typing import Any
 
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
+from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, source_channels_of
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -533,8 +533,10 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     (``STEER_POSSIBLY_DELIVERED_META``), at a requeued automation steer
     (:data:`AUTOMATION_STEER_META`), at an entry a decision steered
     (``meta.decisions_strip``) and where the stamped turn actor
-    changes, so an app's queued send never folds into the user's own words; an
-    entry that starts no run pops alone.
+    changes, so an app's queued send never folds into the user's own words, and
+    where the stamped source channels change, so a turn admission refuses for one
+    channel never carries another message with it; an entry that starts no run
+    pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
@@ -552,6 +554,11 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
+                break
+            # Admission judges a turn by every source channel its entries carry,
+            # so entries from different channels (or one with none) never share a
+            # turn: a refusal of one channel's words must not take another's.
+            if to_merge and source_channels_of(item) != source_channels_of(to_merge[0]):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_live_slot_memory_mode,
 )
+from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
 from kiro_crew.members import DM_SLOT_MODE, is_dispatchable_member_name, member_lifecycle
@@ -184,6 +185,71 @@ def _check_owner(turn) -> tuple[str | None, str]:
     return None, ""
 
 
+def _channels_judging_turn(turn, slot) -> tuple[str, ...]:
+    """The Slack channels whose configured agent a turn must run on.
+
+    The channels a producer stamped win, whatever the slot is linked to now.
+    A stamp is a restriction, so it is judged even on a turn that lost its
+    channel-origin flag (a queued reply restored after a restart). A
+    channel-origin turn nobody stamped falls back to the slot's linked channel.
+    """
+    stamped = getattr(turn, "_directive_source_channels", ()) or ()
+    if isinstance(stamped, tuple):
+        channels = tuple(ch for ch in stamped if isinstance(ch, str) and ch)
+        if channels:
+            return channels
+    if not getattr(turn, "_directive_channel_origin", False):
+        return ()
+    if getattr(slot, "_slack_linked", False):
+        linked = getattr(slot, "_slack_channel", "")
+        if isinstance(linked, str) and linked:
+            return (linked,)
+    return ()
+
+
+async def _source_channel_mismatch(channels: tuple[str, ...], slot, session_key: str) -> str | None:
+    """The agent one of *channels* requires that *slot* does not run, or None.
+
+    ``"<unknown>"`` when it cannot be named, including a restored source channel
+    that could not be read. Judged against the execution record the turn will
+    run on, read off the loop.
+    """
+    from kiro_crew.slack.handler import linked_slot_channel_mismatch
+
+    for channel in channels:
+        if channel == UNREADABLE_SOURCE_CHANNEL:
+            return "<unknown>"
+        required = await linked_slot_channel_mismatch(channel, slot, session_key)
+        if required is not None:
+            return required
+    return None
+
+
+def _refuse_channel_turn(slot, operation: str) -> None:
+    """Log, audit and tell the session that a channel's words were not run."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    logger.warning(
+        "refusing a channel message on slot %s: its agent is not the channel's",
+        redact_log_via_context(slot.key),
+    )
+    sel().log_api_access(
+        caller=f"slot={slot.key}",
+        operation=operation,
+        outcome="denied",
+        source="channel_agent_pinned",
+        resources=f"slot={slot.key}",
+        error="channel message on a session off its Slack channel's agent",
+    )
+    slot.append(
+        "notice",
+        "⚠ A message from a Slack channel was not run: this session's agent is"
+        " not the agent that channel uses.",
+        "msg msg-info",
+        meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CHANNEL_MESSAGE_NOT_RUN),
+    )
+
+
 def _release_dispatch_lock(turn) -> None:
     _dispatch_lock = turn._dispatch_lock
     if turn._dispatch_lock_held:
@@ -346,6 +412,18 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn.selected_binding = selected_binding
     registered_slot = state._slots.get(slot.key)
     turn.registered_slot = registered_slot
+    # A message typed in a Slack channel runs only on that channel's agent.
+    # The channels are the ones the producer stamped on the turn, so an unlink
+    # or relink while the turn waited does not change which channel judges it;
+    # a turn no producer stamped falls back to the slot's linked channel. Read
+    # under the dispatch lock the switch routes hold, so the agent read is the
+    # one this turn captures: a switch that published a provisional agent and
+    # then rolled back cannot hand the turn another one.
+    _source_channels = _channels_judging_turn(turn, slot)
+    if _source_channels:
+        if await _source_channel_mismatch(_source_channels, slot, session_key) is not None:
+            _refuse_channel_turn(slot, "chat_runner.turn_admission")
+            return _Flow.END
 
     try:
         cfg = KiroCrewConfig.load()

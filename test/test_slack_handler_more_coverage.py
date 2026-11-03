@@ -1447,9 +1447,11 @@ class TestLinkedThreadRouting:
             *,
             _directive_user_origin,
             _directive_channel_origin,
+            _directive_source_channels,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
+            assert _directive_source_channels == ("C1",)
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

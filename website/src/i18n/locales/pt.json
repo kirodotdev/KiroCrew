@@ -12724,6 +12724,8 @@
         "memory_preparing": "A memória ainda está sendo preparada após o reinício do gateway. As mensagens na fila serão executadas quando ela estiver pronta.",
         "agent_switch_blocked_pinned": "A troca para {{agent}} foi bloqueada — este tópico está fixado em {{member}}. O próximo turno reinicia na crew fixada.",
         "agent_switch_blocked_crew_mode": "A troca para {{agent}} foi bloqueada — este chat está no Crew Mode, que fica no seu condutor. O próximo turno reinicia no condutor.",
+        "agent_switch_blocked_channel": "A troca para {{agent}} foi bloqueada — este chat está vinculado a um canal do Slack atendido por {{channel_agent}}. O próximo turno reinicia nesse agente.",
+        "channel_message_not_run": "Uma mensagem de um canal do Slack não foi executada: o agente desta sessão não é o agente que esse canal usa.",
         "crew_name_undispatchable": "Não é possível usar o nome da crew deste tópico. Renomeie ou recrie o membro da crew.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar."
@@ -13296,6 +13298,8 @@
       "could_not_set_the_agent_default_model": "Não foi possível definir o modelo padrão do agente",
       "could_not_switch_variant": "Não foi possível trocar de versão",
       "side_chat_pane_gone": "Não foi possível abrir um Chat lateral para esse painel: a sessão dele não está mais disponível: {{error}}",
+      "slack_link_agent_mismatch": "Este canal do Slack usa o agente {{agent}}, por isso esta sessão não foi vinculada à conversa dele. Sua mensagem está no editor e não foi enviada: envie-a aqui sem o Slack ou abra uma sessão com {{agent}} e vincule a conversa a partir dela.",
+      "slack_link_agent_mismatch_unknown": "Este canal do Slack usa outro agente, por isso esta sessão não foi vinculada à conversa dele. Sua mensagem está no editor e não foi enviada: envie-a aqui sem o Slack ou abra uma sessão com o agente do canal e vincule a conversa a partir dela.",
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
       "could_not_start_session_message_restored": "Não foi possível iniciar uma nova sessão: {{error}}. Sua mensagem foi restaurada — envie novamente para tentar de novo.",
       "enter_split_view": "Entrar na visualização dividida",

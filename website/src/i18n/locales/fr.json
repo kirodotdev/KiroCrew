@@ -12724,6 +12724,8 @@
         "memory_preparing": "La mémoire est encore en préparation après le redémarrage de la passerelle. Les messages en file d’attente s’exécuteront quand elle sera prête.",
         "agent_switch_blocked_pinned": "Le passage à {{agent}} a été bloqué — ce fil est épinglé à {{member}}. Le prochain tour redémarre sur la crew épinglée.",
         "agent_switch_blocked_crew_mode": "Le passage à {{agent}} a été bloqué — ce chat est en Crew Mode, qui reste sur son chef d’orchestre. Le prochain tour redémarre sur le chef d’orchestre.",
+        "agent_switch_blocked_channel": "Le passage à {{agent}} a été bloqué — ce chat est lié à un canal Slack servi par {{channel_agent}}. Le prochain tour redémarre sur cet agent.",
+        "channel_message_not_run": "Un message d'un canal Slack n'a pas été exécuté : l'agent de cette session n'est pas celui qu'utilise ce canal.",
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le membre de la crew.",
         "remote_crew_read_only": "Ce chat s’est exécuté sur une crew distante et il est maintenant en lecture seule. Ouvre la session de la crew pour continuer.",
         "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer."
@@ -13296,6 +13298,8 @@
       "could_not_set_the_agent_default_model": "Impossible de définir le modèle par défaut de l’agent",
       "could_not_switch_variant": "Impossible de changer de version",
       "side_chat_pane_gone": "Impossible d’ouvrir un Chat annexe pour ce volet — sa session n’est plus disponible : {{error}}",
+      "slack_link_agent_mismatch": "Ce canal Slack utilise l’agent {{agent}}, cette session n’a donc pas été liée à son fil. Ton message est dans la zone de saisie et n’a pas été envoyé : envoie-le ici sans Slack, ou ouvre une session sur {{agent}} et lie le fil depuis celle-ci.",
+      "slack_link_agent_mismatch_unknown": "Ce canal Slack utilise un autre agent, cette session n’a donc pas été liée à son fil. Ton message est dans la zone de saisie et n’a pas été envoyé : envoie-le ici sans Slack, ou ouvre une session sur l’agent du canal et lie le fil depuis celle-ci.",
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
       "could_not_start_session_message_restored": "Impossible de démarrer une nouvelle session : {{error}}. Ton message a été restauré — envoie-le à nouveau pour réessayer.",
       "enter_split_view": "Passer en vue divisée",

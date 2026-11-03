@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
         _build_stream_chunk,
+        _channel_pin_refusal,
         _ChatSlot,
         _deny_app_session_settings,
         _emit_agent_assignment,
@@ -988,6 +989,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 {"error": "cannot set agent on running slot"},
                 status=409,
             )
+        # A slot linked to a pinned Slack channel's thread adopts only that
+        # channel's agent, the same rule the switch route holds.
+        pinned = _channel_pin_refusal(slot, agent, getattr(slot, "agent_kind", "") or "")
+        if pinned is not None:
+            return pinned
         slot.agent = agent
         _emit_agent_assignment(slot.key, agent)
     else:

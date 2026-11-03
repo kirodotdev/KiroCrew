@@ -335,6 +335,36 @@ def _crew_mode_lock_refusal(
     )
 
 
+def _channel_pin_refusal(slot: _ChatSlot, agent_name: Any, agent_kind: Any) -> web.Response | None:
+    """409 when *slot* is linked to a thread of a Slack channel that names its own
+    agent and *agent_name* in *agent_kind* is not that agent, else ``None``.
+
+    Switching it away would hand the thread's replies, queued ones included, to
+    another agent. Unlinking the thread lifts it. No awaits, so a caller can
+    place it in a no-await commit window.
+    """
+    if not getattr(slot, "_slack_linked", False):
+        return None
+    linked_channel = getattr(slot, "_slack_channel", "") or ""
+    if not linked_channel:
+        return None
+    from kiro_crew.slack.handler import channel_agent_mismatch
+
+    required = channel_agent_mismatch(linked_channel, str(agent_name or ""), str(agent_kind or ""))
+    if required is None:
+        return None
+    _emit_agent_assignment(slot.key, str(agent_name or ""), outcome="denied_channel_agent")
+    named = f"the {required} agent" if required != "<unknown>" else "its own agent"
+    return web.json_response(
+        {
+            "error": f"this session is linked to a Slack channel served by {named};"
+            " unlink it to switch agents",
+            "code": "channel_agent_pinned",
+        },
+        status=409,
+    )
+
+
 async def switch_slot_agent(
     state: DashboardState,
     slot: _ChatSlot,
@@ -411,6 +441,11 @@ async def switch_slot_agent(
             {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
             status=409,
         )
+    # A session linked to a thread of a Slack channel that names its own agent
+    # is served only by that agent; checked again in the commit window below.
+    pinned = _channel_pin_refusal(slot, agent_name, agent_kind)
+    if pinned is not None:
+        return pinned
     refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
@@ -805,6 +840,11 @@ async def switch_slot_agent(
         locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
         if locked is not None:
             return locked
+        # The channel pin, read again in this no-await window with the resolved
+        # namespace: a link made while resolution awaited must hold too.
+        pinned = _channel_pin_refusal(slot, agent_name, new_agent_kind)
+        if pinned is not None:
+            return pinned
         slot.agent = _CommitToken(agent_name)
         slot.agent_kind = _CommitToken(new_agent_kind)
         committed_agent = slot.agent
