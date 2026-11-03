@@ -91,7 +91,7 @@ export default function PromptsTab() {
   const [filter, setFilter] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const { data: prompts = [], isLoading: loading, error } = useQuery<Prompt[]>({
+  const { data: prompts = [], isLoading: loading, isFetching, error, refetch } = useQuery<Prompt[]>({
     queryKey: ['prompts'],
     queryFn: api.prompts,
   })
@@ -518,7 +518,22 @@ export default function PromptsTab() {
         </div>
       )}
       {loading && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.promptsTab.loading_prompts')}</p>}
-      {error && <p className="text-danger text-sm px-3 py-4">{error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}</p>}
+      {/* The list read failing left a bare text-danger line with no way back:
+          no retry, no hand-off, and no structured context for one. ErrorNotice
+          recovers the journal report from the message and carries the agent
+          hand-off (askAgent is safe here -- the list read holds no draft), and
+          the retry refetches the same query. */}
+      {error && (
+        <div className="px-3 py-4 flex flex-col items-start gap-2">
+          <ErrorNotice
+            message={error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}
+            askAgent
+          />
+          <Btn disabled={isFetching} onClick={() => void refetch()}>
+            {i18nT('pages.overview.promptsTab.retry_read')}
+          </Btn>
+        </div>
+      )}
 
       {/* The empty state now names the affordance on this page rather than the
           filesystem path this feature replaces. */}

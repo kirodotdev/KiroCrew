@@ -1095,3 +1095,29 @@ describe('PromptsTab filter selection (#20262)', () => {
     expect(lastOpened()).toBe('alpha')
   })
 })
+
+
+describe('PromptsTab list-load failure', () => {
+  it('shows the error through a role=alert and a retry button that refetches', async () => {
+    // First load fails; the retry's load succeeds.
+    mockApi.prompts
+      .mockRejectedValueOnce(new StubApiError(503, 'gateway is unreachable'))
+      .mockResolvedValueOnce([USER_PROMPT])
+
+    renderTab()
+
+    // The failure renders through ErrorNotice (role="alert"), not a bare
+    // text-danger paragraph, so assistive tech announces it.
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/gateway is unreachable|failed to load/i)
+
+    // A Retry control exists and refetches the same query.
+    expect(mockApi.prompts).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    await waitFor(() => expect(mockApi.prompts).toHaveBeenCalledTimes(2))
+
+    // After the successful refetch the list renders and the error clears.
+    await screen.findByRole('option', { name: /my-prompt/ })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
