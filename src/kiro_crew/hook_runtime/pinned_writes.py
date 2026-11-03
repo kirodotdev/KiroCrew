@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         is_sensitive_path,
         logger,
         platform_compat,
+        replace_with_retry,
         validate_file_path,
     )
 
@@ -452,18 +453,20 @@ def _pinned_replace(
         else:
             # os.replace, not os.rename: on Windows rename REFUSES an existing
             # destination, while replace overwrites it -- and does so atomically,
-            # which is the property that matters here.
+            # which is the property that matters here. Through the retry: on
+            # Windows a reader holding the destination open fails the rename, and
+            # the same hold fails any other writer's rename onto this name.
             try:
-                os.replace(os.path.join(parent, tmp_name), path)
+                replace_with_retry(os.path.join(parent, tmp_name), path)
             except PermissionError as exc:
                 # A Windows sharing or lock violation (ERROR_SHARING_VIOLATION 32,
-                # ERROR_LOCK_VIOLATION 33) is another handle on the file (an
-                # editor, an indexer, an AV scan), not a check that failed: every
-                # check above already passed. It answers "busy" so a caller can
-                # say "try again" instead of naming a security refusal. Any other
-                # denial, and every PermissionError on POSIX, is genuine and stays
-                # "refused". The codes are literals because this body runs on the
-                # composed ``kiro_crew.hooks`` namespace.
+                # ERROR_LOCK_VIOLATION 33) that outlasts the retry is another handle
+                # on the file (an editor, an indexer, an AV scan), not a check that
+                # failed: every check above already passed. It answers "busy" so a
+                # caller can say "try again" instead of naming a security refusal.
+                # Any other denial, and every PermissionError on POSIX, is genuine
+                # and stays "refused". The codes are literals because this body runs
+                # on the composed ``kiro_crew.hooks`` namespace.
                 if platform_compat.IS_WINDOWS and getattr(exc, "winerror", None) in (32, 33):
                     logger.warning("could not replace %r: another process has the file open", path)
                     return "busy"

@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.imaging import (
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
@@ -657,7 +658,7 @@ def apply_repair(
         # Last possible moment: everything expensive is already done, so this
         # leaves only the stat-to-rename gap instead of the whole write.
         _refuse_if_moved(path, expect)
-        os.replace(tmp_name, path)
+        replace_with_retry(tmp_name, path)
     except BaseException:
         if fd_owned and fd is not None:
             os.close(fd)

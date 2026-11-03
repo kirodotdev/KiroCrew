@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, TypedDict
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import chmod_safe, file_lock
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ def _write_store(path: Path, store: ActivityStore) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
         chmod_safe(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
         return True
     except OSError:
         logger.debug("[mochi] activity log write failed", exc_info=True)
