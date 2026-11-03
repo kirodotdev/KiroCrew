@@ -6465,6 +6465,7 @@
       "project_switch_applies_next_turn": "下一条消息将在你选择的项目中运行。本次回复会在 {{project}} 中完成。",
       "project_switch_links_follow_pick": "本次回复中的链接会在你选择的项目中打开。",
       "project_locked_while_subagents_run": "子代理运行期间无法切换项目。",
+      "switching_project": "正在切换项目…",
       "steer_act_on_this_right_away_desc": "立即处理此消息",
       "steer_act_on_this_as_soon_as_possible_enter": "引导 — 尽快处理此消息 (Enter)",
       "stop_generation": "停止生成",

@@ -6978,6 +6978,7 @@
       "project_switch_applies_next_turn": "Следующее сообщение выполнится в выбранном проекте. Этот ответ завершится в {{project}}.",
       "project_switch_links_follow_pick": "Ссылки в этом ответе откроются в выбранном проекте.",
       "project_locked_while_subagents_run": "Проект нельзя сменить, пока работают субагенты.",
+      "switching_project": "Смена проекта…",
       "steer_act_on_this_right_away_desc": "Обработать прямо сейчас",
       "steer_act_on_this_as_soon_as_possible_enter": "Направить — обработать как можно скорее (Enter)",
       "stop_generation": "Остановить генерацию",

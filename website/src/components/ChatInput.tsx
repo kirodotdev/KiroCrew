@@ -23,6 +23,7 @@ import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
+import { COMPOSER_ROW_SPRING, ComposerSizer } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
@@ -123,10 +124,6 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// The box's height change between the one-row and two-row shapes and on a
-// wrapped or removed line (`inlineToolbarWhileFits`). Short and barely bouncy:
-// it fires mid-typing, so anything longer trails the caret.
-const COMPOSER_ROW_SPRING = { type: 'spring', stiffness: 520, damping: 38, mass: 0.8 } as const
 // Half the one-row box: the 44px text line plus its 1px border each side.
 const COMPOSER_ONE_ROW_RADIUS = 23
 // The one-row text line's padding, equal above and below so the line sits on
@@ -169,39 +166,6 @@ export type { ComposerBusyMode } from './chat-input/props'
 
 /** No Voice atom mounted: every dictation value at its idle default. */
 const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
-
-/**
- * The box's height animator for `inlineToolbarWhileFits`. Enabled, it is a
- * bottom-aligned clip whose height follows `height` (the inner box's measured
- * natural height) and springs between the two shapes when `animate` is set;
- * the inner box keeps its natural height (`shrink-0`), so while the sizer is
- * still shorter it clips the TOP of the text column and the buttons at the
- * bottom never move. The clip is `overflow: clip`, never `hidden`: a `hidden`
- * box keeps a scroll position, and WebKit scrolls it to bring a caret in that
- * clipped top band into view, so the text jumps while the box opens.
- * Disabled -- every host that does not opt in -- it renders
- * its children bare, so the ordinary composer's tree is exactly what it was.
- */
-function ComposerSizer({ enabled, height, animate, className, children }: {
-  enabled: boolean
-  height: number | null
-  animate: boolean
-  className: string
-  children: React.ReactNode
-}) {
-  if (!enabled) return <>{children}</>
-  return (
-    <motion.div
-      data-testid="composer-sizer"
-      initial={false}
-      animate={{ height: height ?? 'auto' }}
-      transition={animate ? COMPOSER_ROW_SPRING : { duration: 0 }}
-      className={className}
-    >
-      {children}
-    </motion.div>
-  )
-}
 
 function ChatInput({
   aboveComposer,
@@ -263,6 +227,7 @@ function ChatInput({
   showContextTokens,
   isRunning = false,
   projectLocked = false,
+  projectSwitching = false,
   compacting = false,
   stopDeclined = false,
   onStop,
@@ -1955,14 +1920,21 @@ function ChatInput({
             disabled={projectLocked}
             title={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
             aria-label={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            /* A pick waits on the turn-preparation lock, which a cold spawn
+               holds for seconds: the spinner says the pick was taken, the
+               same signal as the memory-mode chip (#20351). */
+            aria-busy={projectSwitching || undefined}
+            data-testid="composer-project-chip"
           >
-            <FolderOpen size={13} className="shrink-0 opacity-70" />
+            {projectSwitching
+              ? <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" data-testid="composer-project-switching" />
+              : <FolderOpen size={13} className="shrink-0 opacity-70" />}
             {/* Budget favours the branch: the folder name is also in the tooltip
                 and the picker, whereas a clipped branch ("feat/pro…") is exactly
                 the ambiguity this label exists to remove. The enclosing shelf
                 group is flex-1/min-w-0, so both segments still shrink below
                 these caps on a narrow window. */}
-            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
@@ -1979,6 +1951,7 @@ function ChatInput({
             </>
           )}
           {!!project && <ProjectAwsProfileStatus project={project} shelfCompact={shelfCompact} />}
+          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : ''}</span>
           </div>
           )}
           </div>

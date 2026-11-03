@@ -292,6 +292,9 @@ export interface ChatInputProps {
    *  attached. A pick there cannot land at the next turn, because the deferred
    *  session reset stays armed while children share the runtime. */
   projectLocked?: boolean
+  /** A project pick is still waiting on its route (it holds the turn-
+   *  preparation lock): the chip shows a spinner and announces it (#20351). */
+  projectSwitching?: boolean
   onStop?: () => void
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the

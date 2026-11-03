@@ -2170,6 +2170,7 @@
       "project_switch_applies_next_turn": "Your next message runs in the project you pick. This reply finishes in {{project}}.",
       "project_switch_links_follow_pick": "Links in this reply will open in the project you pick.",
       "project_locked_while_subagents_run": "The project can't change while sub-agents are running.",
+      "switching_project": "Switching project…",
       "queue_run_after_the_current_work_finishes_enter": "Queue — run after the current work finishes (Enter)",
       "recording_click_mic_to_stop": "Recording… click mic to stop",
       "reject_all": "Reject all",

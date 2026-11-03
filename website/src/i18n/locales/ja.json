@@ -6465,6 +6465,7 @@
       "project_switch_applies_next_turn": "次のメッセージは選んだプロジェクトで実行されます。この応答は {{project}} で最後まで進みます。",
       "project_switch_links_follow_pick": "この応答内のリンクは選んだプロジェクトで開きます。",
       "project_locked_while_subagents_run": "サブエージェントの実行中はプロジェクトを変更できません。",
+      "switching_project": "プロジェクトを切り替えています…",
       "steer_act_on_this_right_away_desc": "今すぐ対応",
       "steer_act_on_this_as_soon_as_possible_enter": "指示を追加 — できるだけ早く対応 (Enter)",
       "stop_generation": "生成を停止",

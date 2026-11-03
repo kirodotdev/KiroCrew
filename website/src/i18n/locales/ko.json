@@ -6465,6 +6465,7 @@
       "project_switch_applies_next_turn": "다음 메시지는 선택한 프로젝트에서 실행됩니다. 이 응답은 {{project}}에서 끝납니다.",
       "project_switch_links_follow_pick": "이 응답의 링크는 선택한 프로젝트에서 열립니다.",
       "project_locked_while_subagents_run": "하위 에이전트가 실행 중일 때는 프로젝트를 바꿀 수 없습니다.",
+      "switching_project": "프로젝트를 바꾸는 중…",
       "steer_act_on_this_right_away_desc": "지금 바로 처리",
       "steer_act_on_this_as_soon_as_possible_enter": "방향 지시 — 최대한 빨리 처리 (Enter)",
       "stop_generation": "생성 중지",

@@ -6636,6 +6636,7 @@
       "project_switch_applies_next_turn": "Deine nächste Nachricht läuft im Projekt, das du wählst. Diese Antwort wird in {{project}} fertig.",
       "project_switch_links_follow_pick": "Links in dieser Antwort öffnen sich im gewählten Projekt.",
       "project_locked_while_subagents_run": "Das Projekt kann nicht gewechselt werden, solange Unteragenten laufen.",
+      "switching_project": "Projekt wird gewechselt…",
       "steer_act_on_this_right_away_desc": "Sofort bearbeiten",
       "steer_act_on_this_as_soon_as_possible_enter": "Steuern — so bald wie möglich bearbeiten (Enter)",
       "stop_generation": "Erzeugung stoppen",
