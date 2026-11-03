@@ -393,7 +393,7 @@ class TestBuildSourceFingerprintCleanTreeGuard:
         monkeypatch.setattr(fe.subprocess, "run", fake)
         fe._write_build_source_fingerprint(tmp_path, "/usr/bin/git", log=lambda *_: None)
         fp = tmp_path / "src" / "kiro_crew" / "static" / "dist" / fe._BUILD_SOURCE_FINGERPRINT
-        assert fp.exists() and fp.read_text().strip() == "tree_head"
+        assert fp.exists() and fp.read_text(encoding="utf-8").strip() == "tree_head"
 
     def test_dirty_website_is_not_stamped(self, tmp_path, monkeypatch):
         fe, fake = self._git_status(porcelain=b" M website/src/App.tsx\n")

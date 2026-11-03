@@ -1275,7 +1275,7 @@ async def test_remove_all_tells_a_corrupt_store_from_an_empty_one(tmp_path: Path
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    (empty / "crons.json").write_text(json.dumps({"jobs": []}))
+    (empty / "crons.json").write_text(json.dumps({"jobs": []}), encoding="utf-8")
     healthy = CronService(base_dir=empty)
     quiet = await cron_remove_all_reply(healthy, source="test", caller="test")
 
