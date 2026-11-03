@@ -14891,6 +14891,8 @@
       "by_category": "श्रेणी के अनुसार",
       "clear": "साफ़ करें",
       "clear_old_caches": "स्क्रॉल कैश साफ़ करो",
+      "delete_all_keys_one": "{{count}} कुंजी हटाओ",
+      "delete_all_keys_other": "सभी {{count}} कुंजियां हटाओ",
       "delete_cached_scroll_positions_from_old_sessions": "सभी सत्रों की कैश की गई पंक्ति ऊंचाइयां और सहेजी गई पठन स्थितियां हटाओ (सुरक्षित — स्क्रॉल करने पर फिर बन जाती हैं)",
       "delete_key": "कुंजी हटाएं",
       "export": "एक्सपोर्ट करें",

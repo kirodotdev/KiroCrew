@@ -14605,6 +14605,7 @@
       "by_category": "카테고리별",
       "clear": "지우기",
       "clear_old_caches": "스크롤 캐시 지우기",
+      "delete_all_keys_other": "키 {{count}}개 모두 삭제",
       "delete_cached_scroll_positions_from_old_sessions": "모든 세션의 캐시된 행 높이와 저장된 읽기 위치를 삭제합니다 (안전함 — 스크롤 시 다시 생성됩니다)",
       "delete_key": "키 삭제",
       "export": "내보내기",
