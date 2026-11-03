@@ -44,6 +44,7 @@ from push_guard_helpers import (
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import default_timeout
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -392,32 +393,57 @@ class TestPushGuardGitFailures:
         assert "SAFE TO PUSH" not in stdout
 
     @staticmethod
-    def _slow_fetch_git(tmp_path: Path, chatter_s: float) -> list[str]:
-        """A git whose fetch prints progress every 0.2 s for ``chatter_s`` s and for as
-        long as the real fetch it runs takes (silent when 0, and then it hangs)."""
+    def _slow_fetch_git(tmp_path: Path, release: Path | None = None) -> list[str]:
+        """A git whose fetch prints progress every 0.2 s until ``release`` exists and for as
+        long as the real fetch it runs takes (silent without ``release``, and then it hangs)."""
         script = tmp_path / "slow_fetch_git.py"
         script.write_text(
-            "import subprocess, sys, time\n"
+            "import os, subprocess, sys, time\n"
             "args = sys.argv[1:]\n"
             "fetch = 'fetch' in args\n"
-            "if fetch and not {chatter}:\n"
+            "release = {release!r}\n"
+            "if fetch and not release:\n"
             # flake-ok: the fake git's silent hang is the stall under test, cut at FETCH_STALL_S
             "    time.sleep({hang})\n"
-            # flake-ok: the fake git's own clock times its progress chatter; no test asserts on it
-            "end = time.monotonic() + {chatter}\n"
             "proc = subprocess.Popen([{git!r}] + args)\n"
-            # Progress until the chatter is over AND the real fetch is done, so
-            # no silence window is ever spent on spawning or fetching.
-            # flake-ok: the fake git chatters until its own clock passes the end; moved verbatim
-            "while fetch and (proc.poll() is None or time.monotonic() < end):\n"
+            "lost_run = time.monotonic() + {lost_run}\n"
+            # Progress until the test releases it AND the real fetch is done, so
+            # no silence window is ever spent on spawning or fetching. The lost-run
+            # deadline ends a fetch that is never released or never finishes.
+            "while fetch and (proc.poll() is None or (release and not os.path.exists(release))):\n"
+            "    if time.monotonic() > lost_run:\n"
+            "        proc.kill()\n"
+            "        sys.exit('the fetch was not released or did not finish')\n"
             "    sys.stderr.write('Receiving objects: x\\r'); sys.stderr.flush()\n"
             # flake-ok: the fake git's 0.2 s progress cadence is its output, not a test barrier
             "    time.sleep(0.2)\n"
             "sys.exit(proc.wait(timeout={hang}))\n".format(
-                chatter=chatter_s, hang=_SUBPROCESS_TIMEOUT_S, git=shutil.which("git")
+                release=str(release or ""),
+                hang=_SUBPROCESS_TIMEOUT_S,
+                git=shutil.which("git"),
+                lost_run=default_timeout(),
             )
         )
         return [sys.executable, str(script)]
+
+    @staticmethod
+    def _release_past_the_stall_window(monkeypatch, release: Path, stall_s: float) -> None:
+        """Create ``release`` once the guard has polled the fetch for more than ``stall_s`` s.
+
+        Each poll is a ``Popen.wait`` that runs its whole timeout while the fetch lives, so at
+        the next poll the fetch has kept receiving for longer than the stall bound and was not
+        cut.
+        """
+        waited = 0.0
+
+        def poll(argv, timeout):
+            nonlocal waited
+            if "fetch" in argv:
+                if waited > stall_s:
+                    release.touch()
+                waited += timeout or 0
+
+        _spy_popen(monkeypatch, on_wait=poll)
 
     def test_a_stalled_fetch_is_stopped_and_names_the_manual_fetch(
         self, repo_pair, monkeypatch, tmp_path
@@ -428,7 +454,7 @@ class TestPushGuardGitFailures:
         rc, _, stderr = _inprocess(
             monkeypatch,
             clone_dir,
-            self._slow_fetch_git(tmp_path, 0),
+            self._slow_fetch_git(tmp_path),
             overrides={"FETCH_STALL_S": 1},
         )
         assert rc == 40 and "made no progress for 1 s" in stderr, stderr
@@ -442,11 +468,14 @@ class TestPushGuardGitFailures:
         """The bound is on silence, not on the total: a slow link finishes."""
         clone_dir, _ = repo_pair
         _feature(clone_dir)
+        stall_s = 2
+        release = tmp_path / "release"
+        self._release_past_the_stall_window(monkeypatch, release, stall_s)
         rc, stdout, stderr = _inprocess(
             monkeypatch,
             clone_dir,
-            self._slow_fetch_git(tmp_path, 3),
-            overrides={"FETCH_STALL_S": 2},
+            self._slow_fetch_git(tmp_path, release),
+            overrides={"FETCH_STALL_S": stall_s},
         )
         assert rc == 0 and "SAFE TO PUSH" in stdout, stderr
 
