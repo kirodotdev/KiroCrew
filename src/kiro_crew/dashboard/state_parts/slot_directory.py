@@ -45,7 +45,8 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 #: The single ceiling on live slots, owned by the module that owns the slot
 #: table (see :meth:`DashboardState.live_slot_count`). Every path that allocates
-#: a slot -- session create, chat fork, session import -- tests ``live_slot_count()``
+#: a slot -- session create, chat fork, session import, the workflow result
+#: fallback (``workflow_inject``) -- tests ``live_slot_count()``
 #: against this one number, so raising the ceiling is a single edit and no entry
 #: point can silently drift to a different limit.
 MAX_LIVE_SLOTS = 500
