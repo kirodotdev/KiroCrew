@@ -21,8 +21,9 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = REPO_ROOT / "src/kiro_crew/apps/builtins/design_critique/skills/design-critique/scripts"
+# tests/<this file> -> parents[1] is the app's own directory.
+APP_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = APP_ROOT / "skills/design-critique/scripts"
 SSRF_GUARD = SCRIPTS / "ssrf-guard.mjs"
 ENSURE_PW = SCRIPTS / "ensure-playwright.mjs"
 

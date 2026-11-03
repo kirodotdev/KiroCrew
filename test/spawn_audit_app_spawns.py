@@ -587,5 +587,14 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
         "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
         "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
+        # TEST-ONLY, and the spawn is the thing under test: Design Critique's capture
+        # scripts are Node ESM modules, so the only way to call their shipped pure
+        # functions (``hostResolverRule``, ``installSsrfGuard``, ``getPlaywright``) is
+        # a ``node --input-type=module -e <program>`` child. Fixed argv, no shell=True;
+        # the program is a literal built in the test from a ``file://`` URI of the
+        # app's own script and JSON-encoded fixture inputs, the cwd and environment
+        # overrides are the test's own ``tmp_path``. Nothing here is agent-derived.
+        "apps/builtins/design_critique/tests/test_capture_site_resolver_rule.py::_rules",
+        "apps/builtins/design_critique/tests/test_ssrf_guard_fail_closed.py::_run_node",
     }
 )

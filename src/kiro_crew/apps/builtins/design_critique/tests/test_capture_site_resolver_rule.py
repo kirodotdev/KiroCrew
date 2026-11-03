@@ -7,9 +7,9 @@ IPv6-first site captures nothing. ``hostResolverRule`` is the pure builder; the
 script imports cleanly as a module (its entry point runs only when it is the
 program), so the test calls the shipped function directly under ``node``.
 
-It lives in ``test/`` rather than the app's own ``tests/``: running ``node`` is a
-subprocess spawn, and ``test_spawn_audit`` holds every spawn under
-``src/kiro_crew`` to the sandbox chokepoint or its allowlist.
+Running ``node`` is a subprocess spawn, and ``test_spawn_audit`` holds every spawn
+under ``src/kiro_crew`` to the sandbox chokepoint or its allowlist, so ``_rules`` is a
+row of ``test/spawn_audit_app_spawns.py``.
 """
 
 from __future__ import annotations
@@ -21,14 +21,9 @@ from pathlib import Path
 
 import pytest
 
-# test/<this file> -> parents[1] is the repo root.
+# tests/<this file> -> parents[1] is the app's own directory.
 CAPTURE_SITE = (
     Path(__file__).resolve().parents[1]
-    / "src"
-    / "kiro_crew"
-    / "apps"
-    / "builtins"
-    / "design_critique"
     / "skills"
     / "design-critique"
     / "scripts"

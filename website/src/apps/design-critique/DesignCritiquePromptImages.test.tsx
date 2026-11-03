@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
-import MarkdownRenderer from '../components/MarkdownRenderer'
-import { IMAGES_PROMPT } from '../apps/design-critique/prompts'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { IMAGES_PROMPT } from './prompts'
 
 /**
  * Design Critique's prompt is an ordinary chat message — `designCritiqueApi.send`

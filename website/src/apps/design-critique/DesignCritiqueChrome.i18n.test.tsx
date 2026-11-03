@@ -18,14 +18,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import React from 'react'
 
 // `/all` registers every authored catalog; `../i18n` registers English only.
-import { i18next } from '../i18n/all'
-import { HKEY } from '../apps/design-critique/constants'
-import { designCritiqueApi } from '../apps/design-critique/api'
-import Composer from '../apps/design-critique/Composer'
-import FindingRow from '../apps/design-critique/FindingRow'
-import type { HistoryEntry, StagedItem } from '../apps/design-critique/types'
+import { i18next } from '../../i18n/all'
+import { HKEY } from './constants'
+import { designCritiqueApi } from './api'
+import Composer from './Composer'
+import FindingRow from './FindingRow'
+import type { HistoryEntry, StagedItem } from './types'
 
-vi.mock('../apps/design-critique/api', () => ({
+vi.mock('./api', () => ({
   designCritiqueApi: {
     openSlot: vi.fn(), getSlot: vi.fn(), send: vi.fn(), deleteSlot: vi.fn(), uploadFiles: vi.fn(),
     discover: vi.fn(), render: vi.fn(), pollDiscover: vi.fn(), pollRender: vi.fn(),
@@ -34,7 +34,7 @@ vi.mock('../apps/design-critique/api', () => ({
   fileUrl: (p: string) => '/api/file-raw?path=' + encodeURIComponent(p),
 }))
 
-const DesignCritiquePage = (await import('../apps/design-critique/DesignCritiquePage')).default
+const DesignCritiquePage = (await import('./DesignCritiquePage')).default
 
 const K = 'apps.designCritique.'
 

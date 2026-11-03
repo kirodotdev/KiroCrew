@@ -3,8 +3,8 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import AskLayer from '../apps/design-critique/AskLayer'
-import type { Ask, Sel } from '../apps/design-critique/types'
+import AskLayer from './AskLayer'
+import type { Ask, Sel } from './types'
 
 /**
  * "Ask about this": a floating chip over a text selection, then a popover that

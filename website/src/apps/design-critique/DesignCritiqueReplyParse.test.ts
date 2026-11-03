@@ -8,8 +8,8 @@
 // find. Everything below is the second case, plus the first case still failing.
 import { describe, expect, it } from 'vitest'
 
-import { extractJson, jsonFromMessages, looksLikeReport } from '../apps/design-critique/utils'
-import type { SlotData } from '../apps/design-critique/types'
+import { extractJson, jsonFromMessages, looksLikeReport } from './utils'
+import type { SlotData } from './types'
 
 /** A contract-shaped report, as the schema in `prompts.ts` asks for it. */
 const REPORT = {

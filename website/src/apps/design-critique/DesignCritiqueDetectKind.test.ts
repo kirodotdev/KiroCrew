@@ -4,7 +4,7 @@
 // was only recognised for two of the four hosts the schemed form accepts.
 import { describe, expect, it } from 'vitest'
 
-import { detectKind } from '../apps/design-critique/utils'
+import { detectKind } from './utils'
 
 describe('detectKind', () => {
   it.each([
