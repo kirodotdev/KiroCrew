@@ -420,6 +420,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     setEditing(false)
   }, [showBinaryCard, isMarkdown, isRichType, readOnly])
   const find = useMarkdownPanelFind({ active, editing, diffMode, isMarkdown, fullscreen, content, previewRef, fullscreenPreviewRef })
+  const { findOpen, closeFind } = find
 
   const findBar = find.findOpen ? <MarkdownPanelFindBar find={find} ime={ime} /> : null
 
@@ -1212,7 +1213,19 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // Leaving full screen goes through the same draft guard as its exit
       // button: a typed image box comment whose box lost focus would otherwise
       // go inert with its text out of reach.
-      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) void guardDraft(() => setFullscreen(false)); else void guardedClose() }
+      // An open find bar owns Escape the same way, wherever the focus sits: its
+      // input answers the key itself and stops it, but after a click on a match
+      // arrow or back in the document the key starts outside it, and closing
+      // the document there would throw the reader's place away (#28747). The
+      // next Escape, with the bar gone, closes the document as before. A held
+      // key's auto-repeats are not a next press: they would close the document
+      // right behind the find bar, so only the first keydown of a press acts.
+      if (e.key === 'Escape') {
+        if (e.repeat) return
+        if (composerOpenRef.current) return
+        if (findOpen) { closeFind(); return }
+        if (fullscreen) void guardDraft(() => setFullscreen(false)); else void guardedClose()
+      }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
       // its lazy chunk resolves and only sees keydowns targeting its own
@@ -1230,7 +1243,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, guardDraft, editing, dirty, fullscreen, confirmOpen, crewHidden])
+  }, [active, guardedClose, guardDraft, editing, dirty, fullscreen, confirmOpen, crewHidden, findOpen, closeFind])
 
   // The first edit of a clean buffer fences the disk. A read still in flight
   // describes a buffer the user has now typed into: if the user saves before it
