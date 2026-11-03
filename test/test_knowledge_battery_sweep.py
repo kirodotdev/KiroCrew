@@ -140,9 +140,7 @@ class TestScanHonoursThePolicy:
             asyncio.run(w._scan())
         w._store_rows.assert_not_called()
         # The skip is told to the operator, so a paused Library is not a silent stop.
-        assert [
-            r.getMessage() for r in caplog.records if r.name == watcher_mod.logger.name
-        ] == [
+        assert [r.getMessage() for r in caplog.records if r.name == watcher_mod.logger.name] == [
             "On battery and power.on_battery=paused; skipping this sweep "
             "(sources resume on the first sweep back on mains)"
         ]

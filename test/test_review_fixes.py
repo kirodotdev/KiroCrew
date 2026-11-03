@@ -250,9 +250,7 @@ class TestSelForwardCallback:
             "forward_callback failed"
         ]
         lines = (Path(str(tmp_path)) / "security_events.jsonl").read_text(encoding="utf-8")
-        assert [json.loads(line)["operation"] for line in lines.splitlines() if line] == [
-            "test.op"
-        ]
+        assert [json.loads(line)["operation"] for line in lines.splitlines() if line] == ["test.op"]
 
     def test_forward_callback_redacts_credentials(self, tmp_path: object) -> None:
         from pathlib import Path
