@@ -700,8 +700,10 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors aria-disabled:opacity-40 aria-disabled:cursor-default',
               treeNoticeNamesRefresh ? 'gap-1 px-1.5' : 'w-[26px]',
             )}
-            title={t('pages.chat.fileBrowserRail.refresh')}
-            aria-label={t('pages.chat.fileBrowserRail.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // disabled "Refresh" reads as unavailable, not busy.
+            title={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
+            aria-label={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
             {/* When the notice names "Refresh" as the remedy, the control it names has to

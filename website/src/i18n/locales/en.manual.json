@@ -5606,6 +5606,7 @@
         "mode_content": "Content",
         "mode_name": "Name",
         "refresh": "Refresh",
+        "refreshing": "Refreshing…",
         "resize": "Resize file browser",
         "search_contents": "Search file contents",
         "search_mode": "Search mode",
