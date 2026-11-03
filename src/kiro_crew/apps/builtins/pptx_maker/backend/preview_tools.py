@@ -187,6 +187,29 @@ def _cmd_escape(value: str) -> str:
     return value.replace("%", "%%")
 
 
+def _launcher_encoding() -> str:
+    """The codec the launcher's interpreter reads it with.
+
+    ``cmd.exe`` decodes a ``.cmd`` in the console's OEM code page (``chcp``), never
+    UTF-8, and Python's ``oem`` codec is exactly that page on Windows. ``/bin/sh``
+    passes the bytes through, and UTF-8 is what the POSIX path bytes are.
+    """
+    return "oem" if platform_compat.IS_WINDOWS else "utf-8"
+
+
+def _encode_launcher(body: str) -> bytes | None:
+    """*body* in :func:`_launcher_encoding`, or ``None`` when that page cannot spell it.
+
+    Encoded STRICTLY: a path character outside the page would be read back by
+    ``cmd.exe`` as different bytes, so the launcher would point at a path that does
+    not exist while the install reported ready.
+    """
+    try:
+        return body.encode(_launcher_encoding())
+    except UnicodeEncodeError:
+        return None
+
+
 def pdftoppm_installed() -> bool:
     """True when the managed ``pdftoppm`` launcher is present and executable."""
     for launcher in _launcher_paths():
@@ -224,14 +247,26 @@ def install_pdftoppm() -> tuple[bool, str]:
     except OSError as exc:
         return False, f"cannot create {bin_dir}: {exc}"
 
-    body = _launcher_body(python, shim)
+    data = _encode_launcher(_launcher_body(python, shim))
+    if data is None:
+        # A launcher left from an earlier install points at a path this install
+        # could not spell either, so it is removed rather than reported installed.
+        for launcher in _launcher_paths():
+            try:
+                launcher.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False, (
+            f"the pdftoppm launcher cannot be written in {_launcher_encoding()}, the "
+            "encoding its shell reads it in: the engine or app path holds a character "
+            "that encoding cannot represent. Point KIROCREW_HOME at a path it can spell."
+        )
     for launcher in _launcher_paths():
         try:
-            # `newline=""` disables universal-newline translation, so the line
-            # endings written are exactly the ones `_launcher_body` chose: the
-            # `.cmd` form already spells its own `\r\n`, which the default
-            # translation would turn into `\r\r\n` on Windows.
-            atomic_write(launcher, body, newline="")
+            # Bytes, so no newline translation applies: the line endings written
+            # are exactly the ones `_launcher_body` chose, and the `.cmd` form's
+            # `\r\n` stays `\r\n`.
+            atomic_write(launcher, data)
             # chmod AFTER the write and before any caller can resolve it, so the
             # launcher is never observable without its exec bit.
             if not platform_compat.IS_WINDOWS:
