@@ -418,6 +418,37 @@ def uncounted_gate():
         _GATE_UNCOUNTED.reset(token)
 
 
+#: Set by :func:`unattended_turn`; read by ``_governance_denial``.
+_UNATTENDED_TURN: ContextVar[bool] = ContextVar("kirocrew_unattended_turn", default=False)
+
+
+@contextmanager
+def unattended_turn(active: bool = True):
+    """Judge the gate calls made inside this block as an UNATTENDED turn's.
+
+    For a turn no person is watching: a cron job, a heartbeat task, a monitor
+    wake. The one thing it changes is what the governance tier does when its own
+    evaluation raises: an unattended call is refused, because nobody is there to
+    notice that policy went unchecked, while an attended call keeps "no
+    governance opinion" so a transient fault never refuses an ordinary user
+    action. Every other tier judges the call exactly as before.
+
+    The marker is a ContextVar, so it reaches the tool-gate pool thread (which
+    runs the call in a copy of the caller's context) and nothing outside this
+    block. Wrap the single gate consultation, not a whole turn, so a task the
+    turn spawns does not inherit it. ``active=False`` is a no-op, for a call site
+    that only sometimes runs unattended.
+    """
+    if not active:
+        yield
+        return
+    token = _UNATTENDED_TURN.set(True)
+    try:
+        yield
+    finally:
+        _UNATTENDED_TURN.reset(token)
+
+
 #: The reason a call is refused when the gate itself raised while judging it.
 #: Says plainly that the refusal is a gate defect, not a rule the call broke and
 #: not a user action -- without it the host surfaces kiro-cli's generic

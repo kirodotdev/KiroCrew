@@ -1858,6 +1858,21 @@ surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` 
 resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
 
+**Unattended turns at the PreToolUse gate.** A cron turn hands
+`stream_and_collect` its own `cron:<job>` session key, so the gate resolves that
+session's profile the same way it does for a chat turn. Cron, heartbeat and
+Slack-thread nudge turns pass `stream_and_collect(unattended=True)`. A
+structured monitor wake runs its gate call under the same marker on every
+surface: `build_tool_gate(unattended=True)` for a Slack thread and for a
+messaging channel's `drive_turn` with a `MonitorWake`, and the wrapped gate call
+in the dashboard's `_run_chat(_directive_self_wake=True)`. The marker is
+`hooks.unattended_turn`, a ContextVar scoped to the one gate consultation. When the governance tier's own evaluation raises,
+`_governance_denial` records it through `audit_governance_degraded` (failed
+closed on an unattended turn, failed open otherwise, with the traceback logged)
+and then refuses the call on an unattended turn; on an attended turn it keeps
+"no governance opinion", so a transient fault never refuses an ordinary user
+action.
+
 There is no feature-local unattended refusal in `computer_use.gate` and no shipped
 `cu-off` profile bound to the unattended surfaces. Computer use has
 only the one on/off `capabilities.computer_use` row (see below) — no per-surface row, no
