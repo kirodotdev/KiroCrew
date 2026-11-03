@@ -137,6 +137,14 @@ def test_full_history_jobs_moved_off_a_tight_budget_stay_blobless() -> None:
     for workflow, job_id in (
         ("internal-content-scan.yml", "scan"),
         ("release.yml", "stable-gate"),
+        ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
+        ("security-scope-review.yml", "generate"),
+        ("security-scope-review.yml", "validate"),
+        ("security-scope-review.yml", "adjudicate"),
+        ("security-scope-review.yml", "publish"),
+        ("fork-security-scope-review.yml", "generate"),
+        ("fork-security-scope-review.yml", "validate"),
+        ("fork-security-scope-review.yml", "adjudicate"),
     ):
         job = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))["jobs"][job_id]
         checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses") or ""))
