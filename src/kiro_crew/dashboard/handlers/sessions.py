@@ -725,6 +725,40 @@ async def _cached_reading_is_foreign(payload: dict[str, object], payload_fp: str
     return await _vault_fingerprint() != payload_fp
 
 
+async def cached_usage_for_current_signin() -> dict[str, object]:
+    """The cached reading :func:`api_sessions_usage` would serve now, read only.
+
+    The same identity rules as that GET, and nothing it does besides: no refresh is
+    started, no marker is published, no kiro-cli gate is asked. A reading published
+    for another sign-in (:func:`_cached_reading_is_foreign`), or a vault reading
+    while the vault does not own usage, comes back as ``{"available": False}``.
+    """
+    vault_owned = await _vault_owns_usage()
+    # Payload and fingerprint in one step, as the GET takes them.
+    served, served_fp = _usage_cache, _usage_cache_vault_fp
+    if await _reading_not_servable(vault_owned, served, served_fp):
+        return {"available": False}
+    return dict(served)
+
+
+async def _reading_not_servable(
+    vault_owned: bool, payload: dict[str, object], payload_fp: str
+) -> str:
+    """Why *payload* (published under *payload_fp*) must not be served, or ``""``.
+
+    The one identity rule :func:`api_sessions_usage` and
+    :func:`cached_usage_for_current_signin` both apply: ``"foreign"`` when the vault
+    owns usage and the reading belongs to another identity
+    (:func:`_cached_reading_is_foreign`); ``"vault_unowned"`` when the vault published
+    the reading but does not own usage now, so it is not the kiro-cli account's.
+    """
+    if vault_owned:
+        return "foreign" if await _cached_reading_is_foreign(payload, payload_fp) else ""
+    if payload.get("credits_plan") is not None and payload_fp:
+        return "vault_unowned"
+    return ""
+
+
 async def _refresh_from_vault() -> None:
     """Refresh the reading from Crew's own sign-in vault, never from kiro-cli.
 
@@ -1606,18 +1640,19 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     # the foreign check below judges exactly what this response serves.
     served, served_fp = _usage_cache, _usage_cache_vault_fp
     refresh_now = False
-    if vault_owned:
-        if await _cached_reading_is_foreign(served, served_fp):
-            # The cached reading belongs to another identity (an earlier Crew
-            # sign-in, or the kiro-cli path): never serve it, refresh now.
-            served = {"available": False}
-            refresh_now = True
-        elif await _signin_marker_is_stale(served):
+    not_servable = await _reading_not_servable(vault_owned, served, served_fp)
+    if not_servable == "foreign":
+        # The cached reading belongs to another identity (an earlier Crew
+        # sign-in, or the kiro-cli path): never serve it, refresh now.
+        served = {"available": False}
+        refresh_now = True
+    elif vault_owned:
+        if await _signin_marker_is_stale(served):
             # "Sign in again" from before the vault was last rewritten (or from
             # the kiro-cli path): the user may have just signed in, so ask now.
             # The marker stays on screen until the refresh replaces it.
             refresh_now = True
-    elif _usage_cache.get("credits_plan") is not None and _usage_cache_vault_fp:
+    elif not_servable == "vault_unowned":
         # The vault path published this reading, but the vault does not own
         # usage now (signed out of Crew, or the harness is not KAS): it is not the
         # kiro-cli account's reading, so never serve it, refresh now. Dropped,
