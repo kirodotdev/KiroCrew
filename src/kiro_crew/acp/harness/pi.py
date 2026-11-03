@@ -255,7 +255,7 @@ def _pi_node_floor(pi_bin: str) -> tuple[int, int, int] | None:
     """The oldest Node.js *pi_bin*'s package admits, or ``None`` when unknown.
 
     From ``engines.node`` in pi's own manifest, so the floor moves with pi's
-    releases (every release from ``PI_MIN_VERSION`` to 1.3.0 declares
+    releases (every release from ``PI_MIN_VERSION`` to 1.4.0 declares
     ``>=22.19.0``). No manifest, or no range this can read, answers ``None``: no
     floor is guessed, and the gate read-back decides as before.
 
