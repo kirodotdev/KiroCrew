@@ -296,6 +296,12 @@ kirocrew app install /absolute/path/to/my-app
 kirocrew app enable my-app
 ```
 
+`enable` refuses an app that is not built in until it is trusted. Enabling it
+from the App Store asks you to trust that app alone (`agent.apps_trusted`);
+Settings → Security → Third-party apps lists and revokes those grants, and holds
+the switch that trusts every third-party app (`agent.apps_allow_third_party`). See
+[Third-party executable code is off by default](#third-party-executable-code-is-off-by-default).
+
 The REST routes require dashboard or app authentication; a bare `curl` request
 is not an equivalent local-install command.
 
@@ -659,7 +665,7 @@ useful to Kiro Crew users.
 | Scaffold | `kirocrew app init my-app` |
 | Build UI | `cd ui && npm run build` |
 | Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
-| Enable | `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
+| Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
 | Update local copy | `POST /api/apps/{name}/update` |
 | List a registry app | Official catalog: open an [App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml) issue (maintainer-curated). Bundled seed or a federated registry: add an entry to `app-registry.json`, open a pull request |
