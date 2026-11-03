@@ -58,12 +58,23 @@ def _eaddrinuse() -> OSError:
 
 @pytest.mark.asyncio
 async def test_start_site_succeeds_immediately() -> None:
-    """Happy path: site.start() works on the first attempt."""
-    site = _make_site()
+    """Happy path: a free port binds on the first attempt and serves."""
+    port = _find_free_port()
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
     reclaim = AsyncMock()
-    await _start_site(site, 7777, retries=5, delay=0.01, reclaim=reclaim)
-    site.start.assert_awaited_once_with()
-    site.stop.assert_not_awaited()
+    try:
+        await _start_site(site, port, retries=5, delay=0.01, reclaim=reclaim)
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                assert (resp.status, await resp.text()) == (200, "ok")
+        assert len(runner.sites) == 1
+    finally:
+        await runner.cleanup()
     reclaim.assert_not_awaited()
 
 
