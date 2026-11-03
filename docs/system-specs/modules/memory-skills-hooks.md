@@ -444,6 +444,13 @@ Two separate consolidation paths with independent triggers:
 | Preferences/projects | 30 messages (per session, `_CONSOLIDATION_THRESHOLD`) | Semantic entries; V1 legacy mode also updates `preferences.md` and `projects.md` | In-memory `_prefs_offset` dict |
 | Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | V1: daily Markdown and vector/JSONL lessons. V2: history, episodes and lessons in one SQLite transaction | Transcript `last_consolidated`; V2 also retains an atomic source-span receipt |
 
+The history prompt lets the model answer `"history_entry": ""` when a span holds no
+decision, outcome or fact, and tells it never to write a "No substantive
+conversation" placeholder; a scheduled or automated run that did real work still
+gets an entry. Both writers append only a non-blank string entry (V1 in
+`_consolidate`, V2 in `apply_consolidation`), so an empty answer writes no dated
+line while the marker still advances.
+
 Per-consolidation extraction caps (`vector_memory_constants.py`, also
 interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_SEMANTIC_PER_CONSOLIDATION = 20`, `_MAX_EPISODIC_PER_CONSOLIDATION = 10`,
