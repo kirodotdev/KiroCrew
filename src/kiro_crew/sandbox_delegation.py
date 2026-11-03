@@ -53,12 +53,48 @@ _KIRO_INTERNAL_SANDBOX_KEY = "sandbox"
 # would spam warm-pool refills); every delegated spawn is still SEL-audited.
 _kiro_delegation_warned = False
 
+# One warning per process for a settings file holding several JSON values.
+_kiro_settings_concat_warned = False
+
+
+def _first_json_value(text: str) -> object:
+    """The file's first JSON value, the way kiro-cli reads it.
+
+    kiro-cli takes the first object of a file that holds several JSON values
+    one after another (seen on a host whose file read ``{"sandbox": true}``
+    followed by two ``{"sandbox": false}`` lines: kiro-cli started its own
+    sandbox). ``json.loads`` rejects such a file, which read the switch as off
+    while kiro-cli had it on, so both sandboxes engaged and every spawn died on
+    the nesting EPERM. Only a run of whole JSON values is accepted this way;
+    anything else after the first value still raises ``ValueError``, so a
+    damaged file keeps resolving toward Kiro Crew's own sandbox.
+    """
+    global _kiro_settings_concat_warned
+    decoder = json.JSONDecoder()
+    first, end = decoder.raw_decode(text, len(text) - len(text.lstrip()))
+    rest = text[end:].lstrip()
+    if not rest:
+        return first
+    while rest:
+        _value, end = decoder.raw_decode(rest)
+        rest = rest[end:].lstrip()
+    if not _kiro_settings_concat_warned:
+        _kiro_settings_concat_warned = True
+        logger.warning(
+            "%s holds more than one JSON value; reading only the first, as "
+            "kiro-cli does. Rewrite it as a single object.",
+            _KIRO_INTERNAL_SETTINGS_PATH,
+        )
+    return first
+
 
 def kiro_internal_sandbox_enabled() -> bool:
     """True when kiro-cli's own internal agent sandbox is enabled.
 
     Reads the ``"sandbox"`` key from ``~/.kiro/settings/amazon-internal.json``
-    (kiro-cli >= 2.13). Absent file, missing key, or parse failure all return
+    (kiro-cli >= 2.13). A file holding several JSON values is read by its
+    first, as kiro-cli reads it (:func:`_first_json_value`). Absent file,
+    missing key, or parse failure all return
     False, which keeps Kiro Crew's own sandbox engaged — failure resolves
     toward our audited isolation layer, never toward no isolation.
 
@@ -75,7 +111,7 @@ def kiro_internal_sandbox_enabled() -> bool:
     from kiro_crew.hooks import safe_read_file
 
     try:
-        data = json.loads(safe_read_file(_KIRO_INTERNAL_SETTINGS_PATH))
+        data = _first_json_value(safe_read_file(_KIRO_INTERNAL_SETTINGS_PATH))
         if not isinstance(data, dict):
             # Valid-but-non-object JSON ([], "str", null, 123) must also
             # resolve toward Kiro Crew's own sandbox, not raise.
