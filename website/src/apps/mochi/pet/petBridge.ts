@@ -121,6 +121,8 @@ export async function getWindowPosition(): Promise<{ x: number; y: number }> {
 export const savePosition = fwd('savePosition')
 export const onDisplaysInfo = fwd<() => void>('onDisplaysInfo')
 export const onSetActive = fwd<() => void>('onSetActive')
+/** Ask the shell for this overlay's activation once its listener is mounted. */
+export const petReady = fwd('petReady')
 export const onHide = fwd<() => void>('onHide')
 
 // ── Drag handoff (the shell owns the mouse while dragging) ──────────────────

@@ -1094,6 +1094,7 @@ function startMochiWatcher() {
   // same helper the rest of the shell uses — a renderer crash and its forwarded
   // page errors are otherwise invisible in the packaged app.
   try { require("./panelWindow").setPanelLogger(glog); } catch { /* module shape changed */ }
+  try { require("./petOverlays").setPetLogger(glog); } catch { /* module shape changed */ }
   try { require("./shortcuts").setShortcutLogger(glog); } catch { /* module shape changed */ }
 
   /**
