@@ -1710,6 +1710,16 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   `DashboardState`) types its payload as `WsPayload` (`Mapping[str, Any]`), so
   mypy rejects a coroutine handed over by an unawaited async payload builder,
   which `json.dumps` cannot serialize.
+  The `heartbeat` frame is one gateway-wide tick (`turn_heartbeat.py`,
+  `TurnHeartbeat`, held by the hub as `turn_heartbeat`): `_run_chat` holds it
+  for the turn's stream and releases it in its `finally`, and while any turn
+  holds it `broadcast_heartbeat` sends each socket one
+  `{"type": "heartbeat", "data": {"ts": ...}}` frame every 5 s, so the count is
+  sockets, not turns times sockets. The frame names no slot; the scope gate
+  still runs per socket against the running slot keys, so an app-token socket
+  gets it only while a slot it may see runs. The task exits in the interval
+  after the last release, starts again on the next hold, and `close_all_ws`
+  stops it. Tests: `test/test_turn_heartbeat.py`.
   A tab that stays connected but stops reading is dropped: before each send, a
   tab whose unsent bytes are over `WS_MAX_BUFFERED_BYTES` (4 MiB) and have not
   shrunk for `WS_STALL_SECONDS` (5 s) is unregistered, and so is a tab past

@@ -453,8 +453,6 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # object must hold it before the cut is published on the slot. Nothing touches it
     # between here and the flag block.
     turn._produced_visible_output = False
-    last_heartbeat = time.time()
-    turn.last_heartbeat = last_heartbeat
     # Continues the slot's counter rather than starting at 0: seqs are ordered
     # across turns so a client floor from an earlier turn sits below every
     # chunk of this one (see _ChatSlot._chunk_seq).
