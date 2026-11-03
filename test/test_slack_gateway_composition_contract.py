@@ -197,7 +197,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "(handoff: '_ClaimHandoff', job: 'CronJob', fn: 'Callable[..., Any]', *args: 'Any') -> 'Any'",
         ),
-        ("_annotate_model_fallback", "function", "(text: 'str', provider: 'Any') -> 'str'"),
+        (
+            "_annotate_model_fallback",
+            "function",
+            "(text: 'str', provider: 'Any', *, stop_reason: 'str | None' = None) -> 'str'",
+        ),
         (
             "_cron_stream_with_posttoken_resume",
             "async function",

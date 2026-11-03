@@ -8,6 +8,12 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
+# The ``_session/steering`` readers, re-exported for existing importers.
+from kiro_crew.acp.steering_wire import (  # noqa: F401
+    steering_advertised,
+    steering_outcome,
+)
+
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
 # ``kiro_crew.acp_backends`` (it imports nothing from this package, which is what
@@ -157,6 +163,10 @@ EVENT_STEER_DROPPED = "steer_dropped"
 #: see :meth:`StructuredStatus.from_meta` and the origin rule in
 #: ``AcpSessionHandle._handle_update``.
 EVENT_STRUCTURED_STATUS = "structured_status"
+#: The ENGINE moved the turn onto another model, or reported that it could not
+#: (kiro-cli's KAS or V2 engine). Carries an ``engine_fallback.ModelFallbackNotice``
+#: on :attr:`AcpEvent.model_fallback`; see ``acp/engine_fallback.py``.
+EVENT_MODEL_FALLBACK = "model_fallback"
 
 # ── ACP Protocol Methods ──
 
@@ -197,30 +207,6 @@ STEERING_ANSWER_WAIT_SECS = 8.0
 # healthy session answers in milliseconds.
 METHOD_SESSION_STEER_CLEAR = "_session/steer/clear"
 STEER_CLEAR_ANSWER_WAIT_SECS = 5.0
-
-
-def steering_outcome(result: object) -> str:
-    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
-
-    The answer is adapter-authored JSON: a result that is not an object is read as
-    no outcome (undelivered) rather than trusted to have ``.get``.
-    """
-    if not isinstance(result, dict):
-        return ""
-    outcome = result.get("outcome")
-    return outcome if isinstance(outcome, str) else ""
-
-
-def steering_advertised(init_resp: object) -> bool:
-    """Whether an ``initialize`` result advertises the ``_session/steering`` request.
-
-    The extension is advertised at the TOP level of the result, as
-    ``_meta.steering.supported``, a sibling of ``agentCapabilities``. Only a
-    literal ``true`` counts.
-    """
-    meta = init_resp.get("_meta") if isinstance(init_resp, dict) else None
-    steering = meta.get("steering") if isinstance(meta, dict) else None
-    return isinstance(steering, dict) and steering.get("supported") is True
 
 
 METHOD_SESSION_LOAD = "session/load"
@@ -972,6 +958,9 @@ class AcpEvent:
     #: ``None`` on every other terminal, including a plain ``end_turn`` whose
     #: metadata said nothing about a refusal.
     refusal: "RefusalInfo | None" = None
+    #: Set on ``EVENT_MODEL_FALLBACK``: the engine's fallback decision, an
+    #: ``engine_fallback.ModelFallbackNotice``. ``None`` on every other event.
+    model_fallback: Any = None
     #: True when Kiro Crew fabricated this terminal event because the provider
     #: omitted its result frame. Consumers must not treat it as raw completion
     #: evidence even when compatibility requires ``stop_reason=end_turn``.
