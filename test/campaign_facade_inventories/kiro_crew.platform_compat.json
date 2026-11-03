@@ -66,6 +66,7 @@
   "darwin_process_environ",
   "darwin_process_facts",
   "darwin_process_path",
+  "darwin_resident_bytes_for_pid",
   "descendant_termination_handles",
   "descendant_termination_handles_async",
   "duplicate_asyncio_process_handle",
