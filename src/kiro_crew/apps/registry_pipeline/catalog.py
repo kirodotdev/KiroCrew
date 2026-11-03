@@ -1051,8 +1051,15 @@ def _resolve_registry_row(name: str) -> tuple[dict[str, Any] | None, str]:
 
     catalog_row: dict[str, Any] | None = None
     catalog_failed = False
+    no_install_source = False
     try:
         catalog_row = official_catalog.inventory_for_install(name)
+    except official_catalog.CatalogNoInstallSource:
+        # The catalog answered: it lists this app with no install coordinates.
+        # Still a refusal (the catalog is curating the name), but not an outage.
+        catalog_failed = True
+        no_install_source = True
+        logger.warning("official catalog lists the app without install coordinates")
     except official_catalog.CatalogUnavailable:
         catalog_failed = True
         # The caller may be classifying a config-derived grant name, and catalog
@@ -1078,6 +1085,12 @@ def _resolve_registry_row(name: str) -> tuple[dict[str, Any] | None, str]:
         # code under a name the owner already permitted for execution. The local
         # cache cannot be consulted to decide -- it is agent-writable, which is the
         # surface `inventory_for_install` refuses to read in the first place.
+        if no_install_source:
+            return None, (
+                "the official catalog lists the requested app but gives it no "
+                "install source, so it cannot be installed from the registry yet "
+                "— refusing to resolve it from another source."
+            )
         detail = (
             "is bundled and may carry an official commit pin"
             if seed_row is not None

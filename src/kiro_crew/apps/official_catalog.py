@@ -762,6 +762,16 @@ class CatalogUnavailable(Exception):
     """
 
 
+class CatalogNoInstallSource(CatalogUnavailable):
+    """The catalog was read and names the app, but gives it no install source.
+
+    A ``builtin`` row for an app this host does not ship, or a row whose
+    ``source`` failed validation. A subclass so every ``except
+    CatalogUnavailable`` keeps refusing exactly as before; only a caller that
+    reports the cause to a person needs to tell it from an unreachable catalog.
+    """
+
+
 def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict[str, Any]]:
     """The catalog's entries from a FRESH HTTPS fetch, never the on-disk cache.
 
@@ -881,7 +891,7 @@ def inventory_for_install(name: str) -> dict[str, Any] | None:
         # (no git coordinates) or a row whose `source` failed validation. Reporting
         # absence here would let a caller fall back to unpinned coordinates for an
         # app the catalog is actually curating.
-        raise CatalogUnavailable(
+        raise CatalogNoInstallSource(
             f"catalog names {name!r} but supplies no usable install coordinates"
         )
     return None
