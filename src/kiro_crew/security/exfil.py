@@ -49,6 +49,8 @@ from .exfil_oauth import (  # noqa: F401
     _oauth_diagnostic,
     _oauth_query_diagnostic,
     _oauth_url_payload_diagnostic,
+    _operator_listed_salesforce_query,
+    _salesforce_client_id_shaped,
     _valid_oauth_extension_path,
 )
 from .exfil_scan_span import _walk_flagged_span, _walk_span_urls
@@ -1178,6 +1180,7 @@ def _oauth_credential_scan_target(
     query: str,
     *,
     approved_endpoint: bool,
+    operator_listed: bool = False,
 ) -> str:
     """Blank entropy-bearing OAuth values before the markerless URL scan.
 
@@ -1185,10 +1188,10 @@ def _oauth_credential_scan_target(
     before this target is built. At an exact approved endpoint, only the
     code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
     markerless bare-secret heuristic, and only when the value carries a shape
-    the protocol can emit (see
-    :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
-    parameter names, unknown parameters, and every non-query URL component
-    remain in the scan target.
+    the protocol can emit (see :func:`_oauth_entropy_value_is_protocol_shaped`).
+    An operator-listed endpoint also omits Salesforce-shaped client_id values.
+    Other recognized values, parameter names, unknown
+    parameters, and every non-query URL component remain in the scan target.
     """
     if not approved_endpoint or not query:
         return url
@@ -1199,7 +1202,7 @@ def _oauth_credential_scan_target(
             bool(separator)
             and key in _OAUTH_ENTROPY_QUERY_PARAMS
             and _oauth_entropy_value_is_protocol_shaped(key, value)
-        )
+        ) or (operator_listed and key == "client_id" and _salesforce_client_id_shaped(value))
         sanitized_segments.append(
             f"{key}{separator}" if approved_value else f"{key}{separator}{value}"
         )
@@ -1214,18 +1217,18 @@ def _oauth_credential_scan_target(
 
 
 def diagnose_oauth_url_credential(
-    url: str, *, assume_approved_endpoint: bool = False
+    url: str, *, assume_approved_endpoint: bool = False, assume_operator_listed: bool = False
 ) -> OAuthUrlCredentialDiagnostic | None:
     """Return a safe rejection signature, never URL/value bytes or derivatives.
 
-    ``assume_approved_endpoint`` runs the SAME gate as if the URL's endpoint
-    were on the OAuth allowlist (builtin or operator file), without reading
-    either. It exists so a rejection surface can tell whether the
-    ``oauth_endpoints.json`` remedy would actually clear THIS rejection before
-    advertising it; every unconditional rule (fixed credentials, userinfo,
-    fragments, path params, heavy percent-encoding, http, explicit port) still
-    rejects under the assumption, exactly as it does for an approved endpoint.
+    ``assume_approved_endpoint`` runs the SAME gate as if the endpoint were approved
+    but NOT operator-listed (builtin or MCP-discovered); ``assume_operator_listed``
+    as if listed in ``oauth_endpoints.json``. Neither reads a source. A rejection
+    surface uses them to tell whether discovery or the operator file would clear
+    THIS rejection; the unconditional rules (fixed credentials, userinfo, fragments,
+    path params, heavy percent-encoding, http, explicit port) still reject.
     """
+    assumed = assume_approved_endpoint or assume_operator_listed
     if not url:
         return None
 
@@ -1286,18 +1289,19 @@ def diagnose_oauth_url_credential(
             decoded_netloc.rpartition("@")[0],
         )
 
+    host_l = parsed.hostname.lower()
     approved_endpoint = (
         parsed.scheme.lower() == "https"
         and not port
-        and (
-            assume_approved_endpoint
-            or _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
-        )
+        and (assumed or _approved_oauth_authorization_endpoint(host_l, parsed.path))
+    )
+    operator_listed = approved_endpoint and (
+        assume_operator_listed
+        if assumed
+        else _operator_listed_salesforce_query(host_l, parsed.path, parsed.query)
     )
     scan_target = _oauth_credential_scan_target(
-        url,
-        parsed.query,
-        approved_endpoint=approved_endpoint,
+        url, parsed.query, approved_endpoint=approved_endpoint, operator_listed=operator_listed
     )
     for candidate, suffix, decoder in (
         (scan_target, "raw", None),
@@ -1341,7 +1345,7 @@ def diagnose_oauth_url_credential(
         is_https=parsed.scheme.lower() == "https",
         allow_safe_presigned=False,
         allow_oauth_entropy=True,
-        assume_oauth_endpoint=assume_approved_endpoint,
+        assume_oauth_endpoint=assumed,
         _rule_out=rules,
     )
     if warning is None:
@@ -1433,21 +1437,23 @@ def oauth_url_contains_credential(url: str) -> bool:
     return True
 
 
-def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
+def oauth_rejection_is_endpoint_exemptible(url: str, *, operator_listed: bool = False) -> bool:
     """True when *url* is rejected today AND would pass with its endpoint allowlisted.
 
-    This is the question a rejection surface must answer before it names the
-    endpoint and points at ``oauth_endpoints.json``: the allowlist relaxes only
-    the query-entropy heuristics on standard front-channel parameters, so a URL
-    refused for a fixed credential, userinfo, a fragment, path parameters, heavy
-    percent-encoding, ``http`` or an explicit port is refused again after the
-    entry is added, and naming it would advertise a remedy that cannot work.
-    Reads the operator file only through the ordinary gate (memoized stat), so
-    callers treat it like the gate itself: run it off the event loop.
+    By default the endpoint is assumed approved but not operator-listed (what MCP
+    discovery asks); ``operator_listed=True`` asks whether an ``oauth_endpoints.json``
+    entry would clear it, which a rejection surface must know before naming that remedy.
+    Rules the allowlist never relaxes (fixed credential, userinfo, fragment, path params,
+    heavy percent-encoding, ``http``, explicit port) still refuse under the assumption.
+    Only the first call reads the operator file, through the ordinary gate (memoized
+    stat), so callers treat this like the gate itself: run it off the event loop.
     """
     if diagnose_oauth_url_credential(url) is None:
         return False
-    return diagnose_oauth_url_credential(url, assume_approved_endpoint=True) is None
+    cleared = diagnose_oauth_url_credential(
+        url, assume_approved_endpoint=True, assume_operator_listed=operator_listed
+    )
+    return cleared is None
 
 
 # ── IP Canonicalization (IMDS bypass prevention) ──
@@ -1943,6 +1949,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OAUTH_EXTENSION_MEMO,
         _OAUTH_EXTENSION_PATH_BAD,
         _OAUTH_EXTENSION_PATH_MAX_LEN,
+        _OAUTH_SALESFORCE_CLIENT_ID_RE,
         _OAUTH_URL_SYMBOLS,
         OAuthUrlShapeProfile,
         _discovered_oauth_endpoint_approved,
@@ -1951,6 +1958,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _load_operator_oauth_endpoints,
         _oauth_char_class,
         _oauth_shape_profile,
+        _operator_listed_oauth_endpoint,
         _safe_oauth_parameter_name,
         _validate_operator_oauth_entries,
         record_discovered_oauth_endpoint,
