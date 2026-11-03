@@ -23,6 +23,12 @@ opaque generic-validation errors — so an older Kiro Crew degrades honestly whe
 handed a newer pack. Semantics changes within a major stay backward-tolerant;
 breaking manifest changes bump the major.
 
+A pack's JSON files (`theme.json`, `variables.json`, a saved custom theme record,
+and an appearance pack's `manifest.json`) are read with
+`user_json.loads_user_json`, which accepts one leading UTF-8 byte-order mark: an
+editor that writes one (Windows Notepad does) must not turn a valid hand-edited
+file into "not valid JSON" or drop the pack from the list.
+
 `theme.json` also declares a `level` (0/1/2) that gates which asset categories
 a pack may ship. Validation is tier-scaled to payload trust.
 

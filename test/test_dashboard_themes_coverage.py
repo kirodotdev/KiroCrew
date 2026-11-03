@@ -150,6 +150,18 @@ class TestListThemesSync:
         (row,) = th._list_themes_sync()
         assert row == {"slug": "sunset", "name": "sunset", "emoji": "🎨", "created_at": ""}
 
+    def test_files_saved_with_a_bom_are_listed(self, themes_dir: Path) -> None:
+        """A hand-edited theme file saved by an editor that writes a UTF-8 BOM."""
+        bom = b"\xef\xbb\xbf"
+        (themes_dir / "sunset.json").write_bytes(bom + json.dumps({"name": "Sunset"}).encode())
+        (themes_dir / "lcars").mkdir()
+        (themes_dir / "lcars" / "theme.json").write_bytes(
+            bom + json.dumps({"name": "LCARS"}).encode()
+        )
+        rows = {r["slug"]: r for r in th._list_themes_sync()}
+        assert rows["sunset"]["name"] == "Sunset"
+        assert rows["lcars"]["name"] == "LCARS"
+
     def test_unparseable_custom_record_is_skipped(self, themes_dir: Path) -> None:
         _write_text(themes_dir / "broken.json", "{not json")
         _write_json(themes_dir / "ok.json", {"name": "Ok"})
@@ -1127,6 +1139,17 @@ def _detail(method: str, slug: str, *, body: object = ...) -> web.Request:
     return _request(
         method, f"/api/themes/{slug}", body=body, match_info={"slug": slug}
     )
+
+
+class TestApiThemeDetailReadsABomFile:
+    @pytest.mark.asyncio
+    async def test_get_of_a_theme_saved_with_a_bom_is_200(self, themes_dir: Path) -> None:
+        (themes_dir / "sunset.json").write_bytes(
+            b"\xef\xbb\xbf" + json.dumps({"name": "Sunset"}).encode()
+        )
+        resp = await th.api_theme_detail(_detail("GET", "sunset"))
+        assert resp.status == 200
+        assert _body(resp)["name"] == "Sunset"
 
 
 class TestApiThemeDetailSlugGuard:
