@@ -377,6 +377,14 @@ class TestAgentCli:
 
 
 class TestWorkspaceCopyFrom:
+    @pytest.fixture(autouse=True)
+    def _placement_home(self, tmp_path: Path) -> Any:
+        """The copy source comes from ``workspace_dir_from_entry``, which reads its
+        own ``config_dir`` binding; point it at the data home each test patches.
+        """
+        with patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
+            yield
+
     def _base(self) -> KiroCrewConfig:
         return _cfg_with(
             workspaces={
@@ -417,6 +425,133 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy1" / "memory" / "notes.md").read_text() == "hi"
         assert _read_doc(cfg_path)["workspaces"]["copy1"]["dir"] == "workspace-copy1"
         assert "Created workspace: copy1" in capsys.readouterr().out
+
+    def test_copy_from_a_source_with_no_folder_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        assert not (tmp_path / "workspace-src").exists()
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy2", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy2" in out.out
+        assert "has no folder at 'workspace-src'" in out.err
+        assert "nothing was copied" in out.err
+        assert (tmp_path / "workspace-copy2").is_dir()
+        assert _read_doc(cfg_path)["workspaces"]["copy2"]["dir"] == "workspace-copy2"
+
+    def test_copy_from_an_unknown_tilde_user_source_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~nosuchuser12345/ws"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy4", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy4" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_a_source_that_cannot_be_copied_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "workspace-src").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            patch("shutil.copytree", side_effect=PermissionError(13, "denied")),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy6", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy6" in out.out
+        assert "could not copy source workspace 'src'" in out.err
+        assert (tmp_path / "workspace-copy6").is_dir()
+        assert not list(tmp_path.glob(".workspace-copy6.staging-*"))
+        assert _read_doc(cfg_path)["workspaces"]["copy6"]["dir"] == "workspace-copy6"
+
+    def test_copy_from_a_tilde_source_outside_the_home_is_refused_like_an_absolute_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        user = tmp_path / "user"
+        home.mkdir()
+        (user / "ws-src").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(user))
+        monkeypatch.setenv("USERPROFILE", str(user))
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(home, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy5", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy5" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_copy_from_a_tilde_stored_source_copies_it_without_a_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "ws-src").mkdir()
+        (tmp_path / "ws-src" / "notes.md").write_text("hi", encoding="utf-8")
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy3", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "nothing was copied" not in out.err
+        assert (tmp_path / "workspace-copy3" / "notes.md").read_text(encoding="utf-8") == "hi"
 
     def test_update_without_dir_warns_and_logs_no_success(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -536,6 +671,8 @@ class TestWorkspaceDirInUseResolved:
     def _run(self, home: Path, cfg: KiroCrewConfig, cfg_path: Path, **ns: Any) -> None:
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            # The copy source is placed by ``workspace_dir_from_entry``.
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             patch("kiro_crew.cli_commands.sel"),
