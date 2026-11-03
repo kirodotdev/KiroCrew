@@ -88,6 +88,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
+    APP_NAME_MAX_LENGTH,
     KEBAB_RE,
     RESERVED_APP_NAME_CODE,
     RESERVED_APP_NAMES,
