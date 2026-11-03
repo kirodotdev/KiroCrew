@@ -249,21 +249,30 @@ interface MembersPageSchedulesOptions {
   crewEditing: MembersPageCrewEditing
   layout: MembersPageLayout
   rosterView: MembersPageRosterView
-  sidePanel: MembersPageSidePanelState
   t: TFn
   profile: ProfileCardOpen | null
   activeSlug: string
   activeMemberName: string
 }
 
-/** The Profile card's Schedules draft, its count and its discard questions. */
+/** The Profile card's Schedules draft, its exit-guard state, its count and its discard questions. */
 export function useMembersPageSchedules({
-  crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+  crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
 }: MembersPageSchedulesOptions) {
   const { releaseSchedRef } = crewEditing
   const { panelVisible } = layout
   const { activeView } = rosterView
-  const { setSchedAtStake, schedReleased, schedulesMountedRef } = sidePanel
+  // Whether the Schedules tab is holding unsaved work: the state mirror of the two refs
+  // below, read by the facade's published navigation stake and `beforeunload` listener.
+  const [schedAtStake, setSchedAtStake] = useState(false)
+  // Has the user just accepted a discard? Then retention stands down for that one exit.
+  // A ref, not state: the exit that sets it re-renders the page by itself, and the flag
+  // must already be true at that render.
+  const schedReleased = useRef(false)
+  // Whether the Schedules section is mounted. The facade writes it during render
+  // (`schedulesMounted`, in MembersPage.tsx) so the release effect below can read a
+  // value computed after this hook returns.
+  const schedulesMountedRef = useRef(false)
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -302,8 +311,7 @@ export function useMembersPageSchedules({
     .filter((j) => wakesCrew(j, activeMemberName, false, activeSlug))
   // Unsaved work inside the Schedules tab. Refs, not state: only the guard below reads
   // them and a re-render per keystroke would remount nothing but cost the panel a pass.
-  // (`schedAtStake`, the state mirror, is declared in MembersPageSidePanel.tsx with the
-  // mount decision that also reads it.)
+  // (`schedAtStake`, the state mirror, is declared at the top of this hook.)
   const schedDraftDirty = useRef(false)
   const schedSaving = useRef(false)
   // The refs are what the synchronous guards read; the state mirror is what the published
@@ -369,6 +377,7 @@ export function useMembersPageSchedules({
   }, [confirmSched, t, releaseSchedRetention])
 
   return {
+    schedAtStake, schedulesMountedRef,
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, schedDraftDirty, schedSaving,
     setSchedDraftDirty, setSchedSaving, confirmSched, schedConfirmDialog, requestCancelSchedDraft,
     releaseSchedRetention, mayLeaveSchedules,
