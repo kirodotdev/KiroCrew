@@ -224,6 +224,12 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         # Set before the folder preflight below, so its dry-run probe carries the
         # value and a refused threshold creates no folder.
         payload["autocompact_pct"] = args["autocompact_pct"]
+    if args.get("kind"):
+        # A page instead of a chat; also before the preflight, so a refused page
+        # creates no folder either.
+        payload["kind"] = args["kind"]
+    if args.get("content") is not None:
+        payload["content"] = args["content"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -287,6 +293,14 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         if crew_mode
         else "the user's sidebar"
     )
+    if resp.get("doc"):
+        kind = resp.get("doc_kind") or "doc"
+        return redact(
+            f"\U0001f195 Opened the {kind} page `{resp.get('target')}` ({resp.get('title')})"
+            f"{filed}{on_model}.{made_note} Its file is docs/{resp['doc']}.md and its own "
+            "conductor is idle: send it its brief with session_send, and record it on your "
+            "work ledger. Link it from your page with its session key." + reply_line(resp)
+        )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         f"It is empty and waiting in {where}; watch it with "

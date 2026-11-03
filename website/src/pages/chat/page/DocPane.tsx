@@ -25,10 +25,9 @@ import { slotRowByKey } from '../../../store/slotIndex'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import DocEditor from './DocEditor'
 import DocHeader from './DocHeader'
-import { joinDoc, splitDoc, type DocMeta } from './docMeta'
+import { joinDoc, randomDocIcon, randomGradient, splitDoc, type DocMeta } from './docMeta'
 import { useSessionRefs } from './SessionMention'
-import { docHasGoals } from './docGoals'
-import { DEFAULT_GOAL_EVERY, syncGoalLoop } from './goalLoop'
+import { DEFAULT_GOAL_EVERY } from './goalLoop'
 import { GOAL_INTERVALS } from './board/boardModel'
 import type { EmbedTheme } from './DocHtmlFrame'
 import { useOptionalTheme } from '../../../hooks/useTheme'
@@ -150,13 +149,8 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     timerRef.current = setTimeout(() => { void save() }, SAVE_DEBOUNCE_MS)
   }, [save])
 
-  // Whether any heading has a goal: what the conductor's goal loop follows. State
-  // only when it flips, so typing does not re-render the pane.
-  const [hasGoals, setHasGoals] = useState(false)
-
   const edit = useCallback((next: string) => {
     trackAsks(next)
-    setHasGoals(docHasGoals(next))
     bodyRef.current = next
     markDirty()
   }, [markDirty, trackAsks])
@@ -180,7 +174,14 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       const body = adopt(doc.content)
       setSeed(s => ({ text: body, generation: s.generation + 1 }))
       trackAsks(body)
-      setHasGoals(docHasGoals(body))
+      // A doc never saved yet gets a random document icon and cover, as a new Notion
+      // page does. Saved straight away, so the file exists and a reload keeps them.
+      if (!doc.version && !headRef.current.meta.icon && !headRef.current.meta.cover) {
+        const fresh = { ...headRef.current.meta, icon: randomDocIcon(), cover: randomGradient() }
+        headRef.current = { ...headRef.current, meta: fresh }
+        setMeta(fresh)
+        markDirty()
+      }
       setLoad({ state: 'ready' })
     }, err => {
       if (!cancelled) setLoad({ state: 'failed', message: err instanceof Error ? err.message : String(err) })
@@ -190,7 +191,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       // Leaving the doc (another session, or closing it) writes what is pending.
       if (dirtyRef.current) void save()
     }
-  }, [docId, save, trackAsks, adopt])
+  }, [docId, save, trackAsks, adopt, markDirty])
 
   const takeTheirs = useCallback(() => {
     if (!conflict) return
@@ -200,7 +201,6 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     const body = adopt(conflict.content)
     setSeed(s => ({ text: body, generation: s.generation + 1 }))
     trackAsks(body)
-    setHasGoals(docHasGoals(body))
     setConflict(null)
   }, [conflict, trackAsks, adopt])
   const keepMine = useCallback(() => {
@@ -371,28 +371,13 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     if (fresh.length) setApplied({ keys: [...applied.keys, ...fresh] })
   }, [threads, running, load.state, applied, setApplied, seed.generation])
 
-  // ---- heading goals: one loop on the conductor, at one rate for the doc ----------
+  // ---- heading goals: the gateway arms the one loop on the conductor from the saved file ----
   const goalEvery = GOAL_INTERVALS.includes(Number(meta['goal-every'])) ? Number(meta['goal-every']) : DEFAULT_GOAL_EVERY
   const setGoalEvery = useCallback((m: number) => changeMeta({ ...headRef.current.meta, 'goal-every': String(m) }), [changeMeta])
-  const [goalError, setGoalError] = useState('')
-  // What the loop was last brought to; null before the first sync, so a doc without
-  // goals asks nothing of the loop until it gains one.
-  const goalSynced = useRef<string | null>(null)
   // Each goal's finished checks, for the bars on its heading's chip.
   const goalChecks = useMemo(() => Object.fromEntries(
     Object.entries(threads).filter(([k, t]) => k.startsWith('goal-') && t.checks?.length).map(([k, t]) => [k.slice(5), t.checks!]),
   ), [threads])
-  useEffect(() => {
-    if (load.state !== 'ready') return
-    const want = `${hasGoals}:${goalEvery}`
-    if (goalSynced.current === want || (goalSynced.current === null && !hasGoals)) return
-    goalSynced.current = want
-    syncGoalLoop({ slotKey, kind: 'doc', docId, title, every: goalEvery, active: hasGoals })
-      .then(() => setGoalError(''), err => {
-        goalSynced.current = null
-        setGoalError(err instanceof Error ? err.message : String(err))
-      })
-  }, [load.state, hasGoals, goalEvery, slotKey, docId, title])
 
   // The conductor's tool approvals: there is no chat to answer them in.
   const approvals = messages.filter(m => m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id)
@@ -451,8 +436,6 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
         )}
         <ErrorNotice title={i18nT('pages.chat.docPane.save_failed')} message={saveError} className="mb-3" />
         <ErrorNotice title={i18nT('pages.chat.docPane.send_failed')} message={sendError} className="mb-3" />
-        {/* No hand-off: the goals are already saved in the doc; the next change retries the loop. */}
-        <ErrorNotice title="Goal checks could not be scheduled" message={goalError} className="mb-3" />
         {load.state === 'ready' && (
           <DocEditor
             key={seed.generation}

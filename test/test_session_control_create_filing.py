@@ -467,6 +467,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     child.pinned = True
     child.mode = "design-critique"
     child._artifact = "my-artifact"
+    child._doc = "0123456789abcdef0123456789abcdef"
     child.reasoning_effort = "high"
     child.color_index = 3
     child.title = "Pinned title"

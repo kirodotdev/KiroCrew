@@ -366,6 +366,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
             min_val=AUTOCOMPACT_PCT_MIN,
             max_val=AUTOCOMPACT_PCT_MAX,
         ),
+        # A page instead of a chat, from a doc or board conductor
+        # (``session_control_parts.doc_child``), and the page's starting text.
+        FieldSpec("kind", str, required=False, allowed=frozenset({"doc", "board"})),
+        FieldSpec("content", str, required=False, max_len=200_000),
     ],
 )
 

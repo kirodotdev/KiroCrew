@@ -124,6 +124,16 @@ describe('board model', () => {
     expect(next.connectors.map(c => [c.from, c.to])).toEqual([['a', next.shapes[1].id], ['a', next.shapes[2].id]])
   })
 
+  it('a session card titled like a sticky is still added, and one per session', () => {
+    const b = { ...emptyBoard(), shapes: [sticky('a', 0, 0, '#101 Fix the login redirect')] }
+    const card = { kind: 'session' as const, session: 'chat-27-1793737827', text: '#101 Fix the login redirect' }
+    const next = applyBoardAdd(b, { shapes: [card], connectors: [{ from: 'a', to: 'c1' }] })
+    expect(next.shapes.map(s => s.kind)).toEqual(['sticky', 'session'])
+    expect(next.shapes[1].session).toBe('chat-27-1793737827')
+    const again = applyBoardAdd(next, { shapes: [{ ...card, text: 'renamed' }] })
+    expect(again.shapes).toHaveLength(2)
+  })
+
   it('side right puts new shapes beside their neighbour, and no new shape lands on another', () => {
     const header = sticky('h', 0, 0, 'Doing')
     const inTheWay = sticky('w', 0, 240, 'Already here')

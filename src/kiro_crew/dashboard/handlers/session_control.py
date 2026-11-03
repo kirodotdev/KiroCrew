@@ -354,6 +354,11 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             raise sc.SessionControlError(
                 "reasoning_effort must be a string", code="invalid_field_type"
             )
+        # A page instead of a chat (``doc_child``): its kind, and its starting text,
+        # typed by ``check_doc_child``.
+        page_kind = body.get("kind", "")
+        if not isinstance(page_kind, str):
+            raise sc.SessionControlError("kind must be a string", code="invalid_field_type")
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -372,6 +377,8 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             # included) with `invalid_field_type`.
             autocompact_pct=body.get("autocompact_pct"),
             dry_run=dry_run,
+            doc_kind=page_kind,
+            content=body.get("content"),
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as
             # `precomputed_ownership_fenced`: `create_session` consults it after

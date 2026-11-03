@@ -24,13 +24,12 @@ import { toApiDecision } from '../../../../utils/approvalDecision'
 import { ANSWER_STYLE, type ThreadView } from '../docConductor'
 import { OVERLAY_CLASS_STYLE, OVERLAY_KEYFRAMES, overlaySlug, parseOverlay, type OverlayItem } from '../docOverlay'
 import { deriveThreads, latestGoalReport } from '../docThreads'
-import { syncGoalLoop } from '../goalLoop'
 import { specToCss } from '../styleSpec'
 import { MENTION_STYLE } from '../docMentions'
 import { MENU_STYLE } from '../docSlash'
 import { useSessionRefs } from '../SessionMention'
 import BoardCanvas from './BoardCanvas'
-import { boardGoalEvery, boardHasGoals, parseBoard, serializeBoard, type Board } from './boardModel'
+import { parseBoard, serializeBoard, type Board } from './boardModel'
 import { applyReplyChecked, boardChangesFromMessages, buildBoardTurn } from './boardTurn'
 
 const SAVE_DEBOUNCE_MS = 500
@@ -147,24 +146,6 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
   // Each section goal's latest report, by section id: a check's reply is split per goal.
   const goalReport = useCallback((sectionId: string) => latestGoalReport(threads, sectionId), [threads])
 
-  // Section goals: one loop on the conductor, at the board's one rate. Synced when
-  // the board gains its first goal, loses its last one, or its rate changes; a board
-  // with no goals asks nothing of the loop until it gains one.
-  const hasGoals = boardHasGoals(board)
-  const goalEvery = boardGoalEvery(board)
-  const [goalError, setGoalError] = useState('')
-  const goalSynced = useRef<string | null>(null)
-  useEffect(() => {
-    if (load !== 'ready') return
-    const want = `${hasGoals}:${goalEvery}`
-    if (goalSynced.current === want || (goalSynced.current === null && !hasGoals)) return
-    goalSynced.current = want
-    syncGoalLoop({ slotKey, kind: 'board', docId, title, every: goalEvery, active: hasGoals })
-      .then(() => setGoalError(''), err => {
-        goalSynced.current = null
-        setGoalError(err instanceof Error ? err.message : String(err))
-      })
-  }, [load, hasGoals, goalEvery, slotKey, docId, title])
   const [readCounts, setReadCounts] = useLocalRecord<Record<string, number>>(`docwork.read.${docId}`, {})
   const views = useMemo(() => {
     const out: Record<string, ThreadView> = {}
@@ -256,8 +237,6 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       )}
       <div className="pointer-events-none absolute left-4 right-4 top-4 flex flex-col items-center gap-2" style={{ zIndex: 20 }}>
         <div className="pointer-events-auto w-full max-w-[520px]">
-          {/* No hand-off: the goals are already saved on the board; the next change retries the loop. */}
-          <ErrorNotice title="Goal checks could not be scheduled" message={goalError} />
           {conflict && (
             <ErrorNotice
               title={i18nT('pages.chat.docPane.conflict_title')}

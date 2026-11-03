@@ -12,6 +12,7 @@ import asyncio
 from aiohttp import web
 
 from kiro_crew.dashboard import doc_files
+from kiro_crew.dashboard.doc_goal_loop import schedule_goal_sync
 from kiro_crew.dashboard.handlers._shared_request_body import read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
@@ -36,6 +37,9 @@ async def api_doc_get(request: web.Request) -> web.Response:
     if doc_id is None:
         return web.json_response({"error": "invalid doc id", "code": "invalid_doc_id"}, status=400)
     doc = await asyncio.to_thread(doc_files.read_doc, doc_id)
+    # Opening a doc also brings its goal loop in line with the file, which covers a
+    # doc saved before the gateway armed loops itself.
+    schedule_goal_sync(request.app.get("state"), doc_id, doc.content)
     return web.json_response(_body(doc))
 
 
@@ -76,6 +80,8 @@ async def api_doc_put(request: web.Request) -> web.Response:
         )
     except ValueError:
         return web.json_response({"error": "doc too large", "code": "doc_too_large"}, status=413)
+    # A saved doc's goals run whether or not its page stays open.
+    schedule_goal_sync(request.app.get("state"), doc_id, doc.content)
     return web.json_response(_body(doc))
 
 

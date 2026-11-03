@@ -124,6 +124,8 @@ async def create_session(
     autocompact_pct: float | None = None,
     caller_fenced: bool | None = None,
     dry_run: bool = False,
+    doc_kind: str = "",
+    content: str | None = None,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
 
@@ -1012,6 +1014,17 @@ async def create_session(
     # Any new refusal gate belongs above this line, or the preview would pass a
     # create the real call then refuses, and the MCP path walk would leave the
     # folders it made for that create empty.
+    # A page instead of a chat (``doc_child``): its refusals are gates too, so they
+    # run before the dry run ends. Imported here, not at module level, so the
+    # facade's mirror of this package's outside imports is not asked to carry them.
+    from kiro_crew.dashboard import doc_files
+    from kiro_crew.dashboard.doc_child import check_doc_child, write_child_doc
+
+    page_kind = (
+        check_doc_child(state, caller_slot, doc_kind, content)
+        if doc_kind or content is not None
+        else ""
+    )
     if dry_run:
         return {"dry_run": True}
 
@@ -1041,6 +1054,9 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        if page_kind:
+            # Bound at birth, as a person's own doc create binds it.
+            slot._doc = doc_files.mint_doc_id(page_kind)
         # Freeze the creator's ACP session id HERE, at mint, from the live caller
         # handle we just authorized -- not later at the child's first turn. The
         # creator slot can be closed and replaced between this mint and that turn,
@@ -1204,6 +1220,7 @@ async def create_session(
             state.sessions.resumable_sid(session_key)
         )
         birth_persisted = False
+        page_text: list[str] = [""]
 
         def _persist_birth(metadata: dict[str, Any]) -> None:
             nonlocal birth_persisted
@@ -1230,6 +1247,10 @@ async def create_session(
                 from kiro_crew.mate_worker import note_worker_session
 
                 note_worker_session(session_key, child_execution)
+            if page_kind:
+                # The page's file before its record: a session bound to a doc
+                # whose file is missing would open as an empty page.
+                page_text[0] = write_child_doc(slot._doc, page_kind, content)
             log.update_metadata(session_key, metadata)
             birth_persisted = True
 
@@ -1274,6 +1295,9 @@ async def create_session(
                         "project": slot.project or "",
                         "title": slot.title or "",
                         "memory_mode": getattr(slot, "memory_mode", "persistent"),
+                        # The page binding: for an idle newborn page this dict is the
+                        # only record of it, as for a person's own doc create.
+                        **({"doc": slot._doc} if page_kind else {}),
                         # The committed selection namespace, only when the caller
                         # stated one -- the metadata codec writes `agent_kind` the same
                         # way (truthy only), and for an idle newborn this dict is the
@@ -1422,6 +1446,11 @@ async def create_session(
             "lineage_recorded": "true" if lineage_recorded else "false",
         },
     )
+    if page_kind:
+        # A page that arrives with a goal in it runs that goal from now on, open or not.
+        from kiro_crew.dashboard.doc_goal_loop import schedule_goal_sync
+
+        schedule_goal_sync(state, slot._doc, page_text[0])
     return {
         "ok": True,
         "target": slot.key,
@@ -1432,6 +1461,7 @@ async def create_session(
         **({"inherited": inherited_fields} if inherited_fields else {}),
         **({"inherited_model_dropped": True} if inherited_model_dropped else {}),
         **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
+        **({"doc": slot._doc, "doc_kind": page_kind} if page_kind else {}),
     }
 
 

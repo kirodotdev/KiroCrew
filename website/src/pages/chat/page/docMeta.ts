@@ -92,6 +92,12 @@ export function coverBackground(cover: string | undefined): string | null {
 /** A new cover: one of the gradients, picked at random as Notion does. */
 export const randomGradient = (rand = Math.random) => `gradient:${Math.floor(rand() * GRADIENTS.length)}`
 
+/** Icons that read as a document, for a new doc's random pick. */
+export const DOC_ICONS = ['📄', '📝', '📌', '📎', '🗂', '📊', '📈', '🧾', '📚', '🗓']
+
+/** A new doc's icon: one of the document-related emoji, at random. */
+export const randomDocIcon = (rand = Math.random) => DOC_ICONS[Math.floor(rand() * DOC_ICONS.length)]
+
 /** The icon picker's emoji, a short everyday set. */
 export const EMOJI = [
   '📄', '📝', '📌', '📎', '🗂️', '📊', '📈', '🧾', '✅', '☑️', '🎯', '🚀',

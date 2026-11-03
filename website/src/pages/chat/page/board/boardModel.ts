@@ -506,14 +506,17 @@ function clearSpot(box: { x: number; y: number; w: number; h: number }, shapes: 
 
 /**
  * The board with a conductor's additions: new shapes and connectors only, never a
- * change to what is there. A shape whose text already sits on the board is not
- * added twice. `ref` lets a connector name a shape added in the same block.
+ * change to what is there. A shape whose text already sits on the board as the same
+ * kind is not added twice, and a session card is one per session: a card for an
+ * issue's doc may carry the issue's sticky text and still be new. `ref` lets a
+ * connector name a shape added in the same block.
  */
 export function applyBoardAdd(b: Board, add: BoardAdd): Board {
   const shapes = [...b.shapes]
   const connectors = [...b.connectors]
   const refs = new Map<string, string>()
-  const texts = new Set(shapes.map(s => s.text.trim()).filter(Boolean))
+  const seen = (kind: ShapeKind, text: string, session?: string) => (kind === 'session' ? `session:${session}` : `${kind}:${text}`)
+  const texts = new Set(shapes.filter(s => s.kind === 'session' || s.text.trim()).map(s => seen(s.kind, s.text.trim(), s.session)))
   // Additions without a neighbour line up to the right of everything.
   const all = boundsOf(shapes)
   let freeX = all ? all.x + all.w + 80 : 0
@@ -525,8 +528,9 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
     // A session card names a session; without a valid key it is a plain sticky.
     const kind: ShapeKind = s.kind && KINDS.has(s.kind) && (s.kind !== 'session' || isSessionKey(s.session)) ? s.kind : 'sticky'
     const text = (s.text ?? '').trim()
-    if (text && texts.has(text)) {
-      const existing = shapes.find(x => x.text.trim() === text)
+    const mark = seen(kind, text, s.session)
+    if ((text || kind === 'session') && texts.has(mark)) {
+      const existing = shapes.find(x => seen(x.kind, x.text.trim(), x.session) === mark)
       if (s.ref && existing) refs.set(s.ref, existing.id)
       continue
     }
@@ -565,7 +569,7 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
       ...lookOf({ ...s, fill: s.fill ?? colorAndFill(s.color).fill }),
     }
     shapes.push(shape)
-    if (text) texts.add(text)
+    if (text || kind === 'session') texts.add(mark)
     if (s.ref) refs.set(s.ref, shape.id)
     if (home) into.set(home.id, [...(into.get(home.id) ?? []), shape.id])
   }

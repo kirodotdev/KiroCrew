@@ -144,6 +144,28 @@ def _session_tools() -> tuple[Tool, ...]:
                             "still change or reset it later."
                         ),
                     },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["doc", "board"],
+                        "description": (
+                            "Open a PAGE instead of a chat: a document ('doc') or a "
+                            "whiteboard ('board'), with its own conductor, which is "
+                            "this agent unless you name another. Only a doc or board "
+                            "session's conductor may, and a page opened this way may "
+                            "open at most one more level of pages. Send the new page's "
+                            "conductor its brief with session_send, and record it on "
+                            "your work ledger like any worker."
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "With `kind`: the page's starting file. For a doc, its "
+                            "markdown (an icon and a cover are added). For a board, "
+                            'its JSON file ({"shapes": [...]}, the shape your own board '
+                            "file has). Omit to start it empty."
+                        ),
+                    },
                 },
                 "required": [],
             },

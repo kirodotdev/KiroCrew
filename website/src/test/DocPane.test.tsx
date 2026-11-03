@@ -25,6 +25,7 @@ import type { ChatSlot } from '../types'
 import DocPane from '../pages/chat/page/DocPane'
 import { parseMarkers } from '../pages/chat/page/docConductor'
 import { cycleDirection, shortLabel, stepId } from '../pages/chat/page/ConversationBar'
+import { DOC_ICONS } from '../pages/chat/page/docMeta'
 
 const getDoc = api.getDoc as unknown as ReturnType<typeof vi.fn>
 const saveDoc = api.saveDoc as unknown as ReturnType<typeof vi.fn>
@@ -432,5 +433,27 @@ describe('DocPane', () => {
     fireEvent.click(screen.getByLabelText("Close the conductor's session"))
     expect(screen.queryByTestId('conductor-session')).toBeNull()
     act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
+  })
+
+  it('a doc never saved gets a random document icon and cover, saved at once; a saved doc keeps what it has', async () => {
+    getDoc.mockResolvedValue({ content: '', version: '' })
+    saveDoc.mockResolvedValue({ content: '', version: 'v1' })
+    renderPane()
+    await editor()
+    const icon = await screen.findByTestId('doc-icon')
+    expect(DOC_ICONS).toContain(icon.textContent)
+    await vi.waitFor(() => expect(saveDoc).toHaveBeenCalled())
+    const [, saved, version] = saveDoc.mock.calls.at(-1) as [string, string, string]
+    expect(version).toBe('')
+    expect(saved).toMatch(/^---\nicon: .+\ncover: gradient:\d+\n---\n/)
+  })
+
+  it('a doc that already has a file is not given an icon or cover', async () => {
+    getDoc.mockResolvedValue({ content: '# Plan\n', version: 'v7' })
+    saveDoc.mockClear()
+    renderPane()
+    await editor()
+    expect(screen.queryByTestId('doc-icon')).toBeNull()
+    expect(saveDoc).not.toHaveBeenCalled()
   })
 })
