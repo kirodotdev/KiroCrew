@@ -8,12 +8,12 @@ bundle was indistinguishable to an older restore from a complete one.
 from __future__ import annotations
 
 import json
-import os
 import tarfile
 
 import pytest
 from test_snapshot import _setup_fake_kirocrew, unpinnable_argv
 
+from conftest import requires_symlinks
 from kiro_crew import snapshot as snap
 
 
@@ -31,7 +31,7 @@ class TestARootResolvingToTheHomeItselfIsRefused:
     `resolved == base`, so the "component tree" became the whole home and staging swept
     `.env`, `config.json` and `sel_hmac.key` into an archive meant to carry memory."""
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_link_to_the_home_is_refused(self, home):
         target = home / "workspace" / "memory"
         import shutil
@@ -40,11 +40,11 @@ class TestARootResolvingToTheHomeItselfIsRefused:
         target.symlink_to("..", target_is_directory=True)
         assert snap.safe_tree_root(target, what="component root") is None
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_the_home_itself_is_refused_directly(self, home):
         assert snap.safe_tree_root(home, what="component root") is None
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_secrets_do_not_reach_the_archive_through_such_a_link(self, home, tmp_path):
         """The consequence, asserted end to end rather than at the predicate."""
         (home / ".env").write_text("TELEGRAM_TOKEN=should-never-be-archived\n")
@@ -65,7 +65,7 @@ class TestARootResolvingToTheHomeItselfIsRefused:
             n.endswith("/.env") for n in names
         ), "the data home's .env reached the archive through a link root"
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_link_redirecting_INSIDE_the_home_is_refused(self, home):
         """Containment is necessary and not sufficient.
 
@@ -89,7 +89,7 @@ class TestARootResolvingToTheHomeItselfIsRefused:
         target.symlink_to(other, target_is_directory=True)
         assert snap.safe_tree_root(target, what="component root") is None
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_link_ABOVE_the_home_does_not_make_every_root_unsafe(self, tmp_path):
         """The other direction, which is the real risk in tightening this.
 
@@ -105,7 +105,7 @@ class TestARootResolvingToTheHomeItselfIsRefused:
         root = linked / "workspace" / "memory"
         assert snap.safe_tree_root(root, what="component root", home=linked) == root
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_link_at_an_INTERMEDIATE_segment_below_the_home_is_refused(self, home):
         """The redirect does not have to be the root itself."""
         other = home / "otherplace"
@@ -122,7 +122,7 @@ class TestARootResolvingToTheHomeItselfIsRefused:
         root.mkdir(parents=True, exist_ok=True)
         assert snap.safe_tree_root(root, what="component root") == root
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_redirected_root_does_not_ship_another_subtree_in_a_real_archive(
         self, home, tmp_path
     ):

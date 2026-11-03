@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_log_append
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.log import append, build_row, log_path, session_digest
@@ -330,7 +331,7 @@ class TestRetention:
 
         assert log_mod.sweep_expired(today + timedelta(days=1)) == 1
 
-    @pytest.mark.skipif(os.name != "posix", reason="directory links via the POSIX pinned walk")
+    @requires_symlinks
     def test_a_swapped_directory_link_does_not_redirect_the_sweep(self, home, tmp_path):
         """The listing and the unlink both go through the pinned no-follow descriptor,
         so a link installed under the log directory's name reaches nothing."""

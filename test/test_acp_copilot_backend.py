@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import acp_backends
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.harness import copilot as copilot_mod
@@ -471,7 +472,7 @@ def test_a_project_without_it_starts(tmp_path) -> None:
     assert copilot_mod.copilot_repo_config_issue("") == ""
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@requires_symlinks
 def test_a_symlinked_ancestor_is_checked_on_both_chains(tmp_path) -> None:
     real = _repo(tmp_path)
     (real / ".mcp.json").write_text("{}")
@@ -859,7 +860,7 @@ async def test_the_spawn_hands_the_config_back_to_this_child_alone(tmp_path, mon
         await client._discard_copilot_mcp_config()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@requires_symlinks
 def test_the_config_path_is_the_resolved_spelling(tmp_path, monkeypatch) -> None:
     """The sandbox carve-out matches the realpath spelling, so the file must use it."""
     real = tmp_path / "real-home"

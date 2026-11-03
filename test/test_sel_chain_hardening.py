@@ -25,6 +25,7 @@ from sel_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 import kiro_crew.sel as sel_mod
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.sel import SecurityEventLog, sel_hmac_key_path
 
@@ -591,7 +592,7 @@ class TestHmacKeyTrustDirMigration:
             with pytest.raises(OSError, match="not the directory its name points at"):
                 sel_mod._pin_lock_dir(real_dir)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_linked_trust_dir_is_removed_not_followed(self, tmp_path: Path) -> None:
         """A ``trust`` symlink planted before the upgrade must be removed
         (link only, target untouched) so the key is never written through it."""
@@ -608,7 +609,7 @@ class TestHmacKeyTrustDirMigration:
         assert (tmp_path / "trust" / "sel_hmac.key").read_bytes() == legacy_key
         assert list(target.iterdir()) == []
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_linked_key_file_is_removed_not_followed(self, tmp_path: Path) -> None:
         """A ``trust/sel_hmac.key`` symlink must be removed before use so a
         fresh key is never written through (or read via) a planted link."""
@@ -711,7 +712,7 @@ class TestHmacKeyTrustDirMigration:
         assert log._hmac_key == key
         assert sel_hmac_key_path() == tmp_path / "trust" / "sel_hmac.key"
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_unremovable_planted_link_falls_back_to_legacy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -733,7 +734,7 @@ class TestHmacKeyTrustDirMigration:
         # Nothing was ever written through the planted link.
         assert list(target.iterdir()) == []
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_unremovable_planted_link_never_hosts_the_chain_lock(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -782,7 +783,7 @@ class TestHmacKeyTrustDirMigration:
         # The legacy key was locked, never rewritten.
         assert (tmp_path / "sel_hmac.key").read_bytes() == legacy_key
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_symlinked_data_home_still_takes_the_real_chain_lock(self, tmp_path: Path) -> None:
         """An OPERATOR's symlink ABOVE the log dir is layout, not an attack.
 

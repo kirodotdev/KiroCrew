@@ -23,6 +23,7 @@ from crew_log_core_helpers import (
     _split_into_segments,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
 from kiro_crew import sandbox
 from kiro_crew.config import paths
@@ -38,7 +39,7 @@ _isolated_home = crew_log_core_helpers._isolated_home
 # --- containment ----------------------------------------------------------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@requires_symlinks
 def test_an_id_that_symlinks_out_of_its_root_is_refused():
     # The shape gate cannot see this one: the id has no separator, the ESCAPE is
     # in the filesystem. Containment is re-checked on the resolved path.

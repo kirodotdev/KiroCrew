@@ -34,7 +34,7 @@ from acp_pi_backend_helpers import (
     _response,
 )
 
-from conftest import make_dir_link
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import launch as launch_mod
@@ -436,7 +436,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         )
 
     @pytest.mark.parametrize("leaf_name", ["pi-gate", "playwright-cli"])
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    @requires_symlinks
     def test_a_squat_refuses_the_spawn_with_no_per_leaf_exception(
         self, monkeypatch, tmp_path, leaf_name
     ):
@@ -456,7 +456,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         "squat",
         ["dangling-symlink", "symlink-to-dir", "regular-file"],
     )
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    @requires_symlinks
     def test_the_resolver_refuses_every_squat_the_shared_walk_used_to_catch(
         self, monkeypatch, tmp_path, squat
     ):

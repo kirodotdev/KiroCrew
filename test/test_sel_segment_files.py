@@ -28,6 +28,7 @@ from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
 )
 
 import kiro_crew.sel as sel_mod
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.sel import SecurityEventLog
 
@@ -685,7 +686,7 @@ class TestSegmentOpensValidateTheDescriptor:
     displacement test locks that invariant.
     """
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_symlink_is_refused_by_both_consumers(self, sel_dir, small_segments):
         """O_NOFOLLOW (and the lstat identity check where it is absent) is what
         catches this: a followed link to a regular file yields a perfectly
@@ -779,7 +780,7 @@ class TestSegmentOpensValidateTheDescriptor:
         total, valid = log.verify_integrity()
         assert total == valid
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_symlinked_live_log_stays_readable(self, sel_dir, small_segments):
         """An operator may relocate the live log via symlink. The WRITER
         follows it (O_CREAT | O_APPEND open), so the readers must too — a

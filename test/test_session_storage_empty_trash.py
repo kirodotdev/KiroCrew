@@ -24,6 +24,7 @@ from session_storage_helpers import (  # noqa: F401 -- fixtures are requested by
     stores_fixture,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import session_storage
 from kiro_crew.session_storage import SessionStorageError
 
@@ -370,7 +371,7 @@ class TestEmptyTrashApproval:
         assert skips == [session_storage.SKIP_IDENTITY_CHANGED]
         assert bystander.read_bytes() == b"ONLY COPY", "the smuggled file must survive"
 
-    @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlink semantics")
+    @requires_symlinks
     def test_a_batch_replaced_by_a_symlink_is_not_approved_as_its_target(
         self, stores: tuple[Path, Path]
     ) -> None:
@@ -543,7 +544,7 @@ class TestEmptyTrashApproval:
 class TestEmptyTrashManifest:
     """The manifest's own last step, and putting it back without overwriting."""
 
-    @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlink semantics")
+    @requires_symlinks
     def test_a_symlinked_manifest_is_refused_rather_than_unlinked(
         self, stores: tuple[Path, Path]
     ) -> None:
@@ -583,7 +584,7 @@ class TestEmptyTrashManifest:
         # And what it pointed at was never followed.
         assert elsewhere.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlink semantics")
+    @requires_symlinks
     def test_the_coarse_path_refuses_a_linked_manifest_too(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
