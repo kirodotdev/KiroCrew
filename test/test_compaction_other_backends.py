@@ -481,10 +481,12 @@ class TestTheInlineCompletionLivesOnTheSeam:
         """The other direction, which the seam must not take with it: kiro-cli
         answers later, so short-circuiting it would acknowledge a compaction that
         had not happened."""
-        provider = self._provider(ACP_BACKEND_KIRO, {"type": "completed"})
+        queued = {"type": "completed", "summary": "from the status frame"}
+        provider = self._provider(ACP_BACKEND_KIRO, queued)
 
-        await provider.wait_for_compaction()
+        result = await provider.wait_for_compaction()
 
+        assert result == queued
         provider._client.wait_for_compaction.assert_awaited()
 
     @pytest.mark.asyncio
