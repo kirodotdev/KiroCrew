@@ -6158,7 +6158,6 @@
       "decision_not_recorded_error": "यह निर्णय दर्ज नहीं हुआ: {{error}}",
       "reject": "अस्वीकार करें",
       "rejected": "अस्वीकृत",
-      "running": "चल रहा है:",
       "tool_approval_requested": "टूल स्वीकृति का अनुरोध:",
       "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे",
       "trusted_channel_all": "विश्वसनीय — इस चैनल के सभी टूल स्वतः स्वीकृत होंगे, रीस्टार्ट के बाद भी बना रहता है",

@@ -6158,7 +6158,6 @@
       "decision_not_recorded_error": "Diese Entscheidung wurde nicht gespeichert: {{error}}",
       "reject": "Ablehnen",
       "rejected": "Abgelehnt",
-      "running": "Läuft:",
       "tool_approval_requested": "Werkzeuggenehmigung angefordert:",
       "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt",
       "trusted_channel_all": "Vertrauenswürdig — alle Werkzeuge in diesem Kanal werden automatisch genehmigt, bleibt nach Neustarts bestehen",

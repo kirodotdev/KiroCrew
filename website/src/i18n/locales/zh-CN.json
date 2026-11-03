@@ -6019,7 +6019,6 @@
       "decision_not_recorded_error": "这次决定未被记录：{{error}}",
       "reject": "拒绝",
       "rejected": "已拒绝",
-      "running": "正在运行：",
       "tool_approval_requested": "已请求工具审批：",
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准",
       "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",

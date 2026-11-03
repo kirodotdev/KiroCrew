@@ -5986,7 +5986,6 @@
       "decision_not_recorded_error": "이 결정이 기록되지 않았습니다: {{error}}",
       "reject": "거부",
       "rejected": "거부됨",
-      "running": "실행 중:",
       "tool_approval_requested": "도구 승인 요청됨:",
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인",
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
