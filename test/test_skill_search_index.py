@@ -594,9 +594,9 @@ class TestTransientLockDoesNotLatch:
             def rollback(self):
                 pass
 
-        monkeypatch.setattr(index, "_db", lambda: _Broken())
-        assert index.body_hits(["k"], ["alpha"]) is None
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(index, "_db", lambda: _Broken())
+            assert index.body_hits(["k"], ["alpha"]) is None
         # Latched: a corrupt file would raise and log once per search otherwise.
         assert index.body_hits(["k"], ["alpha"]) is None
         assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) is None
