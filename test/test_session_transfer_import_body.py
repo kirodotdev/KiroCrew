@@ -630,11 +630,15 @@ async def test_a_second_import_waits_for_the_first_ones_reservation(monkeypatch)
 @pytest.mark.asyncio
 async def test_an_unreadable_host_is_not_gated(monkeypatch):
     from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard import session_transfer_intake as intake
 
     _fake_memory(st, monkeypatch, total_mib=0, available=iter(lambda: 0, None))
+    before = intake._memory_reserved
 
     async with st._memory_admission(10_000 * _MIB):
-        pass
+        # Admitted without waiting, and still counted against later imports.
+        assert intake._memory_reserved == before + 10_000 * _MIB * intake._PARSE_MEMORY_FACTOR
+    assert intake._memory_reserved == before
 
 
 @pytest.mark.asyncio
