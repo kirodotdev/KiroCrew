@@ -17,8 +17,12 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.manager import (
+    APPROVED_GRANTS_FILENAME,
+    INSTALLED_META_FILENAME,
+    STAGED_GRANT_FAMILIES,
     AppResult,
     InstalledApp,
+    _read_approved_grants,
     _read_installed,
     _write_installed,
     app_enabled_state,
@@ -585,3 +589,38 @@ class TestEnabledReadsStrictly:
         assert get_app("strict-probe")["enabled"] is True
         rows = [r for r in list_apps() if r.get("name") == "strict-probe"]
         assert [r["enabled"] for r in rows] == [True]
+
+
+class TestNonUtf8RecordsReadAsUnreadable:
+    """A record file holding bytes that are not UTF-8 is as unreadable as bad JSON.
+
+    Both readers must take their unreadable path instead of letting
+    ``UnicodeDecodeError`` escape to the caller.
+    """
+
+    NON_UTF8 = b"\xff\xfe\x00"
+
+    def test_installed_record_with_non_utf8_bytes_reads_as_not_installed(self, app_home):
+        app_root = app_home / "apps" / "bytes-probe"
+        app_root.mkdir(parents=True)
+        (app_root / INSTALLED_META_FILENAME).write_bytes(self.NON_UTF8)
+
+        assert _read_installed("bytes-probe") is None
+
+    def test_approved_grants_with_non_utf8_bytes_approve_nothing(self, app_home):
+        app_root = app_home / "apps" / "bytes-probe"
+        app_root.mkdir(parents=True)
+        (app_root / APPROVED_GRANTS_FILENAME).write_bytes(self.NON_UTF8)
+
+        assert _read_approved_grants("bytes-probe") == {
+            family: [] for family in STAGED_GRANT_FAMILIES
+        }
+
+    def test_approved_grants_with_bad_json_matches_the_non_utf8_answer(self, app_home):
+        app_root = app_home / "apps" / "bytes-probe"
+        app_root.mkdir(parents=True)
+        (app_root / APPROVED_GRANTS_FILENAME).write_text("{not json", encoding="utf-8")
+
+        assert _read_approved_grants("bytes-probe") == {
+            family: [] for family in STAGED_GRANT_FAMILIES
+        }
