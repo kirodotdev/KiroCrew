@@ -12799,6 +12799,9 @@
         "copied": "Copiato",
         "copy_link": "Copia link al messaggio",
         "unpin": "Rimuovi",
+        "copy_text_failed": "Impossibile copiare il testo. Vai al messaggio e seleziona il testo per copiarlo.",
+        "copy_link_failed": "Impossibile copiare il link. Controlla che questa pagina possa usare gli appunti, poi riprova.",
+        "jump_to_named_message": "Vai al messaggio, {{author}}: {{label}}",
         "jump_to_message": "Vai al messaggio",
         "copy_failed": "Copia non riuscita"
       },

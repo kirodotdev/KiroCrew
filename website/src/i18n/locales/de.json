@@ -12550,6 +12550,9 @@
         "copied": "Kopiert",
         "copy_link": "Link zur Nachricht kopieren",
         "unpin": "Loslösen",
+        "copy_text_failed": "Text konnte nicht kopiert werden. Spring zur Nachricht und markiere den Text, um ihn zu kopieren.",
+        "copy_link_failed": "Link konnte nicht kopiert werden. Prüfe, ob diese Seite die Zwischenablage nutzen darf, und versuch es noch einmal.",
+        "jump_to_named_message": "Zur Nachricht springen, {{author}}: {{label}}",
         "jump_to_message": "Zur Nachricht springen",
         "copy_failed": "Kopieren fehlgeschlagen"
       },

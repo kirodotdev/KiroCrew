@@ -12301,6 +12301,9 @@
         "copied": "已复制",
         "copy_link": "复制消息链接",
         "unpin": "取消置顶",
+        "copy_text_failed": "无法复制文本。跳转到消息，选中文本后复制。",
+        "copy_link_failed": "无法复制链接。请检查此页面是否可以使用剪贴板，然后重试。",
+        "jump_to_named_message": "跳转到消息，{{author}}: {{label}}",
         "jump_to_message": "跳转到消息",
         "copy_failed": "复制失败"
       },
