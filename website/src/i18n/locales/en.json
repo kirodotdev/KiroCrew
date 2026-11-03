@@ -6504,7 +6504,6 @@
       "1_authenticate_to_aws": "1. Authenticate to AWS",
       "2_enter_the_profile_name_region_below": "2. Enter the profile name + region below",
       "3_apply_the_iam_policy": "3. Apply the IAM policy",
-      "access_reachable": ": access reachable",
       "account_12_digits_optional_iam_identity_style": "Account (12 digits, optional — iam-identity-style)",
       "active_deployments": "Active Deployments",
       "admin": "Admin",
@@ -6619,7 +6618,10 @@
       "deploy_publishes_directly_from_this_page": "Deploy publishes from this page after you confirm.",
       "deployments_read_live_from_tags": "This list is read live from AWS resource tags, so a deploy you just made can take a couple of minutes to appear here.",
       "more_count_one": "+{{n}} more",
-      "more_count_other": "+{{n}} more"
+      "more_count_other": "+{{n}} more",
+      "account_short": "acct {{account}}",
+      "profile_reachable": "{{profile}}: access reachable",
+      "profile_reachable_account": "{{profile}}: access reachable (account {{account}})"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
