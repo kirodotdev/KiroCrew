@@ -24,6 +24,7 @@ import threading
 import time as _time  # noqa: F401 - facade re-export
 import uuid  # noqa: F401 - facade re-export
 import weakref
+from collections import OrderedDict
 from collections.abc import (  # noqa: F401 - facade re-export
     Callable,
     Container,
@@ -143,6 +144,7 @@ from kiro_crew.history_files import (  # noqa: F401 - facade re-exports
     transcript_stem,
     transcript_stems,
 )
+from kiro_crew.history_listing_index import SessionListingIndex
 from kiro_crew.history_locks import (  # noqa: F401 - facade re-exports
     _FLOCK_ACQUIRE_TIMEOUT_S,
     _FLOCK_POLL_INTERVAL_S,
@@ -371,6 +373,13 @@ class ConversationLog:
     #: Per transcript directory, the total of every bump above: one int per
     #: directory, moved under ``_cache_gens_guard`` with the bumps it sums.
     _dir_write_epochs: dict[str, int] = {}
+    #: Per transcript directory, sanitized stem -> the directory epoch of its
+    #: latest bump, oldest bump first. The listing index drops the records every
+    #: index over the directory replayed; ``_BUMP_JOURNAL_MAX`` caps the rest.
+    _dir_bumped_stems: dict[str, OrderedDict[str, int]] = {}
+    #: Per transcript directory, the newest epoch the cap dropped from
+    #: ``_dir_bumped_stems``. An index whose replay is older re-reads every row.
+    _dir_bump_floors: dict[str, int] = {}
 
     def __init__(
         self,
@@ -402,17 +411,18 @@ class ConversationLog:
         self._meta_cache: _LRUCache[tuple[CacheIdentity, int, dict]] = _LRUCache(
             _METADATA_CACHE_MAX
         )
-        #: ``((identity, size), gen, title_or_None)`` — the first-user-message
-        #: title ``list_sessions`` derives for a session whose metadata line
-        #: carries no title. Without it every listing would re-open and re-read
-        #: the head of every untitled transcript to compute a value that only
-        #: changes when the file does. Same generation guard and bound as
-        #: ``_meta_cache``, plus the size: the identity alone does not move for
-        #: two writes inside one timestamp tick. ``None`` records "no title in
-        #: the head", which is just as cacheable.
-        self._title_scan_cache: _LRUCache[tuple[tuple[tuple[int, int, int], int], int, object]] = (
-            _LRUCache(_METADATA_CACHE_MAX)
-        )
+        #: ``((identity, size), gen, (title_or_None, has_messages))`` — the
+        #: first-user-message title ``list_sessions`` derives for a session whose
+        #: metadata line carries no title, and what the same head read says about
+        #: :meth:`has_messages` (``None`` when 21 lines held only metadata). Without it
+        #: every listing would re-open and re-read the head of every untitled
+        #: transcript to compute a value that only changes when the file does. Same
+        #: generation guard and bound as ``_meta_cache``, plus the size: the identity
+        #: alone does not move for two writes inside one timestamp tick. A ``None``
+        #: title records "no title in the head", which is just as cacheable.
+        self._title_scan_cache: _LRUCache[
+            tuple[tuple[CacheIdentity, int], int, tuple[object, bool | None]]
+        ] = _LRUCache(_METADATA_CACHE_MAX)
         #: size or inode moves on every write path in this repo; ctime moves on POSIX only
         self._has_messages_cache: _LRUCache[tuple[CacheIdentity, int, bool]] = _LRUCache(
             _METADATA_CACHE_MAX
@@ -509,6 +519,8 @@ class ConversationLog:
         )
 
         self._catalog_projection = SessionCatalogProjection(self)
+        #: Holds no row until the first :meth:`list_sessions_indexed`.
+        self._listing_index = SessionListingIndex(self)
         self._read_projection = TranscriptReadProjection(self)
         self._metadata_projection = SessionMetadataProjection(self)
         self._rewrite_coordinator = HistoryRewriteCoordinator(self)
@@ -584,11 +596,17 @@ class ConversationLog:
     def listing_has_messages(self, key: str) -> bool:
         """:meth:`has_messages` for the Older Sessions listing, memoized per file.
 
-        The listing asks this of every untitled transcript on each refresh. An
-        answer is reused while the file's stamp and this log's write generation
-        both match, so an unchanged transcript costs one ``stat`` instead of the
-        per-key lock and an open. Only the listing calls this: the callers that
-        gate memory on the answer keep the locked, uncached :meth:`has_messages`.
+        The listing asks this of every untitled transcript on each refresh. When
+        the listing index holds a row for *key* whose head read settled the
+        answer, that answer is returned only while the row's file identity
+        matches the current file. The index first re-reads the rows of
+        transcripts this process wrote since its last listing. A stale index
+        entry therefore falls through to the stamp-validated memo below.
+        Otherwise an answer is reused while the file's stamp and this log's
+        write generation both match, so an unchanged transcript costs one
+        ``stat`` instead of the per-key lock and an open. Only the listing calls
+        this: the callers that gate memory on the answer keep the locked,
+        uncached :meth:`has_messages`.
         """
         path = self._path(key)
         # Generation BEFORE the stat, as in list_sessions: a write landing
@@ -599,6 +617,9 @@ class ConversationLog:
         except OSError:
             # Absent or unstattable: the locked read decides, uncached.
             return self.has_messages(key)
+        indexed = self._listing_index.has_messages(key, identity=identity)
+        if indexed is not None:
+            return indexed
         cached = self._has_messages_cache.get(key)
         if cached is not None and cached[0] == identity and cached[1] == self._cache_gen(key):
             return cached[2]
@@ -607,6 +628,17 @@ class ConversationLog:
             self._has_messages_cache, key, (identity, gen, result), key=key, gen=gen
         )
         return result
+
+    def indexed_has_messages(self, key: str) -> bool | None:
+        """The listing index's ``has_messages`` answer for *key*, else None.
+
+        For a row :meth:`list_sessions_indexed` returned: the answer costs no
+        ``stat`` and is as current as that row. The index replays this process's
+        writes first, and another process's append shows after the next reconcile,
+        as the row's title does. None means the index holds no settled answer; the
+        caller then asks :meth:`listing_has_messages`.
+        """
+        return self._listing_index.has_messages(key)
 
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
@@ -668,6 +700,18 @@ class ConversationLog:
         if keys is None:
             return self._catalog_projection.list_sessions()
         return self._catalog_projection.list_sessions(keys=keys)
+
+    def list_sessions_indexed(self) -> list[dict]:
+        """:meth:`list_sessions` answered from the in-memory listing index.
+
+        Same rows, in the same order, as fresh copies. A write through a
+        ``ConversationLog`` in this process shows at once, and so does a file
+        created, removed or renamed in the directory by any writer. A change to a
+        file's content with no journal record (another process's append, or a
+        file replaced under a listed name) shows by the listing after the next
+        reconcile, at most ``history_listing_index.RECONCILE_SECS`` apart.
+        """
+        return self._listing_index.list_sessions()
 
     def list_sessions_status(self) -> tuple[list[dict], bool]:
         return self._catalog_projection.list_sessions_status()

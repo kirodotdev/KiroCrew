@@ -49,6 +49,12 @@ _TRANSCRIPT_CACHE_MAX_BYTES = 32 * 1024 * 1024
 #: the five largest transcripts of one real data home (35-91 MiB files).
 _PARSED_BYTES_PER_FILE_BYTE = 2
 
+#: Most bump records ``ConversationLog._dir_bumped_stems`` holds per directory, at
+#: about 200 bytes each. A record leaves once every listing index over the directory
+#: replayed it, so the cap binds when no index lists the directory, or when more
+#: distinct transcripts are written between two listings than it holds.
+_BUMP_JOURNAL_MAX = 8192
+
 _idle_caches: "weakref.WeakSet[_LRUCache]" = weakref.WeakSet()
 _idle_sweeper_lock = threading.Lock()
 _idle_sweeper: threading.Thread | None = None
@@ -598,7 +604,21 @@ class HistoryCacheCoordinator:
                     self._registry_owner._cache_gens.get(gen_key, 0) + 1
                 )
             epochs = self._registry_owner._dir_write_epochs
-            epochs[base] = epochs.get(base, 0) + 1
+            epoch = epochs[base] = epochs.get(base, 0) + 1
+            # Which stems moved, in bump order, so the listing index re-reads
+            # only those rows (``history_listing_index``), which also drops the
+            # records every index has replayed. Past the cap the oldest go and
+            # the directory's floor records the newest epoch dropped: an index
+            # that has not replayed up to it re-reads every row instead.
+            bumped = self._registry_owner._dir_bumped_stems.setdefault(base, OrderedDict())
+            for _base, stem in gen_keys:
+                bumped[stem] = epoch
+                bumped.move_to_end(stem)
+            if len(bumped) > _BUMP_JOURNAL_MAX:
+                dropped = 0
+                while len(bumped) > _BUMP_JOURNAL_MAX:
+                    dropped = bumped.popitem(last=False)[1]
+                self._registry_owner._dir_bump_floors[base] = dropped
 
     def _dir_write_epoch(self) -> int:
         """How many invalidations any instance over this directory has made.
