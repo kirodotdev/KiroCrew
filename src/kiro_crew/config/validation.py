@@ -274,6 +274,13 @@ def _actual_type_name(value: object) -> str:
 #:   and ``governance._confirm_tool_patterns`` reads it, or a present non-list
 #:   value, as an unknown list, so the writers and the gate withhold instead.
 #:
+#: * ``agent`` (the section): ``agent.kas_persist_mcp_sign_in`` defaults to on,
+#:   so an overlay whose ``agent`` is not an object (``{"agent": null}``) and
+#:   replaces the base file's section would, repaired to absent, drop a stored
+#:   ``false`` and start storing OAuth tokens. Preserved, ``_coerced_section``
+#:   records ``agent`` as degraded and ``kas_secret_storage.persistence_enabled``
+#:   reads it as off, so sign-ins stay in memory.
+#:
 #: * ``workspaces``: the table names WHERE the Global V1 memory workspaces
 #:   live, some possibly at absolute directories outside the data home, and the
 #:   folder-steering memory-store fence is built from it. Repairing a malformed
@@ -290,6 +297,7 @@ def _actual_type_name(value: object) -> str:
 #: listed here; adding a path without them just keeps evidence nobody reads.
 _FAIL_CLOSED_PATHS = frozenset(
     {
+        "agent",
         "publish",
         "publish.allowed_destinations",
         "dashboard",
