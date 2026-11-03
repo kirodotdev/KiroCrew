@@ -21,6 +21,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 )
 
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -375,9 +376,7 @@ class TestResetWithPid:
         # No _client, but has _proc (CC provider style)
         provider._client = None
         mock_proc = AsyncMock()
-        # flake-ok: patched os.kill makes POSIX read pid 99999 as gone so no kill runs; the Windows probe is unpatched; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing fabricated pid moved verbatim; patched os.kill keeps the POSIX kill path unreached; tracked for a de-flake pass
-        mock_proc.pid = 99999
+        mock_proc.pid = UNALLOCATABLE_PID
         mock_proc.returncode = None
         provider._proc = mock_proc
 
@@ -391,7 +390,9 @@ class TestResetWithPid:
 
         provider.shutdown.assert_awaited_once()
         assert not mgr.has_session("k1")
-        assert 99999 in [c.args[0] for c in probe.call_args_list], "the _proc pid is probed"
+        assert UNALLOCATABLE_PID in [
+            c.args[0] for c in probe.call_args_list
+        ], "the _proc pid is probed"
 
     @pytest.mark.asyncio
     async def test_reset_child_sweep(self, cfg):
