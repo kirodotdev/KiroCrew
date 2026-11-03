@@ -116,7 +116,7 @@ beforeEach(() => {
   document.body.append(slot, trail)
   apiMock.generateTitle.mockReset()
 })
-afterEach(() => { cleanup(); slot.remove(); trail.remove() })
+afterEach(() => { cleanup(); slot.remove(); trail.remove(); vi.restoreAllMocks() })
 
 describe('leading cell', () => {
   it('renders the toggle then the title into the slot, marking an incognito session', () => {
@@ -253,6 +253,42 @@ describe('trailing ⋯ menu', () => {
     // Ahead of the window actions (the update row, mocked away here, leads).
     const rows = await screen.findAllByRole('menuitem')
     expect(rows[0].textContent).toBe('cut-row')
+  })
+
+  it('offers the Slack link the phone draws no session header for', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const threadName = i18nT('components.codeChannelBadge.thread_open')
+    // A session started in a Slack thread: its thread, from the origin ids.
+    const born = { key: 'slot-a', title: 'Release notes', slack_linked: false, slack_origin_channel: 'C0C9R9WUXM5', slack_origin_thread_ts: '1792588893.063579' } as ChatSlot
+    const { unmount } = render(<MobileTopBar {...props({ currentSlot: born })} />)
+    await openMore()
+    fireEvent.click(await screen.findByRole('menuitem', { name: threadName }))
+    expect(open).toHaveBeenCalledWith('https://slack.com/archives/C0C9R9WUXM5/p1792588893063579', '_blank', 'noopener,noreferrer')
+    unmount()
+    // A code channel's session: the channel's own link, not a thread's.
+    const bound = {
+      key: 'slot-a', title: 'Release notes', slack_linked: true, slack_channel: 'C0CODE1', slack_thread_ts: '1792588893.063579',
+      code_channel: { channel_name: 'fix-it', status: 'active', web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1' },
+    } as ChatSlot
+    const second = render(<MobileTopBar {...props({ currentSlot: bound })} />)
+    await openMore()
+    expect(screen.queryByRole('menuitem', { name: threadName })).toBeNull()
+    fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('components.codeChannelBadge.open_named', { channel: '#fix-it' }) }))
+    expect(open).toHaveBeenLastCalledWith('https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1', '_blank', 'noopener,noreferrer')
+    second.unmount()
+    // No row for: malformed thread ids; a session still pending its code-channel
+    // lookup; a code channel whose link is malformed (no fallback to the
+    // thread, as the desktop header shows no thread link for it either).
+    for (const s of [
+      { ...born, slack_origin_thread_ts: 'javascript:1' },
+      { ...born, code_channel_pending: true },
+      { ...bound, code_channel: { ...bound.code_channel!, web_url: 'https://evil.example/?channel=C0CODE1' } },
+    ] as ChatSlot[]) {
+      const r = render(<MobileTopBar {...props({ currentSlot: s })} />)
+      await openMore()
+      expect(screen.queryByTestId('mobile-topbar-slack-link')).toBeNull()
+      r.unmount()
+    }
   })
 
   it('offers no split row when the split feature is off, and enters split for the anchor itself', async () => {
