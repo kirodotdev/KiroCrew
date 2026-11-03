@@ -161,8 +161,15 @@ async def _route_action_to_session(
     context_tag: str,
     action_id_value: str,
     blocks: list[dict],
+    user_meta: dict[str, Any] | None = None,
+    pinned_slot: str | None = None,
 ) -> None:
-    """Shared logic for routing an action:: interaction to the agent session."""
+    """Shared logic for routing an action:: interaction to the agent session.
+
+    *user_meta* is the routed user row's meta (a code channel's Slack sender).
+    *pinned_slot* is a bound code channel's session: the answer is delivered
+    there, and its label posts top-level like every other post in the channel.
+    """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
 
     # Redact label before any Slack surface
@@ -177,7 +184,7 @@ async def _route_action_to_session(
         logger.debug("Failed to update action message", exc_info=True)
 
     # Post display text as visible user message
-    new_ts = await _orch.slack.post_message(channel, label, thread_ts)
+    new_ts = await _orch.slack.post_message(channel, label, None if pinned_slot else thread_ts)
     if not new_ts:
         logger.warning("Failed to post action label — aborting action routing")
         return
@@ -221,7 +228,10 @@ async def _route_action_to_session(
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            target_slot_name=pinned_slot,
+            route_pinned=pinned_slot is not None,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
@@ -384,8 +394,11 @@ async def _answer_options(
     blocks: list[dict],
     selected_indices: list[int],
     tool_name: str,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Answer the OPTIONS card posted as *msg_ts* with the choices at *selected_indices*.
+
+    *user_meta* is the routed user row's meta (a code channel's Slack sender).
 
     The one answer path for a one-click button and for the "Choose several..." modal,
     so both send exactly the same text down the same path: the chosen button values,
@@ -612,6 +625,7 @@ async def _answer_options(
             route_pinned=_route_pinned,
             asker_key=_asker_key,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
@@ -703,6 +717,14 @@ async def _handle_options_several_submission(payload: dict) -> None:
     ):
         logger.info("slack OPTIONS choice dropped: denied by channels governance policy")
         return
+    from kiro_crew.slack.code_channels.routing import action_user_meta, options_answer_permitted
+
+    # A code channel's activation (and its origin's) is re-read at the submit: a
+    # card posted before the channel went to review/off must not run a turn.
+    if not options_answer_permitted(channel, user_id):
+        return
+    # A modal answer in a code channel names its submitter on the routed row.
+    user_meta = action_user_meta(channel, payload)
     values = (view.get("state") or {}).get("values") or {}
     picked = ((values.get(OPTIONS_SEVERAL_BLOCK) or {}).get(OPTIONS_SEVERAL_INPUT) or {}).get(
         "selected_options"
@@ -723,6 +745,7 @@ async def _handle_options_several_submission(payload: dict) -> None:
         blocks=list(request.blocks),
         selected_indices=indices,
         tool_name="options_several",
+        user_meta=user_meta,
     )
 
 
@@ -748,6 +771,18 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
+    from kiro_crew.slack.code_channels.routing import (
+        action_answer_slot,
+        action_user_meta,
+        options_answer_permitted,
+    )
+
+    # A code channel's activation (and its origin's) is re-read at the click: a
+    # control posted before the channel went to review/off must not run a turn.
+    if not options_answer_permitted(channel, user_id):
+        return
+    # A button answer in a code channel names its clicker on the routed row.
+    user_meta = action_user_meta(channel, payload)
     blocks = payload.get("message", {}).get("blocks", [])
 
     # ── Standard OPTIONS choice: one click answers with that button's choice ──
@@ -768,6 +803,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             blocks=blocks,
             selected_indices=[int(_suffix)],
             tool_name="options",
+            user_meta=user_meta,
         )
         return
 
@@ -790,6 +826,8 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action button clicked",
             action_id_value,
             blocks,
+            user_meta=user_meta,
+            pinned_slot=action_answer_slot(channel),
         )
         return
 
@@ -826,5 +864,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action element selected",
             action_id_value,
             blocks,
+            user_meta=user_meta,
+            pinned_slot=action_answer_slot(channel),
         )
         return
