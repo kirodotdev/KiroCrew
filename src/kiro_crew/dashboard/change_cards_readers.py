@@ -1345,6 +1345,8 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
     overwrite; only the slash command it asks for must still be free. An update is pinned to the revision read here: Apply sends it as
     ``expected_revision``, and any save in between is a change since the preview.
     """
+    from kiro_crew.workflows.library import command_ref
+
     svc = _workflow_service(state)
     if kind == catalog.KIND_WORKFLOW_SAVE:
         # The command the card shows, asked for or derived from the name, and
@@ -1361,6 +1363,14 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
     return {
         "exists": True,
         "id": str(definition.get("id") or ""),
+        # The ref later reads and the Apply PATCH address: the id, unless the
+        # read lists it as shadowed (a copy restored beside its tombstone), then
+        # the free slug that still reaches it, pinned by ``id``.
+        "ref": (
+            str(definition.get("id") or "")
+            if definition.get("id") not in (definition.get("shadowed_refs") or [])
+            else command_ref(definition)
+        ),
         "slug": str(definition.get("slug") or ""),
         "name": str(definition.get("name") or ""),
         "description": str(definition.get("description") or ""),
@@ -1495,10 +1505,14 @@ async def _workflow_context(
     if kind != catalog.KIND_WORKFLOW_UPDATE or not before.get("exists"):
         return {}
     definition = await asyncio.to_thread(
-        _workflow_service(state).get_definition, str(before.get("id") or "")
+        _workflow_service(state).get_definition, str(before.get("ref") or before.get("id") or "")
     )
     revision = before.get("revision")
-    if not isinstance(definition, dict) or definition.get("revision") != revision:
+    if (
+        not isinstance(definition, dict)
+        or definition.get("id") != before.get("id")
+        or definition.get("revision") != revision
+    ):
         # The diff must be against the revision Apply pins as ``expected_revision``;
         # a save landing between the two reads would otherwise show a diff against
         # a script the card does not replace.

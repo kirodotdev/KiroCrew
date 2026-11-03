@@ -1037,9 +1037,11 @@ def build_preview(
             out["changes"].append(row)
         out["risk"] = RISK_CODE_EXEC
         body = {"source": p["source"], "expected_revision": revision, **changed}
-        out["apply"] = [
-            step("PATCH", f"/api/workflows/definitions/{_q(str(snapshot['id']))}", body)
-        ]
+        ref = str(snapshot.get("ref") or snapshot["id"])
+        if ref != snapshot["id"]:
+            # A free slug stands in for a reserved id: pin the write to the id.
+            body["expected_id"] = str(snapshot["id"])
+        out["apply"] = [step("PATCH", f"/api/workflows/definitions/{_q(ref)}", body)]
     else:  # KIND_DENIED_COMMAND
         if p["action"] == "add":
             if snapshot.get("exists"):

@@ -673,6 +673,10 @@ class WorkflowDefinitionLibrary:
         for definition in self._live():
             if source_format and definition.get("format") != source_format:
                 continue
+            if not command_ref(definition):
+                # No ref reaches it (a restored copy beside its tombstone, or a
+                # hand-placed collision): it is not offered as an example.
+                continue
             title_tokens = _tokens(f"{definition.get('slug', '')} {definition.get('name', '')}")
             description_tokens = _tokens(str(definition.get("description", "")))
             source_tokens = _tokens(str(definition.get("source", "")))

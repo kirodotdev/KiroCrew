@@ -1349,7 +1349,7 @@ class WorkflowService:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}
 
-    def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
+    async def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
         """The run whose original source may enter the library, or the refusal.
 
         Promotion and run-to-revision updates share this: the run must be an ad-hoc
@@ -1363,10 +1363,9 @@ class WorkflowService:
             # A run of a saved workflow is never saved again. Its workflow is
             # either still in the library, so already reusable, or removed,
             # and removal offers no restore.
-            # shortcut: a short locked library read on the caller's thread, since
-            # this helper is sync for both of its callers; move it to a thread if
-            # the library grows large enough to stall the loop.
-            still_saved = self._has_saved_workflow(handle.workflow_id)
+            # The library read takes _definition_lock, which a removal holds
+            # while it waits on the cross-process lock: keep it off the loop.
+            still_saved = await asyncio.to_thread(self._has_saved_workflow, handle.workflow_id)
             return {
                 "ok": False,
                 "error": (
@@ -1402,7 +1401,7 @@ class WorkflowService:
         slug: str = "",
     ) -> dict[str, Any]:
         """Promote a reusable run source from its unredacted server snapshot."""
-        handle = self._reusable_run(run_id)
+        handle = await self._reusable_run(run_id)
         if isinstance(handle, dict):
             return handle
         source = handle.source

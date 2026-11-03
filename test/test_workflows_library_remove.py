@@ -953,6 +953,8 @@ async def test_a_restored_copy_of_a_removed_record_is_reached_by_no_ref(tmp_path
         (gone["id"], ["debug-project", gone["id"]])
     ]
     assert command_ref(listed[0]) == ""
+    # No ref reaches it, so authoring never gets the removed source as an example.
+    assert library.search("debug project", limit=10) == []
 
 
 async def test_a_patch_through_a_restored_copys_free_slug_leaves_its_tombstone_intact(
@@ -1235,6 +1237,101 @@ async def test_a_run_of_a_removed_saved_workflow_says_why_it_cannot_be_saved(tmp
     assert after_removal["error"] == (
         "the saved workflow this run started from is no longer in the library"
     )
+
+
+async def test_a_run_updates_a_restored_copy_through_its_free_slug(tmp_path) -> None:
+    """A copy restored beside its tombstone answers only to its free slug: its
+    id is reserved. A run-to-revision update through that slug must write by the
+    slug (pinned with expected_id), not re-read by the reserved id and 404."""
+    from kiro_crew.workflows.update_from_run import source_sha256
+
+    library = WorkflowDefinitionLibrary(tmp_path)
+    gone = library.create(source=SOURCE_V1, name="Debug Project")
+    assert library.remove(gone["id"]) is not None
+    restored = json.loads(library._path_for(gone["id"]).read_text(encoding="utf-8"))
+    restored.pop("removed_at")
+    restored["slug"] = "deploy-two"
+    copy_path = library.library_dir / "restored-copy.json"
+    copy_path.write_text(json.dumps(restored), encoding="utf-8")
+    svc = _service(library)
+    started = await svc.start(SOURCE_V2, name="Ad hoc")
+    handle = svc.registry.get(started["run_id"])
+    assert handle is not None
+    if handle.task is not None:
+        await handle.task
+
+    updated = await svc.update_run_definition(
+        started["run_id"],
+        "deploy-two",
+        expected_revision=1,
+        expected_source_sha256=source_sha256(SOURCE_V2),
+    )
+
+    assert updated["ok"] is True, updated
+    assert json.loads(copy_path.read_text(encoding="utf-8"))["revision"] == 2
+    assert library.get(gone["id"]) is None
+
+
+async def test_an_update_card_for_a_restored_copy_patches_its_free_slug_pinned_by_id() -> None:
+    """The card's snapshot carries the ref that reaches the copy (its free slug,
+    since its id is reserved), and Apply PATCHes that ref with expected_id."""
+    from kiro_crew import change_card_catalog as catalog
+
+    p = catalog.validate_params("workflow.update", {"workflow": "deploy-two", "source": SOURCE_V2})
+    snapshot = {
+        "exists": True,
+        "id": "wfd_0123456789abcdef",
+        "ref": "deploy-two",
+        "slug": "deploy-two",
+        "name": "Debug Project",
+        "description": "",
+        "format": "python",
+        "revision": 1,
+        "content_hash": "h",
+    }
+    preview = catalog.build_preview("workflow.update", p, snapshot, {"diff": "x"})
+    assert preview["apply"] == [
+        {
+            "method": "PATCH",
+            "path": "/api/workflows/definitions/deploy-two",
+            "body": {
+                "source": SOURCE_V2.strip(),
+                "expected_revision": 1,
+                "expected_id": "wfd_0123456789abcdef",
+            },
+        }
+    ]
+
+
+async def test_the_saved_run_check_reads_the_library_off_the_event_loop(tmp_path) -> None:
+    """The check takes _definition_lock, which a removal holds while it waits on
+    the cross-process lock, so promotion and both run-update paths offload it."""
+    library = WorkflowDefinitionLibrary(tmp_path)
+    saved = library.create(source=SOURCE_V1, name="Debug Project")
+    svc = _service(library)
+    started = await svc.start_definition(saved["slug"])
+    handle = svc.registry.get(started["run_id"])
+    assert handle is not None
+    if handle.task is not None:
+        await handle.task
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    real = svc._has_saved_workflow
+
+    def recording(workflow_id: str) -> bool:
+        seen.append(threading.get_ident())
+        return real(workflow_id)
+
+    svc._has_saved_workflow = recording  # type: ignore[method-assign]
+    await svc.promote_run_definition(started["run_id"], name="Copy")
+    await svc.preview_run_definition_update(started["run_id"], saved["slug"])
+    await svc.update_run_definition(
+        started["run_id"], saved["slug"], expected_revision=1, expected_source_sha256=""
+    )
+
+    assert len(seen) == 3
+    assert loop_thread not in seen
 
 
 # ── a request by a slug that moved: the dashboard sends the id it showed ──
