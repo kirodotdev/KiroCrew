@@ -785,6 +785,10 @@ class LiveStream:
         #: The recorder's last answered query (boxes, frame size); ``None`` after a
         #: query that did not answer. :meth:`flush_held` compares against it.
         self._rec_last: list[list[int]] | None = None
+        #: Bumped by every start and stop: a frame callback that awaited its mask
+        #: query across a stop (the turn ended, maybe the next one opened) sees a
+        #: different run and neither records nor publishes its stale picture.
+        self._run = 0
         self._rec_last_size: tuple[int, int] = (0, 0)
         self._control_task: asyncio.Task[None] | None = None
         #: The screencast runs at the settle picture (one sharp frame of a still page).
@@ -823,6 +827,7 @@ class LiveStream:
         self.session_id = await self.relay.attach(self.target_id, self._on_event)
         self.frames.parent = self.session_id
         self.running = True
+        self._run += 1
         await self.relay.send("Page.enable", {}, self.session_id)
         try:
             await enable_auto_attach(self.relay, self.session_id)
@@ -852,6 +857,7 @@ class LiveStream:
         if not self.running:
             return
         self.running = False
+        self._run += 1
         self._remember()
         task, self._control_task = self._control_task, None
         if task is not None:
@@ -1019,7 +1025,12 @@ class LiveStream:
                 note(width, height)
         want = records and self._recorder_wants()
         scroll = frame_scroll(meta)
+        run = self._run
         boxes = await self._mask_rects(width, height, force=want, scroll=scroll)
+        if not self.running or run != self._run:
+            # Stopped (and maybe started again for the next turn) while the query
+            # ran: this picture belongs to the run that ended, not to this one.
+            return
         mask = boxes if self.config.mask_passwords else []
         if want:
             self._held = None
@@ -1110,9 +1121,12 @@ class LiveStream:
             self._held = None
             jpeg, width, height, at, scroll = held
             before, before_size = self._rec_last, self._rec_last_size
+            run = self._run
             await self._mask_rects(width, height, force=True, scroll=scroll)
             if not (
-                self._mask_ok
+                self.running
+                and run == self._run
+                and self._mask_ok
                 and before is not None
                 and before_size == (width, height)
                 and before == self._rec_boxes

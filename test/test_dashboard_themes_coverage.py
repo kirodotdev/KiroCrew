@@ -31,9 +31,11 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from windows_sim import read_sharing_violation, read_text_sharing_violation
 
 import kiro_crew.platform.governance_profiles as gov_mod
 from conftest import requires_symlinks
+from kiro_crew import atomic_write as aw
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.conditional_get import bare_etag_value, weak_content_etag
 from kiro_crew.dashboard.handlers import themes as th
@@ -233,6 +235,61 @@ class TestListThemesSync:
         real = _make_pack(tmp_path / "outside")
         (themes_dir / "linked").symlink_to(real, target_is_directory=True)
         assert th._list_themes_sync() == []
+
+    # On Windows a read that meets a save's or reinstall's replace raises
+    # PermissionError (a sharing violation). That is a valid theme mid-write, so
+    # the list retries it instead of dropping the theme like a corrupt file.
+
+    @pytest.fixture
+    def windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    @pytest.mark.parametrize(
+        ("rel", "slug"), [("sunset.json", "sunset"), ("lcars/theme.json", "lcars")]
+    )
+    def test_theme_locked_mid_save_is_still_listed(
+        self, windows: None, themes_dir: Path, rel: str, slug: str
+    ) -> None:
+        _write_json(themes_dir / rel, {"name": "Locked"})
+        target = str(themes_dir / rel)
+        # Both read paths fault once, so the test does not depend on which one
+        # the list uses: only a retry gets the theme listed.
+        with read_text_sharing_violation(match=target, times=1):
+            with read_sharing_violation(match=target, times=1):
+                rows = th._list_themes_sync()
+        assert [r["slug"] for r in rows] == [slug]
+
+    @pytest.mark.parametrize(
+        ("rel", "slug"), [("sunset.json", "sunset"), ("lcars/theme.json", "lcars")]
+    )
+    def test_theme_still_locked_after_retries_is_skipped_with_a_warning(
+        self,
+        windows: None,
+        themes_dir: Path,
+        rel: str,
+        slug: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _write_json(themes_dir / rel, {"name": "Locked"})
+        _write_json(themes_dir / "ok.json", {"name": "Ok"})
+        with caplog.at_level("WARNING", logger=th.logger.name):
+            target = str(themes_dir / rel)
+            with read_text_sharing_violation(match=target, times=10_000):
+                with read_sharing_violation(match=target, times=10_000):
+                    rows = th._list_themes_sync()
+        assert [r["slug"] for r in rows] == ["ok"]
+        warned = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warned) == 1
+        assert repr(slug) in warned[0].getMessage()
+
+    def test_corrupt_theme_is_skipped_without_a_warning(
+        self, windows: None, themes_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _write_text(themes_dir / "broken.json", "{not json")
+        with caplog.at_level("WARNING", logger=th.logger.name):
+            assert th._list_themes_sync() == []
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
     def test_sorted_oldest_first_with_undated_last(self, themes_dir: Path) -> None:
         _write_json(themes_dir / "b.json", {"name": "B", "created_at": "2026-05-05"})

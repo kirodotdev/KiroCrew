@@ -19,6 +19,7 @@
  * That one change costs less than re-recording the key after every destructive
  * upgrade, which is why this key is durable while `getPreferredMicId` is not.
  */
+import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { savePrefExplicitly } from './uiPrefs'
 
@@ -364,10 +365,11 @@ export function bindingAriaKeyshortcuts(b: PttBinding): string {
   return parts.join('+')
 }
 
-/** A hold duration in whole-tenths of a second — "0.5", "1.2". Milliseconds are
- *  a developer unit; every user-facing duration string takes seconds. */
+/** A hold duration in whole-tenths of a second, in the active locale's digits —
+ *  "0.5" in en, "0,5" in de. Milliseconds are a developer unit; every
+ *  user-facing duration string takes seconds. */
 export function toSeconds(ms: number): string {
-  return (Math.round(ms / 100) / 10).toFixed(1)
+  return fmtNumber(Math.round(ms / 100) / 10, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
 /** Clamp a hold threshold into range, rejecting non-finite input. */

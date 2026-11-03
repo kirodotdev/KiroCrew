@@ -14,12 +14,14 @@ no chat link), the result simply isn't injected — the tab already shows it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Callable, Optional
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
+    MAX_LIVE_SLOTS,
     DashboardState,
     append_and_surface,
     load_window_off_loop,
@@ -28,6 +30,29 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+logger = logging.getLogger(__name__)
+
+
+def _fallback_slot_at_cap(state: DashboardState, run_id: str) -> bool:
+    """True (and one warning logged) when a new fallback slot would pass the ceiling.
+
+    Every other allocator refuses at ``MAX_LIVE_SLOTS``; a fallback that skipped
+    the test let a workflow whose origin is always gone fill the slot table, so
+    the person's own new chat then answered 429 ``slot_cap_reached``. At the cap
+    the result stays on the run record (``workflow_status``, the Runs view).
+    """
+    live = state.live_slot_count()
+    if live < MAX_LIVE_SLOTS:
+        return False
+    logger.warning(
+        "workflow %s: result not delivered, its chat is gone and the live session"
+        " ceiling (%d) is reached; read it with workflow_result",
+        run_id,
+        MAX_LIVE_SLOTS,
+    )
+    return True
+
 
 # Matches absolute POSIX paths to a file with an extension (artifacts a workflow
 # may have written, e.g. "/home/u/report.md"). Conservative: absolute only, must
@@ -184,6 +209,12 @@ def inject_workflow_result(
             # Never adopt an app-owned slot under the run's key: linking it would
             # hand the app the originating session's transcript.
             if app_holds_gateway_key(state, f"workflow-{run_id}", "workflow.inject_result"):
+                return False
+            # A re-fire reuses its existing fallback slot; only a NEW slot is
+            # an allocation, and every allocation tests the live ceiling.
+            if state.get_slot(f"workflow-{run_id}") is None and _fallback_slot_at_cap(
+                state, run_id
+            ):
                 return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
@@ -401,6 +432,10 @@ async def inject_bound_workflow_result(
                 or getattr(slot, "memory_mode", "persistent") != execution.memory_mode
             ):
                 return False
+            # Test the ceiling before binding anything for a slot that will
+            # not be created; the test runs again at the allocation below.
+            if slot is None and _fallback_slot_at_cap(state, run_id):
+                return False
             # Bind the original identity when the parent is absent.
             # The new visible slot inherits it before any provider can start.
             await asyncio.to_thread(bind_session_execution, origin, execution)
@@ -422,6 +457,8 @@ async def inject_bound_workflow_result(
             ):
                 return False
             if slot is None:
+                if _fallback_slot_at_cap(state, run_id):
+                    return False
                 slot = state.get_or_create_slot(
                     name=fallback_name,
                     agent=agent,

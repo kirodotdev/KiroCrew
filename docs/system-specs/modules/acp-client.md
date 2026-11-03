@@ -986,7 +986,13 @@ remains on disk. If the lock cannot be opened or acquired, preparation retains
 every alias and the current settings file byte-for-byte, then falls back to the
 authored native agent rather than risking a stale-snapshot overwrite or blocking
 startup. Active, foreign-home, unmarked, malformed, unreadable, oversized or
-otherwise uncertain alias files remain on disk.
+otherwise uncertain alias files remain on disk. A global or workspace `cli.json`
+that is present but cannot be read (the credential gate refuses it, it is
+malformed or oversized) takes the same fallback: no view is published, the file
+is left byte-for-byte, and the spawn runs the authored agent, the answer
+`inherits_default_resources` gives for the same file. An absent file reads as
+empty and still projects. A set_mode re-preparation that gets this `None`
+refuses the start, as it does for a busy lock.
 
 `kirocrew doctor`'s Agents Directory section reports the census read-only,
 through `census_projected_aliases` in the reclaim owner

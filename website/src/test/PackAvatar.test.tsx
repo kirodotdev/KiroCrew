@@ -525,3 +525,34 @@ describe('PackAvatar animation is bounded by visibility', () => {
     expect(box.getAttribute('data-pack-playing')).toBe('true')
   })
 })
+
+/** Issue #28531. The ghost face is an `<img>`, which Tailwind's preflight makes
+ *  `display: block`, so a ring around it is exactly as tall as the face. An
+ *  `inline-block` box instead sits on a text baseline, and its parent's line box
+ *  adds the font's descender below it, which turns a `ring-2` around the face
+ *  into a tall pill. jsdom does no layout, so the box's own display is the
+ *  observable fact: it must be `block`, like the ghost's. */
+describe('PackAvatar box matches the ghost face box', () => {
+  it.each([
+    ['svg', { animations: { idle: { content: '<svg/>', format: 'svg' } } }],
+    ['lottie', { animations: { idle: { content: '{"v":1}', format: 'lottie' } } }],
+    ['sprite', { animations: { idle: { content: 'base64', format: 'sprite' } }, sprite: { frameWidth: 16, frameHeight: 16 } }],
+  ])('draws the %s art in a block box, not on a text baseline', async (format, served) => {
+    detail.mockResolvedValue(served)
+    render(<PackAvatar id="aurora" state="idle" size={22} />)
+
+    const box = await screen.findByTestId(`pack-avatar-${format}`, undefined, metaThenWholeRead())
+    expect(box.style.display).toBe('block')
+    expect(box.style.width).toBe('22px')
+    expect(box.style.height).toBe('22px')
+  })
+
+  it('holds the pending skeleton in a block box too', () => {
+    // A read that never lands keeps the skeleton up for the whole test.
+    detail.mockReturnValue(new Promise(() => {}))
+    render(<PackAvatar id="aurora" state="idle" size={22} />)
+
+    const box = screen.getByTestId('pack-avatar-pending')
+    expect(box.style.display).toBe('block')
+  })
+})

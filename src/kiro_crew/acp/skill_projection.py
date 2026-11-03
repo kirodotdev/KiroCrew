@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MANAGED_SETTING,
         _PREVIOUS_INHERITANCE,
         _SETTINGS_READ_RETRY_PAUSES,
+        _UNREADABLE_SETTINGS_ERRORS,
         _inheritance_preference,
         _restore_inheritance,
         _settings,

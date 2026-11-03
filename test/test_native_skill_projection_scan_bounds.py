@@ -1079,7 +1079,9 @@ class TestSettingsReadRetry:
         assert len(calls) == 3
         assert slept == [2.0]
 
-    def test_a_read_that_stays_refused_still_raises(self, native_tree, monkeypatch):
+    def test_a_read_that_stays_refused_raises_and_preparation_falls_back(
+        self, native_tree, monkeypatch
+    ):
         home, agents, project = native_tree
         (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
         global_settings = home / "settings" / "cli.json"
@@ -1090,10 +1092,19 @@ class TestSettingsReadRetry:
         calls = self._flaky_reader(monkeypatch, refusals=10**6)
 
         with pytest.raises(ValueError, match="Cannot read Kiro settings"):
-            projection.prepare_native_skill_projection(project)
+            projection._settings(global_settings)
         # First attempt, immediate re-check, one pause, final attempt.
         assert len(calls) == 3
         assert slept == [2.0]
+
+        # The spawn takes the authored agent on the same exhausted retry
+        # instead of failing: no view, and the workspace overlay is not written.
+        calls.clear()
+        slept.clear()
+        assert projection.prepare_native_skill_projection(project) is None
+        assert len(calls) == 3
+        assert slept == [2.0]
+        assert not (project / ".kiro" / "settings" / "cli.json").exists()
 
     def test_a_missing_file_reads_empty_without_retry(self, tmp_path, monkeypatch):
         calls = self._flaky_reader(monkeypatch, refusals=10**6)

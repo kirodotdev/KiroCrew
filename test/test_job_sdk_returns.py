@@ -42,7 +42,7 @@ from kiro_crew.apps.job_sdk import (
     JobSDK,
     UnknownJobKind,
 )
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import await_until, default_timeout, until_parked, wait_until
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,6 +53,20 @@ from kiro_crew.testing.wait import wait_until
 #: it, so the tests that provoke a real ``PermissionError`` from the filesystem
 #: have nothing to provoke and must skip rather than assert a false negative.
 _MODE_BITS_BITE = hasattr(os, "geteuid") and os.geteuid() != 0
+
+
+def _drain_pool(pool: concurrent.futures.ThreadPoolExecutor) -> None:
+    """Wait, under the lost-run bound, for everything a one-worker ``pool`` was handed.
+
+    The pool runs its queue in order, so a probe submitted last finishes only after every
+    earlier task has run or been skipped as cancelled. The caller releases whatever the
+    tasks wait on first; a task still blocked after that fails the test by name instead of
+    holding a join open.
+    """
+    probe = pool.submit(lambda: None)
+    _, not_done = concurrent.futures.wait([probe], timeout=default_timeout())
+    pool.shutdown(wait=False)
+    assert not not_done, "the pool never drained after the release: a task is still blocked"
 
 
 class TestCoroutineRunnerIsRefusedAtRegistration:
@@ -704,8 +718,7 @@ class TestAnUndrivenResultIsFailedNotDone:
             assert "cannot overlap" not in verdict, "must not claim a stop it did not make"
         finally:
             release.set()
-            # flake-ok: pre-existing pool join after the release; every task it waits on is bounded by its own 5 s wait
-            pool.shutdown(wait=True)
+            _drain_pool(pool)
 
     def test_the_states_are_reachable_and_deliberately_not_distinguished(self) -> None:
         """The states are real; the verdict ignores them ON PURPOSE.
@@ -1141,8 +1154,7 @@ class TestStoppingWorkTheRunnerHandedBack:
             ), "the record does not tell the owner a retry is safe"
         finally:
             release.set()
-            # flake-ok: pre-existing pool join after the release; every task it waits on is bounded by its own 5 s wait
-            pool.shutdown(wait=True)
+            _drain_pool(pool)
         assert ran == [], "the cancelled work ran once the pool drained"
 
     def test_work_already_executing_is_never_claimed_stopped(self, sdk: JobSDK) -> None:
@@ -1180,8 +1192,7 @@ class TestStoppingWorkTheRunnerHandedBack:
             ), "a stop was claimed for work that is still executing"
         finally:
             release.set()
-            # flake-ok: pre-existing pool join after the release; every task it waits on is bounded by its own 5 s wait
-            pool.shutdown(wait=True)
+            _drain_pool(pool)
 
     def test_the_stop_answers_two_ways_one_case_per_answer(self) -> None:
         """One control per branch, so True is not inferred from the others.
@@ -1223,8 +1234,7 @@ class TestStoppingWorkTheRunnerHandedBack:
             assert job_sdk._stop_returned_work(settled) is False
         finally:
             release.set()
-            # flake-ok: pre-existing pool join after the release; every task it waits on is bounded by its own 5 s wait
-            pool.shutdown(wait=True)
+            _drain_pool(pool)
 
     def test_a_callback_raising_baseexception_cannot_corrupt_the_record(self, sdk: JobSDK) -> None:
         """The stop runs app code on this thread, so it must not lose the record.
@@ -1277,8 +1287,7 @@ class TestStoppingWorkTheRunnerHandedBack:
             assert "cannot overlap" not in run.error
         finally:
             release.set()
-            # flake-ok: pre-existing pool join after the release; every task it waits on is bounded by its own 5 s wait
-            pool.shutdown(wait=True)
+            _drain_pool(pool)
         assert ran == [], "the cancelled work ran once the pool drained"
 
     def test_a_truthy_cancel_is_not_accepted_as_a_stop(self) -> None:
@@ -1293,11 +1302,13 @@ class TestStoppingWorkTheRunnerHandedBack:
         kept_going: list[str] = []
 
         async def main() -> object:
+            # Only the cancel below ends the wait; the cleanup sets it so a failed premise
+            # cannot leave the task parked.
+            blocked = asyncio.Event()
+
             async def suppress() -> str:
                 try:
-                    # flake-ok: pre-existing 3 s coroutine body that the task's cancel interrupts at once
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing coroutine body that the cancel interrupts, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(3)
+                    await blocked.wait()
                 except asyncio.CancelledError:
                     kept_going.append("ran on past the cancel")
                     await asyncio.sleep(0)
@@ -1305,12 +1316,12 @@ class TestStoppingWorkTheRunnerHandedBack:
                 return "not cancelled"
 
             task = asyncio.ensure_future(suppress())
-            # flake-ok: pre-existing 50 ms pause that lets the task reach its sleep before the cancel, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms pause before the cancel, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)
-            assert task.cancel() is True, "premise: asyncio reports the cancel taken"
-            # flake-ok: pre-existing await of the task cancelled just above, whose coroutine returns right after the cancel
-            return await task
+            try:
+                await until_parked(blocked)  # the task is inside its try, waiting
+                assert task.cancel() is True, "premise: asyncio reports the cancel taken"
+                return await await_until(task, what="the task that swallowed its cancel")
+            finally:
+                blocked.set()
 
         assert asyncio.run(main()) == "finished anyway"
         assert kept_going == ["ran on past the cancel"]

@@ -5,14 +5,14 @@ its result is already inside a transient scope. Passing that result through
 ``cgroup_scope_argv`` again nests a second ``systemd-run --user --scope``. Because
 ``--scope`` execs in place, the inner call keeps the outer one's PID and asks for
 the same auto-named ``run-p<PID>-i<N>.scope`` unit, which newer systemd refuses,
-so the command never runs. The PPTX Maker spawn tests mock the subprocess, so
-only an argv-level check sees the layer count.
+so the command never runs. A spawn test that mocks the subprocess cannot see the
+nesting, so only an argv-level check counts the layers.
 
 Two layers of pinning:
 
-* the two PPTX Maker spawn sites, driven through the real chokepoint with the
-  cgroup backend forced available, must hand ``run_limited`` an argv whose
-  outermost and only scope layer is the chokepoint's own;
+* the real chokepoint, with the cgroup backend forced available, applies its scope
+  as the outermost and only layer (an app pins its own spawn sites against the same
+  chokepoint in its own ``tests/``, as PPTX Maker does);
 * a source sweep over ``src/kiro_crew`` refuses any function that hands a
   ``sandboxed_spawn_argv`` / ``sandboxed_spawn_argv_async`` result to
   ``cgroup_scope_argv``, so the next caller cannot bring the double wrap back.
@@ -22,12 +22,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
 import kiro_crew.sandbox as sb
-from kiro_crew.apps.builtins.pptx_maker.backend import engine, provision
 
 _SYSTEMD_RUN = "/usr/bin/systemd-run"
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
@@ -68,7 +66,7 @@ def _scope_layers(argv: list[str]) -> int:
     return sum(1 for a in argv if a == _SYSTEMD_RUN)
 
 
-class TestPptxMakerSpawnsCarryOneScope:
+class TestTheChokepointCarriesOneScope:
     def test_the_fixture_really_wraps(self, cgroup_backend_available):
         """Guard the guard: with the backend forced, one wrap is one layer."""
         assert _scope_layers(sb.cgroup_scope_argv(["/bin/true"])) == 1
@@ -81,30 +79,6 @@ class TestPptxMakerSpawnsCarryOneScope:
         )
         assert wrapped[0] == _SYSTEMD_RUN
         assert _scope_layers(wrapped) == 1, wrapped
-
-    def test_provision_run_hands_one_scope_layer_to_the_spawn(
-        self, cgroup_backend_available, real_chokepoint_without_os_sandbox, tmp_path: Path
-    ):
-        with mock.patch.object(provision, "run_limited") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
-            code, _ = provision._run(["/opt/uv", "sync"], cwd=str(tmp_path), timeout=5)
-        spawned = run.call_args.args[0]
-        assert code == 0
-        assert spawned[0] == _SYSTEMD_RUN
-        assert _scope_layers(spawned) == 1, spawned
-        assert spawned[-2:] == ["/opt/uv", "sync"]
-
-    def test_engine_spawn_hands_one_scope_layer_to_the_spawn(
-        self, cgroup_backend_available, real_chokepoint_without_os_sandbox, tmp_path: Path
-    ):
-        with mock.patch.object(engine, "run_limited") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="{}", stderr="")
-            result = engine._spawn(["/venv/python", "-c", "1"], cwd=str(tmp_path), timeout=5)
-        spawned = run.call_args.args[0]
-        assert result.returncode == 0
-        assert spawned[0] == _SYSTEMD_RUN
-        assert _scope_layers(spawned) == 1, spawned
-        assert spawned[-3:] == ["/venv/python", "-c", "1"]
 
 
 def _call_name(node: ast.AST) -> str | None:

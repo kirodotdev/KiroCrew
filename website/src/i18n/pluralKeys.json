@@ -221,6 +221,9 @@
   "pages.chatSidebar.switch_session",
   "pages.chatSidebar.workflow_running",
   "pages.devFleetPage.commits_behind_main_2",
+  "pages.devFleetPage.prune_failed_count",
+  "pages.devFleetPage.pruned_worktrees",
+  "pages.devFleetPage.pruned_worktrees_some_failed",
   "pages.discoverPage.updates_badge_label",
   "pages.knowledge.index.delete_items_permanently",
   "pages.knowledge.index.stats_entities",
@@ -388,5 +391,12 @@
   "pages.chatSidebar.crew_work_stalled",
   "pages.chatSidebar.crew_work_stalled_title",
   "sessionEnvironments.remoteGit.notPushed",
-  "sessionEnvironments.remoteGit.notPulled"
+  "sessionEnvironments.remoteGit.notPulled",
+  "pages.sessionBreakdown.tool_count",
+  "pages.sessionStorage.refused_heading",
+  "apps.mochi.stats.drags",
+  "apps.mochi.stats.peeks",
+  "apps.mochi.stats.screenshots",
+  "apps.mochi.stats.walks",
+  "apps.mochi.stats.longest_chat"
 ]

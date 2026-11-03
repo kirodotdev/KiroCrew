@@ -17,7 +17,7 @@
  * so the tests can pin it without a DOM.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '../api/client'
@@ -350,20 +350,32 @@ export const LIVE_RECORDING_REFRESH_MS = 2000
  * an event after a reload or a reconnect (frames live only in memory), or every
  * frame of the turn reached the gateway's recorder while no card was showing.
  */
-export function useRecordedThumb(sessionKey: string, turnId: string, enabled: boolean): string | null {
+export function useRecordedThumb(sessionKey: string, turnId: string, enabled: boolean): {
+  url: string | null
+  /** The load failed (network, HTTP error): not the same as "no recording". */
+  failed: boolean
+  retry: () => void
+} {
   const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!enabled) return
     const ctl = new AbortController()
+    setFailed(false)
     api.browserLiveRecordings(sessionKey, ctl.signal)
       .then((raw) => {
         const hit = raw === null ? undefined : readRecordingList(raw).find(r => r.turnId === turnId)
         setUrl(hit && hit.frameCount > 0 ? browserLiveFrameUrl(sessionKey, turnId, hit.frameCount - 1) : null)
       })
-      .catch(() => { /* no recording: the globe stays */ })
+      .catch(() => {
+        // An abort is the effect ending, not a failure; anything else is shown, with a retry.
+        if (!ctl.signal.aborted) setFailed(true)
+      })
     return () => ctl.abort()
-  }, [sessionKey, turnId, enabled])
-  return enabled ? url : null
+  }, [sessionKey, turnId, enabled, attempt])
+  const retry = useCallback(() => setAttempt(n => n + 1), [])
+  return { url: enabled ? url : null, failed: enabled && failed, retry }
 }
 
 /** The session's recorded turns, or null when the gateway keeps none. */

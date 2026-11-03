@@ -13,6 +13,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronLeft, ChevronRight, Info, Loader2, Search } from 'lucide-react'
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
+import { recordError, type ErrorReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, ContentSkeleton } from '../../components/ui'
 import { compareText, fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
@@ -62,6 +65,9 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [trashOpen, setTrashOpen] = useState(true)
   const [refused, setRefused] = useState<SessionTrashRefusal[]>([])
+  // What "Ask the agent" hands over for those refusals. A 200 is never journaled,
+  // so without this the hand-off would carry only the heading.
+  const [refusedReport, setRefusedReport] = useState<ErrorReport | undefined>(undefined)
   // One page cursor per list. They are independent because the replay-only group is
   // collapsed by default: paging the main list must not move a reader's place inside
   // the group they had open, and vice versa.
@@ -131,8 +137,15 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
   const trashMut = useMutation({
     mutationFn: (uids: string[]) => api.sessionInventoryTrash(uids),
     onSuccess: (result) => {
-      if (result.refused.length > 0) setRefused(result.refused)
-      else setRefused([])
+      setRefused(result.refused)
+      setRefusedReport(result.refused.length > 0
+        ? recordError({
+            source: 'system',
+            message: i18nT('pages.sessionStorage.refused_heading', { count: result.refused.length, n: fmtNumber(result.refused.length) }),
+            endpoint: '/api/system/session-storage/trash',
+            detail: result.refused.map(r => `${r.uid}: ${r.reason}`).join('\n'),
+          })
+        : undefined)
       invalidate()
     },
   })
@@ -435,19 +448,34 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
             </div>
           )}
 
-          {/* Refused notice */}
+          {/* Refused notice: the server's per-session refusals of a move to
+              Trash. The hand-off is on: the refused sessions are untouched, the
+              selection is already cleared when this shows, and the one text
+              box is a search filter, not a draft. */}
           {refused.length > 0 && (
-            <div className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-[12px]">
-              <div className="font-medium text-text-strong mb-1">
-                {i18nT('pages.sessionStorage.refused_heading', { count: fmtNumber(refused.length) })}
-              </div>
-              {refused.map(r => (
-                <div key={r.uid} className="text-muted">
-                  {labelFor(r.uid)}: {refusalReason(r.reason)}
-                </div>
-              ))}
-            </div>
+            <ErrorNotice
+              askAgent
+              testId="session-storage-refused"
+              report={refusedReport}
+              message={i18nT('pages.sessionStorage.refused_heading', { count: refused.length, n: fmtNumber(refused.length) })}
+              footer={
+                <ul className="text-muted">
+                  {refused.map(r => (
+                    <li key={r.uid}>{labelFor(r.uid)}: {refusalReason(r.reason)}</li>
+                  ))}
+                </ul>
+              }
+            />
           )}
+
+          {/* The move request itself failed, so nothing was moved. The hand-off
+              is on: the sessions are untouched, and the selection and search box
+              are view state, not a draft. */}
+          <ErrorNotice
+            askAgent
+            testId="session-storage-trash-failed"
+            message={trashMut.isError ? errMessage(trashMut.error) : null}
+          />
 
           {/* Session list */}
           <div className="border-t border-border">

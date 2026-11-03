@@ -925,3 +925,37 @@ async def test_a_secret_named_field_that_moved_or_went_between_queries_is_not_ke
     await stream._mask_rects(1280, 768, force=True)
     await stream._mask_rects(1280, 768, force=True)
     assert stream._mask_ok is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("after", "ok"),
+    [([], False), ([[60, 60, 300, 200]], False), ([[10, 10, 300, 200]], True)],
+)
+async def test_an_opaque_frame_that_moved_or_went_between_queries_is_not_kept(
+    after: list[list[int]], ok: bool
+) -> None:
+    """A cross-origin OTP frame removed or moved between the capture and the query
+    leaves the captured one unpainted, so that frame is not recorded as masked."""
+    stream, relay, _clock, _sink = make_stream()
+    replies = iter([[[10, 10, 300, 200]], after])
+
+    def _evaluate() -> dict[str, Any]:
+        return {
+            "result": {
+                "value": {
+                    "boxes": [],
+                    "frames": next(replies),
+                    "named": [],
+                    "partial": False,
+                    "sx": 0,
+                    "sy": 0,
+                }
+            }
+        }
+
+    relay.answers["Runtime.evaluate"] = _evaluate
+    await stream.start()
+    await stream._mask_rects(1280, 768, force=True)
+    await stream._mask_rects(1280, 768, force=True)
+    assert stream._mask_ok is ok

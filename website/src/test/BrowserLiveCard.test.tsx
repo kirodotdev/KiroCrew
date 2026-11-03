@@ -385,6 +385,30 @@ describe('the done card thumbnail without a frame in memory', () => {
     expect(screen.getByTestId('browser-live-replay')).toBeInTheDocument()
   })
 
+  it('says so when the recording cannot be loaded, and Retry reads it again', async () => {
+    const list = vi.spyOn(api, 'browserLiveRecordings')
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ turns: [{ turn_id: 't1', started_ts: 1, frame_count: 5 }] })
+    done()
+    render(card(false))
+    act(() => intersect(true))
+    expect(await screen.findByTestId('browser-live-recording-failed')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-live-replay')).toBeNull()
+    fireEvent.click(screen.getByTestId('browser-live-recording-retry'))
+    expect(await screen.findByTestId('browser-live-done-recorded')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-live-recording-failed')).toBeNull()
+    expect(list).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows no error when the gateway simply keeps no recordings', async () => {
+    vi.spyOn(api, 'browserLiveRecordings').mockResolvedValue(null)
+    done()
+    render(card(false))
+    act(() => intersect(true))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByTestId('browser-live-recording-failed')).toBeNull()
+  })
+
   it('keeps the globe when the gateway recorded no frame of the turn', async () => {
     vi.spyOn(api, 'browserLiveRecordings').mockResolvedValue({ turns: [{ turn_id: 't1', started_ts: 1, frame_count: 0 }] })
     done()

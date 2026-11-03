@@ -948,7 +948,7 @@ class KiroCrewConfig:
                 model = bundled_data.get("model", "")
                 if model:
                     return model
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
         return DEFAULT_MODEL
 

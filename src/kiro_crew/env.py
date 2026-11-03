@@ -18,7 +18,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import env_node_windows, platform_compat
 from kiro_crew.config.paths import data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -366,6 +366,7 @@ _NODE_MANAGER_DIRS = (
     # process and does not inherit N_PREFIX from the user's shell rc.
     "{home}/.n/bin",
 )
+# The same managers' Windows default roots live in :mod:`kiro_crew.env_node_windows`.
 # Standalone Node TREES -- an unpacked distribution rather than a manager's
 # per-version store, so there is no version to glob and no shim to consult.
 # These are where an operator unpacking a nodejs.org tarball by hand puts one.
@@ -559,8 +560,8 @@ def node_bin_dirs() -> tuple[str, ...]:
        because it names the version that script decided on.
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm; nvm under both ``~/.nvm`` and the XDG config
-       dir).
-    4. Shim dirs (mise shims, volta, n).
+       dir; on Windows also fnm and nvm-windows under ``%APPDATA%``).
+    4. Shim dirs (mise shims, volta, n; on Windows also Volta's two roots).
     5. Standalone Node trees -- the glibc-2.17 build ``ensure-node.sh`` unpacks
        into the data home (:data:`_NODE_TREE_DATA_HOME_DIRS`), then a
        hand-unpacked nodejs.org tarball under ``~/.local``
@@ -598,11 +599,15 @@ def node_bin_dirs() -> tuple[str, ...]:
     if marker:
         ordered.append(marker)
 
+    globs = (*_NODE_MANAGER_GLOBS, *env_node_windows.manager_globs(home))
     ordered.extend(
-        _manager_version_bin_dirs(home, mise_data, _xdg_config_dir(home), all_versions=False)
+        _manager_version_bin_dirs(
+            home, mise_data, _xdg_config_dir(home), all_versions=False, patterns=globs
+        )
     )
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
+    ordered.extend(env_node_windows.manager_dirs(home))
     # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
     # unwritable path. Only the data-home candidates depend on it; swallowing here
     # keeps a failure from taking out the manager and $HOME tiers with them.
@@ -661,11 +666,13 @@ def _homebrew_keg_node_bin_dirs() -> list[str]:
 
 
 @functools.lru_cache(maxsize=1)
-def _node_all_bin_dirs(home: str, mise_data: str, xdg_config: str) -> tuple[str, ...]:
+def _node_all_bin_dirs(
+    home: str, mise_data: str, xdg_config: str, windows_globs: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Cached body of :func:`node_all_bin_dirs`, keyed on its inputs.
 
     Keyed on every root the globs format (``home``, ``mise_data``,
-    ``xdg_config``) — matching the retired helper's ``home`` keying — so a
+    ``xdg_config``, the Windows globs from ``env_node_windows``) — matching the retired helper's ``home`` keying — so a
     caller under a different HOME or config dir (tests patching ``expanduser``
     or ``XDG_CONFIG_HOME``) gets a fresh scan instead of the previous key's
     dirs, while the steady-state gateway still globs exactly once.
@@ -673,7 +680,13 @@ def _node_all_bin_dirs(home: str, mise_data: str, xdg_config: str) -> tuple[str,
     out: list[str] = []
     seen: set[str] = set()
     for d in (
-        *_manager_version_bin_dirs(home, mise_data, xdg_config, all_versions=True),
+        *_manager_version_bin_dirs(
+            home,
+            mise_data,
+            xdg_config,
+            all_versions=True,
+            patterns=(*_NODE_MANAGER_GLOBS, *windows_globs),
+        ),
         *_homebrew_keg_node_bin_dirs(),
     ):
         d = os.path.normpath(d)
@@ -715,7 +728,8 @@ def node_all_bin_dirs() -> tuple[str, ...]:
     ever needs re-discovery without one.
     """
     home = os.path.expanduser("~")
-    return _node_all_bin_dirs(home, mise_data_dir(home), _xdg_config_dir(home))
+    windows_globs = env_node_windows.manager_globs(home)
+    return _node_all_bin_dirs(home, mise_data_dir(home), _xdg_config_dir(home), windows_globs)
 
 
 def node_augmented_path(base_path: str = "") -> str:
@@ -1019,7 +1033,11 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
     ):
         extra.append(toolbox_bin)
-    extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
+    extra += env_node_windows.manager_dirs(resolved_home, home)
+    windows_globs = env_node_windows.manager_globs(resolved_home, home)
+    extra += _node_all_bin_dirs(
+        resolved_home, mise_data, _xdg_config_dir(resolved_home), windows_globs
+    )
     # Anchor each well-known dir the inherited PATH already lists ahead of its
     # system dirs, so a prepend never moves it in front of the user's own dirs.
     # Un-anchored extras keep their rank: before the first anchor they are

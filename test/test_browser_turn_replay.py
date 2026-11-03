@@ -1144,3 +1144,35 @@ async def test_a_writer_that_falls_behind_drops_frames_and_marks_the_turn_trunca
     await rec.flush()
     assert rec._recs[KEY].queued_frames == 0 and rec._recs[KEY].queued_bytes == 0
     assert store.turn_detail(KEY, TURN)["truncated"] is True
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_frame_whose_mask_query_spans_a_stop_is_neither_recorded_nor_sent(
+    restart: bool,
+) -> None:
+    """The turn ends (the stream stops), and maybe the next one opens (it starts
+    again), while a frame's mask query is in flight: that picture belongs to the
+    run that ended, so it reaches neither the next turn's replay nor the card."""
+    stream, relay, sink = probe_stream(mask_passwords=True)
+    relay.answers["Runtime.evaluate"] = {"result": {"value": []}}
+    await stream.start()
+    plain = relay.send
+    state = {"armed": True}
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if method == "Runtime.evaluate" and state["armed"]:
+            state["armed"] = False
+            await stream.stop()
+            if restart:
+                await stream.start()
+        return await plain(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    recorded, framed = len(sink.recorded), len(sink.frames)
+    await relay.on_event(frame_event(jpeg(size=(1280, 800))))
+    assert len(sink.recorded) == recorded
+    assert len(sink.frames) == framed
+    # The next frame of the new run is recorded as usual.
+    if restart:
+        await relay.on_event(frame_event(jpeg((3, 3, 3), size=(1280, 800))))
+        assert len(sink.recorded) == recorded + 1

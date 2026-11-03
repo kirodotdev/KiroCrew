@@ -62,7 +62,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Bundled defaults.json (fallback when no project-dir)
@@ -73,7 +73,7 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
                 loaded = json.loads(bundled.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     configs.append(loaded)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
 
     # Installed agent config (always check for mcpServers)
@@ -123,7 +123,7 @@ def _mcp_names_from_file(path: Path) -> set[str]:
         return set()
     try:
         data = loads_user_jsonc(safe_read_file(str(path)))
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, TypeError):
         return set()
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     if not isinstance(servers, dict):
@@ -190,9 +190,10 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
             # JSONC-tolerant: Kiro itself reads these files with comments, so a
             # commented-out server must not drop every other server in the file.
             data = loads_user_jsonc(safe_read_file(str(p)))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             # PermissionError (subclass of OSError) is raised by
-            # safe_read_file when is_sensitive_path() blocks the read.
+            # safe_read_file when is_sensitive_path() blocks the read. Bytes
+            # that are not UTF-8 are as unusable as bad JSON: skip the file.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)
             continue
         if not isinstance(data, dict):

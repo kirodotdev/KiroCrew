@@ -85,10 +85,9 @@ class TestTranscribeWithReaction:
 
 class TestTranscribeFiles:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_slack_events_coverage*.py modules calls monkeypatch.undo()
-    def _uncapped_provider(self, monkeypatch):
-        monkeypatch.setattr(ev, "load_stt_config", lambda: SimpleNamespace(timeout_secs=300))
-        monkeypatch.setattr(ev, "batch_duration_cap_secs", lambda _cfg: None)
+    def _uncapped_provider(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(ev, "load_stt_config", lambda: SimpleNamespace(timeout_secs=300))
+        _floor_monkeypatch.setattr(ev, "batch_duration_cap_secs", lambda _cfg: None)
 
     @pytest.mark.asyncio
     async def test_non_audio_and_urlless_files_skipped(self):

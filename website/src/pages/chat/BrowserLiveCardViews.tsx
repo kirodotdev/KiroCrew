@@ -346,7 +346,7 @@ export function BrowserLiveDoneRow({ turn, onScreen, canvasRef, onReplay, onOpen
   // still there, else Replay.
   // No frame in this page's memory (rebuilt after a reload or reconnect, or the
   // frames went to the recorder while no card showed): the recording's last one.
-  const recorded = useRecordedThumb(turn.sessionKey, turn.turnId, !turn.hasFrame && onScreen)
+  const { url: recorded, failed: recordedFailed, retry: retryRecorded } = useRecordedThumb(turn.sessionKey, turn.turnId, !turn.hasFrame && onScreen)
   const replayable = turn.hasFrame || !!recorded
   const thumbAction = canOpenLive ? onOpenLive : replayable ? onReplay : undefined
   const thumbLabel = canOpenLive
@@ -402,6 +402,14 @@ export function BrowserLiveDoneRow({ turn, onScreen, canvasRef, onReplay, onOpen
         )}
         {turn.controlError && (
           <ErrorNotice variant="inline" message={turn.controlError} askAgent testId="browser-live-control-error" />
+        )}
+        {recordedFailed && (
+          <div className="flex flex-wrap items-center gap-2" data-testid="browser-live-recording-failed">
+            <ErrorNotice variant="inline" message={i18nT('pages.chat.browserLiveCard.recording_load_failed')} askAgent />
+            <Btn onClick={retryRecorded} data-testid="browser-live-recording-retry">
+              {i18nT('pages.chat.browserLiveCard.recording_retry')}
+            </Btn>
+          </div>
         )}
         {/* Two actions, never three: Open live (whose live view carries "Open in
             Chrome" in its menu) and Replay; else Replay and Open in. */}
