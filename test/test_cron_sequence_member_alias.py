@@ -705,3 +705,43 @@ async def test_single_agent_cron_builds_context_from_its_dispatched_template(
     await callback(job)
     assert seen == [expected]
     assert gw.sessions.get_or_create.call_args.kwargs["agent"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_sequence_with_a_project_path_runs_every_step_there(monkeypatch, tmp_path):
+    """The job's project directory is one per job, so it outranks
+    each step's own workspace; the step still runs as its own crew."""
+    import os
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    from kiro_crew.config.sections import WorkspaceConfig
+
+    beta_tree = tmp_path / "beta-tree"
+    beta_tree.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg.workspaces["beta-ws"] = WorkspaceConfig(dir=str(beta_tree))
+    cfg.agents["beta"].kiro_agent = "beta-mode"
+    cfg.agents["beta"].workspace = "beta-ws"
+
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-proj",
+        name="sequence in a repo",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+        project_path=os.path.realpath(repo),
+    )
+    with pytest.raises(RuntimeError, match="stop before the provider"):
+        await callback(job)
+
+    first = gw.sessions.get_or_create.call_args_list[0]
+    assert first.kwargs["cwd"] == os.path.realpath(repo)
+    assert first.kwargs["agent"] == "beta-mode"
+    assert first.kwargs["crew_agent"] == "beta"

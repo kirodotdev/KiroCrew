@@ -198,6 +198,7 @@ leftover prefix without touching it.
 | `kirocrew cron add NAME "" --every 600 --command "df -h /" --no-persistent-session --minimal-context` | Zero-token job: run a vetted shell command |
 | `kirocrew cron add ... --timeout 30 --timeout-secs 60` | Subprocess timeout (script/command) and whole-wake budget |
 | `kirocrew cron add ... --[no-]persistent-session --[no-]minimal-context --hide-in-chat --model ID` | Session shape and model; defaults are persistent session on, minimal context off, so pass `--no-persistent-session --minimal-context` for a script/command job |
+| `kirocrew cron add ... --project-path /abs/repo` | Run the agent session in that repo, so its `.kiro/steering/` and `AGENTS.md` load (agent jobs only; `cron update JOB_ID --project-path ''` clears it) |
 | `kirocrew cron update JOB_ID --message "new msg"` | Update job message |
 | `kirocrew cron update JOB_ID --agent myagent` | Update job agent |
 | `kirocrew cron update JOB_ID --approval-mode auto` | Set auto-approval |

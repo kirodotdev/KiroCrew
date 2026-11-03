@@ -289,6 +289,9 @@ class TestCapAlignment:
         # from: written by register_app_crons_with_service alone, never via
         # CRON_ADD_SCHEMA or any operator update. General ID cap applies.
         "app_manifest_digest",
+        # A job's project directory: set from the CLI only, never via
+        # CRON_ADD_SCHEMA (MCP cron_add does not take it). General ID cap applies.
+        "project_path",
     }
 
     def test_table_caps_match_cron_add_schema(self):
