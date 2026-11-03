@@ -34,6 +34,7 @@ import pytest
 from kiro_crew.apps import bridges
 from kiro_crew.apps.cron_sdk import CronSDK, CronSyncOnLoopError
 from kiro_crew.cron import CronLoopSafetyError, CronService, CronStoreBusy
+from kiro_crew.cron_service.store import cron_store_lock
 
 STRICT = "KIROCREW_STRICT_LOOP_SAFETY"
 
@@ -230,9 +231,12 @@ class TestLoopSafetyGuard:
     ) -> None:
         monkeypatch.setenv(STRICT, "1")
         svc = CronService(base_dir=tmp_path)
-        # No running loop on this thread → the intended sync path → guard passes.
+        # No running loop on this thread → the intended sync path → guard passes,
+        # and the store lock is really held: a second opener cannot take it.
         with svc._file_lock():
-            pass
+            with pytest.raises(CronStoreBusy):
+                with cron_store_lock(svc._dir, timeout=0.0, poll=0.0):
+                    pass  # pragma: no cover
 
     @pytest.mark.asyncio
     async def test_file_lock_raises_on_running_loop_under_strict(
