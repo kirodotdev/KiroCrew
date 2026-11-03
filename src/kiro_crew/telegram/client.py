@@ -429,6 +429,25 @@ def _mention_handles(text: str, entities: "list[dict[str, Any]]") -> tuple[str, 
     return tuple(found)
 
 
+def _reply_sender_id(msg: "dict[str, Any]") -> int:
+    """Numeric id of the sender of the message *msg* replies to, or 0.
+
+    Every level is read defensively: ``reply_to_message``, its ``from`` and the
+    ``id`` can each be absent or an odd type on a crafted or service envelope,
+    and a bare ``int(...)`` on a non-numeric id raised ``ValueError`` -- which,
+    unguarded in ``_build_inbound``, aborted the whole getUpdates batch. A value
+    that is not a plain int (``bool`` is an int subclass and a user id is never
+    a bool) reads as 0, the same "no reply sender" the activation gate already
+    handles.
+    """
+    reply = msg.get("reply_to_message")
+    sender = reply.get("from") if isinstance(reply, dict) else None
+    raw = sender.get("id") if isinstance(sender, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return raw
+
+
 def frame_reply_context(
     text: str,
     reply_context: str,
@@ -1430,15 +1449,25 @@ class TelegramClient:
         # formatted link's target, which would shift every later offset.
         mentions = _mention_handles(raw_text, entities)
         text = _flatten_text_links(raw_text, entities)
-        chat = msg.get("chat", {})
-        user = msg.get("from", {})
+        # ``or {}`` as well as a default: ``message.chat`` / ``message.from`` can
+        # arrive as JSON ``null`` (``from`` is absent on a channel post and some
+        # service messages), and ``{}.get`` on ``None`` would raise -- aborting
+        # the batch loop and losing every later update (see the polling loop's
+        # per-update guard). An absent sender reads as ``user_id=0``, which the
+        # transport's deny-by-default ``authorize`` already refuses.
+        chat = msg.get("chat") or {}
+        user = msg.get("from") or {}
         # Extract file attachments. Telegram delivers each media type in its
         # own top-level key. ``photo`` is an array of sizes — pick the last
         # (largest). Each attachment dict carries at minimum ``file_id``.
         attachments: list[dict[str, Any]] = []
-        if "photo" in msg and msg["photo"]:
+        photo = msg.get("photo")
+        # ``photo`` is an array of size objects; an odd-typed value (not a
+        # non-empty list of dicts) is ignored rather than indexed, so a
+        # malformed envelope cannot raise here.
+        if isinstance(photo, list) and photo and isinstance(photo[-1], dict):
             # Largest photo is last in the array (Bot API guarantee).
-            largest = msg["photo"][-1]
+            largest = photo[-1]
             # Synthesize a filename — photos have no file_name field.
             largest.setdefault("file_name", "photo.jpg")
             largest.setdefault("mime_type", "image/jpeg")
@@ -1460,9 +1489,7 @@ class TelegramClient:
             message_id=msg.get("message_id", 0),
             chat_type=chat.get("type", ""),
             message_thread_id=msg.get("message_thread_id"),
-            reply_to_user_id=int(
-                ((msg.get("reply_to_message") or {}).get("from") or {}).get("id", 0) or 0
-            ),
+            reply_to_user_id=_reply_sender_id(msg),
             # The replied-to message's quoted content, held OUT of ``text`` so it
             # never reaches the mention-activation gate; framed onto the
             # agent-facing text at turn assembly (see ``frame_reply_context``).
