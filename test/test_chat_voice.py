@@ -379,6 +379,11 @@ class TestVoiceConfig:
             assert resp.status == 200
             # Invalid provider ignored — unchanged
             assert mock_vc.provider == "system"
+            # ...and named, so the caller does not read the 200 as saved.
+            body = await resp.json()
+            assert body["ok"] is True
+            assert [w["code"] for w in body["warnings"]] == ["voice_provider_unknown"]
+            assert body["warnings"][0]["field"] == "provider"
 
     @pytest.mark.asyncio
     async def test_put_config_unhashable_engine_does_not_500(self, tmp_path, monkeypatch):
@@ -405,9 +410,11 @@ class TestVoiceConfig:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_voice_app(state))) as client:
-            for bad in ({"engine": ["neural"]}, {"engine": {"x": 1}}):
+            for bad in ({"engine": ["neural"]}, {"engine": {"x": 1}}, {"engine": "turbo"}):
                 resp = await client.put("/api/voice/config", json=bad)
                 assert resp.status == 200  # not a 500
+                body = await resp.json()
+                assert [w["code"] for w in body["warnings"]] == ["voice_engine_unknown"]
             # Unhashable/non-str engine ignored — unchanged
             assert mock_vc.default_engine == "generative"
 
@@ -438,6 +445,71 @@ class TestVoiceConfig:
             resp = await client.put("/api/voice/config", json={"provider": ["polly"]})
             assert resp.status == 200
             assert mock_vc.provider == "system"  # unchanged, not crashed
+
+    @pytest.mark.asyncio
+    async def test_put_config_saves_the_rest_of_a_patch_beside_an_unknown_provider(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(
+            global_enabled=False,
+            auto_speak=False,
+            provider="system",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="",
+            system_voice="",
+            language_code="",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({}))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.put(
+                "/api/voice/config",
+                json={"provider": "bogus", "engine": "neural", "voice": "Joanna"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+        assert [w["field"] for w in body["warnings"]] == ["provider"]
+        assert mock_vc.provider == "system"
+        assert mock_vc.default_engine == "neural"
+        assert mock_vc.default_voice == "Joanna"
+        saved = json.loads(cfg_path.read_text())["voice_reply"]
+        assert "provider" not in saved
+
+    @pytest.mark.asyncio
+    async def test_put_config_with_only_known_values_carries_no_warnings(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(
+            global_enabled=False,
+            auto_speak=False,
+            provider="system",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="",
+            system_voice="",
+            language_code="",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({}))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: cfg_path)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.put("/api/voice/config", json={"engine": "neural"})
+            assert resp.status == 200
+            assert await resp.json() == {"ok": True}
 
     @pytest.mark.asyncio
     async def test_put_config_preserves_unmanaged_voice_reply_keys(self, tmp_path, monkeypatch):

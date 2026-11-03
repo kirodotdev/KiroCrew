@@ -310,6 +310,10 @@ the patch applied to the live `_vc`, so a failed write never leaves the gateway
 running a value the file does not hold. A failed write answers non-2xx with a
 `code`: 500 `config_corrupt` (config.json unreadable), 400
 `config_write_refused`, or 500 `config_write_failed`; success is `{"ok": true}`.
+A `provider` or `engine` the server does not know (or a non-string one) is left
+unsaved while the rest of the patch applies, and the 200 then also carries
+`warnings`: one `{field, code, message}` per such field, with code
+`voice_provider_unknown` or `voice_engine_unknown`.
 
 | Setting | Meaning |
 |---|---|
