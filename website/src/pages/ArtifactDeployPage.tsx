@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -263,12 +263,33 @@ export default function ArtifactDeployPage() {
     },
     onError: (e) => setFailure((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
+  // Each Verify is numbered, and only the newest one may set the verdict: two
+  // checks can be in flight at once (one per profile row), and an older one
+  // that lands last would otherwise show its profile's verdict under the
+  // newer click.
+  const verifySeq = useRef(0)
+  // The profiles with a check in flight: each row's Verify stays locked until
+  // its own check settles.
+  const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
   const verify = useMutation({
     mutationFn: (name: string) => jsend<Reach>('/verify', { profile: name }),
-    onSuccess: ({ data }) => { setReach(data); refreshProfiles() },
+    onMutate: (name) => {
+      setVerifying(prev => new Set(prev).add(name))
+      return { seq: ++verifySeq.current }
+    },
+    onSettled: (_data, _err, name) => {
+      setVerifying(prev => { const next = new Set(prev); next.delete(name); return next })
+    },
+    onSuccess: ({ data }, _name, ctx) => {
+      refreshProfiles()
+      if (ctx?.seq === verifySeq.current) setReach(data)
+    },
     // A rejected check (400 body or transport failure) is an unreachable
     // verdict too — it renders through the same unreachable notice below.
-    onError: (e, name) => setReach({ reachable: false, profile: name, error: (errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')) }),
+    onError: (e, name, ctx) => {
+      if (ctx?.seq !== verifySeq.current) return
+      setReach({ reachable: false, profile: name, error: (errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')) })
+    },
   })
 
   const loadPolicyMut = useMutation({
@@ -573,7 +594,7 @@ export default function ArtifactDeployPage() {
                     </Btn>
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm font-mono font-semibold">{p.name}</td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.account ? `acct ${p.account}` : '—'}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.account ? i18nT('pages.artifactDeployPage.account_short', { account: p.account }) : '—'}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{p.region}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     {p.verified_at
@@ -582,7 +603,8 @@ export default function ArtifactDeployPage() {
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 6 }}>
-                      <Btn onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
+                      {/* Locked while this row's own check runs; another row stays free to check. */}
+                      <Btn disabled={verifying.has(p.name)} onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
                       <Btn aria-label={i18nT('pages.artifactDeployPage.remove_from_registry', { name: p.name })}
                         onClick={async () => {
                           if (await confirm({
@@ -649,7 +671,9 @@ export default function ArtifactDeployPage() {
           <div style={{ marginTop: 10, fontSize: 12 }}>
             {reach.reachable
               ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ok)' }}>
-                  <CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}
+                  <CheckCircle size={12} /> {reach.account
+                    ? i18nT('pages.artifactDeployPage.profile_reachable_account', { profile: reach.profile, account: reach.account })
+                    : i18nT('pages.artifactDeployPage.profile_reachable', { profile: reach.profile })}
                 </span>
               : <>
                   {/* No hand-off while the new-profile form (npName/npAccount/npRole)
