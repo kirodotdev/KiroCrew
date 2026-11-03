@@ -325,7 +325,7 @@ MAIN_ROUTING = {
     "": ("agent_spec", ("", ""), False),
     "kas": ("agent_spec", ("", ""), False),
     "claude": ("seeded_settings", ("", ""), False),
-    "codex": ("session_config", ("mode", "read-only"), True),
+    "codex": ("session_config", ("mode", "external-sandbox"), True),
     "nope": ("unverified", ("", ""), False),
     "kiro": ("unverified", ("", ""), False),
 }
@@ -342,7 +342,7 @@ def test_routing_and_permission_config_are_unchanged_by_the_move(backend: str) -
     assert acp_tool_gate.is_enforced(backend) is expected_enforced
 
 
-def test_codex_still_needs_its_read_only_mode() -> None:
+def test_codex_requires_its_external_sandbox_mode() -> None:
     """The one enforced harness, named rather than only parametrized.
 
     ``codex`` is the backend whose whole security argument is the session-config
@@ -350,7 +350,7 @@ def test_codex_still_needs_its_read_only_mode() -> None:
     finds by name.
     """
     assert routing_for(ACP_BACKEND_CODEX) is sdk_backends.Routing.SESSION_CONFIG
-    assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
+    assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "external-sandbox")
 
 
 def test_known_membership_is_unchanged_by_the_move() -> None:

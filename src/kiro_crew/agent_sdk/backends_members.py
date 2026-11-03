@@ -164,7 +164,7 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 #     channel the session's own servers do;
 #   * the session is GATED -- codex's routing is ``SESSION_CONFIG``, one of the
 #     three mechanisms in ``tool_gate.ENFORCED_ROUTINGS``, so a session that cannot
-#     arm ``mode=read-only`` is REFUSED before its first prompt. That is
+#     arm ``mode=external-sandbox`` is REFUSED before its first prompt. That is
 #     structurally stronger than claude's ``settings.local.json`` ownership check,
 #     which covers a routing this core declares and does not enforce.
 #

@@ -466,7 +466,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   what is absent when a session fails is a switch offered ahead of the code that
 #:   answers for it.
 #: * its tool calls are ROUTED. ``acp_tool_gate`` verifies ``session/new``
-#:   advertised ``mode=read-only`` and applies it before the first prompt, refusing
+#:   advertised ``mode=external-sandbox`` and applies it before the first prompt, refusing
 #:   the session otherwise, so the PreToolUse gate is armed for the calls it makes.
 #:
 #: One gap REMAINS and is survivable rather than closed: ACP v1 offers no way to
