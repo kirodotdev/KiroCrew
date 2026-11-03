@@ -1321,3 +1321,155 @@ class TestKasMcpServedIdentity:
         )
         assert (identity.mcp_server_name, identity.tool_name) == ("weather", "forecast")
         assert identity.identity_trusted is True
+
+
+class TestKasRemoteWrappedBuiltinIdentity:
+    """``remote_web_search`` -- the one KAS built-in served through the engine's
+    remote tool wrapper (``idPrefix = "remote_"``), per
+    ``test/fixtures/kas_builtin_tool_ids.json``'s ``remote`` family. Its
+    tool_call frame carries no ``mcpTool.identity`` at all (recorded live,
+    kiro-cli 2.37.0, ``_meta.kiro`` states only ``{agentMode, toolOrigin}``),
+    so the tool_call cache holds a trusted EMPTY hit -- a KAS built-in's
+    shape, not an MCP server's. Its permission frame then names an identity
+    (``mcpTool.identity.serverName``) its own tool_call never reported, which
+    the general disagreement check (see ``TestKasMcpServedIdentity``) refuses
+    as unreadable. That refusal must carve out exactly this known built-in id,
+    never adopt the claimed server, and still refuse anything it does not
+    recognise."""
+
+    _TOOL_CALL = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "tc-remote-ws",
+        "title": "web_search",
+        "kind": "other",
+        "status": "pending",
+        "rawInput": {"query": "Node.js 22 release notes"},
+        "_meta": {"kiro": {"agentMode": "aidlc", "toolOrigin": "acp"}},
+    }
+    _PERMISSION_META = {
+        "kiro": {
+            "toolId": "remote_web_search",
+            "agentManagesTrust": True,
+            "mcpTool": {
+                "version": 1,
+                "identity": {"serverName": "remote", "toolName": "web_search"},
+            },
+        }
+    }
+
+    def _flow(self, *, perm_meta: dict | None = None) -> AcpEvent:
+        caches: dict[str, Any] = {
+            "tool_input_cache": {},
+            "shell_cache": {},
+            "raw_params_cache": {},
+            "mcp_server_name_cache": {},
+            "tool_name_cache": {},
+            "identity_unreadable_cache": {},
+        }
+        parse_session_update(dict(self._TOOL_CALL), **caches)
+        assert caches["mcp_server_name_cache"]["tc-remote-ws"] == ""
+        msg = JsonRpcMessage(
+            id=60,
+            method="session/request_permission",
+            params={
+                "sessionId": "s",
+                "toolCall": {
+                    "toolCallId": "tc-remote-ws",
+                    "status": "pending",
+                    "title": "web_search",
+                },
+                "options": [
+                    {"optionId": "accept", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "reject", "name": "Deny", "kind": "reject_once"},
+                ],
+                "_meta": perm_meta if perm_meta is not None else self._PERMISSION_META,
+            },
+        )
+        event, _ = build_permission_event(msg, **caches)
+        return event
+
+    def test_the_tool_call_frame_names_no_server(self) -> None:
+        """Ground truth for the fixture above: a built-in's shape, not an MCP
+        server's -- the wire never carries ``mcpTool.identity`` on this frame."""
+        identity = classify_tool_call(dict(self._TOOL_CALL))
+        assert identity.mcp_server_name == ""
+        assert identity.identity_unreadable is False
+
+    def test_remote_web_search_reaches_normal_approval_not_a_refusal(self) -> None:
+        """A disagreement the toolId explains must read as the built-in
+        ``remote_web_search``, server-less, folded under its kiro-cli policy
+        name for governance -- never as an unreadable identity that skips
+        ``ask`` and every grant."""
+        event = self._flow()
+        assert event.mcp_identity_unreadable is False
+        assert event.mcp_server_name == ""
+        assert event.tool_name == "remote_web_search"
+        assert event.kas_builtin_ids is True
+
+    @pytest.mark.asyncio
+    async def test_the_handle_no_longer_refuses_it(self) -> None:
+        """End to end: the handle's own refusal gate lets the call through to
+        the next consumer (ask / grant), instead of auto-rejecting it."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        rt = MagicMock()
+        rt.acp_backend = ACP_BACKEND_KAS
+        rt.pid = None
+        rt.is_alive = MagicMock(return_value=True)
+        rt.send_notification = AsyncMock()
+        rt.supports_image_prompt = False
+        handle = AcpSessionHandle("s-1", asyncio.Queue(), rt)
+        handle._handle_update(
+            JsonRpcMessage(
+                method="session/update",
+                params={"sessionId": "s-1", "update": dict(self._TOOL_CALL)},
+            )
+        )
+        msg = JsonRpcMessage(
+            id=61,
+            method="session/request_permission",
+            params={
+                "sessionId": "s-1",
+                "toolCall": {
+                    "toolCallId": "tc-remote-ws",
+                    "status": "pending",
+                    "title": "web_search",
+                },
+                "options": [
+                    {"optionId": "accept", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "reject", "name": "Deny", "kind": "reject_once"},
+                ],
+                "_meta": self._PERMISSION_META,
+            },
+        )
+        event = handle._build_permission_event(msg)
+        assert event is not None
+        assert event.mcp_identity_unreadable is False
+        assert await handle._refuse_unreadable_mcp_identity(event) is False
+
+    def test_a_server_the_remote_wrapper_did_not_claim_is_still_a_mismatch(self) -> None:
+        """Changing only ``toolId`` away from the known remote-wrapped set must
+        restore the refusal: the exemption is keyed on a RECOGNISED built-in
+        id, never on the mere shape of an empty-server tool_call cache hit."""
+        import copy
+
+        meta = copy.deepcopy(self._PERMISSION_META)
+        meta["kiro"]["toolId"] = "read_file"
+        event = self._flow(perm_meta=meta)
+        assert event.mcp_identity_unreadable is True
+        assert event.mcp_server_name == ""
+
+    def test_a_remote_server_claim_never_reaches_server_keyed_grants(self) -> None:
+        """Recognising the built-in must not adopt ``serverName: "remote"`` as
+        the call's MCP server: ``event.mcp_server_name`` stays empty (never
+        ``"remote"``), so a server-keyed grant (the app-own-MCP auto-approve,
+        keyed on ``facts.mcp_server``) can never match this call -- it would
+        need an exact non-empty server name, and this call carries none."""
+        event = self._flow()
+        assert event.mcp_server_name != "remote"
+        assert event.mcp_server_name == ""
+        assert event.mcp_identity_unreadable is False

@@ -121,6 +121,31 @@ KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
     "web_search": ("remote_web_search",),
 }
 
+#: Every KAS id served through the engine's remote tool wrapper rather than a
+#: registered local tool -- the ``idPrefix = "remote_"`` family
+#: :data:`KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME`'s own docstring describes
+#: (``remote_web_search`` today). Derived from that table, not hand-maintained,
+#: so a future remote-wrapped built-in extends this set the moment it is added
+#: there instead of needing a second edit.
+#:
+#: The permission path's identity-disagreement check
+#: (``acp._dispatch_parts.permission_requests``) reads this set to recognise
+#: the one case the engine's own split creates: the wrapper reports an identity
+#: on the PERMISSION frame (``_meta.kiro.mcpTool.identity``) that its TOOL_CALL
+#: frame never carries (no ``serverName`` at all -- captured live, kiro-cli
+#: 2.37.0), so the preceding tool_call's trusted identity cache holds an empty
+#: hit and a server read off the permission frame always disagrees with it. A
+#: toolId in this set is judged as that built-in rather than refused as an
+#: unreadable identity; the exemption is keyed on the toolId alone, never on
+#: the permission frame's claimed server name, so it cannot be used to adopt a
+#: server identity the tool_call did not itself report.
+KAS_REMOTE_WRAPPED_TOOL_IDS: frozenset[str] = frozenset(
+    kas_id
+    for family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.values()
+    for kas_id in family
+    if kas_id.startswith("remote_")
+)
+
 #: KAS built-in tool id -> the kiro-cli name a policy about it is written under.
 #:
 #: The inverse of the mount table, plus two ids no mount family carries:
