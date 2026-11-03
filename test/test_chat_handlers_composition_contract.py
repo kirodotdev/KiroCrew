@@ -463,7 +463,7 @@ async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
     """
     events: list[str] = []
 
-    async def _drain(_state, name, _slot):
+    async def _drain(_state, name, _slot, takeover_basis=None):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
 
@@ -559,6 +559,7 @@ _OWNER_MODULES = frozenset(
         "slot_lifecycle",
         "slot_model",
         "slot_note",
+        "slot_repair",
         "slot_settings",
         "slot_summary",
         "source_links",
@@ -687,6 +688,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
+    "slot_repair": (
+        (
+            "api_chat_slot_reset_conversation",
+            "async function",
+            "(request: 'web.Request') -> 'web.Response'",
+        ),
+    ),
     "slot_lifecycle": (
         (
             "_slot_still_ours",
@@ -699,11 +707,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_restore_slot_nudge_loop",
             "async function",
             "(loop: \"'NudgeLoop | None'\", admission_check: 'Callable[[], bool]') -> 'None'",
-        ),
-        (
-            "api_chat_slot_reset_conversation",
-            "async function",
-            "(request: 'web.Request') -> 'web.Response'",
         ),
         (
             "_release_closed_execution",
@@ -865,7 +868,8 @@ slot_create | api_chat_slot_create | async function | (request: 'web.Request') -
 handover_drain | _HandoverDrainResult | class
 handover_drain | _owed_prompts_lost_on_line | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', history_key: 'str') -> 'int'
 handover_drain | _report_lost_queued_prompts | function | (state: 'DashboardState', name: 'str', count: 'int', history_key: 'str') -> 'None'
-handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot') -> '_HandoverDrainResult'
+handover_drain | _teardown_drain_basis | function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', basis: 'TakeoverBasis | None') -> 'TakeoverBasis | None'
+handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> '_HandoverDrainResult'
 slot_summary | api_chat_slot_summary | async function | (request: 'web.Request') -> 'web.Response'
 slot_summary | _generate_state | function | (cfg: 'KiroCrewConfig', slot: 'Any') -> 'str'
 slot_summary | api_chat_slot_summary_generate | async function | (request: 'web.Request') -> 'web.Response'

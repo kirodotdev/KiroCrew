@@ -1857,8 +1857,11 @@ specified compatibility change.
     under its `PAGE` rules (see `history.md`, Consistent transcript snapshot);
   - `resume` — resume from History (the request-free core
     `resume_slot_from_history`, materialisation, hydration, window reconciliation);
-  - `slot_lifecycle` — the shared close path (`close_slot`) and delete, the idle
-    cleanup sweep, and the fresh-conversation reset;
+  - `slot_lifecycle` — the shared close path (`close_slot`) and delete, and the idle
+    cleanup sweep;
+  - `slot_repair` — the two routes that rebuild a slot's session in place: the image
+    repair (`api_chat_slot_repair_images`) and the fresh-conversation reset
+    (`api_chat_slot_reset_conversation`);
   - `slot_guards` — the guards and records every slot-mutating request shares: the
     per-request commit token, the replaced-while-queued and busy checks, the
     attached-sub-agent refusal, the session reset with its teardown warning, and the
