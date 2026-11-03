@@ -11312,7 +11312,8 @@
       "synced_from_its_source_directory": "{{name}} sincronizado a partir do diretório de origem.",
       "updated_from_the_registry": "{{name}} atualizado a partir do registro.",
       "updated_needs_session_approval_consent": "{{name}} está desativado porque passou a pedir para controlar seus chats. Revise a permissão nos detalhes do app e ative-o.",
-      "refresh_store": "Atualizar a loja"
+      "refresh_store": "Atualizar a loja",
+      "refreshing_store": "Atualizando a loja…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mês",

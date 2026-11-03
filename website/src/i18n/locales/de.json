@@ -11125,7 +11125,8 @@
       "synced_from_its_source_directory": "{{name}} aus dem Quellverzeichnis synchronisiert.",
       "updated_from_the_registry": "{{name}} aus der Registry aktualisiert.",
       "updated_needs_session_approval_consent": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung in den App-Details und aktiviere sie dann.",
-      "refresh_store": "Store aktualisieren"
+      "refresh_store": "Store aktualisieren",
+      "refreshing_store": "Store wird aktualisiert…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/Mon.",

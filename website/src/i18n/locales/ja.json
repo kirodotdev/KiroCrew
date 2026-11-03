@@ -10938,7 +10938,8 @@
       "updated_app_other": "{{count}} アプリを更新しました。",
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
       "updated_needs_session_approval_consent": "{{name}} は新たにチャットの制御を要求するため、無効になっています。アプリの詳細で権限を確認し、有効にしてください。",
-      "refresh_store": "ストアを更新"
+      "refresh_store": "ストアを更新",
+      "refreshing_store": "ストアを更新中…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

@@ -11125,7 +11125,8 @@
       "synced_from_its_source_directory": "{{name}} তার সোর্স ডিরেক্টরি থেকে সিঙ্ক করা হয়েছে।",
       "updated_from_the_registry": "{{name}} রেজিস্ট্রি থেকে আপডেট করা হয়েছে।",
       "updated_needs_session_approval_consent": "{{name}} বন্ধ আছে, কারণ এটি নতুন করে তোমার চ্যাট নিয়ন্ত্রণের অনুমতি চাইছে। অ্যাপের বিবরণে অনুমতিটি দেখো, তারপর চালু করো।",
-      "refresh_store": "স্টোর রিফ্রেশ করুন"
+      "refresh_store": "স্টোর রিফ্রেশ করুন",
+      "refreshing_store": "স্টোর রিফ্রেশ হচ্ছে…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/মাস",

@@ -111,4 +111,26 @@ describe('the store refresh button', () => {
 
     await waitFor(() => expect(listRegistry).toHaveBeenCalledTimes(2))
   })
+
+  it('names the disabled button for the refresh in flight, then restores it', async () => {
+    // A disabled button whose name still offers the action reads as
+    // unavailable; while the refresh runs its name says it is busy instead.
+    let release: (v: { ok: true }) => void = () => {}
+    refreshAppStore.mockReturnValue(new Promise(resolve => { release = resolve }))
+    renderPage()
+    await waitFor(() => expect(listRegistry).toHaveBeenCalledTimes(1))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh the store' }))
+
+    const busy = await screen.findByRole('button', { name: 'Refreshing the store…' })
+    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('title', 'Refreshing the store…')
+    expect(screen.queryByRole('button', { name: 'Refresh the store' })).toBeNull()
+
+    release({ ok: true })
+
+    const idle = await screen.findByRole('button', { name: 'Refresh the store' })
+    expect(idle).toBeEnabled()
+    expect(idle).toHaveAttribute('title', 'Refresh the store')
+  })
 })

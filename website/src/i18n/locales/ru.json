@@ -11499,7 +11499,8 @@
       "synced_from_its_source_directory": "{{name}} синхронизировано из исходного каталога.",
       "updated_from_the_registry": "{{name}} обновлено из реестра.",
       "updated_needs_session_approval_consent": "{{name}} отключено, потому что теперь запрашивает управление твоими чатами. Проверь разрешение в сведениях о приложении и включи его.",
-      "refresh_store": "Обновить магазин"
+      "refresh_store": "Обновить магазин",
+      "refreshing_store": "Обновление магазина…"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/мес",
