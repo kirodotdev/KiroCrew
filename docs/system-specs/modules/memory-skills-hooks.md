@@ -2686,7 +2686,13 @@ self-contained file with no WAL to pair.
   operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
   the interval guard and `newest_backup` (restore's default choice) read
   `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
-  toward `keep` and never restored without `--from`.
+  toward `keep` and never restored without `--from`. The interval guard measures
+  from the newest backup stamped at or before the current time and logs a warning
+  for any stamped after it (taken under a wrong clock): a future stamp neither keeps
+  every pass skipping until the clock catches up, nor turns the guard off so that
+  each restart copies and prunes the real history away. `prune_backups` reads the
+  same view: a future-stamped copy is kept and takes no `keep` slot, so it can never
+  evict the copy the pass just took.
 - **Atomicity**: each call writes its own hidden UUID `.partial` and renames it, so an
   interrupted or concurrent run cannot delete another call's stage or leave a
   truncated file that looks like a backup. The stage is switched to
