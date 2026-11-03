@@ -529,10 +529,16 @@ class TestReceiptReplay:
     def test_malformed_records_from_a_child_never_fail_a_read(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rp._replay_records({"omissions": {"cleared": 7, "set": [1]}, "receipts": "x"})
-        rp._replay_records(
-            {"omissions": {"cleared": ["nonsense"], "set": {"x": {}, "lesson_rules": 1}}}
-        )
+        from kiro_crew import context_omissions, injection_receipts
+
+        with context_omissions.collect() as omitted, injection_receipts.collect() as receipts:
+            rp._replay_records({"omissions": {"cleared": 7, "set": [1]}, "receipts": "x"})
+            rp._replay_records(
+                {"omissions": {"cleared": ["nonsense"], "set": {"x": {}, "lesson_rules": 1}}}
+            )
+        # Nothing malformed lands in the turn's collectors.
+        assert omitted == {}
+        assert receipts == {}
 
 
 def test_the_pool_is_rebuilt_when_the_setting_changes(monkeypatch: pytest.MonkeyPatch) -> None:

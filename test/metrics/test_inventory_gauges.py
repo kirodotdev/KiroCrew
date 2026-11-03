@@ -1055,14 +1055,19 @@ def test_claiming_the_role_is_idempotent_and_enables_publication():
         ig.reset_for_testing()
 
 
-def test_registration_failure_is_swallowed():
+def test_registration_failure_is_swallowed(caplog):
     """register_inventory_gauges never raises, even on a hostile meter."""
 
     class _HostileMeter:
         def __getattr__(self, name):
             raise RuntimeError("no instruments for you")
 
-    ig.register_inventory_gauges(_HostileMeter())  # must not raise
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.metrics.inventory_gauges"):
+        ig.register_inventory_gauges(_HostileMeter())  # must not raise
+    logged = [
+        r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.inventory_gauges"
+    ]
+    assert logged == ["inventory gauge registration failed: no instruments for you"]
 
 
 # ---------------------------------------------------------------------------
