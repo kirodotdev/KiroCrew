@@ -85,6 +85,7 @@ from kiro_crew.metrics.tool_calls import (  # noqa: F401
     record_tool_call_finished,
 )
 from kiro_crew.platform.guest_paths import GuestPathParams  # noqa: F401
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL  # noqa: F401
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS  # noqa: F401
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints  # noqa: F401
@@ -610,6 +611,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DENY_BEHAVIORS,
         _DENY_OPTION_IDS,
         _KAS_NON_COMMAND_TOOLS,
+        _KAS_REMOTE_WRAPPER_ID_PREFIX,
+        _KAS_REMOTE_WRAPPER_SERVER,
         _LEGACY_OPTION_KIND,
         _PI_MCP_NAME_UNSAFE,
         _SPEC_OPTION_KINDS,
@@ -619,6 +622,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         STRANDS_SIDE_READ_ONLY_REFUSAL,
         StrandsCallIdentity,
         _anchored_in_workspace,
+        _is_kas_remote_builtin,
         _workspace_call_arguments,
         build_permission_event,
         gate_envelope,

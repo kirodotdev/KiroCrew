@@ -1321,3 +1321,118 @@ class TestKasMcpServedIdentity:
         )
         assert (identity.mcp_server_name, identity.tool_name) == ("weather", "forecast")
         assert identity.identity_trusted is True
+
+
+# ── KAS: a built-in served through the engine's remote tool wrapper ───────────
+
+
+def _kas_remote_flow(
+    *,
+    tool_id: str = "remote_web_search",
+    identity_server: str = "remote",
+    identity_tool: str = "web_search",
+    cached_server: str = "",
+    handed: bool = True,
+) -> AcpEvent:
+    """KAS serves ``web_search`` through its remote tool wrapper
+    (``static serverName = "remote"``, ``idPrefix = "remote_"``): the tool_call
+    frame names no server, as for any built-in, while the permission request
+    stamps ``toolId: "remote_web_search"`` and
+    ``mcpTool.identity: {serverName: "remote", toolName: "web_search"}``."""
+    caches: dict[str, Any] = {
+        "tool_input_cache": {},
+        "shell_cache": {},
+        "raw_params_cache": {},
+        "mcp_server_name_cache": {},
+        "tool_name_cache": {},
+    }
+    if handed:
+        caches["identity_unreadable_cache"] = {}
+    kiro_meta: dict[str, Any] = {"toolOrigin": "acp"}
+    if cached_server:
+        kiro_meta["serverName"] = cached_server
+    parse_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-remote",
+            "title": "remote_web_search",
+            "kind": "other",
+            "status": "pending",
+            "rawInput": {"query": "write simply"},
+            "_meta": {"kiro": kiro_meta},
+        },
+        **caches,
+    )
+    msg = JsonRpcMessage(
+        id=52,
+        method="session/request_permission",
+        params={
+            "sessionId": "s",
+            "toolCall": {
+                "toolCallId": "tc-remote",
+                "status": "pending",
+                "title": "remote_web_search",
+            },
+            "options": [
+                {"optionId": "accept", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "reject", "name": "Deny", "kind": "reject_once"},
+            ],
+            "_meta": {
+                "kiro": {
+                    "toolId": tool_id,
+                    "mcpTool": {
+                        "identity": {"serverName": identity_server, "toolName": identity_tool}
+                    },
+                }
+            },
+        },
+    )
+    event, _ = build_permission_event(msg, **caches)
+    assert event is not None
+    return event
+
+
+class TestKasRemoteWrapperBuiltin:
+    """Every KAS web search was refused as an unreadable identity before any
+    consumer saw it: the wrapper's ``remote`` server on the permission request
+    disagreed with the serverless tool_call, which the disagreement rule reads as
+    two frames naming different MCP servers. The wrapper is not an MCP server, so
+    the call must reach the consumers as the ``remote_web_search`` built-in, with
+    the wrapper server never adopted."""
+
+    def test_remote_web_search_is_not_refused_and_is_judged_as_the_built_in(self) -> None:
+        event = _kas_remote_flow()
+        assert event.mcp_identity_unreadable is False
+        assert event.tool_name == "remote_web_search"
+        assert event.mcp_server_name == ""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"tool_id": "remote_get_learnings", "identity_tool": "get_learnings"},
+            {"tool_id": "remote_other"},
+            {"identity_server": "remotes"},
+            {"identity_tool": ""},
+            {"cached_server": "probefs"},
+        ],
+        ids=[
+            "unmapped-remote-id",
+            "id-name-mismatch",
+            "other-server",
+            "no-identity-tool",
+            "after-an-mcp-tool-call",
+        ],
+    )
+    def test_anything_but_the_exact_wrapper_shape_is_still_refused(self, overrides: dict) -> None:
+        event = _kas_remote_flow(**overrides)
+        assert event.mcp_identity_unreadable is True
+        assert event.mcp_server_name != "remote"
+
+    def test_an_oversized_identity_half_is_still_unreadable(self) -> None:
+        event = _kas_remote_flow(identity_tool="w" * 513)
+        assert event.mcp_identity_unreadable is True
+
+    def test_a_first_class_harness_is_unchanged(self) -> None:
+        event = _kas_remote_flow(handed=False)
+        assert event.mcp_identity_unreadable is False
+        assert event.mcp_server_name == ""

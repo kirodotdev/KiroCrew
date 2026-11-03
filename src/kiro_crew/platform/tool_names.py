@@ -146,6 +146,11 @@ KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 #:
 #: Names the two engines share (``fs_write``, ``execute_bash``, ``web_fetch``,
 #: ``code``) need no entry: they already ARE the policy spelling.
+#:
+#: A ``remote_<name>`` key here also exempts that id from the KAS identity
+#: disagreement refusal when KAS's remote tool wrapper serves it
+#: (``permission_requests._is_kas_remote_builtin``), so adding one widens
+#: that check too.
 KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
     **{
         kas_id: kiro_cli_name

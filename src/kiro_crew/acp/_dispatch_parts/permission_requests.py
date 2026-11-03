@@ -52,6 +52,7 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
 from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -485,6 +486,40 @@ def is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> 
 _KAS_NON_COMMAND_TOOLS: dict[str, tuple[str, str]] = {
     "invoke_sub_agent": ("subagent", "use_subagent"),
 }
+
+
+#: The server name KAS's remote tool wrapper stamps on ``mcpTool.identity`` for
+#: the built-ins it serves remotely, and the prefix it puts on their tool ids.
+#: KAS serves ``web_search`` this way: the tool_call frame names no server (a
+#: built-in), while the permission request carries
+#: ``{serverName: "remote", toolName: "web_search"}`` with toolId
+#: ``remote_web_search``.
+_KAS_REMOTE_WRAPPER_SERVER = "remote"
+_KAS_REMOTE_WRAPPER_ID_PREFIX = "remote_"
+
+
+def _is_kas_remote_builtin(
+    id_server: str, id_tool: str, tool_id: object, cached_server: str
+) -> bool:
+    """Whether a permission frame's identity is KAS's remote wrapper naming a built-in.
+
+    Only the exact shape KAS emits for a built-in it serves remotely: the
+    preceding tool_call named no server, the identity server is the wrapper's,
+    the toolId is the wrapper prefix plus the identity's tool name, and that
+    toolId is a built-in Crew already maps to a kiro-cli name
+    (:data:`KIRO_CLI_NAME_BY_KAS_TOOL`). Such a frame is not two frames
+    disagreeing about which MCP server served the call: no MCP server did, and
+    the call is judged as the built-in its toolId names. The wrapper server is
+    never adopted, so no server-keyed grant can fire for it.
+    """
+    return (
+        not cached_server
+        and id_server == _KAS_REMOTE_WRAPPER_SERVER
+        and bool(id_tool)
+        and isinstance(tool_id, str)
+        and tool_id == f"{_KAS_REMOTE_WRAPPER_ID_PREFIX}{id_tool}"
+        and tool_id in KIRO_CLI_NAME_BY_KAS_TOOL
+    )
 
 
 def kas_consent_tool(params: object) -> tuple[str, str]:
@@ -939,9 +974,17 @@ def build_permission_event(
                 or mcp_identity_unreadable(_identity.get("toolName"))
             ):
                 _mcp_identity_unreadable = True
-            if _id_server and _id_server != _mcp_server_name:
+            if (
+                _id_server
+                and _id_server != _mcp_server_name
+                and not _is_kas_remote_builtin(
+                    _id_server, _id_tool, _frame_kiro.get("toolId"), _mcp_server_name
+                )
+            ):
                 # Never adopted (see the design note above): refused on the
-                # harness handed the store, ignored elsewhere.
+                # harness handed the store, ignored elsewhere. KAS's remote
+                # wrapper naming a built-in is exempt: it is not a second MCP
+                # server, and the call is judged by its toolId below.
                 if identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
