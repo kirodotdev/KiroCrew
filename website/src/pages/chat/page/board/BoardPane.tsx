@@ -7,6 +7,7 @@
  * shapes and ask. Its answers hang under the shapes, what it adds lands on the
  * board when its turn ends, and its status overlay is pinned to shapes.
  */
+import { ShieldCheck, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../../../api/client'
 import ApprovalCard from '../../../../components/ApprovalCard'
@@ -24,9 +25,12 @@ import { ANSWER_STYLE, type ThreadView } from '../docConductor'
 import { OVERLAY_CLASS_STYLE, OVERLAY_KEYFRAMES, overlaySlug, parseOverlay, type OverlayItem } from '../docOverlay'
 import { deriveThreads } from '../docThreads'
 import { specToCss } from '../styleSpec'
+import { MENTION_STYLE } from '../docMentions'
+import { MENU_STYLE } from '../docSlash'
+import { useSessionRefs } from '../SessionMention'
 import BoardCanvas from './BoardCanvas'
 import { parseBoard, serializeBoard, type Board } from './boardModel'
-import { applyReplyChanges, boardChangesFromMessages, buildBoardTurn } from './boardTurn'
+import { applyReplyChecked, boardChangesFromMessages, buildBoardTurn } from './boardTurn'
 
 const SAVE_DEBOUNCE_MS = 500
 const OVERLAY_POLL_MS = 3000
@@ -36,6 +40,9 @@ const SCOPE = '[data-board-root]'
 const BOARD_CSS = [
   specToCss(ANSWER_STYLE, SCOPE),
   specToCss(OVERLAY_CLASS_STYLE, SCOPE),
+  // Session links: the doc's chips and "@" picker, outside an editor.
+  specToCss(MENTION_STYLE, SCOPE),
+  specToCss(MENU_STYLE, SCOPE),
   '@keyframes cm-ask-pulse{0%,100%{opacity:1}50%{opacity:.35}}',
   OVERLAY_KEYFRAMES,
   `@media (prefers-reduced-motion: reduce){${SCOPE} [data-da="dot"],${SCOPE} .ov-status::before{animation:none!important}}`,
@@ -70,6 +77,8 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
   const [board, setBoard] = useState<Board>(() => parseBoard(''))
   const [saveError, setSaveError] = useState('')
   const [sendError, setSendError] = useState('')
+  // What the conductor tried to change in a part it may not, until the person dismisses it.
+  const [blockedNote, setBlockedNote] = useState<string[]>([])
   const [conflict, setConflict] = useState<{ content: string; version: string } | null>(null)
   const boardRef = useRef(board)
   boardRef.current = board
@@ -130,6 +139,7 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
 
   const messages = useAppSelector(s => selectSlotMessages(s, slotKey))
   const slots = useAppSelector(s => s.dashboard.slots)
+  const sessionRefs = useSessionRefs(slots)
   const running = !!slotRowByKey(slots, slotKey)?.running
   const threads = useMemo(() => deriveThreads(messages), [messages])
   const [readCounts, setReadCounts] = useLocalRecord<Record<string, number>>(`docwork.read.${docId}`, {})
@@ -167,13 +177,16 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
     const done = new Set(applied.keys)
     const fresh = boardChangesFromMessages(messages).filter(r => !done.has(r.key))
     if (!fresh.length) return
+    const blocked: string[] = []
     for (const r of fresh) {
-      const next = applyReplyChanges(boardRef.current, r)
+      const { board: next, refused } = applyReplyChecked(boardRef.current, r)
+      blocked.push(...refused)
       if (JSON.stringify(next) === JSON.stringify(boardRef.current)) continue
       if (canvasApi.current) canvasApi.current.commit(next)
       else change(next)
       boardRef.current = next
     }
+    if (blocked.length) setBlockedNote([...new Set(blocked)])
     setApplied({ keys: [...applied.keys, ...fresh.map(r => r.key)] })
   }, [messages, running, load, applied, setApplied, change])
 
@@ -213,6 +226,8 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
           onOpenSession={openSession}
           onReadAsk={markRead}
           apiRef={canvasApi}
+          sessions={sessionRefs}
+          selfKey={slotKey}
         />
       )}
       <div className="pointer-events-none absolute left-4 right-4 top-4 flex flex-col items-center gap-2" style={{ zIndex: 20 }}>
@@ -237,6 +252,15 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
           )}
           <ErrorNotice title={i18nT('pages.chat.docPane.save_failed')} message={saveError} />
           <ErrorNotice title={i18nT('pages.chat.docPane.send_failed')} message={sendError} />
+          {blockedNote.length > 0 && (
+            <div data-testid="board-blocked-note" role="status" className="flex items-start gap-2 rounded-xl border border-border bg-bg-elevated px-3 py-2 text-[13px] text-text shadow-lg">
+              <ShieldCheck size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden />
+              <span className="min-w-0 flex-1">
+                Kept the conductor out of protected parts of the board. It tried to change: {blockedNote.slice(0, 4).join(', ')}{blockedNote.length > 4 ? ` and ${blockedNote.length - 4} more` : ''}.
+              </span>
+              <button type="button" aria-label="Dismiss" onClick={() => setBlockedNote([])} className="rounded p-0.5 text-muted hover:bg-bg-hover"><X size={14} /></button>
+            </div>
+          )}
         </div>
       </div>
       {/* The conductor's approval mode, the same control as the chat composer's:

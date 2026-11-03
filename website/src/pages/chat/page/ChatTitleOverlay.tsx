@@ -77,6 +77,8 @@ export default function ChatTitleOverlay({
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
 }: ChatTitleOverlayProps) {
+  // A doc, board, codebase or dashboard session: a page, not a transcript.
+  const pageSession = !!currentSlot?.doc
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -235,8 +237,10 @@ export default function ChatTitleOverlay({
             row, so it hangs off that row's bottom edge (anchor="below":
             as an in-flow sibling its 24px consumed layout and pushed the
             pinned card that far off the header; out of flow it overlays
-            the transcript and the pinned card paints above it). */}
-        <EdgeFade side="top" anchor="below" />
+            the transcript and the pinned card paints above it). A doc or
+            board page has no transcript to soften: its edge stays crisp,
+            so a cover or a shape at the top reads as it is. */}
+        {!pageSession && <EdgeFade side="top" anchor="below" />}
         </div>
         )}
         {/* Fold sentinel — zero-height, always mounted. Its top edge is the
@@ -244,7 +248,7 @@ export default function ChatTitleOverlay({
         <div ref={pinFoldRef} aria-hidden className="h-0" />
         {/* Anchor the phone fade at the fold so its opaque edge stays behind
             the card instead of masking the transcript below it. */}
-        {titleInTopbar && (
+        {titleInTopbar && !pageSession && (
           <div className="relative h-0">
             <EdgeFade side="top" />
           </div>

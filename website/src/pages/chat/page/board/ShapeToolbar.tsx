@@ -5,10 +5,11 @@
  * of the board canvas.
  */
 
-import { Ban, ChevronDown, Circle, Diamond, Ellipsis, Menu as LinesIcon, Slash, Sparkles, Square, SquareDashed, SquareSlash, StickyNote, Trash2 } from 'lucide-react'
+import { ArrowUpRight, Ban, ChevronDown, Circle, Diamond, Ellipsis, Menu as LinesIcon, Shield, ShieldCheck, Slash, Sparkles, Square, SquareDashed, SquareSlash, StickyNote, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
-import type { BorderStyle, FillMode, Shape, ShapeKind, StrokeWeight, Swatch } from './boardModel'
+import type { BorderStyle, ConductorAccess, FillMode, SectionGoal, Shape, ShapeKind, StrokeWeight, Swatch } from './boardModel'
+import GoalPopover from './GoalPopover'
 import { STROKE_WIDTH } from './shapeLook'
 import SwatchPicker, { PANEL, type PickerMode } from './SwatchPicker'
 
@@ -89,12 +90,21 @@ interface Props {
   /** A free colour for the fill or the border; *final* is false while it is still being dragged or typed. */
   onHex: (hex: string, final: boolean) => void
   onBorderHex: (hex: string, final: boolean) => void
+  /** Set or clear the goal of the one selected section. */
+  onGoal: (g: SectionGoal | undefined) => void
+  /** Whether the conductor may change the one selected section, and the switch for it. */
+  access: ConductorAccess
+  onAccess: () => void
   onAsk: () => void
   onDelete: () => void
+  /** Open the session the one selected session card stands for. */
+  onOpen?: () => void
 }
 
-export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onAsk, onDelete }: Props) {
-  const painted = shapes.filter(s => s.kind !== 'text')
+export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onGoal, access, onAccess, onAsk, onDelete, onOpen }: Props) {
+  // A session card draws its own look, so it takes no colour or border.
+  const painted = shapes.filter(s => s.kind !== 'text' && s.kind !== 'session')
+  const card = shapes.length === 1 && shapes[0].kind === 'session' ? shapes[0] : null
   const same = <T,>(pick: (s: Shape) => T): T | undefined => (shapes.every(s => pick(s) === pick(shapes[0])) ? pick(shapes[0]) : undefined)
   const kind = same(s => s.kind)
   const canSwitch = shapes.every(s => SWITCHABLE.has(s.kind))
@@ -145,6 +155,28 @@ export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight
           )} />
       )}
       {painted.length > 0 && rule}
+      {card && onOpen && (
+        <>
+          <button type="button" data-testid="session-card-open" onClick={onOpen}
+            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[13px] font-medium hover:bg-white/10" style={{ color: '#FFFFFF' }}>
+            <ArrowUpRight size={15} aria-hidden /> Open
+          </button>
+          {rule}
+        </>
+      )}
+      {shapes.length === 1 && shapes[0].kind === 'section' && (
+        <>
+          <GoalPopover goal={shapes[0].goal} onGoal={onGoal} />
+          <button type="button" data-testid="section-access-button" aria-pressed={access === 'deny'}
+            aria-label={access === 'deny' ? 'Protected from the conductor' : 'Open to the conductor'}
+            title={access === 'deny' ? 'The conductor cannot change this section or anything in it. Click to open it.' : 'The conductor can change this section. Click to protect it and everything in it.'}
+            onClick={onAccess} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium hover:bg-white/10"
+            style={{ color: '#FFFFFF', background: access === 'deny' ? 'rgba(151,71,255,.45)' : undefined }}>
+            {access === 'deny' ? <ShieldCheck size={14} /> : <Shield size={14} />} {access === 'deny' ? 'Protected' : 'Open'}
+          </button>
+          {rule}
+        </>
+      )}
       <button type="button" data-testid="board-ask-button" onClick={onAsk} title="Ask conductor (C)" aria-keyshortcuts="C"
         className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium hover:bg-white/10" style={{ color: '#FFFFFF' }}>
         <Sparkles size={14} /> Ask conductor <kbd className="ml-0.5 rounded border px-1 text-[10px] font-medium" style={{ borderColor: 'rgba(255,255,255,.3)', opacity: 0.75 }}>C</kbd>

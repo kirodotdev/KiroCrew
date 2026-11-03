@@ -9,6 +9,7 @@
  * elsewhere is reported here instead of overwritten.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import type { EditorView } from '@codemirror/view'
 import { api, ApiError } from '../../../api/client'
 import ApprovalCard from '../../../components/ApprovalCard'
@@ -23,6 +24,12 @@ import { selectSlotMessages } from '../../../store/chat/selectors'
 import { slotRowByKey } from '../../../store/slotIndex'
 import { toApiDecision } from '../../../utils/approvalDecision'
 import DocEditor from './DocEditor'
+import DocHeader from './DocHeader'
+import { joinDoc, splitDoc, type DocMeta } from './docMeta'
+import { useSessionRefs } from './SessionMention'
+import type { EmbedTheme } from './DocHtmlFrame'
+import { useOptionalTheme } from '../../../hooks/useTheme'
+import { readThemeVars } from '../../../lib/widgetSrcdoc'
 import ConversationBar, { cycleDirection, shortLabel, stepId, type ConversationItem } from './ConversationBar'
 import { changeForWrite, markerContent, parseMarkers, type ConductorHost, type DocData } from './docConductor'
 import { rowQuoteLabel } from './docAskRows'
@@ -31,6 +38,8 @@ import { buildAskTurn, deriveThreads } from './docThreads'
 
 /** Quiet time after the last edit before it is written. */
 const SAVE_DEBOUNCE_MS = 600
+/** How long the conversation bar stays after the last ⌃⌥ step. */
+const BAR_LINGER_MS = 2500
 /** How often the open doc reads the conductor's overlay. */
 const OVERLAY_POLL_MS = 3000
 
@@ -118,13 +127,37 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     setAsks(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
   }, [])
 
-  const edit = useCallback((next: string) => {
-    trackAsks(next)
-    contentRef.current = next
+  // The page header (icon, cover) lives in the file's front matter: the editor is
+  // given only the body, and every save writes the two back together.
+  const [meta, setMeta] = useState<DocMeta>({})
+  const headRef = useRef<{ meta: DocMeta; other: string[] }>({ meta: {}, other: [] })
+  const bodyRef = useRef('')
+  const adopt = useCallback((file: string) => {
+    const doc = splitDoc(file)
+    headRef.current = { meta: doc.meta, other: doc.other }
+    bodyRef.current = doc.body
+    setMeta(doc.meta)
+    return doc.body
+  }, [])
+
+  const markDirty = useCallback(() => {
+    contentRef.current = joinDoc({ ...headRef.current, body: bodyRef.current })
     dirtyRef.current = true
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => { void save() }, SAVE_DEBOUNCE_MS)
-  }, [save, trackAsks])
+  }, [save])
+
+  const edit = useCallback((next: string) => {
+    trackAsks(next)
+    bodyRef.current = next
+    markDirty()
+  }, [markDirty, trackAsks])
+
+  const changeMeta = useCallback((next: DocMeta) => {
+    headRef.current = { ...headRef.current, meta: next }
+    setMeta(next)
+    markDirty()
+  }, [markDirty])
 
   useEffect(() => {
     let cancelled = false
@@ -136,8 +169,9 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       contentRef.current = doc.content
       versionRef.current = doc.version
       dirtyRef.current = false
-      setSeed(s => ({ text: doc.content, generation: s.generation + 1 }))
-      trackAsks(doc.content)
+      const body = adopt(doc.content)
+      setSeed(s => ({ text: body, generation: s.generation + 1 }))
+      trackAsks(body)
       setLoad({ state: 'ready' })
     }, err => {
       if (!cancelled) setLoad({ state: 'failed', message: err instanceof Error ? err.message : String(err) })
@@ -147,17 +181,18 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       // Leaving the doc (another session, or closing it) writes what is pending.
       if (dirtyRef.current) void save()
     }
-  }, [docId, save, trackAsks])
+  }, [docId, save, trackAsks, adopt])
 
   const takeTheirs = useCallback(() => {
     if (!conflict) return
     contentRef.current = conflict.content
     versionRef.current = conflict.version
     dirtyRef.current = false
-    setSeed(s => ({ text: conflict.content, generation: s.generation + 1 }))
-    trackAsks(conflict.content)
+    const body = adopt(conflict.content)
+    setSeed(s => ({ text: body, generation: s.generation + 1 }))
+    trackAsks(body)
     setConflict(null)
-  }, [conflict, trackAsks])
+  }, [conflict, trackAsks, adopt])
   const keepMine = useCallback(() => {
     if (!conflict) return
     versionRef.current = conflict.version
@@ -171,6 +206,13 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   const messages = useAppSelector(s => selectSlotMessages(s, slotKey))
   const slots = useAppSelector(s => s.dashboard.slots)
   const running = !!slotRowByKey(slots, slotKey)?.running
+  const sessionRefs = useSessionRefs(slots)
+  // HTML blocks draw with the page's theme, read again on every theme change
+  // (themeVersion covers an edited custom theme under the same name).
+  const themeCtx = useOptionalTheme()
+  const mode = themeCtx?.theme ?? 'light'
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the vars are read fresh when any of these change
+  const embedTheme = useMemo<EmbedTheme>(() => ({ mode, vars: readThemeVars() }), [mode, themeCtx?.colorTheme, themeCtx?.themeVersion])
   const threads = useMemo(() => deriveThreads(messages), [messages])
   const [readCounts, setReadCounts] = useLocalRecord<Record<string, number>>(`docwork.read.${docId}`, {})
   // A row ask's label (its row), kept from when it was sent: its markers wrap the
@@ -213,6 +255,17 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   const activeId = active?.id ?? null
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  // The bar is out of sight until the shortcut is used: it appears with the step
+  // and fades a moment after the last one, unless the pointer is resting on it.
+  const [barShown, setBarShown] = useState(false)
+  const reduceMotion = useReducedMotion()
+  const barTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const barHovered = useRef(false)
+  const hideBarSoon = useCallback(() => {
+    if (barTimer.current) clearTimeout(barTimer.current)
+    barTimer.current = setTimeout(() => { if (!barHovered.current) setBarShown(false) }, BAR_LINGER_MS)
+  }, [])
+  useEffect(() => () => { if (barTimer.current) clearTimeout(barTimer.current) }, [])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const dir = cycleDirection(e)
@@ -220,10 +273,12 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       e.preventDefault()
       e.stopPropagation()
       focusConversation(stepId(conversationIds.current, activeIdRef.current, dir))
+      setBarShown(true)
+      hideBarSoon()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [focusConversation])
+  }, [focusConversation, hideBarSoon])
 
   // The conductor's status overlay: an artifact it publishes and updates. Read
   // often while the doc is open (PoC); a missing one is simply no overlay yet.
@@ -291,26 +346,39 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
   const approvals = messages.filter(m => m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id)
 
   return (
+    // A still frame around the scrolling page, so what floats on it (the
+    // approval mode) stays put while the doc scrolls.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    {/* The conductor's approval mode, the same control as the chat composer's,
+        at the bottom left as on the board: Trust here carries to the workers it
+        starts, so they stop asking too. */}
+    {approvalMode && (
+      <div className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" data-testid="doc-approval-mode">
+        <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />
+      </div>
+    )}
     <div className="flex-1 min-h-0 overflow-y-auto relative" data-testid="doc-pane">
       {/* The overlay's animations; the board mounts the same copy. */}
       <style>{OVERLAY_KEYFRAMES}</style>
-      {/* The conductor's approval mode, the same control as the chat composer's:
-          Trust here carries to the workers it starts, so they stop asking too. */}
-      {/* The page's floating header, taking no room in the doc: the conversations
-          bar in the middle and the approval mode at the right. */}
+      {/* The conversations bar, floating and taking no room in the doc: only
+          while ⌃⌥← / ⌃⌥→ steps through the conversations. */}
       <div className="pointer-events-none sticky top-0 z-20 h-0 overflow-visible">
-        <div className="flex items-start gap-3 px-4 pt-3">
-          <div className="flex min-w-0 flex-1 justify-center">
-            <ConversationBar items={conversations} activeId={activeId} onSelect={focusConversation} />
-          </div>
-          {approvalMode && (
-            <div className="pointer-events-auto h-fit shrink-0 rounded-xl border border-border bg-bg-elevated p-1 shadow-md" data-testid="doc-approval-mode">
-              <ApprovalModePicker mode={approvalMode} slotKey={slotKey} />
-            </div>
+        {/* Below the session's title row (about 45px), which overlays the top of
+            this pane: higher up, it sat behind it with only its edge showing. */}
+        <AnimatePresence>
+          {barShown && (
+            <motion.div key="bar" className="flex justify-center px-4 pt-[56px]" data-testid="doc-conversation-bar"
+              initial={reduceMotion ? false : { opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: -6 }}
+              transition={{ duration: 0.16 }}
+              onMouseEnter={() => { barHovered.current = true }}
+              onMouseLeave={() => { barHovered.current = false; hideBarSoon() }}>
+              <ConversationBar items={conversations} activeId={activeId} onSelect={focusConversation} />
+            </motion.div>
           )}
-        </div>
+        </AnimatePresence>
       </div>
-      <div style={{ margin: '0 auto', width: '100%', maxWidth: 'var(--mc-content-width)', boxSizing: 'border-box', padding: '56px 20px 0' }}>
+      {load.state === 'ready' && <DocHeader meta={meta} onChange={changeMeta} />}
+      <div style={{ margin: '0 auto', width: '100%', maxWidth: 'var(--mc-content-width)', boxSizing: 'border-box', padding: load.state === 'ready' ? '4px 20px 0' : '56px 20px 0' }}>
         {load.state === 'failed' && (
           <ErrorNotice title={i18nT('pages.chat.docPane.load_failed')} message={load.message} />
         )}
@@ -343,6 +411,9 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
             data={data}
             overlay={overlay}
             viewRef={viewRef}
+            sessions={sessionRefs}
+            selfKey={slotKey}
+            embedTheme={embedTheme}
           />
         )}
       </div>
@@ -363,11 +434,13 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
           })}
         </div>
       )}
-      {/* The workers' tool approvals: Crew Mode decides those only on their
-          conductor's page, and this doc is that page. */}
-      <div className="fixed bottom-6 left-6 z-30 w-[400px] max-w-[90vw]" data-testid="doc-worker-approvals">
-        <CrewApprovalCards root={slotKey} />
-      </div>
+    </div>
+    {/* The workers' tool approvals: Crew Mode decides those only on their
+        conductor's page, and this doc is that page. Stacked above the approval
+        mode, which holds the corner. */}
+    <div className="absolute bottom-[68px] left-5 z-30 w-[400px] max-w-[90vw]" data-testid="doc-worker-approvals">
+      <CrewApprovalCards root={slotKey} />
+    </div>
     </div>
   )
 }

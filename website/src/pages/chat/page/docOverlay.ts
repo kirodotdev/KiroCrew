@@ -233,7 +233,6 @@ function overlayPlugin(host: { current: { openSession: (key: string) => void } }
         if (p.where === 'margin') margin.push({ el, top: p.top })
       }
       this.tray.hidden = this.tray.childElementCount === 0
-      this.view.dom.classList.toggle('cm-has-overlay-margin', margin.length > 0 || !this.tray.hidden)
       // Margin items never overlap: each starts below the one above it, and all
       // of them below the tray.
       let floor = this.tray.hidden ? -Infinity : this.tray.offsetHeight + MARGIN_GAP
@@ -249,19 +248,20 @@ function overlayPlugin(host: { current: { openSession: (key: string) => void } }
 
 const overlayTheme = EditorView.baseTheme({
   '.cm-scroller': { position: 'relative' },
-  '&.cm-has-overlay-margin .cm-content': { paddingRight: '232px !important' },
+  // An overlay draws over the page, never in the text's way: margin items and the
+  // tray float just right of the text column, which keeps its full width.
   '.cm-overlay': { position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '4' },
   '.cm-overlay-item': {
     position: 'absolute', pointerEvents: 'auto', color: 'var(--text)', fontSize: '12.5px', lineHeight: '1.45',
     overflow: 'hidden', contain: 'layout paint',
   },
-  '.cm-overlay-margin': { right: '0', width: '216px' },
+  '.cm-overlay-margin': { left: 'calc(100% + 24px)', width: '216px' },
   '.cm-overlay-over': {
     transform: 'translateY(calc(-100% - 2px))', maxWidth: '320px', opacity: '0.88', transition: 'opacity .15s',
   },
   '.cm-overlay-over:hover': { opacity: '1' },
   '.cm-overlay-tray': {
-    position: 'absolute', top: '0', right: '0', width: '216px', display: 'flex', flexDirection: 'column', gap: '6px',
+    position: 'absolute', top: '0', left: 'calc(100% + 24px)', width: '216px', display: 'flex', flexDirection: 'column', gap: '6px',
     pointerEvents: 'auto',
   },
   '.cm-overlay-tray-item': { position: 'static' },

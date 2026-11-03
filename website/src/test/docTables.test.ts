@@ -66,6 +66,18 @@ describe('doc tables', () => {
     expect(v.state.doc.toString()).toBe('after')
   })
 
+  it('Up from below a table enters its last row, Down from above enters its header', () => {
+    const v = make(`before\n${TABLE}\nafter`)
+    v.dispatch({ selection: { anchor: v.state.doc.length } })
+    v.focus()
+    fireEvent.keyDown(v.contentDOM, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(cell(v, 2, 0))
+    v.dispatch({ selection: { anchor: 2 } })
+    v.focus()
+    fireEvent.keyDown(v.contentDOM, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(cell(v, 0, 0))
+  })
+
   it('inserts a 3x3 table with the first header cell focused', () => {
     const v = make('intro')
     v.dispatch({ selection: { anchor: 5 } })

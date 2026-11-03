@@ -9,8 +9,8 @@
  * Backspace in an empty row deletes it, Escape leaves the table. To hand a table
  * to the conductor, select across it in the text: it is wrapped as a whole.
  */
-import { StateField, type EditorState, type Extension, type Transaction } from '@codemirror/state'
-import { Decoration, EditorView, WidgetType, showPanel, type DecorationSet } from '@codemirror/view'
+import { Prec, StateField, type EditorState, type Extension, type Transaction } from '@codemirror/state'
+import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from '@codemirror/view'
 import { askRows, requestRowAsk } from './docAskRows'
 
 export const isRow = (text: string) => text.trim().startsWith('|')
@@ -354,6 +354,40 @@ const tables = StateField.define<DecorationSet>({
   provide: f => EditorView.decorations.from(f),
 })
 
+/** Up / Down from the text into a table: the caret would otherwise land on the
+ *  widget's edge as one step (the table's top), so it steps into the nearest row
+ *  instead, the last row from below and the header from above. */
+function enterTable(view: EditorView, forward: boolean): boolean {
+  const sel = view.state.selection.main
+  if (!sel.empty) return false
+  const doc = view.state.doc
+  const here = tableAt(view.state, sel.head)
+  let next = here
+  if (!here) {
+    const line = doc.lineAt(sel.head)
+    const n = line.number + (forward ? 1 : -1)
+    if (n < 1 || n > doc.lines) return false
+    // A wrapped paragraph moves within itself first.
+    const moved = view.moveVertically(sel, forward).head
+    if (moved !== sel.head && moved >= line.from && moved <= line.to) return false
+    next = tableAt(view.state, doc.line(n).from)
+  }
+  if (!next) return false
+  if (here && !forward) {
+    // On the widget's own edge: Up leaves it upwards.
+    leave(view, here, 'before')
+    return true
+  }
+  const order = visibleRows(next.rows)
+  focusCell(view, next.from, forward ? order[0] : order[order.length - 1], 0)
+  return true
+}
+
+const tableKeys = Prec.high(keymap.of([
+  { key: 'ArrowUp', run: v => enterTable(v, false) },
+  { key: 'ArrowDown', run: v => enterTable(v, true) },
+]))
+
 export function insertTable(view: EditorView): boolean {
   const { state } = view
   const line = state.doc.lineAt(state.selection.main.head)
@@ -369,22 +403,10 @@ export function insertTable(view: EditorView): boolean {
   return true
 }
 
-/** The toolbar above the editor. */
-const toolbar = showPanel.of(view => {
-  const dom = document.createElement('div')
-  dom.className = 'cm-doc-toolbar'
-  const b = document.createElement('button')
-  b.type = 'button'
-  b.textContent = '⊞ Table'
-  b.setAttribute('data-testid', 'insert-table')
-  b.onmousedown = e => e.preventDefault()
-  b.onclick = () => insertTable(view)
-  dom.append(b)
-  return { dom, top: true }
-})
-
 const tableTheme = EditorView.baseTheme({
-  '.cm-table-widget': { margin: '8px 0 12px', position: 'relative' },
+  // Padding, not margin: CodeMirror measures a block widget by its border box, so
+  // an outer margin shifts every line below it and Up / Down land lines away.
+  '.cm-table-widget': { padding: '8px 0 12px', position: 'relative' },
   '.cm-table-widget tr.cm-row-picked td': { background: 'color-mix(in srgb, var(--accent) 14%, transparent)' },
   '.cm-row-ask': {
     position: 'absolute', left: '-24px', width: '22px', height: '22px', transform: 'translateY(-50%)',
@@ -405,15 +427,13 @@ const tableTheme = EditorView.baseTheme({
   '.cm-table-widget input:focus': { boxShadow: 'inset 0 0 0 2px var(--accent)' },
   '.cm-table-foot': { display: 'flex', gap: '6px', marginTop: '6px', opacity: '0', transition: 'opacity .15s' },
   '.cm-table-widget:hover .cm-table-foot, .cm-table-widget:focus-within .cm-table-foot': { opacity: '1' },
-  '.cm-table-foot button, .cm-doc-toolbar button': {
+  '.cm-table-foot button': {
     padding: '3px 10px', borderRadius: '6px', border: '1px solid var(--border)',
     background: 'var(--bg-elevated)', color: 'var(--text)', fontSize: '12px', cursor: 'pointer',
   },
-  '.cm-table-foot button:hover, .cm-doc-toolbar button:hover': { background: 'var(--bg-hover)' },
-  '.cm-panels.cm-panels-top': { background: 'transparent', borderBottom: 'none' },
-  '.cm-doc-toolbar': { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 0 10px' },
+  '.cm-table-foot button:hover': { background: 'var(--bg-hover)' },
 })
 
 export function tableExtension(): Extension {
-  return [tables, toolbar, tableTheme]
+  return [tables, tableKeys, tableTheme]
 }

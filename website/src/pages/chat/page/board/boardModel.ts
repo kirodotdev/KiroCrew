@@ -10,7 +10,8 @@ export const BOARD_ID_PREFIX = 'b0a4d'
 export const isBoardId = (docId: string) => docId.startsWith(BOARD_ID_PREFIX)
 
 /** A `section` is a FigJam section: a titled container whose cards it lays out. */
-export type ShapeKind = 'sticky' | 'rect' | 'ellipse' | 'diamond' | 'text' | 'section'
+/** A `session` is a card standing for another session (chat, doc, board…), which it opens. */
+export type ShapeKind = 'sticky' | 'rect' | 'ellipse' | 'diamond' | 'text' | 'section' | 'session'
 export type Swatch =
   | 'black' | 'dark' | 'red' | 'orange' | 'yellow' | 'green' | 'teal' | 'blue' | 'violet' | 'magenta' | 'white'
   | 'silver' | 'smoke' | 'rose' | 'peach' | 'cream' | 'mint' | 'ice' | 'sky' | 'lavender' | 'blush'
@@ -45,6 +46,41 @@ export interface Shape {
   hex?: string
   /** A custom outline colour, `#RRGGBB`. Overrides `borderColor`. */
   borderHex?: string
+  /** A section only: a standing goal for what is inside it, checked every `every` minutes. */
+  goal?: SectionGoal
+  /**
+   * A section only: whether the conductor may change it and what is inside it. Unset, the
+   * section follows the section around it, or else the board's own default.
+   */
+  conductor?: ConductorAccess
+  /** A session card only: the key of the session it stands for. Its `text` keeps the
+   *  title it had when linked, shown once that session is gone. */
+  session?: string
+}
+
+export type ConductorAccess = 'allow' | 'deny'
+
+/** What a watcher is asked to keep doing for the shapes inside one section. */
+export interface SectionGoal {
+  text: string
+  /** Minutes between checks. */
+  every: number
+  /** The watcher session once one is running for this goal. */
+  session?: string
+}
+
+/** A session key as a card may hold one: the same characters a doc's session link allows. */
+export const isSessionKey = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_.:@-]{1,200}$/.test(v)
+
+export const GOAL_INTERVALS = [5, 10, 30, 60]
+export const DEFAULT_GOAL_INTERVAL = 10
+
+/** A section goal from a file; anything without text is no goal. */
+export function toGoal(v: unknown): SectionGoal | undefined {
+  const o = v as Record<string, unknown> | null
+  if (!o || typeof o !== 'object' || typeof o.text !== 'string' || !o.text.trim()) return undefined
+  const every = GOAL_INTERVALS.includes(o.every as number) ? (o.every as number) : DEFAULT_GOAL_INTERVAL
+  return { text: o.text.trim(), every, ...(typeof o.session === 'string' && o.session ? { session: o.session } : {}) }
 }
 
 export type ConnectorSide = 'top' | 'right' | 'bottom' | 'left'
@@ -69,7 +105,13 @@ export interface Connector {
   /** An elbow's corners once someone has dragged its segments; unset, it routes itself. */
   route?: Pt[]
 }
-export interface BoardAsk { id: string; shapeIds: string[] }
+/**
+ * One conversation with the conductor, about whatever it was pointed at: shapes, one
+ * section (and what it holds), or, with no `shapeIds`, the whole board. `at` is where its
+ * pin sits when that is not at a shape: absolute for the whole board, an offset from the
+ * section's top-left corner for a section, so it moves with the section.
+ */
+export interface BoardAsk { id: string; shapeIds: string[]; at?: Pt }
 
 export interface Board {
   kind: 'kirocrew-board'
@@ -77,6 +119,8 @@ export interface Board {
   shapes: Shape[]
   connectors: Connector[]
   asks: BoardAsk[]
+  /** Unset, the conductor may change anything not protected; `closed`, only what a section has been opened for. */
+  conductorDefault?: 'closed'
 }
 
 /** The strong row of FigJam's colour picker, then its light row. */
@@ -146,11 +190,12 @@ export const DEFAULT_SIZE: Record<ShapeKind, { w: number; h: number }> = {
   diamond: { w: 170, h: 150 },
   text: { w: 220, h: 40 },
   section: { w: 300, h: 360 },
+  session: { w: 288, h: 120 },
 }
 
 export const emptyBoard = (): Board => ({ kind: 'kirocrew-board', version: 1, shapes: [], connectors: [], asks: [] })
 
-const KINDS = new Set<ShapeKind>(['sticky', 'rect', 'ellipse', 'diamond', 'text', 'section'])
+const KINDS = new Set<ShapeKind>(['sticky', 'rect', 'ellipse', 'diamond', 'text', 'section', 'session'])
 const CONN_SIDES = new Set<ConnectorSide>(['top', 'right', 'bottom', 'left'])
 const CONN_LINES = new Set<ConnectorLine>(['elbow', 'straight', 'curve'])
 const CONN_ARROWS = new Set<ConnectorArrows>(['end', 'both', 'none'])
@@ -186,6 +231,8 @@ export function parseBoard(raw: string): Board {
     const o = s as Record<string, unknown>
     if (typeof o.id !== 'string' || !KINDS.has(o.kind as ShapeKind)) continue
     const kind = o.kind as ShapeKind
+    // A session card names its session, or it is nothing.
+    if (kind === 'session' && !isSessionKey(o.session)) continue
     shapes.push({
       id: o.id, kind,
       x: num(o.x, 0), y: num(o.y, 0),
@@ -193,6 +240,9 @@ export function parseBoard(raw: string): Board {
       text: typeof o.text === 'string' ? o.text : '',
       color: colorAndFill(o.color).color ?? 'yellow',
       ...(o.locked === true ? { locked: true } : {}),
+      ...(kind === 'section' && toGoal(o.goal) ? { goal: toGoal(o.goal) } : {}),
+      ...(kind === 'section' && (o.conductor === 'allow' || o.conductor === 'deny') ? { conductor: o.conductor } : {}),
+      ...(kind === 'session' ? { session: o.session as string } : {}),
       ...lookOf({ ...o, fill: o.fill ?? colorAndFill(o.color).fill }),
     })
   }
@@ -218,8 +268,13 @@ export function parseBoard(raw: string): Board {
   const asks = (Array.isArray(data.asks) ? data.asks : [])
     .map(a => a as Record<string, unknown>)
     .filter(a => typeof a.id === 'string' && Array.isArray(a.shapeIds))
-    .map(a => ({ id: a.id as string, shapeIds: (a.shapeIds as unknown[]).filter((x): x is string => typeof x === 'string') }))
-  return { kind: 'kirocrew-board', version: 1, shapes, connectors, asks }
+    .map(a => {
+      const ask: BoardAsk = { id: a.id as string, shapeIds: (a.shapeIds as unknown[]).filter((x): x is string => typeof x === 'string') }
+      const at = a.at as Record<string, unknown> | undefined
+      if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) ask.at = { x: at.x as number, y: at.y as number }
+      return ask
+    })
+  return { kind: 'kirocrew-board', version: 1, shapes, connectors, asks, ...(data.conductorDefault === 'closed' ? { conductorDefault: 'closed' as const } : {}) }
 }
 
 export const serializeBoard = (b: Board) => JSON.stringify(b, null, 1)
@@ -253,6 +308,13 @@ export const center = (s: Shape): Pt => ({ x: s.x + s.w / 2, y: s.y + s.h / 2 })
 /** Height of a section's title tab, drawn above its box. */
 export const SECTION_TITLE_H = 30
 
+/**
+ * How much a section's label is drawn larger than the board is, so it keeps its
+ * on-screen size as you zoom out (as FigJam's do) and stays easy to grab. At 100%
+ * and above it is the board's own size and zooms with it.
+ */
+export const labelScale = (zoom: number) => Math.max(1, 1 / zoom)
+
 /** Sections draw first, under everything they hold. */
 export const zOrdered = (shapes: Shape[]) => [...shapes.filter(s => s.kind === 'section'), ...shapes.filter(s => s.kind !== 'section')]
 
@@ -261,8 +323,10 @@ export const zOrdered = (shapes: Shape[]) => [...shapes.filter(s => s.kind === '
  * as in FigJam: a press on its body is a press on the board (a marquee, a new
  * sticky), so it never gets in the way of the cards inside it. Locked shapes are
  * passed over, as presses go through them, unless *opts.locked* asks for them.
+ * *opts.zoom* sizes the label's grab area to match its on-screen size.
  */
-export function shapeAt(shapes: Shape[], p: Pt, opts: { locked?: boolean } = {}): Shape | null {
+export function shapeAt(shapes: Shape[], p: Pt, opts: { locked?: boolean; zoom?: number } = {}): Shape | null {
+  const k = labelScale(opts.zoom ?? 1)
   for (let i = shapes.length - 1; i >= 0; i--) {
     const s = shapes[i]
     if (s.locked && !opts.locked) continue
@@ -273,7 +337,7 @@ export function shapeAt(shapes: Shape[], p: Pt, opts: { locked?: boolean } = {})
     const s = shapes[i]
     if (s.locked && !opts.locked) continue
     if (s.kind !== 'section') continue
-    if (p.x >= s.x && p.x <= s.x + Math.min(s.w, 260) && p.y >= s.y - SECTION_TITLE_H && p.y <= s.y) return s
+    if (p.x >= s.x && p.x <= s.x + Math.min(s.w, 260 * k) && p.y >= s.y - SECTION_TITLE_H * k && p.y <= s.y) return s
   }
   return null
 }
@@ -291,6 +355,24 @@ const centerIn = (s: Shape, box: Shape) => {
 }
 
 /** What a section holds: every non-section shape whose centre is inside it. */
+/** A conversation about the whole board has no shapes and outlives any of them; one about shapes ends when they are all gone. */
+export const askSurvives = (a: BoardAsk, gone: Set<string>) => a.shapeIds.length === 0 || a.shapeIds.some(id => !gone.has(id))
+
+export type AskScope = 'shape' | 'section' | 'board'
+
+/**
+ * What a click at *p* is about, found by walking up from the point: the shape under it,
+ * else the innermost section whose body holds it, else the whole board.
+ */
+export function askTarget(shapes: Shape[], p: Pt, zoom = 1): { scope: AskScope; shapeIds: string[] } {
+  const hit = shapeAt(shapes, p, { zoom })
+  if (hit) return { scope: hit.kind === 'section' ? 'section' : 'shape', shapeIds: [hit.id] }
+  const holding = shapes
+    .filter(s => s.kind === 'section' && p.x >= s.x && p.x <= s.x + s.w && p.y >= s.y && p.y <= s.y + s.h)
+    .sort((a, b) => a.w * a.h - b.w * b.h)
+  return holding.length ? { scope: 'section', shapeIds: [holding[0].id] } : { scope: 'board', shapeIds: [] }
+}
+
 export const sectionMembers = (shapes: Shape[], sec: Shape) =>
   shapes.filter(s => s.kind !== 'section' && centerIn(s, sec))
 
@@ -298,8 +380,35 @@ export const sectionMembers = (shapes: Shape[], sec: Shape) =>
 export const sectionsOf = (shapes: Shape[], s: Shape) =>
   shapes.filter(x => x.kind === 'section' && x.id !== s.id && centerIn(s, x))
 
+// ---- what the conductor may change ----------------------------------------------------
+
+/** What the board allows where nothing says otherwise. */
+export const boardAccess = (b: Pick<Board, 'conductorDefault'>): ConductorAccess => (b.conductorDefault === 'closed' ? 'deny' : 'allow')
+
+/**
+ * The answer of the nearest section that has one, walking out from the innermost, else
+ * the board's own: the first container with a setting decides, as a click's target does.
+ */
+function accessFrom(b: Board, containers: Shape[]): ConductorAccess {
+  const inner = [...containers].sort((a, c) => a.w * a.h - c.w * c.h)
+  return inner.find(s => s.conductor)?.conductor ?? boardAccess(b)
+}
+
+/** Whether the conductor may change shape *s*: a section by its own setting first, then by the sections around it. */
+export function conductorAccessOf(b: Board, s: Shape): ConductorAccess {
+  if (s.kind === 'section' && s.conductor) return s.conductor
+  return accessFrom(b, sectionsOf(b.shapes, s))
+}
+
+/** Whether the conductor may add something at *p*. */
+export function conductorAccessAt(b: Board, p: Pt): ConductorAccess {
+  return accessFrom(b, b.shapes.filter(s => s.kind === 'section' && p.x >= s.x && p.x <= s.x + s.w && p.y >= s.y && p.y <= s.y + s.h))
+}
+
 /** A card's height for its text at width *w*: as tall as it needs, no taller. */
 export function fitHeight(kind: ShapeKind, text: string, w: number): number {
+  // A session card draws its own fixed layout, not its text.
+  if (kind === 'session') return DEFAULT_SIZE.session.h
   const font = kind === 'text' ? 20 : kind === 'sticky' ? 16 : 15
   const pad = kind === 'text' ? 4 : kind === 'sticky' ? 16 : 14
   const perLine = Math.max(6, Math.floor((w - pad * 2) / (font * 0.56)))
@@ -355,15 +464,16 @@ export function summarizeBoard(b: Board): string {
   if (!b.shapes.length) return '(the board is empty)'
   const lines = b.shapes.map(s => {
     const text = s.text.replace(/\s+/g, ' ').trim()
-    const holds = s.kind === 'section' ? ` | contains: ${sectionMembers(b.shapes, s).map(m => m.id).join(', ') || 'nothing'}` : ''
-    return `- ${s.id} | ${s.kind} | ${s.color} | at (${Math.round(s.x)}, ${Math.round(s.y)}) size ${Math.round(s.w)}x${Math.round(s.h)} | ${text ? JSON.stringify(text) : '(no text)'}${holds}${s.locked ? ' | locked' : ''}`
+    const holds = s.kind === 'section' ? ` | contains: ${sectionMembers(b.shapes, s).map(m => m.id).join(', ') || 'nothing'}`
+      : s.kind === 'session' ? ` | opens session ${s.session}` : ''
+    return `- ${s.id} | ${s.kind} | ${s.color} | at (${Math.round(s.x)}, ${Math.round(s.y)}) size ${Math.round(s.w)}x${Math.round(s.h)} | ${text ? JSON.stringify(text) : '(no text)'}${holds}${s.locked ? ' | locked' : ''}${conductorAccessOf(b, s) === 'deny' ? ' | protected' : ''}`
   })
   const conns = b.connectors.map(c => `- ${c.from} -> ${c.to}`)
   return [`Shapes:`, ...lines, conns.length ? 'Connections:' : 'Connections: none', ...conns].join('\n')
 }
 
 export interface BoardAdd {
-  shapes?: { ref?: string; kind?: ShapeKind; text?: string; color?: Swatch; fill?: FillMode; weight?: StrokeWeight; border?: BorderStyle; borderColor?: Swatch; hex?: string; borderHex?: string; in?: string; near?: string; side?: 'below' | 'right'; x?: number; y?: number; w?: number; h?: number }[]
+  shapes?: { ref?: string; kind?: ShapeKind; session?: string; text?: string; color?: Swatch; fill?: FillMode; weight?: StrokeWeight; border?: BorderStyle; borderColor?: Swatch; hex?: string; borderHex?: string; in?: string; near?: string; side?: 'below' | 'right'; x?: number; y?: number; w?: number; h?: number }[]
   connectors?: { from: string; to: string }[]
 }
 
@@ -400,7 +510,8 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
   // Cards headed for a section, by section, in the order given: laid out at the end.
   const into = new Map<string, string[]>()
   for (const s of add.shapes ?? []) {
-    const kind: ShapeKind = s.kind && KINDS.has(s.kind) ? s.kind : 'sticky'
+    // A session card names a session; without a valid key it is a plain sticky.
+    const kind: ShapeKind = s.kind && KINDS.has(s.kind) && (s.kind !== 'session' || isSessionKey(s.session)) ? s.kind : 'sticky'
     const text = (s.text ?? '').trim()
     if (text && texts.has(text)) {
       const existing = shapes.find(x => x.text.trim() === text)
@@ -438,6 +549,7 @@ export function applyBoardAdd(b: Board, add: BoardAdd): Board {
     const shape: Shape = {
       id: newId(), kind, x, y, w: size.w, h: size.h, text,
       color: colorAndFill(s.color).color ?? 'yellow',
+      ...(kind === 'session' ? { session: s.session } : {}),
       ...lookOf({ ...s, fill: s.fill ?? colorAndFill(s.color).fill }),
     }
     shapes.push(shape)
@@ -535,7 +647,7 @@ export function applyBoardEdit(b: Board, edit: BoardEdit): Board {
   }
   for (const id of edit.arrange ?? []) if (typeof id === 'string') touched.add(id)
   for (const id of touched) shapes = reflowSection(shapes, id)
-  const asks = b.asks.filter(a => a.shapeIds.some(id => !gone.has(id)))
+  const asks = b.asks.filter(a => askSurvives(a, gone))
   return { ...b, shapes, connectors, asks }
 }
 

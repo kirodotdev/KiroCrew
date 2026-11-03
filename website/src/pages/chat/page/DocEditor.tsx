@@ -13,6 +13,12 @@ import { tags as t } from '@lezer/highlight'
 import { tableExtension } from './docTables'
 import { conductorExtension, setDocData, type ConductorHost, type DocData } from './docConductor'
 import { overlayExtension, setOverlay, type OverlayItem } from './docOverlay'
+import { spaceAskExtension } from './docSpaceAsk'
+import { slashExtension } from './docSlash'
+import { mentionExtension, setMentionSessions } from './docMentions'
+import type { SessionRef } from './SessionMention'
+import { htmlExtension, setEmbedTheme } from './docHtml'
+import type { EmbedTheme } from './DocHtmlFrame'
 
 const markdownStyle = HighlightStyle.define([
   { tag: t.heading1, fontSize: '1.9em', fontWeight: '700', color: 'var(--text-strong)' },
@@ -50,6 +56,9 @@ export default function DocEditor({
   data,
   overlay,
   viewRef,
+  sessions,
+  selfKey,
+  embedTheme,
 }: {
   initial: string
   onChange: (next: string) => void
@@ -62,6 +71,12 @@ export default function DocEditor({
   overlay: OverlayItem[]
   /** The live view, for the pane to apply the conductor's actions. */
   viewRef?: MutableRefObject<EditorView | null>
+  /** The sessions a link can point at, newest first, for chips and the "@" picker. */
+  sessions?: SessionRef[]
+  /** This doc's own session, which the picker leaves out. */
+  selfKey?: string
+  /** The theme HTML blocks draw with: the editor cannot read the app's theme itself. */
+  embedTheme?: EmbedTheme
 }) {
   const parent = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
@@ -80,6 +95,10 @@ export default function DocEditor({
         markdown({ base: markdownLanguage }),
         tableExtension(),
         conductorExtension(host),
+        spaceAskExtension(host),
+        slashExtension(),
+        mentionExtension(host),
+        htmlExtension(),
         overlayExtension(host),
         syntaxHighlighting(markdownStyle),
         EditorView.lineWrapping,
@@ -108,6 +127,14 @@ export default function DocEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: setOverlay.of(overlay) })
   }, [overlay])
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: setMentionSessions.of({ sessions: sessions ?? [], self: selfKey ?? null }) })
+  }, [sessions, selfKey])
+
+  useEffect(() => {
+    if (embedTheme) view.current?.dispatch({ effects: setEmbedTheme.of(embedTheme) })
+  }, [embedTheme])
 
   return <div ref={parent} data-testid="doc-editor" />
 }

@@ -144,10 +144,10 @@ const draft = StateField.define<Draft | null>({
   },
 })
 
-const newAskId = () => `a${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 5)}`
+export const newAskId = () => `a${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 5)}`
 
 /** Wrap [from, to] in ask markers and return the quoted text, or null for blank text. */
-function wrapAsk(view: EditorView, rawFrom: number, rawTo: number, id: string): string | null {
+export function wrapAsk(view: EditorView, rawFrom: number, rawTo: number, id: string): string | null {
   const doc = view.state.doc
   // Only the text itself: blank lines around a selection are not part of it.
   const range = trimRange(doc.toString(), rawFrom, rawTo)
@@ -188,10 +188,11 @@ const roots = new WeakMap<HTMLElement, Root>()
 class AnswerWidget extends WidgetType {
   constructor(
     readonly id: string, readonly thread: ThreadView | undefined, readonly host: { current: ConductorHost },
-    readonly active = false, readonly focus = 0,
+    readonly active = false, readonly focus = 0, readonly stack = 0, readonly onTable = false,
   ) { super() }
   eq(o: AnswerWidget) {
-    return o.id === this.id && o.active === this.active && o.focus === this.focus && JSON.stringify(o.thread) === JSON.stringify(this.thread)
+    return o.id === this.id && o.active === this.active && o.focus === this.focus && o.stack === this.stack && o.onTable === this.onTable
+      && JSON.stringify(o.thread) === JSON.stringify(this.thread)
   }
   toDOM(view: EditorView) {
     const dom = document.createElement('div')
@@ -211,6 +212,9 @@ class AnswerWidget extends WidgetType {
     const { id, host } = this
     roots.get(dom)?.render(createElement(DocAnswer, {
       thread: this.thread,
+      gutter: true,
+      stack: this.stack,
+      onTable: this.onTable,
       active: this.active,
       focusSignal: this.focus,
       onActivate: () => host.current.activate?.(id),
@@ -247,7 +251,24 @@ function build(state: EditorState, host: { current: ConductorHost }): { decos: D
   const decos: Range<Decoration>[] = []
   const atomic: Range<Decoration>[] = []
   const hide = Decoration.replace({})
-  for (const m of parseMarkers(text)) {
+  const markers = parseMarkers(text)
+  // Pins sit level with the visible line above their answer; several on one line
+  // (two asks about one table, say) line up side by side instead of overlapping.
+  const hidden = new Set<number>()
+  for (const m of markers) {
+    if (m.ownLine) hidden.add(state.doc.lineAt(m.open.from).number).add(state.doc.lineAt(m.close.from).number)
+  }
+  const onLine = new Map<number, number>()
+  const pinFor = (m: Marker) => {
+    let n = state.doc.lineAt(m.close.from).number
+    if (m.ownLine) { n--; while (n > 1 && hidden.has(n)) n-- }
+    const i = onLine.get(n) ?? 0
+    onLine.set(n, i + 1)
+    // Under a table the widget starts below the grid's bottom padding: raise the
+    // pin to its last row.
+    return { stack: i, onTable: isRow(state.doc.line(n).text) }
+  }
+  for (const m of markers) {
     const openLine = state.doc.lineAt(m.open.from)
     const closeLine = state.doc.lineAt(m.close.from)
     if (m.kind === 'work') {
@@ -266,7 +287,8 @@ function build(state: EditorState, host: { current: ConductorHost }): { decos: D
     // An ask: its own text tinted, and its answer under its last line.
     const thread = data.threads[m.id]
     const isActive = data.active?.id === m.id
-    const answer = new AnswerWidget(m.id, thread, host, isActive, isActive ? data.active!.focus : 0)
+    const pin = pinFor(m)
+    const answer = new AnswerWidget(m.id, thread, host, isActive, isActive ? data.active!.focus : 0, pin.stack, pin.onTable)
     const content = trimRange(text, m.open.to, m.close.from)
     if (m.ownLine) {
       decos.push(Decoration.replace({ widget: new HiddenLine(), block: true }).range(openLine.from, openLine.to))
@@ -394,6 +416,22 @@ export const ANSWER_STYLE: StyleSpec = {
     textAlign: 'left', cursor: 'pointer',
   },
   '[data-da="bar"]:hover': { background: 'var(--bg-hover)', color: 'var(--text)' },
+  // A doc's answer, collapsed, is only its pin: the root takes no height, and the
+  // pin sits in the left margin, centred on the line above the widget.
+  '[data-da="root"][data-gutter="true"]': { position: 'relative' },
+  '[data-da="pin"]': {
+    position: 'absolute', padding: '0', border: 'none', background: 'transparent', cursor: 'pointer', lineHeight: '0',
+  },
+  '[data-da="pin-flip"]': { display: 'block', transform: 'scaleX(-1)' },
+  '[data-da="preview"]': {
+    position: 'absolute', left: '0', zIndex: '5', width: '280px', pointerEvents: 'none',
+    padding: '8px 12px', borderRadius: '14px', border: '1px solid var(--border)', background: 'var(--bg-elevated)',
+    color: 'var(--text)', boxShadow: '0 8px 24px -6px rgba(0,0,0,.25)', lineHeight: '1.45',
+  },
+  '[data-da="preview-text"]': {
+    fontSize: '13px', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden',
+  },
+  '[data-da="preview-meta"]': { display: 'flex', gap: '8px', marginTop: '2px', fontSize: '11px', color: 'var(--muted)' },
   '[data-da="root"][data-open="true"] [data-da="bar"]': { background: 'var(--bg-elevated)', color: 'var(--text)' },
   '[data-da="who"]': { color: 'var(--accent)', fontWeight: '600', flexShrink: '0' },
   '[data-da="summary"]': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1', minWidth: '0' },
@@ -467,7 +505,9 @@ const conductorTheme = EditorView.baseTheme({
   '.cm-work-line.cm-work-idle, .cm-work-line.cm-work-missing': { borderLeftColor: 'var(--border-strong)' },
 
   // The answer under a highlight (`DocAnswer`, styled by its `data-da` parts).
-  '.cm-answer': { padding: '2px 0 6px', cursor: 'default' },
+  // Collapsed, an answer is only its margin pin and takes no height at all.
+  '.cm-answer': { cursor: 'default' },
+  '.cm-answer [data-da="root"][data-open="true"]': { padding: '2px 0 6px' },
   ...ANSWER_STYLE,
   '@media (prefers-reduced-motion: reduce)': {
     '[data-da="dot"]': { animation: 'none !important' },
@@ -510,14 +550,19 @@ export function conductorExtension(host: { current: ConductorHost }): Extension 
 
 // ---- writes: markdown a conductor reply asks the pane to add to the doc ----------------
 
+/** The info string of a doc's HTML block: a fence the editor draws as live HTML. */
+export const HTML_FENCE = 'html-embed'
+/** *html* as the doc's HTML block, in markdown. */
+export const htmlBlock = (html: string) => `\`\`\`${HTML_FENCE}\n${html.replace(/\s+$/, '')}\n\`\`\``
+
 /** One write: add *text* at the end of the doc, or after the line holding *after*. */
 export interface DocWrite { mode: 'append' | 'after'; after?: string; text: string }
 export interface DocActions { writes: DocWrite[] }
 
 // A fenced block, closed by a fence on a line of its own.
-const WRITE_RE = /```(doc-append|doc-insert)([^\n]*)\n([\s\S]*?)\n```[ \t]*(?=\n|$)/g
+const WRITE_RE = /```(doc-append|doc-insert|doc-html)([^\n]*)\n([\s\S]*?)\n```[ \t]*(?=\n|$)/g
 // A block still streaming in (or a retired one): hidden, never applied.
-const OPEN_RE = /```(?:doc-(?:append|insert|actions)|board-(?:add|edit)|codebase-(?:root|focus)|page-(?:html|replace))[\s\S]*$/
+const OPEN_RE = /```(?:doc-(?:append|insert|html|actions)|board-(?:add|edit)|codebase-(?:root|focus)|page-(?:html|replace))[\s\S]*$/
 // A whiteboard's additions and edits, a codebase model's root and focus, and a
 // dashboard's page: applied by their panes, never shown as prose.
 const BOARD_ADD_RE = /```(?:board-(?:add|edit)|codebase-(?:root|focus)|page-(?:html|replace))[^\n]*\n[\s\S]*?\n```[ \t]*(?=\n|$)/g
@@ -527,7 +572,13 @@ export function splitReply(text: string): { prose: string; actions: DocActions |
   const writes: DocWrite[] = []
   let prose = text.replace(WRITE_RE, (_all, kind: string, info: string, body: string) => {
     if (kind === 'doc-append') writes.push({ mode: 'append', text: body })
-    else {
+    else if (kind === 'doc-html') {
+      // Raw HTML from the conductor lands as the doc's own HTML block, at the end
+      // or after a line it names.
+      const after = /after="([^"]*)"/.exec(info)?.[1]
+      const block = htmlBlock(body)
+      writes.push(after ? { mode: 'after', after, text: block } : { mode: 'append', text: block })
+    } else {
       const after = /after="([^"]*)"/.exec(info)?.[1]
       if (after) writes.push({ mode: 'after', after, text: body })
     }

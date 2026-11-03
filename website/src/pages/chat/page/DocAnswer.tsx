@@ -13,6 +13,10 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ThreadView, WorkerState } from './docConductor'
+import { PinGlyph } from './board/ConductorThread'
+
+/** A gutter pin's width plus the gap between pins on one line. */
+const PIN_STEP = 32
 
 const WORKER_LABEL: Record<WorkerState, string> = { working: 'Working', needs_you: 'Needs you', idle: 'Idle' }
 
@@ -22,7 +26,7 @@ function firstLine(text: string): string {
 }
 
 export default function DocAnswer({
-  thread, onOpen, onSend, onOpenSession, compact = false, active = false, focusSignal = 0, onActivate,
+  thread, onOpen, onSend, onOpenSession, compact = false, gutter = false, stack = 0, onTable = false, active = false, focusSignal = 0, onActivate,
 }: {
   thread: ThreadView | undefined
   onOpen: () => void
@@ -31,6 +35,13 @@ export default function DocAnswer({
   /** A small pin (a board's answers) instead of a full-width bar; the thread
    *  opens as a floating card rather than pushing anything down. */
   compact?: boolean
+  /** A doc's answers: collapsed, only a pin in the left margin level with the
+   *  line above; open, the thread inline under that line. */
+  gutter?: boolean
+  /** With *gutter*: how many pins already sit on the same line, to its right. */
+  stack?: number
+  /** With *gutter*: the line above is a table, so the pin rises to its last row. */
+  onTable?: boolean
   /** The page's current conversation: another becoming current collapses this one. */
   active?: boolean
   /** Changes when the conversation bar or its shortcut moves focus here: open,
@@ -67,27 +78,58 @@ export default function DocAnswer({
   const summary = pending ? 'Thinking…' : latest ? firstLine(latest.text) : 'No reply yet'
   const dotState = pending ? 'pending' : thread?.unread ? 'unread' : 'read'
   const pinLabel = pending ? 'Thinking…' : thread?.unread ? 'New reply' : latest ? 'Reply' : 'No reply'
+  const [hover, setHover] = useState(false)
+  const toggle = () => { setHover(false); setOpen(o => !o); if (!open) { onOpen(); onActivate?.() } }
+  // The pin centres on the line above the widget: a text line, or a table's last
+  // row (the grid's footer and padding sit between that row and the widget).
+  const pinTop = onTable ? -80 : -27
+  const workerCount = workers.length > 0 ? `${running}/${workers.length} working` : ''
+  const replies = messages.filter(m => m.who === 'conductor').length
 
   return (
-    <div ref={rootRef} data-da="root" data-testid="doc-answer" data-open={open ? 'true' : 'false'} data-active={active ? 'true' : 'false'} data-compact={compact ? 'true' : 'false'}>
-      <button
+    <div ref={rootRef} data-da="root" data-testid="doc-answer" data-open={open ? 'true' : 'false'} data-active={active ? 'true' : 'false'} data-compact={compact ? 'true' : 'false'} data-gutter={gutter ? 'true' : 'false'}>
+      {gutter && (
+        <button
+          type="button"
+          data-da="pin"
+          data-testid="doc-answer-pin"
+          data-stack={stack}
+          aria-expanded={open}
+          aria-label={`Conversation with the conductor: ${summary}${workerCount ? `, ${workerCount}` : ''}`}
+          style={{ right: `calc(100% + 14px + ${stack * PIN_STEP}px)`, top: pinTop }}
+          onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} onFocus={() => setHover(true)} onBlur={() => setHover(false)}
+          onMouseDown={e => e.preventDefault()}
+          onClick={toggle}
+        >
+          {/* Mirrored, so the tail points at the text it marks. */}
+          <span data-da="pin-flip"><PinGlyph state={dotState} /></span>
+        </button>
+      )}
+      {gutter && hover && !open && (
+        <div role="tooltip" data-da="preview" data-testid="doc-answer-preview" style={{ top: pinTop + 32 }}>
+          <div data-da="preview-text">{summary}</div>
+          <div data-da="preview-meta">
+            <span>{replies === 0 ? 'No replies' : replies === 1 ? '1 reply' : `${replies} replies`}</span>
+            {workerCount && <span>{workerCount}</span>}
+          </div>
+        </div>
+      )}
+      {(!gutter || open) && <button
         type="button"
         data-da="bar"
         data-testid="doc-answer-bar"
         aria-expanded={open}
         title={compact ? summary : undefined}
         onMouseDown={e => e.preventDefault()}
-        onClick={() => { setOpen(o => !o); if (!open) { onOpen(); onActivate?.() } }}
+        onClick={toggle}
       >
         <span data-da="dot" data-state={dotState} aria-hidden />
         <span data-da="who">{compact ? '✦' : '✦ Conductor'}</span>
         {thread?.topic && <span data-da="chip" data-testid="doc-answer-topic">{thread.topic}</span>}
         <span data-da="summary">{compact ? pinLabel : summary}</span>
-        {workers.length > 0 && (
-          <span data-da="chip">{`${running}/${workers.length} working`}</span>
-        )}
+        {workerCount && <span data-da="chip">{workerCount}</span>}
         {!compact && <span data-da="caret" aria-hidden>{open ? '▾' : '▸'}</span>}
-      </button>
+      </button>}
       {open && (
         <div data-da="body">
           {messages.map((m, i) => (

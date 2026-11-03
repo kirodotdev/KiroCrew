@@ -212,12 +212,14 @@ describe('the editor layer', () => {
     expect(q(v, 'ask-conductor')).toBeNull()
   })
 
-  it('the answer sits under the highlight, collapsed, outside the text', () => {
+  it('the answer sits under the highlight, collapsed to a margin pin, outside the text', () => {
     const { v } = make('see <!-- ask:q1 -->this<!-- /ask:q1 --> part\nnext')
     push(v, { threads: { q1: { messages: [{ who: 'you', text: 'why?' }], pending: true, unread: false } }, workers: {} })
-    const bar = q(v, 'doc-answer-bar')!
-    expect(bar.textContent).toContain('Thinking…')
-    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    const pin = q(v, 'doc-answer-pin')!
+    expect(pin.getAttribute('aria-label')).toContain('Thinking…')
+    expect(pin.getAttribute('aria-expanded')).toBe('false')
+    // Collapsed, there is no bar taking up a line: only the pin.
+    expect(q(v, 'doc-answer-bar')).toBeNull()
     // The line reads exactly as written; the answer is a block between lines.
     const lines = [...v.contentDOM.querySelectorAll('.cm-line')].map(l => l.textContent)
     expect(lines).toEqual(['see this part', 'next'])
@@ -233,11 +235,15 @@ describe('the editor layer', () => {
       } },
       workers: {},
     })
-    const bar = q(v, 'doc-answer-bar')!
-    expect(bar.textContent).toContain('Here:')
-    expect(bar.textContent).toContain('1/1 working')
-    await act(async () => { fireEvent.click(bar) })
+    const pin = q(v, 'doc-answer-pin')!
+    expect(pin.getAttribute('aria-label')).toContain('Here:')
+    expect(pin.getAttribute('aria-label')).toContain('1/1 working')
+    await act(async () => { fireEvent.mouseEnter(pin) })
+    expect(q(v, 'doc-answer-preview')!.textContent).toContain('1 reply')
+    await act(async () => { fireEvent.click(pin) })
     expect(host.markRead).toHaveBeenCalledWith('q1')
+    expect(q(v, 'doc-answer-bar')!.textContent).toContain('1/1 working')
+    expect(q(v, 'doc-answer-preview')).toBeNull()
     expect(v.dom.querySelector('[data-da="md"] table')).not.toBeNull()
     fireEvent.click(q(v, 'doc-answer-worker')!)
     expect(host.openSession).toHaveBeenCalledWith('w-1')
@@ -251,11 +257,25 @@ describe('the editor layer', () => {
     const { v } = make('see <!-- ask:q1 -->this<!-- /ask:q1 --> part')
     const thread = (n: number) => ({ q1: { messages: Array.from({ length: n }, (_, i) => ({ who: 'conductor' as const, text: `m${i}` })), pending: false, unread: false } })
     push(v, { threads: thread(1), workers: {} })
-    await act(async () => { fireEvent.click(q(v, 'doc-answer-bar')!) })
+    await act(async () => { fireEvent.click(q(v, 'doc-answer-pin')!) })
     await act(async () => { fireEvent.change(q(v, 'doc-answer-input')!, { target: { value: 'half written' } }) })
     push(v, { threads: thread(2), workers: {} })
     expect((q(v, 'doc-answer-input') as HTMLTextAreaElement).value).toBe('half written')
     expect(v.dom.querySelector('[data-da="body"]')!.textContent).toContain('m1')
+  })
+
+  it('pins on one line sit side by side; the bar collapses an open answer back to its pin', async () => {
+    const { v } = make('a <!-- ask:q1 -->one<!-- /ask:q1 --> and <!-- ask:q2 -->two<!-- /ask:q2 -->\nnext <!-- ask:q3 -->three<!-- /ask:q3 -->')
+    const t = { messages: [{ who: 'conductor' as const, text: 'ok' }], pending: false, unread: false }
+    push(v, { threads: { q1: t, q2: t, q3: t }, workers: {} })
+    const stacks = [...v.dom.querySelectorAll<HTMLElement>('[data-testid="doc-answer-pin"]')].map(p => p.dataset.stack)
+    expect(stacks).toEqual(['0', '1', '0'])
+    const pin = q(v, 'doc-answer-pin')!
+    await act(async () => { fireEvent.click(pin) })
+    expect(pin.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => { fireEvent.click(q(v, 'doc-answer-bar')!) })
+    expect(q(v, 'doc-answer-bar')).toBeNull()
+    expect(pin.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('typing a new line after a highlight is plain text: the answer is not in the way', () => {

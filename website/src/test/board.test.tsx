@@ -7,15 +7,16 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import BoardCanvas from '../pages/chat/page/board/BoardCanvas'
 import {
-  BOARD_ID_PREFIX, applyBoardAdd, applyBoardEdit, boardAddsIn, boardEditsIn, emptyBoard, isBoardId, parseBoard, sectionMembers, serializeBoard, shapeAt, summarizeBoard, toSwatch, wheelPanStep, wheelZoomFactor,
+  BOARD_ID_PREFIX, applyBoardAdd, applyBoardEdit, boardAddsIn, boardEditsIn, conductorAccessOf, emptyBoard, isBoardId, labelScale, parseBoard, sectionMembers, serializeBoard, shapeAt, summarizeBoard, toSwatch, wheelPanStep, wheelZoomFactor,
   type Board, type Shape,
 } from '../pages/chat/page/board/boardModel'
-import { applyReplyChanges, boardAddsFromMessages, boardChangesFromMessages, buildBoardTurn } from '../pages/chat/page/board/boardTurn'
+import { applyReplyChanges, applyReplyChecked, boardAddsFromMessages, boardChangesFromMessages, buildBoardTurn } from '../pages/chat/page/board/boardTurn'
 import type { OverlayItem } from '../pages/chat/page/docOverlay'
 import { deriveThreads } from '../pages/chat/page/docThreads'
 import { fitDash, ovalDash } from '../pages/chat/page/board/dashFit'
 import { darker, hexToHsv, hsvToHex, inkOn, luminance, toHex } from '../pages/chat/page/board/colorMath'
 import { shapeLook } from '../pages/chat/page/board/shapeLook'
+import { firstLine } from '../pages/chat/page/board/ConductorThread'
 import { restack } from '../pages/chat/page/board/boardEditing'
 import { connectorRoute, connectorSides, movedSegment, segmentDrag } from '../pages/chat/page/board/connectorGeometry'
 
@@ -198,7 +199,7 @@ describe('board model', () => {
     const b = { ...emptyBoard(), shapes: [sticky('a', 0, 0, 'Pricing')] }
     const turn = buildBoardTurn({ id: 'q1', request: 'brainstorm tiers', board: b, selected: ['a'], followUp: false, docId: 'b0a4d1', title: 'Launch' })
     expect(turn.startsWith('[Doc ask q1]\nbrainstorm tiers\n\n---\n')).toBe(true)
-    expect(turn).toContain('They selected a ')
+    expect(turn).toContain('They pointed at a ')
     expect(turn).toContain('"Pricing"')
     expect(turn).toContain('slug "doc-overlay-b0a4d1"')
     expect(turn).toContain('data-anchor="shape:<shape id>"')
@@ -547,6 +548,26 @@ describe('the canvas', () => {
     expect([copy.from, copy.to]).toEqual([latest().shapes[3].id, latest().shapes[5].id])
   })
 
+  it('a section label keeps its on-screen size as you zoom out, and its grab area grows with it', () => {
+    expect(labelScale(1)).toBe(1)
+    expect(labelScale(2)).toBe(1)
+    expect(labelScale(0.5)).toBe(2)
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 300, h: 200, text: 'To do', color: 'smoke' }
+    // At 100% the tab is 30 high above the section; zoomed out to 25% it is 4 times that, so it can still be grabbed.
+    expect(shapeAt([section], { x: 200, y: -100 }, { zoom: 1 })).toBeNull()
+    expect(shapeAt([section], { x: 200, y: -100 }, { zoom: 0.25 })?.id).toBe('sec')
+    expect(shapeAt([section], { x: 200, y: -125 }, { zoom: 0.25 })).toBeNull()
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section] }} />)
+    const label = () => screen.getByText('To do').parentElement as HTMLElement
+    expect(label().style.transform).toBe('')
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    // 1 / 1.2^3 = 0.579 of the board's size: the label is drawn 1.728 times larger from its bottom-left corner.
+    expect(label().style.transform).toBe('scale(1.728)')
+    expect(label().style.transformOrigin).toBe('left bottom')
+  })
+
   it('zooming out thins the dots by halves instead of packing them tighter', () => {
     render(<Harness initial={emptyBoard()} />)
     const gap = () => parseFloat(canvas().style.backgroundSize)
@@ -860,6 +881,46 @@ describe('the canvas', () => {
     expect(parseBoard(serializeBoard(added)).shapes[1].hex).toBe('#AABBCC')
   })
 
+  it('sections get no connect dots and are not joined by lines; the dots go once zoomed far out', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 100, w: 500, h: 300, text: 'To do', color: 'smoke' }
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section, sticky('a', 600, 100)] }} />)
+    const hover = (x: number, y: number) => act(() => { fireEvent.pointerMove(canvas(), at(x, y)) })
+    // Hovering or selecting a section (by its label) shows no dots.
+    hover(100, 80)
+    expect(screen.queryAllByTestId('connect-dot')).toHaveLength(0)
+    press(100, 80)
+    release(100, 80)
+    hover(900, 900)
+    expect(screen.queryAllByTestId('connect-dot')).toHaveLength(0)
+    // A shape beside it has them, and a line dragged from there passes over the section without joining it.
+    press(700, 200)
+    release(700, 200)
+    hover(900, 900)
+    expect(screen.getAllByTestId('connect-dot')).toHaveLength(4)
+    act(() => { fireEvent.pointerDown(screen.getAllByTestId('connect-dot')[3], at(586, 200)) })
+    moveTo(200, 250)
+    release(200, 250)
+    expect(latest().connectors).toEqual([])
+    // The connector tool does not start a line from a section's label either.
+    fireEvent.click(screen.getByTestId('tool-connector'))
+    press(100, 80)
+    moveTo(700, 200)
+    release(700, 200)
+    expect(latest().connectors).toEqual([])
+    // Zoomed out to just under half, the dots are gone from a shape that has them at 100%.
+    fireEvent.click(screen.getByTestId('tool-select'))
+    press(700, 200)
+    release(700, 200)
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    expect(screen.getAllByTestId('connect-dot')).toHaveLength(4)
+    fireEvent.click(screen.getByLabelText('Zoom out'))
+    expect(screen.queryAllByTestId('connect-dot')).toHaveLength(0)
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    expect(screen.getAllByTestId('connect-dot')).toHaveLength(4)
+  })
+
   it('a selected shape keeps its four connect dots, and they go with the selection', () => {
     render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0)] }} />)
     press(100, 100)
@@ -891,32 +952,232 @@ describe('the canvas', () => {
     expect(latest().shapes.map(s => s.color)).toEqual(['blue', 'blue', 'yellow'])
   })
 
-  it('C opens the ask box for the selection, without typing a "c" into it', () => {
+  it('C asks about the selection at once, without typing a "c"; with nothing selected it picks the Ask tool', () => {
     render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0, 'Pricing')] }} />)
     act(() => { fireEvent.keyDown(canvas(), { key: 'c' }) })
-    // Nothing selected and nothing under the pointer: nothing to ask about.
+    // Nothing selected: the Ask tool is picked and the next click says where.
     expect(screen.queryByTestId('board-ask-input')).toBeNull()
+    expect(screen.getByTestId('tool-ask').getAttribute('aria-pressed')).toBe('true')
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Escape' }) })
     press(100, 100)
     release(100, 100)
     let typed = true
     act(() => { typed = fireEvent.keyDown(canvas(), { key: 'c' }) })
     expect(typed).toBe(false)
-    expect((screen.getByTestId('board-ask-input') as HTMLTextAreaElement).value).toBe('')
+    const input = screen.getByTestId('board-ask-input') as HTMLInputElement
+    expect(input.value).toBe('')
+    expect(input.placeholder).toBe('Ask the conductor about "Pricing"')
   })
 
-  it('asking pins the ask to the selected shapes and hands the turn up', () => {
+  it('a section gets a goal from its toolbar, shows a chip on its label, and the goal clears again', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 600, h: 400, text: 'To do', color: 'smoke' }
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section, sticky('a', 40, 40, 'Fix login')] }} />)
+    // A sticky has no goal button.
+    press(100, 100)
+    release(100, 100)
+    expect(screen.queryByTestId('section-goal-button')).toBeNull()
+    // A section is picked by its label.
+    press(50, -10)
+    release(50, -10)
+    expect(screen.queryByTestId('section-goal-chip')).toBeNull()
+    fireEvent.click(screen.getByTestId('section-goal-button'))
+    expect((screen.getByTestId('section-goal-save') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(screen.getByTestId('section-goal-text'), { target: { value: '  Keep checking these tasks  ' } })
+    fireEvent.click(screen.getByRole('radio', { name: '30 min' }))
+    fireEvent.click(screen.getByTestId('section-goal-save'))
+    expect(latest().shapes.find(s => s.id === 'sec')?.goal).toEqual({ text: 'Keep checking these tasks', every: 30 })
+    expect(latest().shapes.find(s => s.id === 'a')?.goal).toBeUndefined()
+    expect(screen.getByTestId('section-goal-chip').textContent).toContain('Watching')
+    // A watched section has a ring round its border, and it goes with the goal.
+    expect(screen.getAllByTestId('watch-ring')).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('section-goal-button'))
+    fireEvent.click(screen.getByTestId('section-goal-clear'))
+    expect(latest().shapes.find(s => s.id === 'sec')?.goal).toBeUndefined()
+    expect(screen.queryByTestId('section-goal-chip')).toBeNull()
+    expect(screen.queryByTestId('watch-ring')).toBeNull()
+  })
+
+  it('the toolbar protects a section from the conductor, a chip says so, and the board switch flips the default', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 600, h: 400, text: 'To do', color: 'smoke' }
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section] }} />)
+    press(50, -10)
+    release(50, -10)
+    const button = () => screen.getByTestId('section-access-button')
+    expect(button().getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByTestId('section-access-chip')).toBeNull()
+    fireEvent.click(button())
+    expect(latest().shapes[0].conductor).toBe('deny')
+    expect(screen.getByTestId('section-access-chip').getAttribute('data-mark')).toBe('protected')
+    // Opening it again goes back to following the board, and stores nothing.
+    fireEvent.click(button())
+    expect(latest().shapes[0].conductor).toBeUndefined()
+    expect(screen.queryByTestId('section-access-chip')).toBeNull()
+    // Closing the board makes an unmarked section protected; opening it is then marked.
+    fireEvent.click(screen.getByTestId('board-conductor-mode'))
+    expect(latest().conductorDefault).toBe('closed')
+    expect(button().getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(button())
+    expect(latest().shapes[0].conductor).toBe('allow')
+    expect(screen.getByTestId('section-access-chip').getAttribute('data-mark')).toBe('open')
+    fireEvent.click(screen.getByTestId('board-conductor-mode'))
+    expect(latest().conductorDefault).toBeUndefined()
+  })
+
+  it('the conductor cannot change a protected section or what is in it, and is told so', () => {
+    const sec = (id: string, x: number, conductor?: 'allow' | 'deny'): Shape => ({ id, kind: 'section', x, y: 0, w: 600, h: 400, text: id, color: 'smoke', ...(conductor ? { conductor } : {}) })
+    const board: Board = {
+      ...emptyBoard(),
+      shapes: [sec('A', 0, 'deny'), sec('B', 800), sticky('a', 40, 40, 'Keep'), sticky('b', 840, 40, 'Change'), sticky('l', 0, 600, 'Loose')],
+      connectors: [{ id: 'k', from: 'a', to: 'b' }],
+    }
+    const edit = { shapes: [{ id: 'a', text: 'Hacked' }, { id: 'b', text: 'Changed' }, { id: 'b2', text: 'Unknown' }, { id: 'l', in: 'A' }], delete: ['a', 'l'], arrange: ['A', 'B'], deleteConnectors: ['k'] }
+    const { board: next, refused } = applyReplyChecked(board, { edits: [edit], adds: [] })
+    expect(next.shapes.find(s => s.id === 'a')?.text).toBe('Keep')
+    expect(next.shapes.find(s => s.id === 'b')?.text).toBe('Changed')
+    expect(next.shapes.find(s => s.id === 'l')).toBeUndefined()
+    expect(next.connectors).toHaveLength(1)
+    expect(refused).toEqual(expect.arrayContaining(['a', 'l', 'A', 'a -> b']))
+    // Additions: into a protected section no, into another yes; a new section and its cards are the conductor's own.
+    const added = applyReplyChecked(board, {
+      edits: [],
+      adds: [{
+        shapes: [
+          { text: 'Into A', in: 'A' }, { text: 'Into B', in: 'B' },
+          { ref: 'n', kind: 'section', text: 'New' }, { text: 'In new', in: 'n' },
+          { text: 'Dropped at A', x: 100, y: 100 },
+        ],
+        connectors: [{ from: 'a', to: 'n' }],
+      }],
+    })
+    const texts = added.board.shapes.map(s => s.text)
+    expect(texts).toEqual(expect.arrayContaining(['Into B', 'New', 'In new']))
+    expect(texts).not.toContain('Into A')
+    expect(texts).not.toContain('Dropped at A')
+    expect(added.board.connectors).toHaveLength(1)
+    expect(added.refused).toEqual(expect.arrayContaining(['Into A', 'Dropped at A', 'a -> n']))
+    // The conductor is told what is off limits, and the summary marks it.
+    expect(summarizeBoard(board)).toMatch(/- a \| sticky[^\n]*\| protected/)
+    expect(summarizeBoard(board)).not.toMatch(/- b \| sticky[^\n]*\| protected/)
+    expect(buildBoardTurn({ id: 'q', request: 'x', board, selected: [], followUp: false, docId: 'd' })).toContain('Protected, off limits to you: A "A"')
+  })
+
+  it('on a closed board only opened sections can be changed, and the nearest setting decides', () => {
+    const sec = (id: string, x: number, y: number, w: number, conductor?: 'allow' | 'deny'): Shape => ({ id, kind: 'section', x, y, w, h: w, text: id, color: 'smoke', ...(conductor ? { conductor } : {}) })
+    const closed: Board = {
+      ...emptyBoard(), conductorDefault: 'closed',
+      shapes: [sec('open', 0, 0, 400, 'allow'), sec('shut', 800, 0, 400), sticky('o', 40, 40, 'In open'), sticky('s', 840, 40, 'In shut'), sticky('l', 0, 900, 'Loose')],
+    }
+    const { board: next, refused } = applyReplyChecked(closed, { edits: [{ shapes: [{ id: 'o', text: 'ok' }, { id: 's', text: 'no' }, { id: 'l', text: 'no' }] }], adds: [{ shapes: [{ text: 'New loose' }, { text: 'New in open', in: 'open' }] }] })
+    expect(next.shapes.find(s => s.id === 'o')?.text).toBe('ok')
+    expect(next.shapes.find(s => s.id === 's')?.text).toBe('In shut')
+    expect(next.shapes.find(s => s.id === 'l')?.text).toBe('Loose')
+    expect(next.shapes.map(s => s.text)).toEqual(expect.arrayContaining(['New in open']))
+    expect(next.shapes.map(s => s.text)).not.toContain('New loose')
+    expect(refused).toEqual(expect.arrayContaining(['s', 'l', 'New loose']))
+    expect(buildBoardTurn({ id: 'q', request: 'x', board: closed, selected: [], followUp: false, docId: 'd' })).toContain('ONLY inside these sections, and what they hold: open "open"')
+    // A section inside a protected one follows it, unless it says otherwise.
+    const nested: Board = {
+      ...emptyBoard(),
+      shapes: [sec('outer', 0, 0, 800, 'deny'), sec('inner', 100, 100, 300, 'allow'), sticky('x', 120, 120, 'inner card'), sticky('y', 500, 500, 'outer card')],
+    }
+    expect(conductorAccessOf(nested, nested.shapes[2])).toBe('allow')
+    expect(conductorAccessOf(nested, nested.shapes[3])).toBe('deny')
+  })
+
+  it('a section\'s protection and the board\'s default survive the file', () => {
+    const raw = JSON.stringify({
+      conductorDefault: 'closed',
+      shapes: [
+        { id: 'a', kind: 'section', x: 0, y: 0, w: 300, h: 300, text: 'A', color: 'smoke', conductor: 'deny' },
+        { id: 'b', kind: 'section', x: 0, y: 0, w: 300, h: 300, text: 'B', color: 'smoke', conductor: 'maybe' },
+        { id: 'c', kind: 'sticky', x: 0, y: 0, w: 200, h: 200, text: '', color: 'yellow', conductor: 'deny' },
+      ],
+    })
+    const b = parseBoard(raw)
+    expect(b.conductorDefault).toBe('closed')
+    expect(b.shapes.map(s => s.conductor)).toEqual(['deny', undefined, undefined])
+    expect(parseBoard(serializeBoard(b)).conductorDefault).toBe('closed')
+    expect(parseBoard('{"shapes":[],"conductorDefault":"x"}').conductorDefault).toBeUndefined()
+  })
+
+  it('a goal survives the file, only on a section, and an empty one is no goal', () => {
+    const raw = JSON.stringify({
+      shapes: [
+        { id: 's', kind: 'section', x: 0, y: 0, w: 300, h: 300, text: 'A', color: 'smoke', goal: { text: 'Watch', every: 5, session: 'w1' } },
+        { id: 'e', kind: 'section', x: 400, y: 0, w: 300, h: 300, text: 'B', color: 'smoke', goal: { text: '  ', every: 5 } },
+        { id: 'k', kind: 'sticky', x: 0, y: 0, w: 200, h: 200, text: '', color: 'yellow', goal: { text: 'Nope', every: 5 } },
+        { id: 'o', kind: 'section', x: 800, y: 0, w: 300, h: 300, text: 'C', color: 'smoke', goal: { text: 'Odd', every: 7 } },
+      ],
+    })
+    const b = parseBoard(raw)
+    expect(b.shapes.map(s => s.goal)).toEqual([{ text: 'Watch', every: 5, session: 'w1' }, undefined, undefined, { text: 'Odd', every: 10 }])
+    expect(parseBoard(serializeBoard(b)).shapes[0].goal).toEqual({ text: 'Watch', every: 5, session: 'w1' })
+  })
+
+  it('the toolbar\'s Ask opens the input beside the selection, and sending pins the conversation there', () => {
     const onAsk = vi.fn()
     render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0, 'Pricing')] }} onAsk={onAsk} />)
     press(100, 100)
     release(100, 100)
     fireEvent.click(screen.getByTestId('board-ask-button'))
     const box = screen.getByTestId('board-ask-input')
+    expect((screen.getByTestId('board-ask-send') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(box, { target: { value: 'brainstorm tiers' } })
+    expect((screen.getByTestId('board-ask-send') as HTMLButtonElement).disabled).toBe(false)
     act(() => { fireEvent.keyDown(box, { key: 'Enter' }) })
-    expect(latest().asks).toEqual([{ id: expect.any(String), shapeIds: ['a'] }])
+    // Its pin sits at the sticky's top-right corner, kept as an offset so it follows the sticky.
+    expect(latest().asks).toEqual([{ id: expect.any(String), shapeIds: ['a'], at: { x: 200, y: 0 } }])
     expect(onAsk).toHaveBeenCalledWith(latest().asks[0].id, 'brainstorm tiers', latest())
-    // The answer bar hangs under the shape.
-    expect(screen.getByTestId('doc-answer-bar').textContent).toContain('Thinking…')
+    // It opens straight away, waiting on the conductor.
+    expect(screen.getByTestId('conductor-card')).toBeTruthy()
+    expect(screen.getByTestId('thread-waiting')).toBeTruthy()
+    expect(screen.queryByTestId('board-ask-input')).toBeNull()
+  })
+
+  it('with the Ask tool, a click asks about what is there: a shape, else the section holding the point, else the board', () => {
+    const onAsk = vi.fn()
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 600, h: 400, text: 'To do', color: 'smoke' }
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section, sticky('a', 40, 40, 'Fix login')] }} onAsk={onAsk} />)
+    const askAt = (x: number, y: number, text: string) => {
+      fireEvent.click(screen.getByTestId('tool-ask'))
+      press(x, y)
+      const input = screen.getByTestId('board-ask-input') as HTMLInputElement
+      const hint = input.placeholder
+      fireEvent.change(input, { target: { value: text } })
+      act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
+      return hint
+    }
+    expect(askAt(100, 100, 'on the card')).toBe('Ask the conductor about "Fix login"')
+    expect(askAt(400, 300, 'in the section')).toBe('Ask the conductor about "To do"')
+    expect(askAt(900, 600, 'on the board')).toBe('Ask the conductor about the whole board')
+    expect(latest().asks.map(a => ({ shapeIds: a.shapeIds, at: a.at }))).toEqual([
+      { shapeIds: ['a'], at: { x: 60, y: 60 } },
+      // Kept relative to the section, so the pin moves with it.
+      { shapeIds: ['sec'], at: { x: 400, y: 300 } },
+      { shapeIds: [], at: { x: 900, y: 600 } },
+    ])
+    // The tool goes back to Select after each pin.
+    expect(screen.getByTestId('tool-select').getAttribute('aria-pressed')).toBe('true')
+    // A conversation about the whole board outlives deleting a shape; one about that shape does not.
+    press(100, 100)
+    release(100, 100)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Delete' }) })
+    expect(latest().asks.map(a => a.shapeIds)).toEqual([['sec'], []])
+  })
+
+  it('Esc or a press elsewhere puts away an unsent question', () => {
+    const onAsk = vi.fn()
+    render(<Harness initial={emptyBoard()} onAsk={onAsk} />)
+    fireEvent.click(screen.getByTestId('tool-ask'))
+    press(300, 300)
+    act(() => { fireEvent.keyDown(screen.getByTestId('board-ask-input'), { key: 'Escape' }) })
+    expect(screen.queryByTestId('board-ask-input')).toBeNull()
+    fireEvent.click(screen.getByTestId('tool-ask'))
+    press(300, 300)
+    press(600, 600)
+    expect(screen.queryByTestId('board-ask-input')).toBeNull()
+    expect(onAsk).not.toHaveBeenCalled()
+    expect(latest().asks).toEqual([])
   })
 
   it('an overlay item pinned to a shape moves with it; one with no shape waits in the tray', () => {
@@ -936,6 +1197,49 @@ describe('the canvas', () => {
     expect(screen.getByTestId('board-overlay-tray').textContent).toContain('Board-wide')
   })
 
+  it('an overlay item above or on the corner of a section starts above its label, not on it', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 100, w: 300, h: 200, text: 'To do', color: 'smoke' }
+    const overlay: OverlayItem[] = [
+      { key: '0', anchor: 'shape:sec', place: 'top', html: '<div class="ov-pill">3 of 7</div>' },
+      { key: '1', anchor: 'shape:sec', place: 'corner', html: '<span class="ov-status">Doing</span>' },
+      { key: '2', anchor: 'shape:sec', place: 'right', html: '<div>Side note</div>' },
+    ]
+    render(<Harness initial={{ ...emptyBoard(), shapes: [section, sticky('a', 400, 100)] }} overlay={overlay} />)
+    const [top, corner, right] = screen.getAllByTestId('board-overlay-item')
+    // The view starts at (120, 100), so the section's body begins at y = 200 on screen and its label strip at 170.
+    expect(top.style.top).toBe('160px')
+    expect(corner.style.top).toBe('164px')
+    // Items beside it are placed against the body as before.
+    expect(right.style.top).toBe('200px')
+  })
+
+  it('the overlay can be hidden and shown, the choice is remembered, and an overlay never catches a drag', () => {
+    localStorage.removeItem('kirocrew.board.overlays')
+    const overlay: OverlayItem[] = [
+      { key: '0', anchor: 'shape:a', place: 'top', html: '<div class="ov-pill">2 of 3</div>' },
+      { key: '1', anchor: null, place: 'margin', html: '<div>Board-wide</div>' },
+    ]
+    const { unmount } = render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0)] }} overlay={overlay} />)
+    expect(screen.getAllByTestId('board-overlay-item')).toHaveLength(2)
+    // Pointer events pass through the overlay to the board; only its links and buttons catch them.
+    expect(screen.getAllByTestId('board-overlay-item')[0].className).toContain('pointer-events-none')
+    expect(screen.getByTestId('board-overlay-tray').className).toContain('pointer-events-none')
+    fireEvent.click(screen.getByLabelText('Hide overlays'))
+    expect(screen.queryAllByTestId('board-overlay-item')).toHaveLength(0)
+    expect(screen.queryByTestId('board-overlay-tray')).toBeNull()
+    // The toggle says how many are hidden, and the shapes under them are still there to work on.
+    expect(screen.getByTestId('board-overlay-toggle').textContent).toBe('2')
+    expect(screen.getByTestId('board-overlay-toggle').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getAllByTestId('board-shape')).toHaveLength(1)
+    // Remembered across a reload.
+    unmount()
+    render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0)] }} overlay={overlay} />)
+    expect(screen.queryAllByTestId('board-overlay-item')).toHaveLength(0)
+    fireEvent.click(screen.getByLabelText('Show overlays'))
+    expect(screen.getAllByTestId('board-overlay-item')).toHaveLength(2)
+    expect(localStorage.getItem('kirocrew.board.overlays')).toBe('on')
+  })
+
   it('a corner badge sits on the shape\'s top-right corner and follows it', () => {
     const overlay: OverlayItem[] = [{ key: '0', anchor: 'shape:a', place: 'corner', html: '<span class="ov-status ov-running">Researching</span>' }]
     render(<Harness initial={{ ...emptyBoard(), shapes: [sticky('a', 0, 0)] }} overlay={overlay} />)
@@ -949,16 +1253,109 @@ describe('the canvas', () => {
     expect(badge().style.left).toBe('362px')
   })
 
-  it('an answer is a small pin on the asked shape, and its thread opens as a floating card', () => {
-    const board: Board = { ...emptyBoard(), shapes: [sticky('a', 0, 0)], asks: [{ id: 'q', shapeIds: ['a'] }] }
-    const threads = { q: { messages: [{ who: 'conductor' as const, text: 'Here is the plan.' }], pending: false, unread: true } }
-    render(<Harness initial={board} threads={threads} />)
-    const root = screen.getByTestId('doc-answer')
-    expect(root.getAttribute('data-compact')).toBe('true')
-    const bar = screen.getByTestId('doc-answer-bar')
-    expect(bar.textContent).toContain('New reply')
-    expect(bar.getAttribute('title')).toBe('Here is the plan.')
-    act(() => { fireEvent.click(bar) })
-    expect(root.textContent).toContain('Here is the plan.')
+  it('a conversation is a pin: hover shows the latest line, click opens the card, which replies and deletes', () => {
+    const board: Board = { ...emptyBoard(), shapes: [sticky('a', 0, 0)], asks: [{ id: 'q', shapeIds: ['a'], at: { x: 200, y: 0 } }] }
+    const threads = { q: { messages: [{ who: 'you' as const, text: 'Plan it' }, { who: 'conductor' as const, text: '**Here** is the plan.' }], pending: false, unread: true,
+      workers: [{ key: 'w1', title: 'Research A', state: 'working' as const }] } }
+    const onFollowUp = vi.fn()
+    const onReadAsk = vi.fn()
+    const onOpenSession = vi.fn()
+    render(<Harness initial={board} threads={threads} onFollowUp={onFollowUp} onReadAsk={onReadAsk} onOpenSession={onOpenSession} />)
+    const thread = screen.getByTestId('conductor-thread')
+    expect(thread.dataset.state).toBe('unread')
+    expect(screen.getByTestId('thread-unread')).toBeTruthy()
+    // The pin's point is the sticky's top-right corner: view (120, 100) + (200, 0), lifted by its height so its tail marks the spot.
+    expect(screen.getByTestId('board-thread').style.left).toBe('320px')
+    expect(screen.getByTestId('board-thread').style.top).toBe('72px')
+    act(() => { fireEvent.mouseEnter(screen.getByTestId('conductor-pin')) })
+    expect(screen.getByTestId('conductor-preview').textContent).toContain('Here is the plan.')
+    expect(screen.getByTestId('conductor-preview').textContent).toContain('1 reply')
+    expect(screen.getByTestId('conductor-preview').textContent).toContain('1/1 working')
+    act(() => { fireEvent.click(screen.getByTestId('conductor-pin')) })
+    expect(onReadAsk).toHaveBeenCalledWith('q')
+    // What it is about is outlined while it is open.
+    expect(screen.getAllByTestId('ask-target')).toHaveLength(1)
+    const card = screen.getByTestId('conductor-card')
+    // Its header says what it is about.
+    expect(card.textContent).toContain('this sticky')
+    expect(screen.getAllByTestId('thread-msg').map(m => m.dataset.who)).toEqual(['you', 'conductor'])
+    expect(screen.getAllByTestId('thread-msg')[1].querySelector('strong')?.textContent).toBe('Here')
+    fireEvent.click(screen.getByTestId('thread-worker'))
+    expect(onOpenSession).toHaveBeenCalledWith('w1')
+    const reply = screen.getByTestId('thread-reply')
+    fireEvent.change(reply, { target: { value: 'more detail' } })
+    act(() => { fireEvent.keyDown(reply, { key: 'Enter' }) })
+    expect(onFollowUp).toHaveBeenCalledWith('q', 'more detail')
+    expect((reply as HTMLTextAreaElement).value).toBe('')
+    // Esc closes it; the menu deletes the conversation.
+    act(() => { fireEvent.keyDown(reply, { key: 'Escape' }) })
+    expect(screen.queryByTestId('conductor-card')).toBeNull()
+    expect(screen.queryAllByTestId('ask-target')).toHaveLength(0)
+    act(() => { fireEvent.click(screen.getByTestId('conductor-pin')) })
+    fireEvent.click(screen.getByLabelText('More'))
+    fireEvent.click(screen.getByTestId('conductor-delete'))
+    expect(latest().asks).toEqual([])
+    expect(screen.queryByTestId('conductor-thread')).toBeNull()
   })
+
+  it('the turn tells the conductor what was pointed at: shapes, a section and what it holds, or the board', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 600, h: 400, text: 'To do', color: 'smoke' }
+    const b: Board = { ...emptyBoard(), shapes: [section, sticky('a', 40, 40, 'Fix login')] }
+    const turn = (selected: string[]) => buildBoardTurn({ id: 'q', request: 'tidy this', board: b, selected, followUp: false, docId: 'b0a4d1' })
+    expect(turn(['a'])).toContain('They pointed at a and wrote the request above.')
+    expect(turn(['sec'])).toContain('They pointed at the section sec "To do" as a whole (it holds a)')
+    expect(turn([])).toContain('They pointed at the whole board (no shape or section in particular)')
+    expect(turn([])).toContain('pinned where they pointed')
+  })
+
+  it('what a conversation is about is tinted shape by shape, never boxed together with what it is not about', () => {
+    const shapes = [sticky('a', 0, 0), sticky('b', 300, 0), sticky('c', 0, 300), sticky('other', 150, 150)]
+    const board: Board = { ...emptyBoard(), shapes, asks: [{ id: 'q', shapeIds: ['a', 'b', 'c'], at: { x: 500, y: 0 } }] }
+    render(<Harness initial={board} threads={{ q: { messages: [], pending: true, unread: false } }} />)
+    expect(screen.queryAllByTestId('ask-target')).toHaveLength(0)
+    act(() => { fireEvent.click(screen.getByTestId('conductor-pin')) })
+    const marks = screen.getAllByTestId('ask-target')
+    expect(marks).toHaveLength(3)
+    // Each wash sits exactly on its shape (the view starts at (120, 100)), with no border.
+    expect(marks[0].style.left).toBe('120px')
+    expect(marks[0].style.top).toBe('100px')
+    expect(marks[0].style.border).toBe('')
+  })
+
+  it('a run of messages from one side shares one header', () => {
+    const board: Board = { ...emptyBoard(), shapes: [sticky('a', 0, 0, 'I need to create a kanban board of the open issues, by kind of task')], asks: [{ id: 'q', shapeIds: ['a'], at: { x: 200, y: 0 } }] }
+    const threads = { q: { messages: [{ who: 'you' as const, text: 'Plan it' }, { who: 'conductor' as const, text: 'One.' }, { who: 'conductor' as const, text: 'Two.' }, { who: 'you' as const, text: 'Thanks' }], pending: false, unread: false } }
+    render(<Harness initial={board} threads={threads} />)
+    act(() => { fireEvent.click(screen.getByTestId('conductor-pin')) })
+    expect(screen.getByTestId('conductor-card').textContent?.match(/Conductor/g)).toHaveLength(2) // the card title and one header
+    expect(screen.getAllByTestId('thread-msg')).toHaveLength(4)
+    // A long subject is cut at a word.
+    expect(screen.getByTestId('thread-about').textContent).toBe('About "I need to create a kanban board of the…"')
+  })
+
+  it('the preview line drops markdown marks cleanly', () => {
+    expect(firstLine('**Here** is `the` _plan_.')).toBe('Here is the plan.')
+    expect(firstLine('\n\n# Title\n- a')).toBe('Title')
+  })
+
+  it('a pin follows its shape or section, and only one conversation is open at a time', () => {
+    const section: Shape = { id: 'sec', kind: 'section', x: 0, y: 0, w: 400, h: 300, text: 'To do', color: 'smoke' }
+    const board: Board = { ...emptyBoard(), shapes: [section, sticky('a', 600, 0)],
+      asks: [{ id: 'q1', shapeIds: ['sec'], at: { x: 200, y: 150 } }, { id: 'q2', shapeIds: ['a'], at: { x: 200, y: 0 } }] }
+    const threads = { q1: { messages: [], pending: true, unread: false }, q2: { messages: [], pending: false, unread: false } }
+    render(<Harness initial={board} threads={threads} />)
+    const pin = (id: string) => document.querySelector(`[data-ask="${id}"]`) as HTMLElement
+    expect(pin('q1').style.left).toBe('320px')
+    expect(screen.getAllByTestId('conductor-thread')[0].dataset.state).toBe('pending')
+    // Dragging the section by its label carries its pin.
+    press(50, -15)
+    moveTo(150, -15)
+    release(150, -15)
+    expect(pin('q1').style.left).toBe('416px')
+    act(() => { fireEvent.click(pin('q1').querySelector('[data-testid="conductor-pin"]')!) })
+    act(() => { fireEvent.click(pin('q2').querySelector('[data-testid="conductor-pin"]')!) })
+    expect(screen.getAllByTestId('conductor-card')).toHaveLength(1)
+    expect(pin('q2').querySelector('[data-testid="conductor-card"]')).toBeTruthy()
+  })
+
 })

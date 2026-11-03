@@ -87,7 +87,8 @@ describe('scroll shell: header fade', () => {
     const pinnedCard = afterFold.indexOf('<PinnedPrompt')
     expect(pinnedCard, 'pinned card mount not found after the fold').toBeGreaterThan(0)
     expect(afterFold.slice(0, pinnedCard)).toMatch(
-      /\{titleInTopbar && \(\s*<div className="relative h-0">\s*<EdgeFade side="top" \/>\s*<\/div>\s*\)\}/,
+      // A page session (doc, board) has no transcript to fade, so the mount may carry that guard.
+      /\{titleInTopbar(?: && !pageSession)? && \(\s*<div className="relative h-0">\s*<EdgeFade side="top" \/>\s*<\/div>\s*\)\}/,
     )
   })
 })
