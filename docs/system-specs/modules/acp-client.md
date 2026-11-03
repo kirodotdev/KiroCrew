@@ -1559,7 +1559,8 @@ URL, on the `bg-card ring-1 ring-border` notice surface — an unset enum is han
 no option carries so `''` stays a real choice, a fraction in an integer field and an
 integer past the safe range are each refused before submission with their own hint rather
 than sent changed, and every field input carries a per-instance `useId` so two cards on one
-page cannot share a label target;
+page cannot share a label target; a field's description is the `aria-describedby` of its
+control, since each control's own `aria-label` replaces the label text as its name;
 once resolved it retitles ("A tool asked you") and shows the answer that was sent;
 a refused answer renders through the shared `ErrorNotice`, a required-field hint as
 status text.

@@ -413,7 +413,7 @@ export function ArtifactDetailPageHeader({
               <button
                 type="button"
                 onClick={() => removeTag(t)}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
                 aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >
                 <X size={12} />

@@ -489,7 +489,9 @@ placement:
   event as a reader leaving the bottom, so follow releases and the jump pill shows,
   carrying the count (`JumpToBottomButton.unreadCount`: "N new · Jump to latest", one
   element in both states) until the reader has reached the bottom once in the visit,
-  when it returns to the plain arrow. A start row outside the mounted window is
+  when it returns to the plain arrow. Reaching the bottom unmounts the pill, so a pill
+  that held keyboard focus hands it to the nearest composer field rather than to
+  `<body>`. A start row outside the mounted window is
   pointed at first (`mountIndex`) and landed on the commit that mounts it, within a
   bounded number of frames; a start the list holds no row for is not landed on.
   **The reader's own position outranks the landing**: a saved reading anchor for the
