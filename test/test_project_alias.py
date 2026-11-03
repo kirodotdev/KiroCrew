@@ -472,7 +472,10 @@ class TestProjectRunAlias:
     async def test_project_run_normalizes(self):
         runner = MagicMock()
         runner.status.return_value = {"running": False, "runs": []}
-        await _handle_run_command("project run status", runner, MagicMock(), "C123", "ts123")
+        reply = await _handle_run_command(
+            "project run status", runner, MagicMock(), "C123", "ts123"
+        )
+        assert reply == "No task running."
         runner.status.assert_called_once()
 
     @pytest.mark.asyncio

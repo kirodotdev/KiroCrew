@@ -237,9 +237,13 @@ class TestOtherHarnessesClear:
     async def test_goose_runs_its_own_clear(self, tmp_path) -> None:
         """goose's prompt handler runs ``/clear`` itself, so it is sent on."""
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_GOOSE)
+        slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
 
         await _run_chat(state, slot, "/clear")
 
+        # Nothing was cleared locally: the slot keeps its todo and shows no notice.
+        assert slot.todo_payload() is not None
+        assert not any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         assert dispatched.called
         state.sessions.discard_conversation.assert_not_awaited()
 
@@ -248,9 +252,13 @@ class TestKiroUnchanged:
     @pytest.mark.asyncio
     async def test_kiro_clear_still_runs_natively(self, tmp_path) -> None:
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KIRO)
+        slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
 
         await _run_chat(state, slot, "/clear")
 
+        # Nothing was cleared locally: the slot keeps its todo and shows no notice.
+        assert slot.todo_payload() is not None
+        assert not any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         dispatched.assert_called_once_with("/clear")
         state.sessions.discard_conversation.assert_not_awaited()
 
