@@ -7038,16 +7038,23 @@
       "empty_comment": "_(vuoto)_",
       "expand_comment": "Espandi commento",
       "hide_resolved": "Nascondi i risolti",
-      "messages": "messaggi",
       "no_comments_yet": "Ancora nessun commento.",
       "no_open_threads": "Nessun thread aperto.",
-      "open": "aperti ·",
       "reopen": "Riapri",
       "replying_is_github_only_for_now_open_the_merge_r": "Per ora si può rispondere solo su GitHub — apri la merge request per commentare.",
       "resolve": "Risolvi",
       "resolved": "risolti",
       "show_resolved": "Mostra i risolti",
-      "write_a_comment_to_send": "Scrivi un commento… {{keys}} per inviare"
+      "write_a_comment_to_send": "Scrivi un commento… {{keys}} per inviare",
+      "open_count_one": "{{count}} aperto",
+      "open_count_many": "{{count}} aperti",
+      "open_count_other": "{{count}} aperti",
+      "resolved_count_one": "{{count}} risolto",
+      "resolved_count_many": "{{count}} risolti",
+      "resolved_count_other": "{{count}} risolti",
+      "messages_count_one": "{{count}} messaggio",
+      "messages_count_many": "{{count}} messaggi",
+      "messages_count_other": "{{count}} messaggi"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Aggiungi un commento sull'intero artefatto…",
@@ -7273,19 +7280,20 @@
       "computing_line_by_line_diff": "Calcolo del diff riga per riga…",
       "highlighting": "Evidenziazione della sintassi…",
       "line_by_line_diff_failed": "Impossibile calcolare il diff",
-      "more": "altri",
       "no_changes": "nessuna modifica",
       "open": "Apri file",
       "open_in_side_panel": "Apri {{path}} nel pannello laterale",
       "removals_many": "{{count}} rimozioni",
       "removals_one": "{{count}} rimozione",
       "removals_other": "{{count}} rimozioni",
-      "show": "Mostra",
       "show_less": "Mostra meno",
       "switch_to_split_view": "Passa alla vista divisa",
       "switch_to_unified_view": "Passa alla vista unificata",
       "this_document_is_tracked_as_a_session_artifact_n": "Questo documento è tracciato come artefatto di sessione, non come modifica a un file sorgente",
-      "toggle_diff": "Mostra o nascondi il diff di {{path}}"
+      "toggle_diff": "Mostra o nascondi il diff di {{path}}",
+      "show_more_count_one": "Mostra {{count}} altro",
+      "show_more_count_many": "Mostra altri {{count}}",
+      "show_more_count_other": "Mostra altri {{count}}"
     },
     "openFileChips": {
       "open_file": "Apri file"
@@ -8711,7 +8719,10 @@
       "send_now": "Invia ora",
       "sub_agent_result_many": "{{count}} risultati di subagenti",
       "sub_agent_result_one": "{{count}} risultato di subagente",
-      "sub_agent_result_other": "{{count}} risultati di subagenti"
+      "sub_agent_result_other": "{{count}} risultati di subagenti",
+      "queued_count_one": "{{count}} in coda",
+      "queued_count_many": "{{count}} in coda",
+      "queued_count_other": "{{count}} in coda"
     },
     "readingWidthToggle": {
       "title_full": "Larghezza intera",
@@ -12175,7 +12186,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Approvazione necessaria",
-        "approvals_pending": "approvazioni in attesa",
         "batch_preview_all": "Esamina di seguito tutte le {{count}} chiamate in attesa: verranno risolte tutte insieme.",
         "batch_preview_none": "Nessuna anteprima disponibile per questa chiamata.",
         "approve": "Approva",
@@ -12194,7 +12204,10 @@
         "tool_call_other": "{{count}} chiamate a strumenti",
         "trust": "Considera attendibile",
         "trusted": "Attendibile",
-        "view_full_activity": "Visualizza tutta l'attività →"
+        "view_full_activity": "Visualizza tutta l'attività →",
+        "approvals_pending_count_one": "{{count}} approvazione in attesa",
+        "approvals_pending_count_many": "{{count}} approvazioni in attesa",
+        "approvals_pending_count_other": "{{count}} approvazioni in attesa"
       },
       "cronAckBar": {
         "acknowledge": "Conferma",
@@ -12522,7 +12535,6 @@
         "backend_hiccup_retrying": "connessione instabile — nuovo tentativo…",
         "collapse_agent_list": "Comprimi l’elenco dei subagenti",
         "expand_agent_list": "Espandi l’elenco dei subagenti",
-        "more_running_normally": "altri in esecuzione normale…",
         "show_more_running_in_sidebar_one": "Mostra {{count}} altro subagente in esecuzione nella barra laterale",
         "show_more_running_in_sidebar_many": "Mostra altri {{count}} subagenti in esecuzione nella barra laterale",
         "show_more_running_in_sidebar_other": "Mostra altri {{count}} subagenti in esecuzione nella barra laterale",
@@ -12571,7 +12583,10 @@
         "chip_stopped_other": "{{count}} agenti interrotti",
         "chip_stalled_one": "{{count}} agente forse bloccato",
         "chip_stalled_many": "{{count}} agenti forse bloccati",
-        "chip_stalled_other": "{{count}} agenti forse bloccati"
+        "chip_stalled_other": "{{count}} agenti forse bloccati",
+        "more_running_normally_count_one": "{{count}} altro in esecuzione normale…",
+        "more_running_normally_count_many": "altri {{count}} in esecuzione normale…",
+        "more_running_normally_count_other": "altri {{count}} in esecuzione normale…"
       },
       "subagentQueued": {
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",

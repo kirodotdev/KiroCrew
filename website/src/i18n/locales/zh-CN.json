@@ -6716,16 +6716,17 @@
       "empty_comment": "_（空）_",
       "expand_comment": "展开评论",
       "hide_resolved": "隐藏已解决",
-      "messages": "条消息",
       "no_comments_yet": "还没有评论。",
       "no_open_threads": "没有未解决的讨论。",
-      "open": "未解决 ·",
       "reopen": "重新打开",
       "replying_is_github_only_for_now_open_the_merge_r": "目前只有 GitHub 支持回复——打开 merge request 去评论。",
       "resolve": "标记为已解决",
       "resolved": "已解决",
       "show_resolved": "显示已解决",
-      "write_a_comment_to_send": "写一条评论……{{keys}} 发送"
+      "write_a_comment_to_send": "写一条评论……{{keys}} 发送",
+      "open_count_other": "{{count}} 个未解决",
+      "resolved_count_other": "{{count}} 个已解决",
+      "messages_count_other": "{{count}} 条消息"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "对整个产物添加评论…",
@@ -6941,17 +6942,16 @@
       "computing_line_by_line_diff": "正在计算逐行差异…",
       "highlighting": "正在高亮代码…",
       "line_by_line_diff_failed": "无法计算差异",
-      "more": "更多",
       "no_changes": "无更改",
       "open": "打开文件",
       "open_in_side_panel": "在侧边面板中打开 {{path}}",
       "removals_other": "{{count}} 处删除",
-      "show": "展开",
       "show_less": "收起",
       "switch_to_split_view": "切换到分屏视图",
       "switch_to_unified_view": "切换到统一视图",
       "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话产物，而非源文件更改",
-      "toggle_diff": "显示或隐藏 {{path}} 的差异"
+      "toggle_diff": "显示或隐藏 {{path}} 的差异",
+      "show_more_count_other": "展开另外 {{count}} 项"
     },
     "openFileChips": {
       "open_file": "打开文件"
@@ -8347,7 +8347,8 @@
       "save": "保存",
       "save_edit": "保存修改",
       "send_now": "立即发送",
-      "sub_agent_result_other": "{{count}} 个子代理结果"
+      "sub_agent_result_other": "{{count}} 个子代理结果",
+      "queued_count_other": "{{count}} 条已排队"
     },
     "readingWidthToggle": {
       "title_full": "全宽",
@@ -11725,7 +11726,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "需要审批",
-        "approvals_pending": "项待审批",
         "batch_preview_all": "请在下方查看全部 {{count}} 个待处理调用；将一并处理。",
         "batch_preview_none": "此调用没有可用的预览。",
         "approve": "批准",
@@ -11742,7 +11742,8 @@
         "tool_call_other": "{{count}} 次工具调用",
         "trust": "信任",
         "trusted": "已信任",
-        "view_full_activity": "查看完整动态 →"
+        "view_full_activity": "查看完整动态 →",
+        "approvals_pending_count_other": "{{count}} 项待审批"
       },
       "cronAckBar": {
         "acknowledge": "确认",
@@ -12060,7 +12061,6 @@
         "backend_hiccup_retrying": "连接不稳定 — 正在重试…",
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
-        "more_running_normally": "个仍在正常运行…",
         "show_more_running_in_sidebar_other": "在侧边栏中显示另外 {{count}} 个正在运行的子代理",
         "no_activity_possibly_stalled": "无活动 — 可能已停滞",
         "open_in_subagents_sidebar": "在子代理侧边栏中打开 {{label}}",
@@ -12089,7 +12089,8 @@
         "chip_done_other": "{{count}} 个代理已完成",
         "chip_failed_other": "{{count}} 个代理失败",
         "chip_stopped_other": "{{count}} 个代理已停止",
-        "chip_stalled_other": "{{count}} 个代理可能已停滞"
+        "chip_stalled_other": "{{count}} 个代理可能已停滞",
+        "more_running_normally_count_other": "另有 {{count}} 个正常运行中…"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",

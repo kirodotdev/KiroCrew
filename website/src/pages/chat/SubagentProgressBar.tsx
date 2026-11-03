@@ -566,7 +566,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               aria-label={i18nT('pages.chat.subagentProgressBar.show_more_running_in_sidebar', { count: hiddenCount })}
             >
               <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">└─</span>
-              <span>+ {hiddenCount} {i18nT('pages.chat.subagentProgressBar.more_running_normally')}</span>
+              <span>+ {i18nT('pages.chat.subagentProgressBar.more_running_normally_count', { count: hiddenCount })}</span>
             </button>
           )}
         </div>

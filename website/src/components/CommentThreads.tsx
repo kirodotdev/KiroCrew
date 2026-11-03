@@ -308,7 +308,7 @@ export default function CommentThreads(
         <div className="flex items-center gap-2 text-[12px] text-muted">
           <MessagesSquare size={12} aria-hidden="true" />
           <span>
-            {threads.length - resolvedCount} {i18nT('components.commentThreads.open')} {resolvedCount} {i18nT('components.commentThreads.resolved')}
+            {i18nT('components.commentThreads.open_count', { count: threads.length - resolvedCount })} · {i18nT('components.commentThreads.resolved_count', { count: resolvedCount })}
           </span>
           <button
             type="button"
@@ -349,7 +349,7 @@ export default function CommentThreads(
               )}
               {t.replies.length > 0 && (
                 <span className="text-[10.5px] px-1.5 py-0.5 rounded-full bg-card border border-border tabular-nums">
-                  {t.replies.length + 1} {i18nT('components.commentThreads.messages')}
+                  {i18nT('components.commentThreads.messages_count', { count: t.replies.length + 1 })}
                 </span>
               )}
               {t.resolved && (

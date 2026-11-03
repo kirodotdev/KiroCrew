@@ -6716,16 +6716,17 @@
       "empty_comment": "_(비어 있음)_",
       "expand_comment": "댓글 펼치기",
       "hide_resolved": "해결됨 숨기기",
-      "messages": "개 메시지",
       "no_comments_yet": "아직 댓글이 없습니다.",
       "no_open_threads": "열린 스레드가 없습니다.",
-      "open": "건 열림 ·",
       "reopen": "다시 열기",
       "replying_is_github_only_for_now_open_the_merge_r": "답글은 현재 GitHub에서만 지원됩니다 — 풀 리퀘스트를 열어 댓글을 다세요.",
       "resolve": "해결",
       "resolved": "건 해결됨",
       "show_resolved": "해결됨 표시",
-      "write_a_comment_to_send": "댓글을 입력하세요… {{keys}}(으)로 전송"
+      "write_a_comment_to_send": "댓글을 입력하세요… {{keys}}(으)로 전송",
+      "open_count_other": "{{count}}건 열림",
+      "resolved_count_other": "{{count}}건 해결됨",
+      "messages_count_other": "메시지 {{count}}개"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "아티팩트 전체에 댓글 추가…",
@@ -6941,17 +6942,16 @@
       "computing_line_by_line_diff": "줄 단위 diff 계산 중…",
       "highlighting": "구문 강조 표시 중…",
       "line_by_line_diff_failed": "diff를 계산할 수 없습니다",
-      "more": "더 보기",
       "no_changes": "변경 없음",
       "open": "파일 열기",
       "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
       "removals_other": "삭제 {{count}}건",
-      "show": "표시",
       "show_less": "간략히 보기",
       "switch_to_split_view": "분할 보기로 전환",
       "switch_to_unified_view": "통합 보기로 전환",
       "this_document_is_tracked_as_a_session_artifact_n": "이 문서는 소스 파일 변경이 아니라 세션 아티팩트로 추적됩니다",
-      "toggle_diff": "{{path}}의 차이 표시 또는 숨기기"
+      "toggle_diff": "{{path}}의 차이 표시 또는 숨기기",
+      "show_more_count_other": "{{count}}개 더 보기"
     },
     "openFileChips": {
       "open_file": "파일 열기"
@@ -8347,7 +8347,8 @@
       "save": "저장",
       "save_edit": "편집 내용 저장",
       "send_now": "지금 보내기",
-      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개"
+      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개",
+      "queued_count_other": "{{count}}개 대기 중"
     },
     "readingWidthToggle": {
       "title_full": "전체 너비",
@@ -11725,7 +11726,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "승인 필요",
-        "approvals_pending": "승인 대기 중",
         "batch_preview_all": "아래에서 대기 중인 {{count}}건의 호출을 모두 검토하세요. 모두 함께 처리됩니다.",
         "batch_preview_none": "이 호출에 대한 미리 보기를 사용할 수 없습니다.",
         "approve": "승인",
@@ -11742,7 +11742,8 @@
         "tool_call_other": "도구 호출 {{count}}건",
         "trust": "신뢰",
         "trusted": "신뢰됨",
-        "view_full_activity": "전체 활동 보기 →"
+        "view_full_activity": "전체 활동 보기 →",
+        "approvals_pending_count_other": "승인 대기 중 {{count}}건"
       },
       "cronAckBar": {
         "acknowledge": "확인",
@@ -12060,7 +12061,6 @@
         "backend_hiccup_retrying": "연결 불안정 — 재시도 중…",
         "collapse_agent_list": "서브에이전트 목록 접기",
         "expand_agent_list": "서브에이전트 목록 펼치기",
-        "more_running_normally": "나머지는 정상 실행 중…",
         "show_more_running_in_sidebar_other": "사이드바에서 실행 중인 서브에이전트 {{count}}개 더 보기",
         "no_activity_possibly_stalled": "활동 없음 — 멈췄을 수 있습니다",
         "open_in_subagents_sidebar": "{{label}}을(를) 서브에이전트 사이드바에서 열기",
@@ -12089,7 +12089,8 @@
         "chip_done_other": "에이전트 {{count}}개 완료",
         "chip_failed_other": "에이전트 {{count}}개 실패",
         "chip_stopped_other": "에이전트 {{count}}개 중지됨",
-        "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성"
+        "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성",
+        "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",

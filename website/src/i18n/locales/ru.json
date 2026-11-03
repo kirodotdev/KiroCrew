@@ -7199,16 +7199,26 @@
       "empty_comment": "_(пусто)_",
       "expand_comment": "Развернуть комментарий",
       "hide_resolved": "Скрыть решённые",
-      "messages": "сообщений",
       "no_comments_yet": "Комментариев пока нет.",
       "no_open_threads": "Открытых обсуждений нет.",
-      "open": "открытых ·",
       "reopen": "Открыть снова",
       "replying_is_github_only_for_now_open_the_merge_r": "Пока отвечать можно только в GitHub — открой merge request, чтобы прокомментировать.",
       "resolve": "Решить",
       "resolved": "решённых",
       "show_resolved": "Показать решённые",
-      "write_a_comment_to_send": "Напиши комментарий… {{keys}} чтобы отправить"
+      "write_a_comment_to_send": "Напиши комментарий… {{keys}} чтобы отправить",
+      "open_count_one": "открыто: {{count}}",
+      "open_count_few": "открыто: {{count}}",
+      "open_count_many": "открыто: {{count}}",
+      "open_count_other": "открыто: {{count}}",
+      "resolved_count_one": "решено: {{count}}",
+      "resolved_count_few": "решено: {{count}}",
+      "resolved_count_many": "решено: {{count}}",
+      "resolved_count_other": "решено: {{count}}",
+      "messages_count_one": "{{count}} сообщение",
+      "messages_count_few": "{{count}} сообщения",
+      "messages_count_many": "{{count}} сообщений",
+      "messages_count_other": "{{count}} сообщения"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Добавить комментарий ко всему артефакту…",
@@ -7439,7 +7449,6 @@
       "computing_line_by_line_diff": "Вычисление построчных различий…",
       "highlighting": "Подсветка синтаксиса…",
       "line_by_line_diff_failed": "Не удалось вычислить различия",
-      "more": "ещё",
       "no_changes": "нет изменений",
       "open": "Открыть файл",
       "open_in_side_panel": "Открыть {{path}} в боковой панели",
@@ -7447,12 +7456,15 @@
       "removals_many": "{{count}} удалений",
       "removals_one": "{{count}} удаление",
       "removals_other": "{{count}} удаления",
-      "show": "Показать",
       "show_less": "Показать меньше",
       "switch_to_split_view": "Переключить на разделённый вид",
       "switch_to_unified_view": "Переключить на объединённый вид",
       "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла",
-      "toggle_diff": "Показать или скрыть diff для {{path}}"
+      "toggle_diff": "Показать или скрыть diff для {{path}}",
+      "show_more_count_one": "Показать ещё {{count}}",
+      "show_more_count_few": "Показать ещё {{count}}",
+      "show_more_count_many": "Показать ещё {{count}}",
+      "show_more_count_other": "Показать ещё {{count}}"
     },
     "openFileChips": {
       "open_file": "Открыть файл"
@@ -8893,7 +8905,11 @@
       "sub_agent_result_few": "{{count}} результата субагентов",
       "sub_agent_result_many": "{{count}} результатов субагентов",
       "sub_agent_result_one": "{{count}} результат субагента",
-      "sub_agent_result_other": "{{count}} результата субагентов"
+      "sub_agent_result_other": "{{count}} результата субагентов",
+      "queued_count_one": "в очереди: {{count}}",
+      "queued_count_few": "в очереди: {{count}}",
+      "queued_count_many": "в очереди: {{count}}",
+      "queued_count_other": "в очереди: {{count}}"
     },
     "readingWidthToggle": {
       "title_full": "Полная ширина",
@@ -12400,7 +12416,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Требуется подтверждение",
-        "approvals_pending": "ожидают подтверждения",
         "batch_preview_all": "Просмотрите ниже все {{count}} ожидающих вызовов — все будут обработаны вместе.",
         "batch_preview_none": "Предпросмотр для этого вызова недоступен.",
         "approve": "Разрешить",
@@ -12420,7 +12435,11 @@
         "tool_call_other": "{{count}} вызова инструмента",
         "trust": "Доверять",
         "trusted": "Доверено",
-        "view_full_activity": "Показать всю активность →"
+        "view_full_activity": "Показать всю активность →",
+        "approvals_pending_count_one": "{{count}} подтверждение ожидает",
+        "approvals_pending_count_few": "{{count}} подтверждения ожидают",
+        "approvals_pending_count_many": "{{count}} подтверждений ожидают",
+        "approvals_pending_count_other": "{{count}} подтверждения ожидают"
       },
       "cronAckBar": {
         "acknowledge": "Подтвердить",
@@ -12753,7 +12772,6 @@
         "backend_hiccup_retrying": "соединение нестабильно — повтор…",
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
-        "more_running_normally": "ещё выполняются нормально…",
         "show_more_running_in_sidebar_one": "Показать ещё {{count}} выполняющийся субагент на боковой панели",
         "show_more_running_in_sidebar_few": "Показать ещё {{count}} выполняющихся субагента на боковой панели",
         "show_more_running_in_sidebar_many": "Показать ещё {{count}} выполняющихся субагентов на боковой панели",
@@ -12812,7 +12830,11 @@
         "chip_stalled_one": "{{count}} агент, возможно, завис",
         "chip_stalled_few": "{{count}} агента, возможно, зависли",
         "chip_stalled_many": "{{count}} агентов, возможно, зависли",
-        "chip_stalled_other": "{{count}} агента, возможно, зависли"
+        "chip_stalled_other": "{{count}} агента, возможно, зависли",
+        "more_running_normally_count_one": "ещё {{count}} выполняется нормально…",
+        "more_running_normally_count_few": "ещё {{count}} выполняются нормально…",
+        "more_running_normally_count_many": "ещё {{count}} выполняются нормально…",
+        "more_running_normally_count_other": "ещё {{count}} выполняются нормально…"
       },
       "subagentQueued": {
         "low_memory": "ожидание запуска — требуется {{required}} свободной памяти, сейчас свободно {{available}}; освободи память, чтобы продолжить",

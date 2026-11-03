@@ -6877,16 +6877,20 @@
       "empty_comment": "_(खाली)_",
       "expand_comment": "टिप्पणी विस्तृत करें",
       "hide_resolved": "सुलझे हुए छिपाओ",
-      "messages": "संदेश",
       "no_comments_yet": "अभी कोई टिप्पणी नहीं है।",
       "no_open_threads": "कोई खुला सूत्र नहीं है।",
-      "open": "खुले ·",
       "reopen": "फिर खोलो",
       "replying_is_github_only_for_now_open_the_merge_r": "अभी जवाब सिर्फ़ GitHub पर दिया जा सकता है — टिप्पणी करने के लिए merge request खोलो।",
       "resolve": "सुलझाओ",
       "resolved": "सुलझे हुए",
       "show_resolved": "सुलझे हुए दिखाओ",
-      "write_a_comment_to_send": "टिप्पणी लिखो… भेजने के लिए {{keys}}"
+      "write_a_comment_to_send": "टिप्पणी लिखो… भेजने के लिए {{keys}}",
+      "open_count_one": "{{count}} खुला",
+      "open_count_other": "{{count}} खुले",
+      "resolved_count_one": "{{count}} सुलझा हुआ",
+      "resolved_count_other": "{{count}} सुलझे हुए",
+      "messages_count_one": "{{count}} संदेश",
+      "messages_count_other": "{{count}} संदेश"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "पूरे आर्टिफ़ैक्ट पर टिप्पणी जोड़ें…",
@@ -7107,18 +7111,18 @@
       "computing_line_by_line_diff": "पंक्ति-दर-पंक्ति डिफ़ की गणना हो रही है…",
       "highlighting": "कोड हाइलाइट हो रहा है…",
       "line_by_line_diff_failed": "डिफ़ की गणना नहीं हो सकी",
-      "more": "और",
       "no_changes": "कोई बदलाव नहीं",
       "open": "फ़ाइल खोलें",
       "open_in_side_panel": "{{path}} को साइड पैनल में खोलो",
       "removals_one": "{{count}} हटाई गई पंक्ति",
       "removals_other": "{{count}} हटाई गई पंक्तियाँ",
-      "show": "दिखाएँ",
       "show_less": "कम दिखाएँ",
       "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
       "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
       "this_document_is_tracked_as_a_session_artifact_n": "यह दस्तावेज़ सत्र आर्टिफ़ैक्ट के रूप में ट्रैक किया जाता है, सोर्स-फ़ाइल बदलाव के रूप में नहीं",
-      "toggle_diff": "{{path}} का डिफ़ दिखाएँ या छिपाएँ"
+      "toggle_diff": "{{path}} का डिफ़ दिखाएँ या छिपाएँ",
+      "show_more_count_one": "{{count}} और दिखाओ",
+      "show_more_count_other": "{{count}} और दिखाओ"
     },
     "openFileChips": {
       "open_file": "फ़ाइल खोलो"
@@ -8529,7 +8533,9 @@
       "save_edit": "संपादन सहेजें",
       "send_now": "अभी भेजें",
       "sub_agent_result_one": "{{count}} सब-एजेंट परिणाम",
-      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम"
+      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम",
+      "queued_count_one": "{{count}} कतार में",
+      "queued_count_other": "{{count}} कतार में"
     },
     "readingWidthToggle": {
       "title_full": "पूरी चौड़ाई",
@@ -11950,7 +11956,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "स्वीकृति आवश्यक",
-        "approvals_pending": "स्वीकृतियाँ लंबित",
         "batch_preview_all": "नीचे सभी {{count}} लंबित कॉल की समीक्षा करें — सभी एक साथ हल की जाएंगी।",
         "batch_preview_none": "इस कॉल के लिए कोई पूर्वावलोकन उपलब्ध नहीं है।",
         "approve": "स्वीकृत करें",
@@ -11968,7 +11973,9 @@
         "tool_call_other": "{{count}} टूल कॉल",
         "trust": "विश्वास करें",
         "trusted": "विश्वसनीय",
-        "view_full_activity": "पूरी गतिविधि देखें →"
+        "view_full_activity": "पूरी गतिविधि देखें →",
+        "approvals_pending_count_one": "{{count}} स्वीकृति लंबित",
+        "approvals_pending_count_other": "{{count}} स्वीकृतियाँ लंबित"
       },
       "cronAckBar": {
         "acknowledge": "स्वीकारें",
@@ -12291,7 +12298,6 @@
         "backend_hiccup_retrying": "कनेक्शन अस्थिर — पुनः प्रयास…",
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
-        "more_running_normally": "और सामान्य रूप से चल रहे…",
         "show_more_running_in_sidebar_one": "साइडबार में {{count}} और चल रहा सबएजेंट दिखाओ",
         "show_more_running_in_sidebar_other": "साइडबार में {{count}} और चल रहे सबएजेंट दिखाओ",
         "no_activity_possibly_stalled": "कोई गतिविधि नहीं — संभवतः अटका हुआ",
@@ -12330,7 +12336,9 @@
         "chip_stopped_one": "{{count}} एजेंट रोका गया",
         "chip_stopped_other": "{{count}} एजेंट रोके गए",
         "chip_stalled_one": "{{count}} एजेंट शायद अटका",
-        "chip_stalled_other": "{{count}} एजेंट शायद अटके"
+        "chip_stalled_other": "{{count}} एजेंट शायद अटके",
+        "more_running_normally_count_one": "{{count}} और सामान्य रूप से चल रहा…",
+        "more_running_normally_count_other": "{{count}} और सामान्य रूप से चल रहे…"
       },
       "subagentQueued": {
         "low_memory": "शुरू होने की प्रतीक्षा — {{required}} खाली मेमोरी चाहिए, अभी {{available}} खाली है; जारी रखने के लिए मेमोरी खाली करो",
