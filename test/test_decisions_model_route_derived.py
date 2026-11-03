@@ -744,11 +744,10 @@ class TestTheUsageRowOfARoutedStart:
         import json
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from kiro_crew.dashboard.handlers import usage
-
         from test_subagent import _mock_ctx_builder_auto_spawn, _mock_sessions
 
         from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.dashboard.handlers import usage
         from kiro_crew.execution_context import execution_for_store
         from kiro_crew.providers.base import EVENT_COMPLETE
         from kiro_crew.subagent import SubagentInfo, SubagentManager
