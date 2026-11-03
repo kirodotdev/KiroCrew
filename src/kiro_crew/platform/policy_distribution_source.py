@@ -406,6 +406,18 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
                 "must be a file whose size can be bounded before it is read"
             )
         if stat_writable_by_current_user(st) or path_writable_by_current_user(path):
+            # Off POSIX the predicates answer "writable" because a Windows ACL is
+            # not read yet, so every source lands here. Say that, not "writable".
+            # Read at call time so a test that patches the flag reaches this branch.
+            from kiro_crew import platform_compat
+
+            if not platform_compat.IS_POSIX:
+                raise PlatformCompositionError(
+                    f"policy source {request.url!r} is refused on Windows, because "
+                    "Kiro Crew cannot yet read a Windows ACL to confirm that the "
+                    "account it runs as has no write access. Use an https source, or "
+                    "KIROCREW_SECURITY_POLICY for a local, editable policy."
+                )
             raise PlatformCompositionError(
                 f"policy source {request.url!r} is writable by the account Kiro Crew runs "
                 "as. A file:// distribution source must be read-only to it, or an agent "

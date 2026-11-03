@@ -1421,6 +1421,41 @@ class TestPolicyCli:
         captured = capsys.readouterr()
         assert "not configured" in captured.out and captured.err == ""
 
+    @pytest.mark.parametrize(
+        ("is_posix", "expected"),
+        [(True, "file, "), (False, "file (not on Windows), ")],
+    )
+    def test_source_not_configured_marks_file_off_posix(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        is_posix: bool,
+        expected: str,
+    ) -> None:
+        """file:// is refused on Windows, so it is not listed as plainly available."""
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", is_posix)
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.distribution_posture",
+                return_value={"configured": False},
+            ),
+            patch(
+                "kiro_crew.platform.policy_distribution.registered_policy_schemes",
+                return_value=("file", "http", "https"),
+            ),
+        ):
+            cc._policy(_ns(policy_action="source"))
+        line = next(
+            ln for ln in capsys.readouterr().out.splitlines() if "Transports available" in ln
+        )
+        assert line.endswith(expected + "http, https")
+
     def test_profile_prints_bind_and_scopes(self, capsys: pytest.CaptureFixture[str]) -> None:
         prof = SimpleNamespace(
             name="team",
