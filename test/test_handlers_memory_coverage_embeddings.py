@@ -113,6 +113,47 @@ class TestEmbeddingModelEndpoint:
         apply_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "validates_only"),
+        [
+            ("false", False),
+            ("0", False),
+            ("Off", False),
+            ("no", False),
+            ("true", True),
+            (1, True),
+            (None, False),
+            ("yes please", True),
+        ],
+    )
+    async def test_a_spelled_validate_only_reads_as_it_spells(
+        self, tmp_path: Path, sent: object, validates_only: bool
+    ) -> None:
+        """``bool("false")`` is True; a spelled false must go on to apply."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import memory_embeddings
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"abcd")
+        state = _make_state()
+        req = _make_request(
+            state, method="POST", json_body={"path": str(model), "validate_only": sent}
+        )
+        # Past the validate-only exit the next step is the startup check; a
+        # marker refusal there shows the request went on toward applying.
+        marker = web.json_response({"marker": True}, status=409)
+        with (
+            patch(f"{_MOD}.validate_custom_model_path", return_value=(model, "", "")),
+            patch.object(memory_embeddings, "memory_startup_refusal", return_value=marker),
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        if validates_only:
+            assert _body(resp) == {"ok": True, "size_bytes": 4}
+        else:
+            assert resp is marker
+
+    @pytest.mark.asyncio
     async def test_path_checks_run_off_the_event_loop(self, tmp_path: Path) -> None:
         # The path is the caller's choice, so on a dead mount its stats would
         # park the gateway's one loop. Both must run on a probe-pool worker.

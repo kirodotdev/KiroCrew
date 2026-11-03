@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         SlotContinueRefusal,
         _app_cancel_denied,
         _ChatSlot,
+        _coerce_bool,
         _slot_replaced_while_queued,
         _subagents_attached_response,
         _switch_target_busy,
@@ -364,7 +365,10 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     if "replay" in body:
-        replay = bool(body.get("replay"))
+        # A spelled "false"/"0"/"no"/"off" means False; any other value keeps
+        # the truthiness it has always been read with.
+        raw_replay = body.get("replay")
+        replay = _coerce_bool(raw_replay, bool(raw_replay))
 
     # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
     # flag tracks this slot's own task, while an inbound channel message runs a
