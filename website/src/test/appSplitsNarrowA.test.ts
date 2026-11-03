@@ -1,25 +1,21 @@
 /**
- * Two builtin apps whose desktop left/right splits had no narrow-viewport branch
- * at all. Measured at a 390px viewport before this change:
+ * A builtin app whose desktop left/right split had no narrow-viewport branch at
+ * all. Measured at a 390px viewport before this change:
  *
  *   meetings MeetingView   340px task sidebar  -> content   49px (or the row
  *                                                 overflowed: the content column
  *                                                 lacked `min-w-0`, so it refused
  *                                                 to shrink and pushed the meeting
  *                                                 off-screen instead)
- *   pptx-maker decks       240px deck list     -> viewer    86px, 44px once the
- *                                                 surrounding Card padding counts
- *   pptx-maker library     224px template list -> detail    too little to read
  *
- * Nothing overflowed in the pptx-maker cases, which is why an overflow-based check
- * reports them as fine: the list simply took its fixed width and the content took
- * what was left. This is a body-text rule in every language -- the measure is how
- * much width the prose column gets, and script only changes the symptom.
+ * This is a body-text rule in every language -- the measure is how much width the
+ * prose column gets, and script only changes the symptom. The pptx-maker splits of
+ * the same series are pinned beside that app, in
+ * `apps/pptx-maker/pptxMakerSplitsNarrow.test.ts`.
  *
  * meetings follows ITS OWN existing shape (`flex-col lg:flex-row`, already used by
  * MeetingWorkspace and TaskReviewView) rather than a new one; only MeetingView's
- * outer split lacked it. pptx-maker has no precedent of its own, so it takes the
- * same stacked form as the rest of this series.
+ * outer split lacked it.
  *
  * Asserted over source: jsdom performs no layout, so a render cannot measure the
  * widths this is about.
@@ -60,42 +56,5 @@ describe('meetings MeetingView at narrow widths', () => {
     // draws a line down the side of the sidebar, not between the two.
     expect(s).toMatch(/border-t border-border[^"]*lg:border-t-0 lg:border-l/)
     expect(s, 'no ungated 340px width').not.toMatch(/className="flex-none w-\[340px\]/)
-  })
-})
-
-describe('pptx-maker splits at narrow widths', () => {
-  const cases: [string, string, string][] = [
-    ['decks', 'pptx-maker/PptxMakerPage.tsx', 'sm:w-60'],
-    ['library', 'pptx-maker/LibraryPanel.tsx', 'sm:w-56'],
-  ]
-
-  it('stacks both splits and releases both list widths', async () => {
-    for (const [name, path, gated] of cases) {
-      const s = await read(path)
-      expect(s, `${name}: expected the split to stack while narrow`)
-        .toMatch(/className="flex flex-col sm:flex-row gap-4 flex-1 min-h-0"/)
-      expect(s, `${name}: the list must take the full width while narrow`)
-        .toMatch(new RegExp(`w-full ${gated.replace(':', ':')}`))
-      // Bounded when stacked: the list is `shrink-0`, so its natural height would
-      // otherwise push the content pane out of the column.
-      // A viewport unit, not a percentage: these splits sit inside a Card inside a
-      // page scroller, and no ancestor has a definite height, so a percentage
-      // max-height never resolves -- measured on the Releases panel, where a 10%
-      // cap left a 289px list untouched while 10vh brought it to 84px.
-      expect(s, `${name}: the list needs a height bound when stacked`)
-        .toContain('max-h-[40vh] sm:max-h-none')
-      expect(s, `${name}: the bound must use a definite unit`).not.toContain('max-h-[38%]')
-      // Divider on the axis the columns now sit on.
-      expect(s, `${name}: the divider must turn with the layout`)
-        .toMatch(/border-b sm:border-b-0 sm:border-r border-border/)
-    }
-  })
-
-  it('leaves no ungated fixed list width behind', async () => {
-    for (const [name, path, gated] of cases) {
-      const s = await read(path)
-      const bare = gated.replace('sm:', '')
-      expect(s, `${name}: no ungated ${bare}`).not.toMatch(new RegExp(`className="${bare}\\b`))
-    }
   })
 })
