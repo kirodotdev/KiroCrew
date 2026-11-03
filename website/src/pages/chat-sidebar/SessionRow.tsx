@@ -1783,7 +1783,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   ))}
                 </span>
               )}
-              {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
+              {isOut && <span className="text-accent" role="img" aria-label={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')} title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
               {/* One brand mark per channel this session is CONNECTED to, read
                *  from `s.links` and nothing else. A second glyph used to be drawn
                *  here from the slot KEY for the channel the session was born in.
@@ -1817,8 +1817,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
               {s.executor === 'remote' && !inCrewGroup && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
-              {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
-              {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
+              {s.memory_mode === 'incognito' && <span className="text-muted" role="img" aria-label={i18nT('pages.chatSidebar.incognito_no_memory_writes')} title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
+              {s.memory_mode === 'temporary' && <span className="text-aim" role="img" aria-label={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')} title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the timestamp
                *  mid-row.
@@ -1845,7 +1845,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                    *  from a quiet one. Beside the pin, the other state marker. */}
                   {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
                   {s.process === 'released' && <span className="shrink-0" data-testid="session-row-released" role="img" aria-label={i18nT('pages.chatSidebar.process_released')} title={i18nT('pages.chatSidebar.process_released')}><Moon size={10} className="text-muted" /></span>}
-                  {isPinned && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
+                  {isPinned && <span className="shrink-0" role="img" aria-label={i18nT('pages.chatSidebar.pinned')} title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}
             </div>
