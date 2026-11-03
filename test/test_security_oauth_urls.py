@@ -121,21 +121,40 @@ class TestOAuthAuthorizationUrlRedaction:
         assert security._text_contains_bare_secret(client_id)
         assert oauth_url_contains_credential(url) is True
 
-    @pytest.mark.parametrize(
-        ("client_id", "expected_length"),
-        [
-            ("aB3" * 13, 39),
-            ("aB3" * 13 + "aB", 41),
-        ],
-        ids=["39-characters", "41-characters"],
-    )
-    def test_off_secret_length_client_id_keeps_identifier_exemption(
-        self, client_id: str, expected_length: int
+    @pytest.mark.parametrize("symbol", [".", "_", "-", "~"])
+    @pytest.mark.parametrize("placement", ["prepended", "appended"])
+    def test_padded_40_character_client_id_keeps_bare_secret_scan(
+        self, symbol: str, placement: str
     ) -> None:
+        secret = self.BARE_AWS_SECRET_ALNUM
+        client_id = symbol + secret if placement == "prepended" else secret + symbol
         url = self.NOTION_URL.replace("client123", client_id, 1)
 
-        assert len(client_id) == expected_length
-        assert client_id.isalnum()
+        assert len(client_id) == 41
+        assert security._text_contains_bare_secret(client_id)
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "body_length",
+        [69, 101],
+        ids=["below-minimum", "above-maximum"],
+    )
+    def test_secret_wrapped_in_nonmatching_salesforce_length_keeps_scan(
+        self, body_length: int
+    ) -> None:
+        secret = self.BARE_AWS_SECRET_ALNUM
+        client_id = "3MVG9" + secret + "A" * (body_length - len(secret))
+        url = self.NOTION_URL.replace("client123", client_id, 1)
+
+        assert len(client_id.removeprefix("3MVG9")) == body_length
+        assert security._text_contains_bare_secret(client_id)
+        assert oauth_url_contains_credential(url) is True
+
+    def test_benign_nonmatching_client_id_passes_without_exemption(self) -> None:
+        client_id = "ordinary-client-id"
+        url = self.NOTION_URL.replace("client123", client_id, 1)
+
+        assert security._oauth_entropy_value_is_protocol_shaped("client_id", client_id) is False
         assert security._text_contains_bare_secret(client_id) is False
         assert oauth_url_contains_credential(url) is False
 
@@ -167,15 +186,10 @@ class TestOAuthAuthorizationUrlRedaction:
             ("percent-encoded-slash", lambda value: value[:40] + "%2F" + value[40:42]),
         ],
     )
-    def test_identifier_exemption_rejects_non_unreserved_characters(
+    def test_client_id_exemption_rejects_nonmatching_characters(
         self, label: str, mutate: Callable[[str], str]
     ) -> None:
-        """Identifier parameters must consist of unreserved characters only.
-
-        Base64 standard alphabet (+/) and percent-encoded non-unreserved chars
-        are rejected even at an approved endpoint because they don't fit the
-        identifier shape (RFC 3986 unreserved: [A-Za-z0-9._~-]).
-        """
+        """Client ids outside the 43-char base64url and Salesforce shapes reject."""
         digest = hashlib.sha256(b"synthetic-oauth-entropy-regression").digest()
         value = mutate(base64.urlsafe_b64encode(digest).decode().rstrip("="))
         url = self.NOTION_URL.replace("client123", value, 1)
@@ -211,6 +225,16 @@ class TestOAuthAuthorizationUrlRedaction:
         assert len(consumer_key) == 85
         url = self.NOTION_URL.replace("client123", consumer_key, 1)
 
+        assert oauth_url_contains_credential(url) is False
+
+    def test_salesforce_shape_residual_is_explicitly_accepted(self) -> None:
+        # Accepted residual: a complete Salesforce public-identifier shape skips
+        # the markerless scan even when a random-looking run appears inside it.
+        client_id = "3MVG9" + self.BARE_AWS_SECRET_ALNUM + "A" * 30
+        url = self.NOTION_URL.replace("client123", client_id, 1)
+
+        assert len(client_id.removeprefix("3MVG9")) == 70
+        assert security._text_contains_bare_secret(client_id)
         assert oauth_url_contains_credential(url) is False
 
     def test_salesforce_consumer_key_passes_at_mcp_discovered_endpoint(self) -> None:
@@ -478,17 +502,6 @@ class TestOAuthAuthorizationUrlRedaction:
         # test must not claim to cover that gap.
         value = self.BARE_AWS_SECRET.replace("/", encoded_slash)
         assert security._oauth_entropy_value_is_protocol_shaped("state", value) is False
-
-    def test_identifier_exemption_rejects_over_limit_value(self) -> None:
-        """A value exceeding 512 characters is rejected even for identifier params."""
-        # Create a value that's > 512 chars but otherwise valid (unreserved chars).
-        # It must contain a secret-like 40-char window to trigger the scanner,
-        # so we embed the alnum secret and pad with high-entropy mixed-case chars.
-        padding = "xY3zW9qR7tP2mK5nL8vB4cD6fG1hJ0sAuE" * 15  # 525 chars of mixed case
-        long_value = self.BARE_AWS_SECRET_ALNUM + padding[: 513 - 40]  # exactly 513 chars
-        assert len(long_value) == 513
-        url = self.NOTION_URL.replace(self.CHALLENGE, long_value, 1)
-        assert oauth_url_contains_credential(url) is True
 
     @pytest.mark.parametrize("parameter", ["state", "code_challenge"])
     def test_markerless_secret_shape_is_banner_exempt_but_generically_redacted(
@@ -1329,10 +1342,9 @@ class TestOperatorOAuthEndpointExtension:
         """A Salesforce MCP sign-in URL, as a Connected App sends it, passes
         once the operator lists its My Domain endpoint in oauth_endpoints.json.
 
-        Before the rule table decided the identifier params, this URL failed
-        even with the endpoint listed: the 85-char consumer key in `client_id`
-        missed the exact-43-character exemption and the markerless scan read it
-        as a bare secret.
+        The markerless scan flags the 85-char consumer key, but the known
+        Salesforce public-identifier shape is exempt once the endpoint is
+        approved.
         """
         path = "/services/oauth2/authorize"
         consumer_key = self._salesforce_consumer_key()

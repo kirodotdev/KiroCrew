@@ -41,10 +41,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from .exfil_oauth import (  # noqa: F401
-    _AWS_SECRET_KEY_LENGTH,
-    _OAUTH_CLIENT_ID_RE,
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
+    _OAUTH_SALESFORCE_CLIENT_ID_RE,
     OAuthUrlCredentialDiagnostic,
     _approved_oauth_authorization_endpoint,
     _log_operator_list_use,
@@ -1131,26 +1130,27 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
     return _SCOPED_EXEMPT_HOSTS.get()
 
 
-# Markerless 40-character values collide with OAuth entropy only for these
+# Markerless credential-shaped values collide with OAuth entropy only for these
 # authorization-request fields (``code_verifier`` goes to the token endpoint).
-# A public ``client_id`` is an identifier, but an exactly 40-character value
-# stays under the bare-secret scan because that is the AWS secret-key length.
+# A ``client_id`` is exempt only in the known public-identifier shapes below.
 _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
 # The exemption is bounded to shapes the protocol itself can emit, so an
 # AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
 # set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
-# challenge must be exactly 43 base64url characters. A ``client_id`` is a
-# public identifier and may be 1 to 512 RFC 3986 unreserved characters (no
-# `+` or `/`), long enough for a Salesforce Connected App consumer key.
-# ``state`` and ``nonce`` must not contain `+` or `/`.
+# challenge, and the original dynamic-client-id shape, must be exactly 43
+# base64url characters. A Salesforce client id must match its fixed consumer-key
+# shape. ``state`` and ``nonce`` must not contain `+` or `/`.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
     if key == "client_id":
-        return len(form) != _AWS_SECRET_KEY_LENGTH and bool(_OAUTH_CLIENT_ID_RE.fullmatch(form))
+        return bool(
+            _OAUTH_S256_CHALLENGE_RE.fullmatch(form)
+            or _OAUTH_SALESFORCE_CLIENT_ID_RE.fullmatch(form)
+        )
     if key == "code_challenge":
         return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
     return "+" not in form and "/" not in form
