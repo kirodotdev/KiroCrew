@@ -327,3 +327,42 @@ def test_the_mint_spec_is_written_from_the_validated_entry_not_a_reread(agents_d
         assert written["mcpServers"] == {"docsServer": {"url": _DOCS_URL}}
     finally:
         mint._remove_mint_agent_spec(path)
+
+
+@pytest.mark.asyncio
+async def test_a_started_sign_in_counts_as_a_retry_for_the_chat_banner(
+    agents_dir: Path, started: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+):
+    """The MCP Servers page's Sign in is a retry: a chat that stopped repeating
+    the server's unchanged rejection banner shows the next one again."""
+    from kiro_crew.dashboard import mcp_banner_dedupe
+
+    monkeypatch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
+    client = await _client()
+    try:
+        resp = await client.post("/api/connections/mint", json={"server": "docsServer"})
+        assert resp.status == 200
+        await _drain_mint_tasks()
+    finally:
+        await client.close()
+    assert list(mcp_banner_dedupe._sign_in_rounds) == ["docsServer"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_sign_in_is_not_a_retry(
+    agents_dir: Path, started: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+):
+    from kiro_crew.dashboard import mcp_banner_dedupe
+
+    monkeypatch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
+    client = await _client()
+    try:
+        for body, headers in (
+            ({"server": "not-configured"}, None),
+            ({"server": "docsServer"}, NON_OWNER),
+        ):
+            resp = await client.post("/api/connections/mint", json=body, headers=headers)
+            assert resp.status in (400, 403)
+    finally:
+        await client.close()
+    assert mcp_banner_dedupe._sign_in_rounds == {}

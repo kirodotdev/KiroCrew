@@ -23,7 +23,7 @@ import pytest
 from kiro_crew.apps.manifest import AppManifest
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "contributed_commands_conformance.json"
-CASES = json.loads(FIXTURE.read_text())["cases"]
+CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
 
 
 def _contributes(case: dict) -> dict:

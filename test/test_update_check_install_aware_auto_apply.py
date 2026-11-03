@@ -193,11 +193,19 @@ class TestAutoApplyGuard:
     def test_finishing_while_the_pause_is_kept_schedules_no_replay(self):
         # During a shutdown the resume keeps the pause and reports it; a replay
         # then would tell senders to resend while the gateway is stopping.
+        from kiro_crew.slack.gateway import GatewayOrchestrator
+
         orch = self._orchestrator()
         orch.sessions.resume_turn_admission_after_update = AsyncMock(return_value=False)
+        # The real scheduler behind the mock, so a replay would leave its task behind.
+        orch._inbound_replay_task = None
+        orch._schedule_inbound_replay = MagicMock(
+            wraps=lambda: GatewayOrchestrator._schedule_inbound_replay(orch)
+        )
 
         asyncio.run(orch._finish_auto_update_apply())
 
+        assert orch._inbound_replay_task is None
         orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
         orch._schedule_inbound_replay.assert_not_called()
 

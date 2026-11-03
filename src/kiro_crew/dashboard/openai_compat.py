@@ -635,6 +635,35 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        if getattr(slot, "_slack_linked", False) and getattr(slot, "_slack_channel", ""):
+            from kiro_crew.slack.handler import channel_agent_mismatch
+
+            if (
+                channel_agent_mismatch(
+                    slot._slack_channel, str(agent), str(getattr(slot, "agent_kind", "") or "")
+                )
+                is not None
+            ):
+                sel().log_api_access(
+                    caller=request.remote or "",
+                    operation="openai_compat.chat",
+                    outcome="denied",
+                    source="channel_agent_pinned",
+                    resources=f"slot={slot.key}",
+                    error="slot is linked to a Slack channel served by another agent",
+                )
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "this session is linked to a Slack channel served by"
+                            " another agent",
+                            "type": "invalid_request_error",
+                            "code": "channel_agent_pinned",
+                        },
+                        "code": "channel_agent_pinned",
+                    },
+                    status=409,
+                )
         slot.agent = agent
     slot.append("user", prompt, "msg msg-u")
 

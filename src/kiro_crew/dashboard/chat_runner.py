@@ -247,7 +247,12 @@ from kiro_crew.dashboard.chat_turn.tool_rows import (
     _tool_call_ws_payload,
     _tool_meta,
 )
-from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
+from kiro_crew.dashboard.chat_turn.turn_admission import (
+    _channels_judging_turn,
+    _refuse_channel_turn,
+    _source_channel_mismatch,
+    _turn_admit,
+)
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
     _turn_dispatch_gates,
     _turn_dispatch_prep,
@@ -853,6 +858,11 @@ async def _run_chat(
     # only by ``_fire_dashboard_nudge``.
     _skill_trigger_text: str | None = None,
     _directive_channel_origin: bool = False,
+    # The Slack channels a channel-origin turn's words were typed in, stamped by
+    # the producer that knew them. Turn admission checks the turn against these
+    # channels' configured agents whether or not the thread is still linked, so
+    # an unlink or relink while the turn waits cannot move it off that check.
+    _directive_source_channels: tuple[str, ...] = (),
     # Whether the OWNER's own dashboard request dispatched this turn
     # (`is_owner_dashboard_request`), declared by the dashboard send, regenerate
     # and rewind handlers and by the queue drain. It rides this call rather than
@@ -906,6 +916,7 @@ async def _run_chat(
         _directive_loop_gen=_directive_loop_gen,
         _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
+        _directive_source_channels=_directive_source_channels,
         _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,

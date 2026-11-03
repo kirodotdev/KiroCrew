@@ -112,6 +112,10 @@ class GateFacts:
         #: read-only tier alone (``_tier_read_only``), for the first-party MCP
         #: proof; no deny tier, governance or grant tier consults it.
         self.trust_reads = trust_reads
+        #: Why this call will ask when no row decides it, for the person who
+        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
+        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
     def _once(self, key: str, compute: Callable[[], Any]) -> Any:
@@ -1175,6 +1179,17 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     return _command_matches_any(call.command, call.spec_granted_commands)
 
 
+def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
+    """Whether a shell call is kept from *patterns* only by its shell composition
+    (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
+    explains a prompt or a refusal; it never grants."""
+    if not patterns or "execute_bash" not in names or not call.is_shell:
+        return False
+    from kiro_crew.platform import allowed_commands
+
+    return allowed_commands.composition_blocks_match(tuple(patterns), call.command)
+
+
 def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
     """Whether *command* is plain
     (:func:`kiro_crew.platform.allowed_commands.plain_command`: no chaining, pipe,
@@ -1214,6 +1229,12 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         return None
     if _command_matches_any(call.command, allowlist):
         return None
+    if _spec_command_composed(call, ("execute_bash",), allowlist):
+        return ToolHookResult.deny_policy(
+            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "and this command matches allowedCommands, but commands with |, >, <, &&, ;, $() "
+            "or backticks never match. Run the script alone, or move the pipeline into the script."
+        )
     return ToolHookResult.deny_policy(
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
@@ -1394,6 +1415,10 @@ def grant_spec_builtin(
         return None
     names = _spec_builtin_names(call)
     if not any(name in granted for name in names) and not _spec_command_granted(call, names):
+        if _spec_command_composed(call, names, call.spec_granted_commands):
+            from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
+
+            facts.ask_note = COMPOSITION_NOTICE
         return None
     from kiro_crew.platform.governance import may_grant_builtin_at_gate
 

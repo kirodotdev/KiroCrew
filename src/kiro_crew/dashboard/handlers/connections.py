@@ -455,7 +455,11 @@ async def _start_cold_mint(
     path never loads it.
     """
     from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+    from kiro_crew.dashboard.mcp_banner_dedupe import note_mcp_sign_in_retry
 
+    # A sign-in the user started here is a retry: a chat that stopped repeating
+    # this server's unchanged rejection banner shows the next one again.
+    note_mcp_sign_in_retry(slug)
     token, prior = await reserve_mint_row(slug)
     try:
         task = asyncio.create_task(
@@ -540,6 +544,10 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # provider warming never covered.
     adopted = await adopt_shared_mint(slug, str(provider["mcp_url"]))
     if adopted is not None:
+        from kiro_crew.dashboard.mcp_banner_dedupe import note_mcp_sign_in_retry
+
+        # A retry, like the cold path's (see _start_cold_mint).
+        note_mcp_sign_in_retry(slug)
         # ONE event, outcome ``ok``: unlike the cold path below, this request both
         # starts and finishes here, so a ``started`` with no completion would leave the
         # audit trail showing a mint that never ended. A bare enqueue — SEL is

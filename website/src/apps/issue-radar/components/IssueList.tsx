@@ -232,8 +232,10 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
           <button
             onClick={refresh}
             disabled={refreshing}
-            title={i18nT('apps.issueRadar.components.issueList.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
-            aria-label={i18nT('apps.issueRadar.components.issueList.refresh_issues')}
+            // Disabled while a refresh runs, so the name carries the reason: a
+            // disabled "Refresh issues" reads as unavailable, not busy.
+            title={refreshing ? i18nT('apps.issueRadar.components.issueList.refreshing_issues') : i18nT('apps.issueRadar.components.issueList.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
+            aria-label={refreshing ? i18nT('apps.issueRadar.components.issueList.refreshing_issues') : i18nT('apps.issueRadar.components.issueList.refresh_issues')}
             className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
           >
             <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />

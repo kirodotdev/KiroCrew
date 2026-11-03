@@ -1009,8 +1009,9 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     ``/opt/homebrew/bin``, and still precede ``/usr/bin``. An inherited dir
     that sits behind a system dir is not an anchor and is prepended as on
     main, so a :func:`~kiro_crew.service.common.service_path` ``PATH``
-    (``~/.local/bin:/usr/local/bin:/usr/bin:/bin:<installer PATH>``) resolves
-    in the same order as before. With no anchor at all the output equals main.
+    (``~/.local/bin:/usr/local/bin:/usr/bin:/bin:<installer PATH>``, with
+    mise's shims after ``~/.local/bin`` on Linux) resolves in the same order
+    as before. With no anchor at all the output equals main.
     Anchoring is POSIX-only: on Windows the system section (``System32``) comes
     FIRST and user dirs such as ``~/.local/bin`` come last, so there is no
     "ahead of the system dirs" to anchor in, and every extra is prepended

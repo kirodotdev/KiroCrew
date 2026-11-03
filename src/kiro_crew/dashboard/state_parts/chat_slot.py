@@ -151,6 +151,7 @@ class _ChatSlot:
         "_todo_rebuild_expected",
         "_mcp_report",
         "_mcp_report_session_id",
+        "_mcp_banner_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -433,6 +434,7 @@ class _ChatSlot:
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
+    _mcp_banner_shown: dict[str, tuple[str, int, str]]
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
@@ -686,7 +688,7 @@ class _ChatSlot:
         self.agent = agent
         _slot_session.init_session_fields(self)
         self.model = model
-        # "" = default chat; app workers may carry their own mode (design-critique)
+        # "" = default chat; app workers may carry their own mode (apps/seams.py)
         self.mode = mode
         self.workspace = workspace
         _slot_turns.init_turns_fields(self)

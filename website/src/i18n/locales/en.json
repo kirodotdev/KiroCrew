@@ -274,6 +274,7 @@
       "pipeline": {
         "subtitle": "One lane per crew work item, across every phase — see which phase each item is in and where items are piling up.",
         "refresh": "Refresh the pipeline",
+        "refreshing": "Refreshing the pipeline…",
         "aria_diagram": "Crew pipeline: one horizontal lane per work item across the phase columns",
         "and_counting": "{{dwell}} and counting",
         "fence_label": "EDITING PHASES — AT MOST ONE ITEM",
@@ -1258,6 +1259,7 @@
           "issue_one": "{{count}} issue",
           "issue_other": "{{count}} issues",
           "refresh_issues": "Refresh issues",
+          "refreshing_issues": "Refreshing issues…",
           "updated": "Updated"
         },
         "labelPalette": {
@@ -1604,7 +1606,8 @@
           "no_labels_in_use": "No labels in use.",
           "nothing_needs_attention": "Nothing needs attention",
           "recently_updated": "Recently updated",
-          "refresh_issues": "Refresh issues"
+          "refresh_issues": "Refresh issues",
+          "refreshing_issues": "Refreshing issues…"
         },
         "settings": {
           "generalSettings": {
@@ -5017,6 +5020,7 @@
       "previous_shift_enter": "Previous (Shift+Enter)",
       "refresh": "Refresh",
       "refresh_file": "Refresh file",
+      "refreshing_file": "Refreshing file…",
       "save_this_file_as_an_artifact_versioned_persiste": "Save this file as an artifact (versioned, persistent, comment-able)",
       "select_any_text_to_add_inline_comments_then_subm": "Select any text to add inline comments, then submit them all to the chat.",
       "select_any_text_or_drag_across_an_image_to_add_i": "Select any text, or drag across an image, to add inline comments, then submit them all to the chat.",
@@ -7194,6 +7198,8 @@
         "memory_preparing": "Memory is still being prepared after the gateway restart. Queued messages will run when it is ready.",
         "agent_switch_blocked_pinned": "Switching to {{agent}} was blocked — this thread is pinned to {{member}}. The next turn restarts on the pinned crew.",
         "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.",
+        "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
+        "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue."
@@ -7388,6 +7394,8 @@
       "could_not_set_the_agent_default_model": "Could not set the agent's default model",
       "could_not_switch_variant": "Couldn't switch version",
       "side_chat_pane_gone": "Couldn't open a Side Chat for that pane — its session is no longer available: {{error}}",
+      "slack_link_agent_mismatch": "This Slack channel uses the {{agent}} agent, so this session was not linked to its thread. Your message is in the composer and was not sent: send it here without Slack, or open a session on {{agent}} and link the thread from there.",
+      "slack_link_agent_mismatch_unknown": "This Slack channel uses a different agent, so this session was not linked to its thread. Your message is in the composer and was not sent: send it here without Slack, or open a session on the channel's agent and link the thread from there.",
       "enter_split_view": "Enter split view",
       "effort_options_unavailable": "Could not verify this session's reasoning effort options. The effort control is unavailable until the connection recovers.",
       "effort_cycle_unavailable": "This session takes no reasoning effort, so there is none to cycle.",
@@ -9165,6 +9173,7 @@
         "package": "Package",
         "pointer": "pointer",
         "refresh_skills": "Refresh skills",
+        "refreshing_skills": "Refreshing skills…",
         "save": "Save",
         "script": "script",
         "scripts": "scripts/",
@@ -9200,6 +9209,7 @@
         "declaration_too_long": "That value is too long for the document's front matter.",
         "inclusion_unknown_rejected": "That is not a known inclusion mode.",
         "refresh_steering_files": "Refresh steering files",
+        "refreshing_steering_files": "Refreshing steering files…",
         "save": "Save",
         "scope": "Scope",
         "select_a_steering_file_to_view_it": "Select a steering file to view it",

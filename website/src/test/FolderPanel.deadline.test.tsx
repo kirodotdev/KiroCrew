@@ -293,6 +293,28 @@ describe('FolderPanel — bounded /api/file-search', () => {
     await waitFor(() => expect(refresh.querySelector('svg')).not.toHaveClass('animate-spin'))
   })
 
+  it('names Refresh for the press in flight while it is inert, then restores it', async () => {
+    // An inert control whose name still offers the action reads as unavailable with no
+    // reason. The name follows the same flag as `aria-disabled` (the press's own bracket),
+    // so the background-read case above keeps the plain "Refresh" name.
+    renderPanel()
+    await screen.findByText('README.md')
+
+    let release: (v: unknown) => void = () => {}
+    vi.spyOn(api, 'browseFiles').mockImplementation((() => new Promise(r => { release = r })) as never)
+    const refresh = screen.getByRole('button', { name: 'Refresh' })
+    fireEvent.click(refresh)
+
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-disabled', 'true'))
+    expect(refresh).toHaveAccessibleName('Refreshing…')
+    expect(refresh).toHaveAttribute('title', 'Refreshing…')
+
+    release(listing())
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-disabled', 'false'))
+    expect(refresh).toHaveAccessibleName('Refresh')
+    expect(refresh).toHaveAttribute('title', 'Refresh')
+  })
+
   it('still refuses a second press while a PRESS-started retry is in flight', async () => {
     // The control for the two tests above: narrowing the guard to the press's own bracket must
     // keep the defects it was added for fixed. A second press during a press-started batch

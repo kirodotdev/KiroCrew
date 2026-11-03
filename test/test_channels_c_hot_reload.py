@@ -105,7 +105,8 @@ class TestWeComThresholds:
         """
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(
-            json.dumps({"wecom": {"soft_threshold_pct": 33, "hard_threshold_pct": 66}})
+            json.dumps({"wecom": {"soft_threshold_pct": 33, "hard_threshold_pct": 66}}),
+            encoding="utf-8",
         )
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_path)
         monkeypatch.setattr(

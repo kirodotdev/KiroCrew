@@ -2561,7 +2561,11 @@ granted), and that one entry matches whole, as kiro-cli anchors each entry at
 both ends. Every other condition above still holds, so a matching command the
 deny floor, governance or `confirm_tools` refuses is still refused, and a command
 that chains, pipes, redirects, groups or substitutes is never granted whatever the
-pattern says.
+pattern says. When an entry matches such a command whole or matches the plain command before
+its first composition character (`allowed_commands.composition_blocks_match`), the
+gate's fall-through `allow` carries `COMPOSITION_NOTICE` as its reason and the
+dashboard shows it ahead of the card; under `denyByDefault` the refusal names the
+composition instead of saying no entry matches. The note decides nothing.
 
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has

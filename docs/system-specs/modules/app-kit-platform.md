@@ -641,8 +641,9 @@ copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
-allows. The aws-control and Files gates call it with their own package and names,
-and the next app to leave adds a gate that does the same, never another scanner.
+allows. The aws-control, Files and Design Critique gates call it with their own
+package and names, and the next app to leave adds a gate that does the same, never
+another scanner.
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -4691,7 +4692,7 @@ change lands in its owner.
 | `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
 | `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), and the thread-waitable shutdown signal |
 | `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
-| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred Dev Fleet spawn |
+| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred spawn of every backend whose host grants ask for the bound port |
 
 Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 `provisioning`, `termination`, `stale_reap`, `registration`, `restart`, `supervision`,
@@ -4711,7 +4712,7 @@ reaches the call site in whichever owner makes the call. The mutable state is on
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
 through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEV_FLEET_DEFERRED` in
+one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
 `startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
@@ -4870,6 +4871,40 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
   outcome `revoked`).
 
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
+
+## 23a. A built-in's worker slot mode is a seam the built-in fills
+
+A slot's `mode` is fixed at creation, and the chat sidebar lists only `""` slots, so an
+app whose throwaway worker slots must stay off the sidebar creates them under a mode of
+its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept only
+`chat_handlers._CREATABLE_MODES`, which is `""` followed by `seams.worker_slot_modes()`
+(section 30); the core spells no app's mode.
+
+- **Registration.** A builtin's `seams.py` calls `seams.register_worker_slot_mode(app_id)`
+  with its own id when it is imported. A non-`str` id is refused with `ValueError`; the
+  loader logs that module and skips it, like any broken provider.
+- **Built-ins only, in practice.** `chat_handlers` reads the seam once, at import, and
+  that first lookup is what loads the builtin seams modules. An installed app's
+  `on_startup` runs later, so it reaches no create path, and no manifest field is read.
+  With no builtin registering one, the create paths accept `""` alone. The mode-switch
+  (`chat_folders._VALID_MODES`) and fork-override allowlists stay narrower on purpose.
+- **Light package.** The lookup imports the app's package `__init__`, so Design
+  Critique serves `register_routes` from a module `__getattr__` that imports its route
+  module on first access. That access is the boot route loop's guarded lookup, so an
+  unreadable route file is skipped like any unreadable app, not fatal.
+
+Design Critique is held to it by `test/test_core_design_critique_decoupling.py`, which
+runs the shared `test/core_app_independence.py` scans: no module under `src/kiro_crew`
+outside `apps/builtins/`, and no `scripts/` file, imports the app's package or names
+`design_critique` / `design-critique` in a non-docstring string. Its UI is held the
+same way by `website/src/apps/design-critique/designCritiqueBoundary.test.ts`: outside that
+directory only the `/design-critique` row of `apps/builtinRegistry.ts` imports from it,
+and the app's backend and frontend tests live in its own directories.
+
+Writers: `apps/seams.py`, `apps/builtins/design_critique/seams.py`.
+Tests: `test/test_app_seams.py`,
+`apps/builtins/design_critique/tests/test_worker_slot_mode.py`,
+`apps/builtins/design_critique/tests/test_unreadable_routes_skipped.py`.
 
 ## 24. A backend's principal claim is opt-in and bound to one request
 
@@ -5234,6 +5269,7 @@ this repository without core changing.
 | `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
 | `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
 | `stopped_loop_tombstone` | `StoppedLoopTombstone`: `keeps_stopped_loop(slot_key, app_id)` | `dashboard/session_directive_apply_monitor.py` `_keeps_stopped_loop` (the stop of a legacy autonudge loop) | the loop row is removed, as for every other legacy loop (see `knowledge.md`, "Repository boundary") |
+| worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
 seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
@@ -5247,6 +5283,7 @@ an installed app's `on_startup` hook, calls `seams.register` itself.
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
 registering it is refused with `ValueError`, so the answer cannot depend on import order.
+Worker slot modes are the exception: each app registers its own id.
 A broken provider module is logged and skipped. The one-time load holds its own lock,
 never the registry's, so a provider module registering from another thread cannot
 deadlock it; a seams module therefore only registers while it is imported, and never
@@ -5691,6 +5728,46 @@ Writers (dashboard side): `website/src/appNav.ts`, `website/src/apps/builtinIcon
 `website/src/apps/BuiltinAppRoute.tsx`, `website/src/hooks/panelTabRegistry.ts`,
 `website/src/components/InstalledAppSurface.tsx`, `website/src/components/appstore/types.ts`,
 `website/src/pages/AppDetailAdoptionNotice.tsx`, `website/src/pages/AppDetailPage.tsx`.
+
+## 34. What a built-in asks of the host is the built-in's own data
+
+The core names no built-in app. Where a shipped built-in needs something from the host
+that no manifest field may ask for, the built-in declares it and the core reads it
+through one seam that is empty by default:
+
+- **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
+  a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
+  backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
+  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
+  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
+  `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
+  (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`
+  (`kiro_relay/limits._LOCAL_CREDENTIAL_EXACT`). The loader looks for the file on disk
+  before importing, so a built-in that grants nothing is never imported, and it reads
+  the rows once per process. A row may grant only its own app (`app` must be the
+  package's installed name), every path must sit under that app's own
+  `/api/apps/<app>/` or `/apps/<app>/` namespace and not end in `/` (the strict tier
+  also admits an entry's children, so a row names leaf verbs), and a forwarded variable must be a
+  `KIROCREW_*` name; a malformed row raises at load, so a grant cannot silently stop
+  applying. Only `BUILTIN_NAMES` is read: an installed or registry app can claim none
+  of this, whatever its manifest says.
+- **Agent-template placeholders** (`bridges_agents._placeholder_values`). A built-in
+  whose shipped agent config names a runtime path ships `agent_placeholders.py` with a
+  `placeholder_values()` the gateway calls to compute them; a result that is not a
+  `{"{NAME}": str}` mapping is refused whole, and an app with no such module gets `{}`
+  (its template stays unrendered and unregistered).
+
+A capability the core itself offers lives in the core, and an app that needs it too
+imports it there rather than the other way round: the file panel's slide previews and
+PPTX Maker both find `soffice` (and its install hint) through
+`kiro_crew.soffice_discovery`, the only copy in the repository.
+`test/test_core_dev_fleet_pptx_maker_decoupling.py` fails, through the shared scan in
+`test/core_app_independence.py`, on any core module or script that imports Dev Fleet
+or PPTX Maker.
+
+Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
+`apps/builtins/dev_fleet/host_grants.py`, `apps/builtins/pptx_maker/agent_placeholders.py`.
 
 ## Windows stale-backend cleanup capacity
 

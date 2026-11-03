@@ -438,12 +438,17 @@ def _build_ssh_argv(
     device: every caller here runs a remote command and none of them writes the
     child's stdin, and an inherited console-less stdin keeps the channel open
     after the remote command exits (notably through a ``ProxyCommand``), so ssh
-    waits for an EOF that never arrives. ``ssh_host`` is validated by the caller
-    (registry / tunnel manager) before reaching here.
+    waits for an EOF that never arrives. ``-T`` never asks for a terminal: no
+    caller here is interactive, and a user's ``RequestTTY yes`` otherwise
+    prints "Pseudo-terminal will not be allocated" first on stderr, which then
+    reads as the failure reason.
+    ``ssh_host`` is validated by the caller (registry / tunnel manager) before
+    reaching here.
     """
     return [
         "ssh",
         "-n",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",

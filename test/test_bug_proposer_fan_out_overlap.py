@@ -30,7 +30,7 @@ class FakeProfile:
 
     def propose(self, *, candidate, base_sha, worktree, tier):
         # Write a trivial file so _capture_diff produces a non-empty diff
-        (worktree / "change.txt").write_text(f"edit for {candidate.target}\n")
+        (worktree / "change.txt").write_text(f"edit for {candidate.target}\n", encoding="utf-8")
         return True
 
 

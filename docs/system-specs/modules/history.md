@@ -2137,7 +2137,19 @@ no longer destroy older turns.
   (re-read after a config write) and a per-entry ceiling; a window longer than
   the entry bound, or whose content alone exceeds the byte bound, skips the memo.
 - **Consolidation offset & rotation generation**: `last_consolidated` is an
-  absolute message index the consolidator snapshots (as `total`) BEFORE its slow
+  absolute message index. The readers that slice or count by it
+  (`consolidated_offset`, `unconsolidated_count`, `get_unconsolidated`,
+  `snapshot_for_consolidation`) read it through one helper that answers 0 for a
+  value `int()` cannot read or a negative one, since a negative slice start would
+  skip the head of the transcript. When the snapshot repairs the marker that way it
+  also returns a sub-offset of 0, because the stored sub-offset is a position in
+  the row at the old marker. That pair has one reader, `_live_position`, which
+  the snapshot slices by and the retry-span check (`_attempts_describe_current_span`)
+  compares a charged attempt against, so a failure on a repaired marker counts
+  toward the cap. `advance_consolidation_sub_offset` reads the marker
+  through the same helper and, when it repaired it, saves `last_consolidated = 0`
+  in the same write as the sub-offset, so the next pass resumes the head instead
+  of restarting its first slice. The consolidator snapshots it (as `total`) BEFORE its slow
   LLM call and writes back via `mark_consolidated`. A rotation firing during that
   await truncates the file and shifts every surviving index, so the stale offset
   can no longer be applied. Detection uses a monotonically-increasing

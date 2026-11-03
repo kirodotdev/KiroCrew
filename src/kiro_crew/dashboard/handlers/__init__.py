@@ -639,6 +639,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_arm,
     api_update_arm_status,
     api_update_auto,
+    api_update_auto_pin,
     api_update_cancel,
     api_update_channel,
     api_update_check,

@@ -224,8 +224,10 @@ function PageChrome({
           <div className="flex items-center gap-2">
             {onRefresh && (
               <IconButton
-                aria-label={i18nT('apps.autoTriagePipeline.pipeline.refresh')}
-                title={i18nT('apps.autoTriagePipeline.pipeline.refresh')}
+                // Disabled while a read runs, so the name carries the reason: a
+                // disabled "Refresh the pipeline" reads as unavailable, not busy.
+                aria-label={refreshing ? i18nT('apps.autoTriagePipeline.pipeline.refreshing') : i18nT('apps.autoTriagePipeline.pipeline.refresh')}
+                title={refreshing ? i18nT('apps.autoTriagePipeline.pipeline.refreshing') : i18nT('apps.autoTriagePipeline.pipeline.refresh')}
                 onClick={onRefresh}
                 disabled={refreshing}
                 className="border border-border h-8 w-8 flex items-center justify-center"

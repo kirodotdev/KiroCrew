@@ -71,7 +71,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from aiohttp import web
 
-from kiro_crew import hooks
+from kiro_crew import hooks, soffice_discovery
 from kiro_crew.apps.builtins.pptx_maker.backend import (
     decks,
     engine,
@@ -707,7 +707,8 @@ def _deps_status() -> dict:
         # for THIS platform. Data for the UI to show — never run from here.
         "hints": (
             {preview_tools.SOFFICE: hint}
-            if preview_tools.SOFFICE in missing and (hint := preview_tools.soffice_hint())
+            if preview_tools.SOFFICE in missing
+            and (hint := soffice_discovery.soffice_install_hint())
             else {}
         ),
     }

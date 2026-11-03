@@ -81,8 +81,10 @@ DEFAULT_SSH_COMPRESSION: bool = True
 # Health-probe cadence/threshold for a connected tunnel. Poll every interval,
 # and after this many *consecutive* failures treat the tunnel as unhealthy
 # (Stage 2 self-heal hooks the existing exit seam). interval <= 0 disables the
-# probe.
-DEFAULT_PROBE_INTERVAL_SECS: int = 30
+# probe. At 10s a forward that is up but relays nothing (an SSM session that
+# died without a word) is torn down after 3 x 10s = 30s; each probe is one small
+# `GET` through the forward, so the steady-state cost stays negligible.
+DEFAULT_PROBE_INTERVAL_SECS: int = 10
 DEFAULT_PROBE_FAILURE_THRESHOLD: int = 3
 
 # Total timeout (secs) for one steady-state end-to-end liveness probe: a
@@ -108,8 +110,8 @@ DEFAULT_PROBE_HEALTH_TIMEOUT_SECS: float = 4.0
 # (~2 min total at the default 8 attempts / 30s cap), while a dead-far-end
 # forward that re-binds but never answers additionally spends one probe window
 # per attempt (DEFAULT_PROBE_FAILURE_THRESHOLD x DEFAULT_PROBE_INTERVAL_SECS =
-# 3 x 30s = 90s), so the handoff to diagnosis takes attempts x (90s + backoff)
-# ~= 16 min at the defaults. Size instances.max_recovery_attempts against the
+# 3 x 10s = 30s), so the handoff to diagnosis takes attempts x (30s + backoff)
+# ~= 6 min at the defaults. Size instances.max_recovery_attempts against the
 # longer window.
 DEFAULT_MAX_RECOVERY_ATTEMPTS: int = 8
 
@@ -118,7 +120,7 @@ DEFAULT_MAX_RECOVERY_ATTEMPTS: int = 8
 # the bounded self-heal into a near-infinite retry loop on a dead connection. Kept
 # generous: at this ceiling a dead-far-end forward spends roughly
 # CEILING x (probe_failure_threshold x probe_interval + 30s backoff cap) =
-# 100 x (90s + 30s) ~= 3.3h before giving up, so only extreme values trip it.
+# 100 x (30s + 30s) ~= 1.7h before giving up, so only extreme values trip it.
 MAX_RECOVERY_ATTEMPTS_CEILING: int = 100
 
 # Cap (secs) on the per-attempt backoff between self-heal attempts. The backoff
@@ -131,7 +133,7 @@ DEFAULT_RECOVER_BACKOFF_MAX_SECS: float = 30.0
 # (e.g. a 1-day backoff) can't stretch the bounded self-heal into a multi-day
 # wall-clock window even with the attempt count capped. At this ceiling the worst
 # case is ~MAX_RECOVERY_ATTEMPTS_CEILING * (probe window + this) =
-# 100 * (90s + 300s) ~= 10.8h.
+# 100 * (30s + 300s) ~= 9.2h.
 RECOVER_BACKOFF_MAX_CEILING_SECS: float = 300.0
 
 # How long (secs) to wait for the local forward port to start accepting

@@ -794,7 +794,7 @@ committed store with the new one, logs each loop that stopped at WARNING with it
 `stopped_reason`, and appends the same record as one JSON line to
 `<data home>/logs/autonudge_stops.jsonl`. The log line is for reading live; grep
 `gateway.log` for `AutoNudge:`. Each gateway boot moves `gateway.log` to
-`gateway.log.prev`, keeping one copy, so the line is gone after two restarts. The JSONL file is the record that stays: it holds
+`gateway.log.prev` and keeps three older boots in `logs/gateway-boots/`, so the line is gone after five restarts. The JSONL file is the record that stays: it holds
 the same scrubbed fields, is size-rotated to one `.1` generation (about 2 MiB in
 total), and a failure to append costs that one record, never the store write.
 To see the last stops, newest last:

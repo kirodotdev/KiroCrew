@@ -271,6 +271,18 @@ describe('KiroCrewCfgTab — numeric rows', () => {
     expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
   })
 
+  it('rejects a fractional value instead of saving its leading digits', async () => {
+    // `parseInt('3600.5')` is 3600, a number the reader never typed.
+    await renderTab()
+
+    const input = num('Session Timeout')
+    fireEvent.change(input, { target: { value: '3600.5' } })
+    fireEvent.blur(input)
+
+    expect(screen.getByText('invalid')).toBeInTheDocument()
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+  })
+
   it('reports the floor and the ceiling instead of saving', async () => {
     await renderTab()
     const input = num('Session Timeout')

@@ -410,7 +410,11 @@ export function useSessionsDrawer({
   // `useShellSlot` seeds synchronously (no first-render flash into the inline
   // fallback) and watches the DOM across a mobile -> desktop crossing; the
   // phone top-bar slots (pageEnvironment.ts) resolve through the same hook.
-  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
+  // Bumped by the side panel's health check (sidePanelHealth) when the column
+  // it holds has left the document, so the lookup latches the current one.
+  const [activitySlotRev, setActivitySlotRev] = useState(0)
+  const refreshActivitySlot = useCallback(() => setActivitySlotRev(n => n + 1), [])
+  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode, activitySlotRev)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and ChatTitleOverlay's render so the two cannot disagree. */
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
@@ -752,7 +756,7 @@ export function useSessionsDrawer({
   useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
   return {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
-    closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
+    closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   }
 }

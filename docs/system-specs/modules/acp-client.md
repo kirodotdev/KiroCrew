@@ -2314,6 +2314,23 @@ adds a pointer to `kirocrew doctor`, whose MCP Governance section checks the
 account's identity before advising the setting. A server the host did report
 (still connecting, or a same-named entry that is not `client` origin) gets the
 plain timeout.
+
+A governed host is not always silent. KAS 0.66.62 under an enterprise registry
+sends a `_kiro/mcp/status` snapshot for the session with `servers` empty and the
+dropped name in `accessModeFilteredServers`. (`unresolvedRegistryServers` is
+not read: no capture shows whether a server listed there is final or still
+resolving.) That is the host's own positive answer, so a required
+server listed there is decided on that frame, with no settle and no deadline,
+unless the same snapshot also has a status entry under that name, of any state
+or origin (then the usual states and timeout rule, so a foreign same-named
+server still times out).
+With registry mode on, the session starts as soon as every pending server is
+such a listed drop, recorded failed with the governed-drop reason; a server
+still connecting beside it keeps the full budget. With registry mode off, the
+start fails at once with `AcpRuntimeError` naming each listed server and the
+field that listed it, and how to declare registry mode; it never starts
+without the servers and never waits out the budget for them. The upstream wire
+limitation is tracked as kirodotdev/Kiro#12231.
 Errors name the required server and sanitize backend failure text. On failure,
 runtime death, or cancellation, no handle escapes. A failed fresh `session/new`
 is terminated through the bounded per-session teardown, freeing its resident state
@@ -2517,7 +2534,9 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 2. `_kiro.dev/mcp/server_initialized` — flips the banner to authenticated state. Clears the per-server dedupe entry so a future token expiry can re-prompt.
 3. `_kiro.dev/mcp/server_init_failure` — flips the banner to failed state with the error string. Also clears dedupe so a retry surfaces a fresh banner.
 
-**Dedupe**: Per-server dedupe via `_oauth_emitted_servers: set[str]` prevents kiro-cli's per-probe retries from spamming the user. Works across both buffered (init drain) and live (mid-session) paths. Cleared on new session.
+**Dedupe**: Per-server dedupe via `_oauth_emitted_servers: set[str]` prevents kiro-cli's per-probe retries from spamming the user. Works across both buffered (init drain) and live (mid-session) paths. Cleared on new session, and cleared for a server by its `mcp_server_init_failure`, so it does not hold across turns: kiro-cli retries a signed-out server's sign-in on each turn.
+
+**Rejected-banner dedupe** (`dashboard/mcp_banner_dedupe.py`): a rejected-URL banner (unsafe scheme, or a URL the credential gate refuses) is posted once per server per sign-in state in a chat, not on every user turn and auto-nudge cycle. `_emit_mcp_oauth_request` skips one whose text and error match the last rejected banner shown for that server in the same chat, in the same ACP session and the same sign-in round. It is shown again when the rejection changes, the ACP session changes (a new chat), the server signs in (a mid-turn event, or the session MCP report listing it as connected when the report is published) or gets an Authorize banner in between, or the user starts that server's sign-in from the MCP Servers page or a Connections card (`POST /api/connections/mint` bumps a process-wide round for the name and its kiro-safe alias). A gateway restart shows it once more: the record lives in memory only. No dedupe applies without a session id or to a name redaction rewrote. The per-chat record holds at most 64 servers and the round table 256 names, oldest evicted first, and keeps only digests of the session id and the banner text. Retry rounds come from one growing counter, so an evicted name never reads as an older round. Authorize banners are never suppressed, because each one carries a fresh link. The MCP Servers page's "Sign-in required" status is not affected.
 
 **Card-owned requests**: a request for a server that a rendered Connections card owns (`_connections_managed_mcp_names`) is tagged `card_owned` on both paths, the init drain and the mid-session `_on_mcp_oauth_request`. The tag rides through every later state of the banner (completed, failed, superseded, expired), and the chat hides tagged banners while `connections_ui` is on, because the card shows the same Authorize action. The KAS sign-in offer re-requests every unauthorized server at each turn start, so an untagged mid-session request would repeat the prompt on every turn of every session.
 

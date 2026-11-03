@@ -31,6 +31,7 @@ import { Btn } from './ui'
 import { readCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
+import { safeHref } from '../utils/safeHref'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
@@ -163,11 +164,11 @@ function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: React
 }
 
 /**
- * A value rendered as a click-to-copy block — the device flow's verification
- * link has to be retyped on ANOTHER device, so the whole block is the copy
- * target and the glyph stays faintly visible rather than hover-only.
+ * The device flow's verification link: the URL itself opens the issuer's page
+ * in a new tab (a click is a user gesture, so a popup blocker lets it through),
+ * and a separate always-visible button copies it for approval on ANOTHER device.
  */
-function CopyField({ value }: { value: string }) {
+function LinkField({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(
@@ -186,23 +187,40 @@ function CopyField({ value }: { value: string }) {
   const label = copied
     ? i18nT('components.kasLogin.copied')
     : i18nT('components.kasLogin.copy_link')
+  // The URL comes from the issuer's response: only an http(s) URL becomes a
+  // link, so no other scheme (javascript:, data:) can run on a click.
+  const href = safeHref(value)
   return (
-    <button
-      type="button"
-      onClick={onCopy}
-      aria-label={label}
-      title={label}
-      className="group/copy mt-1.5 flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-left hover:bg-bg-hover focus-ring"
-    >
-      <code className="min-w-0 overflow-x-auto font-mono text-[13px] text-text-strong">
-        {value}
-      </code>
-      {copied ? (
-        <Check className="lucide-inline shrink-0 text-ok" />
+    <div className="mt-1.5 flex w-full items-center gap-2 rounded-lg border border-border bg-bg-elevated py-1.5 pl-3 pr-1.5">
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="kas-login-verification-link"
+          className="min-w-0 flex-1 overflow-x-auto font-mono text-[13px] text-accent underline underline-offset-2 hover:text-accent-hover focus-ring"
+        >
+          {value}
+        </a>
       ) : (
-        <Copy className="lucide-inline shrink-0 text-muted transition-opacity group-hover/copy:opacity-100" />
+        <code className="min-w-0 flex-1 overflow-x-auto font-mono text-[13px] text-text-strong">
+          {value}
+        </code>
       )}
-    </button>
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={label}
+        title={label}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-bg text-muted hover:bg-bg-hover hover:text-text focus-ring"
+      >
+        {copied ? (
+          <Check className="lucide-inline text-ok" />
+        ) : (
+          <Copy className="lucide-inline" />
+        )}
+      </button>
+    </div>
   )
 }
 
@@ -334,9 +352,16 @@ function Chooser({
               htmlFor="kas-sso-start-url"
             >
               {i18nT('components.kasLogin.sso_start_url_label')}
+              {/* type="text", not "url": the browser's URL check refuses a paste
+                  without "https://" before the gateway can add it. inputMode
+                  keeps the URL keyboard on touch devices. */}
               <input
                 id="kas-sso-start-url"
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
                 autoFocus
                 value={startUrl}
@@ -563,10 +588,7 @@ function DeviceWaiting({
             </span>
             {i18nT('components.kasLogin.open_this_link')}
           </p>
-          <CopyField value={session.verification_uri_complete} />
-          <p className="mt-1 text-[11px] text-muted">
-            {i18nT('components.kasLogin.click_to_copy')}
-          </p>
+          <LinkField value={session.verification_uri_complete} />
         </li>
         <li>
           <p className="flex items-center gap-2 text-[13px] font-medium text-text">

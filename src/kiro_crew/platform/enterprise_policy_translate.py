@@ -31,11 +31,12 @@ instead, by :func:`switch`:
 
 * any ``deny``/``ask``: ``enabled: false``;
 * an ``allow`` and no deny: ``enabled: true``;
-* no rule: unnamed, so the enterprise baseline holds;
-* a rule with ``match``, ``exclude`` or ``when``: unnamed. The policy language refuses ``match``
-  and ``exclude`` on an on/off capability, and the grant shape the control plane sends for
-  one is not confirmed yet, so a shape this module does not know keeps the baseline
-  rather than guess.
+* no rule: unnamed, so the enterprise baseline holds (Crew's default for an open
+  control such as ``cron``);
+* a rule with ``match``, ``exclude`` or ``when``: ``enabled: false``. The policy language
+  refuses ``match`` and ``exclude`` on an on/off capability, and the grant shape the control
+  plane sends for one is not confirmed yet, so a shape this module does not know turns the
+  capability off rather than guess. Leaving it unnamed would keep an open control on.
 """
 
 from __future__ import annotations
@@ -224,9 +225,11 @@ def switch(rules: List[Mapping[str, Any]], capability: str) -> Optional[Dict[str
             granted = True
         else:
             denied = True
-    if unknown:
-        return None
-    if denied:
+    if unknown or denied:
+        # A shape this module does not know turns the capability off, as an
+        # unconditional deny does. Leaving it unnamed is not safe: an unnamed
+        # open control (``capabilities.cron``, RFC D3) keeps
+        # Crew's default, so a policy that restricts it would widen it instead.
         return {"enabled": False}
     if granted:
         return {"enabled": True}

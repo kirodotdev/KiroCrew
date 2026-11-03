@@ -117,6 +117,10 @@ class TestTokenMint:
         # part of the remote command.
         assert "-n" in argv
         assert argv.index("-n") < argv.index("cd-1")
+        # -T overrides a user's `RequestTTY yes`, whose "Pseudo-terminal will
+        # not be allocated" warning otherwise leads the mint's failure text.
+        assert "-T" in argv
+        assert argv.index("-T") < argv.index("cd-1")
         # Default fail-fast connect bound is preserved for callers that
         # don't thread a budget (e.g. run_remote_kirocrew).
         assert "ConnectTimeout=10" in argv

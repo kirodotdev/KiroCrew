@@ -706,8 +706,7 @@ class ConversationLog:
     def get_unconsolidated(self, key: str) -> tuple[list[dict], int]:
         """Return (messages_after_last_consolidated, total_message_count)."""
         messages = self._read_messages(key)
-        offset = self._read_metadata(key).get("last_consolidated", 0)
-        return messages[offset:], len(messages)
+        return messages[self.consolidated_offset(key) :], len(messages)
 
     def chained_keys(self, key: str) -> list[str]:
         """Every transcript key :meth:`read_messages_chained` concatenates for *key*."""
