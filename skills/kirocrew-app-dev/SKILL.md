@@ -260,7 +260,8 @@ export default function MyApp() {
 ### Version Source (IMPORTANT)
 
 Read the installed manifest version from `useAppInfo()`. The host mounts external
-apps inside `AppApiProvider` and supplies `{name, version, permissions, active}`;
+apps inside `AppApiProvider` and supplies `{name, version, permissions, active}`,
+plus `session` (`{ sessionKey }`) on a session-bound surface such as a side-panel tab;
 apps are not iframes and do not need to derive absolute data-home paths.
 
 ```javascript
