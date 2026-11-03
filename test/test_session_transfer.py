@@ -20,7 +20,8 @@ with the slot-cap accounting across it, and arrival filing in
 ``test_session_transfer_landing.py``; the import route's body and the host bounds that admit
 it in ``test_session_transfer_import_body.py``; the transcript file's own privacy line
 withholding a bundle at and after the read, the staged upload and the staging sweep in
-``test_session_transfer_outbound.py``.
+``test_session_transfer_outbound.py``; and a sent folder's sending side (the folder
+name the bundle carries) in ``test_session_transfer_folder.py``.
 """
 
 from __future__ import annotations
