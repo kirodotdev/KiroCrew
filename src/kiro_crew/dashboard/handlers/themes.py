@@ -91,6 +91,7 @@ from kiro_crew.security import (
     redact_and_truncate,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def _read_listed_theme(path: Path, slug: str) -> Any:
     missing, undecodable or unparseable file keeps the silent skip.
     """
     try:
-        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        return loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
     except PermissionError:
         logger.warning("theme %r left out of the list: %s could not be read", slug, path.name)
         return None
@@ -528,7 +529,7 @@ def _installed_theme_identity(slug: str) -> str | None:
     if raw is None:
         return None
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = loads_user_json(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -1035,7 +1036,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         def _update_locked() -> dict:
             with _theme_install_lock(safe_slug):
                 try:
-                    existing = json.loads(target.read_text("utf-8"))
+                    existing = loads_user_json(target.read_text("utf-8"))
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                     existing = {}
                 if not isinstance(existing, dict):
@@ -1064,7 +1065,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             raw = await loop.run_in_executor(
                 discovery_executor(), target.read_text, "utf-8"
             )
-            data = json.loads(raw)
+            data = loads_user_json(raw)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             return web.json_response({"error": "failed to read theme"}, status=500)
         return web.json_response(data)
