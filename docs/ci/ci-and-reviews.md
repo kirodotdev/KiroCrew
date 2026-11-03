@@ -444,6 +444,21 @@ issue" step, the hand-copied ancestor of this watcher) and `gui-user-test.yml`
 when a listed name matches no workflow -- a `workflow_run` trigger on a misspelt
 name never fires and never says so.
 
+### Scheduled workflows: a spent API rate limit
+
+A scheduled job's token shares the installation rate limit with the rest of the
+fleet, so one `gh` call made while it is spent fails the run, although the limit
+resets within the hour. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+PATH for the rest of the job: it retries only a call whose error names a rate
+limit, at most twice, waiting for the earliest reported reset (60 s for a
+secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
+Every other result passes through unchanged. A scheduled job that calls `gh`
+either installs it before its first call, with a job timeout that leaves room
+for the budget, or is listed in `test/test_scheduled_gh_rate_limit.py` with the
+reason a failed run costs nothing the next tick does not re-cover (frequent
+sweeps, full re-derivations, and a job whose model step can write to the
+runner's disk). That test fails for a new scheduled `gh` job that does neither.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.
