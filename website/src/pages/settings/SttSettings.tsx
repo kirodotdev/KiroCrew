@@ -316,7 +316,7 @@ interface SttVocabularies {
 /** The only vocabulary state Amazon Transcribe opens a stream with. */
 const VOCABULARY_READY = 'READY'
 
-/** The listing's refusal code with an IAM fix of its own, from `transcribe.py`. */
+/** The listing's refusal code with an IAM fix of its own, from `transcribe_aws.py`. */
 const VOCABULARIES_ACCESS_DENIED = 'stt_vocabularies_access_denied'
 
 /**

@@ -316,7 +316,8 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
   const rejected = wasRejectedByPerm()
   // Backend persists `input` (when the call was issued) and `output` (when
   // the result arrived) directly on the tool message's meta — see
-  // _tool_meta() and the EVENT_TOOL_RESULT handler in chat_runner.py.
+  // _tool_meta() in chat_turn/tool_rows.py and _on_tool_result() in
+  // chat_turn/tool_results.py.
   // Pre-persistence messages won't have these fields and fall through to
   // the empty-state hint inside ToolDetails.
   const metaInput = (message.meta?.input as string | undefined) || ''
@@ -340,13 +341,13 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
     // so the empty-state copy only shows for truly bare historical messages.
     hasEntry: !!(metaInput || metaOutput),
     isShell: false,
-    // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
+    // Persisted ACP tool kind (see _tool_meta in chat_turn/tool_rows.py). Rows
     // written before the field existed read '' and never promote a card.
     toolKind: (message.meta?.kind as string | undefined) || '',
     // Historical rows have no log entry; the message content is the only
     // carrier. Harmless either way — a replayed wait is never in flight.
     toolName: message.content.replace(/^🔧\s*/, ''),
-    // Persisted by _tool_meta (chat_runner.py) since the title-derivation
+    // Persisted by _tool_meta (chat_turn/tool_rows.py) since the title-derivation
     // change; rows written before it read '' and derive from the title.
     trustedToolName: (message.meta?.tool_name as string | undefined) || '',
     mcpServer: (message.meta?.mcp_server as string | undefined) || '',
@@ -517,7 +518,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const isFirstRowForCall = message.meta?.mcp_app_lead === true
 
   // Did this call produce an MCP App? Persisted by the backend on the tool row
-  // (`_meta["mcp_app"]`, chat_runner.py) when the app's single-use render was
+  // (`_meta["mcp_app"]`, chat_turn/tool_results.py) when the app's single-use render was
   // claimed, because the payload is the only carrier of the app and it is
   // live-only: owner-scoped WS, a callback capability, and a spool record that
   // expires. A reload, a bounded-cache eviction, a guest WebSocket and an

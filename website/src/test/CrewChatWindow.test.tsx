@@ -6,7 +6,7 @@
  * check needs), a reload mid-turn shows the peer's turn running, and continue /
  * regenerate / rewind go to the peer's routes and render the peer's answer.
  * Redaction of peer text happens in the hub proxy and is pinned there
- * (test/test_instances.py, TestProxyRedactsPeerReplies).
+ * (test/test_instances_proxy_handler.py, TestProxyRedactsPeerReplies).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'

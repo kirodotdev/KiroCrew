@@ -884,7 +884,7 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
 }
 
 /** The name the skills create handler will store this under, mirrored from
- *  `api_skills_create` in `src/kiro_crew/dashboard/handlers/prompts.py`.
+ *  `api_skills_create` in `src/kiro_crew/dashboard/handlers/prompts_skill_edits.py`.
  *
  *  This is NOT `sanitizePromptName`, and the difference is deliberate: the skills
  *  rule PERMITS `/` so a name can nest (`utils/code`), it strips leading and

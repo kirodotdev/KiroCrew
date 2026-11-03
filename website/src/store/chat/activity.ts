@@ -220,7 +220,7 @@ export const activityReducers = {
     // sees nothing until the slot is refetched, since `chatSlotDetail` would
     // be the only source carrying this field — a reload-only artifact. Mirrors
     // the server, which writes the same redacted string to the same field
-    // (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded state agree.
+    // (`_on_tool_result` in chat_turn/tool_results.py), so live and reloaded state agree.
     //
     // Restricted to launch results on purpose. `state.messages` has no entry
     // cap and a single output can reach the server's 1 MB cap, so copying

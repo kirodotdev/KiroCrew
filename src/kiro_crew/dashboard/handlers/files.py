@@ -462,7 +462,7 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
     if manager is None:
         return ""
     try:
-        # A PROPERTY, not a method (``subagent.py`` ``@property all_agents``).
+        # A PROPERTY, not a method (``subagent_parts/manager.py`` ``@property all_agents``).
         # Calling it invoked the returned LIST, so every lookup raised TypeError,
         # the except below swallowed it, and the card was suppressed for every
         # sub-agent -- the routing this function exists to do never happened once.

@@ -15,7 +15,7 @@ from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIX
 
 #: The cache leaf, mirroring ``policy_distribution.CACHE_DIR_LEAF``; spelled here so
 #: this module needs no import from the governance engine.  Pinned equal by
-#: ``test_governance_distribution``.
+#: ``test_governance_distribution_cache_trust``.
 _POLICY_CACHE_LEAF = "policy_cache"
 #: Gateway-only runtime subtree that holds authenticated macOS decoder images.
 #: The gateway opens these outside the agent sandbox; every sandbox mode must

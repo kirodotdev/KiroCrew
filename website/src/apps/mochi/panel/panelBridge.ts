@@ -345,7 +345,7 @@ export function isRenderableChatRole(role: unknown): boolean {
  *
  * The pet's turn runs on this dashboard slot, and — unlike Slack/background
  * approvals, which emit a dedicated `approval` frame via `state.request_approval`
- * — `chat_runner` surfaces an interactive tool approval as a `permission`-role
+ * — `_on_permission_prompt` (chat_turn/permission_prompt.py) surfaces an interactive tool approval as a `permission`-role
  * `chat_message` whose `cls` field holds the approval metadata
  * (`request_id` / `tool_title` / `tool_input`, and `resolved` once answered).
  * The panel drops `permission` as a non-renderable role, so without this the
