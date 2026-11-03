@@ -188,15 +188,18 @@ the configured pool agent.
 passes, so it outranks the crew pin and the configured default. It must be one of
 `kiro_crew.effort.EFFORT_LEVELS`; any other value fails the step
 (`WorkflowEffortInvalid`) before a session is allocated. Unset (`None` or `""`)
-passes nothing and the session resolves its effort as before. Effort applies
-when the step's session starts: the pooled adapter keys its warm sub-pools on
-`(agent, model, cwd, effort)` so a reused worker always runs at the effort the
-call asked for, and a named `session=` chain keeps the effort its first step
-started it with. A warm reuse's `new_conversation()` re-applies the model but,
-except on claude, not the effort, and a harness that takes effort as a
-per-session config option (KAS, Codex) pushes it only at cold start, so the
-worker pushes its effort again through `provider.change_effort` after each
-cheap reset; a push that raises takes
+passes nothing and the session resolves its effort as before. The override
+applies when the step's session starts: the pooled adapter keys its warm
+sub-pools on `(agent, model, cwd, effort)` so a reused worker always runs at the
+effort the call asked for. A named `session=` chain starts at its first step's
+effort, and each later step that names an effort pushes it onto the live session
+through `provider.change_effort` before its turn, on whichever backend the chain
+runs; a level the session does not offer (`accepts_effort_level` returns False)
+is skipped as on a cold start, and a push that raises fails the step. A warm
+reuse's `new_conversation()` re-applies the model but, except on claude, not the
+effort, and a harness that takes effort as a per-session config option (KAS,
+Codex) pushes it only at cold start, so the worker pushes its effort again
+through `provider.change_effort` after each cheap reset; a push that raises takes
 the hard-reset fallback, which cold-starts with the override, except a level
 kiro-cli refuses (`AcpCommandRefused.command_refused`): the worker logs a warning and keeps
 its conversation, because a cold start would only replay the level. There is no
