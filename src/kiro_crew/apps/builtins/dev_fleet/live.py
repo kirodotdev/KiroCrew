@@ -36,7 +36,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import _facade_mirror
-from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import (
+    gateway_service,
+    installer_launcher,
+    repository,
+    runtime,
+)
 from kiro_crew.apps.builtins.dev_fleet.live_leases import (
     _LEASE_CONFIRMS,
     _LEASE_LOSS_EVENTS,
@@ -103,6 +108,9 @@ class PointerState:
     staged_cancel_available: bool
     previous: str | None = None
     live_verified: bool = True
+    #: The pointer names a checkout (usable or not): the gateway's next start is
+    #: decided by Dev Fleet, not the installer. Gates "Restore installed build".
+    pinned: bool = False
 
 
 class PointerUnavailable(RuntimeError):
@@ -157,13 +165,17 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
     # await, so it describes the path just returned.
     live_verified = _LIVE_VERIFIED
 
-    def _pointer_fields() -> tuple[str | None, str | None]:
+    def _pointer_fields() -> tuple[str | None, str | None, bool]:
         # Staged target and undo history come from the same pointer read: one hop,
         # one document, so the two fields cannot describe different pointers.
         previous = live_target.read_previous_target()
-        return _staged_target(), (str(previous) if previous is not None else None)
+        return (
+            _staged_target(),
+            (str(previous) if previous is not None else None),
+            live_target.is_pinned(),
+        )
 
-    staged, previous = await loop.run_in_executor(subprocess_executor(), _pointer_fields)
+    staged, previous, pinned = await loop.run_in_executor(subprocess_executor(), _pointer_fields)
     # The cancel-availability probe reaches the service manager (a subprocess). The
     # fleet endpoint that consumes this is polled, so it is only paid while a stage
     # exists — with none, the control it gates cannot render and the answer is False.
@@ -174,6 +186,7 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
         staged_cancel_available=cancel,
         previous=previous,
         live_verified=live_verified,
+        pinned=pinned,
     )
 
 
@@ -1300,6 +1313,26 @@ async def _make_live_inner(
                         "refusing make-live: the current service definition exists "
                         "but could not be read, so a failed cutover could not be "
                         f"rolled back: {runtime._redact(str(exc))}"
+                    ),
+                }
+        if can_restart and isinstance(svc, gateway_service.LaunchdBackend):
+            # The launcher about to be rewritten may be the installer's; keep it for
+            # "Restore installed build", which cannot re-derive it from a worktree.
+            try:
+                await _off(
+                    subprocess_executor(),
+                    installer_launcher.record_first_cutover,
+                    svc.live_program(),
+                    prior_definition,
+                )
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "code": "write_failed",
+                    "error": (
+                        "refusing make-live: the installed build's launchd launcher "
+                        "could not be recorded, so Restore installed build could not "
+                        f"put it back: {runtime._redact(str(exc))}"
                     ),
                 }
 

@@ -283,6 +283,10 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'digits, hyphens and underscores, no space or quote), and it sits directly after the literal '
     + '\"/workflow\" command word, so the command shape delimits it and glyph quotes would '
     + 'double-decorate a command whose own slash is the delimiter a reader checks (#18998)',
+  'pages.devFleetPage.restore_installed_build_confirm_manual':
+    'the {{cmd}} operand is the restart command the Dev Fleet backend names '
+    + '(`kirocrew restart`), never user text, and every catalog already wraps it in '
+    + 'backticks, so glyph quotes would double-delimit a command the reader copies',
   'pages.settings.connectionsPanel.remove_confirm':
     'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
     + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '

@@ -112,6 +112,7 @@ def test_a_dev_fleet_live_target_exempts_the_checkout(tmp_path, monkeypatch, hos
     out = capsys.readouterr().out
     assert _WARN not in out
     assert "Dev Fleet live target is set" in out
+    assert "Restore installed build" in out
 
 
 def test_a_checkout_on_a_host_without_the_wheel_install_is_ok(tmp_path, monkeypatch, capsys):

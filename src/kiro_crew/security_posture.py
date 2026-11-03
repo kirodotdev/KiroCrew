@@ -1258,10 +1258,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `release_worktree` redacts git's stderr, the worktree paths and the text
         # of a failed git or filesystem call in the refusals it returns, which reach
         # the route's JSON reply and its SEL record through `gateway_routes`.
+        # `restore_installed` redacts the launcher-record and restart error text in
+        # the refusals it returns, which reach the same JSON reply and SEL record.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
         "apps/builtins/dev_fleet/gateway_routes.py",
         "apps/builtins/dev_fleet/release_worktree.py",
+        "apps/builtins/dev_fleet/restore_installed.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",

@@ -218,8 +218,9 @@ class GatewayServiceBackend(Protocol):
     async def stage(self, worktree: Path, kcbin: Path) -> tuple[bool, str, str]:
         """Point the service at *worktree*. ``(ok, code, error)``."""
 
-    async def reload(self) -> None:
-        """Re-read service definitions from disk (a no-op where meaningless)."""
+    async def reload(self) -> bool:
+        """Re-read service definitions from disk. False when the manager refused
+        (True where it is meaningless)."""
 
     def rollback(self, prior: str | None) -> bool:
         """Best-effort restore of a :meth:`snapshot`. False on any OSError."""
@@ -359,11 +360,14 @@ class SystemdBackend:
             return False, "reload_failed", (redact(stderr.strip())[-200:] or "daemon-reload failed")
         return True, "", ""
 
-    async def reload(self) -> None:
+    async def reload(self) -> bool:
         """Re-read unit files. Called on the rollback path so the loaded config
-        matches the restored disk state rather than the rejected override."""
-        if await self._available():
-            await self._run(["systemctl", "--user", "daemon-reload"], timeout=10)
+        matches the restored disk state rather than the rejected override. False
+        when ``daemon-reload`` failed, so the manager still holds the old definition."""
+        if not await self._available():
+            return True
+        rc, _out, _err = await self._run(["systemctl", "--user", "daemon-reload"], timeout=10)
+        return rc == 0
 
     def rollback(self, prior: str | None) -> bool:
         dropin = self._dropin_path()
@@ -593,9 +597,10 @@ class LaunchdBackend:
             return False, "write_failed", f"failed to write live launcher: {exc}"
         return True, "", ""
 
-    async def reload(self) -> None:
+    async def reload(self) -> bool:
         """No-op: launchd has no ``daemon-reload``. The plist is never rewritten
         by staging, so there is nothing to re-read."""
+        return True
 
     def rollback(self, prior: str | None) -> bool:
         try:

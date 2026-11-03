@@ -29,7 +29,13 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins import BUILTIN_NAMES
-from kiro_crew.apps.builtins.dev_fleet import gateway_routes, live, pointer_broker, server
+from kiro_crew.apps.builtins.dev_fleet import (
+    gateway_routes,
+    live,
+    pointer_broker,
+    restore_installed,
+    server,
+)
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -62,6 +68,7 @@ class TestRegistration:
             ("POST", "/api/apps/dev-fleet/make-live"),
             ("POST", "/api/apps/dev-fleet/pod-token"),
             ("POST", "/api/apps/dev-fleet/restart-gateway"),
+            ("POST", "/api/apps/dev-fleet/restore-installed"),
             ("PUT", "/api/apps/dev-fleet/live-target/removal-lease"),
         ]
 
@@ -120,6 +127,10 @@ def recorded(monkeypatch):
         calls["restart"] = True
         return {"ok": True, "start_id": "1"}
 
+    async def _restore(dry_run=False):
+        calls["restore"] = dry_run
+        return {"ok": True, "restored": True, "start_id": "1"}
+
     async def _state(*, fresh=False):
         calls["state_fresh"] = fresh
         return live.PointerState(
@@ -134,6 +145,7 @@ def recorded(monkeypatch):
 
     monkeypatch.setattr(live, "_make_live", _make_live)
     monkeypatch.setattr(live, "_restart_gateway", _restart)
+    monkeypatch.setattr(restore_installed, "_restore_installed", _restore)
     monkeypatch.setattr(live, "pointer_state", _state)
     monkeypatch.setattr(gateway_routes.repository, "ensure_main_repo_discovered", _ensure)
     monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
@@ -351,6 +363,96 @@ class TestTheWriteRoutesAreOwnerOnly:
             await client.close()
 
 
+class TestRestoreInstalledHasTheCutoversGate:
+    """``POST restore-installed`` moves the pointer, so it takes exactly the gate,
+    the refusals and the audit ``make-live`` takes — nothing wider."""
+
+    _ROUTE = "/api/apps/dev-fleet/restore-installed"
+
+    @pytest.mark.asyncio
+    async def test_owner_human_can_restore_and_it_is_audited(
+        self, enabled, recorded, monkeypatch
+    ) -> None:
+        rows: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                rows.append(kw)
+
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _Sel())
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post(self._ROUTE, json={})
+            assert resp.status == 200 and (await resp.json())["restored"] is True
+            assert recorded["restore"] is False
+            resp = await client.post(self._ROUTE, json={"dry_run": True})
+            assert resp.status == 200 and recorded["restore"] is True
+        finally:
+            await client.close()
+        assert [(r["operation"], r["outcome"]) for r in rows] == [
+            ("dev_fleet_restore_installed", "success"),
+            ("dev_fleet_restore_installed", "success"),
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("principal", ["dev-fleet", "md-notebook"])
+    async def test_every_app_token_is_refused_like_make_live(
+        self, enabled, recorded, principal
+    ) -> None:
+        client = await _client(_make_app(principal_app=principal))
+        try:
+            restore = await client.post(self._ROUTE, json={})
+            make_live = await client.post(
+                "/api/apps/dev-fleet/make-live", json={"path": "/wt/next"}
+            )
+            assert restore.status == make_live.status == 403
+            assert "restore" not in recorded and "make_live" not in recorded
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_non_owner_human_gets_make_lives_answer(self, enabled, recorded) -> None:
+        client = await _client(_make_app(principal_app="", user="guest", owner_id="owner"))
+        try:
+            restore = await client.post(self._ROUTE, json={})
+            make_live = await client.post(
+                "/api/apps/dev-fleet/make-live", json={"path": "/wt/next"}
+            )
+            assert restore.status == make_live.status
+            assert restore.status in (401, 403)
+            assert "restore" not in recorded
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_gets_make_lives_answer(self, enabled, recorded) -> None:
+        client = await _client(_make_app(principal_app=None))
+        try:
+            restore = await client.post(self._ROUTE, json={})
+            make_live = await client.post(
+                "/api/apps/dev-fleet/make-live", json={"path": "/wt/next"}
+            )
+            assert restore.status == make_live.status
+            assert restore.status in (401, 403)
+            assert "restore" not in recorded
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_disabled_app_and_bad_body_are_refused(self, recorded, monkeypatch) -> None:
+        monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda name: name == "dev-fleet")
+        client = await _client(_make_app(principal_app=""))
+        try:
+            r = await client.post(self._ROUTE, json={"dry_run": "yes"})
+            assert r.status == 400 and (await r.json())["code"] == "invalid_dry_run"
+            monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda name: False)
+            r = await client.post(self._ROUTE, json={})
+            assert r.status == 404 and (await r.json())["code"] == "app_not_enabled"
+            assert "restore" not in recorded
+        finally:
+            await client.close()
+
+
 class TestThePodTokenRoute:
     """``POST pod-token`` mints in the gateway, for the dashboard owner only.
 
@@ -469,6 +571,7 @@ class TestTheReadBroker:
                 "staged_cancel_available": True,
                 "previous": "/wt/previous",
                 "live_verified": True,
+                "pinned": False,
             }
             assert recorded["state_fresh"] is True
         finally:
@@ -611,6 +714,15 @@ class TestTheBackendClient:
         assert pointer_broker._parse_state({"live": "/wt/live"}).live_verified is True
 
     @pytest.mark.asyncio
+    async def test_pinned_crosses_the_broker_and_defaults_false(self) -> None:
+        """The fleet view gates "Restore installed build" on this bit; an older
+        gateway that omits it reads as not pinned, a non-bool as an outage."""
+        assert pointer_broker._parse_state({"pinned": True}).pinned is True
+        assert pointer_broker._parse_state({}).pinned is False
+        with pytest.raises(live.PointerUnavailable, match="pinned"):
+            pointer_broker._parse_state({"pinned": "yes"})
+
+    @pytest.mark.asyncio
     async def test_a_non_bool_live_verified_is_an_outage(self) -> None:
         with pytest.raises(live.PointerUnavailable, match="live_verified"):
             pointer_broker._parse_state({"live": "/wt/live", "live_verified": "no"})
@@ -670,6 +782,7 @@ def test_pointer_state_payload_is_json_shaped() -> None:
         "staged_cancel_available": False,
         "previous": None,
         "live_verified": True,
+        "pinned": False,
     }
 
 
