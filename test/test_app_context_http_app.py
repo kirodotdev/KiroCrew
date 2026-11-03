@@ -202,7 +202,11 @@ def test_written_manifest_on_disk_round_trips(wired, tmp_path):
     }
     path = Path(tmp_path) / "app.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    info = {"name": "ondisk", "enabled": True, "manifest": json.loads(path.read_text())}
+    info = {
+        "name": "ondisk",
+        "enabled": True,
+        "manifest": json.loads(path.read_text(encoding="utf-8")),
+    }
     ctx = hooks_mod._build_app_context_from_info(info)
     assert ctx.http_app is gateway_app
 

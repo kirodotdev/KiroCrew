@@ -251,7 +251,9 @@ async def test_provider_reads_frames_normally_with_the_recorder_on(monkeypatch, 
     await _frame_record.flush_for_tests()
     out = tmp_path / f"{POLICY_ID_BY_BACKEND[backend]}.jsonl"
     assert out.exists(), f"{backend or 'kiro-cli'}: recording did not land"
-    assert json.loads(out.read_text().splitlines()[-1])["method"] == "session/update"
+    assert (
+        json.loads(out.read_text(encoding="utf-8").splitlines()[-1])["method"] == "session/update"
+    )
     assert not _frame_record._stood_down
 
 

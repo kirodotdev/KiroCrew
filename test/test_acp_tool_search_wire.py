@@ -358,7 +358,9 @@ class TestProviderChannels:
         provider._client._work_dir = tmp_path
         provider._tool_search = True
         provider._apply_tool_search_overlay()
-        data = json.loads((tmp_path / ".kiro" / "settings" / "cli.json").read_text())
+        data = json.loads(
+            (tmp_path / ".kiro" / "settings" / "cli.json").read_text(encoding="utf-8")
+        )
         assert data["toolSearch.enabled"] is True
 
     def test_resolved_settings_carry_the_configured_values(self):

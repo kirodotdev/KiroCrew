@@ -516,7 +516,7 @@ class TestArmingOnAnAlreadyUnreadableStore(unittest.IsolatedAsyncioTestCase):
             # NEGATIVE CONTROL: the probe must not fire on a store that is merely
             # empty. Without this the guard could be satisfied by refusing always,
             # which would break every honestly-empty install.
-            store.write_text(json.dumps({"jobs": []}))
+            store.write_text(json.dumps({"jobs": []}), encoding="utf-8")
             healthy = CronService(base_dir=Path(tmp))
             await healthy.list_jobs_async(True)
             healthy.raise_if_store_unreadable()
