@@ -13942,6 +13942,9 @@
       "waiting_for_approval_address": "Aguardando o endereço de aprovação… Ele aparecerá aqui na próxima conexão do agente — envie qualquer mensagem no chat para iniciar a autorização agora.",
       "needs_configuration": "Requer configuração",
       "needs_configuration_help": "{{provider}} precisa de uma configuração única. \"Configurar app OAuth\" abre uma página de definições guiada; nada muda até você salvar lá, e você pode removê-la depois. Ela orienta o registro de um app no {{provider}} e a inserção do client ID e do secret.",
+      "backend_oauth_caveat": "O Connect é concluído mesmo assim, e o login do {{provider}} fica salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login, então as ferramentas podem não funcionar neles.",
+      "chat_use_label": "Nos chats",
+      "chat_use_lacks_oauth": "Salvo para os chats que o suportam. Alguns chats ainda não podem usar esse tipo de login.",
       "configure_oauth_app": "Configurar app OAuth",
       "prerequisite_github": "GitHub não oferece registro dinâmico de clientes, então Conectar usa o app OAuth do GitHub registrado em Configurações → Apps OAuth. A página de consentimento do GitHub mostra esse app; aprove-o para continuar.",
       "prerequisite_asana": "Asana não oferece registro dinâmico de clientes, então Conectar usa o app MCP do Asana registrado em Configurações → Apps OAuth. A página de consentimento do Asana mostra esse app; aprove-o para continuar."

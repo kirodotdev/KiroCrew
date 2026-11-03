@@ -1172,6 +1172,29 @@ re-authorization, even when a refresh token already exists. That is the accepted
 cost, because without it a repeat consent returns no new refresh token; do not
 drop the parameter to save the extra screen.
 
+**Which backend can use it.** The client reaches a chat's sign-in only through
+the remote MCP entry's `oauth` block, and only kiro-cli reads that block
+(`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
+schema with no slot for it (#27711). The Connections mint itself runs on
+kiro-cli, so Connect stays on every backend and the grant it writes is real for
+kiro-cli chats; whether a KAS chat can use that grant is #24693 / #24677's
+question. So while the resolved `agent.acp_backend`
+lacks the capability (crewmate threads are not read: that field resolves to KAS on every install),
+`/api/connections/status` marks every pre-registered row `backendLacksOauth`,
+connected or not. The card states it without adding a tip or heading key
+(connection-card-caveat-tip): inside the tip beside Connect; on a connected row
+with a shared grant, inside the shared-grant tip beside Disconnect; on a
+connected row without one, as an "In chats" line in the status list beside
+"Connected since", since there it is a fact about the current state. The copy
+uses no backend name, no issue number and no remedy, in user terms: the tip
+says Connect still finishes and the sign-in is saved for chats that support it,
+while some chats cannot use this kind of sign-in yet; the row line says it is saved
+for chats that support it and some chats cannot use it yet. A Kiro CLI pick can itself load as KAS (the
+v3 relay), so naming a switch would point at a route that does not help.
+An unreadable config makes no
+claim.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`

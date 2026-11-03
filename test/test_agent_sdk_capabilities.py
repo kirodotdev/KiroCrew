@@ -82,6 +82,7 @@ CAPABILITY_FIELDS = (
     "supports_native_todos",
     "honors_zero_tool_ban",
     "acp_client_spawnable",
+    "honors_remote_mcp_oauth",
 )
 
 
