@@ -40,6 +40,9 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
 from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _COMMAND_AGENT_RE,
     _COMMAND_SLUG_RE,
+    _COMPOSER_ACTION_ICON_RE,
+    _COMPOSER_ACTION_KEYS,
+    _COMPOSER_ACTION_POPOVER,
     _FILE_MENU_KINDS,
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
@@ -64,6 +67,9 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_COMPOSER_ACTION_STRING,
+    MAX_COMPOSER_ACTION_TITLE,
+    MAX_COMPOSER_ACTIONS_PER_APP,
     MAX_LINK_OPEN_PER_APP,
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
@@ -75,6 +81,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     MESSAGE_ACTION_ROLES,
     CommandArgument,
     CommandContribution,
+    ComposerActionConfig,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
@@ -560,6 +567,13 @@ class AppManifest:
             refusal = path_refusal(link_open.entry)
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+        # A composer-action entry is imported by the same frame bootstrap.
+        for composer in self.contributes.composerActions:
+            refusal = path_refusal(composer.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.composerActions entry {refusal}: {composer.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -802,6 +816,7 @@ class AppManifest:
             # A link-open `entry` is the same kind of module, and `hosts` decides which
             # clicked links the app is handed.
             or self.contributes.linkOpen
+            or self.contributes.composerActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further

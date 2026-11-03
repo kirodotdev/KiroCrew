@@ -4467,6 +4467,84 @@ the frame, the capability, the fetch or the invocation contract is its own. The 
 Writers: `apps/manifest_contributes.py` (`LinkOpenConfig`), `apps/link_open_grants.py`,
 `apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`.
 
+## 18e. A composer action inserts only into an empty composer, only text with nothing to resolve; the app sees nothing and sends nothing
+
+`contributes.composerActions[]` (at most 2 per app: `id`, `title` of at most 40
+UTF-16 units, optional glyph `icon`, `entry`, optional
+`popover.width` 200 to 480 and `popover.maxHeight` 120 to 600; a field with the wrong
+type or an unknown field is refused, never coerced) puts one row per action in the
+composer's "+" menu, after the host's own shortcuts and naming its app. It is a
+click-driven point on the shared frame contract (§18b); the RFC is
+`docs/request-for-change/rfc-app-contribution-points.md` §6.
+
+- **Point.** `composerActions`, registered at the bottom of `apps/app_frame.py`
+  with `composer_action_frame.resolve_composer_action` and
+  `COMPOSER_ACTION_SCRIPT`. The resolver answers only for an enabled app's declared
+  action whose grant the owner approved, so a revoked action or a disabled app
+  stops its frame, its renewal and its next fetch.
+- **What the frame gets.** `init` and one `composer.invoke { invocationId,
+  deadlineMs }`. Nothing from the composer: not the draft, the selection, the
+  session or the agent. The script hands the module a frozen `call`
+  (`invocationId`, `deadlineMs`, `signal`, `insert`, `resize`, `close`, `error`),
+  runs one invocation at a time, and turns a returned string into `insert`.
+- **Host** (`website/src/composerActions/composerActionHost.ts`, on `HostInvocation`
+  with `allowedKinds` `insert` only). The frame must say `ready` within 5 s; the
+  invocation has a 2-minute deadline. An offer over 32,000 characters is
+  answered `too_large` (`frameProtocol.offerRefusal`), one that is empty after `displaySafe` `not_allowed`; an
+  accepted one is acked and `settle()`d, so no `invoke.cancel` follows. A message
+  over `MAX_HOST_MESSAGE_BYTES`, past the burst allowance, or a second `load` tears
+  the frame down.
+- **Insert.** Stateless: an app's text goes only into an EMPTY composer (no text,
+  no collapsed paste, `literalInsert.draftIsEmpty`), so the text is the whole draft.
+  A click on a non-empty composer opens the popover with a notice and makes no
+  frame. The draft is checked again when the offer arrives: if the person typed
+  meanwhile the offer is refused `not_empty`, so a draft is never mixed. An offer
+  whose text alone would resolve anything is refused `not_literal`
+  (`literalInsert.composerWouldResolve`). Each refusal is answered to the app as
+  `result.error` and shown in the popover (`composer_action_needs_empty`,
+  `composer_action_would_resolve`); the frame stays, so the app can offer other
+  text. Accepted text is ordinary draft text with no mark: nothing in it resolves,
+  and what the person types after it is their own and resolves normally. A session
+  switch, a revoked action, or a typing lock (another tab holds the draft) cancels
+  the invocation, and a locked composer opens no action; an offer that lands while
+  locked settles `stale` and touches nothing. Before any check the host drops every
+  `\p{Default_Ignorable_Code_Point}` (zero-width characters, tag characters,
+  variation selectors, fillers; `literalInsert.visibleOnly`), so the draft holds
+  only what the person can read before sending. The check's rules are each a
+  superset of one reader, because the gateway's readers are Python:
+  - a line whose first character other than JS `\s` or U+0085 is `/`: the gateway's
+    `message.split()[0]` and the client's `raw.trim()` slash readers;
+  - a line whose first such character is `!`: the composer's terminal-command
+    reader (`useTerminalCommand.terminalCommand`, a separated leading bang), whose
+    command reaches the person's shell;
+  - `@` not straight after a letter or digit: mentions, `@prompt`, `@knowledge`;
+  - `$` before a letter or digit, after anything: the gateway's `$skill` reader;
+  - the paste token and the attachment and folder markers (`PASTE_TOKEN_REGEX`,
+    `fileTokens.parseFiles`, `parseDirs`);
+  - a path separator followed on the same line by an `IMG_EXT` suffix: every match
+    of `kiro_crew.image_refs._PATH_RE` has that shape;
+  - markdown image syntax `![`, any raw HTML tag (`<` then a letter, `!`, `/` or
+    `?`, since `rehypeRaw` passes HTML through), and any `[attached_file` /
+    `[attached_dir` marker, however spaced or encoded: the transcript renderer decodes and fetches a local media
+    destination (`ImgWithFallback`), and `resolveFileSegment` / `resolveDirSegment`
+    read markers with any blank after them.
+- **Grant.** One staged family, `composerActions`, entry `<id>:insert`
+  (`apps/composer_action_grants.py`), registered in `apps/point_grants.py`. A new id
+  on update is held back until the owner approves it on the App Detail page; a
+  title or icon change keeps the approval. The app row carries
+  `composerActionGrant { actions, staged }`, and the dashboard renders only
+  `actions`.
+- **Hosts.** Only the main chat composer passes `composerActions`
+  (`ComposerDockView`). On a touch host whose "+" is a bare file picker (`directFilePicker`)
+  the rows are items of the touch overflow menu instead (`composer-more-trigger`,
+  `ComposerActionMenuItems`). A failed or stopped action is shown through
+  `ErrorNotice` with no agent hand-off, because the draft below it is unsaved; the
+  popover's window Escape listener closes it when the local Crew is hidden.
+
+Writers: `apps/composer_action_frame.py`, `apps/composer_action_grants.py`,
+`apps/manifest_contributes.py`, `website/src/composerActions/*`,
+`website/src/components/chat-input/composerActions.tsx`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns

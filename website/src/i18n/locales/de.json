@@ -6658,7 +6658,18 @@
       "attachment_removed": "{{file}} aus Anhängen entfernt",
       "attachment_restored": "{{file}} angehängt",
       "trusted_command_until": "„{{cmd}}“ ist bis {{time}} vertrauenswürdig, danach wird erneut gefragt",
-      "trusted_base_until": "Jedem „{{base}}“-Befehl wird bis {{time}} vertraut, danach wird erneut gefragt"
+      "trusted_base_until": "Jedem „{{base}}“-Befehl wird bis {{time}} vertraut, danach wird erneut gefragt",
+      "composer_action_dialog": "{{title}}, von {{app}}",
+      "composer_action_close": "Schließen",
+      "composer_action_timed_out": "{{app}} hat zu lange gebraucht und wurde gestoppt. Nichts wurde eingefügt.",
+      "composer_action_app_error": "{{app}} hatte einen Fehler. Nichts wurde eingefügt.",
+      "composer_action_revoked": "{{app}} wurde ausgeschaltet. Nichts wurde eingefügt.",
+      "composer_action_failed": "{{app}} hat nicht geantwortet. Nichts wurde eingefügt.",
+      "composer_action_from": "Bereitgestellt von der App {{app}}",
+      "composer_action_footer_host": "{{productName}} hat den Entwurf geprüft. {{app}} sieht ihn weiterhin nicht.",
+      "composer_action_needs_empty": "{{app}} kann nur in eine leere Nachricht einfügen. Leere zuerst den Entwurf.",
+      "composer_action_would_resolve": "Der Text von {{app}} beginnt mit /, ! oder @ oder enthält einen $skill, eine Datei oder ein Bild und würde daher ausgeführt statt als Text gesendet. Er wurde nicht eingefügt.",
+      "composer_action_footer": "{{app}} kann deinen Entwurf nicht sehen. Sein Text wird wörtlich eingefügt, und du entscheidest, ob du ihn sendest."
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -11074,7 +11085,8 @@
         "keeps_builtin_until": "Bis dahin bleibt sie eine integrierte App.",
         "keeps_builtin": "Sie bleibt eine integrierte App.",
         "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
-      }
+      },
+      "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden."
     },
     "appPage": {
       "loading_app": "App wird geladen…",

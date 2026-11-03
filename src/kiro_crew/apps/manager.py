@@ -270,6 +270,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
     )
+    from kiro_crew.apps.composer_action_grants import (  # noqa: F401
+        composer_action_grant_row,
+    )
     from kiro_crew.apps.discovery import (  # noqa: F401
         discover_builtin_apps,
     )

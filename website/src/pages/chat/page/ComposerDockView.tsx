@@ -18,6 +18,7 @@ import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeC
 import { CrewModeChip } from '../../../components/CrewModeChip'
 import type { PromptHistoryItem } from '../../../components/composerPromptHistory'
 import type { ResolvedSessionControl } from '../../../hooks/useSessionControls'
+import { useComposerActionItems } from '../../../composerActions/useComposerActionItems'
 import type { ProviderAdapter, ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import type { ChatMessage, SessionInfo, ChatSlot } from '../../../types'
@@ -327,6 +328,8 @@ export default function ComposerDockView({
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // App composer actions: rows in "+" whose apps insert plain text.
+  const composerActions = useComposerActionItems()
   // Someone else holds the typing lock: no dictation may start into the draft.
   const voiceOptions = useMemo(
     () => (typingLock ? { ...composerVoiceOptions, startBlocked: true } : composerVoiceOptions),
@@ -695,6 +698,7 @@ export default function ComposerDockView({
                 setProjectPickerOpen(o => !o)
               }}
               sessionControls={composerSessionControls}
+              composerActions={composerActions}
               onSessionControlClick={(key, rect, trigger) => {
                 anchorSessionControl(rect, trigger)
                 // Two independent setState calls, not one updater with a side

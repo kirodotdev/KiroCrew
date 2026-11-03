@@ -6509,7 +6509,18 @@
       "attachment_removed": "已从附件中移除 {{file}}",
       "attachment_restored": "已附加 {{file}}",
       "trusted_command_until": "已信任“{{cmd}}”至 {{time}}，之后会再次询问",
-      "trusted_base_until": "已信任任意“{{base}}”命令至 {{time}}，之后会再次询问"
+      "trusted_base_until": "已信任任意“{{base}}”命令至 {{time}}，之后会再次询问",
+      "composer_action_dialog": "{{title}}，来自 {{app}}",
+      "composer_action_close": "关闭",
+      "composer_action_timed_out": "{{app}} 用时太久，已停止。没有插入任何内容。",
+      "composer_action_app_error": "{{app}} 出错了。没有插入任何内容。",
+      "composer_action_revoked": "{{app}} 已被关闭。没有插入任何内容。",
+      "composer_action_failed": "{{app}} 没有响应。没有插入任何内容。",
+      "composer_action_from": "由 {{app}} 应用提供",
+      "composer_action_footer_host": "{{productName}} 检查了草稿。{{app}} 仍然看不到它。",
+      "composer_action_needs_empty": "{{app}} 只能插入到空消息中。请先清空草稿。",
+      "composer_action_would_resolve": "{{app}} 的文本以 /、! 或 @ 开头，或包含 $skill、文件或图片，因此会被执行而不是作为文本发送。没有插入。",
+      "composer_action_footer": "{{app}} 看不到你的草稿。它的文字按原样插入，是否发送由你决定。"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -10878,7 +10889,8 @@
         "keeps_builtin_until": "在此之前，它仍是内置应用。",
         "keeps_builtin": "它仍是内置应用。",
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
-      }
+      },
+      "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。"
     },
     "appPage": {
       "loading_app": "加载应用…",

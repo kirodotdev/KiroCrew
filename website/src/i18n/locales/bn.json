@@ -6658,7 +6658,18 @@
       "attachment_removed": "{{file}} সংযুক্তি থেকে সরানো হয়েছে",
       "attachment_restored": "{{file}} সংযুক্ত করা হয়েছে",
       "trusted_command_until": "«{{cmd}}» {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে",
-      "trusted_base_until": "যেকোনো «{{base}}» কমান্ড {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে"
+      "trusted_base_until": "যেকোনো «{{base}}» কমান্ড {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে",
+      "composer_action_dialog": "{{title}}, {{app}} থেকে",
+      "composer_action_close": "বন্ধ করো",
+      "composer_action_timed_out": "{{app}} খুব বেশি সময় নিয়েছে, তাই থামানো হয়েছে। কিছুই যোগ হয়নি।",
+      "composer_action_app_error": "{{app}}-এ ত্রুটি হয়েছে। কিছুই যোগ হয়নি।",
+      "composer_action_revoked": "{{app}} বন্ধ করা হয়েছে। কিছুই যোগ হয়নি।",
+      "composer_action_failed": "{{app}} সাড়া দেয়নি। কিছুই যোগ হয়নি।",
+      "composer_action_from": "{{app}} অ্যাপ থেকে",
+      "composer_action_footer_host": "{{productName}} খসড়াটি দেখেছে। {{app}} এখনও এটি দেখতে পায় না।",
+      "composer_action_needs_empty": "{{app}} শুধু খালি বার্তায় লেখা যোগ করতে পারে। আগে খসড়াটি মুছে ফেলো।",
+      "composer_action_would_resolve": "{{app}}-এর লেখা /, ! বা @ দিয়ে শুরু, অথবা এতে $skill, ফাইল বা ছবি আছে, তাই এটি লেখা হিসেবে না গিয়ে চলত। এটি যোগ করা হয়নি।",
+      "composer_action_footer": "{{app}} তোমার খসড়া দেখতে পায় না। এর লেখা যেমন আছে তেমনই যোগ হয়, আর পাঠাবে কিনা তুমি ঠিক করো।"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -11074,7 +11085,8 @@
         "keeps_builtin_until": "ততদিন এটি অন্তর্নির্মিত অ্যাপই থাকবে।",
         "keeps_builtin": "এটি অন্তর্নির্মিত অ্যাপই থাকবে।",
         "installed_needs_newer_host": "{{name}}-এর ইনস্টল করা সংস্করণের জন্য নতুন {{productName}} দরকার। {{productName}} আপডেট করো; তোমার ডেটা বদলায়নি।"
-      }
+      },
+      "grants_reconsent_composer_actions": "কম্পোজার বোতাম: অ্যাপকে কম্পোজারের + মেনুতে এই বোতামগুলো যোগ করতে দেয়। ক্লিক করলে অ্যাপের লেখা তোমার খসড়ায় যোগ হয়; অ্যাপ খসড়া দেখতে বা পাঠাতে পারে না।"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",

@@ -6807,7 +6807,18 @@
       "attachment_removed": "{{file}} retiré des pièces jointes",
       "attachment_restored": "{{file}} joint",
       "trusted_command_until": "Confiance accordée à « {{cmd}} » jusqu’à {{time}}, puis la demande réapparaît",
-      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît"
+      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît",
+      "composer_action_dialog": "{{title}}, de {{app}}",
+      "composer_action_close": "Fermer",
+      "composer_action_timed_out": "{{app}} a mis trop de temps et a été arrêtée. Rien n'a été inséré.",
+      "composer_action_app_error": "{{app}} a rencontré une erreur. Rien n'a été inséré.",
+      "composer_action_revoked": "{{app}} a été désactivée. Rien n'a été inséré.",
+      "composer_action_failed": "{{app}} n'a pas répondu. Rien n'a été inséré.",
+      "composer_action_from": "Fourni par l'app {{app}}",
+      "composer_action_footer_host": "{{productName}} a vérifié le brouillon. {{app}} ne le voit toujours pas.",
+      "composer_action_needs_empty": "{{app}} ne peut insérer que dans un message vide. Vide d'abord le brouillon.",
+      "composer_action_would_resolve": "Le texte de {{app}} commence par /, ! ou @, ou contient un $skill, un fichier ou une image : il s'exécuterait au lieu d'être envoyé comme texte. Il n'a pas été inséré.",
+      "composer_action_footer": "{{app}} ne voit pas ton brouillon. Son texte est inséré tel quel, et c'est toi qui choisis de l'envoyer."
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -11270,7 +11281,8 @@
         "keeps_builtin_until": "D’ici là, elle reste une app intégrée.",
         "keeps_builtin": "Elle reste une app intégrée.",
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
-      }
+      },
+      "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

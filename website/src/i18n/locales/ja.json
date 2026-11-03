@@ -6509,7 +6509,18 @@
       "attachment_removed": "{{file}} を添付から削除しました",
       "attachment_restored": "{{file}} を添付しました",
       "trusted_command_until": "「{{cmd}}」を {{time}} まで信頼します。その後は再度確認します",
-      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します"
+      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します",
+      "composer_action_dialog": "{{title}}（{{app}}）",
+      "composer_action_close": "閉じる",
+      "composer_action_timed_out": "{{app}} の処理に時間がかかりすぎたため停止しました。何も挿入されていません。",
+      "composer_action_app_error": "{{app}} でエラーが発生しました。何も挿入されていません。",
+      "composer_action_revoked": "{{app}} はオフになりました。何も挿入されていません。",
+      "composer_action_failed": "{{app}} が応答しませんでした。何も挿入されていません。",
+      "composer_action_from": "{{app}} アプリが提供",
+      "composer_action_footer_host": "{{productName}} が下書きを確認しました。{{app}} には引き続き見えません。",
+      "composer_action_needs_empty": "{{app}} は空のメッセージにのみ挿入できます。先に下書きを空にしてください。",
+      "composer_action_would_resolve": "{{app}} のテキストは /、! か @ で始まるか、$skill、ファイル、画像を含むため、テキストとして送られずに実行されます。挿入しませんでした。",
+      "composer_action_footer": "{{app}} は下書きを見られません。テキストはそのまま挿入され、送信するかどうかはあなたが決めます。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -10878,7 +10889,8 @@
         "keeps_builtin_until": "それまではビルトインアプリのままです。",
         "keeps_builtin": "ビルトインアプリのままです。",
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
-      }
+      },
+      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

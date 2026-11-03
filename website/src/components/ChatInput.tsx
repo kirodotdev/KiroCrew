@@ -70,6 +70,7 @@ import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/Voice
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
+import { ComposerActionMenuItems, useComposerActionMenu } from './chat-input/composerActions'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -251,6 +252,7 @@ function ChatInput({
   onProjectClick,
   environmentSlot,
   sessionControls,
+  composerActions,
   onSessionControlClick,
   contextPct,
   contextUsedTokens,
@@ -549,6 +551,7 @@ function ChatInput({
   const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef, isTouchInput: () => touchInput })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
+  const appActions = useComposerActionMenu({ items: terminal.active ? undefined : composerActions, value, onChange, pasteBlocks, composerControl, scopeKey: slotId, locked: typingLocked, plusBtnRef: plus.plusBtnRef, composerBoxRef: composerAnchorRef, closeMenu: () => setPlusOpen(false) })
   // The More menu's Sketch item opens a dialog. The dialog hands focus to the
   // composer itself on close (`returnFocusRef`), so only the menu half of the
   // hand-off is used here: defer the open, and skip the trigger restore.
@@ -1317,6 +1320,7 @@ function ChatInput({
       {onUploadFiles && (
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
+      {appActions.popover}
 
       {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
@@ -1657,7 +1661,7 @@ function ChatInput({
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           {typingLock && <TypingLockBanner lock={typingLock} />}
           <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}${typingLocked ? ' hidden' : ''}`}>
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} appActionRows={appActions.rows} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -1712,6 +1716,7 @@ function ChatInput({
                       {collapseMenuRow}
                     </DropdownMenuItem>
                   )}
+                  <ComposerActionMenuItems items={appActions.items} onPick={(item) => moreMenuLayer.openLayer(() => appActions.start(item))} />
                   {/* Mid-turn Optimize, as in the "+" menu (`busyOptimizeRow`). */}
                   {busyOptimizeOffered && (
                     <DropdownMenuItem asChild disabled={optimizeBlocked} onSelect={() => optimizeUnlessLocked()}>
