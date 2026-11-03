@@ -854,6 +854,26 @@ describe('useMeetingSession action items', () => {
     await waitFor(() => expect(view.result.current.pending.filing).toBeNull())
   })
 
+  it('lists every action item with a filing in flight, not only the latest', async () => {
+    const releases: Array<() => void> = []
+    apiMocks.fileTask.mockImplementation(
+      () => new Promise(resolve => { releases.push(() => resolve({})) }),
+    )
+    const view = await mountLoaded()
+
+    act(() => {
+      view.result.current.actions.fileTask('t1')
+      view.result.current.actions.fileTask('t2')
+    })
+    await waitFor(() => expect(view.result.current.pending.filingIds).toEqual(['t1', 't2']))
+    expect(view.result.current.pending.filing).toBe('t2')
+
+    await act(async () => {
+      releases.forEach(release => release())
+    })
+    await waitFor(() => expect(view.result.current.pending.filingIds).toEqual([]))
+  })
+
   it('archives and unarchives an action item', async () => {
     const view = await mountLoaded()
 

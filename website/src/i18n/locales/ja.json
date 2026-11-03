@@ -3447,6 +3447,8 @@
         "allDone": "すべてレビュー完了",
         "archive": "アーカイブ",
         "archiveAll": "残りをアーカイブ",
+        "archiveOthers_other": "他の{{count}}件をアーカイブ",
+        "archiveSkipsFiling": "登録中の項目は対象外です",
         "archivedSection": "アーカイブ済み",
         "assignedTo": "{{name}}に割り当て",
         "backToMeeting": "ミーティングに戻る",

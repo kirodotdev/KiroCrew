@@ -80,6 +80,7 @@
   "apps.issueRadar.views.taggingView.reanalyse_issues",
   "apps.issueRadar.welcomeCarousel.connect_count",
   "apps.meetings.list.synced",
+  "apps.meetings.review.archiveOthers",
   "apps.meetings.review.closeBlocked",
   "apps.meetings.review.remaining",
   "apps.meetings.taskSidebar.heading",

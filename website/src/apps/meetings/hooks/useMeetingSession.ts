@@ -7,7 +7,7 @@
 // stays in useState.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { i18nT } from '../../../i18n/t'
 import {
@@ -972,13 +972,23 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onSuccess: () => invalidate(),
   })
 
+  const fileTaskKey = [...scope, 'fileTask'] as const
   const fileTaskMutation = useMutation({
+    mutationKey: fileTaskKey,
     mutationFn: (taskId: string) => meetingsApi.fileTask(meetingId, taskId),
     onSuccess: () => {
       notify(i18nT('apps.meetings.session.taskFiled'), { type: 'success' })
       invalidate()
     },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.taskFileFailed')),
+  })
+
+  // Every filing still in flight, not only the latest: `fileTaskMutation.variables`
+  // names only the last call, so a second File would make the first look settled
+  // and its row archivable while its provider call is still running.
+  const filingIds = useMutationState({
+    filters: { mutationKey: fileTaskKey, status: 'pending' },
+    select: mutation => mutation.state.variables as string,
   })
 
   const reviewTaskMutation = useMutation({
@@ -1145,6 +1155,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       /** The target status of an in-flight pause/resume/review change, or null. */
       settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,
+      /** Every action item with a filing in flight, oldest first. */
+      filingIds,
     },
   }
 }
