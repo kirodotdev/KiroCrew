@@ -287,6 +287,15 @@ _OAUTH_QUERY_PARAMS = frozenset(
     }
 )
 
+# A public OAuth client id: RFC 3986 unreserved characters, bounded. A Salesforce
+# Connected App consumer key is about 85 characters; `+` and `/` stay out so a
+# base64 secret cannot pass as one.
+_OAUTH_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._~-]{1,512}\Z")
+
+# AWS secret access keys are exactly 40 characters.
+_AWS_SECRET_KEY_LENGTH = 40
+
+
 # ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
 # ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
 # exact-match, but that leaves no remedy short of a code release when a user's

@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from .exfil_oauth import (  # noqa: F401
+    _AWS_SECRET_KEY_LENGTH,
+    _OAUTH_CLIENT_ID_RE,
     _OAUTH_EXTENSION_HOST_RE,
     _OAUTH_QUERY_PARAMS,
     OAuthUrlCredentialDiagnostic,
@@ -1130,20 +1132,26 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
 
 
 # Markerless 40-character values collide with OAuth entropy only for these
-# authorization-request fields (``code_verifier`` goes to the token endpoint;
-# a dynamically registered public ``client_id`` may be 43-char base64url).
+# authorization-request fields (``code_verifier`` goes to the token endpoint).
+# A public ``client_id`` is an identifier, but an exactly 40-character value
+# stays under the bare-secret scan because that is the AWS secret-key length.
 _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
 # The exemption is bounded to shapes the protocol itself can emit, so an
 # AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
 # set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
-# challenge and a dynamic client id must be exactly 43 base64url characters.
+# challenge must be exactly 43 base64url characters. A ``client_id`` is a
+# public identifier and may be 1 to 512 RFC 3986 unreserved characters (no
+# `+` or `/`), long enough for a Salesforce Connected App consumer key.
+# ``state`` and ``nonce`` must not contain `+` or `/`.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
-    if key in {"client_id", "code_challenge"}:
+    if key == "client_id":
+        return len(form) != _AWS_SECRET_KEY_LENGTH and bool(_OAUTH_CLIENT_ID_RE.fullmatch(form))
+    if key == "code_challenge":
         return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
     return "+" not in form and "/" not in form
 

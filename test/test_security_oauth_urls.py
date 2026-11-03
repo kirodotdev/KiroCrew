@@ -20,8 +20,10 @@ from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew import security
 from kiro_crew.security import (
+    exfil,
     is_sensitive_path,
     oauth_url_contains_credential,
+    record_discovered_oauth_endpoint,
     redact_credentials,
     redact_exfiltration_urls,
     sanitized_oauth_endpoint,
@@ -110,7 +112,36 @@ class TestOAuthAuthorizationUrlRedaction:
         assert security.diagnose_oauth_url_credential(url) is None
         assert oauth_url_contains_credential(url) is False
 
-    @pytest.mark.parametrize("parameter", ["redirect_uri", "client_id"])
+    def test_40_character_client_id_keeps_bare_secret_scan(self) -> None:
+        client_id = self.BARE_AWS_SECRET_ALNUM
+        url = self.NOTION_URL.replace("client123", client_id, 1)
+
+        assert len(client_id) == 40
+        assert client_id.isalnum()
+        assert security._text_contains_bare_secret(client_id)
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        ("client_id", "expected_length"),
+        [
+            ("aB3" * 13, 39),
+            ("aB3" * 13 + "aB", 41),
+        ],
+        ids=["39-characters", "41-characters"],
+    )
+    def test_off_secret_length_client_id_keeps_identifier_exemption(
+        self, client_id: str, expected_length: int
+    ) -> None:
+        url = self.NOTION_URL.replace("client123", client_id, 1)
+
+        assert len(client_id) == expected_length
+        assert client_id.isalnum()
+        assert security._text_contains_bare_secret(client_id) is False
+        assert oauth_url_contains_credential(url) is False
+
+    @pytest.mark.parametrize(
+        "parameter", ["redirect_uri", "scope", "response_type", "code_challenge_method"]
+    )
     def test_non_entropy_oauth_parameter_keeps_markerless_secret_scan(self, parameter: str) -> None:
         secret = self.BARE_AWS_SECRET_ALNUM
         url = self.NOTION_URL + f"&{parameter}={secret}"
@@ -119,18 +150,32 @@ class TestOAuthAuthorizationUrlRedaction:
         assert security._text_contains_bare_secret(secret)
         assert oauth_url_contains_credential(url) is True
 
+    def test_unknown_parameter_keeps_markerless_secret_scan(self) -> None:
+        """An unknown parameter (not in the rule table's identifier set) keeps
+        the markerless bare-secret heuristic even at an approved endpoint."""
+        secret = self.BARE_AWS_SECRET_ALNUM
+        url = self.NOTION_URL + f"&session_blob={secret}"
+
+        assert len(secret) == 40
+        assert security._text_contains_bare_secret(secret)
+        assert oauth_url_contains_credential(url) is True
+
     @pytest.mark.parametrize(
         ("label", "mutate"),
         [
-            ("42-chars", lambda value: value[:42]),
-            ("44-chars", lambda value: value + "Q"),
             ("standard-alphabet", lambda value: value[:41] + "+/"),
             ("percent-encoded-slash", lambda value: value[:40] + "%2F" + value[40:42]),
         ],
     )
-    def test_client_id_exemption_only_covers_exact_base64url_shape(
+    def test_identifier_exemption_rejects_non_unreserved_characters(
         self, label: str, mutate: Callable[[str], str]
     ) -> None:
+        """Identifier parameters must consist of unreserved characters only.
+
+        Base64 standard alphabet (+/) and percent-encoded non-unreserved chars
+        are rejected even at an approved endpoint because they don't fit the
+        identifier shape (RFC 3986 unreserved: [A-Za-z0-9._~-]).
+        """
         digest = hashlib.sha256(b"synthetic-oauth-entropy-regression").digest()
         value = mutate(base64.urlsafe_b64encode(digest).decode().rstrip("="))
         url = self.NOTION_URL.replace("client123", value, 1)
@@ -143,6 +188,78 @@ class TestOAuthAuthorizationUrlRedaction:
         value = base64.urlsafe_b64encode(digest).decode().rstrip("=")
         url = self.NOTION_URL.replace("client123", value, 1).replace(
             "api.notion.com", "auth.attacker.example", 1
+        )
+
+        assert oauth_url_contains_credential(url) is True
+
+    def test_salesforce_consumer_key_passes_at_approved_endpoint(self) -> None:
+        """Salesforce consumer keys are ~85 chars; they pass at approved endpoints."""
+        # Salesforce consumer keys are alphanumeric, ~85 chars
+        consumer_key = (
+            "3MVG9d8"
+            "..zR7ygAq"
+            "EfBzSFn1"
+            "PGuFNLKm"
+            "0YBpQZK1"
+            "vS.abCdE"
+            "xYz12345"
+            "67890AbC"
+            "dEfGhIjK"
+            "lMnOpQrS"
+            "tUvWx"
+        )
+        assert len(consumer_key) == 85
+        url = self.NOTION_URL.replace("client123", consumer_key, 1)
+
+        assert oauth_url_contains_credential(url) is False
+
+    def test_salesforce_consumer_key_passes_at_mcp_discovered_endpoint(self) -> None:
+        """Salesforce consumer keys pass at MCP-discovered endpoints."""
+        consumer_key = (
+            "3MVG9d8"
+            "..zR7ygAq"
+            "EfBzSFn1"
+            "PGuFNLKm"
+            "0YBpQZK1"
+            "vS.abCdE"
+            "xYz12345"
+            "67890AbC"
+            "dEfGhIjK"
+            "lMnOpQrS"
+            "tUvWx"
+        )
+        assert len(consumer_key) == 85
+        host = "login.salesforce.com"
+        path = "/services/oauth2/authorize"
+        mcp_url = "https://mcp.salesforce.example/auth"
+
+        try:
+            assert record_discovered_oauth_endpoint(host, path, mcp_url=mcp_url)
+            url = f"https://{host}{path}?client_id={consumer_key}&response_type=code"
+
+            assert oauth_url_contains_credential(url) is False
+        finally:
+            exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
+
+    def test_salesforce_consumer_key_rejected_at_unapproved_host(self) -> None:
+        """Salesforce consumer keys are rejected at unapproved hosts."""
+        consumer_key = (
+            "3MVG9d8"
+            "..zR7ygAq"
+            "EfBzSFn1"
+            "PGuFNLKm"
+            "0YBpQZK1"
+            "vS.abCdE"
+            "xYz12345"
+            "67890AbC"
+            "dEfGhIjK"
+            "lMnOpQrS"
+            "tUvWx"
+        )
+        assert len(consumer_key) == 85
+        url = (
+            f"https://auth.attacker.example/oauth/authorize"
+            f"?client_id={consumer_key}&response_type=code"
         )
 
         assert oauth_url_contains_credential(url) is True
@@ -283,6 +400,13 @@ class TestOAuthAuthorizationUrlRedaction:
         assert oauth_url_contains_credential(url) is True
         self._assert_general_redactors_remove_secret(url, self.GITHUB_TOKEN)
 
+    def test_off_length_challenge_loses_the_s256_exemption(self) -> None:
+        # An S256 challenge is base64url of a 32-byte digest: exactly 43 chars.
+        # A 40-char value in that field is not a challenge shape.
+        assert len(self.BARE_AWS_SECRET_ALNUM) == 40
+        url = self.NOTION_URL.replace(self.CHALLENGE, self.BARE_AWS_SECRET_ALNUM, 1)
+        assert oauth_url_contains_credential(url) is True
+
     def test_duplicate_value_in_standard_and_unknown_param_fails_closed(self) -> None:
         url = self.NOTION_URL + f"&session_blob={self.CHALLENGE}"
         assert oauth_url_contains_credential(url) is True
@@ -355,11 +479,15 @@ class TestOAuthAuthorizationUrlRedaction:
         value = self.BARE_AWS_SECRET.replace("/", encoded_slash)
         assert security._oauth_entropy_value_is_protocol_shaped("state", value) is False
 
-    def test_off_length_challenge_loses_the_s256_exemption(self) -> None:
-        # An S256 challenge is base64url of a 32-byte digest: exactly 43 chars.
-        # A 40-char value in that field is not a challenge shape.
-        assert len(self.BARE_AWS_SECRET_ALNUM) == 40
-        url = self.NOTION_URL.replace(self.CHALLENGE, self.BARE_AWS_SECRET_ALNUM, 1)
+    def test_identifier_exemption_rejects_over_limit_value(self) -> None:
+        """A value exceeding 512 characters is rejected even for identifier params."""
+        # Create a value that's > 512 chars but otherwise valid (unreserved chars).
+        # It must contain a secret-like 40-char window to trigger the scanner,
+        # so we embed the alnum secret and pad with high-entropy mixed-case chars.
+        padding = "xY3zW9qR7tP2mK5nL8vB4cD6fG1hJ0sAuE" * 15  # 525 chars of mixed case
+        long_value = self.BARE_AWS_SECRET_ALNUM + padding[: 513 - 40]  # exactly 513 chars
+        assert len(long_value) == 513
+        url = self.NOTION_URL.replace(self.CHALLENGE, long_value, 1)
         assert oauth_url_contains_credential(url) is True
 
     @pytest.mark.parametrize("parameter", ["state", "code_challenge"])
@@ -1178,6 +1306,80 @@ class TestOperatorOAuthEndpointExtension:
         assert _load_operator_oauth_endpoints() == frozenset()
 
     # ── Gate: the extension widens exactly the builtin exemption, nothing more ──
+
+    @staticmethod
+    def _salesforce_consumer_key() -> str:
+        """An ~85-char Connected App consumer key: `3MVG9` then mixed-case
+        alphanumerics and dots, the shape the markerless scan flagged."""
+        raw = b"".join(
+            hashlib.sha256(f"synthetic-salesforce-consumer-key-{i}".encode()).digest()
+            for i in range(3)
+        )
+        body = base64.b64encode(raw).decode().replace("+", ".").replace("/", ".")
+        return "3MVG9" + body[:80]
+
+    @pytest.mark.parametrize(
+        "host",
+        ["acme.my.salesforce.com", "acme--dev.sandbox.my.salesforce.com"],
+        ids=["my-domain", "sandbox-my-domain"],
+    )
+    def test_salesforce_authorize_url_passes_once_its_endpoint_is_allowlisted(
+        self, ext_home: Path, host: str
+    ) -> None:
+        """A Salesforce MCP sign-in URL, as a Connected App sends it, passes
+        once the operator lists its My Domain endpoint in oauth_endpoints.json.
+
+        Before the rule table decided the identifier params, this URL failed
+        even with the endpoint listed: the 85-char consumer key in `client_id`
+        missed the exact-43-character exemption and the markerless scan read it
+        as a bare secret.
+        """
+        path = "/services/oauth2/authorize"
+        consumer_key = self._salesforce_consumer_key()
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(b"synthetic-salesforce-verifier").digest())
+            .decode()
+            .rstrip("=")
+        )
+        state = (
+            base64.urlsafe_b64encode(hashlib.sha256(b"synthetic-salesforce-state").digest())
+            .decode()
+            .rstrip("=")
+        )
+        url = (
+            f"https://{host}{path}"
+            "?response_type=code"
+            f"&client_id={consumer_key}"
+            "&redirect_uri=http%3A%2F%2Flocalhost%3A3334%2Foauth%2Fcallback"
+            "&scope=api%20refresh_token%20offline_access"
+            f"&code_challenge={challenge}"
+            "&code_challenge_method=S256"
+            f"&state={state}"
+        )
+        assert len(consumer_key) == 85
+        assert security._text_contains_bare_secret(consumer_key)
+
+        # Not on any list: still fails closed.
+        assert oauth_url_contains_credential(url) is True
+        # The operator's remedy for this host: it now passes.
+        self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is False
+        # A credential in another parameter at the same listed endpoint still rejects.
+        leaked = url + "&session_blob=" + ("AKIA" "IOSFODNN7EXAMPLE")
+        assert oauth_url_contains_credential(leaked) is True
+
+    def test_40_character_client_id_rejected_at_operator_listed_salesforce_endpoint(
+        self, ext_home: Path
+    ) -> None:
+        host = "acme.my.salesforce.com"
+        path = "/services/oauth2/authorize"
+        client_id = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
+        url = f"https://{host}{path}?client_id={client_id}&response_type=code"
+
+        assert len(client_id) == 40
+        assert security._text_contains_bare_secret(client_id)
+        self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is True
 
     def test_extended_endpoint_passes_previously_rejected_consent_url(self, ext_home: Path) -> None:
         # Fails closed with no file (the pre-extension behavior) …
