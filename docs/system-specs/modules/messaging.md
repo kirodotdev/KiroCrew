@@ -3784,9 +3784,8 @@ under the 2000-char cap, splitting ordinary text with the shared
 and holding local-image markup for secure multipart extraction at the semantic
 steer/final seal. It rotates messages at the shared driver's structured steer
 boundaries with quote chips, renders trailing `[OPTIONS:]` as button action rows
-(`opt:<i>:<tag>`, label recovered from the component at interaction time; `<tag>`
-is `session_provenance_tag()` — a 12-hex SHA-256 digest of the session key the
-buttons were rendered for), and posts
+(`opt:<i>[~<digest>]:<tag>`; `<tag>` is `session_provenance_tag()` — a 12-hex
+SHA-256 digest of the session key the buttons were rendered for), and posts
 Approve/Deny buttons for interactive tool approvals. Approval `custom_id`s carry a
 per-prompt random nonce (`a:<request_id>:<nonce>:<1|0>`) validated at
 resolution: ACP request IDs are reusable across provider/gateway restarts, so a
@@ -3806,6 +3805,19 @@ mismatch (the chat was rebound or `!new`'d since the buttons were posted) and an
 untagged pre-provenance button both fail closed with a refusal naming the
 remedy; queue drains and AutoNudge fires dispatch untagged with commands off and
 keep their native-session affinity.
+
+**Option-press answer.** A button label is cut to Discord's 80 characters, so
+the press answer is not always the label. A choice of 80 characters or fewer
+keeps the `opt:<i>:<tag>` id and answers with the label Discord sends back. A
+longer one gets `opt:<i>~<digest>:<tag>`, where `<digest>` is 12 hex
+characters of its full text, and `renderer_components.py` keeps that full text
+in a process-local map keyed by `(tag, "<i>~<digest>")`. The map is bounded:
+at most `_FULL_CHOICES_MAX` (1024) entries, oldest dropped first, and no entry
+longer than `_FULL_CHOICE_MAX_CHARS` (1000) characters. A press on a digest id
+whose entry is not there (a restart, an eviction, or a choice over the
+ceiling) never answers with the cut label: it gets the existing "type it
+instead" reply. The quoted echo of the press goes through the same display
+pass as the answer body before it is posted.
 
 **Native-generation picker scope.** Discord, Telegram and Teams include persistent
 dashboard sessions plus native generations from the current private conversation's

@@ -136,6 +136,15 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacted in its display form before any escape goes in.",
     ),
     (
+        "Discord [OPTIONS] press echo",
+        "discord/transport_dispatch_interactions.py",
+        "The quoted line posted when a user presses an `[OPTIONS:]` button. It "
+        "carries the full choice, which can be longer than the label that was "
+        "shown. This module calls only `_redact_transformed`, the renderer's "
+        "display-form pass for the answer body, which itself runs both the "
+        "credential and the exfiltration-URL scan.",
+    ),
+    (
         "Teams rendered message text",
         "teams/renderer.py",
         "Every LLM-authored string this channel sends, re-scanned in the form Teams "
