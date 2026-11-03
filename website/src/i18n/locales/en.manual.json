@@ -2606,7 +2606,8 @@
       "disconnected": "Disconnected",
       "pane_failed_to_load": "Pane failed to load",
       "pane_needs_loopback_origin": "This pane needs a local dashboard address",
-      "pane_needs_loopback_origin_how": "Remote crew panes embed only when the dashboard is open on localhost. Open the dashboard there to use this pane."
+      "pane_needs_loopback_origin_how": "Remote crew panes embed only when the dashboard is open on localhost. Open the dashboard there to use this pane.",
+      "pane_port_unreachable": "This browser cannot reach port {{port}}. Most likely the browser and the gateway are different machines: forward that port too (ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>), or open the dashboard on the gateway host. If they are the same machine, the crew's dashboard may be restarting; retry."
     },
     "instanceTabBar": {
       "connected": "connected",
