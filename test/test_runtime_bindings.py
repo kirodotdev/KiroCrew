@@ -107,7 +107,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
-    "_kas_custom_agents": ("function", True, "997f5903aa65", "runtime_session_setup"),
+    "_kas_custom_agents": ("function", True, "1cacd0d91137", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),

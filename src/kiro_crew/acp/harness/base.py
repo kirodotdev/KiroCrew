@@ -324,6 +324,15 @@ class SessionExtras:
     every other host.
     """
 
+    withdrawn_stub_names: frozenset[str] = frozenset()
+    """Session-level stubs the caller selected that this payload does not mount.
+
+    For a KAS crewmate worker: the names in ``worker_stub_names`` whose server the
+    projected worker spec drops or mutes. That spec is read after the stubs were
+    selected, so a mute saved in between shows here, and the caller removes those
+    stubs from the session-level array. Empty on every other host.
+    """
+
 
 # ── Seam 5: notification aliases ──
 
@@ -576,6 +585,7 @@ class HarnessAdapter(LaunchAdapter):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -584,6 +594,10 @@ class HarnessAdapter(LaunchAdapter):
         session-level entries -- declaring one twice lets the weaker declaration
         shadow the keyed one. Empty extras is the normal answer for a host that
         took its agent at spawn time.
+
+        ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
+        names of the stubs ``session/new`` injects for that session, from the
+        caller's one overlay lookup. A host that projects nothing ignores it.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:

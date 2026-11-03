@@ -34,6 +34,8 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
+    _drop_withdrawn_stubs,
+    _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
 )
 from kiro_crew.acp.session_handle import (
@@ -146,6 +148,8 @@ async def load_session(
     # step, nothing to unwind, no shared coroutine that could grow a failure mode
     # later. A membership read is the sanctioned form of that comparison.
     mirrored = None
+    # The KAS crewmate worker's stub names, set beside its one overlay lookup.
+    worker_stubs: frozenset[str] | None = None
     if has_mirror(self.acp_backend):
         mirrored = await self._mirrored_session_mcp(
             active_agent,
@@ -169,8 +173,12 @@ async def load_session(
             self.acp_backend,
             session_work_dir,
             launch_spec,
+            session_key or "",
         )
         mcp_servers = await self._unpooled_control_planes(pooled, active_agent, session_work_dir)
+        worker_stubs = _kas_worker_stub_names(
+            self.acp_backend, pool_agent, session_key or "", pooled
+        )
         mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
     member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
@@ -284,6 +292,7 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
         payload_snapshot = kas_extras.derived_spec_snapshot
@@ -313,6 +322,8 @@ async def load_session(
         # Read BEFORE the hoist: it moves launcher entries out of the batch, and
         # the recorded batch then lacks the snapshots this projection wrote.
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+        # Same as create_session: a worker stub the payload's spec read muted.
+        mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,
