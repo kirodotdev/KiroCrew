@@ -287,6 +287,20 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    from kiro_crew.config.sections_session import STAR_ORDER_MAX
+
+    if "star_order" in body and (
+        isinstance(body["star_order"], bool)
+        or not isinstance(body["star_order"], int)
+        or not 0 <= body["star_order"] <= STAR_ORDER_MAX
+    ):
+        return web.json_response(
+            {
+                "error": f"star_order must be an integer from 0 to {STAR_ORDER_MAX}",
+                "code": "invalid_star_order",
+            },
+            status=400,
+        )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -712,6 +726,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
+        if "star_order" in body:
+            agent.star_order = body["star_order"]
+            changed.append("star_order")
+        if not agent.starred and agent.star_order:
+            # An unstarred crew holds no dock position, so starring it again
+            # puts it at the bottom instead of back in its old slot.
+            agent.star_order = 0
+            if "star_order" not in changed:
+                changed.append("star_order")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store

@@ -407,7 +407,8 @@ export function buildThemeFontCss(slug: string, theme: CustomThemeData): string 
 // ── §4.2/§5.1 runtime positive-selector scoper ──
 // A selector group from overrides.css is kept only if EVERY selector, after
 // stripping one optional leading [data-theme="…"] / html[data-theme…] scoping
-// prefix, targets one of the 10 allowlisted surfaces (optionally with extra
+// prefix, targets an allowlisted surface: an element in _ALLOWED_ELEMENTS or a
+// class in _ALLOWED_CLASSES (optionally with extra
 // chained classes/pseudo-classes on the SAME base — no descendant/child/sibling
 // combinators, no ids/attribute selectors, never the forbidden set).
 const _ALLOWED_ELEMENTS = new Set(['', 'body', 'button']) // blocks iframe/script/div/…

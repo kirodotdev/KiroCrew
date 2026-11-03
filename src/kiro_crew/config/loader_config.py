@@ -883,7 +883,7 @@ class KiroCrewConfig:
                             },
                         }
                     d = _subtract_overlay(d, raw_local)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
         # An equal overlay value must not erase a choice the base file owns.
         _restore_stored_harness_fields(d)

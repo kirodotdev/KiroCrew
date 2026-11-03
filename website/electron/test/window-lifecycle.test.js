@@ -1000,8 +1000,9 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false, downloadExpectations = null } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
   const log = [];
+  const prompts = [];
   const sessionListeners = new Map();
   const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).find(Boolean);
   const viewEvents = recordingEmitter("view", log);
@@ -1082,6 +1083,12 @@ function dashboardWindowHarness({ platform, frameless = false, downloadExpectati
       BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => null },
       Menu: { buildFromTemplate: () => ({ popup() {} }) },
       shell: { openExternal(url) { openedExternally.push(url); return Promise.resolve(); } },
+      dialog: {
+        async showMessageBox(parent, options) {
+          prompts.push({ parent, options });
+          return { response: dialogResponse, checkboxChecked: dialogChecked };
+        },
+      },
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
@@ -1090,7 +1097,7 @@ function dashboardWindowHarness({ platform, frameless = false, downloadExpectati
     env: {},
     downloadExpectations,
   }));
-  return { lifecycle, win, viewContents, log, panelViews, openedExternally, sessionListeners };
+  return { lifecycle, win, viewContents, log, panelViews, openedExternally, prompts, sessionListeners };
 }
 
 async function wireDashboardWindow(t, options) {
@@ -1210,6 +1217,39 @@ describe("dashboard window wiring order", () => {
       assert.deepEqual(verdict, { action: "deny" }, "no in-app window for an external link");
     }
     assert.deepEqual(openedExternally, ["https://example.com/docs", "https://example.com/docs"]);
+  });
+
+  for (const [label, dialogResponse, expected] of [["Open", 0, true], ["Cancel", 1, false]]) {
+    it(`asks in a dialog on the window before an editor link, and ${label} decides`, async (t) => {
+      const { win, viewContents, openedExternally, prompts } = await wireDashboardWindow(t, {
+        platform: "darwin",
+        dialogResponse,
+      });
+      const link = "vscode://file/Users/me/a.ts:3";
+      assert.deepEqual(viewContents.windowOpenHandler({ url: link }), { action: "deny" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(prompts.length, 1);
+      assert.equal(prompts[0].parent, win);
+      assert.equal(prompts[0].options.detail, link);
+      assert.equal(prompts[0].options.cancelId, 1);
+      assert.deepEqual(openedExternally, expected ? [link] : []);
+    });
+  }
+
+  it("skips the dialog for the same machine after Don't ask again is checked", async (t) => {
+    const { viewContents, openedExternally, prompts } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      dialogResponse: 0,
+      dialogChecked: true,
+    });
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    viewContents.windowOpenHandler({ url: "vscode://file/Users/me/a.ts" });
+    await settle();
+    viewContents.windowOpenHandler({ url: "vscode://file/Users/me/b.ts" });
+    await settle();
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0].options.checkboxLabel, /Don't ask again/);
+    assert.deepEqual(openedExternally, ["vscode://file/Users/me/a.ts", "vscode://file/Users/me/b.ts"]);
   });
 
   it("refuses a top-level navigation off the app origin, in the dashboard and its pop-outs", async (t) => {

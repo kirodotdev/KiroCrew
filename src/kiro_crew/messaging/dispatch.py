@@ -1029,7 +1029,14 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                 )
-                tool_gate = build_tool_gate(ctx_builder, session_key=session_key, agent=agent)
+                # A monitor wake runs with nobody watching: a governance check
+                # that cannot be evaluated refuses the call.
+                tool_gate = build_tool_gate(
+                    ctx_builder,
+                    session_key=session_key,
+                    agent=agent,
+                    unattended=monitor is not None,
+                )
                 if Drift.GENERIC_DENY_REASON in drift:
                     tool_gate = _without_deny_reason(tool_gate)
                 if monitor is not None:
@@ -1555,6 +1562,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         TOOL_DENY,
         event_is_spawn_run,
         hook_gate_kwargs,
+        unattended_turn,
     )
     from kiro_crew.messaging.identity import (  # noqa: F401
         channel_inbound_permitted,

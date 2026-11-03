@@ -934,11 +934,13 @@
           "pattern_many": "{{count}} motifs",
           "pattern_one": "{{count}} motif",
           "pattern_other": "{{count}} motifs",
-          "pending": "en attente",
           "read_namespace": "Lire le namespace {{name}}",
           "invalid_namespace_name": "Les noms de namespace servent de noms de dossier. Ils ne peuvent donc contenir que des lettres latines minuscules (a–z), des chiffres (0–9), des points, des traits d’union et des tirets bas, doivent commencer et finir par une lettre ou un chiffre et comporter de 2 à 64 caractères.",
           "invalid_namespace_name_char": "« {{char}} » ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "« {{char}} » ({{script}}, {{code}}) ne peut pas être utilisé dans un nom de namespace. Utilise des minuscules a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} en attente",
+          "pending_count_many": "{{count}} en attente",
+          "pending_count_other": "{{count}} en attente"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1092,7 +1094,6 @@
         },
         "reportView": {
           "blast_radius": "Portée de l'impact : {{scope}}",
-          "blocking": "bloquant",
           "changes_reviewed_many": "{{count}} changements revus",
           "changes_reviewed_one": "{{count}} changement revu",
           "changes_reviewed_other": "{{count}} changements revus",
@@ -1111,10 +1112,15 @@
           "open_the_pull_request": "Ouvrir la pull request",
           "share": "Partager",
           "sharing": "Partage…",
-          "should_fix": "à corriger",
           "step_problem": "Problème",
           "step_solution_fit": "Adéquation de la solution",
-          "step_why_it_matters": "Pourquoi c’est important"
+          "step_why_it_matters": "Pourquoi c’est important",
+          "blocking_count_one": "{{count}} bloquant",
+          "blocking_count_many": "{{count}} bloquants",
+          "blocking_count_other": "{{count}} bloquants",
+          "should_fix_count_one": "{{count}} à corriger",
+          "should_fix_count_many": "{{count}} à corriger",
+          "should_fix_count_other": "{{count}} à corriger"
         },
         "reviewChat": {
           "error_generic": "La session de suivi n'a pas pu être ouverte. Réessayez.",
@@ -1151,7 +1157,6 @@
           "delete_review_of": "Supprimer la revue de {{label}}",
           "delete_this_review": "Supprimer cette revue",
           "delete_this_review_2": "Supprimer cette revue ?",
-          "more": "de plus",
           "needs_review_count_many": "{{count}} à revoir",
           "needs_review_count_one": "{{count}} à revoir",
           "needs_review_count_other": "{{count}} à revoir",
@@ -1163,13 +1168,15 @@
           "review_of_with_more_other": "Revue de {{label}} et {{count}} de plus",
           "worth_a_glance_count_many": "{{count}} méritent un coup d’œil",
           "worth_a_glance_count_one": "{{count}} mérite un coup d’œil",
-          "worth_a_glance_count_other": "{{count}} méritent un coup d’œil"
+          "worth_a_glance_count_other": "{{count}} méritent un coup d’œil",
+          "more_count_one": "+{{count}} de plus",
+          "more_count_many": "+{{count}} de plus",
+          "more_count_other": "+{{count}} de plus"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Elle a été annulée avant qu’aucune pull request ne se termine.",
           "finished": "terminée",
           "loading_report": "Chargement du rapport…",
-          "more": "de plus",
           "nothing_to_report": "Aucune pull request n’a terminé une revue, il n’y avait donc rien à rapporter.",
           "pull_request_many": "{{count}} pull requests",
           "pull_request_one": "{{count}} pull request",
@@ -1180,25 +1187,34 @@
           "skipped_inflight_other": "{{count}} pull requests ont été ignorées parce qu’une autre revue les avait déjà.",
           "started": "démarrée",
           "this_review_produced_no_report": "Cette revue n’a produit aucun rapport.",
-          "you_can_leave_this_page_a_notification_will_tell": "Tu peux quitter cette page — une notification te dira quand elle arrive."
+          "you_can_leave_this_page_a_notification_will_tell": "Tu peux quitter cette page — une notification te dira quand elle arrive.",
+          "more_count_one": "+{{count}} de plus",
+          "more_count_many": "+{{count}} de plus",
+          "more_count_other": "+{{count}} de plus"
         },
         "runList": {
           "new_review": "Nouvelle revue"
         },
         "runProgress": {
           "cancel_review": "Annuler la revue",
-          "cancelled": "annulée",
           "cancelling": "Annulation…",
           "elapsed_time": "Temps écoulé",
-          "failed": "en échec",
           "median_of_past_runs_of_this_size": "Médiane des exécutions passées de cette taille",
           "review_progress": "Progression de la revue",
-          "reviewed": "revues",
           "reviewers_busy": "{{busy}} relecteurs sur {{max}} occupés",
           "step": "· étape",
           "stops_queued_prs_one_already_being_reviewed_will": "Arrête les PR en file ; celle déjà en cours de revue se terminera.",
           "usually": "d’habitude ~",
-          "working": "Travaille"
+          "working": "Travaille",
+          "reviewed_of_one": "{{done}} / {{count}} revue",
+          "reviewed_of_many": "{{done}} / {{count}} revues",
+          "reviewed_of_other": "{{done}} / {{count}} revues",
+          "failed_count_one": "{{count}} en échec",
+          "failed_count_many": "{{count}} en échec",
+          "failed_count_other": "{{count}} en échec",
+          "cancelled_count_one": "{{count}} annulée",
+          "cancelled_count_many": "{{count}} annulées",
+          "cancelled_count_other": "{{count}} annulées"
         },
         "runStatusPill": {
           "cancelled": "Annulé",
@@ -3213,7 +3229,6 @@
           "frontier_caption": "Les éléments nouvellement débloqués ont tous leurs bloqueurs enregistrés fermés ou fusionnés. Ouvrez un élément pour le détail, ou ouvrez son arbre.",
           "focus_caption": "Tout l’arbre de dépendances actif de l’élément sélectionné. Cliquez sur un nœud pour le mettre en racine, Entrée l’ouvre. Pointillé = déduit, barré = satisfait.",
           "focus_empty": "Sélectionnez un élément pour tracer son arbre de dépendances.",
-          "tree_stat": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}} arêtes actives",
           "ghost_satisfied": "satisfait",
           "ci_fail": "ÉCHEC CI",
           "led_wait": "WAIT",
@@ -3221,7 +3236,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}} arêtes actives",
           "aria_node": "{{kind}}-{{number}}, {{state}} : {{title}}",
           "empty_board": "CARTE NON PEUPLÉE",
           "empty_title": "Aucune dépendance pour l’instant",
@@ -3234,7 +3248,16 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab n'a pas répondu pour la plupart des tickets (panne ou limite de débit). Patiente un instant, puis réessaie.",
           "empty_unavailable_issue_scope": "Le graphe de dépendances a besoin de la liste des tickets ouverts, qui n’est pas encore disponible. Ouvre l’onglet Tickets pour la mettre en cache, ou regarde l’erreur ci-dessous, puis réessaie.",
           "refresh_failed_stale_graph": "Affichage du dernier graphe chargé ; la dernière actualisation a échoué.",
-          "retry": "RÉESSAYER"
+          "retry": "RÉESSAYER",
+          "tree_stat_one": "arbre de {{kind}}-{{number}} : {{nodes}} nœud · {{edges}}",
+          "tree_stat_many": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}}",
+          "tree_stat_other": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}}",
+          "aria_tree_one": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœud, {{edges}}",
+          "aria_tree_many": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}}",
+          "aria_tree_other": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}}",
+          "live_edges_one": "{{n}} arête active",
+          "live_edges_many": "{{n}} arêtes actives",
+          "live_edges_other": "{{n}} arêtes actives"
         },
         "groupReviewsView": {
           "title": "Demandes de revue",
@@ -3397,6 +3420,7 @@
         "view_list": "Liste simple"
       },
       "preview": {
+        "detailsSummaryFallback": "Détails",
         "mermaidError": "Diagramme Mermaid invalide — sa source est affichée."
       },
       "row": {
@@ -3614,6 +3638,10 @@
         "allDone": "Tout est passé en revue",
         "archive": "Archiver",
         "archiveAll": "Archiver le reste",
+        "archiveOthers_many": "Archiver les {{count}} autres",
+        "archiveOthers_one": "Archiver les {{count}} autres",
+        "archiveOthers_other": "Archiver les {{count}} autres",
+        "archiveSkipsFiling": "Les éléments en cours d’enregistrement sont ignorés",
         "archivedSection": "Archivées",
         "assignedTo": "Attribuée à {{name}}",
         "backToMeeting": "Revenir à la réunion",
@@ -4243,7 +4271,6 @@
         "working": "Travaille"
       },
       "stats": {
-        "busiest_day": "Jour le plus bavard : {{date}} ({{count}} msgs)",
         "companion_days": "Ensemble depuis {{time}}",
         "drags_one": "Déplacé {{n}} fois",
         "drags_many": "Déplacé {{n}} fois",
@@ -4267,7 +4294,10 @@
         "title": "Souvenirs",
         "walks_one": "{{n}} pas",
         "walks_many": "{{n}} pas",
-        "walks_other": "{{n}} pas"
+        "walks_other": "{{n}} pas",
+        "busiest_day_one": "Jour le plus bavard : {{date}} ({{n}} msg)",
+        "busiest_day_many": "Jour le plus bavard : {{date}} ({{n}} msgs)",
+        "busiest_day_other": "Jour le plus bavard : {{date}} ({{n}} msgs)"
       },
       "tip": {
         "bedtime": "Essayez : \"dis-moi de lever le pied à 23 h\"",
@@ -5350,14 +5380,16 @@
         },
         "taskList": {
           "done": "Terminée",
-          "done_of_total": "{{done}} tâches terminées sur {{total}}",
           "no_tasks_yet": "Pas encore de tâches. Une fois la conception approuvée, la liste ordonnée des tâches apparaît ici et vous pouvez les lancer une par une.",
           "pause_the_build_first": "Mettez la construction en pause avant de lancer une seule tâche",
           "run": "Lancer",
           "run_only_this_task_and_stop": "Lancer uniquement cette tâche, puis s’arrêter",
           "run_task": "Lancer la tâche : {{task}}",
           "starting": "Démarrage…",
-          "task_progress": "Avancement des tâches"
+          "task_progress": "Avancement des tâches",
+          "done_of_total_one": "Tâches terminées : {{done}}/{{total}}",
+          "done_of_total_many": "Tâches terminées : {{done}}/{{total}}",
+          "done_of_total_other": "Tâches terminées : {{done}}/{{total}}"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Décris ce que tu veux construire, réponds à quelques questions et obtiens un plan relu — exigences, conception et tâches — qu'un agent peut réaliser.",
@@ -5727,7 +5759,6 @@
         "costs_refresh_failed": "La dernière lecture de la facture a échoué. Ceci est la valeur en cache."
       },
       "page": {
-        "totals_summary": "{{accounts}} comptes · {{healthy}} clés sur {{keys}} en bon état",
         "refresh": "Actualiser",
         "health_ok": "Sain",
         "health_degraded": "À vérifier",
@@ -5790,7 +5821,13 @@
         "remove_account_error": "Le compte n'a pas pu être retiré.",
         "remove_account_hint": "Rien ne change dans AWS",
         "forget_key_confirm": "Oublier la clé « {{name}} » de cette ligne ? Rien ne change dans AWS ni dans votre configuration de l'AWS CLI.",
-        "forget_key_action": "Oublier la clé"
+        "forget_key_action": "Oublier la clé",
+        "totals_summary_one": "{{accounts}} compte · {{keys}}",
+        "totals_summary_many": "{{accounts}} comptes · {{keys}}",
+        "totals_summary_other": "{{accounts}} comptes · {{keys}}",
+        "keys_healthy_one": "clés en bon état : {{healthy}}/{{n}}",
+        "keys_healthy_many": "clés en bon état : {{healthy}}/{{n}}",
+        "keys_healthy_other": "clés en bon état : {{healthy}}/{{n}}"
       },
       "rail": {
         "accounts": "Comptes et identifiants",
@@ -6218,6 +6255,14 @@
       "found_setup_but_could_not_read_it": "{{productName}} a trouvé {{sources}} mais n'a pas pu lire les fichiers. Rien n'a été importé.",
       "some_setup_could_not_be_read": "{{productName}} n'a pas pu lire {{sources}} — non affiché ci-dessous.",
       "files_could_not_be_read": "Les fichiers n'ont pas pu être lus",
+      "skip_reason_credentials": "Contient des identifiants, il reste donc dans sa source",
+      "skip_reason_too_large": "Dépasse une limite de taille ou de nombre",
+      "skip_reason_unsupported": "Pas encore pris en charge",
+      "skip_reason_excluded": "Laissé de côté volontairement",
+      "skip_reason_path_rejected": "Son chemin n'est pas autorisé (un lien, ou hors de la source)",
+      "skip_reason_invalid": "Impossible de le lire comme des paramètres valides",
+      "skip_reason_other": "Ignoré",
+      "resolve_failed_title": "Ton import est enregistré, mais Conserver les deux ou Remplacer la mienne n'a pas abouti. Réessaie ci-dessous.",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Votre configuration {{productName}} existante ne sera pas affectée.",
       "your_selected_setup_is_ready_in_kiro_crew": "La configuration sélectionnée est prête dans {{productName}}.",
       "import_setup_stage": "Importer la configuration · {{stage}} sur {{stages}}",
@@ -6304,7 +6349,8 @@
       "trusted_auto_approving_future_calls": "Approuvé — les prochains appels seront auto-approuvés",
       "trusted_channel_all": "Approuvé — tous les outils de ce canal seront auto-approuvés, persiste après redémarrage",
       "trusted_channel_base": "Approuvé — les commandes {{base}} seront auto-approuvées pour @{{role}} jusqu’au redémarrage de {{productName}}",
-      "trusted_channel_command": "Approuvé — « {{cmd}} » sera auto-approuvé pour @{{role}} jusqu’au redémarrage de {{productName}}"
+      "trusted_channel_command": "Approuvé — « {{cmd}} » sera auto-approuvé pour @{{role}} jusqu’au redémarrage de {{productName}}",
+      "title_wants_to_run": "<title/> demande à s’exécuter"
     },
     "approvalModePicker": {
       "nudge_body": "C'est ici que vous réglez la façon dont {{productName}} demande une approbation. En choisissant « Confiance » ici, il travaille dans cette conversation sans demander d'abord — vous pouvez revenir en arrière à tout moment.",
@@ -6463,6 +6509,7 @@
       "artifact": "Artefact : {{slug}}",
       "could_not_render": "Impossible d'afficher cet artefact",
       "image_could_not_be_loaded": "Impossible de charger l'image",
+      "view_full_size": "Afficher en taille réelle",
       "no_longer_showing": "Cet artefact ne s'affiche plus",
       "rendering": "Rendu en cours…",
       "retry": "Réessayer",
@@ -6881,7 +6928,9 @@
       "copy": "Copier",
       "generating": "génération…",
       "unwrap": "Désactiver le retour à la ligne",
-      "wrap": "Retour à la ligne"
+      "wrap": "Retour à la ligne",
+      "code_label": "code",
+      "code_region": "Code {{lang}}"
     },
     "blockquote": {
       "copied": "Copié !",
@@ -7006,16 +7055,23 @@
       "empty_comment": "_(vide)_",
       "expand_comment": "Développer le commentaire",
       "hide_resolved": "Masquer les résolus",
-      "messages": "messages",
       "no_comments_yet": "Pas encore de commentaires.",
       "no_open_threads": "Aucun fil ouvert.",
-      "open": "ouverts ·",
       "reopen": "Réouvrir",
       "replying_is_github_only_for_now_open_the_merge_r": "Répondre n’est possible que sur GitHub pour l’instant — ouvre la merge request pour commenter.",
       "resolve": "Résoudre",
       "resolved": "résolus",
       "show_resolved": "Afficher les résolus",
-      "write_a_comment_to_send": "Écris un commentaire… {{keys}} pour envoyer"
+      "write_a_comment_to_send": "Écris un commentaire… {{keys}} pour envoyer",
+      "open_count_one": "{{count}} ouvert",
+      "open_count_many": "{{count}} ouverts",
+      "open_count_other": "{{count}} ouverts",
+      "resolved_count_one": "{{count}} résolu",
+      "resolved_count_many": "{{count}} résolus",
+      "resolved_count_other": "{{count}} résolus",
+      "messages_count_one": "{{count}} message",
+      "messages_count_many": "{{count}} messages",
+      "messages_count_other": "{{count}} messages"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Ajouter un commentaire sur l'ensemble de l'artefact…",
@@ -7241,19 +7297,20 @@
       "computing_line_by_line_diff": "Calcul du diff ligne par ligne…",
       "highlighting": "Coloration syntaxique…",
       "line_by_line_diff_failed": "Impossible de calculer le diff",
-      "more": "de plus",
       "no_changes": "aucun changement",
       "open": "Ouvrir le fichier",
       "open_in_side_panel": "Ouvrir {{path}} dans le panneau latéral",
       "removals_many": "{{count}} suppressions",
       "removals_one": "{{count}} suppression",
       "removals_other": "{{count}} suppressions",
-      "show": "Afficher",
       "show_less": "Afficher moins",
       "switch_to_split_view": "Passer à la vue divisée",
       "switch_to_unified_view": "Passer à la vue unifiée",
       "this_document_is_tracked_as_a_session_artifact_n": "Ce document est suivi comme un artefact de session, pas comme une modification de fichier source",
-      "toggle_diff": "Afficher ou masquer le diff de {{path}}"
+      "toggle_diff": "Afficher ou masquer le diff de {{path}}",
+      "show_more_count_one": "Afficher {{count}} de plus",
+      "show_more_count_many": "Afficher {{count}} de plus",
+      "show_more_count_other": "Afficher {{count}} de plus"
     },
     "openFileChips": {
       "open_file": "Ouvrir le fichier"
@@ -8101,6 +8158,10 @@
       "contents": "Sommaire",
       "table_of_contents": "Table des matières"
     },
+    "matesDock": {
+      "load_failed": "Impossible de charger tes coéquipiers marqués d’une étoile.",
+      "reorder_failed": "Impossible d’enregistrer le nouvel ordre de tes coéquipiers."
+    },
     "mcpAppFrame": {
       "collapse": "Réduire",
       "collapse_app": "Réduire l'application",
@@ -8675,7 +8736,10 @@
       "send_now": "Envoyer maintenant",
       "sub_agent_result_many": "{{count}} résultats de sous-agent",
       "sub_agent_result_one": "{{count}} résultat de sous-agent",
-      "sub_agent_result_other": "{{count}} résultats de sous-agent"
+      "sub_agent_result_other": "{{count}} résultats de sous-agent",
+      "queued_count_one": "{{count}} en file d’attente",
+      "queued_count_many": "{{count}} en file d’attente",
+      "queued_count_other": "{{count}} en file d’attente"
     },
     "readingWidthToggle": {
       "title_full": "Pleine largeur",
@@ -9296,6 +9360,9 @@
       "group_borders": "Bordures",
       "group_status": "Statut",
       "group_text_muted": "Texte et atténué",
+      "json_invalid": "JSON non valide — vérifie la syntaxe et réessaie.",
+      "json_needs_modes": "Le JSON doit contenir les objets « dark » et « light ».",
+      "json_needs_name": "Le JSON doit contenir un champ « name ».",
       "light_mode_colors": "Couleurs du mode clair",
       "my_custom_theme": "Mon thème personnalisé",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"Mon thème\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -9309,6 +9376,7 @@
       "theme_css_help": "Colle des couleurs CSS issues d’une réponse d’IA ou d’un thème qui te plaît, par exemple la variable --bg avec la valeur #12141a. Les couleurs dans un bloc .dark ou .light définissent ce mode ; les autres définissent les deux. Les couleurs que tu omets restent inchangées.",
       "theme_json": "JSON du thème",
       "theme_name": "Nom du thème",
+      "theme_name_required": "Le nom du thème est obligatoire.",
       "update_theme": "Mettre à jour le thème",
       "var_accent": "Accent",
       "var_accent_hover": "Accent au survol",
@@ -9347,7 +9415,9 @@
       "sounds": "Sons",
       "overlays": "Superpositions",
       "persona": "Persona",
-      "save_failed_storage": "Enregistrement impossible. Le stockage du navigateur est plein ou désactivé."
+      "save_failed_storage": "Enregistrement impossible. Le stockage du navigateur est plein ou désactivé.",
+      "theme_topbar_dark": "barre supérieure du thème, mode sombre",
+      "theme_topbar_light": "barre supérieure du thème, mode clair"
     },
     "timezoneSelect": {
       "render_timezone": "Fuseau horaire d'affichage"
@@ -10875,6 +10945,30 @@
       "offer_open": "Ouvrir {{host}}",
       "copy_failed": "Copie impossible. Sélectionne le texte dans l'app et copie-le toi-même.",
       "more_actions": "Plus d'actions"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Envoyer le texte sélectionné à une app",
+      "menu_label": "Apps pour le texte sélectionné",
+      "close": "Fermer",
+      "copy": "Copier",
+      "copied": "Copié",
+      "open": "Ouvrir {{host}}",
+      "no_response": "{{app}} n'a pas répondu.",
+      "revoked": "{{app}} ne peut plus utiliser cet élément. Il a été désactivé ou son approbation a été retirée.",
+      "failed": "{{app}} a rencontré un problème : {{message}}",
+      "too_short": "{{title}} demande au moins {{min}} caractères. Tu en as sélectionné {{count}}.",
+      "copy_failed": "Impossible de copier dans le presse-papiers.",
+      "load_failed": "Impossible de charger les apps pour le texte sélectionné.",
+      "loading": "Chargement des apps…",
+      "none": "Aucune app ne propose d’action pour ce texte.",
+      "retry": "Réessayer",
+      "grant_entry": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat",
+      "grant_entry_copy": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton Copier",
+      "grant_entry_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton pour ouvrir un lien",
+      "grant_entry_copy_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et des boutons Copier et Ouvrir"
     }
   },
   "hooks": {
@@ -11283,7 +11377,8 @@
         "keeps_builtin": "Elle reste une app intégrée.",
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
       },
-      "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer."
+      "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer.",
+      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",
@@ -11385,7 +11480,9 @@
       "1_authenticate_to_aws": "1. Authentifiez-vous auprès d'AWS",
       "2_enter_the_profile_name_region_below": "2. Saisissez le nom du profil + la région ci-dessous",
       "3_apply_the_iam_policy": "3. Appliquez la politique IAM",
-      "access_reachable": ": accès joignable",
+      "account_short": "compte {{account}}",
+      "profile_reachable": "{{profile}} : accès joignable",
+      "profile_reachable_account": "{{profile}} : accès joignable (compte {{account}})",
       "account_12_digits_optional_iam_identity_style": "Compte (12 chiffres, optionnel — style iam-identity)",
       "active_deployments": "Déploiements actifs",
       "admin": "Admin",
@@ -11573,7 +11670,6 @@
       "back_to_editor": "Retour à l’éditeur",
       "back_to_library": "← Retour à la bibliothèque",
       "bring_artifact_back_to_this_window": "Ramener l'artefact dans cette fenêtre",
-      "by": "par",
       "cancel": "Annuler",
       "cancel_esc": "Annuler (Esc)",
       "change_how_this_document_is_rendered": "Modifier le rendu de ce document",
@@ -11587,7 +11683,6 @@
       "comment_removed": "Commentaire supprimé",
       "comment_resolved": "Commentaire résolu",
       "comments": "Commentaires",
-      "content_copied_from_v": "contenu copié depuis la v",
       "copied": "Copié",
       "copy_content": "Copier le contenu",
       "send_to_session": "Envoyer à une session",
@@ -11676,9 +11771,6 @@
       "to_chat_with_the_agent": "pour discuter avec l'agent",
       "toggle_agent_chat": "Afficher ou masquer la discussion avec l'agent",
       "unsaved_changes": "• modifications non enregistrées",
-      "updated": "· Mis à jour",
-      "v": "v",
-      "v_2": "→ v",
       "version": "Version",
       "via_dashboard": "via le tableau de bord",
       "view_remote": "Voir la version distante",
@@ -11693,7 +11785,14 @@
       "activity_failed_to_load": "Échec du chargement de l'activité",
       "sync_status_unavailable": "État de synchronisation indisponible",
       "more": "Plus",
-      "more_actions": "Plus d'actions"
+      "more_actions": "Plus d'actions",
+      "created_at_value": "Créé le {{date}}",
+      "updated_at_value": "Mis à jour le {{date}}",
+      "action_by_actor": "<0>{{action}}</0> par {{name}}",
+      "content_copied_from_version": "contenu copié depuis la v{{version}}",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "Artefact",
@@ -12144,7 +12243,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Approbation requise",
-        "approvals_pending": "approbations en attente",
         "batch_preview_all": "Passez en revue ci-dessous les {{count}} appels en attente — tous seront traités ensemble.",
         "batch_preview_none": "Aucun aperçu disponible pour cet appel.",
         "approve": "Approuver",
@@ -12163,7 +12261,10 @@
         "tool_call_other": "{{count}} appels",
         "trust": "Faire confiance",
         "trusted": "De confiance",
-        "view_full_activity": "Voir toute l'activité →"
+        "view_full_activity": "Voir toute l'activité →",
+        "approvals_pending_count_one": "{{count}} approbation en attente",
+        "approvals_pending_count_many": "{{count}} approbations en attente",
+        "approvals_pending_count_other": "{{count}} approbations en attente"
       },
       "cronAckBar": {
         "acknowledge": "Accuser réception",
@@ -12491,7 +12592,6 @@
         "backend_hiccup_retrying": "connexion instable — nouvelle tentative…",
         "collapse_agent_list": "Réduire la liste des sous-agents",
         "expand_agent_list": "Développer la liste des sous-agents",
-        "more_running_normally": "autres en cours normalement…",
         "show_more_running_in_sidebar_one": "Afficher {{count}} autre sous-agent en cours dans la barre latérale",
         "show_more_running_in_sidebar_many": "Afficher {{count}} autres sous-agents en cours dans la barre latérale",
         "show_more_running_in_sidebar_other": "Afficher {{count}} autres sous-agents en cours dans la barre latérale",
@@ -12540,7 +12640,10 @@
         "chip_stopped_other": "{{count}} agents arrêtés",
         "chip_stalled_one": "{{count}} agent peut-être bloqué",
         "chip_stalled_many": "{{count}} agents peut-être bloqués",
-        "chip_stalled_other": "{{count}} agents peut-être bloqués"
+        "chip_stalled_other": "{{count}} agents peut-être bloqués",
+        "more_running_normally_count_one": "{{count}} autre en cours normalement…",
+        "more_running_normally_count_many": "{{count}} autres en cours normalement…",
+        "more_running_normally_count_other": "{{count}} autres en cours normalement…"
       },
       "subagentQueued": {
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
@@ -13748,7 +13851,6 @@
       "goal_loop_cycle_no_cap": "Boucle d’objectif · cycle {{count}} (sans limite)",
       "goal_loop_interrupted_title": "Boucle d’objectif armée — le dernier tour a été interrompu ; reprends le chat ou attends le prochain cycle",
       "hidden_because_parent_hidden": "{{name}} est masqué car un dossier parent est masqué",
-      "hide": "Masquer",
       "hide_folder": "Masquer le dossier",
       "hide_when_empty": "Masquer si vide",
       "hiding_named_filter": "Masquage : {{filter}}",
@@ -13866,7 +13968,6 @@
       "show_hidden_folder_other": "Afficher {{count}} dossiers masqués",
       "show_only_sessions_tagged": "Afficher uniquement les sessions avec l'étiquette {{name}}",
       "show_the_folder_list": "Afficher la liste des dossiers",
-      "skip": "Ignorer",
       "sort_and_filter_sessions": "Trier et filtrer les sessions",
       "sort_by": "Trier par",
       "sort_created_newest": "Création (plus récentes)",
@@ -13899,8 +14000,8 @@
       "stale_collapse_row_hidden_many": "Afficher {{count}} sessions en sommeil",
       "stale_collapse_row_hidden_one": "Afficher {{count}} session en sommeil",
       "stale_collapse_row_hidden_other": "Afficher {{count}} sessions en sommeil",
-      "stale_collapse_row_hint": "En sommeil : sans activité depuis plus de {{window}}. Clique pour afficher.",
-      "stale_collapse_row_hint_open": "En sommeil : sans activité depuis plus de {{window}}. Clique pour masquer.",
+      "stale_collapse_row_hint": "Les sessions en sommeil ne sont pas fermées et gardent leur historique. Tu ne les as pas utilisées depuis plus de {{window}}, elles sont donc regroupées ici pour garder la liste courte. Clique pour les afficher. Pour changer la durée ou désactiver ce réglage, utilise « {{setting}} » dans le bouton de filtre à côté de la recherche.",
+      "stale_collapse_row_hint_open": "Les sessions en sommeil ne sont pas fermées et gardent leur historique. Tu ne les as pas utilisées depuis plus de {{window}}, elles sont donc regroupées ici pour garder la liste courte. Clique pour les masquer. Pour changer la durée ou désactiver ce réglage, utilise « {{setting}} » dans le bouton de filtre à côté de la recherche.",
       "stale_collapse_row_shown_many": "Masquer {{count}} sessions en sommeil",
       "stale_collapse_row_shown_one": "Masquer {{count}} session en sommeil",
       "stale_collapse_row_shown_other": "Masquer {{count}} sessions en sommeil",
@@ -13932,7 +14033,6 @@
       "untagged": "+ sans étiquette",
       "untagged_2": "Non étiquetés",
       "untagged_only": "Sans étiquette uniquement",
-      "will_be_moved_to_older_sessions": "seront déplacées vers les anciennes sessions.",
       "yesterday": "Hier",
       "new_incognito_chat": "Nouveau chat incognito",
       "new_temporary_chat": "Nouveau chat temporaire",
@@ -14129,7 +14229,19 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "Normal",
       "kind_section_mate": "Des coéquipiers",
-      "filter_crew_description": "Afficher uniquement les discussions Ultra Mode"
+      "filter_crew_description": "Afficher uniquement les discussions Ultra Mode",
+      "skip_running_sessions_one": "Ignorer {{n}} session en cours",
+      "skip_running_sessions_many": "Ignorer {{n}} sessions en cours",
+      "skip_running_sessions_other": "Ignorer {{n}} sessions en cours",
+      "cleanup_move_count_one": "{{n}} session sera déplacée vers les anciennes sessions.",
+      "cleanup_move_count_many": "{{n}} sessions seront déplacées vers les anciennes sessions.",
+      "cleanup_move_count_other": "{{n}} sessions seront déplacées vers les anciennes sessions.",
+      "show_sessions_count_one": "Afficher {{n}} session",
+      "show_sessions_count_many": "Afficher {{n}} sessions",
+      "show_sessions_count_other": "Afficher {{n}} sessions",
+      "hide_sessions_count_one": "Masquer {{n}} session",
+      "hide_sessions_count_many": "Masquer {{n}} sessions",
+      "hide_sessions_count_other": "Masquer {{n}} sessions"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -14146,6 +14258,7 @@
       "connection_unreachable": "Impossible de joindre {{provider}} pour vérifier cette connexion.",
       "connection_views": "Vues des connexions",
       "connections": "Connexions",
+      "mcp_management_heading": "Gestion MCP",
       "could_not_load_status": "Impossible de charger l’état des connexions. Les cartes peuvent être obsolètes.",
       "disconnect": "Déconnecter",
       "disconnect_census_incomplete": "L'autorisation stockée a été conservée car une source de configuration n'a pas pu être lue pour exclure qu'un autre serveur l'utilise. Vérifiez votre configuration de serveur, puis déconnectez à nouveau.",
@@ -14962,9 +15075,6 @@
         "logs": {
           "label": "Journaux"
         },
-        "mcpPool": {
-          "label": "Gestion MCP"
-        },
         "memory": {
           "label": "Mémoire"
         },
@@ -15219,11 +15329,15 @@
         "related_load_failed": "Impossible de charger les éléments liés",
         "relations_count": "Relations ({{count}})",
         "save": "enregistrer",
-        "shared": "partagé",
         "summary": "Résumé",
         "tag1_tag2_tag3": "étiquette1, étiquette2, étiquette3",
         "tags_save_failed": "Impossible d'enregistrer les étiquettes",
-        "unarchive": "Désarchiver"
+        "unarchive": "Désarchiver",
+        "shared_count_one": "{{n}} en commun",
+        "shared_count_many": "{{n}} en commun",
+        "shared_count_other": "{{n}} en commun",
+        "status_active": "Actif",
+        "status_archived": "Archivé"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} vectorisés ({{pct}}%)",
@@ -15319,7 +15433,17 @@
         "delete_items_permanently_other": "Supprimer définitivement {{count}} éléments ?",
         "selected_count_one": "{{count}} sélectionné",
         "selected_count_many": "{{count}} sélectionnés",
-        "selected_count_other": "{{count}} sélectionnés"
+        "selected_count_other": "{{count}} sélectionnés",
+        "type_design_doc": "document de conception",
+        "type_runbook": "procédure d’exploitation",
+        "type_meeting_notes": "notes de réunion",
+        "type_code_doc": "documentation de code",
+        "type_presentation": "présentation",
+        "type_report": "rapport",
+        "type_policy": "politique",
+        "type_personal_notes": "notes personnelles",
+        "type_external_reference": "référence externe",
+        "type_document": "fichier"
       },
       "itemCard": {
         "copied": "Copié !",
@@ -15418,7 +15542,7 @@
         "paused": "En pause",
         "paused_2": "en pause",
         "pending": "en attente",
-        "queried_live_at_search_time_from_your_aws_account": "Interrogée en direct depuis ton compte AWS au moment de la recherche. Rien n'est ingéré ni stocké localement\u202f; les résultats citent les liens des documents d'origine.",
+        "queried_live_at_search_time_from_your_aws_account": "Interrogée en direct depuis ton compte AWS au moment de la recherche. Rien n'est ingéré ni stocké localement ; les résultats citent les liens des documents d'origine.",
         "remove_source": "Supprimer la source",
         "remove_this_source_and_all_its_ingested_items": "Supprimer cette source et tous ses éléments ingérés ?",
         "rename_source": "Renommer la source",
@@ -15471,7 +15595,7 @@
         "confirm_account_to_enable": "Confirme le compte AWS ci-dessus pour ajouter cette source.",
         "enter_region_to_add": "Saisis la région AWS pour ajouter cette source.",
         "profile_blank_uses_default_chain": "Laisse vide pour utiliser les identifiants AWS par défaut.",
-        "remove_this_live_source": "Supprimer cette source de base de connaissances\u202f? Rien n'est stocké localement\u202f; la base de connaissances elle-même n'est pas modifiée.",
+        "remove_this_live_source": "Supprimer cette source de base de connaissances ? Rien n'est stocké localement ; la base de connaissances elle-même n'est pas modifiée.",
         "region_example_placeholder": "ex. us-east-1",
         "word_count_one": "{{n}} mot",
         "word_count_many": "{{n}} mots",
@@ -15570,9 +15694,11 @@
       "pool_warm_hit_rate": "Taux de réutilisation à chaud du pool",
       "ram_saved": "RAM économisée",
       "rss": "RSS",
-      "s": "s",
       "server": "Serveur",
       "shared_mcp_gateway": "Passerelle MCP partagée",
+      "status_active": "actif",
+      "status_stopped": "arrêté",
+      "status_unhealthy": "défaillant",
       "with_shared_gateway_pooled": "Avec passerelle partagée (mutualisée)",
       "without_gateway_per_session_copies": "Sans passerelle (copies par session)"
     },
@@ -15748,6 +15874,7 @@
       "diff_env_removed": "Env retirée : {{names}}",
       "remove_mark": "Retirer",
       "footprint_failed": "Impossible de lire la mémoire utilisée par les serveurs MCP.",
+      "footprint_owner_only": "Seul le propriétaire de la crew voit les chiffres de mémoire.",
       "review_what_approve_does": "Approuver : une seule copie l’exécute pour tous les chats, hors de leur bac à sable. Ignorer : il continue de tourner dans chaque chat.",
       "share_risk": "Hors du bac à sable, un serveur partagé peut lire et modifier tes fichiers, comme un programme que tu lances toi-même.",
       "review_when_safe": "Approuve un serveur si tu l’as ajouté toi-même et si la commande affichée est celle que tu attends."
@@ -16966,7 +17093,6 @@
       "resource_network": "Réseau",
       "sandbox_procs": "Sandbox",
       "session_storage": "Stockage des sessions",
-      "session_storage_detail": "{{sessions}} sessions · {{reclaimable}} récupérables",
       "session_storage_measuring": "Mesure en cours…",
       "threads": "Threads",
       "total": "Total",
@@ -16976,7 +17102,10 @@
       "utilization": "Utilisation",
       "working_directory": "Répertoire de travail",
       "graph_scale_network": "Pleine échelle {{max}} · dernières {{seconds}}",
-      "graph_scale_percent": "Pleine échelle 100 % · dernières {{seconds}}"
+      "graph_scale_percent": "Pleine échelle 100 % · dernières {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} session · {{reclaimable}} récupérables",
+      "session_storage_detail_many": "{{sessions}} sessions · {{reclaimable}} récupérables",
+      "session_storage_detail_other": "{{sessions}} sessions · {{reclaimable}} récupérables"
     },
     "popoutFrame": {
       "session": "Session",
@@ -20022,7 +20151,6 @@
       "credits_col": "Crédits",
       "credits_this_period": "{{days}} derniers j",
       "daily_p50_trend": "p50 quotidien — à froid en haut, à chaud en bas",
-      "daily_trend_point": "{{date}} · à froid {{cold}} · à chaud {{warm}} · {{count}} démarrages",
       "detail_col": "Détail",
       "distribution_col": "Distribution",
       "duration_col": "Durée",
@@ -20131,7 +20259,10 @@
       "otel_retention_cap": "Les chiffres de tours, de latence et de démarrage ne couvrent que les derniers {{days}} j ; les métriques plus anciennes sont supprimées (<settingRef/>).",
       "window_footer_shards_one": "Sections OTEL · période : {{period}} · {{n}} fragment · source : <dir/> · local uniquement, aucune sortie de données",
       "window_footer_shards_many": "Sections OTEL · période : {{period}} · {{n}} fragments · source : <dir/> · local uniquement, aucune sortie de données",
-      "window_footer_shards_other": "Sections OTEL · période : {{period}} · {{n}} fragments · source : <dir/> · local uniquement, aucune sortie de données"
+      "window_footer_shards_other": "Sections OTEL · période : {{period}} · {{n}} fragments · source : <dir/> · local uniquement, aucune sortie de données",
+      "daily_trend_point_one": "{{date}} · à froid {{cold}} · à chaud {{warm}} · {{n}} démarrage",
+      "daily_trend_point_many": "{{date}} · à froid {{cold}} · à chaud {{warm}} · {{n}} démarrages",
+      "daily_trend_point_other": "{{date}} · à froid {{cold}} · à chaud {{warm}} · {{n}} démarrages"
     },
     "terminalPopoutFrame": {
       "return": "Revenir au dock",
@@ -20426,7 +20557,6 @@
       "filter_source_mine_description": "Crews que vous avez créés dans le gestionnaire de crews",
       "filter_source_builtin_description": "Crews fournis avec {{productName}}",
       "filter_source_package_description": "Crews installés par des packages de capacités",
-      "member_count_filtered": "{{shown}} coéquipiers sur {{count}}",
       "webview_rendering": "Affichage de la vue publiée…",
       "webview_retry": "Réessayer",
       "deploy_title": "Ton équipe dans le cloud",
@@ -20823,7 +20953,10 @@
       "profile_harness_cannot_start": "Ne peut pas démarrer ici.",
       "profile_harness_saved": "Enregistré. {{name}} tourne sur ce harness dès le prochain message.",
       "profile_harness_unavailable": "{{name}} doit tourner sur {{harness}}, qui ne peut pas démarrer ici, donc ses chats et ses workers ne démarrent pas non plus. Choisis un autre harness de l’agent, ou Hérité.",
-      "profile_harness_choose": "Choisir un harness de l’agent"
+      "profile_harness_choose": "Choisir un harness de l’agent",
+      "member_count_filtered_one": "coéquipiers : {{shown}}/{{n}}",
+      "member_count_filtered_many": "coéquipiers : {{shown}}/{{n}}",
+      "member_count_filtered_other": "coéquipiers : {{shown}}/{{n}}"
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

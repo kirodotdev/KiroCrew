@@ -58,7 +58,7 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
+import { compareText, fmtDateTimeNumeric, fmtRelative, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
 import { browserTimeZone, isValidTimeZone, jobZoneCaption } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
@@ -173,17 +173,10 @@ const fmtAgo = (ts?: number) => {
 
 const fmtIn = (ts?: number | null) => {
   if (ts == null) return '—'
-  const s = Math.floor(ts - Date.now() / 1000)
-  if (s <= 0) return i18nT('pages.schedulePage.now')
-  // `in <1m` deliberately stays English for now: as a NEW catalog value it is
-  // rejected by check-source-strings' `leading-connector` rule, which cannot
-  // separate a lowercase standalone label from a real sentence fragment (its
-  // own comment names `in progress` as the same known limit). The `${}` branches
-  // below need a key plus `{{vars}}`, which is Phase 6.
-  if (s < 60) return 'in <1m'
-  if (s < 3600) return `in ${Math.floor(s / 60)}m`
-  if (s < 86400) { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `in ${h}h ${m}m` }
-  const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return `in ${d}d ${h}h`
+  if (ts - Date.now() / 1000 <= 0) return i18nT('pages.schedulePage.now')
+  // The locale words the future offset (`in 5m`, `in 5 m`, `5分钟后`) in the
+  // largest unit that fits.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 /**

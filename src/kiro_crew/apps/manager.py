@@ -302,6 +302,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         grant_source,
         point_grant_families,
     )
+    from kiro_crew.apps.selection_action_grants import (  # noqa: F401
+        selection_action_grant_row,
+    )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,
         on_event_loop,

@@ -104,13 +104,29 @@ jobs:
       # otherwise pass by measuring nothing.
       RATCHET_SCOPE_WHOLE_TREE: "1"
     steps:
-      # fetch-depth: 0 for parity with ci.yml backend-lint's checkout: a gate
-      # that falls back to a diff (any run where the override above is not set)
-      # needs parent info a shallow clone truncates.
+      # The gates here scan the WORKING TREE: RATCHET_SCOPE_WHOLE_TREE above
+      # makes ratchet_scope.changed_paths() short-circuit to "whole tree" before
+      # any git call, so no gate resolves a base ref, diffs a second commit, or
+      # reads a historical file.
+      #
+      # filter: blob:none therefore skips the history blobs, which would
+      # otherwise be most of what this checkout transfers (measured in #27496).
+      # It is safe HERE
+      # because nothing diffs: on a lane that does, a lazily fetched blob whose
+      # fetch fails inside `git diff | grep` reads as NO MATCH and a rule passes
+      # unchecked, which is why #27513 declined the same filter for the
+      # diff-reading lanes. Trees are still fetched, which is what
+      # check_cwd_relative_repo_reads.py's `git ls-tree HEAD` reads.
+      #
+      # fetch-depth: 0 is kept because nothing here needs it reduced, NOT
+      # because a gate needs the history. A gate that stopped using whole-tree
+      # scope would diff, and it would have to drop this filter too -- the depth
+      # alone would not make it safe.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

@@ -963,11 +963,14 @@
           "pattern_many": "{{count}} шаблонов",
           "pattern_one": "{{count}} шаблон",
           "pattern_other": "{{count}} шаблона",
-          "pending": "в ожидании",
           "read_namespace": "Прочитать namespace {{name}}",
           "invalid_namespace_name": "Имена namespace становятся именами папок, поэтому в них можно использовать только строчные латинские буквы (a–z), цифры (0–9), точки, дефисы и подчёркивания. Имя должно начинаться и заканчиваться буквой или цифрой и содержать от 2 до 64 символов.",
           "invalid_namespace_name_char": "«{{char}}» нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _",
-          "invalid_namespace_name_letter": "«{{char}}» ({{script}}, {{code}}) нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _"
+          "invalid_namespace_name_letter": "«{{char}}» ({{script}}, {{code}}) нельзя использовать в имени namespace. Используй строчные буквы a–z, 0–9, . -⁠ _",
+          "pending_count_one": "{{count}} в ожидании",
+          "pending_count_few": "{{count}} в ожидании",
+          "pending_count_many": "{{count}} в ожидании",
+          "pending_count_other": "{{count}} в ожидании"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1132,7 +1135,6 @@
         },
         "reportView": {
           "blast_radius": "Область влияния: {{scope}}",
-          "blocking": "блокирующих",
           "changes_reviewed_few": "{{count}} изменения отревьюено",
           "changes_reviewed_many": "{{count}} изменений отревьюено",
           "changes_reviewed_one": "{{count}} изменение отревьюено",
@@ -1153,10 +1155,17 @@
           "open_the_pull_request": "Открыть pull request",
           "share": "Поделиться",
           "sharing": "Делюсь…",
-          "should_fix": "стоит исправить",
           "step_problem": "Проблема",
           "step_solution_fit": "Соответствие решения",
-          "step_why_it_matters": "Почему это важно"
+          "step_why_it_matters": "Почему это важно",
+          "blocking_count_one": "{{count}} блокирующий",
+          "blocking_count_few": "{{count}} блокирующих",
+          "blocking_count_many": "{{count}} блокирующих",
+          "blocking_count_other": "{{count}} блокирующих",
+          "should_fix_count_one": "стоит исправить: {{count}}",
+          "should_fix_count_few": "стоит исправить: {{count}}",
+          "should_fix_count_many": "стоит исправить: {{count}}",
+          "should_fix_count_other": "стоит исправить: {{count}}"
         },
         "reviewChat": {
           "error_generic": "Не удалось открыть сеанс для уточнений. Попробуйте снова.",
@@ -1193,7 +1202,6 @@
           "delete_review_of": "Удалить ревью {{label}}",
           "delete_this_review": "Удалить это ревью",
           "delete_this_review_2": "Удалить это ревью?",
-          "more": "ещё",
           "needs_review_count_few": "{{count}} требуют ревью",
           "needs_review_count_many": "{{count}} требуют ревью",
           "needs_review_count_one": "{{count}} требует ревью",
@@ -1208,13 +1216,16 @@
           "worth_a_glance_count_few": "на {{count}} стоит взглянуть",
           "worth_a_glance_count_many": "на {{count}} стоит взглянуть",
           "worth_a_glance_count_one": "на {{count}} стоит взглянуть",
-          "worth_a_glance_count_other": "на {{count}} стоит взглянуть"
+          "worth_a_glance_count_other": "на {{count}} стоит взглянуть",
+          "more_count_one": "ещё +{{count}}",
+          "more_count_few": "ещё +{{count}}",
+          "more_count_many": "ещё +{{count}}",
+          "more_count_other": "ещё +{{count}}"
         },
         "runDetail": {
           "cancelled_before_any_finished": "Оно было отменено до того, как хоть один pull request успел закончиться.",
           "finished": "завершено",
           "loading_report": "Загружаю отчёт…",
-          "more": "ещё",
           "nothing_to_report": "Ни один pull request не завершил ревью, поэтому сообщать было нечего.",
           "pull_request_few": "{{count}} pull request’а",
           "pull_request_many": "{{count}} pull request’ов",
@@ -1227,25 +1238,38 @@
           "skipped_inflight_other": "{{count}} pull request’а пропущено, потому что они уже были в другом ревью.",
           "started": "начато",
           "this_review_produced_no_report": "Это ревью не создало отчёта.",
-          "you_can_leave_this_page_a_notification_will_tell": "Можешь уйти с этой страницы — уведомление сообщит, когда всё будет готово."
+          "you_can_leave_this_page_a_notification_will_tell": "Можешь уйти с этой страницы — уведомление сообщит, когда всё будет готово.",
+          "more_count_one": "ещё +{{count}}",
+          "more_count_few": "ещё +{{count}}",
+          "more_count_many": "ещё +{{count}}",
+          "more_count_other": "ещё +{{count}}"
         },
         "runList": {
           "new_review": "Новое ревью"
         },
         "runProgress": {
           "cancel_review": "Отменить ревью",
-          "cancelled": "отменено",
           "cancelling": "Отменяю…",
           "elapsed_time": "Прошло времени",
-          "failed": "с ошибкой",
           "median_of_past_runs_of_this_size": "Медиана прошлых запусков такого размера",
           "review_progress": "Прогресс ревью",
-          "reviewed": "отревьюено",
           "reviewers_busy": "{{busy}} из {{max}} ревьюеров заняты",
           "step": "· шаг",
           "stops_queued_prs_one_already_being_reviewed_will": "Останавливает PR в очереди; тот, что уже на ревью, будет доведён до конца.",
           "usually": "обычно ~",
-          "working": "Работаю"
+          "working": "Работаю",
+          "reviewed_of_one": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_few": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_many": "отревьюено: {{done}} / {{count}}",
+          "reviewed_of_other": "отревьюено: {{done}} / {{count}}",
+          "failed_count_one": "{{count}} с ошибкой",
+          "failed_count_few": "{{count}} с ошибками",
+          "failed_count_many": "{{count}} с ошибками",
+          "failed_count_other": "{{count}} с ошибками",
+          "cancelled_count_one": "отменено: {{count}}",
+          "cancelled_count_few": "отменено: {{count}}",
+          "cancelled_count_many": "отменено: {{count}}",
+          "cancelled_count_other": "отменено: {{count}}"
         },
         "runStatusPill": {
           "cancelled": "Отменено",
@@ -3210,7 +3234,6 @@
           "frontier_caption": "У разблокированных элементов все учтённые блокеры закрыты или смерджены. Откройте элемент, чтобы увидеть причину, или откройте его дерево.",
           "focus_caption": "Всё активное дерево зависимостей выбранного элемента. Клик по узлу делает его корнем, Enter открывает. Пунктир — выведено, зачёркнуто — выполнено.",
           "focus_empty": "Выберите элемент, чтобы построить его дерево зависимостей.",
-          "tree_stat": "дерево {{kind}}-{{number}}: {{nodes}} узлов · {{edges}} активных рёбер",
           "ghost_satisfied": "выполнено",
           "ci_fail": "СБОЙ CI",
           "led_wait": "WAIT",
@@ -3218,7 +3241,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узлов, {{edges}} активных рёбер",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "ПУСТАЯ ПЛАТА",
           "empty_title": "Зависимостей пока нет",
@@ -3231,7 +3253,19 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab не ответил по большинству задач (сбой или ограничение частоты). Подожди немного и повтори.",
           "empty_unavailable_issue_scope": "Графу зависимостей нужен список открытых задач, но он пока недоступен. Открой вкладку «Задачи», чтобы закэшировать его, или посмотри ошибку ниже, затем повтори.",
           "refresh_failed_stale_graph": "Показан последний загруженный граф; последнее обновление не удалось.",
-          "retry": "ПОВТОРИТЬ"
+          "retry": "ПОВТОРИТЬ",
+          "tree_stat_one": "дерево {{kind}}-{{number}}: {{nodes}} узел · {{edges}}",
+          "tree_stat_few": "дерево {{kind}}-{{number}}: {{nodes}} узла · {{edges}}",
+          "tree_stat_many": "дерево {{kind}}-{{number}}: {{nodes}} узлов · {{edges}}",
+          "tree_stat_other": "дерево {{kind}}-{{number}}: {{nodes}} узла · {{edges}}",
+          "aria_tree_one": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узел, {{edges}}",
+          "aria_tree_few": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узла, {{edges}}",
+          "aria_tree_many": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узлов, {{edges}}",
+          "aria_tree_other": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узла, {{edges}}",
+          "live_edges_one": "{{n}} активное ребро",
+          "live_edges_few": "{{n}} активных ребра",
+          "live_edges_many": "{{n}} активных рёбер",
+          "live_edges_other": "{{n}} активного ребра"
         },
         "groupReviewsView": {
           "title": "Запросы на ревью",
@@ -3395,6 +3429,7 @@
         "view_list": "Плоский список"
       },
       "preview": {
+        "detailsSummaryFallback": "Подробности",
         "mermaidError": "Недопустимая диаграмма Mermaid — показан исходный код."
       },
       "row": {
@@ -3613,6 +3648,11 @@
         "allDone": "Всё проверено",
         "archive": "В архив",
         "archiveAll": "Остальное в архив",
+        "archiveOthers_few": "Остальные ({{count}}) в архив",
+        "archiveOthers_many": "Остальные ({{count}}) в архив",
+        "archiveOthers_one": "Остальные ({{count}}) в архив",
+        "archiveOthers_other": "Остальные ({{count}}) в архив",
+        "archiveSkipsFiling": "Задачи, которые сейчас отправляются, пропускаются",
         "archivedSection": "В архиве",
         "assignedTo": "Назначено: {{name}}",
         "backToMeeting": "Вернуться к встрече",
@@ -4245,7 +4285,6 @@
         "working": "Работает"
       },
       "stats": {
-        "busiest_day": "Самый болтливый день: {{date}} ({{count}} сообщ.)",
         "companion_days": "Вместе уже {{time}}",
         "drags_one": "Перетащен {{n}} раз",
         "drags_few": "Перетащен {{n}} раза",
@@ -4274,7 +4313,11 @@
         "walks_one": "{{n}} шаг",
         "walks_few": "{{n}} шага",
         "walks_many": "{{n}} шагов",
-        "walks_other": "{{n}} шага"
+        "walks_other": "{{n}} шага",
+        "busiest_day_one": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_few": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_many": "Самый болтливый день: {{date}} ({{n}} сообщ.)",
+        "busiest_day_other": "Самый болтливый день: {{date}} ({{n}} сообщ.)"
       },
       "tip": {
         "bedtime": "Попробуйте: \"скажи мне сбавить темп в 23:00\"",
@@ -5378,14 +5421,17 @@
         },
         "taskList": {
           "done": "Готово",
-          "done_of_total": "Готово {{done}} из {{total}} задач",
           "no_tasks_yet": "Задач пока нет. После согласования дизайна здесь появится упорядоченный список задач, и вы сможете запускать их по одной.",
           "pause_the_build_first": "Поставьте сборку на паузу, прежде чем запускать отдельную задачу",
           "run": "Запустить",
           "run_only_this_task_and_stop": "Запустить только эту задачу и остановиться",
           "run_task": "Запустить задачу: {{task}}",
           "starting": "Запуск…",
-          "task_progress": "Прогресс по задачам"
+          "task_progress": "Прогресс по задачам",
+          "done_of_total_one": "Готово {{done}} из {{total}} задачи",
+          "done_of_total_few": "Готово {{done}} из {{total}} задач",
+          "done_of_total_many": "Готово {{done}} из {{total}} задач",
+          "done_of_total_other": "Готово {{done}} из {{total}} задачи"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Опишите, что вы хотите создать, ответьте на несколько вопросов и получите проверенный план — требования, дизайн и задачи — который сможет выполнить агент.",
@@ -5853,7 +5899,6 @@
         "costs_refresh_failed": "Последнее чтение счёта не удалось. Показано значение из кеша."
       },
       "page": {
-        "totals_summary": "Аккаунтов: {{accounts}} · Исправных ключей: {{healthy}} из {{keys}}",
         "refresh": "Обновить",
         "health_ok": "Исправно",
         "health_degraded": "Требует внимания",
@@ -5921,7 +5966,15 @@
         "remove_account_error": "Не удалось убрать аккаунт.",
         "remove_account_hint": "В AWS ничего не изменится",
         "forget_key_confirm": "Забыть ключ «{{name}}» этой строки? В AWS и в вашей конфигурации AWS CLI ничего не изменится.",
-        "forget_key_action": "Забыть ключ"
+        "forget_key_action": "Забыть ключ",
+        "totals_summary_one": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_few": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_many": "Аккаунтов: {{accounts}} · {{keys}}",
+        "totals_summary_other": "Аккаунтов: {{accounts}} · {{keys}}",
+        "keys_healthy_one": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_few": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_many": "Исправных ключей: {{healthy}} из {{n}}",
+        "keys_healthy_other": "Исправных ключей: {{healthy}} из {{n}}"
       },
       "rail": {
         "accounts": "Аккаунты и учётные данные",
@@ -6352,6 +6405,14 @@
       "found_setup_but_could_not_read_it": "{{productName}} обнаружил {{sources}}, но не смог прочитать файлы, поэтому ничего не было импортировано.",
       "some_setup_could_not_be_read": "{{productName}} не смог прочитать {{sources}} — ниже не показано.",
       "files_could_not_be_read": "Не удалось прочитать файлы",
+      "skip_reason_credentials": "Содержит учётные данные, поэтому остаётся в источнике",
+      "skip_reason_too_large": "Превышен лимит размера или количества",
+      "skip_reason_unsupported": "Пока не поддерживается",
+      "skip_reason_excluded": "Не перенесено намеренно",
+      "skip_reason_path_rejected": "Путь не разрешён (ссылка или за пределами источника)",
+      "skip_reason_invalid": "Не удалось прочитать как допустимые настройки",
+      "skip_reason_other": "Пропущено",
+      "resolve_failed_title": "Импорт сохранён, но действие Оставить оба или Заменить мою не выполнено. Попробуй ещё раз ниже.",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ваша существующая конфигурация {{productName}} не будет затронута.",
       "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}.",
       "import_setup_stage": "Импортировать конфигурацию · {{stage}} из {{stages}}",
@@ -6443,7 +6504,8 @@
       "trusted_auto_approving_future_calls": "Доверенный — последующие вызовы разрешаются автоматически",
       "trusted_channel_all": "Доверенный — все инструменты в этом канале разрешаются автоматически, сохраняется после перезапуска",
       "trusted_channel_base": "Доверенный — команды {{base}} разрешаются автоматически для @{{role}} до перезапуска {{productName}}",
-      "trusted_channel_command": "Доверенный — «{{cmd}}» разрешается автоматически для @{{role}} до перезапуска {{productName}}"
+      "trusted_channel_command": "Доверенный — «{{cmd}}» разрешается автоматически для @{{role}} до перезапуска {{productName}}",
+      "title_wants_to_run": "<title/> запрашивает запуск"
     },
     "approvalModePicker": {
       "nudge_body": "Здесь можно настроить, как {{productName}} запрашивает одобрение. Если выбрать здесь «Доверие», он сможет работать в этом чате без предварительных вопросов — вернуть можно в любой момент.",
@@ -6603,6 +6665,7 @@
       "artifact": "Артефакт: {{slug}}",
       "could_not_render": "Не удалось отобразить этот артефакт",
       "image_could_not_be_loaded": "Не удалось загрузить изображение",
+      "view_full_size": "Открыть в полном размере",
       "no_longer_showing": "Этот артефакт больше не отображается",
       "rendering": "Отрисовка…",
       "retry": "Повторить",
@@ -7030,7 +7093,9 @@
       "copy": "Копировать",
       "generating": "генерация…",
       "unwrap": "Не переносить строки",
-      "wrap": "Переносить строки"
+      "wrap": "Переносить строки",
+      "code_label": "код",
+      "code_region": "Код {{lang}}"
     },
     "blockquote": {
       "copied": "Скопировано!",
@@ -7157,16 +7222,26 @@
       "empty_comment": "_(пусто)_",
       "expand_comment": "Развернуть комментарий",
       "hide_resolved": "Скрыть решённые",
-      "messages": "сообщений",
       "no_comments_yet": "Комментариев пока нет.",
       "no_open_threads": "Открытых обсуждений нет.",
-      "open": "открытых ·",
       "reopen": "Открыть снова",
       "replying_is_github_only_for_now_open_the_merge_r": "Пока отвечать можно только в GitHub — открой merge request, чтобы прокомментировать.",
       "resolve": "Решить",
       "resolved": "решённых",
       "show_resolved": "Показать решённые",
-      "write_a_comment_to_send": "Напиши комментарий… {{keys}} чтобы отправить"
+      "write_a_comment_to_send": "Напиши комментарий… {{keys}} чтобы отправить",
+      "open_count_one": "открыто: {{count}}",
+      "open_count_few": "открыто: {{count}}",
+      "open_count_many": "открыто: {{count}}",
+      "open_count_other": "открыто: {{count}}",
+      "resolved_count_one": "решено: {{count}}",
+      "resolved_count_few": "решено: {{count}}",
+      "resolved_count_many": "решено: {{count}}",
+      "resolved_count_other": "решено: {{count}}",
+      "messages_count_one": "{{count}} сообщение",
+      "messages_count_few": "{{count}} сообщения",
+      "messages_count_many": "{{count}} сообщений",
+      "messages_count_other": "{{count}} сообщения"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Добавить комментарий ко всему артефакту…",
@@ -7397,7 +7472,6 @@
       "computing_line_by_line_diff": "Вычисление построчных различий…",
       "highlighting": "Подсветка синтаксиса…",
       "line_by_line_diff_failed": "Не удалось вычислить различия",
-      "more": "ещё",
       "no_changes": "нет изменений",
       "open": "Открыть файл",
       "open_in_side_panel": "Открыть {{path}} в боковой панели",
@@ -7405,12 +7479,15 @@
       "removals_many": "{{count}} удалений",
       "removals_one": "{{count}} удаление",
       "removals_other": "{{count}} удаления",
-      "show": "Показать",
       "show_less": "Показать меньше",
       "switch_to_split_view": "Переключить на разделённый вид",
       "switch_to_unified_view": "Переключить на объединённый вид",
       "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла",
-      "toggle_diff": "Показать или скрыть diff для {{path}}"
+      "toggle_diff": "Показать или скрыть diff для {{path}}",
+      "show_more_count_one": "Показать ещё {{count}}",
+      "show_more_count_few": "Показать ещё {{count}}",
+      "show_more_count_many": "Показать ещё {{count}}",
+      "show_more_count_other": "Показать ещё {{count}}"
     },
     "openFileChips": {
       "open_file": "Открыть файл"
@@ -8262,6 +8339,10 @@
       "contents": "Содержание",
       "table_of_contents": "Содержание"
     },
+    "matesDock": {
+      "load_failed": "Не удалось загрузить твоих напарников, отмеченных звёздочкой.",
+      "reorder_failed": "Не удалось сохранить новый порядок напарников."
+    },
     "mcpAppFrame": {
       "collapse": "Свернуть",
       "collapse_app": "Свернуть приложение",
@@ -8847,7 +8928,11 @@
       "sub_agent_result_few": "{{count}} результата субагентов",
       "sub_agent_result_many": "{{count}} результатов субагентов",
       "sub_agent_result_one": "{{count}} результат субагента",
-      "sub_agent_result_other": "{{count}} результата субагентов"
+      "sub_agent_result_other": "{{count}} результата субагентов",
+      "queued_count_one": "в очереди: {{count}}",
+      "queued_count_few": "в очереди: {{count}}",
+      "queued_count_many": "в очереди: {{count}}",
+      "queued_count_other": "в очереди: {{count}}"
     },
     "readingWidthToggle": {
       "title_full": "Полная ширина",
@@ -9472,6 +9557,9 @@
       "group_borders": "Границы",
       "group_status": "Статус",
       "group_text_muted": "Текст и приглушённый",
+      "json_invalid": "Некорректный JSON — проверь синтаксис и попробуй снова.",
+      "json_needs_modes": "В JSON должны быть объекты «dark» и «light».",
+      "json_needs_name": "В JSON должно быть поле «name».",
       "light_mode_colors": "Цвета светлой темы",
       "my_custom_theme": "Моя тема",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"Моя тема\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -9485,6 +9573,7 @@
       "theme_css_help": "Вставь цвета CSS из ответа ИИ или из понравившейся темы, например --bg: #12141a. Цвета внутри блока .dark или .light задают этот режим, остальные — оба режима. Неуказанные цвета остаются без изменений.",
       "theme_json": "JSON темы",
       "theme_name": "Название темы",
+      "theme_name_required": "Нужно указать название темы.",
       "update_theme": "Обновить тему",
       "var_accent": "Акцент",
       "var_accent_hover": "Акцент наведения",
@@ -9523,7 +9612,9 @@
       "sounds": "Звуки",
       "overlays": "Оверлеи",
       "persona": "Персона",
-      "save_failed_storage": "Не удалось сохранить. Хранилище браузера заполнено или отключено."
+      "save_failed_storage": "Не удалось сохранить. Хранилище браузера заполнено или отключено.",
+      "theme_topbar_dark": "верхняя панель темы, тёмный режим",
+      "theme_topbar_light": "верхняя панель темы, светлый режим"
     },
     "timezoneSelect": {
       "render_timezone": "Часовой пояс отображения"
@@ -11071,6 +11162,30 @@
       "offer_open": "Открыть {{host}}",
       "copy_failed": "Не удалось скопировать. Выдели текст в приложении и скопируй его вручную.",
       "more_actions": "Другие действия"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Приложения",
+      "apps_hint": "Отправить выделенный текст в приложение",
+      "menu_label": "Приложения для выделенного текста",
+      "close": "Закрыть",
+      "copy": "Копировать",
+      "copied": "Скопировано",
+      "open": "Открыть {{host}}",
+      "no_response": "{{app}} не ответило.",
+      "revoked": "{{app}} больше не может использовать этот пункт. Его отключили или отозвали одобрение.",
+      "failed": "В {{app}} возникла проблема: {{message}}",
+      "too_short": "Для «{{title}}» нужно не меньше {{min}} символов. Выделено: {{count}}.",
+      "copy_failed": "Не удалось скопировать в буфер обмена.",
+      "load_failed": "Не удалось загрузить приложения для выделенного текста.",
+      "loading": "Загрузка приложений…",
+      "none": "Ни у одного приложения нет действия для этого текста.",
+      "retry": "Повторить",
+      "grant_entry": "{{title}}: до {{max}} символов текста, который ты выделяешь в ответах чата",
+      "grant_entry_copy": "{{title}}: до {{max}} символов текста, который ты выделяешь в ответах чата, и кнопка «Копировать»",
+      "grant_entry_open": "{{title}}: до {{max}} символов текста, который ты выделяешь в ответах чата, и кнопка открытия ссылки",
+      "grant_entry_copy_open": "{{title}}: до {{max}} символов текста, который ты выделяешь в ответах чата, и кнопки «Копировать» и «Открыть»"
     }
   },
   "hooks": {
@@ -11481,7 +11596,8 @@
         "keeps_builtin": "Оно остаётся встроенным приложением.",
         "installed_needs_newer_host": "Установленной версии {{name}} нужен более новый {{productName}}. Обнови {{productName}}; твои данные не изменились."
       },
-      "grants_reconsent_composer_actions": "Кнопки поля ввода: приложение может добавить эти кнопки в меню + поля ввода. По нажатию его текст вставляется в черновик; приложение не видит черновик и не может его отправить."
+      "grants_reconsent_composer_actions": "Кнопки поля ввода: приложение может добавить эти кнопки в меню + поля ввода. По нажатию его текст вставляется в черновик; приложение не видит черновик и не может его отправить.",
+      "grants_reconsent_selection_actions": "Действия с выделенным текстом: элементы приложения получают текст, который ты выделяешь в ответах чата, и могут предложить результат для копирования или открытия."
     },
     "appPage": {
       "loading_app": "Загрузка приложения…",
@@ -11590,7 +11706,9 @@
       "1_authenticate_to_aws": "1. Пройдите аутентификацию в AWS",
       "2_enter_the_profile_name_region_below": "2. Укажите имя профиля и регион ниже",
       "3_apply_the_iam_policy": "3. Примените политику IAM",
-      "access_reachable": ": доступ подтверждён",
+      "account_short": "аккаунт {{account}}",
+      "profile_reachable": "{{profile}}: доступ подтверждён",
+      "profile_reachable_account": "{{profile}}: доступ подтверждён (аккаунт {{account}})",
       "account_12_digits_optional_iam_identity_style": "Аккаунт (12 цифр, необязательно — формат iam-identity)",
       "active_deployments": "Активные развёртывания",
       "admin": "Admin",
@@ -11781,7 +11899,6 @@
       "back_to_editor": "Назад в редактор",
       "back_to_library": "← Назад в библиотеку",
       "bring_artifact_back_to_this_window": "Вернуть артефакт в это окно",
-      "by": "автор",
       "cancel": "Отмена",
       "cancel_esc": "Отмена (Esc)",
       "change_how_this_document_is_rendered": "Изменить способ отображения документа",
@@ -11795,7 +11912,6 @@
       "comment_removed": "Комментарий удалён",
       "comment_resolved": "Комментарий закрыт",
       "comments": "Комментарии",
-      "content_copied_from_v": "содержимое скопировано из v",
       "copied": "Скопировано",
       "copy_content": "Скопировать содержимое",
       "send_to_session": "Отправить в сессию",
@@ -11884,9 +12000,6 @@
       "to_chat_with_the_agent": "чтобы общаться с агентом",
       "toggle_agent_chat": "Показать или скрыть чат с агентом",
       "unsaved_changes": "• несохранённые изменения",
-      "updated": "· Обновлено",
-      "v": "v",
-      "v_2": "→ v",
       "version": "Версия",
       "via_dashboard": "через панель управления",
       "view_remote": "Открыть удалённую копию",
@@ -11901,7 +12014,14 @@
       "activity_failed_to_load": "Не удалось загрузить активность",
       "sync_status_unavailable": "Статус синхронизации недоступен",
       "more": "Ещё",
-      "more_actions": "Другие действия"
+      "more_actions": "Другие действия",
+      "created_at_value": "Создано {{date}}",
+      "updated_at_value": "Обновлено {{date}}",
+      "action_by_actor": "<0>{{action}}</0> · автор: {{name}}",
+      "content_copied_from_version": "содержимое скопировано из v{{version}}",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "Артефакт",
@@ -12361,7 +12481,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "Требуется подтверждение",
-        "approvals_pending": "ожидают подтверждения",
         "batch_preview_all": "Просмотрите ниже все {{count}} ожидающих вызовов — все будут обработаны вместе.",
         "batch_preview_none": "Предпросмотр для этого вызова недоступен.",
         "approve": "Разрешить",
@@ -12381,7 +12500,11 @@
         "tool_call_other": "{{count}} вызова инструмента",
         "trust": "Доверять",
         "trusted": "Доверено",
-        "view_full_activity": "Показать всю активность →"
+        "view_full_activity": "Показать всю активность →",
+        "approvals_pending_count_one": "{{count}} подтверждение ожидает",
+        "approvals_pending_count_few": "{{count}} подтверждения ожидают",
+        "approvals_pending_count_many": "{{count}} подтверждений ожидают",
+        "approvals_pending_count_other": "{{count}} подтверждения ожидают"
       },
       "cronAckBar": {
         "acknowledge": "Подтвердить",
@@ -12714,7 +12837,6 @@
         "backend_hiccup_retrying": "соединение нестабильно — повтор…",
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
-        "more_running_normally": "ещё выполняются нормально…",
         "show_more_running_in_sidebar_one": "Показать ещё {{count}} выполняющийся субагент на боковой панели",
         "show_more_running_in_sidebar_few": "Показать ещё {{count}} выполняющихся субагента на боковой панели",
         "show_more_running_in_sidebar_many": "Показать ещё {{count}} выполняющихся субагентов на боковой панели",
@@ -12773,7 +12895,11 @@
         "chip_stalled_one": "{{count}} агент, возможно, завис",
         "chip_stalled_few": "{{count}} агента, возможно, зависли",
         "chip_stalled_many": "{{count}} агентов, возможно, зависли",
-        "chip_stalled_other": "{{count}} агента, возможно, зависли"
+        "chip_stalled_other": "{{count}} агента, возможно, зависли",
+        "more_running_normally_count_one": "ещё {{count}} выполняется нормально…",
+        "more_running_normally_count_few": "ещё {{count}} выполняются нормально…",
+        "more_running_normally_count_many": "ещё {{count}} выполняются нормально…",
+        "more_running_normally_count_other": "ещё {{count}} выполняются нормально…"
       },
       "subagentQueued": {
         "low_memory": "ожидание запуска — требуется {{required}} свободной памяти, сейчас свободно {{available}}; освободи память, чтобы продолжить",
@@ -14015,7 +14141,6 @@
       "goal_loop_cycle_no_cap": "Цикл цели · {{count}} (без лимита)",
       "goal_loop_interrupted_title": "Цикл цели наготове — последний ход был прерван; возобнови чат или дождись следующего цикла",
       "hidden_because_parent_hidden": "{{name}} не показывается, потому что скрыта родительская папка",
-      "hide": "Скрыть",
       "hide_folder": "Скрыть папку",
       "hide_when_empty": "Скрывать, когда пусто",
       "hiding_named_filter": "Скрыто: «{{filter}}»",
@@ -14144,7 +14269,6 @@
       "show_hidden_folder_other": "Показать {{count}} скрытой папки",
       "show_only_sessions_tagged": "Показывать только сеансы с тегом {{name}}",
       "show_the_folder_list": "Развернуть список папок",
-      "skip": "Пропустить",
       "sort_and_filter_sessions": "Сортировка и фильтрация сессий",
       "sort_by": "Сортировать по",
       "sort_created_newest": "Дата создания (сначала новые)",
@@ -14178,8 +14302,8 @@
       "stale_collapse_row_hidden_many": "Показать {{count}} спящих сессий",
       "stale_collapse_row_hidden_one": "Показать {{count}} спящую сессию",
       "stale_collapse_row_hidden_other": "Показать {{count}} спящих сессии",
-      "stale_collapse_row_hint": "Режим сна: без активности дольше {{window}}. Нажми, чтобы показать.",
-      "stale_collapse_row_hint_open": "Режим сна: без активности дольше {{window}}. Нажми, чтобы скрыть.",
+      "stale_collapse_row_hint": "Спящие сессии не закрыты и сохраняют историю. Их не использовали дольше {{window}}, поэтому они свёрнуты здесь, чтобы список оставался коротким. Нажми, чтобы показать их. Чтобы изменить срок или отключить это, используй «{{setting}}» в кнопке фильтра рядом с поиском.",
+      "stale_collapse_row_hint_open": "Спящие сессии не закрыты и сохраняют историю. Их не использовали дольше {{window}}, поэтому они свёрнуты здесь, чтобы список оставался коротким. Нажми, чтобы скрыть их. Чтобы изменить срок или отключить это, используй «{{setting}}» в кнопке фильтра рядом с поиском.",
       "stale_collapse_row_shown_few": "Скрыть {{count}} спящие сессии",
       "stale_collapse_row_shown_many": "Скрыть {{count}} спящих сессий",
       "stale_collapse_row_shown_one": "Скрыть {{count}} спящую сессию",
@@ -14215,7 +14339,6 @@
       "untagged": "+ без тегов",
       "untagged_2": "Без меток",
       "untagged_only": "Только без тегов",
-      "will_be_moved_to_older_sessions": "будут перемещены в старые сессии.",
       "yesterday": "Вчера",
       "new_incognito_chat": "Новый чат инкогнито",
       "new_temporary_chat": "Новый временный чат",
@@ -14425,7 +14548,23 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "Обычные",
       "kind_section_mate": "От напарников",
-      "filter_crew_description": "Показывать только чаты Ultra Mode"
+      "filter_crew_description": "Показывать только чаты Ultra Mode",
+      "skip_running_sessions_one": "Пропустить {{n}} активную сессию",
+      "skip_running_sessions_few": "Пропустить {{n}} активные сессии",
+      "skip_running_sessions_many": "Пропустить {{n}} активных сессий",
+      "skip_running_sessions_other": "Пропустить {{n}} активной сессии",
+      "cleanup_move_count_one": "{{n}} сессия будет перемещена в старые сессии.",
+      "cleanup_move_count_few": "{{n}} сессии будут перемещены в старые сессии.",
+      "cleanup_move_count_many": "{{n}} сессий будут перемещены в старые сессии.",
+      "cleanup_move_count_other": "{{n}} сессии будут перемещены в старые сессии.",
+      "show_sessions_count_one": "Показать {{n}} сессию",
+      "show_sessions_count_few": "Показать {{n}} сессии",
+      "show_sessions_count_many": "Показать {{n}} сессий",
+      "show_sessions_count_other": "Показать {{n}} сессии",
+      "hide_sessions_count_one": "Скрыть {{n}} сессию",
+      "hide_sessions_count_few": "Скрыть {{n}} сессии",
+      "hide_sessions_count_many": "Скрыть {{n}} сессий",
+      "hide_sessions_count_other": "Скрыть {{n}} сессии"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -14442,6 +14581,7 @@
       "connection_unreachable": "Не удалось связаться с {{provider}}, чтобы проверить это подключение.",
       "connection_views": "Представления подключений",
       "connections": "Подключения",
+      "mcp_management_heading": "Управление MCP",
       "could_not_load_status": "Не удалось загрузить состояние подключений. Данные карточек могут быть устаревшими.",
       "disconnect": "Отключить",
       "disconnect_census_incomplete": "Сохранённое разрешение было оставлено, потому что не удалось прочитать источник конфигурации и исключить его использование другим сервером. Проверьте конфигурацию сервера и отключитесь снова.",
@@ -15270,9 +15410,6 @@
         "logs": {
           "label": "Логи"
         },
-        "mcpPool": {
-          "label": "Управление MCP"
-        },
         "memory": {
           "label": "Память"
         },
@@ -15528,11 +15665,16 @@
         "related_load_failed": "Не удалось загрузить связанные элементы",
         "relations_count": "Связи ({{count}})",
         "save": "сохранить",
-        "shared": "общий",
         "summary": "Сводка",
         "tag1_tag2_tag3": "тег1, тег2, тег3",
         "tags_save_failed": "Не удалось сохранить теги",
-        "unarchive": "Из архива"
+        "unarchive": "Из архива",
+        "shared_count_one": "общих: {{n}}",
+        "shared_count_few": "общих: {{n}}",
+        "shared_count_many": "общих: {{n}}",
+        "shared_count_other": "общих: {{n}}",
+        "status_active": "Активно",
+        "status_archived": "В архиве"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} векторизовано ({{pct}}%)",
@@ -15634,7 +15776,17 @@
         "selected_count_one": "выбрано: {{count}}",
         "selected_count_few": "выбрано: {{count}}",
         "selected_count_many": "выбрано: {{count}}",
-        "selected_count_other": "выбрано: {{count}}"
+        "selected_count_other": "выбрано: {{count}}",
+        "type_design_doc": "проектный документ",
+        "type_runbook": "инструкция по эксплуатации",
+        "type_meeting_notes": "заметки встречи",
+        "type_code_doc": "документация кода",
+        "type_presentation": "презентация",
+        "type_report": "отчёт",
+        "type_policy": "политика",
+        "type_personal_notes": "личные заметки",
+        "type_external_reference": "внешняя ссылка",
+        "type_document": "документ"
       },
       "itemCard": {
         "copied": "Скопировано!",
@@ -15891,9 +16043,11 @@
       "pool_warm_hit_rate": "Доля тёплых попаданий в пул",
       "ram_saved": "Сэкономлено ОЗУ",
       "rss": "RSS",
-      "s": "s",
       "server": "Сервер",
       "shared_mcp_gateway": "Общий шлюз MCP",
+      "status_active": "активен",
+      "status_stopped": "остановлен",
+      "status_unhealthy": "неисправен",
       "with_shared_gateway_pooled": "С общим шлюзом (пул)",
       "without_gateway_per_session_copies": "Без шлюза (копия на каждую сессию)"
     },
@@ -16078,6 +16232,7 @@
       "diff_env_removed": "Удалены переменные: {{names}}",
       "remove_mark": "Убрать",
       "footprint_failed": "Не удалось прочитать, сколько памяти используют MCP-серверы.",
+      "footprint_owner_only": "Данные о памяти видит только владелец команды.",
       "review_what_approve_does": "Одобрить: одна копия запускает это для всех чатов, вне их песочницы. Пропустить: он продолжает работать внутри каждого чата.",
       "share_risk": "Вне песочницы общий сервер может читать и менять твои файлы, как программа, которую ты запускаешь сам.",
       "review_when_safe": "Одобри сервер, если ты сам его добавил и показанная команда совпадает с ожидаемой."
@@ -17327,7 +17482,6 @@
       "resource_network": "Сеть",
       "sandbox_procs": "Sandbox",
       "session_storage": "Хранилище сессий",
-      "session_storage_detail": "{{sessions}} сессий · {{reclaimable}} можно освободить",
       "session_storage_measuring": "Измерение…",
       "threads": "Потоки",
       "total": "Всего",
@@ -17337,7 +17491,11 @@
       "utilization": "Использование",
       "working_directory": "Рабочий каталог",
       "graph_scale_network": "Полная шкала {{max}} · последние {{seconds}}",
-      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}}"
+      "graph_scale_percent": "Полная шкала 100% · последние {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} сессия · {{reclaimable}} можно освободить",
+      "session_storage_detail_few": "{{sessions}} сессии · {{reclaimable}} можно освободить",
+      "session_storage_detail_many": "{{sessions}} сессий · {{reclaimable}} можно освободить",
+      "session_storage_detail_other": "{{sessions}} сессии · {{reclaimable}} можно освободить"
     },
     "popoutFrame": {
       "session": "Сессия",
@@ -20423,7 +20581,6 @@
       "credits_col": "Кредиты",
       "credits_this_period": "Последние {{days}} дн.",
       "daily_p50_trend": "p50 по дням — холодный сверху, тёплый снизу",
-      "daily_trend_point": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{count}}",
       "detail_col": "Детали",
       "distribution_col": "Распределение",
       "duration_col": "Длительность",
@@ -20537,7 +20694,11 @@
       "window_footer_shards_one": "Разделы OTEL · период: {{period}} · {{n}} шард · источник: <dir/> · только локально, без передачи наружу",
       "window_footer_shards_few": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу",
       "window_footer_shards_many": "Разделы OTEL · период: {{period}} · {{n}} шардов · источник: <dir/> · только локально, без передачи наружу",
-      "window_footer_shards_other": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу"
+      "window_footer_shards_other": "Разделы OTEL · период: {{period}} · {{n}} шарда · источник: <dir/> · только локально, без передачи наружу",
+      "daily_trend_point_one": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_few": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_many": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}",
+      "daily_trend_point_other": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{n}}"
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",
@@ -20844,7 +21005,6 @@
       "filter_source_mine_description": "Команды, созданные вами в менеджере команд",
       "filter_source_builtin_description": "Команды, входящие в {{productName}}",
       "filter_source_package_description": "Команды, установленные пакетами возможностей",
-      "member_count_filtered": "{{shown}} из {{count}} товарищей по команде",
       "webview_rendering": "Отображение опубликованного представления...",
       "webview_retry": "Повторить",
       "deploy_title": "Твоя команда в облаке",
@@ -21248,7 +21408,11 @@
       "profile_harness_cannot_start": "Здесь не может запуститься.",
       "profile_harness_saved": "Сохранено. Со следующего сообщения {{name}} работает в этой оболочке.",
       "profile_harness_unavailable": "{{name}} настроен на {{harness}}, а здесь её нельзя запустить, поэтому его чаты и воркеры тоже не запускаются. Выбери другую оболочку агента или «Наследуется».",
-      "profile_harness_choose": "Выбрать оболочку агента"
+      "profile_harness_choose": "Выбрать оболочку агента",
+      "member_count_filtered_one": "{{shown}} из {{n}} товарища по команде",
+      "member_count_filtered_few": "{{shown}} из {{n}} товарищей по команде",
+      "member_count_filtered_many": "{{shown}} из {{n}} товарищей по команде",
+      "member_count_filtered_other": "{{shown}} из {{n}} товарища по команде"
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

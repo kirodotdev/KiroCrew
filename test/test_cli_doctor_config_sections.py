@@ -851,7 +851,7 @@ class TestNameGrantPlatformScopeRow:
         from kiro_crew import name_grant
 
         profile = tmp_path / "Microsoft.PowerShell_profile.ps1"
-        profile.write_text("function ls { evil }\n")
+        profile.write_text("function ls { evil }\n", encoding="utf-8")
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(
             name_grant.platform_compat, "windows_powershell_profile_paths", lambda: (str(profile),)

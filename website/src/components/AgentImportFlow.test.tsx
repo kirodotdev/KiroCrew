@@ -7,7 +7,7 @@ import type {
 } from '../api/client'
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
-import AgentImportFlow from './AgentImportFlow'
+import AgentImportFlow, { skipReasonText } from './AgentImportFlow'
 import { i18next } from '../i18n/all'
 import { LocalOverlayRoot } from './overlayRoot'
 
@@ -745,6 +745,100 @@ describe('AgentImportFlow', () => {
         ([body]) => body?.conflict_strategy === 'skip',
       ),
     ).toHaveLength(1)
+  })
+
+  it('keeps the results and the resolution after a failed conflict resolution, and says it failed', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply)
+      .mockResolvedValueOnce(CONFLICTED_APPLY_RESPONSE)
+      .mockRejectedValueOnce(new Error('Import service unavailable'))
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('2 items already exist with different content.')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Keep both' }))
+
+    const resolveError = await screen.findByTestId('agent-import-resolve-error')
+    expect(resolveError).toHaveTextContent('Import service unavailable')
+    // It says the import itself is saved and only the conflict choice failed.
+    expect(resolveError).toHaveTextContent('Your import is saved, but Keep both or Replace mine did not go through.')
+    // No hand-off: it would unmount the only place these conflicts resolve.
+    expect(within(resolveError).queryByText('Ask the agent')).toBeNull()
+    // The import before the failed resolution stands: its counts and both ways
+    // out are still on screen, so the person can try again.
+    expect(screen.getByText('2 items already exist with different content.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Keep both' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Replace mine' })).not.toBeDisabled()
+  })
+
+  it('holds Import another and Continue while a conflict resolution runs', async () => {
+    let resolveRetry: ((value: AgentImportApplyResponse) => void) | undefined
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply)
+      .mockResolvedValueOnce(CONFLICTED_APPLY_RESPONSE)
+      .mockReturnValueOnce(new Promise(resolve => { resolveRetry = resolve }))
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('2 items already exist with different content.')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Replace mine' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import another' })).toBeDisabled())
+    // The pressed resolution says it is running; the other does not.
+    expect(screen.getByRole('button', { name: 'Replace mine' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('button', { name: 'Keep both' })).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    // The counts stay while it runs, rather than dropping to zero.
+    expect(screen.getByText('2 items already exist with different content.')).toBeInTheDocument()
+
+    resolveRetry?.(APPLY_RESPONSE)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled())
+    expect(screen.getByText('10')).toBeInTheDocument()
+  })
+
+  it('names each skip reason in words, and keeps a prose reason as sent', async () => {
+    mockSuccessfulRequests({
+      ...SCAN_RESPONSE,
+      skipped: [
+        { source: 'Claude Code', category: 'Memories', reason: 'row_count_limit', count: 3 },
+        { source: 'Claude Code', category: 'Schedules', reason: 'unsupported_schedule_schema' },
+        { source: 'Claude Code', category: 'MCP servers', reason: 'credential_bearing_server' },
+        { source: 'Claude Code', category: 'Skills', reason: 'a_code_no_one_knows_yet' },
+        { source: 'Claude Code', category: 'Credentials', reason: 'Secrets are never imported' },
+        { source: 'Claude Code', category: 'Rules', reason: 'read_failed' },
+        { source: 'Claude Code', category: 'Settings', reason: 'invalid_config' },
+        { source: 'Claude Code', category: 'Hooks', reason: 'sensitive_path_rejected' },
+      ],
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await goToReview()
+
+    expect(screen.getByText('Over a size or count limit')).toHaveAttribute('data-reason', 'row_count_limit')
+    expect(screen.getByText('Not supported yet')).toHaveAttribute('data-reason', 'unsupported_schedule_schema')
+    expect(screen.getByText('Holds credentials, so it stays with its source')).toHaveAttribute('data-reason', 'credential_bearing_server')
+    expect(screen.getByText('Skipped')).toHaveAttribute('data-reason', 'a_code_no_one_knows_yet')
+    expect(screen.getByText('Secrets are never imported')).toBeInTheDocument()
+    expect(screen.queryByText('row_count_limit')).toBeNull()
+    // Pinned until the scan sends a failed flag (#29216): a caught failure
+    // reads in words but is still a note, like every other skip.
+    expect(screen.getByText('Files could not be read')).toHaveAttribute('data-reason', 'read_failed')
+    expect(screen.getByText('Could not be read as valid settings')).toHaveAttribute('data-reason', 'invalid_config')
+    expect(screen.queryByTestId('agent-import-skip-read-error')).toBeNull()
+  })
+
+  it('reads a skip code by its kind, not by a suffix another kind shares', () => {
+    // An unreachable workspace is a bad setting, not a missing feature.
+    expect(skipReasonText('workspace_unavailable')).toBe('Could not be read as valid settings')
+    expect(skipReasonText('workspace_path_too_long')).toBe('Over a size or count limit')
+    expect(skipReasonText('scoped_memory_unsupported')).toBe('Not supported yet')
+    expect(skipReasonText('source_workspace_excluded')).toBe('Left out on purpose')
+    // The scan flags these unsupported, not broken.
+    expect(skipReasonText('unstable_memory_store')).toBe('Not supported yet')
+    expect(skipReasonText('timezone_required')).toBe('Not supported yet')
+    expect(skipReasonText('ambiguous_schedule_trigger')).toBe('Not supported yet')
+    expect(skipReasonText('sensitive_path_rejected')).toBe('Left out on purpose')
+    expect(skipReasonText('unknown_source')).toBe('Skipped')
+    expect(skipReasonText('database_open_failed')).toBe('Files could not be read')
   })
 
   it('shows no conflict resolution when nothing conflicted', async () => {

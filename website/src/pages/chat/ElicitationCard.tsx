@@ -152,14 +152,18 @@ export function clipCodePoints(text: string, max: number | undefined): string {
   return points.length > max ? points.slice(0, max).join('') : text
 }
 
-function FieldLabel({ field }: { field: ElicitationField }) {
+/** `descriptionId` names the description line, so the control can point at it
+ *  with `aria-describedby`: each control carries its own `aria-label`, which
+ *  replaces the label text as its name, so the description is otherwise never
+ *  read with it. */
+function FieldLabel({ field, descriptionId }: { field: ElicitationField; descriptionId?: string }) {
   return (
     <span className="flex flex-col gap-0.5 min-w-0">
       <span className="text-[12px] text-text font-medium">
         {field.title || field.name}
         {field.required && <span className="text-danger ml-0.5" aria-hidden="true">*</span>}
       </span>
-      {field.description && <span className="text-[11px] text-muted">{field.description}</span>}
+      {field.description && <span id={descriptionId} className="text-[11px] text-muted">{field.description}</span>}
     </span>
   )
 }
@@ -176,6 +180,7 @@ function FieldControl({ field, value, onChange, disabled }: {
   // may carry a field of the same name, and a shared id would send the second
   // label's click, and the typing after it, into the other session's form.
   const id = useId()
+  const descriptionId = field.description ? `${id}-description` : undefined
   if (field.kind === 'boolean') {
     return (
       <label className="flex items-start gap-2 cursor-pointer">
@@ -183,12 +188,13 @@ function FieldControl({ field, value, onChange, disabled }: {
           id={id}
           type="checkbox"
           aria-label={field.title || field.name}
+          aria-describedby={descriptionId}
           className="mt-0.5 accent-accent"
           checked={value === true}
           disabled={disabled}
           onChange={e => onChange(e.target.checked)}
         />
-        <FieldLabel field={field} />
+        <FieldLabel field={field} descriptionId={descriptionId} />
       </label>
     )
   }
@@ -196,10 +202,11 @@ function FieldControl({ field, value, onChange, disabled }: {
     const options = field.options ?? []
     return (
       <div className="flex flex-col gap-1">
-        <label htmlFor={id}><FieldLabel field={field} /></label>
+        <label htmlFor={id}><FieldLabel field={field} descriptionId={descriptionId} /></label>
         <SimpleSelect
           id={id}
           aria-label={field.title || field.name}
+          aria-describedby={descriptionId}
           options={options.map(o => o.value)}
           optionLabels={options.map(o => o.label)}
           value={typeof value === 'string' ? value : ENUM_UNSET}
@@ -241,11 +248,12 @@ function FieldControl({ field, value, onChange, disabled }: {
   const inputType = numeric ? 'number' : field.format === 'email' ? 'email' : field.format === 'uri' ? 'url' : field.format === 'date' ? 'date' : 'text'
   return (
     <label htmlFor={id} className="flex flex-col gap-1">
-      <FieldLabel field={field} />
+      <FieldLabel field={field} descriptionId={descriptionId} />
       <input
         id={id}
         type={inputType}
         aria-label={field.title || field.name}
+        aria-describedby={descriptionId}
         className={inputClass}
         value={value === undefined || typeof value === 'boolean' || Array.isArray(value) ? '' : String(value)}
         disabled={disabled}

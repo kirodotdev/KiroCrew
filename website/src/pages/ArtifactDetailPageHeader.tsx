@@ -15,6 +15,7 @@ import {
 import { copyToClipboard } from '../utils/clipboard'
 import { PageHeader, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
+import { fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import HoverTip from '../components/HoverTip'
@@ -312,7 +313,7 @@ export function ArtifactDetailPageHeader({
   const versionOptions = ['live', ...versionsDesc.map(String)]
   const versionOptionLabels = [
     i18nT('pages.artifactDetailPage.live'),
-    ...versionsDesc.map((v) => `${i18nT('pages.artifactDetailPage.v')}${v}`),
+    ...versionsDesc.map((v) => i18nT('pages.artifactDetailPage.version_label', { version: fmtNumber(v, { useGrouping: false }) })),
   ]
   return (
     <div className="sticky top-0 z-10 bg-bg border-b border-border">
@@ -412,7 +413,7 @@ export function ArtifactDetailPageHeader({
               <button
                 type="button"
                 onClick={() => removeTag(t)}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
                 aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >
                 <X size={12} />

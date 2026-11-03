@@ -86,6 +86,7 @@ __all__ = [
     "repaired_for_delivery",
     "bounded_for_delivery",
     "iter_fence_spans",
+    "close_open_fence",
     "iter_fence_lines",
     "rebalance_fenced_cuts",
     "fence_line_safe_offset",
@@ -1106,6 +1107,24 @@ def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
         fence = after
     if fence is not None:
         yield open_at, len(text)
+
+
+def close_open_fence(text: str) -> str:
+    """*text*, with a closer line appended when it ends inside a fenced block.
+
+    A caller that appends lines of its own after a user's text (a channel's
+    attachment paths) uses this so a fence the user left open ends before
+    them: otherwise a later delimiter line -- inside an attached file's body,
+    say -- closes that fence after the appended lines and turns them into code.
+    *text* that ends outside every fence is returned unchanged.
+    """
+    fence: _Fence | None = None
+    for line, _full, _terminated in _lines(text):
+        fence = _advance(fence, line)
+    if fence is None:
+        return text
+    separator = "" if text.endswith("\n") else "\n"
+    return f"{text}{separator}{fence.closer}"
 
 
 #: The start of a line that is, or could become, a fence delimiter: up to three

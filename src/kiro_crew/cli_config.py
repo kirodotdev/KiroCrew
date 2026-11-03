@@ -446,7 +446,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                             raw_local = json.loads(read_config_text(lp))
                             if isinstance(raw_local, dict):
                                 return _subtract_overlay(existing, raw_local)
-                        except (json.JSONDecodeError, OSError):
+                        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                             pass
                     return existing
 

@@ -537,6 +537,10 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
  * Future timestamps format forwards (`in 5m`) rather than being clamped, so
  * clock skew is visible instead of silently reading as "now".
  *
+ * `numeric: 'always'` keeps the number for a countdown: with `'auto'`, a run
+ * 24-48 hours away truncates to one day and reads `tomorrow`, which can be two
+ * calendar days off.
+ *
  * `unit` pins the unit instead of picking the largest that fits. A caller that
  * has already reduced its input to whole CALENDAR days needs this: with an
  * auto-picked unit a zero delta means "under one second" and renders "now",
@@ -545,18 +549,24 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
  */
 export function fmtRelative(
   value: Date | string | number | null | undefined,
-  options?: { style?: RelativeStyle; now?: Date | number; unit?: Intl.RelativeTimeFormatUnit },
+  options?: {
+    style?: RelativeStyle
+    now?: Date | number
+    unit?: Intl.RelativeTimeFormatUnit
+    numeric?: Intl.RelativeTimeFormatNumeric
+  },
 ): string {
   const d = toDate(value)
   if (!d) return '—'
   const style = options?.style ?? 'narrow'
+  const numeric = options?.numeric ?? 'auto'
   const nowMs = options?.now instanceof Date ? options.now.getTime() : (options?.now ?? Date.now())
   const deltaSeconds = (d.getTime() - nowMs) / 1000
   const magnitude = Math.abs(deltaSeconds)
 
   const locale = activeLocale()
-  const rtf = memo('relative', locale, style, () =>
-    new Intl.RelativeTimeFormat(locale, { localeMatcher: 'lookup', numeric: 'auto', style }),
+  const rtf = memo(numeric === 'auto' ? 'relative' : 'relativeAlways', locale, style, () =>
+    new Intl.RelativeTimeFormat(locale, { localeMatcher: 'lookup', numeric, style }),
   )
 
   if (options?.unit) {

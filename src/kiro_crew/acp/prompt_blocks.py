@@ -49,10 +49,13 @@ from kiro_crew.hooks import (
 # kiro_crew.acp. The pattern names are re-exported because this module and
 # its tests are where they have always been read from.
 from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
+    _MASKED,
     _PATH_RE,
     _POSIX_PATH_RE,
     _WINDOWS_PATH_RE,
     STRIPPED_IMAGE_MARKER,
+    mask_literal_spans,
+    mask_user_literal_text,
     strip_image_refs,
 )
 
@@ -141,7 +144,12 @@ def build_prompt_blocks(
     ``[image: <name> (2)]``, and so on; the same bytes under two names are one
     block, marked both places with the first name. Past ``max_prompt_image_blocks``
     blocks or ``max_prompt_image_b64_bytes`` of base64 in one prompt, a further
-    picture stays a path in the text.
+    picture stays a path in the text. A path written as literal text -- in
+    fenced or inline code, on a 4-space-indented line, or inside escaped
+    ``\\![x](...)`` markup -- is not a reference: it stays as written and attaches
+    nothing (:func:`~kiro_crew.image_refs.mask_literal_spans`). Each user segment
+    is judged on its own, so a fence that injected text in front of it leaves
+    open cannot pair with the user's next fence line.
 
     Only the user's own segments are read (:mod:`kiro_crew.prompt_segments`).
     A :class:`~kiro_crew.prompt_segments.SegmentedPrompt` from ``build_message``
@@ -199,7 +207,26 @@ def build_prompt_blocks(
         marker_count: dict[str, int] = {}
         prompt_b64_bytes = 0
         past_block_cap = 0
-        for match in _PATH_RE.finditer(message):
+        # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
+        # path, not an attachment: scan the view with it masked, the same view
+        # strip_image_refs reads, so the text stays as written and no block is
+        # attached. Offsets index straight into *message*. A fence the user
+        # left open stays unmasked: a channel's own attachment lines follow
+        # the user's text, and a dangling opener must not swallow them. Each
+        # user segment is judged on its own (mask_user_literal_text), so injected
+        # text ending inside an open fence cannot pair with the user's next
+        # fence line.
+        try:
+            scan = mask_user_literal_text(message)
+        except Exception:  # pragma: no cover - defensive: a scan must never break a turn
+            logger.debug("acp prompt: literal-span mask failed", exc_info=True)
+            scan = message
+        for match in _PATH_RE.finditer(scan):
+            if _MASKED in match.group(1):
+                # Only reachable through a Windows UNC host segment, whose
+                # negated class admits the sentinel: a span touching literal
+                # text is not a reference.
+                continue
             group = match.group(1)
             raw = group.strip()
             start = match.start(1) + (len(group) - len(group.lstrip()))

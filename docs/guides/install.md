@@ -48,8 +48,13 @@ bundled, so end users of those artifacts need neither Node nor a compiler.
 
 Kiro Crew drives the default agent through **`kiro-cli`** over the
 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol)
-(ACP). Other ACP backends can be selected with `agent.acp_backend`, but a fresh
-configuration uses Kiro and the gateway spawns `kiro-cli acp --agent <name>`.
+(ACP). Other ACP backends can be selected with `agent.acp_backend`. A fresh
+configuration uses the KAS harness: it runs through `kiro-cli`'s own ACP relay
+(`kiro-cli acp --agent-engine v3`) when `kiro-cli` is installed and can sign in,
+and through Kiro Crew's own bundled KAS engine otherwise. The `route:` line in
+the KAS backend section of `kirocrew doctor` names the one this host uses. Setting `agent.acp_backend` to `kiro` keeps
+`kiro-cli`: it still uses the relay when `kiro-cli` offers v3, and
+`kiro-cli acp --agent <name>` when it does not.
 
 Install `kiro-cli` per its own docs, put it on your `PATH`, and log in:
 
@@ -57,13 +62,16 @@ Install `kiro-cli` per its own docs, put it on your `PATH`, and log in:
 kiro-cli login
 ```
 
-If `kiro-cli` is not on `PATH`, spawning a session fails with
-`kiro-cli not found in PATH`. On the first dashboard launch the **Set up Kiro**
-page detects the missing prerequisite, shows copyable installer commands for the
-host's platform and the login commands to run yourself, and offers a **Use other
-coding agents** picker so another configured harness can finish setup instead.
-Kiro Crew does not run the install or the login itself. `kirocrew doctor`
-reports both the binary and the login state.
+With `agent.acp_backend` set to `kiro`, a missing `kiro-cli` makes spawning a
+session fail with `kiro-cli not found (<searched directories>)`, followed by the
+install link and the `KIROCREW_KIRO_BIN` override for a binary outside those
+directories; the default backend runs the bundled engine instead. On the first
+dashboard launch the **Set up Kiro** page detects the missing prerequisite,
+shows copyable installer commands for the host's platform and the login commands
+to run yourself, and offers a **Use other coding agents** picker so another
+configured harness can finish setup instead. Kiro Crew does not run the install
+or the login itself. `kirocrew doctor` reports both the binary and the login
+state.
 
 ### Embeddings: nothing to install
 
@@ -470,6 +478,7 @@ prints the exact command, already pointed at the right interpreter.
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |
 | `whatsapp` | `neonize` | QR-linked WhatsApp channel |
 | `feishu` | `lark-oapi` | Feishu/Lark long-connection channel |
+| `bedrock` | `boto3` | Amazon Bedrock Knowledge Base source (`bedrock_kb`) |
 | `dev` | pytest, black, isort, flake8, mypy, ... | Contributor tooling; what `make build` installs |
 
 `make desktop` and `make backend-bin` need no extra: both run
@@ -730,7 +739,8 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
-ephemeral port). The `dashboard.url` config key only advertises a remote URL.
+ephemeral port). Without either, the port in the `dashboard.url` config key is
+used, and 5476 when that URL names none.
 For the installed service the port is baked into the unit at install time — see
 [Running as a service](#running-as-a-service) for how to set and later change
 it.
@@ -1162,8 +1172,9 @@ Always start with `kirocrew doctor`.
 
 The `kiro-cli` backend did not answer in time. Five common causes:
 
-1. **`kiro-cli` is not installed.** The gateway raises
-   `kiro-cli not found in PATH`. Install it, or use the dashboard's
+1. **`kiro-cli` is not installed.** With `agent.acp_backend` set to `kiro`,
+   the gateway raises `kiro-cli not found (<searched directories>)`. Install
+   it, point `KIROCREW_KIRO_BIN` at the binary, or use the dashboard's
    **Set up Kiro** page.
 2. **Not logged in.** Run `kiro-cli login`. An expired session normally
    surfaces as the distinct, non-retryable "kiro-cli is not logged in" error
@@ -1332,8 +1343,9 @@ Uninstalling via any method above leaves your data home intact. To also remove
 all user data:
 
 ```bash
-# Back up first — this is irreversible. `kirocrew snapshot` only captures
-# memory/config/skills/workspace, not `.env`, credentials, or installed apps,
+# Back up first — this is irreversible. `kirocrew snapshot` captures memory,
+# crons, config, notifications, security, workspace, skills, crew-teams,
+# artifacts and uploads, but not `.env`, credentials, or installed apps,
 # so a full copy of the data home is the only complete backup. Chained with
 # `&&` so a failed copy (e.g. disk full) blocks the delete rather than racing
 # ahead of it. Point the copy at a location you control OUTSIDE the data home:

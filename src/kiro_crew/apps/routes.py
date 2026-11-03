@@ -122,6 +122,7 @@ from kiro_crew.apps.registry import (
     _git_target_is_unsupported,
     _git_url_host,
     _loggable_git_transport_output,
+    _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,

@@ -12,6 +12,7 @@ The wire halves (the bounded download, the seal that posts an activity) live in
 from __future__ import annotations
 
 import base64
+import os
 
 import pytest
 
@@ -76,6 +77,53 @@ class TestInboundMapping:
         attachment, needs_token = mapped[0]
         assert needs_token is True
         assert attachment.mimetype == "image/png"
+
+    @pytest.mark.parametrize(
+        "name,expected_mime",
+        [("image", "image/png"), ("shot.jpg", "image/jpeg"), ("art.svg", "image/png")],
+    )
+    def test_a_pasted_image_typed_image_star_is_classified_as_an_image(
+        self, name: str, expected_mime: str
+    ) -> None:
+        """Teams sends a pasted image as ``image/*``: it must reach the image path."""
+        from kiro_crew.messaging.attachments import IMAGE, classify
+
+        raw = {"contentType": "image/*", "contentUrl": "https://smba.trafficmanager.net/img/1"}
+        if name != "image":
+            raw["name"] = name
+        mapped, unsupported = map_inbound_attachments([raw])
+
+        assert unsupported == []
+        attachment, needs_token = mapped[0]
+        assert needs_token is True
+        assert attachment.mimetype == expected_mime
+        assert "*" not in attachment.suffix_hint
+        assert classify(attachment.mimetype, attachment.name) == IMAGE
+
+    @pytest.mark.asyncio
+    async def test_a_pasted_image_star_reaches_the_model_as_an_image(self, tmp_path) -> None:
+        """End to end: the downloaded PNG bytes land in ``image_paths``, not as a file."""
+        from kiro_crew.messaging.attachments import ingest_attachments
+
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        raw = {"contentType": "image/*", "contentUrl": "https://smba.trafficmanager.net/img/1"}
+        attachment, _ = map_inbound_attachments([raw])[0][0]
+
+        async def _download(url: str, dest: str) -> None:
+            with open(dest, "wb") as fh:
+                fh.write(png)
+
+        result = await ingest_attachments([attachment], download=_download, source="teams")
+        try:
+            assert len(result.image_paths) == 1
+            assert result.image_paths[0].endswith(".png")
+            assert result.rejections == []
+        finally:
+            for p in result.image_paths + result.file_paths:
+                if os.path.exists(p):
+                    os.remove(p)
 
     def test_message_body_echo_is_not_a_file(self) -> None:
         """Teams echoes rich text as a ``text/html`` attachment on ordinary messages.

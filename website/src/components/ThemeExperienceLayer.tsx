@@ -887,7 +887,7 @@ export default function ThemeExperienceLayer() {
           data-theme-frame="1"
           data-theme-pointer="0"
           data-theme-maxh={String(TOPBAR_MAX_PX)}
-          title={`theme topbar (${mode})`}
+          title={mode === 'light' ? i18nT('components.themeExperienceLayer.theme_topbar_light') : i18nT('components.themeExperienceLayer.theme_topbar_dark')}
           src={topbarUrl(slug, mode)}
           sandbox="allow-scripts"
           onLoad={(e) => postThemeState((e.currentTarget as HTMLIFrameElement).contentWindow)}

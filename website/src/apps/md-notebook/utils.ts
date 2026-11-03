@@ -502,6 +502,95 @@ export function parseMermaidBlock(
 }
 
 /**
+ * A ``<details>`` collapsible block, from its opening line to the matching
+ * ``</details>``, or ``null`` when the block is not opened here or never closes.
+ *
+ * The one multi-line HTML block this renderer reads — every other raw tag stays
+ * literal text. Shaped like :func:`parseMermaidBlock`: an unclosed ``<details>``
+ * returns null and falls through to the generic line path, exactly as a run-away
+ * code fence does, so a half-typed block is still editable rather than eating
+ * the rest of the note.
+ *
+ * ``summary`` is the text inside a leading ``<summary>…</summary>`` — inline on
+ * the open line (``<details><summary>Answer</summary>``) or on its own next line
+ * — with the tags removed; empty when the author wrote no summary (the renderer
+ * shows a localized fallback). ``body`` is the lines between the summary and the
+ * close, verbatim. Nothing here interprets the content as HTML: ``summary`` and
+ * every ``body`` line are handed to the same ``inline()`` span renderer the rest
+ * of the note uses, so they are escaped by React and no raw tag passes through.
+ */
+/** The ``</details>`` closing tag, tolerant of inner whitespace (``</details >``). */
+function detailsCloseRe(): RegExp {
+  return /<\/details\s*>/
+}
+
+export function parseDetailsBlock(
+  lines: string[],
+  start: number,
+): { summary: string; body: string[]; end: number } | null {
+  const open = lines[start]
+  // Open on its own line, optionally carrying the whole summary after it. A
+  // trailing attribute (``<details open>``) is tolerated: only the tag name is
+  // matched, and ``open`` is honored nowhere — the block always mounts collapsed.
+  const openMatch = /^<details\b[^>]*>(.*)$/.exec(open)
+  if (openMatch === null) return null
+  // Find the matching close. Nested ``<details>`` is not supported (the notebook
+  // has no case for it); the first closing tag closes the block. The tag is
+  // matched with a regex (not a string literal) so ``</details >`` is tolerated
+  // and the marker is read as markup rather than as a word.
+  //
+  // A ``</details>`` INSIDE a fenced code block is example text, not the real
+  // close, so the scan tracks whether it is inside a ``` ``` ``` fence and skips
+  // close tags found there — a well-formed disclosure that contains a fenced
+  // example still closes at its own ``</details>`` outside the fence. A fence
+  // left OPEN to the end of the note means no real close is found, so the block
+  // falls through to the generic path like any other unclosed block.
+  let end = -1
+  let inFence = false
+  for (let i = start; i < lines.length; i++) {
+    if (i > start && lines[i].startsWith('```')) {
+      inFence = !inFence
+      continue
+    }
+    if (!inFence && detailsCloseRe().test(lines[i])) {
+      end = i
+      break
+    }
+  }
+  if (end < 0) return null
+  // Text AFTER the close tag on the closing line is not part of the block and
+  // has nowhere to render (``skipTo`` swallows the whole line). Rather than drop
+  // it silently, bail out so the line falls through to the generic path and the
+  // author sees their text. A trailing run of whitespace is cosmetic and kept.
+  const closeOnEnd = detailsCloseRe().exec(lines[end])
+  if (closeOnEnd !== null && lines[end].slice(closeOnEnd.index + closeOnEnd[0].length).trim() !== '') {
+    return null
+  }
+  // Collect everything between the open tag and the close tag as one text run,
+  // then peel a leading ``<summary>…</summary>`` off the front.
+  const afterOpen = openMatch[1]
+  const inner: string[] = [afterOpen, ...lines.slice(start + 1, end + 1)]
+  // Drop the trailing close tag (and anything after it on that line).
+  const closeIdx = inner.length - 1
+  const closeMatch = detailsCloseRe().exec(inner[closeIdx])
+  inner[closeIdx] = inner[closeIdx].slice(0, closeMatch === null ? undefined : closeMatch.index)
+  const joined = inner.join('\n')
+  let summary = ''
+  let bodyText = joined
+  const summaryMatch = /^\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/.exec(joined)
+  if (summaryMatch !== null) {
+    summary = summaryMatch[1].trim()
+    bodyText = joined.slice(summaryMatch[0].length)
+  }
+  // A leading/trailing blank line from the tags sitting on their own lines is
+  // cosmetic; drop it so the body starts at the author's first real line.
+  const body = bodyText.split('\n')
+  while (body.length && body[0].trim() === '') body.shift()
+  while (body.length && body[body.length - 1].trim() === '') body.pop()
+  return { summary, body, end }
+}
+
+/**
  * Language named on a fence's opening line (` ```python ` -> `python`), or
  * undefined for a bare fence. Only the first whitespace-delimited token after
  * the backticks counts, matching how highlight.js and every other markdown

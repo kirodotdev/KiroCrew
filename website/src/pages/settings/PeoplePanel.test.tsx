@@ -712,6 +712,48 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(await screen.findByTestId('people-advanced-save-error')).toHaveAttribute('role', 'alert')
   })
 
+  it('keeps a typed number in its field when the save fails, and clears it once a save lands', async () => {
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 2 } } } as never)
+    patchApi.mockRejectedValueOnce(new Error('nope'))
+    await mountOwner()
+    const input = await screen.findByTestId('people-advanced-principal_concurrency')
+    await waitFor(() => expect(input).toHaveValue(2))
+
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.blur(input)
+    expect(await screen.findByTestId('people-advanced-save-error')).toHaveAttribute('role', 'alert')
+    await waitFor(() => expect(input).not.toBeDisabled())
+    // The failed number is still there to retry, not the stored 2.
+    expect(input).toHaveValue(6)
+
+    patchApi.mockResolvedValueOnce({} as never)
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 6 } } } as never)
+    fireEvent.blur(input)
+    await waitFor(() => expect(patchApi).toHaveBeenLastCalledWith('dashboard.shared_crew.principal_concurrency', 6))
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(6)
+  })
+
+  it('drops a failed number once another control saves, so it never shows without its error', async () => {
+    configApi.mockResolvedValue({ dashboard: { shared_crew: { principal_concurrency: 2, admission_enabled: false } } } as never)
+    patchApi.mockRejectedValueOnce(new Error('nope'))
+    await mountOwner()
+    const input = await screen.findByTestId('people-advanced-principal_concurrency')
+    await waitFor(() => expect(input).toHaveValue(2))
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.blur(input)
+    expect(await screen.findByTestId('people-advanced-save-error')).toBeInTheDocument()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    expect(input).toHaveValue(6)
+
+    patchApi.mockResolvedValueOnce({} as never)
+    fireEvent.click(screen.getByRole('switch', { name: 'Fair admission' }))
+    await waitFor(() => expect(patchApi).toHaveBeenLastCalledWith('dashboard.shared_crew.admission_enabled', true))
+    await waitFor(() => expect(screen.queryByTestId('people-advanced-save-error')).toBeNull())
+    // The number that never saved is gone with its error; the stored 2 shows.
+    expect(screen.getByTestId('people-advanced-principal_concurrency')).toHaveValue(2)
+  })
+
   it('locks every Advanced control through a save and its config read-back', async () => {
     const stale = { dashboard: { shared_crew: { admission_enabled: false } } }
     const accepted = { dashboard: { shared_crew: { admission_enabled: true } } }

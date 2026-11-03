@@ -905,11 +905,12 @@
           "new_namespace_name": "नए namespace का नाम",
           "pattern_one": "{{count}} पैटर्न",
           "pattern_other": "{{count}} पैटर्न",
-          "pending": "बाकी",
           "read_namespace": "namespace {{name}} पढ़ो",
           "invalid_namespace_name": "namespace का नाम उसके फ़ोल्डर का नाम बनता है, इसलिए उसमें सिर्फ़ छोटे लैटिन अक्षर (a–z), अंक (0–9), बिंदु, हाइफ़न और अंडरस्कोर हो सकते हैं। नाम किसी अक्षर या अंक से शुरू और ख़त्म होना चाहिए और उसमें 2 से 64 वर्ण होने चाहिए।",
           "invalid_namespace_name_char": "“{{char}}” namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।",
-          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।"
+          "invalid_namespace_name_letter": "“{{char}}” ({{script}}, {{code}}) namespace के नाम में इस्तेमाल नहीं किया जा सकता। छोटे अक्षर a–z, 0–9, . -⁠ _ इस्तेमाल करो।",
+          "pending_count_one": "{{count}} बाकी",
+          "pending_count_other": "{{count}} बाकी"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1052,7 +1053,6 @@
         },
         "reportView": {
           "blast_radius": "प्रभाव क्षेत्र: {{scope}}",
-          "blocking": "अवरोधक",
           "changes_reviewed_one": "{{count}} बदलाव समीक्षित",
           "changes_reviewed_other": "{{count}} बदलाव समीक्षित",
           "clear": "साफ़ करो",
@@ -1069,10 +1069,13 @@
           "open_the_pull_request": "pull request खोलो",
           "share": "साझा करो",
           "sharing": "साझा हो रहा है…",
-          "should_fix": "ठीक करना चाहिए",
           "step_problem": "समस्या",
           "step_solution_fit": "समाधान का मेल",
-          "step_why_it_matters": "यह क्यों मायने रखता है"
+          "step_why_it_matters": "यह क्यों मायने रखता है",
+          "blocking_count_one": "{{count}} अवरोधक",
+          "blocking_count_other": "{{count}} अवरोधक",
+          "should_fix_count_one": "{{count}} ठीक करना चाहिए",
+          "should_fix_count_other": "{{count}} ठीक करना चाहिए"
         },
         "reviewChat": {
           "error_generic": "फ़ॉलो-अप सेशन नहीं खोला जा सका। पुनः प्रयास करें।",
@@ -1109,7 +1112,6 @@
           "delete_review_of": "{{label}} की समीक्षा मिटाओ",
           "delete_this_review": "यह समीक्षा मिटाओ",
           "delete_this_review_2": "यह समीक्षा मिटा दें?",
-          "more": "और",
           "needs_review_count_one": "{{count}} को समीक्षा चाहिए",
           "needs_review_count_other": "{{count}} को समीक्षा चाहिए",
           "pull_requests": "pull request",
@@ -1118,13 +1120,14 @@
           "review_of_with_more_one": "{{label}} और {{count}} और की समीक्षा",
           "review_of_with_more_other": "{{label}} और {{count}} और की समीक्षा",
           "worth_a_glance_count_one": "{{count}} पर नज़र डालने लायक",
-          "worth_a_glance_count_other": "{{count}} पर नज़र डालने लायक"
+          "worth_a_glance_count_other": "{{count}} पर नज़र डालने लायक",
+          "more_count_one": "+{{count}} और",
+          "more_count_other": "+{{count}} और"
         },
         "runDetail": {
           "cancelled_before_any_finished": "किसी भी pull request के पूरा होने से पहले उसे रद्द कर दिया गया।",
           "finished": "खत्म हुई",
           "loading_report": "रिपोर्ट लोड हो रही है…",
-          "more": "और",
           "nothing_to_report": "किसी pull request की समीक्षा पूरी नहीं हुई, इसलिए बताने को कुछ नहीं था।",
           "pull_request_one": "{{count}} pull request",
           "pull_request_other": "{{count}} pull request",
@@ -1133,25 +1136,30 @@
           "skipped_inflight_other": "{{count}} pull request छोड़े गए क्योंकि दूसरी समीक्षा उन्हें पहले ही ले चुकी थी।",
           "started": "शुरू हुई",
           "this_review_produced_no_report": "इस समीक्षा ने कोई रिपोर्ट नहीं बनाई।",
-          "you_can_leave_this_page_a_notification_will_tell": "तुम यह पेज छोड़ सकते हो — आने पर सूचना बता देगी।"
+          "you_can_leave_this_page_a_notification_will_tell": "तुम यह पेज छोड़ सकते हो — आने पर सूचना बता देगी।",
+          "more_count_one": "+{{count}} और",
+          "more_count_other": "+{{count}} और"
         },
         "runList": {
           "new_review": "नई समीक्षा"
         },
         "runProgress": {
           "cancel_review": "समीक्षा रद्द करो",
-          "cancelled": "रद्द",
           "cancelling": "रद्द हो रही है…",
           "elapsed_time": "बीता समय",
-          "failed": "विफल",
           "median_of_past_runs_of_this_size": "इस आकार के पिछले रनों का मध्यमान",
           "review_progress": "समीक्षा की प्रगति",
-          "reviewed": "समीक्षित",
           "reviewers_busy": "{{max}} में से {{busy}} समीक्षक व्यस्त",
           "step": "· चरण",
           "stops_queued_prs_one_already_being_reviewed_will": "कतार में लगे PR रुक जाएँगे; जिसकी समीक्षा चल रही है वह पूरी होगी।",
           "usually": "आम तौर पर ~",
-          "working": "काम चल रहा है"
+          "working": "काम चल रहा है",
+          "reviewed_of_one": "{{done}} / {{count}} समीक्षित",
+          "reviewed_of_other": "{{done}} / {{count}} समीक्षित",
+          "failed_count_one": "{{count}} विफल",
+          "failed_count_other": "{{count}} विफल",
+          "cancelled_count_one": "{{count}} रद्द",
+          "cancelled_count_other": "{{count}} रद्द"
         },
         "runStatusPill": {
           "cancelled": "रद्द",
@@ -3036,7 +3044,6 @@
           "frontier_caption": "नए अनलॉक आइटम के सभी दर्ज ब्लॉकर बंद या मर्ज हो चुके हैं। कारण देखने के लिए आइटम खोलें, या उसका ट्री खोलें।",
           "focus_caption": "चयनित आइटम का पूरा सक्रिय निर्भरता ट्री। किसी नोड पर क्लिक से उसे रूट बनाएँ, Enter से खोलें। डैश = अनुमानित, कटा = पूरा।",
           "focus_empty": "निर्भरता ट्री बनाने के लिए एक आइटम चुनें।",
-          "tree_stat": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}} सक्रिय किनारे",
           "ghost_satisfied": "पूरा",
           "ci_fail": "CI विफल",
           "led_wait": "WAIT",
@@ -3044,7 +3051,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}} सक्रिय किनारे",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "खाली बोर्ड",
           "empty_title": "अभी कोई निर्भरता नहीं",
@@ -3057,7 +3063,13 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab ने अधिकांश इश्यू के लिए उत्तर नहीं दिया (आउटेज या रेट लिमिट)। थोड़ी देर प्रतीक्षा करो, फिर पुनः प्रयास करो।",
           "empty_unavailable_issue_scope": "डिपेंडेंसी ग्राफ़ को खुले इश्यू की सूची चाहिए, जो अभी उपलब्ध नहीं है। इसे कैश करने के लिए इश्यू टैब खोलो, या नीचे दी गई त्रुटि देखो, फिर पुनः प्रयास करो।",
           "refresh_failed_stale_graph": "अंतिम लोड किया गया ग्राफ़ दिखाया जा रहा है; हालिया रिफ़्रेश विफल रहा।",
-          "retry": "पुनः प्रयास"
+          "retry": "पुनः प्रयास",
+          "tree_stat_one": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}}",
+          "tree_stat_other": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}}",
+          "aria_tree_one": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}}",
+          "live_edges_one": "{{n}} सक्रिय किनारा",
+          "live_edges_other": "{{n}} सक्रिय किनारे"
         },
         "groupReviewsView": {
           "title": "समीक्षा अनुरोध",
@@ -3219,6 +3231,7 @@
         "view_list": "सपाट सूची"
       },
       "preview": {
+        "detailsSummaryFallback": "विवरण",
         "mermaidError": "अमान्य Mermaid आरेख — स्रोत दिखाया जा रहा है।"
       },
       "row": {
@@ -3435,6 +3448,9 @@
         "allDone": "सब समीक्षित",
         "archive": "संग्रहित करें",
         "archiveAll": "बाकी संग्रहित करें",
+        "archiveOthers_one": "बाकी {{count}} संग्रहित करो",
+        "archiveOthers_other": "बाकी {{count}} संग्रहित करो",
+        "archiveSkipsFiling": "जो आइटम फ़ाइल हो रहे हैं, वे छोड़ दिए जाते हैं",
         "archivedSection": "संग्रहित",
         "assignedTo": "{{name}} को सौंपा गया",
         "backToMeeting": "मीटिंग पर लौटें",
@@ -4061,7 +4077,6 @@
         "working": "काम कर रहा है"
       },
       "stats": {
-        "busiest_day": "सबसे बातूनी दिन: {{date}} ({{count}} संदेश)",
         "companion_days": "{{time}} से साथ",
         "drags_one": "{{n}} बार खींचा गया",
         "drags_other": "{{n}} बार खींचा गया",
@@ -4080,7 +4095,9 @@
         "thinking_time": "{{time}} तक सोचा",
         "title": "यादें",
         "walks_one": "{{n}} कदम",
-        "walks_other": "{{n}} कदम"
+        "walks_other": "{{n}} कदम",
+        "busiest_day_one": "सबसे बातूनी दिन: {{date}} ({{n}} संदेश)",
+        "busiest_day_other": "सबसे बातूनी दिन: {{date}} ({{n}} संदेश)"
       },
       "tip": {
         "bedtime": "आज़माएँ: \"मुझे 11 बजे धीमा होने को कहो\"",
@@ -5142,14 +5159,15 @@
         },
         "taskList": {
           "done": "पूरा",
-          "done_of_total": "{{total}} में से {{done}} कार्य पूरे",
           "no_tasks_yet": "अभी कोई कार्य नहीं है। डिज़ाइन स्वीकृत करने के बाद क्रमबद्ध कार्य सूची यहाँ आ जाएगी और तुम एक-एक कार्य चला सकोगे।",
           "pause_the_build_first": "एक कार्य चलाने से पहले निर्माण रोको",
           "run": "चलाओ",
           "run_only_this_task_and_stop": "सिर्फ़ यह कार्य चलाओ, फिर रुक जाओ",
           "run_task": "कार्य चलाओ: {{task}}",
           "starting": "शुरू हो रहा है…",
-          "task_progress": "कार्य की प्रगति"
+          "task_progress": "कार्य की प्रगति",
+          "done_of_total_one": "पूरे कार्य: {{done}}/{{total}}",
+          "done_of_total_other": "पूरे कार्य: {{done}}/{{total}}"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "बताओ कि तुम क्या बनाना चाहते हो, कुछ प्रश्नों के उत्तर दो, और एक समीक्षित योजना पाओ — आवश्यकताएं, डिज़ाइन और कार्य — जिसे कोई एजेंट पूरा कर सके।",
@@ -5601,7 +5619,6 @@
         "costs_refresh_failed": "बिल की ताज़ा रीडिंग विफल रही; यह कैश किया गया आँकड़ा है।"
       },
       "page": {
-        "totals_summary": "{{accounts}} खाते · {{keys}} में से {{healthy}} कुंजियाँ स्वस्थ",
         "refresh": "रीफ़्रेश करें",
         "health_ok": "स्वस्थ",
         "health_degraded": "ध्यान देने की ज़रूरत",
@@ -5659,7 +5676,11 @@
         "remove_account_error": "खाता हटाया नहीं जा सका।",
         "remove_account_hint": "AWS में कुछ नहीं बदलता",
         "forget_key_confirm": "इस पंक्ति की कुंजी “{{name}}” भुला दें? AWS में या तुम्हारे AWS CLI कॉन्फ़िगरेशन में कुछ नहीं बदलता।",
-        "forget_key_action": "कुंजी भुलाएँ"
+        "forget_key_action": "कुंजी भुलाएँ",
+        "totals_summary_one": "{{accounts}} खाता · {{keys}}",
+        "totals_summary_other": "{{accounts}} खाते · {{keys}}",
+        "keys_healthy_one": "स्वस्थ कुंजियाँ: {{healthy}}/{{n}}",
+        "keys_healthy_other": "स्वस्थ कुंजियाँ: {{healthy}}/{{n}}"
       },
       "rail": {
         "accounts": "खाते और क्रेडेंशियल",
@@ -6084,6 +6105,14 @@
       "found_setup_but_could_not_read_it": "{{productName}} को {{sources}} मिला, लेकिन फ़ाइलें नहीं पढ़ी जा सकीं, इसलिए कुछ भी आयात नहीं किया गया।",
       "some_setup_could_not_be_read": "{{productName}} {{sources}} को पढ़ नहीं सका — नीचे सूचीबद्ध नहीं।",
       "files_could_not_be_read": "फ़ाइलें पढ़ी नहीं जा सकीं",
+      "skip_reason_credentials": "इसमें क्रेडेंशियल हैं, इसलिए यह अपने स्रोत में ही रहता है",
+      "skip_reason_too_large": "आकार या संख्या की सीमा से अधिक",
+      "skip_reason_unsupported": "अभी समर्थित नहीं है",
+      "skip_reason_excluded": "जानबूझकर छोड़ा गया",
+      "skip_reason_path_rejected": "इसका पाथ अनुमत नहीं है (लिंक, या स्रोत के बाहर)",
+      "skip_reason_invalid": "मान्य सेटिंग्स के रूप में पढ़ा नहीं जा सका",
+      "skip_reason_other": "छोड़ा गया",
+      "resolve_failed_title": "तुम्हारा इम्पोर्ट सहेजा गया है, लेकिन टकराव पर तुम्हारा चुनाव पूरा नहीं हुआ। नीचे फिर से कोशिश करो।",
       "your_existing_kirocrew_setup_will_not_be_affecte": "आपके मौजूदा {{productName}} सेटअप पर कोई असर नहीं पड़ेगा।",
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।",
       "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}",
@@ -6165,7 +6194,8 @@
       "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे",
       "trusted_channel_all": "विश्वसनीय — इस चैनल के सभी टूल स्वतः स्वीकृत होंगे, रीस्टार्ट के बाद भी बना रहता है",
       "trusted_channel_base": "विश्वसनीय — {{base}} कमांड @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होंगे",
-      "trusted_channel_command": "विश्वसनीय — «{{cmd}}» @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होगा"
+      "trusted_channel_command": "विश्वसनीय — «{{cmd}}» @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होगा",
+      "title_wants_to_run": "<title/> चलाना चाहता है"
     },
     "approvalModePicker": {
       "nudge_body": "यहाँ आप समायोजित कर सकते हैं कि {{productName}} अनुमोदन कैसे माँगता है। यहाँ \"ट्रस्ट\" चुनने पर यह इस चैट में बिना पहले पूछे काम कर सकता है — आप कभी भी वापस बदल सकते हैं।",
@@ -6323,6 +6353,7 @@
       "artifact": "आर्टिफ़ैक्ट: {{slug}}",
       "could_not_render": "यह आर्टिफ़ैक्ट रेंडर नहीं हो सका",
       "image_could_not_be_loaded": "छवि लोड नहीं हो सकी",
+      "view_full_size": "पूरे आकार में देखो",
       "no_longer_showing": "यह आर्टिफ़ैक्ट अब दिखाई नहीं दे रहा है",
       "rendering": "रेंडर हो रहा है…",
       "retry": "पुन: प्रयास करें",
@@ -6732,7 +6763,9 @@
       "copy": "कॉपी करें",
       "generating": "जेनरेट हो रहा है…",
       "unwrap": "पंक्तियाँ न लपेटें",
-      "wrap": "पंक्तियाँ लपेटें"
+      "wrap": "पंक्तियाँ लपेटें",
+      "code_label": "कोड",
+      "code_region": "{{lang}} कोड"
     },
     "blockquote": {
       "copied": "कॉपी हो गया!",
@@ -6855,16 +6888,20 @@
       "empty_comment": "_(खाली)_",
       "expand_comment": "टिप्पणी विस्तृत करें",
       "hide_resolved": "सुलझे हुए छिपाओ",
-      "messages": "संदेश",
       "no_comments_yet": "अभी कोई टिप्पणी नहीं है।",
       "no_open_threads": "कोई खुला सूत्र नहीं है।",
-      "open": "खुले ·",
       "reopen": "फिर खोलो",
       "replying_is_github_only_for_now_open_the_merge_r": "अभी जवाब सिर्फ़ GitHub पर दिया जा सकता है — टिप्पणी करने के लिए merge request खोलो।",
       "resolve": "सुलझाओ",
       "resolved": "सुलझे हुए",
       "show_resolved": "सुलझे हुए दिखाओ",
-      "write_a_comment_to_send": "टिप्पणी लिखो… भेजने के लिए {{keys}}"
+      "write_a_comment_to_send": "टिप्पणी लिखो… भेजने के लिए {{keys}}",
+      "open_count_one": "{{count}} खुला",
+      "open_count_other": "{{count}} खुले",
+      "resolved_count_one": "{{count}} सुलझा हुआ",
+      "resolved_count_other": "{{count}} सुलझे हुए",
+      "messages_count_one": "{{count}} संदेश",
+      "messages_count_other": "{{count}} संदेश"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "पूरे आर्टिफ़ैक्ट पर टिप्पणी जोड़ें…",
@@ -7085,18 +7122,18 @@
       "computing_line_by_line_diff": "पंक्ति-दर-पंक्ति डिफ़ की गणना हो रही है…",
       "highlighting": "कोड हाइलाइट हो रहा है…",
       "line_by_line_diff_failed": "डिफ़ की गणना नहीं हो सकी",
-      "more": "और",
       "no_changes": "कोई बदलाव नहीं",
       "open": "फ़ाइल खोलें",
       "open_in_side_panel": "{{path}} को साइड पैनल में खोलो",
       "removals_one": "{{count}} हटाई गई पंक्ति",
       "removals_other": "{{count}} हटाई गई पंक्तियाँ",
-      "show": "दिखाएँ",
       "show_less": "कम दिखाएँ",
       "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
       "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
       "this_document_is_tracked_as_a_session_artifact_n": "यह दस्तावेज़ सत्र आर्टिफ़ैक्ट के रूप में ट्रैक किया जाता है, सोर्स-फ़ाइल बदलाव के रूप में नहीं",
-      "toggle_diff": "{{path}} का डिफ़ दिखाएँ या छिपाएँ"
+      "toggle_diff": "{{path}} का डिफ़ दिखाएँ या छिपाएँ",
+      "show_more_count_one": "{{count}} और दिखाओ",
+      "show_more_count_other": "{{count}} और दिखाओ"
     },
     "openFileChips": {
       "open_file": "फ़ाइल खोलो"
@@ -7940,6 +7977,10 @@
       "contents": "विषय-सूची",
       "table_of_contents": "विषय-सूची तालिका"
     },
+    "matesDock": {
+      "load_failed": "तुम्हारे तारे से चिह्नित साथियों को लोड नहीं किया जा सका।",
+      "reorder_failed": "साथियों का नया क्रम सहेजा नहीं जा सका।"
+    },
     "mcpAppFrame": {
       "collapse": "छोटा करें",
       "collapse_app": "ऐप छोटा करें",
@@ -8503,7 +8544,9 @@
       "save_edit": "संपादन सहेजें",
       "send_now": "अभी भेजें",
       "sub_agent_result_one": "{{count}} सब-एजेंट परिणाम",
-      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम"
+      "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम",
+      "queued_count_one": "{{count}} कतार में",
+      "queued_count_other": "{{count}} कतार में"
     },
     "readingWidthToggle": {
       "title_full": "पूरी चौड़ाई",
@@ -9120,6 +9163,9 @@
       "group_borders": "बॉर्डर",
       "group_status": "स्थिति",
       "group_text_muted": "टेक्स्ट और मंद",
+      "json_invalid": "अमान्य JSON — सिंटैक्स जाँचो और फिर से कोशिश करो।",
+      "json_needs_modes": "JSON में \"dark\" और \"light\" ऑब्जेक्ट होने चाहिए।",
+      "json_needs_name": "JSON में \"name\" फ़ील्ड होना चाहिए।",
       "light_mode_colors": "लाइट मोड के रंग",
       "my_custom_theme": "मेरी कस्टम थीम",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"मेरी थीम\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -9133,6 +9179,7 @@
       "theme_css_help": "किसी AI जवाब या पसंद की थीम से CSS रंग पेस्ट करो, जैसे --bg: #12141a। .dark या .light ब्लॉक के अंदर के रंग उसी मोड को सेट करते हैं; बाकी रंग दोनों मोड सेट करते हैं। जो रंग तुम छोड़ दोगे, वे जैसे हैं वैसे ही रहेंगे।",
       "theme_json": "थीम JSON",
       "theme_name": "थीम का नाम",
+      "theme_name_required": "थीम का नाम ज़रूरी है।",
       "update_theme": "थीम अपडेट करें",
       "var_accent": "एक्सेंट",
       "var_accent_hover": "एक्सेंट (होवर)",
@@ -9171,7 +9218,9 @@
       "sounds": "ध्वनियाँ",
       "overlays": "ओवरले",
       "persona": "पर्सोना",
-      "save_failed_storage": "सहेजा नहीं जा सका। ब्राउज़र स्टोरेज भरा हुआ है या बंद है।"
+      "save_failed_storage": "सहेजा नहीं जा सका। ब्राउज़र स्टोरेज भरा हुआ है या बंद है।",
+      "theme_topbar_dark": "थीम शीर्ष बार, डार्क मोड",
+      "theme_topbar_light": "थीम शीर्ष बार, लाइट मोड"
     },
     "timezoneSelect": {
       "render_timezone": "प्रदर्शन समय-क्षेत्र"
@@ -10679,6 +10728,30 @@
       "offer_open": "{{host}} खोलो",
       "copy_failed": "कॉपी नहीं हो सका। ऐप में टेक्स्ट चुनो और खुद कॉपी करो।",
       "more_actions": "और कार्रवाइयाँ"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "ऐप",
+      "apps_hint": "चुना गया टेक्स्ट किसी ऐप को भेजें",
+      "menu_label": "चुने गए टेक्स्ट के लिए ऐप",
+      "close": "बंद करो",
+      "copy": "कॉपी करो",
+      "copied": "कॉपी हो गया",
+      "open": "{{host}} खोलो",
+      "no_response": "{{app}} ने जवाब नहीं दिया।",
+      "revoked": "{{app}} अब इस आइटम का उपयोग नहीं कर सकता। इसे बंद कर दिया गया या इसकी मंज़ूरी वापस ले ली गई।",
+      "failed": "{{app}} में समस्या आई: {{message}}",
+      "too_short": "{{title}} के लिए कम से कम {{min}} अक्षर चाहिए। तुमने {{count}} चुने।",
+      "copy_failed": "क्लिपबोर्ड पर कॉपी नहीं हो सका।",
+      "load_failed": "चुने गए टेक्स्ट के लिए ऐप लोड नहीं हो सके।",
+      "loading": "ऐप लोड हो रहे हैं…",
+      "none": "इस टेक्स्ट के लिए किसी ऐप में आइटम नहीं है।",
+      "retry": "फिर से कोशिश करो",
+      "grant_entry": "{{title}}: चैट जवाबों में तुम जो टेक्स्ट चुनते हो, उसके अधिकतम {{max}} अक्षर",
+      "grant_entry_copy": "{{title}}: चैट जवाबों में तुम जो टेक्स्ट चुनते हो, उसके अधिकतम {{max}} अक्षर, और एक कॉपी बटन",
+      "grant_entry_open": "{{title}}: चैट जवाबों में तुम जो टेक्स्ट चुनते हो, उसके अधिकतम {{max}} अक्षर, और लिंक खोलने का एक बटन",
+      "grant_entry_copy_open": "{{title}}: चैट जवाबों में तुम जो टेक्स्ट चुनते हो, उसके अधिकतम {{max}} अक्षर, और कॉपी व खोलने के बटन"
     }
   },
   "hooks": {
@@ -11085,7 +11158,8 @@
         "keeps_builtin": "यह अंतर्निहित ऐप ही रहेगा।",
         "installed_needs_newer_host": "{{name}} के इंस्टॉल किए गए संस्करण को नया {{productName}} चाहिए। {{productName}} अपडेट करो; तुम्हारा डेटा नहीं बदला है।"
       },
-      "grants_reconsent_composer_actions": "कंपोज़र बटन: ऐप को कंपोज़र के + मेनू में ये बटन जोड़ने देता है। क्लिक करने पर ऐप का टेक्स्ट तुम्हारे ड्राफ़्ट में डलता है; ऐप ड्राफ़्ट को देख या भेज नहीं सकता।"
+      "grants_reconsent_composer_actions": "कंपोज़र बटन: ऐप को कंपोज़र के + मेनू में ये बटन जोड़ने देता है। क्लिक करने पर ऐप का टेक्स्ट तुम्हारे ड्राफ़्ट में डलता है; ऐप ड्राफ़्ट को देख या भेज नहीं सकता।",
+      "grants_reconsent_selection_actions": "चुने गए टेक्स्ट की कार्रवाइयाँ: ऐप के आइटम को चैट जवाबों में तुम्हारा चुना गया टेक्स्ट मिलता है, और वे कॉपी या खोलने के लिए नतीजा दे सकते हैं।"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",
@@ -11180,7 +11254,9 @@
       "1_authenticate_to_aws": "1. AWS में प्रमाणीकरण करें",
       "2_enter_the_profile_name_region_below": "2. नीचे प्रोफ़ाइल नाम + रीजन दर्ज करें",
       "3_apply_the_iam_policy": "3. IAM पॉलिसी लागू करें",
-      "access_reachable": ": एक्सेस उपलब्ध है",
+      "account_short": "खाता {{account}}",
+      "profile_reachable": "{{profile}}: एक्सेस उपलब्ध है",
+      "profile_reachable_account": "{{profile}}: एक्सेस उपलब्ध है (खाता {{account}})",
       "account_12_digits_optional_iam_identity_style": "खाता (12 अंक, वैकल्पिक — iam-identity-style)",
       "active_deployments": "सक्रिय डिप्लॉयमेंट",
       "admin": "Admin",
@@ -11365,7 +11441,6 @@
       "back_to_editor": "एडिटर पर वापस",
       "back_to_library": "← लाइब्रेरी पर वापस",
       "bring_artifact_back_to_this_window": "आर्टिफ़ैक्ट को इस विंडो में वापस लाएँ",
-      "by": "द्वारा:",
       "cancel": "रद्द करें",
       "cancel_esc": "रद्द करें (Esc)",
       "change_how_this_document_is_rendered": "यह दस्तावेज़ कैसे प्रस्तुत किया जाए, बदलें",
@@ -11379,7 +11454,6 @@
       "comment_removed": "टिप्पणी हटाई गई",
       "comment_resolved": "टिप्पणी सुलझाई गई",
       "comments": "टिप्पणियाँ",
-      "content_copied_from_v": "सामग्री इससे कॉपी की गई: v",
       "copied": "कॉपी हो गया",
       "copy_content": "सामग्री कॉपी करें",
       "send_to_session": "किसी सत्र में भेजें",
@@ -11466,9 +11540,6 @@
       "to_chat_with_the_agent": "एजेंट से चैट करने के लिए",
       "toggle_agent_chat": "एजेंट चैट दिखाएँ या छिपाएँ",
       "unsaved_changes": "• बिना सहेजे गए बदलाव",
-      "updated": "· अपडेट किया गया",
-      "v": "v",
-      "v_2": "→ v",
       "version": "संस्करण",
       "via_dashboard": "डैशबोर्ड के माध्यम से",
       "view_remote": "रिमोट देखें",
@@ -11485,7 +11556,14 @@
       "activity_failed_to_load": "गतिविधि लोड करने में विफल",
       "sync_status_unavailable": "सिंक स्थिति उपलब्ध नहीं",
       "more": "अधिक",
-      "more_actions": "और कार्रवाइयां"
+      "more_actions": "और कार्रवाइयां",
+      "created_at_value": "{{date}} को बनाया गया",
+      "updated_at_value": "{{date}} को अपडेट किया गया",
+      "action_by_actor": "{{name}} द्वारा <0>{{action}}</0>",
+      "content_copied_from_version": "सामग्री v{{version}} से कॉपी की गई",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "आर्टिफ़ैक्ट",
@@ -11927,7 +12005,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "स्वीकृति आवश्यक",
-        "approvals_pending": "स्वीकृतियाँ लंबित",
         "batch_preview_all": "नीचे सभी {{count}} लंबित कॉल की समीक्षा करें — सभी एक साथ हल की जाएंगी।",
         "batch_preview_none": "इस कॉल के लिए कोई पूर्वावलोकन उपलब्ध नहीं है।",
         "approve": "स्वीकृत करें",
@@ -11945,7 +12022,9 @@
         "tool_call_other": "{{count}} टूल कॉल",
         "trust": "विश्वास करें",
         "trusted": "विश्वसनीय",
-        "view_full_activity": "पूरी गतिविधि देखें →"
+        "view_full_activity": "पूरी गतिविधि देखें →",
+        "approvals_pending_count_one": "{{count}} स्वीकृति लंबित",
+        "approvals_pending_count_other": "{{count}} स्वीकृतियाँ लंबित"
       },
       "cronAckBar": {
         "acknowledge": "स्वीकारें",
@@ -12268,7 +12347,6 @@
         "backend_hiccup_retrying": "कनेक्शन अस्थिर — पुनः प्रयास…",
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
-        "more_running_normally": "और सामान्य रूप से चल रहे…",
         "show_more_running_in_sidebar_one": "साइडबार में {{count}} और चल रहा सबएजेंट दिखाओ",
         "show_more_running_in_sidebar_other": "साइडबार में {{count}} और चल रहे सबएजेंट दिखाओ",
         "no_activity_possibly_stalled": "कोई गतिविधि नहीं — संभवतः अटका हुआ",
@@ -12307,7 +12385,9 @@
         "chip_stopped_one": "{{count}} एजेंट रोका गया",
         "chip_stopped_other": "{{count}} एजेंट रोके गए",
         "chip_stalled_one": "{{count}} एजेंट शायद अटका",
-        "chip_stalled_other": "{{count}} एजेंट शायद अटके"
+        "chip_stalled_other": "{{count}} एजेंट शायद अटके",
+        "more_running_normally_count_one": "{{count}} और सामान्य रूप से चल रहा…",
+        "more_running_normally_count_other": "{{count}} और सामान्य रूप से चल रहे…"
       },
       "subagentQueued": {
         "low_memory": "शुरू होने की प्रतीक्षा — {{required}} खाली मेमोरी चाहिए, अभी {{available}} खाली है; जारी रखने के लिए मेमोरी खाली करो",
@@ -13481,7 +13561,6 @@
       "goal_loop_cycle_no_cap": "लक्ष्य लूप · चक्र {{count}} (कोई सीमा नहीं)",
       "goal_loop_interrupted_title": "लक्ष्य लूप तैयार — पिछला टर्न बाधित हुआ; चैट फिर से शुरू करो या अगले चक्र का इंतज़ार करो",
       "hidden_because_parent_hidden": "{{name}} छिपा है क्योंकि इसका कोई पैरेंट फ़ोल्डर छिपा है",
-      "hide": "छिपाएँ",
       "hide_folder": "फ़ोल्डर छिपाएँ",
       "hide_when_empty": "खाली होने पर छिपाएँ",
       "hiding_named_filter": "{{filter}} छिपाए गए",
@@ -13588,7 +13667,6 @@
       "show_hidden_folder_other": "{{count}} छिपे फ़ोल्डर दिखाएँ",
       "show_only_sessions_tagged": "केवल {{name}} टैग वाले सत्र दिखाएँ",
       "show_the_folder_list": "फ़ोल्डर सूची दिखाएँ",
-      "skip": "छोड़ें",
       "sort_and_filter_sessions": "सत्र क्रमित और फ़िल्टर करें",
       "sort_by": "इसके अनुसार क्रमित करें",
       "sort_created_newest": "बनाया गया (नवीनतम)",
@@ -13620,8 +13698,8 @@
       "stale_collapse_paused_hint": "सूची खोज, फ़िल्टर या “नवीनतम पहले” के अलावा किसी क्रम में होने पर रोक दिया जाता है।",
       "stale_collapse_row_hidden_one": "{{count}} सुप्त सत्र दिखाएं",
       "stale_collapse_row_hidden_other": "{{count}} सुप्त सत्र दिखाएं",
-      "stale_collapse_row_hint": "सुप्त: {{window}} से अधिक समय से उपयोग नहीं। दिखाने के लिए क्लिक करो।",
-      "stale_collapse_row_hint_open": "सुप्त: {{window}} से अधिक समय से उपयोग नहीं। छिपाने के लिए क्लिक करो।",
+      "stale_collapse_row_hint": "सुप्त सत्र बंद नहीं हुए हैं और उनका इतिहास बना रहता है। {{window}} से अधिक समय से इनका उपयोग नहीं हुआ, इसलिए सूची को छोटा रखने के लिए इन्हें यहाँ समेटा गया है। इन्हें दिखाने के लिए क्लिक करो। समय बदलने या इसे बंद करने के लिए खोज के पास वाले फ़िल्टर बटन में \"{{setting}}\" का उपयोग करो।",
+      "stale_collapse_row_hint_open": "सुप्त सत्र बंद नहीं हुए हैं और उनका इतिहास बना रहता है। {{window}} से अधिक समय से इनका उपयोग नहीं हुआ, इसलिए सूची को छोटा रखने के लिए इन्हें यहाँ समेटा गया है। इन्हें छिपाने के लिए क्लिक करो। समय बदलने या इसे बंद करने के लिए खोज के पास वाले फ़िल्टर बटन में \"{{setting}}\" का उपयोग करो।",
       "stale_collapse_row_shown_one": "{{count}} सुप्त सत्र छिपाएं",
       "stale_collapse_row_shown_other": "{{count}} सुप्त सत्र छिपाएं",
       "stale_collapse_row_ungrouped": "फ़ोल्डर के बाहर",
@@ -13649,7 +13727,6 @@
       "untagged": "+ बिना टैग",
       "untagged_2": "अनटैग्ड",
       "untagged_only": "केवल बिना टैग",
-      "will_be_moved_to_older_sessions": "पुराने सत्रों में ले जाया जाएगा।",
       "yesterday": "कल",
       "new_incognito_chat": "नई गुप्त चैट",
       "new_temporary_chat": "नई अस्थायी चैट",
@@ -13833,7 +13910,15 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "सामान्य",
       "kind_section_mate": "साथियों से",
-      "filter_crew_description": "केवल Ultra Mode चैट दिखाओ"
+      "filter_crew_description": "केवल Ultra Mode चैट दिखाओ",
+      "skip_running_sessions_one": "{{n}} चल रहा सत्र छोड़ें",
+      "skip_running_sessions_other": "{{n}} चल रहे सत्र छोड़ें",
+      "cleanup_move_count_one": "{{n}} सत्र पुराने सत्रों में ले जाया जाएगा।",
+      "cleanup_move_count_other": "{{n}} सत्र पुराने सत्रों में ले जाए जाएँगे।",
+      "show_sessions_count_one": "{{n}} सत्र दिखाएँ",
+      "show_sessions_count_other": "{{n}} सत्र दिखाएँ",
+      "hide_sessions_count_one": "{{n}} सत्र छिपाएँ",
+      "hide_sessions_count_other": "{{n}} सत्र छिपाएँ"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -13850,6 +13935,7 @@
       "connection_unreachable": "इस कनेक्शन की जाँच के लिए {{provider}} से संपर्क नहीं हो सका।",
       "connection_views": "कनेक्शन दृश्य",
       "connections": "कनेक्शन",
+      "mcp_management_heading": "MCP प्रबंधन",
       "could_not_load_status": "कनेक्शन की स्थिति लोड नहीं हो सकी। कार्ड पुराने हो सकते हैं।",
       "disconnect": "डिस्कनेक्ट करें",
       "disconnect_census_incomplete": "संग्रहीत अनुमति रखी गई क्योंकि एक कॉन्फ़िगरेशन स्रोत पढ़ा नहीं जा सका और यह पुष्टि नहीं हो सकी कि कोई अन्य सर्वर इसका उपयोग नहीं कर रहा है। अपना सर्वर कॉन्फ़िगरेशन जाँचें और फिर से डिस्कनेक्ट करें।",
@@ -14654,9 +14740,6 @@
         "logs": {
           "label": "लॉग"
         },
-        "mcpPool": {
-          "label": "MCP प्रबंधन"
-        },
         "memory": {
           "label": "मेमोरी"
         },
@@ -14910,11 +14993,14 @@
         "related_load_failed": "संबंधित आइटम लोड नहीं हो सके",
         "relations_count": "संबंध ({{count}})",
         "save": "सहेजें",
-        "shared": "साझा",
         "summary": "सारांश",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "टैग सहेजे नहीं जा सके",
-        "unarchive": "संग्रह से हटाएं"
+        "unarchive": "संग्रह से हटाएं",
+        "shared_count_one": "{{n}} साझा",
+        "shared_count_other": "{{n}} साझा",
+        "status_active": "सक्रिय",
+        "status_archived": "संग्रहित"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} एम्बेड किए गए ({{pct}}%)",
@@ -15004,7 +15090,17 @@
         "delete_items_permanently_one": "{{count}} आइटम हमेशा के लिए हटाओ?",
         "delete_items_permanently_other": "{{count}} आइटम हमेशा के लिए हटाओ?",
         "selected_count_one": "{{count}} चुना गया",
-        "selected_count_other": "{{count}} चुने गए"
+        "selected_count_other": "{{count}} चुने गए",
+        "type_design_doc": "डिज़ाइन दस्तावेज़",
+        "type_runbook": "रनबुक",
+        "type_meeting_notes": "मीटिंग नोट्स",
+        "type_code_doc": "कोड दस्तावेज़",
+        "type_presentation": "प्रस्तुति",
+        "type_report": "रिपोर्ट",
+        "type_policy": "नीति",
+        "type_personal_notes": "निजी नोट्स",
+        "type_external_reference": "बाहरी संदर्भ",
+        "type_document": "दस्तावेज़"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",
@@ -15249,9 +15345,11 @@
       "pool_warm_hit_rate": "पूल वॉर्म-हिट दर",
       "ram_saved": "बची RAM",
       "rss": "RSS",
-      "s": "s",
       "server": "सर्वर",
       "shared_mcp_gateway": "साझा MCP गेटवे",
+      "status_active": "सक्रिय",
+      "status_stopped": "रुका हुआ",
+      "status_unhealthy": "अस्वस्थ",
       "with_shared_gateway_pooled": "साझा गेटवे के साथ (पूल किया गया)",
       "without_gateway_per_session_copies": "गेटवे के बिना (हर सत्र की अलग कॉपी)"
     },
@@ -15418,6 +15516,7 @@
       "diff_env_removed": "एनव हटाया: {{names}}",
       "remove_mark": "हटाओ",
       "footprint_failed": "MCP सर्वर कितनी मेमोरी इस्तेमाल करते हैं, यह पढ़ा नहीं जा सका।",
+      "footprint_owner_only": "मेमोरी के आंकड़े सिर्फ़ क्रू के मालिक को दिखते हैं।",
       "review_what_approve_does": "स्वीकृत करो: एक कॉपी इसे सभी चैट के लिए चलाती है, उनके सैंडबॉक्स के बाहर। छोड़ो: यह हर चैट के अंदर चलता रहता है।",
       "share_risk": "सैंडबॉक्स के बाहर, साझा सर्वर तुम्हारी फ़ाइलें पढ़ और बदल सकता है, जैसे कोई प्रोग्राम जिसे तुम खुद चलाते हो।",
       "review_when_safe": "सर्वर को तभी स्वीकृत करो जब तुमने उसे खुद जोड़ा हो और दिखाया गया कमांड वही हो जिसकी तुम्हें उम्मीद है।"
@@ -16605,7 +16704,6 @@
       "resource_network": "नेटवर्क",
       "sandbox_procs": "सैंडबॉक्स",
       "session_storage": "सत्र संग्रहण",
-      "session_storage_detail": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य",
       "session_storage_measuring": "माप रहे हैं…",
       "threads": "थ्रेड",
       "total": "कुल",
@@ -16615,7 +16713,9 @@
       "utilization": "उपयोगिता",
       "working_directory": "कार्य डायरेक्टरी",
       "graph_scale_network": "पूर्ण स्केल {{max}} · पिछले {{seconds}}",
-      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}"
+      "graph_scale_percent": "पूर्ण स्केल 100% · पिछले {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य",
+      "session_storage_detail_other": "{{sessions}} सत्र · {{reclaimable}} पुनः प्राप्त करने योग्य"
     },
     "popoutFrame": {
       "session": "सेशन",
@@ -19621,7 +19721,6 @@
       "credits_col": "क्रेडिट",
       "credits_this_period": "पिछले {{days}} दिन",
       "daily_p50_trend": "दैनिक p50 — ऊपर कोल्ड, नीचे वार्म",
-      "daily_trend_point": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{count}} स्टार्ट",
       "detail_col": "विवरण",
       "distribution_col": "वितरण",
       "duration_col": "अवधि",
@@ -19725,7 +19824,9 @@
       "no_telemetry_in_window": "इस अवधि ({{period}}) में कोई टेलीमेट्री दर्ज नहीं हुई।",
       "otel_retention_cap": "टर्न, लेटेंसी और स्टार्टअप के आँकड़े केवल पिछले {{days}} दिन के हैं; पुराने मेट्रिक हटा दिए जाते हैं (<settingRef/>)।",
       "window_footer_shards_one": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
-      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं"
+      "window_footer_shards_other": "OTEL अनुभाग · अवधि: {{period}} · {{n}} शार्ड · स्रोत: <dir/> · केवल स्थानीय, कोई एग्रेस नहीं",
+      "daily_trend_point_one": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{n}} स्टार्ट",
+      "daily_trend_point_other": "{{date}} · कोल्ड {{cold}} · वार्म {{warm}} · {{n}} स्टार्ट"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",
@@ -20008,7 +20109,6 @@
       "filter_source_mine_description": "क्रू मैनेजर में तुम्हारे बनाए क्रू",
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
-      "member_count_filtered": "{{count}} में से {{shown}} क्रूमेट",
       "webview_rendering": "प्रकाशित दृश्य दिखाया जा रहा है…",
       "webview_retry": "पुन: प्रयास करें",
       "deploy_title": "क्लाउड में तुम्हारा क्रू",
@@ -20398,7 +20498,9 @@
       "profile_harness_cannot_start": "यहाँ शुरू नहीं हो सकता।",
       "profile_harness_saved": "सेव हो गया। अगले संदेश से {{name}} इसी हार्नेस पर चलेगा।",
       "profile_harness_unavailable": "{{name}} को {{harness}} पर चलने के लिए सेट किया गया है, जो यहाँ शुरू नहीं हो सकता, इसलिए उसकी चैट और वर्कर भी शुरू नहीं होते। कोई दूसरा एजेंट हार्नेस चुनो, या विरासत में मिला।",
-      "profile_harness_choose": "एजेंट हार्नेस चुनो"
+      "profile_harness_choose": "एजेंट हार्नेस चुनो",
+      "member_count_filtered_one": "{{n}} में से {{shown}} क्रूमेट",
+      "member_count_filtered_other": "{{n}} में से {{shown}} क्रूमेट"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

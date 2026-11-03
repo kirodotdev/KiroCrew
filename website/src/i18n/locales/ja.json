@@ -876,11 +876,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "新しい名前空間の名前",
           "pattern_other": "{{count}} 件のパターン",
-          "pending": "保留中",
           "read_namespace": "名前空間 {{name}} を読む",
           "invalid_namespace_name": "名前空間の名前はフォルダー名になるため、使用できるのは小文字のラテン文字（a–z）、数字（0–9）、ピリオド、ハイフン、アンダースコアのみです。先頭と末尾は英字か数字にし、2 文字以上 64 文字以内にする必要があります。",
           "invalid_namespace_name_char": "「{{char}}」は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
-          "invalid_namespace_name_letter": "「{{char}}」（{{script}}、{{code}}）は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。"
+          "invalid_namespace_name_letter": "「{{char}}」（{{script}}、{{code}}）は名前空間の名前に使用できません。小文字の a–z、0–9、. -⁠ _ を使用してください。",
+          "pending_count_other": "{{count}} 件保留中"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1012,7 +1012,6 @@
         },
         "reportView": {
           "blast_radius": "影響範囲: {{scope}}",
-          "blocking": "ブロッカー",
           "changes_reviewed_other": "{{count}} 件の変更をレビュー済み",
           "clear": "クリア",
           "design_gate": "デザインゲート ·",
@@ -1025,12 +1024,13 @@
           "open_the_pull_request": "プルリクエストを開く",
           "share": "共有",
           "sharing": "共有しています…",
-          "should_fix": "修正推奨",
           "step_problem": "課題",
           "step_solution_fit": "解決策の妥当性",
           "step_why_it_matters": "なぜ重要か",
           "finding_dimension_in_file": "{{file}} の {{dimension}}",
-          "moved_to": "現在は{{band}}です。フィルターを変えるまで位置はそのままです。"
+          "moved_to": "現在は{{band}}です。フィルターを変えるまで位置はそのままです。",
+          "blocking_count_other": "ブロッカー {{count}} 件",
+          "should_fix_count_other": "修正推奨 {{count}} 件"
         },
         "reviewChat": {
           "error_generic": "フォローアップのセッションを開けませんでした。もう一度お試しください。",
@@ -1067,44 +1067,44 @@
           "delete_review_of": "{{label}} のレビューを削除",
           "delete_this_review": "このレビューを削除",
           "delete_this_review_2": "このレビューを削除しますか？",
-          "more": "他",
           "needs_review_count_other": "{{count}} 件が要レビュー",
           "pull_requests": "件のプルリクエスト",
           "review": "レビュー",
           "review_of": "{{label}} のレビュー",
           "review_of_with_more_other": "{{label}} ほか {{count}} 件のレビュー",
-          "worth_a_glance_count_other": "{{count}} 件が一見の価値あり"
+          "worth_a_glance_count_other": "{{count}} 件が一見の価値あり",
+          "more_count_other": "他 +{{count}} 件"
         },
         "runDetail": {
           "cancelled_before_any_finished": "どのプルリクエストも終わる前にキャンセルされました。",
           "finished": "完了",
           "loading_report": "レポートを読み込んでいます…",
-          "more": "他",
           "nothing_to_report": "レビューを完了したプルリクエストがないため、報告する内容はありませんでした。",
           "pull_request_other": "{{count}} 件のプルリクエスト",
           "report_appears_when_the_review_finishes": "レビューが終わり次第、レポートがここに表示されます。",
           "skipped_inflight_other": "{{count}} 件のプルリクエストは、別のレビューが既に処理していたためスキップされました。",
           "started": "開始",
           "this_review_produced_no_report": "このレビューはレポートを生成しませんでした。",
-          "you_can_leave_this_page_a_notification_will_tell": "このページを離れても構いません — 完了したら通知でお知らせします。"
+          "you_can_leave_this_page_a_notification_will_tell": "このページを離れても構いません — 完了したら通知でお知らせします。",
+          "more_count_other": "他 +{{count}} 件"
         },
         "runList": {
           "new_review": "新しいレビュー"
         },
         "runProgress": {
           "cancel_review": "レビューをキャンセル",
-          "cancelled": "キャンセル済み",
           "cancelling": "キャンセルしています…",
           "elapsed_time": "経過時間",
-          "failed": "失敗",
           "median_of_past_runs_of_this_size": "同程度の規模の過去の実行の中央値",
           "review_progress": "レビューの進捗",
-          "reviewed": "レビュー済み",
           "reviewers_busy": "{{max}} 人中 {{busy}} 人のレビュアーが稼働中",
           "step": "· ステップ",
           "stops_queued_prs_one_already_being_reviewed_will": "待機中のプルリクエストを停止します。既にレビュー中のものは完了します。",
           "usually": "通常 約",
-          "working": "処理中"
+          "working": "処理中",
+          "reviewed_of_other": "{{done}} / {{count}} レビュー済み",
+          "failed_count_other": "{{count}} 件失敗",
+          "cancelled_count_other": "{{count}} 件キャンセル済み"
         },
         "runStatusPill": {
           "cancelled": "キャンセル済み",
@@ -3037,7 +3037,6 @@
           "frontier_caption": "新たに解放された項目は、記録上のブロッカーがすべてクローズまたはマージ済みです。項目を開くと理由を展開、またはそのツリーを開きます。",
           "focus_caption": "選択した項目のライブ依存ツリー全体。ノードをクリックで再ルート、Enter で開きます。破線=推定、取り消し線=解消済み。",
           "focus_empty": "項目を選択すると依存ツリーを描画します。",
-          "tree_stat": "{{kind}}-{{number}} のツリー: {{nodes}} ノード · {{edges}} ライブエッジ",
           "ghost_satisfied": "解消済み",
           "ci_fail": "CI 失敗",
           "led_wait": "WAIT",
@@ -3045,7 +3044,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} の依存ツリー: {{nodes}} ノード、{{edges}} ライブエッジ",
           "aria_node": "{{kind}}-{{number}}、{{state}}: {{title}}",
           "empty_board": "未実装ボード",
           "empty_title": "依存関係はまだありません",
@@ -3058,7 +3056,10 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab がほとんどの Issue に応答しませんでした（障害またはレート制限）。少し待ってから再試行してください。",
           "empty_unavailable_issue_scope": "依存関係グラフにはオープンな Issue の一覧が必要ですが、まだ利用できません。Issue タブを開いてキャッシュするか、下のエラーを確認してから、再試行してください。",
           "refresh_failed_stale_graph": "最後に読み込んだグラフを表示しています。直近の更新は失敗しました。",
-          "retry": "再試行"
+          "retry": "再試行",
+          "tree_stat_other": "{{kind}}-{{number}} のツリー: {{nodes}} ノード · {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} の依存ツリー: {{nodes}} ノード、{{edges}}",
+          "live_edges_other": "{{n}} ライブエッジ"
         },
         "groupReviewsView": {
           "title": "レビューリクエスト",
@@ -3219,6 +3220,7 @@
         "view_list": "フラットリスト"
       },
       "preview": {
+        "detailsSummaryFallback": "詳細",
         "mermaidError": "無効な Mermaid 図 — ソースを表示しています。"
       },
       "row": {
@@ -3450,6 +3452,8 @@
         "allDone": "すべてレビュー完了",
         "archive": "アーカイブ",
         "archiveAll": "残りをアーカイブ",
+        "archiveOthers_other": "他の{{count}}件をアーカイブ",
+        "archiveSkipsFiling": "登録中の項目は対象外です",
         "archivedSection": "アーカイブ済み",
         "assignedTo": "{{name}}に割り当て",
         "backToMeeting": "ミーティングに戻る",
@@ -4057,7 +4061,6 @@
         "working": "作業中"
       },
       "stats": {
-        "busiest_day": "最多チャットの日：{{date}}（{{count}}件のメッセージ）",
         "companion_days": "{{time}}一緒にいます",
         "drags_other": "{{n}}回ドラッグしました",
         "earliest_time": "最早：{{time}}に起床",
@@ -4071,7 +4074,8 @@
         "streak": "（{{streak}}日連続）",
         "thinking_time": "{{time}}考えました",
         "title": "思い出",
-        "walks_other": "{{n}}ステップ"
+        "walks_other": "{{n}}ステップ",
+        "busiest_day_other": "最多チャットの日：{{date}}（{{n}}件のメッセージ）"
       },
       "tip": {
         "bedtime": "試してみてください：「11時に寝るよう教えて」",
@@ -5112,14 +5116,14 @@
         },
         "taskList": {
           "done": "完了",
-          "done_of_total": "{{total}} 件中 {{done}} 件完了",
           "no_tasks_yet": "タスクはまだありません。設計を承認すると、順序付けられたタスクリストがここに表示され、1 件ずつ実行できます。",
           "pause_the_build_first": "1 件だけ実行する前にビルドを一時停止してください",
           "run": "実行",
           "run_only_this_task_and_stop": "このタスクだけを実行して停止します",
           "run_task": "タスクを実行：{{task}}",
           "starting": "開始中…",
-          "task_progress": "タスクの進捗"
+          "task_progress": "タスクの進捗",
+          "done_of_total_other": "{{total}} 件中 {{done}} 件完了"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "作成したいことを説明し、いくつかの質問に答えて、確認済みのプラン — 要件、デザイン、タスク — を取得すれば、エージェントがそれを実行できます。",
@@ -5475,7 +5479,6 @@
         "costs_refresh_failed": "最新の請求額の読み取りに失敗しました。表示中の数値はキャッシュです。"
       },
       "page": {
-        "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個のうち {{healthy}} 個が正常",
         "refresh": "更新",
         "health_ok": "正常",
         "health_degraded": "要確認",
@@ -5528,7 +5531,9 @@
         "remove_account_error": "アカウントを削除できませんでした。",
         "remove_account_hint": "AWS 側は何も変わりません",
         "forget_key_confirm": "この行のキー「{{name}}」を忘れますか？AWS や AWS CLI の設定は何も変わりません。",
-        "forget_key_action": "キーを忘れる"
+        "forget_key_action": "キーを忘れる",
+        "totals_summary_other": "アカウント {{accounts}} 件 · {{keys}}",
+        "keys_healthy_other": "キー {{n}} 個のうち {{healthy}} 個が正常"
       },
       "rail": {
         "accounts": "アカウントと認証情報",
@@ -5917,6 +5922,14 @@
       "found_setup_but_could_not_read_it": "{{productName}} は {{sources}} を検出しましたが、ファイルを読み取れなかったため、何もインポートされませんでした。",
       "some_setup_could_not_be_read": "{{productName}} は {{sources}} を読み取れませんでした（以下には表示されません）。",
       "files_could_not_be_read": "ファイルを読み取れませんでした",
+      "skip_reason_credentials": "認証情報を含むため、元の場所に残します",
+      "skip_reason_too_large": "サイズまたは件数の上限を超えています",
+      "skip_reason_unsupported": "まだサポートされていません",
+      "skip_reason_excluded": "意図的に除外しました",
+      "skip_reason_path_rejected": "パスが許可されていません（リンク、またはソースの外）",
+      "skip_reason_invalid": "有効な設定として読み取れませんでした",
+      "skip_reason_other": "スキップしました",
+      "resolve_failed_title": "インポートは保存されましたが、両方を保持または私のものを置き換えは完了しませんでした。下からもう一度お試しください。",
       "your_existing_kirocrew_setup_will_not_be_affecte": "既存の {{productName}} セットアップは影響を受けません。",
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。",
       "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}",
@@ -5993,7 +6006,8 @@
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
       "trusted_channel_base": "信頼済み — {{base}} コマンドを @{{role}} に対して{{productName}} の再起動まで自動承認",
-      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認"
+      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認",
+      "title_wants_to_run": "<title/> の実行を求めています"
     },
     "approvalModePicker": {
       "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
@@ -6150,6 +6164,7 @@
       "artifact": "アーティファクト：{{slug}}",
       "could_not_render": "このアーティファクトを表示できませんでした",
       "image_could_not_be_loaded": "画像を読み込めませんでした",
+      "view_full_size": "フルサイズで表示",
       "no_longer_showing": "このアーティファクトは表示されなくなりました",
       "rendering": "レンダリング中…",
       "retry": "再試行",
@@ -6583,7 +6598,9 @@
       "copy": "コピー",
       "generating": "生成中…",
       "unwrap": "折り返し解除",
-      "wrap": "折り返し"
+      "wrap": "折り返し",
+      "code_label": "コード",
+      "code_region": "{{lang}} コード"
     },
     "blockquote": {
       "copied": "コピーしました！",
@@ -6704,16 +6721,17 @@
       "empty_comment": "_（空）_",
       "expand_comment": "コメントを展開",
       "hide_resolved": "解決済みを非表示",
-      "messages": "件のメッセージ",
       "no_comments_yet": "まだコメントはありません。",
       "no_open_threads": "未解決のスレッドはありません。",
-      "open": "件が未解決 ·",
       "reopen": "再オープン",
       "replying_is_github_only_for_now_open_the_merge_r": "返信は現在 GitHub のみ対応しています。マージリクエストを開いてコメントしてください。",
       "resolve": "解決",
       "resolved": "件が解決済み",
       "show_resolved": "解決済みを表示",
-      "write_a_comment_to_send": "コメントを入力… {{keys}} で送信"
+      "write_a_comment_to_send": "コメントを入力… {{keys}} で送信",
+      "open_count_other": "{{count}} 件が未解決",
+      "resolved_count_other": "{{count}} 件が解決済み",
+      "messages_count_other": "{{count}} 件のメッセージ"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "アーティファクト全体にコメントを追加…",
@@ -6929,17 +6947,16 @@
       "computing_line_by_line_diff": "行単位の差分を計算中…",
       "highlighting": "構文ハイライト中…",
       "line_by_line_diff_failed": "差分を計算できませんでした",
-      "more": "その他",
       "no_changes": "変更なし",
       "open": "ファイルを開く",
       "open_in_side_panel": "{{path}} をサイドパネルで開く",
       "removals_other": "{{count}} 件の削除",
-      "show": "表示",
       "show_less": "表示を減らす",
       "switch_to_split_view": "分割ビューに切り替え",
       "switch_to_unified_view": "統一ビューに切り替え",
       "this_document_is_tracked_as_a_session_artifact_n": "このドキュメントはセッションアーティファクトとして追跡されており、ソースファイルの変更ではありません",
-      "toggle_diff": "{{path}} の差分を表示または非表示にする"
+      "toggle_diff": "{{path}} の差分を表示または非表示にする",
+      "show_more_count_other": "さらに {{count}} 件を表示"
     },
     "openFileChips": {
       "open_file": "ファイルを開く"
@@ -7779,6 +7796,10 @@
       "contents": "目次",
       "table_of_contents": "目次"
     },
+    "matesDock": {
+      "load_failed": "スターを付けたクルーメイトを読み込めませんでした。",
+      "reorder_failed": "クルーメイトの新しい並び順を保存できませんでした。"
+    },
     "mcpAppFrame": {
       "collapse": "折りたたむ",
       "collapse_app": "アプリを折りたたむ",
@@ -8331,7 +8352,8 @@
       "save": "保存",
       "save_edit": "編集を保存",
       "send_now": "今すぐ送信",
-      "sub_agent_result_other": "{{count}} 個のサブエージェント結果"
+      "sub_agent_result_other": "{{count}} 個のサブエージェント結果",
+      "queued_count_other": "{{count}} 件がキュー内"
     },
     "readingWidthToggle": {
       "title_full": "全幅",
@@ -8944,6 +8966,9 @@
       "group_borders": "境界線",
       "group_status": "ステータス",
       "group_text_muted": "テキストと薄い色",
+      "json_invalid": "JSON が無効です。構文を確認して、もう一度お試しください。",
+      "json_needs_modes": "JSON には「dark」と「light」のオブジェクトが必要です。",
+      "json_needs_name": "JSON には「name」フィールドが必要です。",
       "light_mode_colors": "ライトモード色",
       "my_custom_theme": "マイカスタムテーマ",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"マイテーマ\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -8957,6 +8982,7 @@
       "theme_css_help": "AI の返答や気に入ったテーマの CSS カラーを貼り付けます（例: --bg: #12141a）。.dark または .light ブロック内の色はそのモードに、それ以外は両方のモードに適用されます。指定しなかった色はそのまま残ります。",
       "theme_json": "テーマ JSON",
       "theme_name": "テーマ名",
+      "theme_name_required": "テーマ名は必須です。",
       "update_theme": "テーマを更新",
       "var_accent": "アクセント",
       "var_accent_hover": "アクセントホバー",
@@ -8995,7 +9021,9 @@
       "sounds": "サウンド",
       "overlays": "オーバーレイ",
       "persona": "ペルソナ",
-      "save_failed_storage": "保存できませんでした。ブラウザーのストレージがいっぱいか、オフになっています。"
+      "save_failed_storage": "保存できませんでした。ブラウザーのストレージがいっぱいか、オフになっています。",
+      "theme_topbar_dark": "テーマのトップバー（ダークモード）",
+      "theme_topbar_light": "テーマのトップバー（ライトモード）"
     },
     "timezoneSelect": {
       "render_timezone": "タイムゾーンをレンダリング"
@@ -10483,6 +10511,30 @@
       "offer_open": "{{host}} を開く",
       "copy_failed": "コピーできませんでした。アプリ内のテキストを選択して自分でコピーしてください。",
       "more_actions": "その他の操作"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "アプリ",
+      "apps_hint": "選択したテキストをアプリに送る",
+      "menu_label": "選択したテキスト用のアプリ",
+      "close": "閉じる",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "open": "{{host}} を開く",
+      "no_response": "{{app}} が応答しませんでした。",
+      "revoked": "{{app}} はこの項目を使えなくなりました。無効にされたか、承認が取り消されました。",
+      "failed": "{{app}} で問題が発生しました: {{message}}",
+      "too_short": "{{title}} には {{min}} 文字以上が必要です。選択したのは {{count}} 文字です。",
+      "copy_failed": "クリップボードにコピーできませんでした。",
+      "load_failed": "選択したテキスト用のアプリを読み込めませんでした。",
+      "loading": "アプリを読み込んでいます…",
+      "none": "このテキストに使えるアプリはありません。",
+      "retry": "再試行",
+      "grant_entry": "{{title}}: チャットの返信で選択したテキスト（最大 {{max}} 文字）",
+      "grant_entry_copy": "{{title}}: チャットの返信で選択したテキスト（最大 {{max}} 文字）とコピーボタン",
+      "grant_entry_open": "{{title}}: チャットの返信で選択したテキスト（最大 {{max}} 文字）とリンクを開くボタン",
+      "grant_entry_copy_open": "{{title}}: チャットの返信で選択したテキスト（最大 {{max}} 文字）とコピー・開くボタン"
     }
   },
   "hooks": {
@@ -10887,7 +10939,8 @@
         "keeps_builtin": "ビルトインアプリのままです。",
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
-      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。"
+      "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
+      "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",
@@ -10975,7 +11028,9 @@
       "1_authenticate_to_aws": "1. AWS に認証",
       "2_enter_the_profile_name_region_below": "2. 下のプロファイル名 + リージョンを入力",
       "3_apply_the_iam_policy": "3. IAM ポリシーを適用",
-      "access_reachable": "：アクセス可能",
+      "account_short": "アカウント {{account}}",
+      "profile_reachable": "{{profile}}：アクセス可能",
+      "profile_reachable_account": "{{profile}}：アクセス可能（アカウント {{account}}）",
       "account_12_digits_optional_iam_identity_style": "アカウント（12 桁、オプション — iam-identity-style）",
       "active_deployments": "アクティブなデプロイ",
       "admin": "管理者",
@@ -11157,7 +11212,6 @@
       "back_to_editor": "エディタに戻る",
       "back_to_library": "← ライブラリに戻る",
       "bring_artifact_back_to_this_window": "アーティファクトをこのウィンドウに戻す",
-      "by": "作成者",
       "cancel": "キャンセル",
       "cancel_esc": "キャンセル (Esc)",
       "change_how_this_document_is_rendered": "このドキュメントのレンダリング方法を変更",
@@ -11171,7 +11225,6 @@
       "comment_removed": "コメントが削除されました",
       "comment_resolved": "コメントが解決されました",
       "comments": "コメント",
-      "content_copied_from_v": "コンテンツは v からコピー",
       "copied": "コピーしました",
       "copy_content": "コンテンツをコピー",
       "send_to_session": "セッションに送る",
@@ -11260,9 +11313,6 @@
       "to_chat_with_the_agent": "エージェントとチャットするために",
       "toggle_agent_chat": "エージェントチャットを切り替え",
       "unsaved_changes": "• 保存されていない変更",
-      "updated": "· 更新",
-      "v": "v",
-      "v_2": "→ v",
       "version": "バージョン",
       "via_dashboard": "ダッシュボード経由",
       "view_remote": "リモートを表示",
@@ -11277,7 +11327,14 @@
       "activity_failed_to_load": "アクティビティの読み込みに失敗しました",
       "sync_status_unavailable": "同期状態を取得できません",
       "more": "その他",
-      "more_actions": "その他の操作"
+      "more_actions": "その他の操作",
+      "created_at_value": "{{date}}に作成",
+      "updated_at_value": "{{date}}に更新",
+      "action_by_actor": "<0>{{action}}</0>（{{name}}）",
+      "content_copied_from_version": "コンテンツは v{{version}} からコピー",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",
@@ -11710,7 +11767,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "承認が必要です",
-        "approvals_pending": "承認待ち",
         "batch_preview_all": "保留中の {{count}} 件のコールを以下ですべて確認してください。すべてまとめて処理されます。",
         "batch_preview_none": "このコールのプレビューはありません。",
         "approve": "承認",
@@ -11727,7 +11783,8 @@
         "tool_call_other": "ツール呼び出し {{count}} 件",
         "trust": "信頼",
         "trusted": "信頼済み",
-        "view_full_activity": "すべてのアクティビティを表示 →"
+        "view_full_activity": "すべてのアクティビティを表示 →",
+        "approvals_pending_count_other": "{{count}} 件が承認待ち"
       },
       "cronAckBar": {
         "acknowledge": "確認",
@@ -12045,7 +12102,6 @@
         "backend_hiccup_retrying": "接続が不安定 — 再試行中…",
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",
         "expand_agent_list": "サブエージェント一覧を展開",
-        "more_running_normally": "ほかは正常に実行中…",
         "show_more_running_in_sidebar_other": "サイドバーで実行中のサブエージェントをあと {{count}} 件表示",
         "no_activity_possibly_stalled": "アクティビティなし — 停止している可能性があります",
         "open_in_subagents_sidebar": "{{label}} をサブエージェントサイドバーで開く",
@@ -12074,7 +12130,8 @@
         "chip_done_other": "{{count}} 個のエージェントが完了",
         "chip_failed_other": "{{count}} 個のエージェントが失敗",
         "chip_stopped_other": "{{count}} 個のエージェントが停止",
-        "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性"
+        "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
+        "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
@@ -13213,7 +13270,6 @@
       "goal_loop_cycle_no_cap": "ゴールループ · サイクル {{count}}（上限なし）",
       "goal_loop_interrupted_title": "ゴールループ待機中 — 前のターンが中断されました。チャットを再開するか、次のサイクルをお待ちください",
       "hidden_because_parent_hidden": "上位フォルダーが非表示のため {{name}} も非表示です",
-      "hide": "非表示",
       "hide_folder": "フォルダーを非表示",
       "hide_when_empty": "空の場合は非表示",
       "hiding_named_filter": "{{filter}}を非表示中",
@@ -13309,7 +13365,6 @@
       "show_hidden_folder_other": "非表示フォルダー {{count}} 件を表示",
       "show_only_sessions_tagged": "{{name}} タグが付いたセッションのみ表示",
       "show_the_folder_list": "フォルダー一覧を表示",
-      "skip": "スキップ",
       "sort_and_filter_sessions": "セッションの並べ替えと絞り込み",
       "sort_by": "並べ替え",
       "sort_created_newest": "作成日時 (新しい順)",
@@ -13339,8 +13394,8 @@
       "stale_collapse_paused": "一時停止中",
       "stale_collapse_paused_hint": "検索・フィルター中、または「新しい順」以外の並び替え中は一時停止します。",
       "stale_collapse_row_hidden_other": "休眠中のセッション {{count}} 件を表示する",
-      "stale_collapse_row_hint": "休眠中: {{window}} 以上使われていません。クリックで表示します。",
-      "stale_collapse_row_hint_open": "休眠中: {{window}} 以上使われていません。クリックで非表示にします。",
+      "stale_collapse_row_hint": "休眠中のセッションは閉じられておらず、履歴も残っています。{{window}} 以上使われていないため、一覧を短く保つようにここにまとめています。クリックで表示します。期間を変えたりオフにしたりするには、検索欄の横にあるフィルターボタンの「{{setting}}」を使います。",
+      "stale_collapse_row_hint_open": "休眠中のセッションは閉じられておらず、履歴も残っています。{{window}} 以上使われていないため、一覧を短く保つようにここにまとめています。クリックで非表示にします。期間を変えたりオフにしたりするには、検索欄の横にあるフィルターボタンの「{{setting}}」を使います。",
       "stale_collapse_row_shown_other": "休眠中のセッション {{count}} 件を非表示にする",
       "stale_collapse_row_ungrouped": "フォルダー外",
       "stop_filtering_by_tag": "{{name}} でのフィルターを解除",
@@ -13364,7 +13419,6 @@
       "untagged": "+ タグなし",
       "untagged_2": "タグなし",
       "untagged_only": "タグなしのみ",
-      "will_be_moved_to_older_sessions": "以前のセッションに移動されます。",
       "yesterday": "昨日",
       "new_incognito_chat": "新しいプライベートチャット",
       "new_temporary_chat": "新しい一時的なチャット",
@@ -13537,7 +13591,11 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "通常",
       "kind_section_mate": "クルーメイトから",
-      "filter_crew_description": "Ultra Mode のチャットだけを表示"
+      "filter_crew_description": "Ultra Mode のチャットだけを表示",
+      "skip_running_sessions_other": "実行中のセッション {{n}} 件をスキップ",
+      "cleanup_move_count_other": "{{n}} 件のセッションが以前のセッションに移動されます。",
+      "show_sessions_count_other": "{{n}} 件のセッションを表示",
+      "hide_sessions_count_other": "{{n}} 件のセッションを非表示"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -13554,6 +13612,7 @@
       "connection_unreachable": "{{provider}}に接続を確認するためのアクセスができませんでした。",
       "connection_views": "コネクションビュー",
       "connections": "コネクション",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "コネクションステータスを読み込めませんでした。カードが古い可能性があります。",
       "disconnect": "切断",
       "disconnect_census_incomplete": "設定ソースを読み取れず、他のサーバーが使用していないことを確認できなかったため、保存された認可は保持されました。サーバー設定を確認してから、再度切断してください。",
@@ -14346,9 +14405,6 @@
         "logs": {
           "label": "ログ"
         },
-        "mcpPool": {
-          "label": "MCP 管理"
-        },
         "memory": {
           "label": "メモリ"
         },
@@ -14601,11 +14657,13 @@
         "related_load_failed": "関連アイテムを読み込めませんでした",
         "relations_count": "関連性（{{count}}）",
         "save": "保存",
-        "shared": "共有",
         "summary": "サマリー",
         "tag1_tag2_tag3": "tag1、tag2、tag3",
         "tags_save_failed": "タグを保存できませんでした",
-        "unarchive": "アーカイブ解除"
+        "unarchive": "アーカイブ解除",
+        "shared_count_other": "共通 {{n}} 件",
+        "status_active": "アクティブ",
+        "status_archived": "アーカイブ済み"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}}埋め込み済み（{{pct}}%）",
@@ -14689,7 +14747,17 @@
         "entity_items_load_failed": "このエンティティのアイテムを読み込めませんでした",
         "error_no_reason": "理由が示されないままリクエストが失敗しました。",
         "delete_items_permanently_other": "{{count}} 件の項目を完全に削除しますか？",
-        "selected_count_other": "{{count}} 件選択済み"
+        "selected_count_other": "{{count}} 件選択済み",
+        "type_design_doc": "設計ドキュメント",
+        "type_runbook": "ランブック",
+        "type_meeting_notes": "議事録",
+        "type_code_doc": "コードドキュメント",
+        "type_presentation": "プレゼンテーション",
+        "type_report": "レポート",
+        "type_policy": "ポリシー",
+        "type_personal_notes": "個人メモ",
+        "type_external_reference": "外部参照",
+        "type_document": "ドキュメント"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -14928,9 +14996,11 @@
       "pool_warm_hit_rate": "プールウォームヒット率",
       "ram_saved": "RAM 節約",
       "rss": "RSS",
-      "s": "s",
       "server": "サーバー",
       "shared_mcp_gateway": "共有 MCP ゲートウェイ",
+      "status_active": "稼働中",
+      "status_stopped": "停止",
+      "status_unhealthy": "異常",
       "with_shared_gateway_pooled": "共有ゲートウェイあり (プール)",
       "without_gateway_per_session_copies": "ゲートウェイなし (セッションごとのコピー)"
     },
@@ -15088,6 +15158,7 @@
       "diff_env_removed": "削除された環境変数: {{names}}",
       "remove_mark": "外す",
       "footprint_failed": "MCP サーバーのメモリ使用量を読み取れませんでした。",
+      "footprint_owner_only": "メモリの数値はクルーのオーナーだけが確認できます。",
       "review_what_approve_does": "承認: 1 つのコピーがすべてのチャットのためにこれを、各チャットのサンドボックスの外で実行します。スキップ: 各チャットの中で動き続けます。",
       "share_risk": "サンドボックスの外では、共有サーバーは自分で起動したプログラムと同じように、ファイルを読み書きできます。",
       "review_when_safe": "自分で追加したサーバーで、表示されたコマンドが想定どおりなら承認してください。"
@@ -16244,7 +16315,6 @@
       "resource_network": "ネットワーク",
       "sandbox_procs": "サンドボックス",
       "session_storage": "セッションストレージ",
-      "session_storage_detail": "{{sessions}} セッション · {{reclaimable}} 回収可能",
       "session_storage_measuring": "計測中…",
       "threads": "スレッド",
       "total": "合計",
@@ -16254,7 +16324,8 @@
       "utilization": "使用率",
       "working_directory": "作業ディレクトリ",
       "graph_scale_network": "フルスケール {{max}} · 直近 {{seconds}}",
-      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}"
+      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}",
+      "session_storage_detail_other": "{{sessions}} セッション · {{reclaimable}} 回収可能"
     },
     "popoutFrame": {
       "session": "セッション",
@@ -19220,7 +19291,6 @@
       "credits_col": "クレジット",
       "credits_this_period": "直近{{days}}日",
       "daily_p50_trend": "日次 p50 — 上がコールド、下がウォーム",
-      "daily_trend_point": "{{date}} · コールド {{cold}} · ウォーム {{warm}} · 起動 {{count}} 回",
       "detail_col": "詳細",
       "distribution_col": "分布",
       "duration_col": "所要時間",
@@ -19319,7 +19389,8 @@
       "range_to": "終了日",
       "no_telemetry_in_window": "この期間（{{period}}）に記録されたテレメトリはありません。",
       "otel_retention_cap": "ターン・レイテンシ・起動の数値は直近{{days}}日分のみです。古いメトリクスは削除されます（<settingRef/>）。",
-      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし"
+      "window_footer_shards_other": "OTELセクション · 期間: {{period}} · シャード {{n}} 個 · ソース: <dir/> · ローカルのみ、送出なし",
+      "daily_trend_point_other": "{{date}} · コールド {{cold}} · ウォーム {{warm}} · 起動 {{n}} 回"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",
@@ -19590,7 +19661,6 @@
       "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",
       "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
       "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
-      "member_count_filtered": "{{count}} 人中 {{shown}} 人のクルーメイト",
       "webview_rendering": "公開済みビューを表示中…",
       "webview_retry": "再試行",
       "deploy_title": "クラウド上のクルー",
@@ -19973,7 +20043,8 @@
       "profile_harness_cannot_start": "ここでは起動できません。",
       "profile_harness_saved": "保存しました。次のメッセージから {{name}} はこのハーネスで動きます。",
       "profile_harness_unavailable": "{{name}} は {{harness}} で動く設定ですが、ここでは起動できないため、チャットもワーカーも起動しません。別のエージェントハーネスか「継承済み」を選んでください。",
-      "profile_harness_choose": "エージェントハーネスを選ぶ"
+      "profile_harness_choose": "エージェントハーネスを選ぶ",
+      "member_count_filtered_other": "{{n}} 人中 {{shown}} 人のクルーメイト"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

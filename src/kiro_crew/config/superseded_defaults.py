@@ -1443,7 +1443,7 @@ def render_doctor_section(issues: list[str]) -> None:
     except FileNotFoundError:
         print("  drift:       ✅ no config file yet (current defaults apply)")
         return
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
         print(f"  drift:       ⚠️  could not read {path}: {e}")
         issues.append("stored defaults unreadable")
         return

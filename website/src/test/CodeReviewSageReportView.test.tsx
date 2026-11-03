@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { RunReport } from '../apps/code-review-sage/lib/types'
 
 // Render markdown-bearing prose as a tagged span so the test can (a) read the
@@ -182,6 +184,16 @@ describe('ReportView severity chips with dismissals', () => {
   it('counts a blocking finding that is not dismissed', () => {
     render(<ReportView report={makeReport()} />)
     expect(screen.getByText(/1 blocking/)).toBeInTheDocument()
+  })
+
+  it('counts blocking findings in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      render(<ReportView report={makeReport()} />)
+      expect(screen.getByText('1 blockierend')).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('hides the blocking chip once its only blocking finding is dismissed', () => {

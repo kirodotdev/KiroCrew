@@ -354,10 +354,11 @@ export const CodeBlock = memo(function CodeBlock(
   }, [annotations])
 
   return (
+    // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
+          <span className="text-muted text-[13px] font-mono">{lang || i18nT('components.codeBlock.code_label')}</span>
           <button
             type="button"
             data-testid="code-block-wrap-toggle"
@@ -385,7 +386,7 @@ export const CodeBlock = memo(function CodeBlock(
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
+      <div ref={contentRef} className="pierre-surface" tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
         {complete && highlighted ? (
           <PierreCode
             file={file}

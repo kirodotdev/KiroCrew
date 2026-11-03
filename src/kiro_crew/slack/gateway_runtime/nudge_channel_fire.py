@@ -278,6 +278,9 @@ async def _fire_slack_inner_nudge(
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=self._interactive_approval("autonudge", nudge_key=key),
+                    # A monitor wake runs with nobody watching: a governance
+                    # check that cannot be evaluated refuses the call.
+                    unattended=True,
                     on_complete=_capture_raw_completion,
                     undelivered_watch_key=key,
                 ),
@@ -300,6 +303,7 @@ async def _fire_slack_inner_nudge(
                     self.ctx_builder,
                     session_key=key,
                     agent=_get_agent_for_session(key) or "",
+                    unattended=True,
                 ),
                 directive_consumer=build_directive_consumer(
                     session_key=key,

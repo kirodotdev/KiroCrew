@@ -17,7 +17,7 @@ function task(overrides: Partial<Task> & { id: string; description: string }): T
 
 let handlers: Record<"onBack"|"onClose"|"onFile"|"onArchive"|"onUnarchive", ReturnType<typeof vi.fn>>
 
-function renderView(tasks: Task[], filing: string | null = null) {
+function renderView(tasks: Task[], filing: string | null = null, filingIds?: string[]) {
   render(
     <TaskReviewView
       tasks={tasks}
@@ -26,6 +26,7 @@ function renderView(tasks: Task[], filing: string | null = null) {
       transcriptFull={false}
       provider="Jira"
       filing={filing}
+      filingIds={filingIds}
       onBack={handlers.onBack}
       onClose={handlers.onClose}
       onFile={handlers.onFile}
@@ -92,6 +93,47 @@ describe('TaskReviewView', () => {
     expect(screen.getByText('Filing…')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'File' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+  })
+
+  it('leaves the item being filed out of Archive the rest', () => {
+    renderView(
+      [
+        task({ id: 't1', description: 'In flight' }),
+        task({ id: 't2', description: 'Still pending' }),
+      ],
+      't1',
+    )
+    expect(screen.getByText('Items being filed are skipped')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Archive the other 1' }))
+    expect(handlers.onArchive).toHaveBeenCalledTimes(1)
+    expect(handlers.onArchive).toHaveBeenCalledWith('t2')
+  })
+
+  it('disables Archive the rest when the only pending item is being filed', () => {
+    renderView([task({ id: 't1', description: 'In flight' })], 't1')
+    const archiveRest = screen.getByRole('button', { name: 'Archive the rest' })
+    expect(archiveRest).toBeDisabled()
+    expect(archiveRest).toHaveAccessibleDescription('Items being filed are skipped')
+    fireEvent.click(archiveRest)
+    expect(handlers.onArchive).not.toHaveBeenCalled()
+  })
+
+  it('keeps an earlier filing out of Archive the rest after a second File', () => {
+    renderView(
+      [
+        task({ id: 't1', description: 'Filed first' }),
+        task({ id: 't2', description: 'Filed second' }),
+        task({ id: 't3', description: 'Still pending' }),
+      ],
+      't2',
+      ['t1', 't2'],
+    )
+    const first = screen.getByText('Filed first').closest('div.flex') as HTMLElement
+    expect(within(first).getByRole('button', { name: 'Archive' })).toBeDisabled()
+    expect(within(first).getByRole('button', { name: 'File' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Archive the other 1' }))
+    expect(handlers.onArchive).toHaveBeenCalledTimes(1)
+    expect(handlers.onArchive).toHaveBeenCalledWith('t3')
   })
 
   it('shows the assignee and marks a high priority item in the error tone', () => {

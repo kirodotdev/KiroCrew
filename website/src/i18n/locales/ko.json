@@ -876,11 +876,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "새 네임스페이스 이름",
           "pattern_other": "패턴 {{count}}개",
-          "pending": "보류 중",
           "read_namespace": "네임스페이스 {{name}} 읽기",
           "invalid_namespace_name": "네임스페이스 이름은 폴더 이름이 되므로 소문자 라틴 문자(a–z), 숫자(0–9), 마침표, 하이픈, 밑줄만 사용할 수 있습니다. 이름은 문자나 숫자로 시작하고 끝나야 하며 2자 이상 64자 이하여야 합니다.",
           "invalid_namespace_name_char": "‘{{char}}’은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
-          "invalid_namespace_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요."
+          "invalid_namespace_name_letter": "‘{{char}}’({{script}}, {{code}})은(는) 네임스페이스 이름에 사용할 수 없습니다. 소문자 a–z, 0–9, . -⁠ _ 문자만 사용하세요.",
+          "pending_count_other": "{{count}}개 보류 중"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1012,7 +1012,6 @@
         },
         "reportView": {
           "blast_radius": "영향 범위: {{scope}}",
-          "blocking": "차단",
           "changes_reviewed_other": "변경 {{count}}건 리뷰됨",
           "clear": "지우기",
           "design_gate": "설계 게이트 ·",
@@ -1027,10 +1026,11 @@
           "open_the_pull_request": "풀 리퀘스트 열기",
           "share": "공유",
           "sharing": "공유 중…",
-          "should_fix": "수정 권장",
           "step_problem": "문제",
           "step_solution_fit": "해결책 적합성",
-          "step_why_it_matters": "왜 중요한가"
+          "step_why_it_matters": "왜 중요한가",
+          "blocking_count_other": "차단 {{count}}개",
+          "should_fix_count_other": "수정 권장 {{count}}개"
         },
         "reviewChat": {
           "error_generic": "후속 세션을 열지 못했습니다. 다시 시도하세요.",
@@ -1067,44 +1067,44 @@
           "delete_review_of": "{{label}}의 리뷰 삭제",
           "delete_this_review": "이 리뷰 삭제",
           "delete_this_review_2": "이 리뷰를 삭제하시겠습니까?",
-          "more": "외",
           "needs_review_count_other": "{{count}}건 리뷰 필요",
           "pull_requests": "개 풀 리퀘스트",
           "review": "리뷰",
           "review_of": "{{label}}의 리뷰",
           "review_of_with_more_other": "{{label}} 외 {{count}}건의 리뷰",
-          "worth_a_glance_count_other": "{{count}}건 살펴볼 만함"
+          "worth_a_glance_count_other": "{{count}}건 살펴볼 만함",
+          "more_count_other": "외 +{{count}}개"
         },
         "runDetail": {
           "cancelled_before_any_finished": "어떤 풀 리퀘스트도 끝나기 전에 취소되었습니다.",
           "finished": "완료",
           "loading_report": "보고서를 불러오고 있습니다…",
-          "more": "외",
           "nothing_to_report": "리뷰를 완료한 풀 리퀘스트가 없어 보고할 내용이 없었습니다.",
           "pull_request_other": "풀 리퀘스트 {{count}}개",
           "report_appears_when_the_review_finishes": "리뷰가 끝나는 대로 보고서가 여기에 표시됩니다.",
           "skipped_inflight_other": "다른 리뷰가 이미 처리하고 있어 풀 리퀘스트 {{count}}개는 건너뛰었습니다.",
           "started": "시작",
           "this_review_produced_no_report": "이 리뷰는 보고서를 생성하지 않았습니다.",
-          "you_can_leave_this_page_a_notification_will_tell": "이 페이지를 떠나도 됩니다 — 완료되면 알림으로 알려 드립니다."
+          "you_can_leave_this_page_a_notification_will_tell": "이 페이지를 떠나도 됩니다 — 완료되면 알림으로 알려 드립니다.",
+          "more_count_other": "외 +{{count}}개"
         },
         "runList": {
           "new_review": "새 리뷰"
         },
         "runProgress": {
           "cancel_review": "리뷰 취소",
-          "cancelled": "취소됨",
           "cancelling": "취소 중…",
           "elapsed_time": "경과 시간",
-          "failed": "실패",
           "median_of_past_runs_of_this_size": "비슷한 규모의 과거 실행 중앙값",
           "review_progress": "리뷰 진행 상황",
-          "reviewed": "리뷰됨",
           "reviewers_busy": "리뷰어 {{max}}명 중 {{busy}}명 작업 중",
           "step": "· 단계",
           "stops_queued_prs_one_already_being_reviewed_will": "대기 중인 PR을 중단합니다. 이미 리뷰 중인 것은 끝까지 진행됩니다.",
           "usually": "보통 약",
-          "working": "처리 중"
+          "working": "처리 중",
+          "reviewed_of_other": "{{done}} / {{count}} 리뷰됨",
+          "failed_count_other": "{{count}}개 실패",
+          "cancelled_count_other": "{{count}}개 취소됨"
         },
         "runStatusPill": {
           "cancelled": "취소됨",
@@ -3037,7 +3037,6 @@
           "frontier_caption": "새로 해제된 항목은 기록된 차단 항목이 모두 닫히거나 병합되었습니다. 항목을 열어 이유를 펼치거나 그 트리를 여세요.",
           "focus_caption": "선택한 항목의 전체 활성 의존성 트리입니다. 노드를 클릭하면 루트 재설정, Enter로 열기. 점선=추론, 취소선=해소됨.",
           "focus_empty": "항목을 선택하면 의존성 트리를 그립니다.",
-          "tree_stat": "{{kind}}-{{number}}의 트리: 노드 {{nodes}}개 · 활성 간선 {{edges}}개",
           "ghost_satisfied": "해소됨",
           "ci_fail": "CI 실패",
           "led_wait": "WAIT",
@@ -3045,7 +3044,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}}의 의존성 트리: 노드 {{nodes}}개, 활성 간선 {{edges}}개",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "빈 보드",
           "empty_title": "아직 의존성이 없습니다",
@@ -3058,7 +3056,10 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab이 대부분의 이슈에 응답하지 않았습니다(장애 또는 속도 제한). 잠시 기다린 뒤 다시 시도하세요.",
           "empty_unavailable_issue_scope": "종속성 그래프에는 열린 이슈 목록이 필요하지만 아직 사용할 수 없습니다. 이슈 탭을 열어 캐시하거나 아래 오류를 확인한 뒤 다시 시도하세요.",
           "refresh_failed_stale_graph": "마지막으로 불러온 그래프를 표시 중입니다. 최근 새로 고침이 실패했습니다.",
-          "retry": "다시 시도"
+          "retry": "다시 시도",
+          "tree_stat_other": "{{kind}}-{{number}}의 트리: 노드 {{nodes}}개 · {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}}의 의존성 트리: 노드 {{nodes}}개, {{edges}}",
+          "live_edges_other": "활성 간선 {{n}}개"
         },
         "groupReviewsView": {
           "title": "리뷰 요청",
@@ -3219,6 +3220,7 @@
         "view_list": "평면 목록"
       },
       "preview": {
+        "detailsSummaryFallback": "세부 정보",
         "mermaidError": "잘못된 Mermaid 다이어그램 — 소스를 표시합니다."
       },
       "row": {
@@ -3450,6 +3452,8 @@
         "allDone": "검토 완료",
         "archive": "보관",
         "archiveAll": "나머지 보관",
+        "archiveOthers_other": "나머지 {{count}}건 보관",
+        "archiveSkipsFiling": "등록 중인 항목은 제외됩니다",
         "archivedSection": "보관됨",
         "assignedTo": "{{name}}에게 할당됨",
         "backToMeeting": "회의로 돌아가기",
@@ -4057,7 +4061,6 @@
         "working": "작업 중"
       },
       "stats": {
-        "busiest_day": "가장 많이 대화한 날: {{date}} (메시지 {{count}}개)",
         "companion_days": "함께한 시간 {{time}}",
         "drags_other": "{{n}}번 끌었습니다",
         "earliest_time": "가장 이른 시각: {{time}}에 기상",
@@ -4071,7 +4074,8 @@
         "streak": "({{streak}}일 연속)",
         "thinking_time": "{{time}} 동안 생각했습니다",
         "title": "추억",
-        "walks_other": "{{n}}걸음"
+        "walks_other": "{{n}}걸음",
+        "busiest_day_other": "가장 많이 대화한 날: {{date}} (메시지 {{n}}개)"
       },
       "tip": {
         "bedtime": "이렇게 말해 보세요: ‘11시에 이제 쉬라고 알려 줘’",
@@ -5112,14 +5116,14 @@
         },
         "taskList": {
           "done": "완료",
-          "done_of_total": "{{total}}개 중 {{done}}개 완료",
           "no_tasks_yet": "아직 작업이 없습니다. 설계를 승인하면 순서가 정해진 작업 목록이 여기에 표시되고, 하나씩 실행할 수 있습니다.",
           "pause_the_build_first": "작업 하나만 실행하려면 먼저 구축을 일시 중지하세요",
           "run": "실행",
           "run_only_this_task_and_stop": "이 작업만 실행한 뒤 멈춥니다",
           "run_task": "작업 실행: {{task}}",
           "starting": "시작 중…",
-          "task_progress": "작업 진행률"
+          "task_progress": "작업 진행률",
+          "done_of_total_other": "{{total}}개 중 {{done}}개 완료"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "만들고 싶은 것을 설명하고 몇 가지 질문에 답하면, 에이전트가 실행할 수 있는 검토된 계획 — 요구사항·설계·작업 — 을 받습니다.",
@@ -5475,7 +5479,6 @@
         "costs_refresh_failed": "최신 청구액 읽기에 실패했습니다. 표시된 값은 캐시된 수치입니다."
       },
       "page": {
-        "totals_summary": "계정 {{accounts}}개 · 키 {{keys}}개 중 {{healthy}}개 정상",
         "refresh": "새로 고침",
         "health_ok": "정상",
         "health_degraded": "확인 필요",
@@ -5528,7 +5531,9 @@
         "remove_account_error": "계정을 제거할 수 없습니다.",
         "remove_account_hint": "AWS에서는 아무것도 바뀌지 않습니다",
         "forget_key_confirm": "이 행의 키 ‘{{name}}’을(를) 잊으시겠습니까? AWS나 AWS CLI 구성은 아무것도 바뀌지 않습니다.",
-        "forget_key_action": "키 잊기"
+        "forget_key_action": "키 잊기",
+        "totals_summary_other": "계정 {{accounts}}개 · {{keys}}",
+        "keys_healthy_other": "키 {{n}}개 중 {{healthy}}개 정상"
       },
       "rail": {
         "accounts": "계정 및 자격 증명",
@@ -5917,6 +5922,14 @@
       "found_setup_but_could_not_read_it": "{{productName}}에서 {{sources}}을(를) 찾았지만 파일을 읽을 수 없어 아무것도 가져오지 않았습니다.",
       "some_setup_could_not_be_read": "{{productName}}이(가) {{sources}}을(를) 읽을 수 없습니다 — 아래에 표시되지 않습니다.",
       "files_could_not_be_read": "파일을 읽을 수 없습니다",
+      "skip_reason_credentials": "자격 증명이 있어 원래 위치에 남겨 둡니다",
+      "skip_reason_too_large": "크기 또는 개수 한도를 넘었습니다",
+      "skip_reason_unsupported": "아직 지원되지 않습니다",
+      "skip_reason_excluded": "의도적으로 제외했습니다",
+      "skip_reason_path_rejected": "경로가 허용되지 않습니다(링크이거나 원본 밖에 있음)",
+      "skip_reason_invalid": "올바른 설정으로 읽을 수 없습니다",
+      "skip_reason_other": "건너뜀",
+      "resolve_failed_title": "가져오기는 저장되었지만 둘 다 유지 또는 내 것 대체가 완료되지 않았습니다. 아래에서 다시 시도하세요.",
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 {{productName}} 설정은 영향을 받지 않습니다.",
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다.",
       "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계",
@@ -5993,7 +6006,8 @@
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인",
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
       "trusted_channel_base": "신뢰함 — {{base}} 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
-      "trusted_channel_command": "신뢰함 — ‘{{cmd}}’ 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인"
+      "trusted_channel_command": "신뢰함 — ‘{{cmd}}’ 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
+      "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
     "approvalModePicker": {
       "nudge_body": "여기에서 {{productName}}의 승인 모드를 조정할 수 있습니다. 여기에서 '신뢰'를 선택하면 이 대화에서 먼저 묻지 않고 작업합니다. 언제든지 되돌릴 수 있습니다.",
@@ -6150,6 +6164,7 @@
       "artifact": "아티팩트: {{slug}}",
       "could_not_render": "이 아티팩트를 렌더링할 수 없습니다",
       "image_could_not_be_loaded": "이미지를 불러올 수 없습니다",
+      "view_full_size": "원본 크기로 보기",
       "no_longer_showing": "이 아티팩트가 더 이상 표시되지 않습니다",
       "rendering": "렌더링 중…",
       "retry": "다시 시도",
@@ -6583,7 +6598,9 @@
       "copy": "복사",
       "generating": "생성 중…",
       "unwrap": "줄 바꿈 해제",
-      "wrap": "줄 바꿈"
+      "wrap": "줄 바꿈",
+      "code_label": "코드",
+      "code_region": "{{lang}} 코드"
     },
     "blockquote": {
       "copied": "복사했습니다!",
@@ -6704,16 +6721,17 @@
       "empty_comment": "_(비어 있음)_",
       "expand_comment": "댓글 펼치기",
       "hide_resolved": "해결됨 숨기기",
-      "messages": "개 메시지",
       "no_comments_yet": "아직 댓글이 없습니다.",
       "no_open_threads": "열린 스레드가 없습니다.",
-      "open": "건 열림 ·",
       "reopen": "다시 열기",
       "replying_is_github_only_for_now_open_the_merge_r": "답글은 현재 GitHub에서만 지원됩니다 — 풀 리퀘스트를 열어 댓글을 다세요.",
       "resolve": "해결",
       "resolved": "건 해결됨",
       "show_resolved": "해결됨 표시",
-      "write_a_comment_to_send": "댓글을 입력하세요… {{keys}}(으)로 전송"
+      "write_a_comment_to_send": "댓글을 입력하세요… {{keys}}(으)로 전송",
+      "open_count_other": "{{count}}건 열림",
+      "resolved_count_other": "{{count}}건 해결됨",
+      "messages_count_other": "메시지 {{count}}개"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "아티팩트 전체에 댓글 추가…",
@@ -6929,17 +6947,16 @@
       "computing_line_by_line_diff": "줄 단위 diff 계산 중…",
       "highlighting": "구문 강조 표시 중…",
       "line_by_line_diff_failed": "diff를 계산할 수 없습니다",
-      "more": "더 보기",
       "no_changes": "변경 없음",
       "open": "파일 열기",
       "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
       "removals_other": "삭제 {{count}}건",
-      "show": "표시",
       "show_less": "간략히 보기",
       "switch_to_split_view": "분할 보기로 전환",
       "switch_to_unified_view": "통합 보기로 전환",
       "this_document_is_tracked_as_a_session_artifact_n": "이 문서는 소스 파일 변경이 아니라 세션 아티팩트로 추적됩니다",
-      "toggle_diff": "{{path}}의 차이 표시 또는 숨기기"
+      "toggle_diff": "{{path}}의 차이 표시 또는 숨기기",
+      "show_more_count_other": "{{count}}개 더 보기"
     },
     "openFileChips": {
       "open_file": "파일 열기"
@@ -7779,6 +7796,10 @@
       "contents": "목차",
       "table_of_contents": "목차"
     },
+    "matesDock": {
+      "load_failed": "별표 표시한 크루메이트를 불러올 수 없습니다.",
+      "reorder_failed": "크루메이트의 새 순서를 저장할 수 없습니다."
+    },
     "mcpAppFrame": {
       "collapse": "접기",
       "collapse_app": "앱 접기",
@@ -8331,7 +8352,8 @@
       "save": "저장",
       "save_edit": "편집 내용 저장",
       "send_now": "지금 보내기",
-      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개"
+      "sub_agent_result_other": "서브 에이전트 결과 {{count}}개",
+      "queued_count_other": "{{count}}개 대기 중"
     },
     "readingWidthToggle": {
       "title_full": "전체 너비",
@@ -8944,6 +8966,9 @@
       "group_borders": "테두리",
       "group_status": "상태",
       "group_text_muted": "텍스트·연한 색",
+      "json_invalid": "JSON이 올바르지 않습니다. 구문을 확인하고 다시 시도하세요.",
+      "json_needs_modes": "JSON에 ‘dark’와 ‘light’ 객체가 있어야 합니다.",
+      "json_needs_name": "JSON에 ‘name’ 필드가 있어야 합니다.",
       "light_mode_colors": "라이트 모드 색",
       "my_custom_theme": "내 커스텀 테마",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n \"name\": \"내 테마\",\n \"emoji\": \"✨\",\n \"dark\": { \"--bg\": \"#12141a\", ... },\n \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -8957,6 +8982,7 @@
       "theme_css_help": "AI 답변이나 마음에 드는 테마의 CSS 색을 붙여넣으세요(예: --bg: #12141a). .dark 또는 .light 블록 안의 색은 해당 모드에, 나머지는 두 모드 모두에 적용됩니다. 지정하지 않은 색은 그대로 유지됩니다.",
       "theme_json": "테마 JSON",
       "theme_name": "테마 이름",
+      "theme_name_required": "테마 이름을 입력해야 합니다.",
       "update_theme": "테마 업데이트",
       "var_accent": "강조",
       "var_accent_hover": "강조 호버",
@@ -8995,7 +9021,9 @@
       "sounds": "사운드",
       "overlays": "오버레이",
       "persona": "페르소나",
-      "save_failed_storage": "저장할 수 없습니다. 브라우저 저장소가 가득 찼거나 꺼져 있습니다."
+      "save_failed_storage": "저장할 수 없습니다. 브라우저 저장소가 가득 찼거나 꺼져 있습니다.",
+      "theme_topbar_dark": "테마 상단 바, 다크 모드",
+      "theme_topbar_light": "테마 상단 바, 라이트 모드"
     },
     "timezoneSelect": {
       "render_timezone": "표시 시간대"
@@ -10483,6 +10511,30 @@
       "offer_open": "{{host}} 열기",
       "copy_failed": "복사하지 못했습니다. 앱에서 텍스트를 선택해 직접 복사하세요.",
       "more_actions": "작업 더 보기"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "앱",
+      "apps_hint": "선택한 텍스트를 앱으로 보내기",
+      "menu_label": "선택한 텍스트용 앱",
+      "close": "닫기",
+      "copy": "복사",
+      "copied": "복사됨",
+      "open": "{{host}} 열기",
+      "no_response": "{{app}}이(가) 응답하지 않았습니다.",
+      "revoked": "{{app}}에서 더 이상 이 항목을 사용할 수 없습니다. 꺼졌거나 승인이 철회되었습니다.",
+      "failed": "{{app}}에 문제가 발생했습니다: {{message}}",
+      "too_short": "{{title}}에는 최소 {{min}}자가 필요합니다. {{count}}자를 선택했습니다.",
+      "copy_failed": "클립보드에 복사할 수 없습니다.",
+      "load_failed": "선택한 텍스트용 앱을 불러올 수 없습니다.",
+      "loading": "앱을 불러오는 중…",
+      "none": "이 텍스트에 쓸 수 있는 앱이 없습니다.",
+      "retry": "다시 시도",
+      "grant_entry": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)",
+      "grant_entry_copy": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 복사 버튼",
+      "grant_entry_open": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 링크 열기 버튼",
+      "grant_entry_copy_open": "{{title}}: 채팅 답변에서 선택한 텍스트(최대 {{max}}자)와 복사 및 열기 버튼"
     }
   },
   "hooks": {
@@ -10887,7 +10939,8 @@
         "keeps_builtin": "기본 제공 앱으로 유지됩니다.",
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
-      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다."
+      "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",
@@ -10975,7 +11028,9 @@
       "1_authenticate_to_aws": "1. AWS에 인증",
       "2_enter_the_profile_name_region_below": "2. 아래에 프로필 이름 + 리전 입력",
       "3_apply_the_iam_policy": "3. IAM 정책 적용",
-      "access_reachable": ": 액세스 가능",
+      "account_short": "계정 {{account}}",
+      "profile_reachable": "{{profile}}: 액세스 가능",
+      "profile_reachable_account": "{{profile}}: 액세스 가능 (계정 {{account}})",
       "account_12_digits_optional_iam_identity_style": "계정 (12자리, 선택 — iam-identity-style)",
       "active_deployments": "활성 배포",
       "admin": "관리자",
@@ -11157,7 +11212,6 @@
       "back_to_editor": "편집기로 돌아가기",
       "back_to_library": "← 라이브러리로 돌아가기",
       "bring_artifact_back_to_this_window": "아티팩트를 이 창으로 되돌리기",
-      "by": "작성자",
       "cancel": "취소",
       "cancel_esc": "취소 (Esc)",
       "change_how_this_document_is_rendered": "이 문서의 렌더링 방식 변경",
@@ -11171,7 +11225,6 @@
       "comment_removed": "댓글이 삭제되었습니다",
       "comment_resolved": "댓글이 해결되었습니다",
       "comments": "댓글",
-      "content_copied_from_v": "콘텐츠를 다음 버전에서 복사함: v",
       "copied": "복사됨",
       "copy_content": "콘텐츠 복사",
       "send_to_session": "세션으로 보내기",
@@ -11260,9 +11313,6 @@
       "to_chat_with_the_agent": "에이전트와 대화하려면",
       "toggle_agent_chat": "에이전트 채팅 전환",
       "unsaved_changes": "• 저장하지 않은 변경 내용",
-      "updated": "· 업데이트됨",
-      "v": "v",
-      "v_2": "→ v",
       "version": "버전",
       "via_dashboard": "대시보드에서",
       "view_remote": "원격 보기",
@@ -11277,7 +11327,14 @@
       "activity_failed_to_load": "활동을 불러오지 못했습니다",
       "sync_status_unavailable": "동기화 상태를 확인할 수 없습니다",
       "more": "더 보기",
-      "more_actions": "추가 작업"
+      "more_actions": "추가 작업",
+      "created_at_value": "{{date}}에 생성됨",
+      "updated_at_value": "{{date}}에 업데이트됨",
+      "action_by_actor": "<0>{{action}}</0> ({{name}})",
+      "content_copied_from_version": "v{{version}}에서 콘텐츠를 복사함",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "아티팩트",
@@ -11710,7 +11767,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "승인 필요",
-        "approvals_pending": "승인 대기 중",
         "batch_preview_all": "아래에서 대기 중인 {{count}}건의 호출을 모두 검토하세요. 모두 함께 처리됩니다.",
         "batch_preview_none": "이 호출에 대한 미리 보기를 사용할 수 없습니다.",
         "approve": "승인",
@@ -11727,7 +11783,8 @@
         "tool_call_other": "도구 호출 {{count}}건",
         "trust": "신뢰",
         "trusted": "신뢰됨",
-        "view_full_activity": "전체 활동 보기 →"
+        "view_full_activity": "전체 활동 보기 →",
+        "approvals_pending_count_other": "승인 대기 중 {{count}}건"
       },
       "cronAckBar": {
         "acknowledge": "확인",
@@ -12045,7 +12102,6 @@
         "backend_hiccup_retrying": "연결 불안정 — 재시도 중…",
         "collapse_agent_list": "서브에이전트 목록 접기",
         "expand_agent_list": "서브에이전트 목록 펼치기",
-        "more_running_normally": "나머지는 정상 실행 중…",
         "show_more_running_in_sidebar_other": "사이드바에서 실행 중인 서브에이전트 {{count}}개 더 보기",
         "no_activity_possibly_stalled": "활동 없음 — 멈췄을 수 있습니다",
         "open_in_subagents_sidebar": "{{label}}을(를) 서브에이전트 사이드바에서 열기",
@@ -12074,7 +12130,8 @@
         "chip_done_other": "에이전트 {{count}}개 완료",
         "chip_failed_other": "에이전트 {{count}}개 실패",
         "chip_stopped_other": "에이전트 {{count}}개 중지됨",
-        "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성"
+        "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성",
+        "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",
@@ -13214,7 +13271,6 @@
       "goal_loop_cycle_no_cap": "목표 루프 · 사이클 {{count}} (상한 없음)",
       "goal_loop_interrupted_title": "목표 루프 대기 중 — 이전 턴이 중단되었습니다. 채팅을 재개하거나 다음 주기를 기다리세요",
       "hidden_because_parent_hidden": "상위 폴더가 숨겨져 있어 {{name}}도 숨겨집니다",
-      "hide": "숨기기",
       "hide_folder": "폴더 숨기기",
       "hide_when_empty": "비어 있으면 숨기기",
       "hiding_named_filter": "{{filter}} 숨김 중",
@@ -13310,7 +13366,6 @@
       "show_hidden_folder_other": "숨긴 폴더 {{count}}개 표시",
       "show_only_sessions_tagged": "{{name}} 태그가 지정된 세션만 표시",
       "show_the_folder_list": "폴더 목록 표시",
-      "skip": "건너뛰기",
       "sort_and_filter_sessions": "세션 정렬 및 필터",
       "sort_by": "정렬 기준",
       "sort_created_newest": "생성일 (최신순)",
@@ -13341,8 +13396,8 @@
       "stale_collapse_paused": "일시 중지됨",
       "stale_collapse_paused_hint": "목록이 검색·필터 중이거나 최신순이 아닌 정렬일 때는 일시 중지됩니다.",
       "stale_collapse_row_hidden_other": "휴면 세션 {{count}}개 보기",
-      "stale_collapse_row_hint": "휴면: {{window}} 이상 사용하지 않았습니다. 클릭하면 표시됩니다.",
-      "stale_collapse_row_hint_open": "휴면: {{window}} 이상 사용하지 않았습니다. 클릭하면 숨겨집니다.",
+      "stale_collapse_row_hint": "휴면 세션은 닫히지 않았으며 기록도 그대로 남아 있습니다. {{window}} 이상 사용하지 않아 목록을 짧게 유지하려고 여기에 접어 두었습니다. 클릭하면 표시됩니다. 기간을 바꾸거나 끄려면 검색창 옆 필터 버튼에서 ‘{{setting}}’ 항목을 사용하세요.",
+      "stale_collapse_row_hint_open": "휴면 세션은 닫히지 않았으며 기록도 그대로 남아 있습니다. {{window}} 이상 사용하지 않아 목록을 짧게 유지하려고 여기에 접어 두었습니다. 클릭하면 숨겨집니다. 기간을 바꾸거나 끄려면 검색창 옆 필터 버튼에서 ‘{{setting}}’ 항목을 사용하세요.",
       "stale_collapse_row_shown_other": "휴면 세션 {{count}}개 숨기기",
       "stale_collapse_row_ungrouped": "폴더 밖",
       "stop_filtering_by_tag": "{{name}} 필터 해제",
@@ -13366,7 +13421,6 @@
       "untagged": "+ 태그 없음",
       "untagged_2": "태그 없음",
       "untagged_only": "태그 없음만",
-      "will_be_moved_to_older_sessions": "이전 세션으로 이동됩니다.",
       "yesterday": "어제",
       "new_incognito_chat": "새 시크릿 채팅",
       "new_temporary_chat": "새 임시 채팅",
@@ -13537,7 +13591,11 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "일반",
       "kind_section_mate": "크루메이트에서",
-      "filter_crew_description": "Ultra Mode 채팅만 보기"
+      "filter_crew_description": "Ultra Mode 채팅만 보기",
+      "skip_running_sessions_other": "실행 중인 세션 {{n}}개 건너뛰기",
+      "cleanup_move_count_other": "세션 {{n}}개가 이전 세션으로 이동됩니다.",
+      "show_sessions_count_other": "세션 {{n}}개 표시",
+      "hide_sessions_count_other": "세션 {{n}}개 숨기기"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -13554,6 +13612,7 @@
       "connection_unreachable": "{{provider}}에 연결 상태를 확인하기 위해 접근할 수 없었습니다.",
       "connection_views": "연결 보기",
       "connections": "연결",
+      "mcp_management_heading": "MCP 관리",
       "could_not_load_status": "연결 상태를 불러올 수 없습니다. 카드가 최신 정보가 아닐 수 있습니다.",
       "disconnect": "연결 해제",
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
@@ -14346,9 +14405,6 @@
         "logs": {
           "label": "로그"
         },
-        "mcpPool": {
-          "label": "MCP 관리"
-        },
         "memory": {
           "label": "메모리"
         },
@@ -14601,11 +14657,13 @@
         "related_load_failed": "관련 항목을 불러올 수 없습니다",
         "relations_count": "관계({{count}})",
         "save": "저장",
-        "shared": "공유",
         "summary": "요약",
         "tag1_tag2_tag3": "tag1, tag2, tag3",
         "tags_save_failed": "태그를 저장할 수 없습니다",
-        "unarchive": "보관 해제"
+        "unarchive": "보관 해제",
+        "shared_count_other": "공통 {{n}}개",
+        "status_active": "활성",
+        "status_archived": "보관됨"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 임베딩됨({{pct}}%)",
@@ -14689,7 +14747,17 @@
         "entity_items_load_failed": "이 엔터티의 항목을 불러올 수 없습니다",
         "error_no_reason": "이유 없이 요청이 실패했습니다.",
         "delete_items_permanently_other": "항목 {{count}}개를 영구 삭제하시겠습니까?",
-        "selected_count_other": "{{count}}개 선택됨"
+        "selected_count_other": "{{count}}개 선택됨",
+        "type_design_doc": "설계 문서",
+        "type_runbook": "런북",
+        "type_meeting_notes": "회의록",
+        "type_code_doc": "코드 문서",
+        "type_presentation": "프레젠테이션",
+        "type_report": "보고서",
+        "type_policy": "정책",
+        "type_personal_notes": "개인 메모",
+        "type_external_reference": "외부 참조",
+        "type_document": "문서"
       },
       "itemCard": {
         "copied": "복사했습니다!",
@@ -14928,9 +14996,11 @@
       "pool_warm_hit_rate": "풀 웜 히트율",
       "ram_saved": "절약된 RAM",
       "rss": "RSS",
-      "s": "초",
       "server": "서버",
       "shared_mcp_gateway": "공유 MCP 게이트웨이",
+      "status_active": "활성",
+      "status_stopped": "중지됨",
+      "status_unhealthy": "비정상",
       "with_shared_gateway_pooled": "공유 게이트웨이 사용 (풀링)",
       "without_gateway_per_session_copies": "게이트웨이 없음 (세션별 사본)"
     },
@@ -15088,6 +15158,7 @@
       "diff_env_removed": "제거된 환경 변수: {{names}}",
       "remove_mark": "제거",
       "footprint_failed": "MCP 서버의 메모리 사용량을 읽을 수 없습니다.",
+      "footprint_owner_only": "메모리 수치는 크루 소유자만 볼 수 있습니다.",
       "review_what_approve_does": "승인: 복사본 하나가 모든 채팅을 위해 이것을, 각 채팅의 샌드박스 밖에서 실행합니다. 건너뛰기: 각 채팅 안에서 계속 실행됩니다.",
       "share_risk": "샌드박스 밖에서는 공유 서버가 직접 실행한 프로그램처럼 파일을 읽고 변경할 수 있습니다.",
       "review_when_safe": "직접 추가한 서버이고 표시된 명령이 예상한 것과 같다면 승인하세요."
@@ -16244,7 +16315,6 @@
       "resource_network": "네트워크",
       "sandbox_procs": "샌드박스",
       "session_storage": "세션 스토리지",
-      "session_storage_detail": "세션 {{sessions}}개 · {{reclaimable}} 회수 가능",
       "session_storage_measuring": "측정 중…",
       "threads": "스레드",
       "total": "합계",
@@ -16254,7 +16324,8 @@
       "utilization": "사용률",
       "working_directory": "작업 디렉터리",
       "graph_scale_network": "전체 눈금 {{max}} · 최근 {{seconds}}",
-      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}"
+      "graph_scale_percent": "전체 눈금 100% · 최근 {{seconds}}",
+      "session_storage_detail_other": "세션 {{sessions}}개 · {{reclaimable}} 회수 가능"
     },
     "popoutFrame": {
       "session": "세션",
@@ -19220,7 +19291,6 @@
       "credits_col": "크레딧",
       "credits_this_period": "최근 {{days}}일",
       "daily_p50_trend": "일별 p50 — 위가 콜드, 아래가 웜",
-      "daily_trend_point": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{count}}회",
       "detail_col": "상세",
       "distribution_col": "분포",
       "duration_col": "소요 시간",
@@ -19319,7 +19389,8 @@
       "range_to": "종료 날짜",
       "no_telemetry_in_window": "이 기간({{period}})에 기록된 텔레메트리가 없습니다.",
       "otel_retention_cap": "턴, 지연 시간, 시작 수치는 최근 {{days}}일만 포함합니다. 이전 메트릭은 삭제됩니다(<settingRef/>).",
-      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음"
+      "window_footer_shards_other": "OTEL 섹션 · 기간: {{period}} · 샤드 {{n}}개 · 소스: <dir/> · 로컬 전용, 외부 전송 없음",
+      "daily_trend_point_other": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{n}}회"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",
@@ -19590,7 +19661,6 @@
       "filter_source_mine_description": "크루 관리자에서 직접 만든 크루",
       "filter_source_builtin_description": "{{productName}}에 기본 포함된 크루",
       "filter_source_package_description": "기능 패키지로 설치된 크루",
-      "member_count_filtered": "크루메이트 {{count}}명 중 {{shown}}명",
       "webview_rendering": "게시된 보기 표시 중…",
       "webview_retry": "다시 시도",
       "deploy_title": "클라우드의 내 크루",
@@ -19973,7 +20043,8 @@
       "profile_harness_cannot_start": "여기서는 시작할 수 없습니다.",
       "profile_harness_saved": "저장했습니다. 다음 메시지부터 {{name}}이(가) 이 하네스에서 실행됩니다.",
       "profile_harness_unavailable": "{{name}}은(는) {{harness}}에서 실행되도록 설정되어 있지만 여기서는 시작할 수 없어 채팅과 워커도 시작되지 않습니다. 다른 에이전트 하네스나 상속됨을 선택하세요.",
-      "profile_harness_choose": "에이전트 하네스 선택"
+      "profile_harness_choose": "에이전트 하네스 선택",
+      "member_count_filtered_other": "크루메이트 {{n}}명 중 {{shown}}명"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

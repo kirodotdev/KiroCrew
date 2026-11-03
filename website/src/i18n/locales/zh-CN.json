@@ -876,11 +876,11 @@
           "new_namespace_2": "new-namespace",
           "new_namespace_name": "新 namespace 的名称",
           "pattern_other": "{{count}} 条模式",
-          "pending": "待处理",
           "read_namespace": "查看 namespace {{name}}",
           "invalid_namespace_name": "namespace 名称会用作文件夹名称，因此只能包含小写拉丁字母（a–z）、数字（0–9）、点、短横线或下划线，必须以字母或数字开头和结尾，长度为 2 到 64 个字符。",
           "invalid_namespace_name_char": "namespace 名称中不能使用“{{char}}”。只能使用小写 a–z、0–9、. -⁠ _。",
-          "invalid_namespace_name_letter": "namespace 名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。"
+          "invalid_namespace_name_letter": "namespace 名称中不能使用“{{char}}”（{{script}}，{{code}}）。只能使用小写 a–z、0–9、. -⁠ _。",
+          "pending_count_other": "{{count}} 个待处理"
         },
         "leftRail": {
           "code_review_sage": "Code Review Sage",
@@ -1012,7 +1012,6 @@
         },
         "reportView": {
           "blast_radius": "影响范围：{{scope}}",
-          "blocking": "阻塞项",
           "changes_reviewed_other": "已评审 {{count}} 处改动",
           "clear": "清除",
           "design_gate": "设计闸门 ·",
@@ -1027,10 +1026,11 @@
           "open_the_pull_request": "打开这个 pull request",
           "share": "共享",
           "sharing": "正在共享……",
-          "should_fix": "建议修复",
           "step_problem": "问题",
           "step_solution_fit": "方案契合度",
-          "step_why_it_matters": "为什么重要"
+          "step_why_it_matters": "为什么重要",
+          "blocking_count_other": "{{count}} 个阻塞项",
+          "should_fix_count_other": "{{count}} 个建议修复"
         },
         "reviewChat": {
           "error_generic": "无法打开追问会话。请重试。",
@@ -1067,44 +1067,44 @@
           "delete_review_of": "删除 {{label}} 的评审",
           "delete_this_review": "删除这次评审",
           "delete_this_review_2": "删除这次评审？",
-          "more": "个",
           "needs_review_count_other": "{{count}} 项需要评审",
           "pull_requests": "pull request",
           "review": "评审",
           "review_of": "{{label}} 的评审",
           "review_of_with_more_other": "{{label}} 及另外 {{count}} 个的评审",
-          "worth_a_glance_count_other": "{{count}} 项值得一看"
+          "worth_a_glance_count_other": "{{count}} 项值得一看",
+          "more_count_other": "另外 +{{count}} 个"
         },
         "runDetail": {
           "cancelled_before_any_finished": "它在任何 pull request 完成之前就被取消了。",
           "finished": "完成于",
           "loading_report": "正在加载报告……",
-          "more": "个",
           "nothing_to_report": "没有任何 pull request 完成评审，所以没有可报告的内容。",
           "pull_request_other": "{{count}} 个 pull request",
           "report_appears_when_the_review_finishes": "评审一结束，报告就会出现在这里。",
           "skipped_inflight_other": "有 {{count}} 个 pull request 被跳过了，因为另一次评审已经在处理它们。",
           "started": "开始于",
           "this_review_produced_no_report": "这次评审没有生成报告。",
-          "you_can_leave_this_page_a_notification_will_tell": "你可以离开这个页面——完成时会有通知告诉你。"
+          "you_can_leave_this_page_a_notification_will_tell": "你可以离开这个页面——完成时会有通知告诉你。",
+          "more_count_other": "另外 +{{count}} 个"
         },
         "runList": {
           "new_review": "新建评审"
         },
         "runProgress": {
           "cancel_review": "取消评审",
-          "cancelled": "已取消",
           "cancelling": "正在取消……",
           "elapsed_time": "已用时间",
-          "failed": "失败",
           "median_of_past_runs_of_this_size": "过往同等规模运行的中位数",
           "review_progress": "评审进度",
-          "reviewed": "已评审",
           "reviewers_busy": "{{max}} 个评审器中有 {{busy}} 个在忙",
           "step": "· 第",
           "stops_queued_prs_one_already_being_reviewed_will": "会停下排队的 PR；已经在评审中的那个会跑完。",
           "usually": "通常约",
-          "working": "工作中"
+          "working": "工作中",
+          "reviewed_of_other": "已评审 {{done}} / {{count}}",
+          "failed_count_other": "{{count}} 个失败",
+          "cancelled_count_other": "{{count}} 个已取消"
         },
         "runStatusPill": {
           "cancelled": "已取消",
@@ -2949,7 +2949,6 @@
           "frontier_caption": "新解锁条目的所有阻塞项均已关闭或合并。展开条目查看原因，或打开其依赖树。",
           "focus_caption": "所选条目的完整活跃依赖树。点击任意节点重设根节点，Enter 打开。虚线为推断，删除线为已满足。",
           "focus_empty": "选择一个条目以绘制其依赖树。",
-          "tree_stat": "{{kind}}-{{number}} 的树：{{nodes}} 个节点 · {{edges}} 条活跃边",
           "ghost_satisfied": "已满足",
           "ci_fail": "CI 失败",
           "led_wait": "WAIT",
@@ -2957,7 +2956,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} 的依赖树：{{nodes}} 个节点，{{edges}} 条活跃边",
           "aria_node": "{{kind}}-{{number}}，{{state}}：{{title}}",
           "empty_board": "空板",
           "empty_title": "尚无依赖关系",
@@ -2970,7 +2968,10 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab 对大多数议题没有响应（故障或速率限制）。请稍候再重试。",
           "empty_unavailable_issue_scope": "依赖关系图谱需要开放议题列表，但目前尚不可用。请打开“议题”标签页将其缓存，或查看下方的错误，然后重试。",
           "refresh_failed_stale_graph": "正在显示上次加载的依赖图；最近一次刷新失败。",
-          "retry": "重试"
+          "retry": "重试",
+          "tree_stat_other": "{{kind}}-{{number}} 的树：{{nodes}} 个节点 · {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} 的依赖树：{{nodes}} 个节点，{{edges}}",
+          "live_edges_other": "{{n}} 条活跃边"
         },
         "groupReviewsView": {
           "title": "审查请求",
@@ -3131,6 +3132,7 @@
         "view_list": "平铺列表"
       },
       "preview": {
+        "detailsSummaryFallback": "详情",
         "mermaidError": "无效的 Mermaid 图表——显示其源代码。"
       },
       "row": {
@@ -3346,6 +3348,8 @@
         "allDone": "全部已复核",
         "archive": "归档",
         "archiveAll": "归档其余",
+        "archiveOthers_other": "归档其余 {{count}} 项",
+        "archiveSkipsFiling": "正在提交的条目会被跳过",
         "archivedSection": "已归档",
         "assignedTo": "负责人：{{name}}",
         "backToMeeting": "返回会议",
@@ -3969,7 +3973,6 @@
         "working": "工作中"
       },
       "stats": {
-        "busiest_day": "最话多的一天：{{date}}（{{count}} 句）",
         "companion_days": "陪伴了 {{time}}",
         "drags_other": "被拽了 {{n}} 次",
         "earliest_time": "最早 {{time}} 就起来了",
@@ -3983,7 +3986,8 @@
         "streak": "（连续 {{streak}} 天）",
         "thinking_time": "想了 {{time}}",
         "title": "回忆",
-        "walks_other": "走了 {{n}} 步"
+        "walks_other": "走了 {{n}} 步",
+        "busiest_day_other": "最话多的一天：{{date}}（{{n}} 句）"
       },
       "tip": {
         "bedtime": "试试：“11点提醒我该睡了”",
@@ -5024,14 +5028,14 @@
         },
         "taskList": {
           "done": "已完成",
-          "done_of_total": "已完成 {{done}} / {{total}} 个任务",
           "no_tasks_yet": "还没有任务。设计通过之后，排好顺序的任务清单会出现在这里，你可以逐个运行任务。",
           "pause_the_build_first": "运行单个任务前请先暂停构建",
           "run": "运行",
           "run_only_this_task_and_stop": "只运行此任务，然后停止",
           "run_task": "运行任务：{{task}}",
           "starting": "正在启动…",
-          "task_progress": "任务进度"
+          "task_progress": "任务进度",
+          "done_of_total_other": "已完成 {{done}} / {{total}} 个任务"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "描述你想构建的内容，回答几个问题，然后获得一份经过审阅的方案——需求、设计和任务——供代理执行。",
@@ -5475,7 +5479,6 @@
         "costs_refresh_failed": "最新一次账单读取失败，显示的是缓存数值。"
       },
       "page": {
-        "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥中 {{healthy}} 个正常",
         "refresh": "刷新",
         "health_ok": "正常",
         "health_degraded": "需要处理",
@@ -5528,7 +5531,9 @@
         "remove_account_error": "无法移除该账户。",
         "remove_account_hint": "AWS 中不会有任何改动",
         "forget_key_confirm": "忘记这一行的密钥“{{name}}”？AWS 和你的 AWS CLI 配置不会有任何改动。",
-        "forget_key_action": "忘记密钥"
+        "forget_key_action": "忘记密钥",
+        "totals_summary_other": "{{accounts}} 个账户 · {{keys}}",
+        "keys_healthy_other": "{{n}} 个密钥中 {{healthy}} 个正常"
       },
       "rail": {
         "accounts": "账户与凭证",
@@ -5950,6 +5955,14 @@
       "found_setup_but_could_not_read_it": "{{productName}} 找到了 {{sources}}，但无法读取文件，因此未导入任何内容。",
       "some_setup_could_not_be_read": "{{productName}} 无法读取 {{sources}} —— 下方未列出。",
       "files_could_not_be_read": "无法读取文件",
+      "skip_reason_credentials": "包含凭据，因此保留在原来源中",
+      "skip_reason_too_large": "超出大小或数量上限",
+      "skip_reason_unsupported": "暂不支持",
+      "skip_reason_excluded": "有意未导入",
+      "skip_reason_path_rejected": "路径不被允许（链接，或位于来源之外）",
+      "skip_reason_invalid": "无法读取为有效设置",
+      "skip_reason_other": "已跳过",
+      "resolve_failed_title": "导入已保存，但两者都保留或替换我的未能完成。请在下方重试。",
       "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 {{productName}} 设置不会受到影响。",
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。",
       "import_setup_stage": "导入配置 · 第 {{stage}} 步，共 {{stages}} 步",
@@ -6026,7 +6039,8 @@
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准",
       "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",
       "trusted_channel_base": "已信任 — {{base}} 命令将对 @{{role}} 自动批准，{{productName}} 重启前有效",
-      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效"
+      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效",
+      "title_wants_to_run": "<title/> 请求运行"
     },
     "approvalModePicker": {
       "nudge_body": "在这里可以调整 {{productName}} 的审批模式——选择这里的“信任”后，它在此对话中无需先询问即可工作，随时可以改回。",
@@ -6183,6 +6197,7 @@
       "artifact": "产物：{{slug}}",
       "could_not_render": "无法渲染此产物",
       "image_could_not_be_loaded": "无法加载图片",
+      "view_full_size": "查看原图",
       "no_longer_showing": "此产物已不再显示",
       "rendering": "渲染中…",
       "retry": "重试",
@@ -6583,7 +6598,9 @@
       "copy": "复制",
       "generating": "生成中…",
       "unwrap": "不折行",
-      "wrap": "折行"
+      "wrap": "折行",
+      "code_label": "代码",
+      "code_region": "{{lang}} 代码"
     },
     "blockquote": {
       "copied": "已复制！",
@@ -6704,16 +6721,17 @@
       "empty_comment": "_（空）_",
       "expand_comment": "展开评论",
       "hide_resolved": "隐藏已解决",
-      "messages": "条消息",
       "no_comments_yet": "还没有评论。",
       "no_open_threads": "没有未解决的讨论。",
-      "open": "未解决 ·",
       "reopen": "重新打开",
       "replying_is_github_only_for_now_open_the_merge_r": "目前只有 GitHub 支持回复——打开 merge request 去评论。",
       "resolve": "标记为已解决",
       "resolved": "已解决",
       "show_resolved": "显示已解决",
-      "write_a_comment_to_send": "写一条评论……{{keys}} 发送"
+      "write_a_comment_to_send": "写一条评论……{{keys}} 发送",
+      "open_count_other": "{{count}} 个未解决",
+      "resolved_count_other": "{{count}} 个已解决",
+      "messages_count_other": "{{count}} 条消息"
     },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "对整个产物添加评论…",
@@ -6929,17 +6947,16 @@
       "computing_line_by_line_diff": "正在计算逐行差异…",
       "highlighting": "正在高亮代码…",
       "line_by_line_diff_failed": "无法计算差异",
-      "more": "更多",
       "no_changes": "无更改",
       "open": "打开文件",
       "open_in_side_panel": "在侧边面板中打开 {{path}}",
       "removals_other": "{{count}} 处删除",
-      "show": "展开",
       "show_less": "收起",
       "switch_to_split_view": "切换到分屏视图",
       "switch_to_unified_view": "切换到统一视图",
       "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话产物，而非源文件更改",
-      "toggle_diff": "显示或隐藏 {{path}} 的差异"
+      "toggle_diff": "显示或隐藏 {{path}} 的差异",
+      "show_more_count_other": "展开另外 {{count}} 项"
     },
     "openFileChips": {
       "open_file": "打开文件"
@@ -7779,6 +7796,10 @@
       "contents": "目录",
       "table_of_contents": "目录"
     },
+    "matesDock": {
+      "load_failed": "无法加载你标星的队友。",
+      "reorder_failed": "无法保存队友的新顺序。"
+    },
     "mcpAppFrame": {
       "collapse": "收起",
       "collapse_app": "收起应用",
@@ -8331,7 +8352,8 @@
       "save": "保存",
       "save_edit": "保存修改",
       "send_now": "立即发送",
-      "sub_agent_result_other": "{{count}} 个子代理结果"
+      "sub_agent_result_other": "{{count}} 个子代理结果",
+      "queued_count_other": "{{count}} 条已排队"
     },
     "readingWidthToggle": {
       "title_full": "全宽",
@@ -8944,6 +8966,9 @@
       "group_borders": "边框色",
       "group_status": "状态色",
       "group_text_muted": "文本与次要文本",
+      "json_invalid": "JSON 无效 — 请检查语法后重试。",
+      "json_needs_modes": "JSON 必须包含 “dark” 和 “light” 对象。",
+      "json_needs_name": "JSON 必须包含 “name” 字段。",
       "light_mode_colors": "浅色模式配色",
       "my_custom_theme": "我的自定义主题",
       "name_my_theme_emoji_dark_bg_12141a_light_bg_fafa": "{\n  \"name\": \"My Theme\",\n  \"emoji\": \"✨\",\n  \"dark\": { \"--bg\": \"#12141a\", ... },\n  \"light\": { \"--bg\": \"#fafafa\", ... }\n}",
@@ -8957,6 +8982,7 @@
       "theme_css_help": "粘贴来自 AI 回复或你喜欢的主题中的 CSS 颜色，例如 --bg: #12141a。.dark 或 .light 块内的颜色只设置对应模式，其余颜色同时设置两种模式。未提供的颜色保持不变。",
       "theme_json": "主题 JSON",
       "theme_name": "主题名称",
+      "theme_name_required": "主题名称为必填项。",
       "update_theme": "更新主题",
       "var_accent": "强调色",
       "var_accent_hover": "强调色（悬停）",
@@ -8995,7 +9021,9 @@
       "sounds": "音效",
       "overlays": "叠加层",
       "persona": "角色设定",
-      "save_failed_storage": "无法保存。浏览器存储已满或已关闭。"
+      "save_failed_storage": "无法保存。浏览器存储已满或已关闭。",
+      "theme_topbar_dark": "主题顶栏（深色模式）",
+      "theme_topbar_light": "主题顶栏（浅色模式）"
     },
     "timezoneSelect": {
       "render_timezone": "显示时区"
@@ -10483,6 +10511,30 @@
       "offer_open": "打开 {{host}}",
       "copy_failed": "无法复制。请在应用中选中文字后自行复制。",
       "more_actions": "更多操作"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "应用",
+      "apps_hint": "把选中的文字发给一个应用",
+      "menu_label": "处理选中文字的应用",
+      "close": "关闭",
+      "copy": "复制",
+      "copied": "已复制",
+      "open": "打开 {{host}}",
+      "no_response": "{{app}} 没有响应。",
+      "revoked": "{{app}} 已不能再使用此项。它已被关闭，或其批准已被收回。",
+      "failed": "{{app}} 出错了：{{message}}",
+      "too_short": "“{{title}}”至少需要 {{min}} 个字符，你选了 {{count}} 个。",
+      "copy_failed": "无法复制到剪贴板。",
+      "load_failed": "无法加载处理选中文字的应用。",
+      "loading": "正在加载应用…",
+      "none": "没有应用可处理这段文字。",
+      "retry": "重试",
+      "grant_entry": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符",
+      "grant_entry_copy": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个复制按钮",
+      "grant_entry_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及一个打开链接的按钮",
+      "grant_entry_copy_open": "{{title}}：你在聊天回复中选中的文本，最多 {{max}} 个字符，以及复制和打开按钮"
     }
   },
   "hooks": {
@@ -10887,7 +10939,8 @@
         "keeps_builtin": "它仍是内置应用。",
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
-      "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。"
+      "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
+      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。"
     },
     "appPage": {
       "loading_app": "加载应用…",
@@ -10975,7 +11028,9 @@
       "1_authenticate_to_aws": "1. 登录 AWS",
       "2_enter_the_profile_name_region_below": "2. 在下方填写配置名称和区域",
       "3_apply_the_iam_policy": "3. 应用 IAM 策略",
-      "access_reachable": "：访问可达",
+      "account_short": "账号 {{account}}",
+      "profile_reachable": "{{profile}}：访问可达",
+      "profile_reachable_account": "{{profile}}：访问可达（账号 {{account}}）",
       "account_12_digits_optional_iam_identity_style": "账户（12 位数字，可选 — iam-identity 格式）",
       "active_deployments": "活跃部署",
       "admin": "管理员",
@@ -11157,7 +11212,6 @@
       "back_to_editor": "返回编辑器",
       "back_to_library": "← 返回库",
       "bring_artifact_back_to_this_window": "把产物带回此窗口",
-      "by": "由",
       "cancel": "取消",
       "cancel_esc": "取消 (Esc)",
       "change_how_this_document_is_rendered": "更改此文档的呈现方式",
@@ -11171,7 +11225,6 @@
       "comment_removed": "评论已删除",
       "comment_resolved": "评论已解决",
       "comments": "评论",
-      "content_copied_from_v": "内容复制自 v",
       "copied": "已复制",
       "copy_content": "复制内容",
       "send_to_session": "发送到会话",
@@ -11260,9 +11313,6 @@
       "to_chat_with_the_agent": "与代理聊天",
       "toggle_agent_chat": "切换智能体对话",
       "unsaved_changes": "• 未保存的更改",
-      "updated": "· 更新于",
-      "v": "v",
-      "v_2": "→ v",
       "version": "版本",
       "via_dashboard": "通过仪表板",
       "view_remote": "查看远端",
@@ -11277,7 +11327,14 @@
       "activity_failed_to_load": "活动记录加载失败",
       "sync_status_unavailable": "同步状态不可用",
       "more": "更多",
-      "more_actions": "更多操作"
+      "more_actions": "更多操作",
+      "created_at_value": "创建于 {{date}}",
+      "updated_at_value": "更新于 {{date}}",
+      "action_by_actor": "<0>{{action}}</0>（{{name}}）",
+      "content_copied_from_version": "内容复制自 v{{version}}",
+      "version_label": "v{{version}}",
+      "to_version": "→ v{{version}}",
+      "version_change": "v{{from}} → v{{to}}"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",
@@ -11710,7 +11767,6 @@
       },
       "collapsibleToolGroup": {
         "approval_needed": "需要审批",
-        "approvals_pending": "项待审批",
         "batch_preview_all": "请在下方查看全部 {{count}} 个待处理调用；将一并处理。",
         "batch_preview_none": "此调用没有可用的预览。",
         "approve": "批准",
@@ -11727,7 +11783,8 @@
         "tool_call_other": "{{count}} 次工具调用",
         "trust": "信任",
         "trusted": "已信任",
-        "view_full_activity": "查看完整动态 →"
+        "view_full_activity": "查看完整动态 →",
+        "approvals_pending_count_other": "{{count}} 项待审批"
       },
       "cronAckBar": {
         "acknowledge": "确认",
@@ -12045,7 +12102,6 @@
         "backend_hiccup_retrying": "连接不稳定 — 正在重试…",
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
-        "more_running_normally": "个仍在正常运行…",
         "show_more_running_in_sidebar_other": "在侧边栏中显示另外 {{count}} 个正在运行的子代理",
         "no_activity_possibly_stalled": "无活动 — 可能已停滞",
         "open_in_subagents_sidebar": "在子代理侧边栏中打开 {{label}}",
@@ -12074,7 +12130,8 @@
         "chip_done_other": "{{count}} 个代理已完成",
         "chip_failed_other": "{{count}} 个代理失败",
         "chip_stopped_other": "{{count}} 个代理已停止",
-        "chip_stalled_other": "{{count}} 个代理可能已停滞"
+        "chip_stalled_other": "{{count}} 个代理可能已停滞",
+        "more_running_normally_count_other": "另有 {{count}} 个正常运行中…"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
@@ -13214,7 +13271,6 @@
       "goal_loop_cycle_no_cap": "目标循环 · 第 {{count}} 轮（无上限）",
       "goal_loop_interrupted_title": "目标循环待命 — 上一轮被中断；恢复聊天或等待下一轮",
       "hidden_because_parent_hidden": "{{name}} 已隐藏，因为上级文件夹处于隐藏状态",
-      "hide": "隐藏",
       "hide_folder": "隐藏文件夹",
       "hide_when_empty": "为空时隐藏",
       "hiding_named_filter": "正在隐藏“{{filter}}”",
@@ -13310,7 +13366,6 @@
       "show_hidden_folder_other": "显示 {{count}} 个隐藏的文件夹",
       "show_only_sessions_tagged": "仅显示带有 {{name}} 标签的会话",
       "show_the_folder_list": "展开文件夹列表",
-      "skip": "跳过",
       "sort_and_filter_sessions": "排序和筛选会话",
       "sort_by": "排序方式",
       "sort_created_newest": "创建时间（最新）",
@@ -13341,8 +13396,8 @@
       "stale_collapse_paused": "已暂停",
       "stale_collapse_paused_hint": "列表处于搜索、筛选或非“最新优先”排序时暂停折叠。",
       "stale_collapse_row_hidden_other": "显示 {{count}} 个休眠会话",
-      "stale_collapse_row_hint": "超过 {{window}} 未使用。点击展开。",
-      "stale_collapse_row_hint_open": "超过 {{window}} 未使用。点击收起。",
+      "stale_collapse_row_hint": "休眠会话并未关闭，历史记录也都保留。它们已超过 {{window}} 未使用，为保持列表简短而折叠在这里。点击展开。如需更改时长或关闭此功能，请使用搜索框旁筛选按钮中的“{{setting}}”。",
+      "stale_collapse_row_hint_open": "休眠会话并未关闭，历史记录也都保留。它们已超过 {{window}} 未使用，为保持列表简短而折叠在这里。点击收起。如需更改时长或关闭此功能，请使用搜索框旁筛选按钮中的“{{setting}}”。",
       "stale_collapse_row_shown_other": "隐藏 {{count}} 个休眠会话",
       "stale_collapse_row_ungrouped": "文件夹外",
       "stop_filtering_by_tag": "取消按 {{name}} 筛选",
@@ -13366,7 +13421,6 @@
       "untagged": "+ 无标签",
       "untagged_2": "未标记",
       "untagged_only": "仅无标签",
-      "will_be_moved_to_older_sessions": "将被移至较早的会话。",
       "yesterday": "昨天",
       "new_incognito_chat": "新建隐身对话",
       "new_temporary_chat": "新建临时对话",
@@ -13537,7 +13591,11 @@
       "kind_section_crew": "Ultra Mode",
       "kind_section_normal": "普通",
       "kind_section_mate": "来自队友",
-      "filter_crew_description": "只显示 Ultra Mode 对话"
+      "filter_crew_description": "只显示 Ultra Mode 对话",
+      "skip_running_sessions_other": "跳过 {{n}} 个运行中的会话",
+      "cleanup_move_count_other": "{{n}} 个会话将被移至较早的会话。",
+      "show_sessions_count_other": "显示 {{n}} 个会话",
+      "hide_sessions_count_other": "隐藏 {{n}} 个会话"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -13554,6 +13612,7 @@
       "connection_unreachable": "无法访问 {{provider}} 以检查此连接。",
       "connection_views": "连接视图",
       "connections": "连接",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "无法加载连接状态。卡片信息可能已过期。",
       "disconnect": "断开连接",
       "disconnect_census_incomplete": "由于无法读取某个配置源以排除其他服务器正在使用该授权，已保留存储的授权。请检查服务器配置后再次断开连接。",
@@ -14346,9 +14405,6 @@
         "logs": {
           "label": "日志"
         },
-        "mcpPool": {
-          "label": "MCP 管理"
-        },
         "memory": {
           "label": "记忆"
         },
@@ -14601,11 +14657,13 @@
         "related_load_failed": "无法加载相关条目",
         "relations_count": "关系（{{count}}）",
         "save": "保存",
-        "shared": "共享",
         "summary": "摘要",
         "tag1_tag2_tag3": "标签 1, 标签 2, 标签 3",
         "tags_save_failed": "无法保存标签",
-        "unarchive": "取消归档"
+        "unarchive": "取消归档",
+        "shared_count_other": "{{n}} 个共有",
+        "status_active": "使用中",
+        "status_archived": "已归档"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 已嵌入 ({{pct}}%)",
@@ -14689,7 +14747,17 @@
         "entity_items_load_failed": "无法加载此实体的条目",
         "error_no_reason": "请求失败，未给出原因。",
         "delete_items_permanently_other": "永久删除 {{count}} 个条目？",
-        "selected_count_other": "已选 {{count}} 项"
+        "selected_count_other": "已选 {{count}} 项",
+        "type_design_doc": "设计文档",
+        "type_runbook": "运行手册",
+        "type_meeting_notes": "会议记录",
+        "type_code_doc": "代码文档",
+        "type_presentation": "演示文稿",
+        "type_report": "报告",
+        "type_policy": "策略",
+        "type_personal_notes": "个人笔记",
+        "type_external_reference": "外部参考",
+        "type_document": "文档"
       },
       "itemCard": {
         "copied": "已复制！",
@@ -14928,9 +14996,11 @@
       "pool_warm_hit_rate": "池热命中率",
       "ram_saved": "节省的 RAM",
       "rss": "RSS",
-      "s": "s",
       "server": "服务器",
       "shared_mcp_gateway": "共享 MCP 网关",
+      "status_active": "运行中",
+      "status_stopped": "已停止",
+      "status_unhealthy": "异常",
       "with_shared_gateway_pooled": "使用共享网关（池化）",
       "without_gateway_per_session_copies": "不使用网关（每会话独立副本）"
     },
@@ -15088,6 +15158,7 @@
       "diff_env_removed": "删除环境变量：{{names}}",
       "remove_mark": "移除",
       "footprint_failed": "无法读取 MCP 服务器的内存占用。",
+      "footprint_owner_only": "只有 crew 所有者可以查看内存数据。",
       "review_what_approve_does": "批准：为所有聊天只运行一份，在每个聊天的沙盒之外运行。跳过：它继续在每个聊天里各自运行。",
       "share_risk": "在沙盒之外，共享服务器可以像你自己启动的程序一样读取和修改你的文件。",
       "review_when_safe": "如果服务器是你自己添加的，且显示的命令符合预期，再批准它。"
@@ -16244,7 +16315,6 @@
       "resource_network": "网络",
       "sandbox_procs": "沙箱",
       "session_storage": "会话存储",
-      "session_storage_detail": "{{sessions}} 个会话 · 可回收 {{reclaimable}}",
       "session_storage_measuring": "正在统计…",
       "threads": "线程数",
       "total": "总计",
@@ -16254,7 +16324,8 @@
       "utilization": "利用率",
       "working_directory": "工作目录",
       "graph_scale_network": "满量程 {{max}} · 最近 {{seconds}}",
-      "graph_scale_percent": "满量程 100% · 最近 {{seconds}}"
+      "graph_scale_percent": "满量程 100% · 最近 {{seconds}}",
+      "session_storage_detail_other": "{{sessions}} 个会话 · 可回收 {{reclaimable}}"
     },
     "popoutFrame": {
       "session": "会话",
@@ -19220,7 +19291,6 @@
       "credits_col": "额度",
       "credits_this_period": "最近 {{days}} 天",
       "daily_p50_trend": "每日 p50 — 上为冷启动，下为热启动",
-      "daily_trend_point": "{{date}} · 冷启动 {{cold}} · 热启动 {{warm}} · {{count}} 次启动",
       "detail_col": "明细",
       "distribution_col": "分布",
       "duration_col": "用时",
@@ -19319,7 +19389,8 @@
       "range_to": "结束日期",
       "no_telemetry_in_window": "此时间范围内（{{period}}）没有记录遥测数据。",
       "otel_retention_cap": "轮次、延迟和启动数据仅涵盖最近 {{days}} 天；更早的指标会被删除（<settingRef/>）。",
-      "window_footer_shards_other": "OTEL 部分 · 时间范围：{{period}} · {{n}} 个分片 · 来源：<dir/> · 仅本地，无外发"
+      "window_footer_shards_other": "OTEL 部分 · 时间范围：{{period}} · {{n}} 个分片 · 来源：<dir/> · 仅本地，无外发",
+      "daily_trend_point_other": "{{date}} · 冷启动 {{cold}} · 热启动 {{warm}} · {{n}} 次启动"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",
@@ -19590,7 +19661,6 @@
       "filter_source_mine_description": "你在 Crew 管理器里创建的成员",
       "filter_source_builtin_description": "{{productName}} 自带的成员",
       "filter_source_package_description": "由能力安装包安装的成员",
-      "member_count_filtered": "显示 {{shown}} / {{count}} 位队友",
       "webview_rendering": "正在显示已发布视图…",
       "webview_retry": "重试",
       "deploy_title": "你的团队在云端",
@@ -19973,7 +20043,8 @@
       "profile_harness_cannot_start": "无法在此启动。",
       "profile_harness_saved": "已保存。从下一条消息起，{{name}} 在此运行框架上运行。",
       "profile_harness_unavailable": "{{name}} 设置为使用 {{harness}}，但它在这里无法启动，因此其聊天和工作会话也不会启动。请选择其他代理运行框架，或选择“继承”。",
-      "profile_harness_choose": "选择代理运行框架"
+      "profile_harness_choose": "选择代理运行框架",
+      "member_count_filtered_other": "显示 {{shown}} / {{n}} 位队友"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

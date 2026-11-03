@@ -29,7 +29,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
-import { fmtList } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -262,10 +262,21 @@ export function useMembersPageRosterView({
   // The optimistic flip and its revert are per-ROW functional patches on the
   // roster cache, not a whole-roster snapshot restore: two members starred in
   // quick succession must not have the second's failure undo the first.
+  // An unstar also zeroes `star_order`, as the server does, so the dock order
+  // and its drag writes never read a slot the server has already cleared.
+  // `starOrder` restores the row's slot when a failed unstar is reverted.
   const patchStar = useCallback(
-    (name: string, starred: boolean) =>
+    (name: string, starred: boolean, starOrder?: number) =>
       queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-        rows?.map((r) => (r.name === name ? { ...r, starred } : r)),
+        rows?.map((r) =>
+          r.name !== name
+            ? r
+            : !starred
+              ? { ...r, starred, star_order: 0 }
+              : starOrder === undefined
+                ? { ...r, starred }
+                : { ...r, starred, star_order: starOrder },
+        ),
       ),
     [queryClient],
   )
@@ -295,7 +306,7 @@ export function useMembersPageRosterView({
       // Same reason as onSuccess: a refetch that started after onMutate's
       // cancel must not land its snapshot on top of the final row.
       await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
-      patchStar(m.name, !next)
+      patchStar(m.name, !next, m.star_order)
       // Localized copy, never the raw server text: the client throws the
       // response body (or `HTTP 500`), which is neither translated nor
       // meant for a user. The journaled report is recovered from that
@@ -650,8 +661,9 @@ export function MembersPageRosterColumn({
                 ? '\u2014'
                 : narrowed
                   ? t('pages.membersPage.member_count_filtered', {
-                      shown: sortedMembers.length,
+                      shown: fmtNumber(sortedMembers.length),
                       count: shownMembers.length,
+                      n: fmtNumber(shownMembers.length),
                     })
                   : t('pages.membersPage.member_count', { count: shownMembers.length })}
             </div>

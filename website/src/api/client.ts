@@ -1243,6 +1243,17 @@ const jSlotEnvironment = (r: Response) => parseJson(r, SLOT_ENVIRONMENT_NOT_OWNE
 const SHARED_CREW_PREVIEW_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT_OWNER)
 
+/**
+ * The sixth: `GET /api/members` answering `owner_only` to a caller that is not the dashboard
+ * owner. The left dock's starred-mates group reads the roster on every page, and for a guest
+ * that refusal means "no mates to dock", so journaling it would file one error report per
+ * page load for a guest whose dashboard works. Every other roster reader still receives the
+ * thrown `ApiError` and shows it as before; only the journal entry is skipped. Any other
+ * failure, a 403 without that code included, journals normally.
+ */
+const MEMBERS_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1506,6 +1517,7 @@ const transport: ClientTransport = {
   jCrewBoard,
   jSlotEnvironment,
   jSharedCrewPreview,
+  jMembers,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

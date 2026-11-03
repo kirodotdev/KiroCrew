@@ -46,6 +46,7 @@ const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLaye
 // App-contributed link opening (`contributes.linkOpen`): click detection only; an
 // app's module loads when the user chooses to open a link in it.
 const LinkOpenLayer = lazy(() => import('./linkOpen/LinkOpenLayer'))
+const SelectionActionLayer = lazy(() => import('./selectionActions/SelectionActionLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
@@ -97,6 +98,7 @@ import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
+import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -370,13 +372,15 @@ export default function App() {
    * renders no rail. The Crewmates page hosts it the same way, beside its
    * roster in the drawer over the open chat.
    */
+  // A docked mate's tile is the lit one while its chat is open (see navRail).
+  const { openIsDocked } = useDockMates()
   const railHost = mobileSingle || (isMobile && membersRoute)
   const mobileNavRail = railHost
     ? ({ onActivate }: MobileNavRailOptions) => {
       const railRow = (
         n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
       ) => {
-        const active = navRowActive(n.path)
+        const active = navRowActive(n.path) && !(n.id === 'members' && openIsDocked)
         return (
           <NavItem
             key={n.id}
@@ -455,7 +459,7 @@ export default function App() {
               onClickOverride={libraryNavActive ? onActivate : undefined}
             />
           </>}
-          apps={sortedAppGroup.map(railRow)}
+          apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
           // Pinned above Settings while the rail has room; folded into the Apps
           // scroller (behind a divider) on screens where pinning them would leave
           // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
@@ -557,6 +561,9 @@ export default function App() {
         </Routes>
       </>
     ) : isPopout ? (
+      <>
+      {/* A popped-out chat offers app items on selected text too. */}
+      <Suspense fallback={null}><SelectionActionLayer /></Suspense>
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
@@ -567,9 +574,11 @@ export default function App() {
             stray path to '/', which no longer matches anything here). */}
         <Route path="*" element={<Navigate to={initialPopoutPath} replace />} />
       </Routes>
+      </>
     ) : isEmbed ? (
       <div className="h-screen supports-[height:100dvh]:h-dvh w-screen overflow-hidden bg-bg flex flex-col">
         <KiroCrewNavBridge />
+        <Suspense fallback={null}><SelectionActionLayer /></Suspense>
         <EmbedTabStrip />
         <div className="flex-1 min-h-0">
           <Routes>
@@ -852,6 +861,8 @@ export default function App() {
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
+          {/* The shell's own nav read owns the shared app list here. */}
+          <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

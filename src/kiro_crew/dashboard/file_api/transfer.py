@@ -10,7 +10,7 @@ import mimetypes
 import os
 import threading
 import urllib.parse
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, Literal
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -434,34 +434,54 @@ async def _stream_unscanned_download(
     return resp
 
 
-def _parse_range_header(value: str, size: int) -> tuple[int, int] | None:
-    """Parse a single-range ``bytes=`` header against ``size``.
+def _parse_range_header(value: str, size: int) -> tuple[int, int] | Literal["ignore"] | None:
+    """Parse a single-range ``bytes=`` header against ``size`` (RFC 9110 14.2).
 
-    Returns (start, end) inclusive, or None for an unsatisfiable or
-    malformed header. Multi-range requests are treated as malformed --
-    <audio>/<video> elements only ever issue single ranges, and multipart
-    responses would complicate the reader for no consumer.
+    Returns (start, end) inclusive for a satisfiable range, None for a
+    well-formed but unsatisfiable one (answer 416), or ``"ignore"`` for a header
+    to ignore (answer 200 with the whole body): a malformed one, another unit, or
+    a multi-range request -- <audio>/<video> elements only ever issue single
+    ranges, and multipart responses would complicate the reader for no consumer.
     """
-    if not value.startswith("bytes="):
-        return None
-    spec = value[len("bytes=") :]
+
+    def _range_number(text: str) -> int | None:
+        # ASCII digits only: int() also takes "+5", "1_0" and non-ASCII digits,
+        # none of which is a byte position.
+        text = text.strip()
+        if not text or not text.isascii() or not text.isdigit():
+            return None
+        digits = text.lstrip("0") or "0"
+        # Past any real file size, and below int()'s digit limit, which raises
+        # ValueError on a header of thousands of digits.
+        if len(digits) > 20:
+            return 10**20
+        return int(digits)
+
+    unit, sep, spec = value.partition("=")
+    if not sep or unit.strip().lower() != "bytes":
+        return "ignore"
+    spec = spec.strip()
     if "," in spec or "-" not in spec:
-        return None
+        return "ignore"
     start_s, _, end_s = spec.partition("-")
-    try:
-        if start_s == "":
-            # suffix form: last N bytes
-            suffix = int(end_s)
-            if suffix <= 0:
-                return None
-            start = max(0, size - suffix)
-            end = size - 1
-        else:
-            start = int(start_s)
-            end = int(end_s) if end_s else size - 1
-    except ValueError:
-        return None
-    if start < 0 or start >= size or end < start:
+    if start_s.strip() == "":
+        # suffix form: last N bytes
+        suffix = _range_number(end_s)
+        if suffix is None:
+            return "ignore"
+        if suffix == 0 or size == 0:
+            return None
+        return max(0, size - suffix), size - 1
+    start = _range_number(start_s)
+    if start is None:
+        return "ignore"
+    if end_s.strip():
+        end = _range_number(end_s)
+        if end is None or end < start:
+            return "ignore"
+    else:
+        end = size - 1  # open-ended: to the last byte
+    if start >= size:
         return None
     return start, min(end, size - 1)
 
@@ -619,15 +639,16 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
         start, end = 0, size - 1
         status = 200
         range_header = request.headers.get("Range")
-        if range_header:
-            parsed = _parse_range_header(range_header, size)
-            if parsed is None:
-                _log("denied", path)
-                return web.json_response(
-                    {"error": "range not satisfiable", "code": "bad_range"},
-                    status=416,
-                    headers={"Content-Range": f"bytes */{size}"},
-                )
+        parsed = _parse_range_header(range_header, size) if range_header else "ignore"
+        if parsed is None:
+            _log("denied", path)
+            return web.json_response(
+                {"error": "range not satisfiable", "code": "bad_range"},
+                status=416,
+                headers={"Content-Range": f"bytes */{size}"},
+            )
+        if parsed != "ignore":
+            # A malformed Range is ignored, not refused: the whole body, 200.
             start, end = parsed
             status = 206
 

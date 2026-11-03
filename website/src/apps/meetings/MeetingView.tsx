@@ -132,6 +132,7 @@ export default function MeetingView({
         transcriptFull={transcriptFull}
         provider={config?.task_provider ?? ''}
         filing={pending.filing}
+        filingIds={pending.filingIds}
         onBack={actions.backToMeeting}
         onClose={() => {
           actions.stop()

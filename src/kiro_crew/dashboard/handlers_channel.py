@@ -174,7 +174,7 @@ def _load_presets() -> object:
         parsed = json.loads(read_config_text(path))
         if isinstance(parsed, dict):
             config = parsed
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         # Malformed config — fall through to defaults
         pass
     presets = coerce_config_field(config, "channel_presets", list, _DEFAULT_PRESETS)

@@ -4647,6 +4647,30 @@
     },
     "sendToInstanceSubmenu": {
       "default_badge": "default"
+    },
+    "meetYourMatesIntro": {},
+    "startupVideoModal": {},
+    "selectionActions": {
+      "apps": "Apps",
+      "apps_hint": "Send the selected text to an app",
+      "menu_label": "Apps for the selected text",
+      "close": "Close",
+      "copy": "Copy",
+      "copied": "Copied",
+      "open": "Open {{host}}",
+      "no_response": "{{app}} didn't respond.",
+      "revoked": "{{app}} can no longer use this item. It was turned off or its approval was taken back.",
+      "failed": "{{app}} ran into a problem: {{message}}",
+      "too_short": "{{title}} needs at least {{min}} characters. You selected {{count}}.",
+      "copy_failed": "Couldn't copy to the clipboard.",
+      "load_failed": "Couldn't load the apps for selected text.",
+      "loading": "Loading apps…",
+      "none": "No app has an item for this text.",
+      "retry": "Retry",
+      "grant_entry": "{{title}}: up to {{max}} characters of text you select in chat replies",
+      "grant_entry_copy": "{{title}}: up to {{max}} characters of text you select in chat replies, and a Copy button",
+      "grant_entry_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and an Open link button",
+      "grant_entry_copy_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and Copy and Open buttons"
     }
   },
   "hooks": {
@@ -4904,7 +4928,8 @@
         "keeps_builtin": "It stays a built-in app.",
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
-      "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it."
+      "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
+      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",
@@ -6306,7 +6331,6 @@
       "collapse_hidden_folders": "Collapse hidden folders",
       "creating": "Creating…",
       "folder": "Folder",
-      "hide": "Hide",
       "last_30_days": "Last 30 Days",
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
@@ -6476,6 +6500,7 @@
       "connection_unreachable": "{{provider}} could not be reached to check this connection.",
       "connection_views": "Connection views",
       "connections": "Connections",
+      "mcp_management_heading": "MCP Management",
       "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
       "disconnect": "Disconnect",
       "disconnect_census_incomplete": "The stored grant was kept because a configuration source could not be read to rule out another server using it. Check your server configuration and disconnect again.",
@@ -6757,9 +6782,6 @@
         },
         "logs": {
           "label": "Logs"
-        },
-        "mcpPool": {
-          "label": "MCP Management"
         },
         "memory": {
           "label": "Memory"
@@ -7196,6 +7218,7 @@
       "diff_env_removed": "Env removed: {{names}}",
       "remove_mark": "Remove",
       "footprint_failed": "Could not read how much memory MCP servers use.",
+      "footprint_owner_only": "Memory figures are visible to the crew owner only.",
       "review_what_approve_does": "Approve: one copy runs this for all chats, outside their sandbox. Skip: it keeps running inside each chat.",
       "share_risk": "Outside the sandbox, a shared server can read and change your files, like a program you start yourself.",
       "review_when_safe": "Approve a server if you added it yourself and the command shown is what you expect."

@@ -121,7 +121,7 @@ describe('DetailView — load states', () => {
     expect(await screen.findByRole('heading', { name: 'Ledger design notes' })).toBeInTheDocument()
     expect(screen.getByText('design doc')).toBeInTheDocument()
     expect(screen.getByText(/2026/)).toBeInTheDocument()
-    expect(screen.getByText('active')).toBeInTheDocument()
+    expect(screen.getByText('Active')).toBeInTheDocument()
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 

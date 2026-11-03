@@ -36,7 +36,7 @@ under `scenarios/` says how the lane checks it.
 | Search everywhere & command palette (`search`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Crew Members (`members`) | 4 | 0 | 4 | 0 | 0 | 0 |
 | Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`) | 14 | 2 | 12 | 0 | 0 | 0 |
-| Connections (MCP servers & services) (`connections`) | 2 | 1 | 0 | 0 | 1 | 0 |
+| Connections (MCP servers & services) (`connections`) | 3 | 1 | 1 | 0 | 1 | 0 |
 | Memory, lessons & usage (`memory`) | 6 | 1 | 4 | 0 | 1 | 0 |
 | Knowledge library (`knowledge`) | 7 | 1 | 5 | 0 | 0 | 1 |
 | Artifacts (`artifacts`) | 10 | 1 | 5 | 0 | 3 | 1 |
@@ -61,7 +61,7 @@ under `scenarios/` says how the lane checks it.
 | Settings (`settings`) | 49 | 12 | 29 | 4 | 0 | 4 |
 | Themes (`themes`) | 3 | 0 | 2 | 0 | 1 | 0 |
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
-| Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
+| Developer tools (`developer`) | 11 | 0 | 11 | 0 | 0 | 0 |
 
 Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
@@ -190,6 +190,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
 | P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/capabilities` | connections-two | smoke | 3 |
+| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/capabilities` | connections-two | nightly | 3 |
 
 ## Memory, lessons & usage (`memory`)
 
@@ -436,9 +437,8 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | P2 | `developer-config` | As a developer, I want raw Kiro Crew and agent config editors, so that I can fix a setting no panel exposes. | `/settings/developer` | minimal | nightly | 3 |
 | P2 | `developer-debug-tools` | As a developer, I want diagnostic overlays such as the chat scroll inspector, so that I can debug layout issues. | `/settings/developer` | sessions-a-few | nightly | 3 |
 | P2 | `developer-logs` | As a developer, I want a live gateway log stream with level control, so that I can debug in real time. | `/settings/developer` | minimal | nightly | 3 |
-| P2 | `developer-mcp-pool` | As a developer, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/settings/developer` | connections-two | nightly | 3 |
 | P2 | `developer-memory-graph` | As a developer, I want an entity/relation visualiser over the memory store plus every memory layer and saved lesson, so that I can debug and audit what the agent remembers. | `/settings/developer` | memory-populated | nightly | 3 |
-| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway. | `/settings/developer` | rich | nightly | 5 |
+| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway. | `/settings/developer` | rich | nightly | 5 |
 | P2 | `developer-storage` | As a developer, I want a raw localStorage inspector, so that I can debug client preferences. | `/settings/developer` | minimal | nightly | 2 |
 | P2 | `developer-system` | As a developer, I want host runtime, services, sessions and performance views, so that I can spot resource problems and reclaim session storage. | `/settings/developer` | sessions-long-history | nightly | 3 |
 | P2 | `developer-telemetry` | As a developer, I want startup timings and context traces, so that I can find slow paths. | `/settings/developer` | minimal | nightly | 2 |

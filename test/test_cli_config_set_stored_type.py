@@ -34,7 +34,7 @@ def _run(config_dir: Path, key: str, value: str) -> None:
 def _config(tmp_path: Path, data: dict) -> Path:
     config_dir = tmp_path / ".kirocrew"
     config_dir.mkdir()
-    (config_dir / "config.json").write_text(json.dumps(data))
+    (config_dir / "config.json").write_text(json.dumps(data), encoding="utf-8")
     return config_dir
 
 

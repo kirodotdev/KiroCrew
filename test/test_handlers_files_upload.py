@@ -765,3 +765,89 @@ def test_a_short_name_is_kept_as_it_is() -> None:
 
     assert _fit_stored_name("notes.md") == "notes.md"
     assert _fit_stored_name("é" * 150 + ".txt") == "é" * 98 + ".txt"
+
+
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("cafe\u0301.txt", "caf\u00e9.txt"),  # NFD from macOS: composed, not "cafe_"
+        ("Bjo\u0308rk n\u0303.png", "Bj\u00f6rk_\u00f1.png"),  # every composable accent
+        # A mark with no composed form is replaced as before, so the stored path
+        # still matches the image-path grammar that reads \w.
+        ("\u0939\u093f\u0902\u0926\u0940.png", "\u0939__\u0926_.png"),
+        ("my report (v2).pdf", "my_report__v2_.pdf"),  # replaced exactly as before
+    ],
+    ids=["nfd-latin", "nfd-several", "devanagari-unchanged", "ascii-punctuation"],
+)
+def test_upload_name_composes_accents(filename: str, expected: str) -> None:
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    assert _safe_upload_name(filename) == expected
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["cafe\u0301.png", "\u0939\u093f\u0902\u0926\u0940.png", "\u6587\u4ef6.jpg", "x\u0338.png"],
+)
+def test_a_sanitized_image_name_is_still_read_as_an_image_path(filename: str) -> None:
+    """The stored path must match image_refs, or the picture never reaches the model."""
+    from kiro_crew import image_refs
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    stored = f"/home/u/.kiro/crew/uploads/{'0' * 32}_{_safe_upload_name(filename)}"
+
+    match = image_refs._POSIX_PATH_RE.search(stored)
+    assert match is not None and match.group(1) == stored, ascii(stored)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../../etc/passwd",
+        "..",
+        "a\\b.txt",
+        "..\\..\\x.txt",
+        "x\x00y.txt",
+        "x\ny.txt",
+        "evil\u202etxt.exe",  # right-to-left override
+        "a\u2066b\u2069.txt",  # bidi isolates
+        "a\u200bb.txt",  # zero-width space
+        "\uff0e\uff0e\uff0fx.txt",  # fullwidth dots and solidus
+        "\u0338.txt",  # a combining overlay with no base letter
+    ],
+)
+def test_upload_name_keeping_marks_still_drops_separators_and_controls(
+    filename: str, tmp_path: Path
+) -> None:
+    """Keeping combining marks must not let a separator, control or bidi character through."""
+    import unicodedata
+
+    from kiro_crew.dashboard.file_api.uploads import _safe_upload_name
+
+    out = _safe_upload_name(Path(filename).name)
+
+    assert "/" not in out and "\\" not in out
+    assert not any(unicodedata.category(ch)[0] in "CZ" for ch in out), ascii(out)
+    assert unicodedata.normalize("NFC", out) == out
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    dest = upload_dir / f"{'0' * 32}_{out}"
+    assert dest.resolve().parent == upload_dir.resolve()
+
+
+@pytest.mark.asyncio
+async def test_upload_with_a_decomposed_accent_is_stored_composed(upload_dir: Path, mock_sel) -> None:
+    # Built by hand: a browser sends the name as raw UTF-8, while
+    # aiohttp.FormData would percent-encode it before it reached the handler.
+    body = (
+        b'--b0undary\r\nContent-Disposition: form-data; name="file"; filename="'
+        + "cafe\u0301.txt".encode("utf-8")
+        + b'"\r\nContent-Type: text/plain\r\n\r\nbody\n\r\n--b0undary--\r\n'
+    )
+    headers = {"Content-Type": "multipart/form-data; boundary=b0undary"}
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=body, headers=headers)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    assert Path(stored).name.endswith("caf\u00e9.txt"), ascii(Path(stored).name)

@@ -5,6 +5,8 @@
 // which left staged learnings inert with no way to act on them.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -216,6 +218,16 @@ describe('the rail while Learning is open', () => {
     expect(screen.getByRole('button', { name: 'Read namespace default' })).toBeTruthy()
     expect(screen.getByText(/5 patterns/)).toBeTruthy()
     expect(screen.getByText(/1 pending/)).toBeTruthy()
+  })
+
+  it('counts pending learnings in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      mount()
+      expect(await screen.findByText(/1 ausstehend/)).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('reads the namespace you pick', async () => {

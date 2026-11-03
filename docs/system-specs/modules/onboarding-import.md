@@ -434,6 +434,7 @@ Rules:
   finer-grained per-item choice is a UI concern layered on top: the UI may issue
   several apply requests with different strategies.
 - `rename` lets the user resolve a collision caused by a source edit: a changed skill or MCP server has a different content-derived fingerprint, so it does not match the ledger record for the installed item.
+- In `AgentImportFlow` a resolution (Keep both / Replace mine) is a second apply request. The results screen keeps the last apply that landed on screen while it runs and after it fails, shows that failure there, and holds Import another and Continue until it settles. A scan `skipped` row shows its `reason` code by kind (credentials, a size or count limit, unsupported, excluded, a refused path, invalid, unreadable) in the reader's language, keeping the code on the row's `data-reason`; a reason that is not a code is shown as sent. Every skipped row stays a muted note, a caught failure included, until the scan sends a failed flag (#29216). The failed-resolution notice says the import itself is saved and offers no agent hand-off, which would unmount the only place the remaining conflicts resolve.
 
 ## Idempotency and deduplication
 
