@@ -827,7 +827,11 @@ class TestProviderDefaults:
         """Pins that nothing in ``_to_wire`` needs a custom encoder."""
         from kiro_crew.decisions.impl_jev import _to_wire
 
-        json.dumps(_to_wire("hi", "jev-latest", [CHOICE, URGENT]))
+        wire = _to_wire("hi", "jev-latest", [CHOICE, URGENT])
+        # The body survives a JSON round trip unchanged: no tuple, set or object
+        # that a plain encoder would turn into something else.
+        assert json.loads(json.dumps(wire)) == wire
+        assert set(wire["questions"]) == {CHOICE.id, URGENT.id}
 
 
 # ---------------------------------------------------------------------------
