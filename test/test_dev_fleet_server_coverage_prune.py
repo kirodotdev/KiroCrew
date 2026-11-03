@@ -303,15 +303,20 @@ async def test_prune_candidates_closed_dirty_lands_in_kept_with_loss_counts(monk
 async def test_prunable_passes_full_head_oid_to_pr_status_cached(monkeypatch, tmp_path):
     """Prune cache invalidation uses full commit identity for branch reuse."""
     full_head = "a" * 40
-    cache = AsyncMock(return_value=None)
+    # The cache only knows the PR under the full OID, so the verdict below shows
+    # which identity the lookup used.
+    cache = AsyncMock(
+        side_effect=lambda branch, head: {"state": "CLOSED"} if head == full_head else None
+    )
     monkeypatch.setattr(fleet_state, "_pr_status_cached", cache)
     monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=0))
     monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
     git = AsyncMock(return_value=full_head)
     monkeypatch.setattr(repository, "_git", git)
 
-    await worktree_ops._prunable(str(tmp_path), "feat")
+    out = await worktree_ops._prunable(str(tmp_path), "feat")
 
+    assert out["code"] == "closed_unverified"
     git.assert_awaited_once_with(str(tmp_path), "rev-parse", "HEAD")
     cache.assert_awaited_once_with("feat", full_head)
 

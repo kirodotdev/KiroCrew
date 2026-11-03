@@ -526,9 +526,10 @@ class TestCriticalWrite:
         finally:
             mp.undo()
 
-    def test_non_critical_log_still_swallows_write_error(self, tmp_path: Path) -> None:
+    def test_non_critical_log_still_swallows_write_error(self, tmp_path: Path, caplog) -> None:
         """Regression guard: a NON-critical write must remain best-effort
         (swallow + warn), never propagate to the hot-path caller."""
+        caplog.set_level("WARNING", logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         real_os_open = os.open
 
@@ -543,6 +544,9 @@ class TestCriticalWrite:
             log.log(_make_event(event_id="soft"))  # must NOT raise
         finally:
             mp.undo()
+        # Swallowed, not silent: the dropped write is reported on the SEL logger.
+        warned = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sel"]
+        assert "SEL append failed for 1 events" in warned
 
     def test_log_api_access_critical_raises(self, tmp_path: Path) -> None:
         """``log_api_access(critical=True)`` propagates a write failure."""
