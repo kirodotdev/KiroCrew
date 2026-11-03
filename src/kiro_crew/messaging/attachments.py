@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import re
 import tempfile
@@ -75,6 +76,14 @@ _AUDIO_PREFIXES = ("audio/",)
 _VIDEO_PREFIXES = ("video/",)
 
 _SAFE_SUFFIX_RE = re.compile(r"[^a-zA-Z0-9]")
+#: Longest extension a temp file is given. A real one is a few characters; the
+#: bound keeps a hostile or mistaken hint from making the temp path too long to
+#: create.
+_SUFFIX_MAX = 16
+#: Mimetypes whose stdlib extension a downstream reader rejects: Python maps
+#: ``audio/ogg`` to ``.oga``, which AWS Transcribe refuses, so it is ``.ogg`` as
+#: the Telegram and WhatsApp adapters already pin it.
+_PINNED_MIME_SUFFIX = {"audio/ogg": ".ogg"}
 
 #: Platform-supplied attachment kinds are echoed back to the sender, so they are
 #: reduced to a word first. Brackets and dashes are what a rejection line is
@@ -172,8 +181,25 @@ def safe_suffix(hint: str, default: str = "bin") -> str:
     Strips everything non-alphanumeric so an attachment name can never steer the
     destination path (``../``, absolute paths, NUL bytes).
     """
-    clean = _SAFE_SUFFIX_RE.sub("", hint or "")
+    clean = _SAFE_SUFFIX_RE.sub("", hint or "")[:_SUFFIX_MAX]
     return "." + (clean or default)
+
+
+def attachment_suffix(name: str, mimetype: str = "") -> str:
+    """The temp-file extension for an attachment called *name*.
+
+    The name's own extension when it has one (``report.pdf``), else the one the
+    mimetype implies (``video/mp4`` -> ``.mp4``), else ``.bin``. A name with no
+    dot, or one that only starts with a dot (``.env``), carries no extension, so
+    its whole text is never taken for one.
+    """
+    stem, dot, ext = (name or "").rpartition(".")
+    own = _SAFE_SUFFIX_RE.sub("", ext) if dot and stem else ""
+    if own and len(own) <= _SUFFIX_MAX:
+        return "." + own
+    base = (mimetype or "").split(";", 1)[0].strip().lower()
+    implied = _PINNED_MIME_SUFFIX.get(base) or (mimetypes.guess_extension(base) if base else None)
+    return safe_suffix(implied or "")
 
 
 def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = ()) -> str:
@@ -388,7 +414,13 @@ async def ingest_attachments(
 
             try:
                 dest = await _fetch(
-                    download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1])
+                    download,
+                    att.url,
+                    (
+                        safe_suffix(att.suffix_hint)
+                        if att.suffix_hint
+                        else attachment_suffix(att.name, att.mimetype)
+                    ),
                 )
             except ValueError as exc:
                 # A ValueError is the downloader's OWN refusal, and its message is
