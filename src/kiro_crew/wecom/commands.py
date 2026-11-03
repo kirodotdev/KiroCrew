@@ -17,7 +17,7 @@ overrides the global ``messaging.queue_mode`` for that one message):
 
 ``COMMAND_SPEC`` is the single source of truth behind the ``/help`` card, so the
 card cannot drift from what the dispatcher actually intercepts —
-``test_wecom_commands.py`` pins that both ways.
+``test_wecom_commands_and_ingest.py`` pins that both ways.
 
 Strings here are Chinese, matching the rest of this module and the Weixin
 channel: WeCom is a Chinese-locale platform and its users are the people reading

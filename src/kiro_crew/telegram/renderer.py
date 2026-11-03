@@ -167,7 +167,7 @@ def md_to_telegram_html_safe(text: str) -> str:
     whole function to ``asyncio.to_thread`` -- one hop covering both steps, since
     the redaction is the part that scans.
 
-    ``_html_len`` and the split budget keep using the raw translator: they MEASURE
+    ``_rendered_len`` and the split budget keep using the raw translator: they MEASURE
     the render, and redacting there would size a segment against text that is not
     the text being sent.
     """

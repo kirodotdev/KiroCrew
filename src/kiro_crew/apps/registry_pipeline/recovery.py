@@ -272,7 +272,7 @@ def _restore_moved_aside(
     the retention sweep later deletes.
 
     TWO RENAMES, NO RECURSIVE DELETE, and that shape is what makes it callable from
-    anywhere. Two review rounds pulled in opposite directions here: awaiting is unsound
+    anywhere. Two constraints pull in opposite directions here: awaiting is unsound
     during cancellation (re-entering a loop being torn down surfaces as
     ``RuntimeError: Event loop is closed``), while a synchronous ``rmtree`` of a large
     checkout stalls the gateway's tasks and heartbeat on the loop thread. Both are right,

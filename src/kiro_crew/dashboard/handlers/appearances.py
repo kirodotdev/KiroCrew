@@ -80,13 +80,11 @@ def _sel():
 def _audit(operation: str, outcome: str, request: web.Request, resources: str = "") -> None:
     """Record one decision or outcome on this surface. NEVER raises.
 
-    THE single audit path for this module, and non-fatal by construction. Three
-    successive review rounds found a different missing-or-misplaced obligation on
-    these routes — no CSP on untrusted markup, no accepted-side permission
-    record, an audit that could fail the operation it described — and every one
-    was the same underlying mistake: a new HTTP surface re-deriving per-route
-    obligations by hand instead of inheriting them from one place. So the audit
-    is a chokepoint rather than a call each handler makes its own way.
+    THE single audit path for this module, and non-fatal by construction. A new
+    HTTP surface that re-derives per-route obligations by hand misses one — a CSP
+    on untrusted markup, an accepted-side permission record, an audit that cannot
+    fail the operation it describes — so the audit is a chokepoint rather than a
+    call each handler makes its own way.
 
     Non-fatal is the load-bearing half. A write handler that audits AFTER its
     mutation and lets the audit raise turns a completed delete into a 500: the

@@ -180,7 +180,7 @@ class TurnTracker:
         #: settled by us" from "never opened" -- both find no started record -- so this map
         #: records the calls this tracker has closed. Pruned on the SAME lifecycle as the
         #: open calls: per turn when its record is released, for a closed session's gone
-        #: turns in :meth:`forget_session`. Its CAP is its own (:meth:`_bound_settled`),
+        #: turns in :meth:`forget_session`. Its CAP is its own (:meth:`_bound_settled_locked`),
         #: because a marker accumulates per completed call where an open-call record is
         #: popped by one, so the shared never-evict-a-live-turn rule would leave this map
         #: growing for a whole turn.

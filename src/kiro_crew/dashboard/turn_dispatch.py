@@ -11,8 +11,8 @@ never retrieved" message and a failure indistinguishable from the agent going
 quiet.
 
 The ceiling is an ordinary outcome of long-running work, not a rare edge case: a
-babysit loop polling a pull request reaches it routinely — ten review rounds at
-roughly five minutes of waiting each, plus the tool time in between.
+babysit loop polling a pull request reaches it routinely — ten rounds of feedback
+at roughly five minutes of waiting each, plus the tool time in between.
 
 This module owns the one dispatch path. Keeping the ceiling, the clamp against
 the transport's own timeout, and the visible-card guarantee together here is

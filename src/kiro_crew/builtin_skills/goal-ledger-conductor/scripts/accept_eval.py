@@ -61,19 +61,17 @@ THE SECURITY INVARIANT (deliberate, do not weaken):
 
 A spec is written by a model, and this script runs as an approved wrapper, so a
 spec that could name a command would make this script a general way to run one.
-That is not a hypothetical: an earlier revision accepted a generic ``cmd`` kind
-with an allowlist, and it took three review rounds to establish that no
-constraint on ``argv`` fixes the shape. In order, the allowlist was defeated by
-(1) bare interpreters on it, so ``python -c <payload>`` ran anything;
-(2) a basename-only check, so ``/tmp/git`` executed an arbitrary binary under an
-allowlisted name; and (3) plain ``git reset --hard`` - allowlisted, and
-destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
+No constraint on ``argv`` fixes that shape. A generic ``cmd`` kind with an
+allowlist is defeated by (1) bare interpreters on it, so ``python -c <payload>``
+runs anything; (2) a basename-only check, so ``/tmp/git`` executes an arbitrary
+binary under an allowlisted name; and (3) plain ``git reset --hard`` -
+allowlisted, and destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
 inspects the ``execute_bash`` command string, which here reads
 ``python3 .../accept_eval.py``; the real argv arrives on stdin and is executed
 with ``shell=False``, so a denied command never appears in any string the hook
 examines. A generic executor behind an approved wrapper therefore REMOVES the
 deny floor for whatever it accepts, and the bypass is the wrapper rather than
-the list - which is why the list was dropped and not tightened again.
+the list - which is why there is no command list to tighten.
 
 So every argv this script runs is built HERE, from a fixed template, out of
 narrowly-typed spec fields. ``_SELF_BUILT_COMMANDS`` is the internal assertion

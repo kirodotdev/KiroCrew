@@ -730,8 +730,8 @@ def read_config_toggles() -> Optional[dict[str, int]]:
 
     A key whose field cannot be resolved is omitted rather than reported as 0 —
     a renamed config field must read as a missing series, never as a switch
-    someone turned off. ``test_every_declared_toggle_resolves`` is what keeps
-    that from being a silent hole.
+    someone turned off. ``test_every_declared_toggle_resolves_against_a_real_config``
+    is what keeps that from being a silent hole.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 

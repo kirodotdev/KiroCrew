@@ -166,7 +166,7 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
     → ``KiroCrewConfig.load()``: stat, read, validate), so resolving it inline
     in an ``async def`` would block the event loop for every session sharing
     it. Offload to a thread, matching this module's convention for filesystem
-    work (see ``_resolve_kiro_bin_async``).
+    work (see ``_resolve_kiro_bin_for_spawn``).
     """
     if timeout is not None:
         return float(timeout)

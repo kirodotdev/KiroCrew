@@ -474,7 +474,7 @@ def apply_consolidation(
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
 
-    *kind_routing* is the consolidator's ``_route_by_kind`` answer for this
+    *kind_routing* is the ``route_consolidation_by_kind`` answer for this
     *result*; its bounded log is written inside the same transaction, so a
     replayed span (which returns the stored receipt) logs nothing twice.
     """

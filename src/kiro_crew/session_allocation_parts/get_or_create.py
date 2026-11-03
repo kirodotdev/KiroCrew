@@ -1292,7 +1292,7 @@ async def _get_or_create_impl(
                 # entries down with the session it removes. What a
                 # forced stop parked for this key lands at the queue head;
                 # the drains for those entries' channels are woken by the
-                # release that ends this claim (``_wake_adopted_drains``).
+                # release that ends this claim (it reads ``adopted_parked``).
                 if adopt_parked_queue(session, key):
                     session.adopted_parked = True
                 self._deps.logger.info(
