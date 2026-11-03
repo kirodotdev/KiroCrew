@@ -124,6 +124,13 @@ function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers
   return hit ? { id: hit.id, data: { droppableContainer: hit, value: 0 } } : null
 }
 
+/** Whether a droppable sits inside a collapsed folder body (FolderBody marks a
+ *  closed body `inert`). */
+function isInCollapsedBody(container: DroppableContainer): boolean {
+  const node = container.node?.current as HTMLElement | null | undefined
+  return !!node?.closest?.('[inert]')
+}
+
 /**
  * Folder reordering and session-to-folder assignment share one DndContext but
  * want different collision behavior:
@@ -135,7 +142,14 @@ function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers
 // Exported for a call-site unit test (ChatSidebar.folderNestBandCallSite.test.tsx):
 // asserts the collision uses the MEASURED header height, not
 // FOLDER_HEADER_DROP_BAND — the specific regression codex flagged in review.
-export const sidebarCollision: CollisionDetection = (args) => {
+export const sidebarCollision: CollisionDetection = (rawArgs) => {
+  // A collapsed folder's body stays mounted but `inert` (FolderBody), and the
+  // subfolder blocks inside it still measure at the collapsed body's position:
+  // on top of the folder rows that follow it. Nothing in there is visible or
+  // reachable, so it is never a drop target; left in, a hidden subfolder's
+  // header ties with the visible header painted at the same spot and wins by
+  // registration order, filing the drop into a folder the person cannot see.
+  const args = { ...rawArgs, droppableContainers: rawArgs.droppableContainers.filter(c => !isInCollapsedBody(c)) }
   const activeData = args.active?.data?.current as {
     type?: string
     nested?: boolean
