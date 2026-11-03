@@ -5655,6 +5655,15 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "このクルーメイトのセッションからのツール承認: {{n}}",
+      "trust": "このセッションを信頼",
+      "trust_hint": "これを承認し、{{productName}} が再起動するまでこのセッションが確認なしでツールを実行できるようにします。",
+      "questions_label": "このクルーメイトのセッションからの質問",
+      "question_from": "{{name}} からの質問",
+      "answer_not_sent": "{{name}} への回答は送信されませんでした。{{name}} のメッセージ欄に戻してあります。",
+      "answer_maybe_lost": "{{name}} への回答は届いていない可能性があります。{{name}} を開いて確認してください。"
+    },
     "agentLabel": {
       "builtin_conductor": "コンダクター"
     },

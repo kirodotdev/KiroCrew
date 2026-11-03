@@ -1072,6 +1072,56 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
   })
 
+  it("a session a crewmate dispatched badges that crewmate's row while it waits on the person", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        // A grandchild of oncall's thread, parked on a tool approval.
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', pending_approval: true },
+        // A Crew Mode worker and a plain chat, both waiting: no crewmate's row lights.
+        { key: 'chat-w2', mode: '', running: false, messages: 1, crew_root: 'chat-root', pending_approval: true },
+        { key: 'chat-w3', mode: '', running: false, messages: 1, needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+    // The session's question badges it too, and the badge goes with the prompt.
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-research', needs_input: true },
+      ] as never))
+    })
+    await waitFor(() => expect(screen.getByTestId('member-needs-you').closest('li')).toHaveTextContent('research'))
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+  })
+
+  it("a crewmate's row lights for its waiting session while the crewmate's own tab is closed", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+  })
+
   it('the identity pill shows only the display name, never the ID', async () => {
     await renderPage([
       row({ name: 'kiro', slug: 'kiro', display_name: 'Kiro', bound: true, slot_key: 'member-kiro' }),

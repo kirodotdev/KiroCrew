@@ -5655,6 +5655,15 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "이 크루메이트 세션의 도구 승인: {{n}}",
+      "trust": "이 세션 신뢰",
+      "trust_hint": "이 요청을 승인하고 {{productName}}이(가) 다시 시작될 때까지 이 세션이 묻지 않고 도구를 실행하도록 허용합니다.",
+      "questions_label": "이 크루메이트 세션의 질문",
+      "question_from": "{{name}}의 질문",
+      "answer_not_sent": "{{name}}에게 보낸 답변이 전송되지 않았습니다. {{name}}의 메시지 입력란에 다시 넣어 두었습니다.",
+      "answer_maybe_lost": "{{name}}에게 보낸 답변이 도착하지 않았을 수 있습니다. {{name}}을(를) 열어 확인하세요."
+    },
     "agentLabel": {
       "builtin_conductor": "지휘자"
     },

@@ -5955,6 +5955,15 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "Aprobaciones de herramientas de las sesiones de este compañero: {{n}}",
+      "trust": "Confiar en esta sesión",
+      "trust_hint": "Aprueba esto y deja que esta sesión use herramientas sin preguntar hasta que {{productName}} se reinicie.",
+      "questions_label": "Preguntas de las sesiones de este compañero",
+      "question_from": "{{name}} pregunta",
+      "answer_not_sent": "Tu respuesta a {{name}} no se envió. Está de nuevo en el cuadro de mensaje de {{name}}.",
+      "answer_maybe_lost": "Puede que tu respuesta a {{name}} no haya llegado. Abre {{name}} para comprobarlo."
+    },
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
-import CrewApprovalCards from './crew/CrewApprovalCards'
+import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
+import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
 import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
@@ -1118,6 +1119,16 @@ export default function ChatPane({
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10 dock-inert">
         {crewModeRoot(paneSlot) && <CrewApprovalCards root={slotKey} />}
+        {/* A crewmate thread: the approvals and question cards of the sessions it
+            dispatched (their `mate_root`), so none waits unseen. */}
+        {/* One height budget for both stacks, so together they never push the
+            composer or each other's top out of the pane. */}
+        {paneSlot?.mode === 'member' && (
+          <div className="mx-2 mb-2 max-h-[45vh] overflow-y-auto empty:hidden" data-testid="mate-worker-prompts">
+            <MateApprovalCards root={slotKey} />
+            <MateWorkerQuestions key={slotKey} root={slotKey} />
+          </div>
+        )}
         {paneCrewRoot ? (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />

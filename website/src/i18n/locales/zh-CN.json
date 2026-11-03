@@ -5655,6 +5655,15 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "来自此团队成员会话的工具批准：{{n}}",
+      "trust": "信任此会话",
+      "trust_hint": "批准此请求，并让此会话在 {{productName}} 重启前无需询问即可运行工具。",
+      "questions_label": "来自此团队成员会话的问题",
+      "question_from": "{{name}} 提问",
+      "answer_not_sent": "你给 {{name}} 的回答未发送，已放回 {{name}} 的输入框。",
+      "answer_maybe_lost": "你给 {{name}} 的回答可能未送达。打开 {{name}} 查看。"
+    },
     "agentLabel": {
       "builtin_conductor": "调度者"
     },
