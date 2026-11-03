@@ -286,6 +286,10 @@ async def handle_add_task(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+#: Task keys only the review and file routes write; a field edit leaves them as stored.
+_REVIEW_OWNED = frozenset({"review_status", "filed_ref"})
+
+
 def _patch_task(
     meeting_id: str, task_id: str, fields: dict[str, Any], root: Any
 ) -> dict[str, Any] | None:
@@ -304,7 +308,12 @@ def _patch_task(
         for index, task in enumerate(tasks):
             if task["id"] != task_id:
                 continue
-            merged = {**task, **fields, "id": task_id}
+            # The review state and the filing record are set only by the review and
+            # file routes, which keep a filed task filed. Taking them from a field
+            # edit would let one PATCH reset a filed task to pending, so the File
+            # action creates a second item in the tracker.
+            editable = {key: value for key, value in fields.items() if key not in _REVIEW_OWNED}
+            merged = {**task, **editable, "id": task_id}
             normalized = _normalize_task(merged)
             if normalized is None:
                 raise BadRequest("description cannot be empty")
