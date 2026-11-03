@@ -3139,7 +3139,6 @@
           "frontier_caption": "Los elementos recién desbloqueados tienen todos sus bloqueadores registrados cerrados o fusionados. Abre un elemento para ver el motivo, o abre su árbol.",
           "focus_caption": "Todo el árbol de dependencias activo del elemento seleccionado. Haz clic en un nodo para fijarlo como raíz, Intro lo abre. Discontinuo = inferido, tachado = satisfecho.",
           "focus_empty": "Selecciona un elemento para dibujar su árbol de dependencias.",
-          "tree_stat": "árbol de {{kind}}-{{number}}: {{nodes}} nodos · {{edges}} aristas activas",
           "ghost_satisfied": "satisfecho",
           "ci_fail": "CI FALLIDA",
           "led_wait": "WAIT",
@@ -3147,7 +3146,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Árbol de dependencias de {{kind}}-{{number}}: {{nodes}} nodos, {{edges}} aristas activas",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "PLACA SIN POBLAR",
           "empty_title": "Aún no hay dependencias",
@@ -3160,7 +3158,16 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab no respondió para la mayoría de las incidencias (una interrupción o un límite de tasa). Espera un momento y vuelve a intentarlo.",
           "empty_unavailable_issue_scope": "El grafo de dependencias necesita la lista de incidencias abiertas, que aún no está disponible. Abre la pestaña Incidencias para almacenarla en caché, o revisa el error de abajo, y vuelve a intentarlo.",
           "refresh_failed_stale_graph": "Mostrando el último gráfico cargado; la actualización más reciente falló.",
-          "retry": "REINTENTAR"
+          "retry": "REINTENTAR",
+          "tree_stat_one": "árbol de {{kind}}-{{number}}: {{nodes}} nodo · {{edges}}",
+          "tree_stat_many": "árbol de {{kind}}-{{number}}: {{nodes}} nodos · {{edges}}",
+          "tree_stat_other": "árbol de {{kind}}-{{number}}: {{nodes}} nodos · {{edges}}",
+          "aria_tree_one": "Árbol de dependencias de {{kind}}-{{number}}: {{nodes}} nodo, {{edges}}",
+          "aria_tree_many": "Árbol de dependencias de {{kind}}-{{number}}: {{nodes}} nodos, {{edges}}",
+          "aria_tree_other": "Árbol de dependencias de {{kind}}-{{number}}: {{nodes}} nodos, {{edges}}",
+          "live_edges_one": "{{n}} arista activa",
+          "live_edges_many": "{{n}} aristas activas",
+          "live_edges_other": "{{n}} aristas activas"
         },
         "groupReviewsView": {
           "title": "Solicitudes de revisión",
@@ -5283,14 +5290,16 @@
         },
         "taskList": {
           "done": "Hecha",
-          "done_of_total": "{{done}} de {{total}} tareas hechas",
           "no_tasks_yet": "Todavía no hay tareas. Cuando apruebes el diseño, la lista ordenada de tareas aparecerá aquí y podrás ejecutarlas de una en una.",
           "pause_the_build_first": "Pausa la construcción antes de ejecutar una sola tarea",
           "run": "Ejecutar",
           "run_only_this_task_and_stop": "Ejecutar solo esta tarea y luego parar",
           "run_task": "Ejecutar la tarea: {{task}}",
           "starting": "Iniciando…",
-          "task_progress": "Avance de las tareas"
+          "task_progress": "Avance de las tareas",
+          "done_of_total_one": "{{done}} de {{total}} tarea hecha",
+          "done_of_total_many": "{{done}} de {{total}} tareas hechas",
+          "done_of_total_other": "{{done}} de {{total}} tareas hechas"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Describe lo que quieres construir, responde unas preguntas y obtén un plan revisado — requisitos, diseño y tareas — que un agente puede llevar a cabo.",
@@ -5750,7 +5759,6 @@
         "costs_refresh_failed": "La última lectura de la factura falló. Esta es la cifra en caché."
       },
       "page": {
-        "totals_summary": "{{accounts}} cuentas · {{healthy}} de {{keys}} claves en buen estado",
         "refresh": "Actualizar",
         "health_ok": "Correcto",
         "health_degraded": "Requiere atención",
@@ -5813,7 +5821,13 @@
         "remove_account_error": "No se pudo quitar la cuenta.",
         "remove_account_hint": "Nada cambia en AWS",
         "forget_key_confirm": "¿Olvidar la clave “{{name}}” de esta fila? Nada cambia en AWS ni en tu configuración de la CLI de AWS.",
-        "forget_key_action": "Olvidar clave"
+        "forget_key_action": "Olvidar clave",
+        "totals_summary_one": "{{accounts}} cuenta · {{keys}}",
+        "totals_summary_many": "{{accounts}} cuentas · {{keys}}",
+        "totals_summary_other": "{{accounts}} cuentas · {{keys}}",
+        "keys_healthy_one": "{{healthy}} de {{n}} clave en buen estado",
+        "keys_healthy_many": "{{healthy}} de {{n}} claves en buen estado",
+        "keys_healthy_other": "{{healthy}} de {{n}} claves en buen estado"
       },
       "rail": {
         "accounts": "Cuentas y credenciales",
@@ -16888,7 +16902,6 @@
       "resource_network": "Red",
       "sandbox_procs": "Sandbox",
       "session_storage": "Almacenamiento de sesiones",
-      "session_storage_detail": "{{sessions}} sesiones · {{reclaimable}} recuperables",
       "session_storage_measuring": "Midiendo…",
       "threads": "Hilos",
       "total": "Total",
@@ -16898,7 +16911,10 @@
       "utilization": "Utilización",
       "working_directory": "Directorio de trabajo",
       "graph_scale_network": "Escala completa {{max}} · últimos {{seconds}}",
-      "graph_scale_percent": "Escala completa 100 % · últimos {{seconds}}"
+      "graph_scale_percent": "Escala completa 100 % · últimos {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} sesión · {{reclaimable}} recuperables",
+      "session_storage_detail_many": "{{sessions}} sesiones · {{reclaimable}} recuperables",
+      "session_storage_detail_other": "{{sessions}} sesiones · {{reclaimable}} recuperables"
     },
     "popoutFrame": {
       "session": "Sesión",

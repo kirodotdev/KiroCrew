@@ -3037,7 +3037,6 @@
           "frontier_caption": "新たに解放された項目は、記録上のブロッカーがすべてクローズまたはマージ済みです。項目を開くと理由を展開、またはそのツリーを開きます。",
           "focus_caption": "選択した項目のライブ依存ツリー全体。ノードをクリックで再ルート、Enter で開きます。破線=推定、取り消し線=解消済み。",
           "focus_empty": "項目を選択すると依存ツリーを描画します。",
-          "tree_stat": "{{kind}}-{{number}} のツリー: {{nodes}} ノード · {{edges}} ライブエッジ",
           "ghost_satisfied": "解消済み",
           "ci_fail": "CI 失敗",
           "led_wait": "WAIT",
@@ -3045,7 +3044,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} の依存ツリー: {{nodes}} ノード、{{edges}} ライブエッジ",
           "aria_node": "{{kind}}-{{number}}、{{state}}: {{title}}",
           "empty_board": "未実装ボード",
           "empty_title": "依存関係はまだありません",
@@ -3058,7 +3056,10 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab がほとんどの Issue に応答しませんでした（障害またはレート制限）。少し待ってから再試行してください。",
           "empty_unavailable_issue_scope": "依存関係グラフにはオープンな Issue の一覧が必要ですが、まだ利用できません。Issue タブを開いてキャッシュするか、下のエラーを確認してから、再試行してください。",
           "refresh_failed_stale_graph": "最後に読み込んだグラフを表示しています。直近の更新は失敗しました。",
-          "retry": "再試行"
+          "retry": "再試行",
+          "tree_stat_other": "{{kind}}-{{number}} のツリー: {{nodes}} ノード · {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} の依存ツリー: {{nodes}} ノード、{{edges}}",
+          "live_edges_other": "{{n}} ライブエッジ"
         },
         "groupReviewsView": {
           "title": "レビューリクエスト",
@@ -5115,14 +5116,14 @@
         },
         "taskList": {
           "done": "完了",
-          "done_of_total": "{{total}} 件中 {{done}} 件完了",
           "no_tasks_yet": "タスクはまだありません。設計を承認すると、順序付けられたタスクリストがここに表示され、1 件ずつ実行できます。",
           "pause_the_build_first": "1 件だけ実行する前にビルドを一時停止してください",
           "run": "実行",
           "run_only_this_task_and_stop": "このタスクだけを実行して停止します",
           "run_task": "タスクを実行：{{task}}",
           "starting": "開始中…",
-          "task_progress": "タスクの進捗"
+          "task_progress": "タスクの進捗",
+          "done_of_total_other": "{{total}} 件中 {{done}} 件完了"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "作成したいことを説明し、いくつかの質問に答えて、確認済みのプラン — 要件、デザイン、タスク — を取得すれば、エージェントがそれを実行できます。",
@@ -5478,7 +5479,6 @@
         "costs_refresh_failed": "最新の請求額の読み取りに失敗しました。表示中の数値はキャッシュです。"
       },
       "page": {
-        "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個のうち {{healthy}} 個が正常",
         "refresh": "更新",
         "health_ok": "正常",
         "health_degraded": "要確認",
@@ -5531,7 +5531,9 @@
         "remove_account_error": "アカウントを削除できませんでした。",
         "remove_account_hint": "AWS 側は何も変わりません",
         "forget_key_confirm": "この行のキー「{{name}}」を忘れますか？AWS や AWS CLI の設定は何も変わりません。",
-        "forget_key_action": "キーを忘れる"
+        "forget_key_action": "キーを忘れる",
+        "totals_summary_other": "アカウント {{accounts}} 件 · {{keys}}",
+        "keys_healthy_other": "キー {{n}} 個のうち {{healthy}} 個が正常"
       },
       "rail": {
         "accounts": "アカウントと認証情報",
@@ -16134,7 +16136,6 @@
       "resource_network": "ネットワーク",
       "sandbox_procs": "サンドボックス",
       "session_storage": "セッションストレージ",
-      "session_storage_detail": "{{sessions}} セッション · {{reclaimable}} 回収可能",
       "session_storage_measuring": "計測中…",
       "threads": "スレッド",
       "total": "合計",
@@ -16144,7 +16145,8 @@
       "utilization": "使用率",
       "working_directory": "作業ディレクトリ",
       "graph_scale_network": "フルスケール {{max}} · 直近 {{seconds}}",
-      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}"
+      "graph_scale_percent": "フルスケール 100% · 直近 {{seconds}}",
+      "session_storage_detail_other": "{{sessions}} セッション · {{reclaimable}} 回収可能"
     },
     "popoutFrame": {
       "session": "セッション",

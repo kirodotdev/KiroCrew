@@ -3044,7 +3044,6 @@
           "frontier_caption": "নতুন আনলক আইটেমের নথিভুক্ত সব ব্লকার বন্ধ বা মার্জ হয়েছে। কারণ দেখতে আইটেম খুলুন, বা তার ট্রি খুলুন।",
           "focus_caption": "নির্বাচিত আইটেমের সম্পূর্ণ সক্রিয় নির্ভরতা ট্রি। যেকোনো নোডে ক্লিকে রুট বদলান, Enter-এ খুলুন। ড্যাশ = অনুমিত, কাটা = পূরণ।",
           "focus_empty": "নির্ভরতা ট্রি আঁকতে একটি আইটেম নির্বাচন করুন।",
-          "tree_stat": "{{kind}}-{{number}} এর ট্রি: {{nodes}}টি নোড · {{edges}}টি সক্রিয় প্রান্ত",
           "ghost_satisfied": "পূরণ",
           "ci_fail": "CI ব্যর্থ",
           "led_wait": "WAIT",
@@ -3052,7 +3051,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} এর নির্ভরতা ট্রি: {{nodes}}টি নোড, {{edges}}টি সক্রিয় প্রান্ত",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "খালি বোর্ড",
           "empty_title": "এখনও কোনো নির্ভরতা নেই",
@@ -3065,7 +3063,13 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab বেশিরভাগ ইস্যুর জন্য সাড়া দেয়নি (আউটেজ বা রেট লিমিট)। একটু অপেক্ষা করো, তারপর আবার চেষ্টা করো।",
           "empty_unavailable_issue_scope": "ডিপেন্ডেন্সি গ্রাফের জন্য খোলা ইস্যুর তালিকা দরকার, যা এখনও পাওয়া যাচ্ছে না। ক্যাশ করতে ইস্যু ট্যাব খোলো, বা নিচের ত্রুটি দেখো, তারপর আবার চেষ্টা করো।",
           "refresh_failed_stale_graph": "সর্বশেষ লোড হওয়া গ্রাফ দেখানো হচ্ছে; সাম্প্রতিক রিফ্রেশ ব্যর্থ হয়েছে।",
-          "retry": "আবার চেষ্টা করুন"
+          "retry": "আবার চেষ্টা করুন",
+          "tree_stat_one": "{{kind}}-{{number}} এর ট্রি: {{nodes}}টি নোড · {{edges}}",
+          "tree_stat_other": "{{kind}}-{{number}} এর ট্রি: {{nodes}}টি নোড · {{edges}}",
+          "aria_tree_one": "{{kind}}-{{number}} এর নির্ভরতা ট্রি: {{nodes}}টি নোড, {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} এর নির্ভরতা ট্রি: {{nodes}}টি নোড, {{edges}}",
+          "live_edges_one": "{{n}}টি সক্রিয় প্রান্ত",
+          "live_edges_other": "{{n}}টি সক্রিয় প্রান্ত"
         },
         "groupReviewsView": {
           "title": "রিভিউ অনুরোধ",
@@ -5155,14 +5159,15 @@
         },
         "taskList": {
           "done": "সম্পন্ন",
-          "done_of_total": "{{total}}টির মধ্যে {{done}}টি কাজ সম্পন্ন",
           "no_tasks_yet": "এখনও কোনো কাজ নেই। ডিজাইন অনুমোদন করার পরে সাজানো কাজের তালিকা এখানে আসবে আর তুমি একটি একটি করে কাজ চালাতে পারবে।",
           "pause_the_build_first": "একটি কাজ চালানোর আগে বানানো থামাও",
           "run": "চালাও",
           "run_only_this_task_and_stop": "শুধু এই কাজটি চালাও, তারপর থামো",
           "run_task": "কাজ চালাও: {{task}}",
           "starting": "শুরু হচ্ছে…",
-          "task_progress": "কাজের অগ্রগতি"
+          "task_progress": "কাজের অগ্রগতি",
+          "done_of_total_one": "{{total}}টির মধ্যে {{done}}টি কাজ সম্পন্ন",
+          "done_of_total_other": "{{total}}টির মধ্যে {{done}}টি কাজ সম্পন্ন"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "আপনি কী বানাতে চান তা লিখুন, কয়েকটি প্রশ্নের উত্তর দিন, এবং একটি পর্যালোচিত পরিকল্পনা পান — চাহিদা, ডিজাইন ও কাজ — যা একজন এজেন্ট সম্পন্ন করতে পারে।",
@@ -5614,7 +5619,6 @@
         "costs_refresh_failed": "সর্বশেষ বিল পড়া ব্যর্থ হয়েছে; এটি ক্যাশ করা সংখ্যা।"
       },
       "page": {
-        "totals_summary": "{{accounts}} অ্যাকাউন্ট · {{keys}}টির মধ্যে {{healthy}}টি কী সুস্থ",
         "refresh": "রিফ্রেশ করুন",
         "health_ok": "সুস্থ",
         "health_degraded": "মনোযোগ প্রয়োজন",
@@ -5672,7 +5676,11 @@
         "remove_account_error": "অ্যাকাউন্টটি সরানো যায়নি।",
         "remove_account_hint": "AWS-এ কিছুই বদলাবে না",
         "forget_key_confirm": "এই সারির কী “{{name}}” ভুলে যাবেন? AWS-এ বা আপনার AWS CLI কনফিগারেশনে কিছুই বদলাবে না।",
-        "forget_key_action": "কী ভুলে যান"
+        "forget_key_action": "কী ভুলে যান",
+        "totals_summary_one": "{{accounts}} অ্যাকাউন্ট · {{keys}}",
+        "totals_summary_other": "{{accounts}} অ্যাকাউন্ট · {{keys}}",
+        "keys_healthy_one": "{{n}}টির মধ্যে {{healthy}}টি কী সুস্থ",
+        "keys_healthy_other": "{{n}}টির মধ্যে {{healthy}}টি কী সুস্থ"
       },
       "rail": {
         "accounts": "অ্যাকাউন্ট ও ক্রেডেনশিয়াল",
@@ -16511,7 +16519,6 @@
       "resource_network": "নেটওয়ার্ক",
       "sandbox_procs": "স্যান্ডবক্স",
       "session_storage": "সেশন স্টোরেজ",
-      "session_storage_detail": "{{sessions}}টি সেশন · {{reclaimable}} পুনরুদ্ধারযোগ্য",
       "session_storage_measuring": "পরিমাপ করা হচ্ছে…",
       "threads": "থ্রেড",
       "total": "মোট",
@@ -16521,7 +16528,9 @@
       "utilization": "ব্যবহার হার",
       "working_directory": "কার্যকরী ডিরেক্টরি",
       "graph_scale_network": "পূর্ণ স্কেল {{max}} · সর্বশেষ {{seconds}}",
-      "graph_scale_percent": "পূর্ণ স্কেল 100% · সর্বশেষ {{seconds}}"
+      "graph_scale_percent": "পূর্ণ স্কেল 100% · সর্বশেষ {{seconds}}",
+      "session_storage_detail_one": "{{sessions}}টি সেশন · {{reclaimable}} পুনরুদ্ধারযোগ্য",
+      "session_storage_detail_other": "{{sessions}}টি সেশন · {{reclaimable}} পুনরুদ্ধারযোগ্য"
     },
     "popoutFrame": {
       "session": "সেশন",

@@ -1758,7 +1758,6 @@
           "frontier_caption": "Newly unlocked items have every blocker on record closed or merged. Open an item to expand why, or open its tree.",
           "focus_caption": "The whole live dependency tree of the selected item. Click any node to re-root. Enter opens it. Dashed = inferred, struck = satisfied.",
           "focus_empty": "Select an item to render its dependency tree.",
-          "tree_stat": "tree of {{kind}}-{{number}}: {{nodes}} nodes · {{edges}} live edges",
           "ghost_satisfied": "satisfied",
           "ci_fail": "CI FAIL",
           "led_wait": "WAIT",
@@ -1766,7 +1765,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Dependency tree of {{kind}}-{{number}}: {{nodes}} nodes, {{edges}} live edges",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "UNPOPULATED BOARD",
           "empty_title": "No dependencies yet",
@@ -1779,7 +1777,13 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab didn't answer for most issues (an outage or rate limit). Wait a moment, then retry.",
           "empty_unavailable_issue_scope": "The dependency graph needs the open-issue list, which isn't available yet. Open the Issues tab to cache it, or check the error below, then retry.",
           "refresh_failed_stale_graph": "Showing the last loaded graph; the most recent refresh failed.",
-          "retry": "RETRY"
+          "retry": "RETRY",
+          "tree_stat_one": "tree of {{kind}}-{{number}}: {{nodes}} node · {{edges}}",
+          "tree_stat_other": "tree of {{kind}}-{{number}}: {{nodes}} nodes · {{edges}}",
+          "aria_tree_one": "Dependency tree of {{kind}}-{{number}}: {{nodes}} node, {{edges}}",
+          "aria_tree_other": "Dependency tree of {{kind}}-{{number}}: {{nodes}} nodes, {{edges}}",
+          "live_edges_one": "{{n}} live edge",
+          "live_edges_other": "{{n}} live edges"
         },
         "groupReviewsView": {
           "title": "Review requests",
@@ -3813,14 +3817,15 @@
         },
         "taskList": {
           "done": "Done",
-          "done_of_total": "{{done}} of {{total}} tasks done",
           "no_tasks_yet": "No tasks yet. Once the design is approved, the ordered task list lands here and you can run tasks one at a time.",
           "pause_the_build_first": "Pause the build before running a single task",
           "run": "Run",
           "run_only_this_task_and_stop": "Run only this task, then stop",
           "run_task": "Run task: {{task}}",
           "starting": "Starting…",
-          "task_progress": "Task progress"
+          "task_progress": "Task progress",
+          "done_of_total_one": "{{done}} of {{total}} task done",
+          "done_of_total_other": "{{done}} of {{total}} tasks done"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Describe what you want to build, answer a few questions, and get a reviewed plan — requirements, design, and tasks — that an agent can execute for you.",
@@ -4149,7 +4154,6 @@
         "costs_refresh_failed": "The latest bill read failed; this is the cached figure."
       },
       "page": {
-        "totals_summary": "{{accounts}} accounts · {{healthy}} of {{keys}} keys healthy",
         "refresh": "Refresh",
         "health_ok": "Healthy",
         "health_degraded": "Needs attention",
@@ -4207,7 +4211,11 @@
         "remove_account_error": "The account could not be removed.",
         "remove_account_hint": "Nothing in AWS changes",
         "forget_key_confirm": "Forget this row’s key “{{name}}”? Nothing in AWS or in your AWS CLI configuration changes.",
-        "forget_key_action": "Forget key"
+        "forget_key_action": "Forget key",
+        "totals_summary_one": "{{accounts}} account · {{keys}}",
+        "totals_summary_other": "{{accounts}} accounts · {{keys}}",
+        "keys_healthy_one": "{{healthy}} of {{n}} key healthy",
+        "keys_healthy_other": "{{healthy}} of {{n}} keys healthy"
       },
       "rail": {
         "accounts": "Accounts & credentials",
@@ -9393,7 +9401,6 @@
       "resource_network": "Network",
       "sandbox_procs": "Sandbox",
       "session_storage": "Session storage",
-      "session_storage_detail": "{{sessions}} sessions · {{reclaimable}} reclaimable",
       "session_storage_measuring": "Measuring…",
       "threads": "Threads",
       "total": "Total",
@@ -9403,7 +9410,9 @@
       "utilization": "Utilization",
       "working_directory": "Working directory",
       "graph_scale_network": "Full scale {{max}} · last {{seconds}}",
-      "graph_scale_percent": "Full scale 100% · last {{seconds}}"
+      "graph_scale_percent": "Full scale 100% · last {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} session · {{reclaimable}} reclaimable",
+      "session_storage_detail_other": "{{sessions}} sessions · {{reclaimable}} reclaimable"
     },
     "projectDetailPage": {
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",

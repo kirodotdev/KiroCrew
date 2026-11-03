@@ -974,7 +974,9 @@ describe('accounts pane', () => {
     // The totals strip answers "how much is connected and is it healthy".
     expect(screen.getByTestId('accounts-totals')).toHaveTextContent(
       i18nT('apps.awsControl.page.totals_summary', {
-        accounts: fmtNumber(2), keys: fmtNumber(2), healthy: fmtNumber(1),
+        count: 2,
+        accounts: fmtNumber(2),
+        keys: i18nT('apps.awsControl.page.keys_healthy', { count: 2, n: fmtNumber(2), healthy: fmtNumber(1) }),
       }),
     )
     // The selected account's connection keys live on this pane too.

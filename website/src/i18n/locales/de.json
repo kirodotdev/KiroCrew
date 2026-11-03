@@ -3133,7 +3133,6 @@
           "frontier_caption": "Bei neu freigegebenen Vorgängen ist jeder erfasste Blocker geschlossen oder gemergt. Öffne einen Vorgang für den Grund oder öffne seinen Baum.",
           "focus_caption": "Der gesamte aktive Abhängigkeitsbaum des gewählten Vorgangs. Klick auf einen Knoten setzt ihn als Wurzel, Enter öffnet ihn. Gestrichelt = abgeleitet, durchgestrichen = erfüllt.",
           "focus_empty": "Wähle einen Vorgang, um seinen Abhängigkeitsbaum zu zeichnen.",
-          "tree_stat": "Baum von {{kind}}-{{number}}: {{nodes}} Knoten · {{edges}} aktive Kanten",
           "ghost_satisfied": "erfüllt",
           "ci_fail": "CI FEHLGESCHLAGEN",
           "led_wait": "WAIT",
@@ -3141,7 +3140,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "Abhängigkeitsbaum von {{kind}}-{{number}}: {{nodes}} Knoten, {{edges}} aktive Kanten",
           "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
           "empty_board": "UNBESTÜCKTE PLATINE",
           "empty_title": "Noch keine Abhängigkeiten",
@@ -3154,7 +3152,13 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab hat für die meisten Issues nicht geantwortet (Ausfall oder Rate-Limit). Warte einen Moment und versuche es erneut.",
           "empty_unavailable_issue_scope": "Der Abhängigkeitsgraph braucht die Liste offener Issues, die noch nicht verfügbar ist. Öffne den Tab „Issues“, um sie zwischenzuspeichern, oder sieh dir den Fehler unten an, und versuche es erneut.",
           "refresh_failed_stale_graph": "Der zuletzt geladene Graph wird angezeigt; die jüngste Aktualisierung ist fehlgeschlagen.",
-          "retry": "ERNEUT VERSUCHEN"
+          "retry": "ERNEUT VERSUCHEN",
+          "tree_stat_one": "Baum von {{kind}}-{{number}}: {{nodes}} Knoten · {{edges}}",
+          "tree_stat_other": "Baum von {{kind}}-{{number}}: {{nodes}} Knoten · {{edges}}",
+          "aria_tree_one": "Abhängigkeitsbaum von {{kind}}-{{number}}: {{nodes}} Knoten, {{edges}}",
+          "aria_tree_other": "Abhängigkeitsbaum von {{kind}}-{{number}}: {{nodes}} Knoten, {{edges}}",
+          "live_edges_one": "{{n}} aktive Kante",
+          "live_edges_other": "{{n}} aktive Kanten"
         },
         "groupReviewsView": {
           "title": "Review-Anfragen",
@@ -5244,14 +5248,15 @@
         },
         "taskList": {
           "done": "Fertig",
-          "done_of_total": "{{done}} von {{total}} Aufgaben fertig",
           "no_tasks_yet": "Noch keine Aufgaben. Sobald das Design freigegeben ist, landet die geordnete Aufgabenliste hier und du kannst Aufgaben einzeln ausführen.",
           "pause_the_build_first": "Pausiere die Umsetzung, bevor du eine einzelne Aufgabe ausführst",
           "run": "Ausführen",
           "run_only_this_task_and_stop": "Nur diese Aufgabe ausführen und dann anhalten",
           "run_task": "Aufgabe ausführen: {{task}}",
           "starting": "Wird gestartet…",
-          "task_progress": "Aufgabenfortschritt"
+          "task_progress": "Aufgabenfortschritt",
+          "done_of_total_one": "{{done}} von {{total}} Aufgabe fertig",
+          "done_of_total_other": "{{done}} von {{total}} Aufgaben fertig"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "Beschreiben Sie, was Sie bauen möchten, beantworten Sie einige Fragen und erhalten Sie einen geprüften Plan — Anforderungen, Design und Aufgaben — den ein Agent umsetzen kann.",
@@ -5614,7 +5619,6 @@
         "costs_refresh_failed": "Die letzte Abfrage der Rechnung ist fehlgeschlagen. Dies ist der zwischengespeicherte Wert."
       },
       "page": {
-        "totals_summary": "{{accounts}} Konten · {{healthy}} von {{keys}} Schlüsseln fehlerfrei",
         "refresh": "Aktualisieren",
         "health_ok": "Intakt",
         "health_degraded": "Erfordert Aufmerksamkeit",
@@ -5672,7 +5676,11 @@
         "remove_account_error": "Das Konto konnte nicht entfernt werden.",
         "remove_account_hint": "In AWS ändert sich nichts",
         "forget_key_confirm": "Den Schlüssel „{{name}}“ dieser Zeile vergessen? In AWS und in Ihrer AWS-CLI-Konfiguration ändert sich nichts.",
-        "forget_key_action": "Schlüssel vergessen"
+        "forget_key_action": "Schlüssel vergessen",
+        "totals_summary_one": "{{accounts}} Konto · {{keys}}",
+        "totals_summary_other": "{{accounts}} Konten · {{keys}}",
+        "keys_healthy_one": "{{healthy}} von {{n}} Schlüssel fehlerfrei",
+        "keys_healthy_other": "{{healthy}} von {{n}} Schlüsseln fehlerfrei"
       },
       "rail": {
         "accounts": "Konten & Anmeldedaten",
@@ -16511,7 +16519,6 @@
       "resource_network": "Netzwerk",
       "sandbox_procs": "Sandbox",
       "session_storage": "Sitzungsspeicher",
-      "session_storage_detail": "{{sessions}} Sitzungen · {{reclaimable}} freigebbar",
       "session_storage_measuring": "Wird gemessen…",
       "threads": "Threads",
       "total": "Gesamt",
@@ -16521,7 +16528,9 @@
       "utilization": "Auslastung",
       "working_directory": "Arbeitsverzeichnis",
       "graph_scale_network": "Vollausschlag {{max}} · letzte {{seconds}}",
-      "graph_scale_percent": "Vollausschlag 100 % · letzte {{seconds}}"
+      "graph_scale_percent": "Vollausschlag 100 % · letzte {{seconds}}",
+      "session_storage_detail_one": "{{sessions}} Sitzung · {{reclaimable}} freigebbar",
+      "session_storage_detail_other": "{{sessions}} Sitzungen · {{reclaimable}} freigebbar"
     },
     "popoutFrame": {
       "session": "Sitzung",

@@ -16,7 +16,7 @@ import type { SpecTask } from '../api'
 import { ACCENT, SEL_BG, PULSE_MOTION, Btn } from './shared'
 
 import { i18nT } from '../../../i18n/t'
-import { fmtPercent } from '../../../i18n/format'
+import { fmtNumber, fmtPercent } from '../../../i18n/format'
 
 export interface TaskListProps {
   tasks: SpecTask[]
@@ -60,7 +60,7 @@ export default function TaskList({ tasks, progress, pendingIndex, busy, onRun }:
       <div className="shrink-0 px-4 pt-3.5 pb-2.5 border-b border-border">
         <div className="flex items-center gap-2 mb-1.5">
           <span className="text-[12px] font-semibold text-text">
-            {i18nT('apps.specBuilder.components.taskList.done_of_total', { done, total })}
+            {i18nT('apps.specBuilder.components.taskList.done_of_total', { count: total, done: fmtNumber(done), total: fmtNumber(total) })}
           </span>
           <span className="flex-1" />
           <span className="text-[11px] font-mono text-muted">{fmtPercent(ratio)}</span>

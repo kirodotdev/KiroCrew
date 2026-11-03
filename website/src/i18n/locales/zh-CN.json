@@ -2949,7 +2949,6 @@
           "frontier_caption": "新解锁条目的所有阻塞项均已关闭或合并。展开条目查看原因，或打开其依赖树。",
           "focus_caption": "所选条目的完整活跃依赖树。点击任意节点重设根节点，Enter 打开。虚线为推断，删除线为已满足。",
           "focus_empty": "选择一个条目以绘制其依赖树。",
-          "tree_stat": "{{kind}}-{{number}} 的树：{{nodes}} 个节点 · {{edges}} 条活跃边",
           "ghost_satisfied": "已满足",
           "ci_fail": "CI 失败",
           "led_wait": "WAIT",
@@ -2957,7 +2956,6 @@
           "led_run": "RUN",
           "led_done": "DONE",
           "led_open": "OPEN",
-          "aria_tree": "{{kind}}-{{number}} 的依赖树：{{nodes}} 个节点，{{edges}} 条活跃边",
           "aria_node": "{{kind}}-{{number}}，{{state}}：{{title}}",
           "empty_board": "空板",
           "empty_title": "尚无依赖关系",
@@ -2970,7 +2968,10 @@
           "empty_unavailable_fetch_failed_gitlab": "GitLab 对大多数议题没有响应（故障或速率限制）。请稍候再重试。",
           "empty_unavailable_issue_scope": "依赖关系图谱需要开放议题列表，但目前尚不可用。请打开“议题”标签页将其缓存，或查看下方的错误，然后重试。",
           "refresh_failed_stale_graph": "正在显示上次加载的依赖图；最近一次刷新失败。",
-          "retry": "重试"
+          "retry": "重试",
+          "tree_stat_other": "{{kind}}-{{number}} 的树：{{nodes}} 个节点 · {{edges}}",
+          "aria_tree_other": "{{kind}}-{{number}} 的依赖树：{{nodes}} 个节点，{{edges}}",
+          "live_edges_other": "{{n}} 条活跃边"
         },
         "groupReviewsView": {
           "title": "审查请求",
@@ -5027,14 +5028,14 @@
         },
         "taskList": {
           "done": "已完成",
-          "done_of_total": "已完成 {{done}} / {{total}} 个任务",
           "no_tasks_yet": "还没有任务。设计通过之后，排好顺序的任务清单会出现在这里，你可以逐个运行任务。",
           "pause_the_build_first": "运行单个任务前请先暂停构建",
           "run": "运行",
           "run_only_this_task_and_stop": "只运行此任务，然后停止",
           "run_task": "运行任务：{{task}}",
           "starting": "正在启动…",
-          "task_progress": "任务进度"
+          "task_progress": "任务进度",
+          "done_of_total_other": "已完成 {{done}} / {{total}} 个任务"
         },
         "workspace": {
           "describe_what_you_want_to_build_answer_a_few_que": "描述你想构建的内容，回答几个问题，然后获得一份经过审阅的方案——需求、设计和任务——供代理执行。",
@@ -5478,7 +5479,6 @@
         "costs_refresh_failed": "最新一次账单读取失败，显示的是缓存数值。"
       },
       "page": {
-        "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥中 {{healthy}} 个正常",
         "refresh": "刷新",
         "health_ok": "正常",
         "health_degraded": "需要处理",
@@ -5531,7 +5531,9 @@
         "remove_account_error": "无法移除该账户。",
         "remove_account_hint": "AWS 中不会有任何改动",
         "forget_key_confirm": "忘记这一行的密钥“{{name}}”？AWS 和你的 AWS CLI 配置不会有任何改动。",
-        "forget_key_action": "忘记密钥"
+        "forget_key_action": "忘记密钥",
+        "totals_summary_other": "{{accounts}} 个账户 · {{keys}}",
+        "keys_healthy_other": "{{n}} 个密钥中 {{healthy}} 个正常"
       },
       "rail": {
         "accounts": "账户与凭证",
@@ -16134,7 +16136,6 @@
       "resource_network": "网络",
       "sandbox_procs": "沙箱",
       "session_storage": "会话存储",
-      "session_storage_detail": "{{sessions}} 个会话 · 可回收 {{reclaimable}}",
       "session_storage_measuring": "正在统计…",
       "threads": "线程数",
       "total": "总计",
@@ -16144,7 +16145,8 @@
       "utilization": "利用率",
       "working_directory": "工作目录",
       "graph_scale_network": "满量程 {{max}} · 最近 {{seconds}}",
-      "graph_scale_percent": "满量程 100% · 最近 {{seconds}}"
+      "graph_scale_percent": "满量程 100% · 最近 {{seconds}}",
+      "session_storage_detail_other": "{{sessions}} 个会话 · 可回收 {{reclaimable}}"
     },
     "popoutFrame": {
       "session": "会话",
