@@ -347,6 +347,104 @@ def _load_overlay_for_agent(
     return None
 
 
+#: The agent whose overlay carries the canonical control-plane stubs. Crew installs
+#: it on every host, and its spec always declares both control-plane servers.
+_CONTROL_PLANE_SOURCE_AGENT = "kirocrew"
+
+
+def _crewmate_control_plane_overlay(
+    overlay_dir: Path,
+    agent: str,
+    work_dir: str | Path | None = None,
+    markdown_specs: bool = False,
+    dispatchable_only: bool = True,
+) -> dict[str, Any] | None:
+    """Control-plane stubs for a crewmate agent the rewriter never sees, or ``None``.
+
+    The rewriter only walks the user-level agents folder (``~/.kiro/agents``), so a
+    crewmate's custom agent in ``<kiro home>/mates/agents/`` has no overlay. Its spec
+    still declares Crew's own control-plane servers, and without a stub for them the
+    mirror places the raw ``kirocrew mcp-core`` child inside the harness. On an
+    enforced harness whose credential mask hides ``<crew>/trust`` and ``<crew>/run``
+    (deepseek, pi, codex, goose, opencode, copilot) that child cannot read the SEL
+    HMAC key or the gateway secret, so ``tools/list`` fails and the session never
+    starts, even with the servers listed in ``mcp_gateway.stub_servers``.
+
+    The control plane is agent-independent by construction: the rewriter replaces
+    those entries from ``managed_mcp_spec_entry`` (Crew's own command, args and env),
+    and each call is attributed by the per-session stub token
+    (:func:`attach_stub_session_token`), not by the agent named in the overlay. So
+    the canonical agent's wrapped control-plane entries serve a crewmate session as
+    well. Only names the crewmate spec itself declares are returned, only wrapped
+    ones, and never for a project-shadowed agent (the same guard
+    :func:`_load_overlay_for_agent` applies). Fail-soft: any read error yields
+    ``None``, which is today's unpooled behaviour.
+    """
+    if agent == _CONTROL_PLANE_SOURCE_AGENT:
+        return None
+    if _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only) is not None:
+        return None
+    try:
+        from kiro_crew.config.paths import mate_agents_dir  # function-local: import cycle
+
+        mate_spec_path = mate_agents_dir() / f"{agent}.json"
+        if not mate_spec_path.is_file():
+            return None
+        mate_spec = json.loads(mate_spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        logger.debug("MCP-gateway: cannot read crewmate spec for %r", agent, exc_info=True)
+        return None
+    declared = mate_spec.get("mcpServers") if isinstance(mate_spec, dict) else None
+    if not isinstance(declared, dict):
+        return None
+    wanted = set(declared) & set(CONTROL_PLANE_SERVERS)
+    if not wanted:
+        return None
+    base = _load_overlay_for_agent(
+        overlay_dir, _CONTROL_PLANE_SOURCE_AGENT, None, markdown_specs, dispatchable_only
+    )
+    servers = base.get("mcpServers") if isinstance(base, dict) else None
+    if not isinstance(servers, dict):
+        return None
+    picked = {
+        name: entry
+        for name, entry in servers.items()
+        if name in wanted
+        and isinstance(entry, dict)
+        and (entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY))
+    }
+    if not picked:
+        return None
+    logger.debug(
+        "MCP-gateway: crewmate agent %r has no overlay; serving its control plane (%s) "
+        "from the %r overlay's broker stubs",
+        agent,
+        ", ".join(sorted(picked)),
+        _CONTROL_PLANE_SOURCE_AGENT,
+    )
+    return {"name": agent, "mcpServers": picked}
+
+
+def _resolve_session_overlay(
+    overlay_dir: Path,
+    agent: str,
+    work_dir: str | Path | None = None,
+    markdown_specs: bool = False,
+    dispatchable_only: bool = True,
+) -> dict[str, Any] | None:
+    """The overlay both public entry points read, so they cannot disagree.
+
+    The agent's own overlay when it has one; otherwise, for a crewmate agent, the
+    control-plane stubs from :func:`_crewmate_control_plane_overlay`.
+    """
+    spec = _load_overlay_for_agent(overlay_dir, agent, work_dir, markdown_specs, dispatchable_only)
+    if spec is not None:
+        return spec
+    return _crewmate_control_plane_overlay(
+        overlay_dir, agent, work_dir, markdown_specs, dispatchable_only
+    )
+
+
 def _registry_ceiling_exemptions() -> frozenset[str] | None:
     """Return the names a broker stub may still be injected under, or ``None``
     when the registry ceiling does not apply at all.
@@ -431,7 +529,7 @@ def pooled_session_servers(
     """
     if not overlay_dir or not agent:
         return []
-    spec = _load_overlay_for_agent(
+    spec = _resolve_session_overlay(
         Path(overlay_dir), agent, work_dir, markdown_specs, dispatchable_only
     )
     if not isinstance(spec, dict):
@@ -491,7 +589,7 @@ def injection_server_names(
     """
     if not overlay_dir or not agent:
         return frozenset()
-    spec = _load_overlay_for_agent(
+    spec = _resolve_session_overlay(
         Path(overlay_dir), agent, work_dir, markdown_specs, dispatchable_only
     )
     if not isinstance(spec, dict):
