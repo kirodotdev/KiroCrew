@@ -178,6 +178,11 @@ export default function McpCustomServerModal({ open, onClose, editName, askAgent
     mutationFn: () => api.mcpCustomAdd(parsed!.ok ? parsed!.servers : {}, enableNow),
     onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+      // MCP Management (#24920) now shares the MCP Servers panel and reads its
+      // own ['mcpGatewayServers'] under staleTime: Infinity, so without this a
+      // newly installed server has no Management row or stub control until a
+      // reload. Same for the edit path below.
+      queryClient.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
       if (agentSpecNotRewritten(r)) setNotApplied(true)
       else onClose()
     },
@@ -194,6 +199,7 @@ export default function McpCustomServerModal({ open, onClose, editName, askAgent
     mutationFn: () => api.mcpCustomUpdate(editName!, parsed!.ok ? parsed!.servers[editName!] : {}),
     onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+      queryClient.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
       if (agentSpecNotRewritten(r)) setNotApplied(true)
       else onClose()
     },
