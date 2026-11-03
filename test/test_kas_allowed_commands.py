@@ -83,6 +83,10 @@ def _judge(event: AcpEvent, patterns: list[str], **surface: Any):
         ("^make test$", "make test"),
         (r"make -C \./sub", "make -C ./sub"),
         ("git .* --stat", "git diff HEAD --stat"),
+        # A grouping character inside a quoted argument is plain text to the shell.
+        ("git commit -m .*", 'git commit -m "docs(skills): weekly"'),
+        ("git commit -m .*", "git commit -m 'fix(gate): {x}'"),
+        ("git (commit|status)( .*)?", "git status"),
     ],
 )
 def test_a_command_an_allowed_pattern_matches_is_answered_without_a_prompt(
@@ -126,6 +130,18 @@ def test_a_command_no_pattern_fullmatches_still_prompts(pattern: str, command: s
         "git status & sleep 1",
         "git status (x)",
         "git status {a,b}",
+        'git status "(x)" (y)',
+        'git status "(x)',
+        "git status '(x)\"",
+        'git status \\"(x)\\"',
+        # PowerShell reads typographic quotes as quotes too: each one closes or
+        # reopens the ASCII-quoted string, leaving the subexpression live.
+        'git status "x\u201c (calc) \u201cy"',
+        "git status 'x\u2019 (calc) \u2018y'",
+        'git status "x\u201e (calc) \u201dy"',
+        'git status "(x)"; curl x',
+        'git status "$(whoami)"',
+        "git status '`whoami`'",
         "git status\nmake",
     ],
 )
@@ -213,12 +229,38 @@ def test_only_the_subset_both_engines_read_alike_is_kept() -> None:
         None,
         # Rust reads a POSIX class; Python reads a set of the characters `[:alph`.
         "rm [[:alpha:]]+",
-        # Nested repetition, which Python's engine backtracks on without bound.
-        "echo (a+)+",
-        "make (all|test)",
+        "rm [[:alpha:]]",
         r"ls \d+",
-        "make ?",
-        "a.b",
+        r"ls \w",
+        r"ls \b",
+        "make a{2}",
+        "make a{2,}",
+        "make a*?",
+        "make a+*",
+        "*make",
+        "make (*a)",
+        "make (a|*b)",
+        "(?i)make",
+        "(?P<n>make)",
+        "make)",
+        "make]",
+        "a^b",
+        "a$b",
+        "[]a]",
+        "[]",
+        "[^]",
+        "[a-c-e]",
+        "[z-a]",
+        "[a&&b]",
+        "[a--b]",
+        "[a~~b]",
+        "[ab",
+        "x" + "(" * 33 + ")" * 33,
+        # Rust escapes only ASCII punctuation, and reads \< \> as word boundaries.
+        "touch [^\\<]+",
+        "touch (\\>|x)",
+        "touch [^\\\u2603]+",
+        "touch (\\\u201c|x)",
         "rm scratch\u00a0",
         "git\tstatus",
         "ls\x00",
@@ -226,19 +268,94 @@ def test_only_the_subset_both_engines_read_alike_is_kept() -> None:
         assert allowed_command_pattern(bad) is None, bad
 
 
-@pytest.mark.parametrize(
-    ("pattern", "command"),
-    [
-        ("rm [[:alpha:]]+", "rm a]"),
-        ("make (a+)+", "make " + "a" * 32 + "!"),
-    ],
-)
-def test_a_pattern_outside_the_subset_grants_nothing(pattern: str, command: str) -> None:
-    """Python would read the first one wider than kiro-cli does, and stall on the second."""
-    event = _shell(command)
-    event.spec_granted_commands = (pattern,)
+def test_a_pattern_outside_the_subset_grants_nothing() -> None:
+    """Python would read a POSIX class wider than kiro-cli does."""
+    event = _shell("rm a]")
+    event.spec_granted_commands = ("rm [[:alpha:]]+",)
     verdict = HookManager(HooksConfig()).on_tool_call(event.title, **hook_gate_kwargs(event))
     assert verdict.action != TOOL_AUTO_APPROVE
+
+
+@pytest.mark.parametrize(
+    ("pattern", "command", "granted"),
+    [
+        ("make (all|test)", "make test", True),
+        ("make (all|test)", "make tests", False),
+        ("make (?:all|test)", "make all", True),
+        ("make ?", "make", True),
+        ("make ?", "make  ", False),
+        ("a.b", "axb", True),
+        ("a.b", "ab", False),
+        ("ls [A-Za-z0-9_./-]+", "ls src/kiro_crew-x.py", True),
+        ("ls [A-Za-z0-9_./-]+", "ls src/kiro crew", False),
+        ("ls [^ ]+", "ls a b", False),
+        (r"ls [\]\-]+", "ls -]", True),
+        ("ls [-a]+", "ls a-a", True),
+        ("ls [a-]+", "ls -a", True),
+        ("ls (-a|-l)*", "ls -a-l-a", True),
+        ("ls (-a|-l)*", "ls ", True),
+        ("git status|ls", "ls", True),
+        ("git status|ls", "git status", True),
+        ("git status|ls", "git status ls", False),
+        ("make (a+)+", "make aaaa", True),
+    ],
+)
+def test_classes_groups_alternation_and_repeats_are_read_like_kiro_cli(
+    pattern: str, command: str, granted: bool
+) -> None:
+    from kiro_crew.platform.allowed_commands import matches, parse
+
+    parsed = parse(pattern)
+    assert parsed is not None and parsed.program is not None
+    assert matches(parsed, command) is granted
+    verdict = _judge(_shell(command), [pattern])
+    assert (verdict.tier == "spec-builtin-grant") is granted
+
+
+@pytest.mark.parametrize("pattern", ["make (a+)+", "make (a*)*(a|aa)*", "make ((a|aa)*)*"])
+def test_nested_repetition_matches_in_linear_time(
+    pattern: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python's engine backtracks on these without bound; the automaton visits a
+    number of states linear in the command, so a budget of a few states per
+    character is enough to reach the answer both ways."""
+    from kiro_crew.platform import allowed_commands
+
+    parsed = allowed_commands.parse(pattern)
+    assert parsed is not None and parsed.program is not None
+    command = "make " + "a" * 4000
+    monkeypatch.setattr(
+        allowed_commands, "_MAX_MATCH_STEPS", (len(parsed.program) + 1) * (len(command) + 1)
+    )
+    assert allowed_commands.matches(parsed, command)
+    assert not allowed_commands.matches(parsed, command + "!")
+
+
+def test_a_match_past_the_step_budget_grants_nothing() -> None:
+    """A costly entry spends one shared budget; past it nothing more matches."""
+    from kiro_crew.platform import allowed_commands
+
+    costly = "(" + "|".join(["."] * 500) + ")*x"
+    command = "a" * 4000 + "x"
+    assert allowed_commands.parse(costly) is not None
+    assert not allowed_commands.matches_any([costly, "a+x"], command)
+    # Alone, the cheap entry matches; a literal entry never draws on the budget.
+    assert allowed_commands.matches_any(["a+x"], command)
+    assert allowed_commands.matches_any([costly, "a.*x"], command)
+
+
+def test_a_wide_class_draws_on_the_shared_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each range a class compares costs a step, so 64 wide classes cannot run
+    unbounded work under a budget that counts only states."""
+    from kiro_crew.platform import allowed_commands
+
+    wide = "echo ([^" + "a-b" * 330 + "])*"
+    command = "echo " + "z" * 100
+    parsed = allowed_commands.parse(wide)
+    assert parsed is not None and allowed_commands.matches(parsed, command)
+    # 100 class tests of 330 ranges each need about 33,000 steps; 10,000 is short.
+    monkeypatch.setattr(allowed_commands, "_MAX_MATCH_STEPS", 10_000)
+    assert not allowed_commands.matches(parsed, command)
 
 
 @pytest.mark.parametrize(
@@ -268,7 +385,7 @@ def test_matching_is_greedy_wildcards_between_literals() -> None:
     from kiro_crew.platform.allowed_commands import matches, parse
 
     segs = parse("git .* --stat")
-    assert segs == ("git ", " --stat")
+    assert segs.segments == ("git ", " --stat")
     assert matches(segs, "git diff --stat")
     assert not matches(segs, "git --stat")
     assert matches(parse("a.*b.*c"), "axbyc")

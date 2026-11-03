@@ -646,8 +646,11 @@ def register_servers_for_cc(
     if mcp_json_path.is_file():
         try:
             text = mcp_json_path.read_text(encoding="utf-8")
-        except OSError:
-            text = ""
+        except (OSError, UnicodeDecodeError):
+            # Unreadable is not empty: writing the discovered servers over it
+            # would replace every entry the user has there.
+            logger.warning("Not registering MCP servers in %s: it cannot be read", mcp_json_path)
+            return False
         if has_json_comments(text):
             # Written back as plain JSON below, which would drop the comments.
             logger.warning(
@@ -656,9 +659,20 @@ def register_servers_for_cc(
             )
             return False
         try:
-            existing = loads_user_json(text)
+            loaded = loads_user_json(text)
         except json.JSONDecodeError:
-            existing = {}
+            loaded = None
+        if not isinstance(loaded, dict) or not isinstance(
+            loaded.setdefault("mcpServers", {}), dict
+        ):
+            # The user's text, not an empty document: refuse rather than
+            # replace it with one holding only the discovered servers.
+            logger.warning(
+                "Not registering MCP servers in %s: it is not an MCP config document",
+                mcp_json_path,
+            )
+            return False
+        existing = loaded
 
     mcp = existing.setdefault("mcpServers", {})
     changed = False

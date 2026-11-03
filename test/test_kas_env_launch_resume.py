@@ -1,6 +1,6 @@
-"""A resumed KAS session's launch snapshots go with the session.
+"""A KAS session's hoisted launch snapshots go with the session.
 
-``session/load`` hoists a launcher entry out of the agent batch into the
+``session/new`` hoists a builtin app server the same way. ``session/load`` hoists a launcher entry out of the agent batch into the
 session-level array (``kas_agents.hoist_servers_for_session(...,
 include_user_servers=True)``), and the batch the handle registers then lacks the
 snapshot that projection wrote. These tests drive the real ``load_session``
@@ -21,10 +21,11 @@ from acp_runtime_helpers import _make_runtime
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD
+from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD, METHOD_SESSION_NEW
 
 SESSION = "dashboard_chat-26256-resume"
 SERVER = "canary-resume-26256"
+APP_SERVER = "mochi:mochi"
 
 
 @pytest.fixture
@@ -132,4 +133,49 @@ async def test_an_mcp_reinjection_keeps_the_old_handles_snapshot_for_shutdown(
     await _reinject(provider)
     assert first <= set(provider._handle.kas_launch_snapshots), "carried across the swap"
     await _shutdown(provider, monkeypatch)
+    assert _snapshots(home) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_new_sessions_hoisted_app_server_snapshot_is_removed_at_shutdown(
+    tmp_path, home, monkeypatch
+):
+    """``session/new`` hoists a builtin app server out of the batch, so the name
+    of the snapshot its projection wrote has to be read before that hoist."""
+    script = tmp_path / "app_server.py"
+    script.write_text("pass\n", encoding="utf-8")
+    spec = {
+        "mcpServers": {
+            APP_SERVER: {
+                "command": sys.executable,
+                "args": [str(script)],
+                "env": {"MOCHI_ENDPOINT": "https://mochi-28835.invalid/v1"},
+            }
+        }
+    }
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "sid-new", "modes": {"currentModeId": "kirocrew"}}
+        return {}
+
+    async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        return SessionExtras(
+            custom_agents=[to_client_custom_agent(agent, spec, "p", session_key=SESSION)],
+            app_launches={APP_SERVER: {"command": sys.executable, "args": [str(script)]}},
+        )
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
+    handle = await rt.create_session(
+        cwd=str(tmp_path), agent="kirocrew", mcp_servers=[], session_key=SESSION
+    )
+    written = _snapshots(home)
+    assert len(written) == 1
+    registered = [a.get("mcpServers", {}) for a in handle.kas_registered_agents]
+    assert all(APP_SERVER not in servers for servers in registered), "session/new hoisted it"
+    assert written <= set(handle.kas_launch_snapshots)
+    await _shutdown(_provider(rt, handle), monkeypatch)
     assert _snapshots(home) == set()

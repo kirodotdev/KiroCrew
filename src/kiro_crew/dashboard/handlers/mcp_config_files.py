@@ -261,6 +261,28 @@ def _mcp_config_corrupt() -> web.Response:
     )
 
 
+def _load_config_for_update(path: Path) -> dict[str, Any] | None:
+    """Read a user MCP config for a read-modify-write; ``None`` when it is not one.
+
+    A missing file is an empty document. A file that does not decode, does not
+    parse, or whose root or ``mcpServers`` is not an object is the user's text,
+    not an empty one: a writer that treated it as empty would replace every
+    server in it, so the caller refuses (:func:`_mcp_config_corrupt`) and leaves
+    the bytes untouched. A file that exists but cannot be read is refused the
+    same way. Comments parse here; the writers refuse a commented file
+    separately (:func:`_refuse_commented_config`).
+    """
+    try:
+        data = loads_user_jsonc(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"mcpServers": {}}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.setdefault("mcpServers", {}), dict):
+        return None
+    return data
+
+
 def _mcp_write_failed(route: str) -> web.Response:
     """A failed global mcp.json write, answered with a code and a fixed sentence.
 

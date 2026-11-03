@@ -212,10 +212,12 @@ different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
 commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
-`/prompts`, `/side`, `/workflow`, plus `/mcp`, `/model` and `/tools` on KAS alone,
-`served_slash_commands`), because the slash gate reads the same set and answers
-every other harness command with a notice naming the harness. `/model`,
-`/tools` and `/mcp` are answered by `dashboard/kas_local_commands.py` from state
+`/prompts`, `/side`, `/workflow`, plus `/context`, `/help`, `/mcp`, `/model`,
+`/tools` and `/usage` on KAS alone; `kas_local_commands.local_harness_menu`), because the slash
+gate reads the same set and answers every other harness command with a notice
+naming the harness. On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
+`/help` and `/agent` (bare or `list`) are answered by
+`dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`
 shows the slot's pin and the session's advertised list (else the recorded KAS
 catalog), and `/model <id>` runs the picker's own transaction
@@ -223,8 +225,15 @@ catalog), and `/model <id>` runs the picker's own transaction
 the pick exactly as the picker does); `/tools` reads the agent entry the session
 registered with KAS (`kas_registered_agents`: `tools`, `excludedTools`, the
 `allow` rules still in force, the built-ins Crew answers); `/mcp` reads the slot's
-MCP session report. Only names are shown: a server's `env`, `headers`, `command`
-and `args` are never read, and the reply is redacted.
+MCP session report; `/context` reads the context meter's reading (percent, and
+tokens when measured); `/usage` reads the credit counter's cached reading and never
+fetches one, and drops a reading published for another sign-in exactly as
+`GET /api/sessions/usage` does (both read `sessions._reading_not_servable`);
+`/help` lists the same `local_harness_menu` set with its descriptions; `/agent` shows the chat's
+agent and `pickable_agent_names`. `/context <argument>` and the other
+`/agent` subcommands edit state kiro-cli keeps, so they keep the notice
+(`kas_local_commands.answers_locally`). Only names are shown: a server's `env`,
+`headers`, `command` and `args` are never read, and the reply is redacted.
 
 A **route** is not a harness, and is not expressed as one. KAS runs either
 through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`),

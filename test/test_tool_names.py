@@ -246,6 +246,28 @@ class TestExpand:
         assert expand_kiro_cli_tool_names([]) == []
 
 
+class TestUseSubagentReachesTheEngineTool:
+    """KAS registers kiro-cli's sub-agent tool as ``invoke_sub_agent``. A spec
+    spelling the kiro-cli name must mount it, and both other readings of the
+    table must agree with that."""
+
+    def test_mounting_use_subagent_mounts_invoke_sub_agent(self):
+        assert expand_kiro_cli_tool_names(["use_subagent"]) == [
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
+    def test_excluding_use_subagent_withholds_invoke_sub_agent(self):
+        assert expand_kiro_cli_tool_exclusions(["use_subagent"]) == [
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
+    def test_a_rule_written_as_use_subagent_binds_invoke_sub_agent(self):
+        assert policy_aliases("invoke_sub_agent") == ("use_subagent",)
+        assert policy_alias_split("invoke_sub_agent") == (("use_subagent",), ())
+
+
 class TestWebSearchReachesTheRemoteTool:
     """KAS serves web search as ``remote_web_search``. A spec spelling the
     kiro-cli ``web_search`` must mount it, exclude it, and govern it under the
