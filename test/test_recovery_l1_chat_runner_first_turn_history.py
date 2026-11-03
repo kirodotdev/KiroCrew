@@ -32,6 +32,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import await_until
 
 
 class _DurableFirstTurnDebt:
@@ -151,8 +152,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
                 mock_sel.return_value = MagicMock()
                 await _run_chat(state, slot, "Resume now please")
                 if slot.task:
-                    # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                    await slot.task
+                    await await_until(slot.task, what="the turn task finishing")
 
         assert len(prompts) == 2, "the pre-output failure was not re-queued"
         assert claims["n"] == 2 and prompts, "the re-queue must claim the session again"
@@ -475,8 +475,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
                 mock_sel.return_value = MagicMock()
                 await _run_chat(state, slot, "hello")
                 if slot.task:
-                    # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                    await slot.task
+                    await await_until(slot.task, what="the turn task finishing")
 
         assert debt.owed is False, (
             "post-token recovery re-queues a CONTINUE onto the live session that "
@@ -544,8 +543,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
                 mock_sel.return_value = MagicMock()
                 await _run_chat(state, slot, "hello")
                 if slot.task:
-                    # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                    await slot.task
+                    await await_until(slot.task, what="the turn task finishing")
 
         assert debt.owed is False, (
             "a follow-up that suppresses post-token recovery still runs on the "
@@ -604,8 +602,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
             mock_sel.return_value = MagicMock()
             await _run_chat(state, slot, "please do the thing")
             if slot.task:
-                # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                await slot.task
+                await await_until(slot.task, what="the turn task finishing")
 
         assert debt.owed is False, (
             "a promise-only first turn ended on a normal end_turn the provider "
@@ -667,8 +664,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
                 mock_sel.return_value = MagicMock()
                 await _run_chat(state, slot, "a long first turn")
                 if slot.task:
-                    # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                    await slot.task
+                    await await_until(slot.task, what="the turn task finishing")
 
         assert debt.owed is False, (
             "a completed mid-turn compaction keeps the summarized session the "
@@ -740,8 +736,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
             mock_sel.return_value = MagicMock()
             await _run_chat(state, slot, "hello")
             if slot.task:
-                # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                await slot.task
+                await await_until(slot.task, what="the turn task finishing")
             assert debt.owed is False, (
                 "output streamed before the non-transient error, so the live "
                 "session already holds the history — the debt must settle, not "
@@ -750,8 +745,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
             # A genuine ordinary follow-up on the SAME live session.
             await _run_chat(state, slot, "and now continue")
             if slot.task:
-                # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                await slot.task
+                await await_until(slot.task, what="the turn task finishing")
 
         assert debt.owed is False, "the warm follow-up must not re-arm the debt"
         assert _context_is_new_per_prompt(state.context_builder) == [True, False], (
@@ -820,8 +814,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
             mock_sel.return_value = MagicMock()
             await _run_chat(state, slot, "hello")
             if slot.task:
-                # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                await slot.task
+                await await_until(slot.task, what="the turn task finishing")
             assert debt.owed is True, (
                 "a bare CancelledError after output is a discarded turn (kiro-cli "
                 "drops the cancelled prompt carrying the history); the debt must "
@@ -830,8 +823,7 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
             )
             await _run_chat(state, slot, "carry on")
             if slot.task:
-                # flake-ok: pre-existing await of the turn task _run_chat started on a scripted client, moved verbatim; tracked for a de-flake pass
-                await slot.task
+                await await_until(slot.task, what="the turn task finishing")
 
         assert _context_is_new_per_prompt(state.context_builder) == [True, True], (
             "the cancelled FRESH turn did not durably deliver history; the next "
