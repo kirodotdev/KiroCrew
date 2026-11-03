@@ -367,7 +367,6 @@ test/test_cron_thread_routing.py
 test/test_cron_timezone_display.py
 test/test_dashboard.py
 test/test_dashboard_branding.py
-test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_batch_delete_handler.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
