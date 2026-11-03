@@ -50,6 +50,20 @@ function createTokenSources({
   psPpid,
   holdsHomeGatewayLock,
 }) {
+  // The Crew Companion asks for a token every few seconds, so a refusal that
+  // holds (a remote crew on the port, no gateway of ours) would otherwise
+  // write the same line on every tick. Each refusal is logged when it first
+  // appears and again only after the reason changes or a mint goes ahead.
+  // This shapes the log only: every refusal still returns "".
+  let lastRefusal = null;
+  function refuse(message) {
+    if (message !== lastRefusal) {
+      glog(message);
+      lastRefusal = message;
+    }
+    return "";
+  }
+
   function fetchRemoteToken(tokenPort) {
     const config = getRemoteHostConfig(store, tokenPort || PORT);
     if (!config || !config.host) return Promise.resolve({ token: "", error: null });
@@ -147,8 +161,7 @@ function createTokenSources({
     // Crew writes a crew for this very port, so the store can name one after the
     // spawn. That port's holder is then a tunnel by construction.
     if (getRemoteHostConfig(store, mintPort)?.host) {
-      glog(`not minting a local token for :${mintPort}: a remote crew is configured there`);
-      return "";
+      return refuse(`not minting a local token for :${mintPort}: a remote crew is configured there`);
     }
     // The gateway must be this process's child AND still running. The child is
     // the supervisor's `gatewayProcess`; its `gatewayOwnership` is NOT, and
@@ -163,8 +176,7 @@ function createTokenSources({
     // Liveness is the same test `stopGatewayGracefully` uses on the same field.
     const liveChild = getGatewayProcess() && getGatewayProcess().exitCode === null;
     if (!liveChild || targetBackendUrl !== BACKEND_URL) {
-      glog(`not minting a local token for :${mintPort}: no live gateway of this process on that port`);
-      return "";
+      return refuse(`not minting a local token for :${mintPort}: no live gateway of this process on that port`);
     }
     // Liveness says our child is RUNNING; it does not say our child is what
     // ANSWERED. The pre-spawn probe established the port was free then, and our
@@ -195,9 +207,9 @@ function createTokenSources({
     // a parent pid is only meaningful while that parent is alive: once it exits,
     // its children re-parent and its pid may be reused.
     if (!owned || getGatewayProcess() !== child || child.exitCode !== null) {
-      glog(`not minting a local token for :${mintPort}: the kernel does not name our gateway (pid ${child.pid}), or a direct child of it holding this home's gateway.lock, as its listener`);
-      return "";
+      return refuse(`not minting a local token for :${mintPort}: the kernel does not name our gateway (pid ${child.pid}), or a direct child of it holding this home's gateway.lock, as its listener`);
     }
+    lastRefusal = null;
     // Re-resolve the home at call time so a KIROCREW_HOME change after Electron
     // starts is honored. The mint dials the configured loopback origin exactly
     // as written; `mintTokenFromHome` never rewrites it to a literal address.
