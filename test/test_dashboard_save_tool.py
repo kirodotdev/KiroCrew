@@ -1748,7 +1748,6 @@ async def test_a_save_stops_waiting_for_a_check_that_does_not_come_back(
     def _stuck(slug: str, crew: str, slot: str, package: dict[str, Any], deadline=None):
         running.set()
         release.wait(60)
-        return None
 
     monkeypatch.setattr(member_dashboard_fields, "verify_package_page", _stuck)
     monkeypatch.setattr(routes, "_await_check", _wait_ends_when(running.is_set))
