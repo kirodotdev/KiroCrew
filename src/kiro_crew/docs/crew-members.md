@@ -277,8 +277,8 @@ not part of the goal.
 Creating a mate allocates its memory store for it. That store cannot later
 be pointed somewhere else or shared with another mate — `kirocrew agent
 update --memory-store` refuses it — because a mate's memory is its identity.
-Deleting a mate unbinds it from new sessions and keeps its workspace, its
-memory store and its past transcripts.
+Deleting a mate removes it, along with its picture and its goal check-ins. Its
+workspace, its memory and its past chats are kept.
 
 ## Memory
 
