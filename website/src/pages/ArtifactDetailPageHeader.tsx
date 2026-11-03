@@ -15,6 +15,7 @@ import {
 import { copyToClipboard } from '../utils/clipboard'
 import { PageHeader, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
+import { fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import HoverTip from '../components/HoverTip'
@@ -312,7 +313,7 @@ export function ArtifactDetailPageHeader({
   const versionOptions = ['live', ...versionsDesc.map(String)]
   const versionOptionLabels = [
     i18nT('pages.artifactDetailPage.live'),
-    ...versionsDesc.map((v) => `${i18nT('pages.artifactDetailPage.v')}${v}`),
+    ...versionsDesc.map((v) => i18nT('pages.artifactDetailPage.version_label', { version: fmtNumber(v, { useGrouping: false }) })),
   ]
   return (
     <div className="sticky top-0 z-10 bg-bg border-b border-border">
