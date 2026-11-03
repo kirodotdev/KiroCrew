@@ -8449,6 +8449,7 @@
         "terminal_shell_save_failed": "Could not save the shell setting",
         "terminal_completion": "Command completion",
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+        "terminal_completion_unavailable_windows": "Not available on a Windows gateway: the Terminal cannot list commands or paths there. Your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
         "terminal_reuse_current": "Reuse the current terminal",
         "terminal_reuse_current_desc": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",

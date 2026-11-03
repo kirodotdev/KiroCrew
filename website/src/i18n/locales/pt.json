@@ -18191,6 +18191,7 @@
         "terminal_shell_save_failed": "Não foi possível salvar a configuração do shell",
         "terminal_completion": "Conclusão de comandos",
         "terminal_completion_desc": "Mostrar o menu de conclusão ao digitar no Terminal. Enter executa a linha que você digitou; para aceitar uma sugestão, pressione ↑/↓ e depois Enter, ou Tab. Desativado oculta o menu; a conclusão por Tab do seu shell continua funcionando.",
+        "terminal_completion_unavailable_windows": "Indisponível em um gateway Windows: o Terminal não consegue listar comandos nem caminhos ali. O preenchimento com Tab do seu shell continua funcionando.",
         "terminal_completion_save_failed": "Não foi possível salvar a configuração de conclusão de comandos",
         "terminal_reuse_current": "Reutilizar o terminal atual",
         "terminal_reuse_current_desc": "Copia o comando em vez de executá-lo: \"Executar no terminal\" foca a aba de terminal que você selecionou e copia o comando, para que você o cole naquela shell mantendo o diretório de trabalho, o ambiente e qualquer sessão de login ativa. Sem nenhum terminal aberto, o comando ainda é copiado para você colar — ele nunca é executado por você.",

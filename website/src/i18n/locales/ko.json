@@ -17431,6 +17431,7 @@
         "terminal_shell_save_failed": "셸 설정을 저장하지 못했습니다",
         "terminal_completion": "명령 자동 완성",
         "terminal_completion_desc": "터미널에서 입력하는 동안 자동 완성 팝업을 표시합니다. Enter는 입력한 줄을 실행합니다. 제안을 선택하려면 ↑/↓ 후 Enter 또는 Tab을 누르세요. 끄면 팝업이 숨겨지며 셸 자체의 Tab 완성은 계속 작동합니다.",
+        "terminal_completion_unavailable_windows": "Windows 게이트웨이에서는 사용할 수 없습니다. 그곳에서는 터미널이 명령이나 경로를 나열할 수 없습니다. 셸 자체의 Tab 자동 완성은 계속 작동합니다.",
         "terminal_completion_save_failed": "명령 자동 완성 설정을 저장하지 못했습니다",
         "terminal_reuse_current": "현재 터미널 재사용",
         "terminal_reuse_current_desc": "명령을 실행하지 않고 복사합니다: 터미널에서 실행하면 선택한 터미널 탭에 포커스를 두고 명령을 복사합니다. 그 셸에 붙여 넣으면 작업 디렉터리, 환경 변수, 로그인 세션이 그대로 유지됩니다. 열린 터미널이 없어도 명령은 붙여 넣을 수 있도록 복사되며, 대신 실행되지는 않습니다.",
