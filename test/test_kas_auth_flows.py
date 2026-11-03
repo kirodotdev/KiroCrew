@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -431,7 +430,6 @@ async def test_logout_before_refresh_does_not_resurrect_the_token(tmp_path: Path
     assert session.calls == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 async def test_logout_during_refresh_leaves_no_token_behind(tmp_path: Path):
     """The refresh-then-delete half: a logout that arrives while a refresh holds
     the lock across its HTTP round-trip waits for the save, then deletes it, so
@@ -478,7 +476,6 @@ async def test_logout_during_refresh_leaves_no_token_behind(tmp_path: Path):
     assert store.load("social") is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 async def test_account_switch_during_refresh_is_not_overwritten(tmp_path: Path):
     """A sign-in that lands a different account in the slot while a refresh of the
     old one is in flight waits for the refresher's save and then replaces it, so
