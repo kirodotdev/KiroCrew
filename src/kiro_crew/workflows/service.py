@@ -58,6 +58,7 @@ from .library import (
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
     WorkflowSlugTakenError,
+    derived_slug,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -1317,15 +1318,13 @@ class WorkflowService:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}
 
-    async def promote_run_definition(
-        self,
-        run_id: str,
-        *,
-        name: str = "",
-        description: str = "",
-        slug: str = "",
-    ) -> dict[str, Any]:
-        """Promote a reusable run source from its unredacted server snapshot."""
+    def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
+        """The run whose original source may enter the library, or the refusal.
+
+        Promotion and run-to-revision updates share this: the run must be an ad-hoc
+        one (a saved invocation is already in the library), finished (or a paused
+        TaskRunner plan), and still hold the exact source it ran.
+        """
         handle = self.registry.get(run_id)
         if handle is None:
             return {"ok": False, "error": "no such workflow run", "not_found": True}
@@ -1348,9 +1347,23 @@ class WorkflowService:
                 "error": "the original workflow source is no longer available",
                 "source_not_original": True,
             }
-        source = handle.source
-        if not source:
+        if not handle.source:
             return {"ok": False, "error": "workflow run has no source", "no_source": True}
+        return handle
+
+    async def promote_run_definition(
+        self,
+        run_id: str,
+        *,
+        name: str = "",
+        description: str = "",
+        slug: str = "",
+    ) -> dict[str, Any]:
+        """Promote a reusable run source from its unredacted server snapshot."""
+        handle = self._reusable_run(run_id)
+        if isinstance(handle, dict):
+            return handle
+        source = handle.source
         if handle.source_format == SOURCE_FORMAT_PYTHON:
             validated = validate(source)
             if not validated.ok:
@@ -1437,6 +1450,96 @@ class WorkflowService:
                 "conflict": True,
             }
         return {"ok": True, "definition": definition}
+
+    async def update_run_definition(
+        self, run_id: str, workflow_ref: str, *, expected_revision: int
+    ) -> dict[str, Any]:
+        """Append a finished run's original source as a saved workflow's next revision.
+
+        The run passes the same checks as promotion. The target must keep the run's
+        format, and a source identical to the pinned revision is refused rather than
+        appended as an empty revision. ``not_found`` names the run and
+        ``definition_not_found`` the saved workflow.
+        """
+        handle = self._reusable_run(run_id)
+        if isinstance(handle, dict):
+            return handle
+        current = await asyncio.to_thread(self.get_definition, workflow_ref)
+        if current is None:
+            return _definition_not_found()
+        if str(current.get("format") or SOURCE_FORMAT_PYTHON) != handle.source_format:
+            return {
+                "ok": False,
+                "error": "the run and the saved workflow have different formats",
+                "format_mismatch": True,
+            }
+        if current.get("revision") == expected_revision and current.get("source") == handle.source:
+            return {
+                "ok": False,
+                "error": "the run's source is already this saved revision",
+                "unchanged": True,
+            }
+        out = await asyncio.to_thread(
+            self.update_definition,
+            str(current["id"]),
+            source=handle.source,
+            expected_revision=expected_revision,
+        )
+        # Deleted between the read above and the write: the run itself still exists.
+        return _definition_not_found() if out.get("not_found") else out
+
+    async def preview_run_definition_update(
+        self, run_id: str, workflow_ref: str = ""
+    ) -> dict[str, Any]:
+        """The saved workflow a run would update, with both sources, or the refusal.
+
+        Without *workflow_ref* the target is suggested (``_suggest_update_target``)
+        and may be ``None``. The caller builds the diff; ``run_source`` is the exact
+        source an update would append.
+        """
+        handle = self._reusable_run(run_id)
+        if isinstance(handle, dict):
+            return handle
+        if workflow_ref:
+            target = await asyncio.to_thread(self.get_definition, workflow_ref)
+            if target is None:
+                return _definition_not_found()
+        else:
+            target = await asyncio.to_thread(self._suggest_update_target, handle)
+        return {
+            "ok": True,
+            "run_source": handle.source,
+            "run_format": handle.source_format,
+            "target": target,
+        }
+
+    def _suggest_update_target(self, handle: RunHandle) -> Optional[dict[str, Any]]:
+        """The saved workflow a run most likely revises, or ``None``.
+
+        In order: the definition an edited rerun came from, a Python script's
+        ``META["adapted_from"]``, then the slug of the script's ``META`` name and of
+        the run's name. Only a definition of the run's format is suggested.
+        """
+        refs: list[str] = []
+        if handle.derived_from_workflow_id:
+            refs.append(handle.derived_from_workflow_id)
+        if handle.source_format == SOURCE_FORMAT_PYTHON:
+            meta = validate(handle.source).meta or {}
+            lineage = _declared_lineage(meta)
+            if lineage is not None:
+                refs.append(lineage["workflow_id"])
+            if meta.get("name"):
+                refs.append(derived_slug(str(meta["name"])))
+        if handle.name:
+            refs.append(derived_slug(handle.name))
+        with self._definition_lock:
+            for ref in dict.fromkeys(refs):
+                definition = self._definition_library.get(ref)
+                if definition is not None and (
+                    str(definition.get("format") or SOURCE_FORMAT_PYTHON) == handle.source_format
+                ):
+                    return definition
+        return None
 
     @admission_errors
     async def start_definition(
@@ -1638,6 +1741,14 @@ class WorkflowService:
         replay_results = {} if edited else dict(prior.agent_results)
         replay_fingerprints = {} if edited else dict(prior.agent_fingerprints)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
+        # An edited rerun of a saved invocation keeps that definition only as
+        # ancestry, as an adapted TaskRunner plan does; any other rerun carries the
+        # prior run's ancestry forward.
+        if edited and prior.workflow_id and prior.workflow_revision:
+            derived_id, derived_revision = prior.workflow_id, prior.workflow_revision
+        else:
+            derived_id = prior.derived_from_workflow_id
+            derived_revision = prior.derived_from_revision
         started = await self._runner(
             new_id,
             timeout_secs=timeout_secs,
@@ -1663,6 +1774,8 @@ class WorkflowService:
             workflow_id="" if edited else prior.workflow_id,
             workflow_slug="" if edited else prior.workflow_slug,
             workflow_revision=0 if edited else prior.workflow_revision,
+            derived_from_workflow_id=derived_id,
+            derived_from_revision=derived_revision,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1767,6 +1880,11 @@ def _verified_lineage(
         for definition in matches
     )
     return lineage if exists else None
+
+
+def _definition_not_found() -> dict[str, Any]:
+    """A run-to-revision refusal naming the saved workflow, not the run, as missing."""
+    return {"ok": False, "error": "no such saved workflow", "definition_not_found": True}
 
 
 def _declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:

@@ -16,6 +16,8 @@ from kiro_crew.dashboard.handlers.workflows import (
     api_workflow_definitions,
     api_workflow_definitions_create,
     api_workflow_run_promote,
+    api_workflow_run_update_definition,
+    api_workflow_run_update_preview,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -27,6 +29,9 @@ class FakeService:
         self.updated = None
         self.started = None
         self.promoted = None
+        self.run_updated = None
+        self.previewed = None
+        self.preview = {"ok": True, "run_source": "new\n", "run_format": "python", "target": None}
 
     def list_definitions(self, search=""):
         return [{"id": "wfd_1", "slug": "debug", "search": search}]
@@ -54,6 +59,14 @@ class FakeService:
         self.promoted = (run_id, kwargs)
         return {"ok": True, "definition": {"id": "wfd_2", "slug": "promoted"}}
 
+    async def update_run_definition(self, run_id, workflow_ref, **kwargs):
+        self.run_updated = (run_id, workflow_ref, kwargs)
+        return {"ok": True, "definition": {"id": "wfd_1", "revision": 3}}
+
+    async def preview_run_definition_update(self, run_id, workflow_ref=""):
+        self.previewed = (run_id, workflow_ref)
+        return self.preview
+
 
 def _app(service: FakeService, *, app_name: str | None = "") -> web.Application:
     @web.middleware
@@ -80,6 +93,12 @@ def _app(service: FakeService, *, app_name: str | None = "") -> web.Application:
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
     )
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     return app
 
 
@@ -316,6 +335,125 @@ async def test_run_promotion_distinguishes_missing_from_unfinished() -> None:
     assert unfinished_body["code"] == "workflow_run_not_finished"
     assert restored.status == 409
     assert restored_body["code"] == "workflow_run_source_not_original"
+
+
+async def test_run_update_preview_returns_target_summary_and_diff() -> None:
+    service = FakeService()
+    async with TestClient(TestServer(_app(service))) as client:
+        empty = await (await client.get("/api/workflows/runs/wf_1/update-definition")).json()
+        service.preview = {
+            **service.preview,
+            "target": {
+                "id": "wfd_1",
+                "slug": "demo",
+                "name": "Demo",
+                "revision": 2,
+                "format": "python",
+                "source": "old\n",
+                "revisions": [{"revision": 1, "source": "older\n"}],
+            },
+        }
+        response = await client.get("/api/workflows/runs/wf_1/update-definition?workflow=demo")
+        body = await response.json()
+
+    assert empty == {"target": None, "diff": "", "unchanged": False, "format_mismatch": False}
+    assert service.previewed == ("wf_1", "demo")
+    assert response.status == 200
+    # Only the summary: neither the saved source nor its revisions travel back.
+    assert body["target"] == {
+        "id": "wfd_1",
+        "slug": "demo",
+        "name": "Demo",
+        "revision": 2,
+        "format": "python",
+    }
+    assert "-old" in body["diff"].split("\n")
+    assert "+new" in body["diff"].split("\n")
+    assert body["unchanged"] is False
+    assert body["format_mismatch"] is False
+
+
+async def test_run_update_maps_each_refusal_to_its_code() -> None:
+    service = FakeService()
+    refusals = [
+        ({"not_found": True}, 404, "workflow_run_not_found"),
+        ({"definition_not_found": True}, 404, "workflow_definition_not_found"),
+        ({"already_saved": True}, 409, "workflow_run_already_saved"),
+        ({"not_finished": True}, 409, "workflow_run_not_finished"),
+        ({"source_not_original": True}, 409, "workflow_run_source_not_original"),
+        ({"conflict": True}, 409, "workflow_definition_conflict"),
+        ({"unchanged": True}, 409, "workflow_definition_unchanged"),
+        ({"format_mismatch": True}, 400, "workflow_definition_format_mismatch"),
+        ({"errors": ["bad script"]}, 400, "workflow_definition_invalid"),
+    ]
+    outcomes = iter(refusals)
+
+    async def refuse(*args, **kwargs):
+        flags, _status, _code = next(outcomes)
+        return {"ok": False, "error": "refused", **flags}
+
+    service.update_run_definition = refuse
+    seen = []
+    async with TestClient(TestServer(_app(service))) as client:
+        for _ in refusals:
+            response = await client.post(
+                "/api/workflows/runs/wf_1/update-definition",
+                json={"workflow": "demo", "expected_revision": 2},
+            )
+            seen.append((response.status, (await response.json())["code"]))
+
+    assert seen == [(status, code) for _flags, status, code in refusals]
+
+
+async def test_run_update_requires_a_workflow_and_an_integer_revision() -> None:
+    service = FakeService()
+    async with TestClient(TestServer(_app(service))) as client:
+        no_workflow = await client.post(
+            "/api/workflows/runs/wf_1/update-definition", json={"expected_revision": 2}
+        )
+        no_workflow_body = await no_workflow.json()
+        bool_revision = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": "demo", "expected_revision": True},
+        )
+        bool_revision_body = await bool_revision.json()
+        updated = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": " demo ", "expected_revision": 2},
+        )
+
+    assert no_workflow.status == 400
+    assert no_workflow_body["code"] == "workflow_ref_required"
+    assert bool_revision.status == 400
+    assert bool_revision_body["code"] == "workflow_revision_required"
+    assert updated.status == 200
+    assert service.run_updated == ("wf_1", "demo", {"expected_revision": 2})
+
+
+@pytest.mark.parametrize("app_name", ["untrusted-app", None])
+async def test_run_update_routes_require_dashboard_user_identity(
+    app_name: str | None, monkeypatch
+) -> None:
+    service = FakeService()
+    audit_calls: list[dict[str, object]] = []
+    audit = SimpleNamespace(log_api_access=lambda **kwargs: audit_calls.append(kwargs))
+    monkeypatch.setattr(workflow_handlers, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app(service, app_name=app_name))) as client:
+        previewed = await client.get("/api/workflows/runs/wf_1/update-definition")
+        updated = await client.post(
+            "/api/workflows/runs/wf_1/update-definition",
+            json={"workflow": "demo", "expected_revision": 2},
+        )
+
+    assert previewed.status == 403
+    assert updated.status == 403
+    assert service.previewed is None
+    assert service.run_updated is None
+    assert [call["operation"] for call in audit_calls] == [
+        "workflow_definition_update_preview",
+        "workflow_definition_update",
+    ]
 
 
 async def test_definition_create_rejects_non_object_json() -> None:

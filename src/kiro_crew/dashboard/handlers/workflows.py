@@ -14,6 +14,8 @@ Routes (registered in dashboard/server.py):
                                                       ``?plan=1`` adds ``plan``
   POST /api/workflows/runs/{id}/cancel              → {cancelled: bool}
   POST /api/workflows/runs/{id}/promote             → save the original completed source
+  GET/POST /api/workflows/runs/{id}/update-definition
+                                                    → preview or append it as a revision
   GET  /api/workflows/definitions                   → reusable global definitions
   POST /api/workflows/definitions                   → explicitly save a definition
   GET/PATCH /api/workflows/definitions/{ref}        → view or append a revision
@@ -42,6 +44,7 @@ _OP_DEFINITION_CREATE = "workflow_definition_create"
 _OP_DEFINITION_UPDATE = "workflow_definition_update"
 _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
+_OP_DEFINITION_UPDATE_PREVIEW = "workflow_definition_update_preview"
 
 
 def _redact_obj(obj):
@@ -933,6 +936,123 @@ async def api_workflow_run_promote(request: web.Request) -> web.Response:
         },
         status=400,
     )
+
+
+async def _owner_library_writer(request: web.Request, operation: str) -> Optional[web.Response]:
+    """Refuse anyone but the dashboard owner, as the library's other write routes do."""
+    denied = _require_dashboard_user(request, operation)
+    if denied is not None:
+        return denied
+    # Body-scope import: see ``api_workflow_run_promote``.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    return await require_owner_dashboard_request(request, operation)
+
+
+def _run_update_refusal(out: dict[str, Any]) -> web.Response:
+    """The response for a refused run-to-revision preview or update."""
+    statuses: tuple[tuple[str, str, int], ...] = (
+        ("not_found", "workflow_run_not_found", 404),
+        ("definition_not_found", "workflow_definition_not_found", 404),
+        ("already_saved", "workflow_run_already_saved", 409),
+        ("not_finished", "workflow_run_not_finished", 409),
+        ("source_not_original", "workflow_run_source_not_original", 409),
+        ("conflict", "workflow_definition_conflict", 409),
+        ("unchanged", "workflow_definition_unchanged", 409),
+        ("format_mismatch", "workflow_definition_format_mismatch", 400),
+    )
+    for flag, code, status in statuses:
+        if out.get(flag):
+            return _error(_redact_obj(out.get("error") or code), code, status)
+    return web.json_response(
+        {
+            "error": _redact_obj(out.get("error") or "invalid workflow"),
+            "errors": _redact_obj(out.get("errors") or []),
+            "code": "workflow_definition_invalid",
+        },
+        status=400,
+    )
+
+
+async def api_workflow_run_update_preview(request: web.Request) -> web.Response:
+    """GET /api/workflows/runs/{id}/update-definition?workflow= — what an update would do.
+
+    Without ``workflow`` the target is suggested from the run (``target`` may then
+    be ``null``). The diff is uncapped: it goes to the owner's dialog, not a card.
+    """
+    denied = await _owner_library_writer(request, _OP_DEFINITION_UPDATE_PREVIEW)
+    if denied is not None:
+        return denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    run_id = request.match_info.get("run_id", "")
+    workflow_ref = (request.query.get("workflow") or "").strip()
+    try:
+        out = await svc.preview_run_definition_update(run_id, workflow_ref)
+    except Exception:
+        logger.exception("workflow run update preview failed")
+        return _error("could not read saved workflow", "workflow_definition_read_failed", 500)
+    if not out.get("ok"):
+        return _run_update_refusal(out)
+    target = out.get("target")
+    if not isinstance(target, dict):
+        return await _json_response_off_loop(
+            {"target": None, "diff": "", "unchanged": False, "format_mismatch": False}
+        )
+    from kiro_crew.dashboard.change_cards_readers import workflow_source_diff
+
+    old = str(target.get("source") or "")
+    new = str(out.get("run_source") or "")
+    format_mismatch = str(target.get("format") or "python") != out.get("run_format")
+    unchanged = old == new
+    # Matching without autojunk can take seconds on thousands of identical lines.
+    diff = "" if unchanged else await asyncio.to_thread(workflow_source_diff, old, new)
+    return await _json_response_off_loop(
+        {
+            "target": {
+                key: target.get(key) for key in ("id", "slug", "name", "revision", "format")
+            },
+            "diff": diff,
+            "unchanged": unchanged,
+            "format_mismatch": format_mismatch,
+        }
+    )
+
+
+async def api_workflow_run_update_definition(request: web.Request) -> web.Response:
+    """POST /api/workflows/runs/{id}/update-definition — append the run as a revision."""
+    denied = await _owner_library_writer(request, _OP_DEFINITION_UPDATE)
+    if denied is not None:
+        return denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    # Default cap: the body names a definition and a revision; the source an
+    # update appends comes from the completed run, not this request.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    workflow_ref = body.get("workflow")
+    expected_revision = body.get("expected_revision")
+    if not isinstance(workflow_ref, str) or not workflow_ref.strip():
+        return _error("workflow is required", "workflow_ref_required", 400)
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        return _error("expected_revision is required", "workflow_revision_required", 400)
+    try:
+        out = await svc.update_run_definition(
+            request.match_info.get("run_id", ""),
+            workflow_ref.strip(),
+            expected_revision=expected_revision,
+        )
+    except Exception:
+        logger.exception("workflow run update failed")
+        return _error("could not update workflow", "workflow_definition_write_failed", 500)
+    if out.get("ok"):
+        # The definition carries every revision's source, so serialize off-loop.
+        return await _json_response_off_loop(out)
+    return _run_update_refusal(out)
 
 
 async def api_workflow_run_cancel(request: web.Request) -> web.Response:
