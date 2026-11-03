@@ -101,9 +101,26 @@ async def _register_app_off_loop(name: str) -> RegistrationResult:
     stall watchdog kills the gateway.  Same offload pattern as ``install_app``
     and ``start_app_backend`` on these handlers.
     """
-    return await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), register_app, name
-    )
+    from kiro_crew.mcp_gateway.overlay_refresh import refresh_after_agent_change
+
+    loop = asyncio.get_running_loop()
+    box: list = []
+
+    async def _register() -> bool:
+        # Under the broker's refresh lock: no spec write between check and publish.
+        try:
+            box.append(await loop.run_in_executor(subprocess_executor(), register_app, name))
+        except BaseException as exc:
+            box.append(exc)
+            raise
+        return bool(getattr(box[0], "agents", None))
+
+    await refresh_after_agent_change(_register)
+    if not box:  # no broker serves, or the refresh failed before registering
+        box.append(await loop.run_in_executor(subprocess_executor(), register_app, name))
+    if isinstance(box[0], BaseException):
+        raise box[0]
+    return box[0]
 
 
 async def _deregister_app_off_loop(name: str) -> RegistrationResult:
