@@ -8,6 +8,7 @@ import MultiSelect, { type MultiSelectOption } from './MultiSelect'
 import { Input, Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /* ── Settings-specific UI primitives ──
  *
  * These match the pencil design system components:
@@ -758,15 +759,16 @@ export function SettingsButtonGroup({ label, description, hint, value, options, 
           the track is visible in both directions.
 
           Selection is conveyed by elevation + weight, not by hue alone, so it
-          survives a theme whose accent is low-contrast — and `aria-pressed`
-          carries it to screen readers, which no amount of styling does. */}
-      <div role="group" aria-label={label} className="inline-flex flex-wrap items-center gap-0.5 p-[3px] rounded-lg border border-border bg-bg-accent w-fit max-w-full">
+          survives a theme whose accent is low-contrast — and the radio group's
+          `aria-checked` carries it to screen readers, which no amount of
+          styling does. */}
+      <RadioChipGroup ariaLabel={label} className="inline-flex flex-wrap items-center gap-0.5 p-[3px] rounded-lg border border-border bg-bg-accent w-fit max-w-full">
         {options.map(o => (
           <button
             key={o.value}
             type="button"
             disabled={disabled || o.disabled}
-            aria-pressed={value === o.value}
+            {...radioChip(value === o.value)}
             aria-describedby={o.describedById}
             className={`flex items-center gap-1.5 px-3 py-[5px] rounded-md text-[13px] cursor-pointer border transition-colors ${
               value === o.value
@@ -779,7 +781,7 @@ export function SettingsButtonGroup({ label, description, hint, value, options, 
             {o.label}
           </button>
         ))}
-      </div>
+      </RadioChipGroup>
     </SettingsField>
   )
 }

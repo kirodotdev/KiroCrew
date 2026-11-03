@@ -14,6 +14,7 @@ import { resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs 
 import { ChatFolder, ChatTag } from '../types'
 import { folderAgentOptions, type FolderAgentRow } from './folderAgentOptions'
 import { i18nT } from '../i18n/t'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 /** The folder fields this modal owns. */
 export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'defaultDestinationCrew' | 'tags' | 'steeringDirs'
@@ -446,13 +447,13 @@ export default function FolderConfigModal({
            *  control. */}
           <div className="flex flex-col gap-1.5">
             <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.color')}</span>
-            <div className="flex items-center gap-1 flex-wrap">
+            <RadioChipGroup className="flex items-center gap-1 flex-wrap" ariaLabel={i18nT('components.folderConfigModal.color')}>
               <button
                 type="button"
                 data-testid="folder-config-color-reset"
                 title={i18nT('components.folderConfigModal.no_color')}
                 aria-label={i18nT('components.folderConfigModal.no_color')}
-                aria-pressed={!draft.color}
+                {...radioChip(!draft.color)}
                 onClick={() => setDraft(d => ({ ...d, color: '' }))}
                 className={`relative w-5 h-5 rounded-full cursor-pointer border overflow-hidden bg-bg-elevated border-border-strong ${!draft.color ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
               >
@@ -467,14 +468,14 @@ export default function FolderConfigModal({
                     type="button"
                     title={i18nT('components.folderConfigModal.set_color_to_name', { name })}
                     aria-label={i18nT('components.folderConfigModal.set_color_to_name', { name })}
-                    aria-pressed={draft.color === value}
+                    {...radioChip(draft.color === value)}
                     onClick={() => setDraft(d => ({ ...d, color: value }))}
                     className={`w-5 h-5 rounded-full cursor-pointer border hover:brightness-125 swatch-cue ${draft.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                     style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                   />
                 )
               })}
-            </div>
+            </RadioChipGroup>
           </div>
 
           {/* Icon — an emoji replacing the default folder glyph. Left empty,

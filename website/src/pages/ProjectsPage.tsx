@@ -21,6 +21,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -514,11 +515,11 @@ export default function ProjectsPage() {
 
   const composePanel = (
     <div className="px-4 md:px-6 py-4">
-      <div className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4">
-        <button onClick={() => setMode('compose')} disabled={anyPlanning} aria-pressed={mode === 'compose'} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
-        <button onClick={() => setMode('spec')} disabled={anyPlanning} aria-pressed={mode === 'spec'} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
-        <button onClick={() => setMode('yaml')} disabled={anyPlanning} aria-pressed={mode === 'yaml'} className={modeRowClass(mode === 'yaml')}><ModeDot on={mode === 'yaml'} /><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
-      </div>
+      <RadioChipGroup className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4" ariaLabel={i18nT('pages.projectsPage.plan_mode_label')}>
+        <button type="button" onClick={() => setMode('compose')} disabled={anyPlanning} {...radioChip(mode === 'compose')} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
+        <button type="button" onClick={() => setMode('spec')} disabled={anyPlanning} {...radioChip(mode === 'spec')} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
+        <button type="button" onClick={() => setMode('yaml')} disabled={anyPlanning} {...radioChip(mode === 'yaml')} className={modeRowClass(mode === 'yaml')}><ModeDot on={mode === 'yaml'} /><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
+      </RadioChipGroup>
       {/* Wraps at phone width: two labelled controls on one line push the
           workspace field off the right edge otherwise. */}
       <div className="flex flex-wrap gap-2 items-center mb-3">

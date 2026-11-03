@@ -17,6 +17,7 @@ import { isMetricNumber, metricNumber } from '../../utils/metrics'
 import type { SessionStorageReport, SystemData } from '../../types'
 import type { PlaneState } from '../SystemPage'
 import SessionStorageScreen from './SessionStorageScreen'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 type Resource = 'cpu' | 'memory' | 'disk' | 'network'
 
@@ -181,15 +182,15 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
           localized label. */}
       <div className="grid gap-4 sm:grid-cols-[196px_minmax(0,1fr)]">
         {/* Left rail — resource selector tiles */}
-        <nav
+        <RadioChipGroup
           className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-col"
-          aria-label={i18nT('pages.performanceTab.resource_nav')}
+          ariaLabel={i18nT('pages.performanceTab.resource_nav')}
         >
           {resources.map(r => (
             <button
               key={r}
               type="button"
-              aria-pressed={selected === r}
+              {...radioChip(selected === r)}
               onClick={() => setSelected(r)}
               className={`text-left rounded-md border px-3 py-2.5 transition-all ${
                 selected === r
@@ -206,7 +207,7 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
               <MiniSparkline history={history} resource={r} />
             </button>
           ))}
-        </nav>
+        </RadioChipGroup>
 
         {/* Right body — graph + stats */}
         <div className="flex flex-col gap-4 min-w-0">

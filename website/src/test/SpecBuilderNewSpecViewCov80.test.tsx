@@ -2,7 +2,7 @@
 // worktree opt-in only appears for a git folder, and a name collision is retried
 // once with a numeric suffix.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const browse = vi.fn()
@@ -121,17 +121,17 @@ describe('NewSpecView worktree opt-in', () => {
 describe('NewSpecView type picker', () => {
   it('starts on the feature type and switches on click', () => {
     renderView()
-    const options = screen.getAllByRole('button').filter(b => b.getAttribute('aria-pressed') !== null)
-    expect(options[0]).toHaveAttribute('aria-pressed', 'true')
+    const options = within(screen.getByRole('radiogroup', { name: 'What kind of work is it?' })).getAllByRole('radio')
+    expect(options[0]).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(options[1])
-    expect(options[1]).toHaveAttribute('aria-pressed', 'true')
-    expect(options[0]).toHaveAttribute('aria-pressed', 'false')
+    expect(options[1]).toHaveAttribute('aria-checked', 'true')
+    expect(options[0]).toHaveAttribute('aria-checked', 'false')
   })
 
   it('sends the chosen type with the create request', async () => {
     renderView()
     fillForm()
-    const options = screen.getAllByRole('button').filter(b => b.getAttribute('aria-pressed') !== null)
+    const options = within(screen.getByRole('radiogroup', { name: 'What kind of work is it?' })).getAllByRole('radio')
     fireEvent.click(options.at(-1)!)
     fireEvent.click(submit())
     await waitFor(() => expect(create).toHaveBeenCalled())

@@ -40,6 +40,7 @@ import WorkflowRunGraph from './WorkflowRunGraph'
 import WorkflowSourceCode from './WorkflowSourceCode'
 
 import { i18nT } from '../../i18n/t'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 // Gateway CORE API base — distinct from the builtin-app proxy used by the
 // author/validate/run flow (`/apps/workflows/api/*`).
 const CORE_API_BASE = '/api/workflows'
@@ -445,11 +446,11 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
             snapshot as a flow chart instead, with the script's planned phases
             behind what has actually run. */}
         {detail && (
-          <div className="flex items-center gap-1 text-[11px]">
+          <RadioChipGroup className="flex items-center gap-1 text-[11px]" ariaLabel={i18nT('apps.workflows.workflowsRuns.view_label')}>
             <button
               type="button"
               onClick={() => setViewMode('tree')}
-              aria-pressed={viewMode === 'tree'}
+              {...radioChip(viewMode === 'tree')}
               data-testid="workflow-view-tree"
               className={`px-2 py-0.5 rounded border ${
                 viewMode === 'tree' ? 'border-accent text-accent' : 'border-border text-muted'
@@ -460,7 +461,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
             <button
               type="button"
               onClick={() => setViewMode('graph')}
-              aria-pressed={viewMode === 'graph'}
+              {...radioChip(viewMode === 'graph')}
               data-testid="workflow-view-graph"
               className={`px-2 py-0.5 rounded border ${
                 viewMode === 'graph' ? 'border-accent text-accent' : 'border-border text-muted'
@@ -468,7 +469,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
             >
               {i18nT('apps.workflows.workflowsRuns.view_graph')}
             </button>
-          </div>
+          </RadioChipGroup>
         )}
 
         {detail && viewMode === 'graph' && (

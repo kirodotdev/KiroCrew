@@ -547,8 +547,8 @@ describe('ProjectsPage', () => {
     // back to "Compose". The checkbox must be unticked in its new render —
     // the intent from the previous compose session did not survive the mode
     // switch.
-    fireEvent.click(screen.getByRole('button', { name: /From YAML/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Compose$/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From YAML/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /^Compose$/ }))
     const composeCheckboxAfterModeSwitch = await screen.findByRole(
       'checkbox', { name: /auto-approve tool calls/i },
     )

@@ -5465,7 +5465,8 @@
         "agents_other": "{{count}} agents",
         "events_one": "{{count}} événement",
         "events_many": "{{count}} événements",
-        "events_other": "{{count}} événements"
+        "events_other": "{{count}} événements",
+        "view_label": "Vue"
       }
     },
     "awsControl": {
@@ -7316,7 +7317,8 @@
       "slides_thumbstrip": "Diapositives",
       "slides_truncated": "Limite de diapositives atteinte à {{n}} ; le reste de la présentation n'est pas affiché.",
       "light_background": "Fond clair",
-      "dark_background": "Fond sombre"
+      "dark_background": "Fond sombre",
+      "sheet_tabs_label": "Feuilles"
     },
     "folderColorNames": {
       "amber": "Ambre",
@@ -16823,7 +16825,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Les fichiers YAML doivent être importés via l'onglet « Depuis YAML ».",
       "yaml_workflows_bypass_the_llm_decomposer": "Les workflows YAML contournent le décomposeur LLM —",
       "action_failed": "Action échouée",
-      "project_renamed_to": "Projet renommé en {{name}}"
+      "project_renamed_to": "Projet renommé en {{name}}",
+      "plan_mode_label": "Mode de planification"
     },
     "remoteArtifactDetailPage": {
       "back": "Retour",
@@ -17240,7 +17243,8 @@
       "group_today": "Aujourd'hui",
       "group_yesterday": "Hier",
       "group_earlier": "Plus ancien",
-      "empty_title": "Aucune session"
+      "empty_title": "Aucune session",
+      "filter_label": "Filtre des sessions"
     },
     "sessionsTab": {
       "agent": "Agent",
@@ -20071,11 +20075,13 @@
       "slots_open_one": "{{n}} emplacement libre",
       "slots_open_many": "{{n}} emplacements libres",
       "slots_open_other": "{{n}} emplacements libres",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Scène"
     },
     "worldsPopout": {
       "hide_controls": "Masquer les commandes",
-      "show_controls": "Afficher les commandes"
+      "show_controls": "Afficher les commandes",
+      "scene_label": "Scène"
     },
     "membersPage": {
       "drawer_delegated_working": "Tâches déléguées en cours",

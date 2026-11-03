@@ -12,6 +12,7 @@ import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, em
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fmtDateNumeric, fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 
 /** Catalog key for each text-only button of the view switch. The Inspector
  * button carries an icon and renders its own label. */
@@ -568,9 +569,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center">
-            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" role="group" aria-label={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
+            <RadioChipGroup className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" ariaLabel={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
             {(['semantic','episodic','audit','inspector'] as const).filter(v => !diagnosticsOnly || v === 'audit' || v === 'inspector').map(v => (
-              <button key={v} type="button" aria-pressed={view === v} onClick={() => {
+              <button key={v} type="button" {...radioChip(view === v)} onClick={() => {
                 setView(v)
                 if (v === 'episodic') {
                   if (view === v) loadEpisodic()
@@ -583,7 +584,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                   v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : i18nT(VIEW_LABEL_KEYS[v])
                 }</button>
             ))}
-            </div>
+            </RadioChipGroup>
           </div>
         </div>
       )}

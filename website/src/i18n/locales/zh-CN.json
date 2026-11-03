@@ -5131,7 +5131,8 @@
         "view_graph": "图",
         "view_tree": "树",
         "agents_other": "{{count}} 个代理",
-        "events_other": "{{count}} 个事件"
+        "events_other": "{{count}} 个事件",
+        "view_label": "视图"
       }
     },
     "commandBar": {
@@ -7000,7 +7001,8 @@
       "slides_thumbstrip": "幻灯片",
       "slides_truncated": "幻灯片数量在第 {{n}} 页达到上限，其余部分不显示。",
       "light_background": "浅色背景",
-      "dark_background": "深色背景"
+      "dark_background": "深色背景",
+      "sheet_tabs_label": "工作表"
     },
     "folderColorNames": {
       "amber": "琥珀色",
@@ -16121,7 +16123,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 文件应通过“From YAML”标签页上传。",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML 工作流会跳过 LLM 分解器 —",
       "action_failed": "操作失败",
-      "project_renamed_to": "项目已重命名为 {{name}}"
+      "project_renamed_to": "项目已重命名为 {{name}}",
+      "plan_mode_label": "规划模式"
     },
     "remoteArtifactDetailPage": {
       "back": "返回",
@@ -16510,7 +16513,8 @@
       "group_today": "今天",
       "group_yesterday": "昨天",
       "group_earlier": "更早",
-      "empty_title": "暂无会话"
+      "empty_title": "暂无会话",
+      "filter_label": "会话筛选"
     },
     "sessionsTab": {
       "agent": "代理",
@@ -19271,11 +19275,13 @@
       "agents_present_other": "{{n}} 个代理在场",
       "agents_active_other": "{{n}} 个活动",
       "slots_open_other": "{{n}} 个空闲槽位",
-      "summary": "{{present}}，{{active}}，{{open}}"
+      "summary": "{{present}}，{{active}}，{{open}}",
+      "scene_label": "场景"
     },
     "worldsPopout": {
       "hide_controls": "隐藏控制项",
-      "show_controls": "展开控制项"
+      "show_controls": "展开控制项",
+      "scene_label": "场景"
     },
     "membersPage": {
       "drawer_delegated_working": "委派的任务正在运行",

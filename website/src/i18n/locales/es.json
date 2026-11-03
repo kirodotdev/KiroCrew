@@ -5375,7 +5375,8 @@
         "agents_other": "{{count}} agentes",
         "events_one": "{{count}} evento",
         "events_many": "{{count}} eventos",
-        "events_other": "{{count}} eventos"
+        "events_other": "{{count}} eventos",
+        "view_label": "Vista"
       }
     },
     "commandBar": {
@@ -7316,7 +7317,8 @@
       "slides_thumbstrip": "Diapositivas",
       "slides_truncated": "Límite de diapositivas alcanzado en {{n}}; el resto de la presentación no se muestra.",
       "light_background": "Fondo claro",
-      "dark_background": "Fondo oscuro"
+      "dark_background": "Fondo oscuro",
+      "sheet_tabs_label": "Hojas"
     },
     "folderColorNames": {
       "amber": "Ámbar",
@@ -16823,7 +16825,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Los archivos YAML deben subirse desde la pestaña \"Desde YAML\".",
       "yaml_workflows_bypass_the_llm_decomposer": "Los flujos de trabajo YAML omiten el descompositor del LLM —",
       "action_failed": "Acción fallida",
-      "project_renamed_to": "Proyecto renombrado a {{name}}"
+      "project_renamed_to": "Proyecto renombrado a {{name}}",
+      "plan_mode_label": "Modo de planificación"
     },
     "remoteArtifactDetailPage": {
       "back": "Atrás",
@@ -17240,7 +17243,8 @@
       "group_today": "Hoy",
       "group_yesterday": "Ayer",
       "group_earlier": "Anteriores",
-      "empty_title": "No hay sesiones"
+      "empty_title": "No hay sesiones",
+      "filter_label": "Filtro de sesiones"
     },
     "sessionsTab": {
       "agent": "Agente",
@@ -20071,11 +20075,13 @@
       "slots_open_one": "{{n}} slot libre",
       "slots_open_many": "{{n}} slots libres",
       "slots_open_other": "{{n}} slots libres",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Escena"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar los controles",
-      "show_controls": "Mostrar los controles"
+      "show_controls": "Mostrar los controles",
+      "scene_label": "Escena"
     },
     "membersPage": {
       "drawer_delegated_working": "Tareas delegadas en curso",

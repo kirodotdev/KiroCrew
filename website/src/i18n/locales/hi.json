@@ -5253,7 +5253,8 @@
         "agents_one": "{{count}} एजेंट",
         "agents_other": "{{count}} एजेंट",
         "events_one": "{{count}} इवेंट",
-        "events_other": "{{count}} इवेंट"
+        "events_other": "{{count}} इवेंट",
+        "view_label": "दृश्य"
       }
     },
     "commandBar": {
@@ -7158,7 +7159,8 @@
       "slides_thumbstrip": "स्लाइड",
       "slides_truncated": "स्लाइड की सीमा {{n}} पर पूरी हो गई; प्रेज़ेंटेशन का बाकी हिस्सा नहीं दिखाया गया है।",
       "light_background": "हल्की पृष्ठभूमि",
-      "dark_background": "गहरी पृष्ठभूमि"
+      "dark_background": "गहरी पृष्ठभूमि",
+      "sheet_tabs_label": "शीट"
     },
     "folderColorNames": {
       "amber": "एम्बर",
@@ -16472,7 +16474,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML फ़ाइलें \"YAML से\" टैब के ज़रिए अपलोड करनी चाहिए।",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML वर्कफ़्लो LLM डीकंपोज़र को बायपास करते हैं —",
       "action_failed": "कार्रवाई विफल",
-      "project_renamed_to": "प्रोजेक्ट का नाम बदलकर {{name}} कर दिया गया"
+      "project_renamed_to": "प्रोजेक्ट का नाम बदलकर {{name}} कर दिया गया",
+      "plan_mode_label": "योजना मोड"
     },
     "remoteArtifactDetailPage": {
       "back": "वापस",
@@ -16875,7 +16878,8 @@
       "group_today": "आज",
       "group_yesterday": "बीता कल",
       "group_earlier": "पहले",
-      "empty_title": "कोई सत्र नहीं"
+      "empty_title": "कोई सत्र नहीं",
+      "filter_label": "सत्र फ़िल्टर"
     },
     "sessionsTab": {
       "agent": "एजेंट",
@@ -19671,11 +19675,13 @@
       "agents_active_other": "{{n}} सक्रिय",
       "slots_open_one": "{{n}} स्लॉट खाली",
       "slots_open_other": "{{n}} स्लॉट खाली",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "दृश्य"
     },
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",
-      "show_controls": "नियंत्रण दिखाएँ"
+      "show_controls": "नियंत्रण दिखाएँ",
+      "scene_label": "दृश्य"
     },
     "membersPage": {
       "drawer_delegated_working": "सौंपे गए कार्य चल रहे हैं",

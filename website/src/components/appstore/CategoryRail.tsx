@@ -13,10 +13,11 @@
  */
 import { BadgeCheck, Database, Plus, ShieldCheck, Users } from 'lucide-react'
 import type { Category } from './categories'
-import Clickable from '../Clickable'
 import { sourceRowKey } from './types'
+import { RadioChipGroup, radioChip } from '../RadioChipGroup'
 
 import { i18nT } from '../../i18n/t'
+
 /**
  * One SOURCES row.
  *
@@ -78,7 +79,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, in
       <button
         key={key}
         type="button"
-        aria-pressed={on}
+        {...radioChip(on)}
         className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] text-left cursor-pointer border-0 bg-transparent transition-colors ${
           on ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'
         }`}
@@ -91,44 +92,48 @@ export default function CategoryRail({ categories, total, selected, onSelect, in
 
   return (
     <div className="flex flex-col gap-[18px] w-full">
-      <div>
-        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
+      <RadioChipGroup ariaLabelledBy="appstore-rail-categories">
+        <div id="appstore-rail-categories" className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
         {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'all')}
         {categories.map(({ category, count }) => item(category, count, category))}
-      </div>
-      <div>
-        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.install_state')}</div>
+      </RadioChipGroup>
+      <RadioChipGroup ariaLabelledBy="appstore-rail-install-state">
+        <div id="appstore-rail-install-state" className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.install_state')}</div>
         {[false, true].map(on => (
-          <Clickable
+          <button
+            type="button"
             key={String(on)}
-            aria-pressed={installedOnly === on}
-            className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${installedOnly === on ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
+            {...radioChip(installedOnly === on)}
+            className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] text-left cursor-pointer mb-1.5 ${installedOnly === on ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
             onClick={() => onSelectInstalledOnly(on)}
           >
             {on ? i18nT('components.appstore.categoryRail.installed') : i18nT('components.appstore.categoryRail.all_install_states')}
             {on && <span className="text-muted text-[11.5px] font-normal">{installedCount}</span>}
-          </Clickable>
+          </button>
         ))}
-      </div>
+      </RadioChipGroup>
       <div>
-        <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>
-        <Clickable
-          aria-pressed={selectedSource === null}
-          className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${selectedSource === null ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
+      <RadioChipGroup ariaLabelledBy="appstore-rail-sources">
+        <div id="appstore-rail-sources" className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>
+        <button
+          type="button"
+          {...radioChip(selectedSource === null)}
+          className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] text-left cursor-pointer mb-1.5 ${selectedSource === null ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
           onClick={() => onSelectSource(null)}
         >
           {i18nT('appStoreSources.all')}
-        </Clickable>
+        </button>
         {sources.map(s => (
-          <Clickable
+          <button
+            type="button"
             key={sourceRowKey(s)}
-            aria-pressed={selectedSource === sourceRowKey(s)}
+            {...radioChip(selectedSource === sourceRowKey(s))}
             onClick={() => onSelectSource(sourceRowKey(s))}
             /* The whole row carries the tooltip, not just the icon: the icon is a
                14px glyph and a hover target that small is easy to miss, while the
                review claim is the thing a user needs before installing. */
             title={sourceTitle(s)}
-            className={`focus-ring cursor-pointer flex items-center gap-2 px-2.5 py-[7px] border rounded-[9px] text-[12.5px] mb-1.5 ${selectedSource === sourceRowKey(s) ? 'border-accent bg-[var(--accent-subtle)] text-text-strong' : 'border-border bg-card text-text hover:border-border-strong'}`}
+            className={`focus-ring w-full text-left cursor-pointer flex items-center gap-2 px-2.5 py-[7px] border rounded-[9px] text-[12.5px] mb-1.5 ${selectedSource === sourceRowKey(s) ? 'border-accent bg-[var(--accent-subtle)] text-text-strong' : 'border-border bg-card text-text hover:border-border-strong'}`}
           >
             {/* ONE icon per tier, the same glyphs the External Registries card
                 uses, so the same source is not drawn two ways across the two
@@ -162,8 +167,9 @@ export default function CategoryRail({ categories, total, selected, onSelect, in
                 {i18nT('components.appstore.categoryRail.app', { count: s.count })}
               </div>
             </div>
-          </Clickable>
+          </button>
         ))}
+      </RadioChipGroup>
         <button
           type="button"
           className="flex items-center gap-1.5 text-[12.5px] text-accent cursor-pointer border-0 bg-transparent px-0.5 py-1 hover:underline"

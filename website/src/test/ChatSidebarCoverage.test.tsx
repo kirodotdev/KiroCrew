@@ -326,16 +326,16 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: [], failed: [], active_is_stale: false })
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Clean up sessions')
-    const chip = (label: string) => screen.getByRole('button', { name: label })
+    const chip = (label: string) => screen.getByRole('radio', { name: label })
     await screen.findByText('7 days')
     // The panel opens on the 3-day window.
-    expect(chip('3 days').getAttribute('aria-pressed')).toBe('true')
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('true')
     for (const other of ['1 day', '7 days', '14 days', '30 days']) {
-      expect(chip(other).getAttribute('aria-pressed')).toBe('false')
+      expect(chip(other).getAttribute('aria-checked')).toBe('false')
     }
     fireEvent.click(chip('14 days'))
-    expect(chip('14 days').getAttribute('aria-pressed')).toBe('true')
-    expect(chip('3 days').getAttribute('aria-pressed')).toBe('false')
+    expect(chip('14 days').getAttribute('aria-checked')).toBe('true')
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('false')
   })
 
   it('exposes the Show/Hide list toggle as an expandable control', async () => {

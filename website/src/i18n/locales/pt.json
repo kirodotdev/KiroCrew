@@ -5375,7 +5375,8 @@
         "agents_other": "{{count}} agentes",
         "events_one": "{{count}} evento",
         "events_many": "{{count}} eventos",
-        "events_other": "{{count}} eventos"
+        "events_other": "{{count}} eventos",
+        "view_label": "Visualização"
       }
     },
     "commandBar": {
@@ -7316,7 +7317,8 @@
       "slides_thumbstrip": "Slides",
       "slides_truncated": "Limite de slides atingido em {{n}}; o restante da apresentação não é exibido.",
       "light_background": "Fundo claro",
-      "dark_background": "Fundo escuro"
+      "dark_background": "Fundo escuro",
+      "sheet_tabs_label": "Planilhas"
     },
     "folderColorNames": {
       "amber": "Âmbar",
@@ -16823,7 +16825,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Os arquivos YAML devem ser enviados pela aba \"De YAML\".",
       "yaml_workflows_bypass_the_llm_decomposer": "Os fluxos de trabalho YAML ignoram o decompositor do LLM —",
       "action_failed": "Ação falhou",
-      "project_renamed_to": "Projeto renomeado para {{name}}"
+      "project_renamed_to": "Projeto renomeado para {{name}}",
+      "plan_mode_label": "Modo de planejamento"
     },
     "remoteArtifactDetailPage": {
       "back": "Voltar",
@@ -17240,7 +17243,8 @@
       "group_today": "Hoje",
       "group_yesterday": "Ontem",
       "group_earlier": "Anteriores",
-      "empty_title": "Nenhuma sessão"
+      "empty_title": "Nenhuma sessão",
+      "filter_label": "Filtro de sessões"
     },
     "sessionsTab": {
       "agent": "Agente",
@@ -20071,11 +20075,13 @@
       "slots_open_one": "{{n}} slot livre",
       "slots_open_many": "{{n}} slots livres",
       "slots_open_other": "{{n}} slots livres",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "Cena"
     },
     "worldsPopout": {
       "hide_controls": "Ocultar controles",
-      "show_controls": "Mostrar controles"
+      "show_controls": "Mostrar controles",
+      "scene_label": "Cena"
     },
     "membersPage": {
       "drawer_delegated_working": "Tarefas delegadas em execução",

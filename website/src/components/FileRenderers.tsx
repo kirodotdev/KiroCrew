@@ -25,6 +25,7 @@ import {
   MD_TABLE_HEAD_CELL_CLS,
   MD_UL_CLS,
 } from './markdown/typography'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -1319,18 +1320,19 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   return (
     <div className="h-full flex flex-col border border-border rounded-md bg-bg-elevated overflow-hidden">
       {payload.sheets.length > 1 && (
-        <div className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0">
+        <RadioChipGroup className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0" ariaLabel={i18nT('components.fileRenderers.sheet_tabs_label')}>
           {payload.sheets.map((s, i) => (
             <button
               key={i}
-              aria-pressed={i === active}
+              type="button"
+              {...radioChip(i === active)}
               onClick={() => setActive(i)}
               className={`px-3 py-1.5 rounded-t text-[12px] whitespace-nowrap cursor-pointer border border-b-0 ${
                 i === active ? 'bg-bg-elevated text-text border-border font-semibold' : 'bg-transparent text-muted border-transparent hover:text-text'
               }`}
             >{s.name}</button>
           ))}
-        </div>
+        </RadioChipGroup>
       )}
       {sheet && hasFormulas && (
         <div className="text-center text-muted text-[12px] py-1.5 border-b border-border bg-chrome shrink-0">

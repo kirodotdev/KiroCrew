@@ -119,9 +119,9 @@ describe('DisplayPanel button-group labels under the pseudolocale', () => {
     renderWithProviders(<DisplayPanel />, { route: route('view') })
     const label = xa('interface_chat')
     expect(label).toMatch(/^\[/)
-    fireEvent.click(await screen.findByRole('button', { name: label }))
+    fireEvent.click(await screen.findByRole('radio', { name: label }))
     expect(setUIModeMock).toHaveBeenCalledWith('chat')
-    expect(screen.queryByRole('button', { name: 'Chat' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Chat' })).not.toBeInTheDocument()
   })
 
   it('translates the Mode options Auto / Light / Dark and keeps writing the wire values', async () => {
@@ -133,9 +133,9 @@ describe('DisplayPanel button-group labels under the pseudolocale', () => {
     ] as const) {
       const label = xa(key)
       expect(label).toMatch(/^\[/)
-      fireEvent.click(await screen.findByRole('button', { name: label }))
+      fireEvent.click(await screen.findByRole('radio', { name: label }))
       expect(setThemeMock).toHaveBeenLastCalledWith(wire)
-      expect(screen.queryByRole('button', { name: english })).not.toBeInTheDocument()
+      expect(screen.queryByRole('radio', { name: english })).not.toBeInTheDocument()
     }
   })
 
@@ -145,12 +145,12 @@ describe('DisplayPanel button-group labels under the pseudolocale', () => {
     const tint = xa('color_mode_solid_tint')
     expect(gradient).toMatch(/^\[/)
     expect(tint).toMatch(/^\[/)
-    fireEvent.click(await screen.findByRole('button', { name: gradient }))
+    fireEvent.click(await screen.findByRole('radio', { name: gradient }))
     expect(store.getState().dashboard.sessionColorsMode).toBe('gradient')
-    fireEvent.click(screen.getByRole('button', { name: tint }))
+    fireEvent.click(screen.getByRole('radio', { name: tint }))
     expect(store.getState().dashboard.sessionColorsMode).toBe('tint')
-    expect(screen.queryByRole('button', { name: 'Gradient' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Solid Tint' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Gradient' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Solid Tint' })).not.toBeInTheDocument()
   })
 
   it('translates the session-color Intensity options and keeps writing the wire values', async () => {
@@ -160,9 +160,9 @@ describe('DisplayPanel button-group labels under the pseudolocale', () => {
     ] as const) {
       const label = xa(`intensity_${wire}`)
       expect(label).toMatch(/^\[/)
-      fireEvent.click(await screen.findByRole('button', { name: label }))
+      fireEvent.click(await screen.findByRole('radio', { name: label }))
       expect(store.getState().dashboard.sessionColorsIntensity).toBe(wire)
-      expect(screen.queryByRole('button', { name: english })).not.toBeInTheDocument()
+      expect(screen.queryByRole('radio', { name: english })).not.toBeInTheDocument()
     }
   })
 })

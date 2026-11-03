@@ -5219,7 +5219,8 @@
         "view_graph": "그래프",
         "view_tree": "트리",
         "agents_other": "에이전트 {{count}}개",
-        "events_other": "이벤트 {{count}}개"
+        "events_other": "이벤트 {{count}}개",
+        "view_label": "보기"
       }
     },
     "awsControl": {
@@ -7000,7 +7001,8 @@
       "slides_thumbstrip": "슬라이드",
       "slides_truncated": "슬라이드가 {{n}}번째에서 상한에 도달했습니다. 나머지는 표시되지 않습니다.",
       "light_background": "밝은 배경",
-      "dark_background": "어두운 배경"
+      "dark_background": "어두운 배경",
+      "sheet_tabs_label": "시트"
     },
     "folderColorNames": {
       "amber": "호박색",
@@ -16121,7 +16123,8 @@
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML 파일은 ‘YAML에서’ 탭으로 업로드하세요.",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML 워크플로는 LLM 분해기를 거치지 않습니다 —",
       "action_failed": "작업 실패",
-      "project_renamed_to": "프로젝트 이름이 {{name}}(으)로 변경되었습니다"
+      "project_renamed_to": "프로젝트 이름이 {{name}}(으)로 변경되었습니다",
+      "plan_mode_label": "계획 모드"
     },
     "remoteArtifactDetailPage": {
       "back": "뒤로",
@@ -16510,7 +16513,8 @@
       "group_today": "오늘",
       "group_yesterday": "어제",
       "group_earlier": "이전",
-      "empty_title": "세션이 없습니다"
+      "empty_title": "세션이 없습니다",
+      "filter_label": "세션 필터"
     },
     "sessionsTab": {
       "agent": "에이전트",
@@ -19271,11 +19275,13 @@
       "agents_present_other": "에이전트 {{n}}개 참석",
       "agents_active_other": "{{n}}개 활동 중",
       "slots_open_other": "빈 슬롯 {{n}}개",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_label": "장면"
     },
     "worldsPopout": {
       "hide_controls": "컨트롤 숨기기",
-      "show_controls": "컨트롤 표시"
+      "show_controls": "컨트롤 표시",
+      "scene_label": "장면"
     },
     "membersPage": {
       "drawer_delegated_working": "위임한 작업 실행 중",
