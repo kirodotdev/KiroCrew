@@ -1467,18 +1467,18 @@ def test_the_running_config_never_diverges_from_the_stored_one(tmp_path, monkeyp
     ALSO still change memory on the success path, and a test that only pinned the
     failure could be satisfied by never touching memory at all.
     """
-    _point_home(tmp_path, monkeypatch)
-    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    with monkeypatch.context() as mp:
+        _point_home(tmp_path, mp)
+        _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
 
-    def _refuse(_values):
-        raise OSError("read-only data home")
+        def _refuse(_values):
+            raise OSError("read-only data home")
 
-    monkeypatch.setattr(L, "record_adoptions", _refuse)
-    failed = KiroCrewConfig.load()
-    assert failed.agent.subagent_timeout_secs == 1800
-    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+        mp.setattr(L, "record_adoptions", _refuse)
+        failed = KiroCrewConfig.load()
+        assert failed.agent.subagent_timeout_secs == 1800
+        assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
 
-    monkeypatch.undo()
     _point_home(tmp_path, monkeypatch)
     L._invalidate_config_cache()
     ok = KiroCrewConfig.load()
@@ -1501,22 +1501,22 @@ def test_a_failed_write_keeps_the_value_and_does_not_re_adopt_later(tmp_path, mo
     side, including the part that matters most: a later load must not delete the value
     again.
     """
-    _point_home(tmp_path, monkeypatch)
-    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    with monkeypatch.context() as mp:
+        _point_home(tmp_path, mp)
+        _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
 
-    def _fail_backup(_path):
-        raise OSError("no space left on device")
+        def _fail_backup(_path):
+            raise OSError("no space left on device")
 
-    monkeypatch.setattr(L, "_write_migration_backup", _fail_backup)
-    with caplog.at_level(logging.WARNING, logger=L.__name__):
-        failed = KiroCrewConfig.load()
+        mp.setattr(L, "_write_migration_backup", _fail_backup)
+        with caplog.at_level(logging.WARNING, logger=L.__name__):
+            failed = KiroCrewConfig.load()
 
-    # Nothing was destroyed, and memory did not run ahead of the file.
-    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
-    assert failed.agent.subagent_timeout_secs == 1800
-    assert not any("adopted current default" in r.getMessage() for r in caplog.records)
+        # Nothing was destroyed, and memory did not run ahead of the file.
+        assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+        assert failed.agent.subagent_timeout_secs == 1800
+        assert not any("adopted current default" in r.getMessage() for r in caplog.records)
 
-    monkeypatch.undo()
     _point_home(tmp_path, monkeypatch)
     L._invalidate_config_cache()
     later = KiroCrewConfig.load()
