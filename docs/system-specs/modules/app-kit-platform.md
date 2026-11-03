@@ -2815,7 +2815,12 @@ independently load-bearing:
   updates, and execution grants for catalog-listed names rather than falling
   back to the unpinned seed or an agent-writable external cache —
   `_resolve_registry_row` distinguishes "the document does not name this app"
-  (seed may answer) from "the document could not be asked" (refuse).
+  (seed may answer) from "the document could not be asked" (refuse). A
+  document that names the app but gives it no install coordinates (a
+  `builtin` row this host does not ship, or an invalid `source`) refuses the
+  same way, but `inventory_for_install` raises it as `CatalogNoInstallSource`
+  (a `CatalogUnavailable` subclass) so the refusal text says the catalog lists
+  the app with no install source instead of claiming it could not be reached.
 - **Supersession is URL-scoped.** A catalog row replaces a same-repo seed row
   (scheme/host case-folded, path case preserved); a different-repo name
   collision keeps the seed, so a republished document cannot silently re-home
