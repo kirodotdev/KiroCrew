@@ -1621,7 +1621,12 @@ commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
 version as an available update. With the app's update switch on, it then runs
-`updateCommand` on the next quit.
+`updateCommand` on the next quit. Windows shutdown, restart and sign-out end the
+app without a quit, so on Windows the app shows a "Kiro Crew update ready"
+notice at session end instead, telling the user to quit from the tray to
+install. It never runs `updateCommand` then: Windows gives the app a few seconds,
+and an apply cut short can leave a half-installed app. The notice appears only
+while the update switch is still on, and not once an install has started.
 
 **A package manager's own update pause holds only if the check command honours
 it**: on this managed lane while the app's update switch is on, and on the
