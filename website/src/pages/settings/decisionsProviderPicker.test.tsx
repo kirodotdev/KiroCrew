@@ -545,4 +545,62 @@ describe('fleet policy', () => {
     expect(screen.getByRole('radio', { name: 'Plumb-4B' })).toBeDisabled()
     expect(screen.getAllByText(/Turned off by your organization's policy/i)).toHaveLength(2)
   })
+
+  it('offers the GPU switch for Plumb and turns the CUDA runtime on', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsPlumbGpu').mockResolvedValue({
+      ...providerOf('plumb-4b'),
+      plumb_gpu: { available: true, enabled: true, reason: '' },
+    })
+    await renderPicker({
+      active: 'plumb-4b',
+      data: {
+        ...providerOf('plumb-4b'),
+        plumb_gpu: { available: true, enabled: false, reason: '' },
+      },
+    })
+    const box = await screen.findByRole('checkbox', { name: /Use the GPU/ })
+    expect(box).not.toBeDisabled()
+    expect(screen.getByText(/Plumb stays on the CPU/)).toBeTruthy()
+    fireEvent.click(box)
+    await waitFor(() => expect(save).toHaveBeenCalledWith(true))
+  })
+
+  it('disables the GPU switch and says there is no driver', async () => {
+    await renderPicker({
+      active: 'plumb-4b',
+      data: {
+        ...providerOf('plumb-4b'),
+        plumb_gpu: { available: false, enabled: false, reason: 'no_driver' },
+      },
+    })
+    const box = await screen.findByRole('checkbox', { name: /Use the GPU/ })
+    expect(box).toBeDisabled()
+    expect(screen.getByText(/No NVIDIA driver was found/)).toBeTruthy()
+    expect(screen.getByText(/keeps about 15\s*GB of memory in use/)).toBeTruthy()
+  })
+
+  it('does not offer the GPU switch for another local model', async () => {
+    await renderPicker({
+      active: 'laya',
+      data: {
+        ...providerOf('laya'),
+        plumb_gpu: { available: true, enabled: false, reason: '' },
+      },
+    })
+    await screen.findByRole('radio', { name: /Laya/ })
+    expect(screen.queryByRole('checkbox', { name: /Use the GPU/ })).toBeNull()
+  })
+
+  it('says when the GPU switch could not be saved', async () => {
+    vi.spyOn(api, 'saveDecisionsPlumbGpu').mockRejectedValue(new Error('no'))
+    await renderPicker({
+      active: 'plumb-4b',
+      data: {
+        ...providerOf('plumb-4b'),
+        plumb_gpu: { available: true, enabled: false, reason: '' },
+      },
+    })
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Use the GPU/ }))
+    expect(await screen.findByText('The GPU setting could not be saved.')).toBeTruthy()
+  })
 })

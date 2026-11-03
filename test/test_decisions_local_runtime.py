@@ -24,6 +24,7 @@ from conftest import requires_symlinks
 from kiro_crew import sandbox, sandbox_plan
 from kiro_crew.decisions import local_models
 from kiro_crew.decisions import local_runtime as lr
+from kiro_crew.decisions import local_torch
 from kiro_crew.testing.wait import wait_until
 
 _LAYA = local_models.get("laya")
@@ -242,6 +243,55 @@ class TestHappyPath:
         _wait_for(h.runtime, "running")
         h.runtime.activate(m, 41004)
         assert len(h.spawns) == 1 and h.procs[0].poll() is None
+        h.runtime.deactivate(wait=True)
+
+
+class TestPlumbGpuInstall:
+    def test_the_switch_on_installs_the_cuda_wheel_and_asks_for_cuda(
+        self, tmp_path, free_port, linux, monkeypatch
+    ):
+        monkeypatch.setattr(local_torch, "plumb_gpu_requested", lambda: True)
+        monkeypatch.setattr(local_torch, "driver_cuda_version", lambda: (13, 0))
+        h = _Harness(tmp_path)
+        h.runtime.activate(replace(_model(), id="plumb-4b"), 41080)
+        _wait_for(h.runtime, "running")
+        _venv, install = h.commands
+        cuda = local_torch.cuda_index_for_driver((13, 0))
+        assert cuda in install and lr.TORCH_CPU_INDEX not in install
+        argv = h.spawns[-1]
+        assert argv[argv.index("--device") + 1] == "cuda"
+        h.runtime.deactivate(wait=True)
+
+    def test_the_switch_off_keeps_the_cpu_wheel_and_device(
+        self, tmp_path, free_port, linux, monkeypatch
+    ):
+        monkeypatch.setattr(local_torch, "plumb_gpu_requested", lambda: False)
+        monkeypatch.setattr(local_torch, "driver_cuda_version", lambda: (13, 0))
+        h = _Harness(tmp_path)
+        h.runtime.activate(replace(_model(), id="plumb-4b"), 41081)
+        _wait_for(h.runtime, "running")
+        assert lr.TORCH_CPU_INDEX in h.commands[1]
+        assert h.spawns[-1][h.spawns[-1].index("--device") + 1] == "cpu"
+        h.runtime.deactivate(wait=True)
+
+    def test_flipping_the_switch_rebuilds_the_environment(
+        self, tmp_path, free_port, linux, monkeypatch
+    ):
+        requested = {"on": False}
+        monkeypatch.setattr(local_torch, "plumb_gpu_requested", lambda: requested["on"])
+        monkeypatch.setattr(local_torch, "driver_cuda_version", lambda: (12, 8))
+        h = _Harness(tmp_path)
+        model = replace(_model(), id="plumb-4b")
+        h.runtime.activate(model, 41082)
+        _wait_for(h.runtime, "running")
+        h.runtime.deactivate(wait=True)
+        h.commands.clear()
+        requested["on"] = True
+        h.runtime.activate(model, 41082)
+        _wait_for(h.runtime, "running")
+        assert [c[1] for c in h.commands] == ["venv", "pip"]
+        assert local_torch.cuda_index_for_driver((12, 8)) in h.commands[1]
+        assert h.spawns[-1][h.spawns[-1].index("--device") + 1] == "cuda"
         h.runtime.deactivate(wait=True)
 
 
