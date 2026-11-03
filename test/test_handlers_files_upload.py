@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -635,6 +636,103 @@ async def test_upload_html_under_an_image_extension_is_still_refused(
     assert "not really a .png image" in body["error"]
     assert "re-export" in body["error"]
     assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_upload_fits_a_file_system_with_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """On eCryptfs (NAME_MAX 143) a name under the fixed 200-byte cap still fits."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename="a" * 111 + ".txt", content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert len(stored_name.encode("utf-8")) <= 143
+    assert stored_name.endswith(".txt")
+
+
+@pytest.mark.asyncio
+async def test_a_relabelled_upload_still_fits_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """A .jpg whose bytes are WebP is stored as .webp, one byte longer, and must still fit."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    form = aiohttp.FormData()
+    form.add_field("file", _WEBP_HEAD, filename="p" * 130 + ".jpg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        [stored] = (await resp.json())["paths"]
+
+    stored_name = Path(stored).name
+    assert stored_name.endswith(".webp")
+    assert len(stored_name.encode("utf-8")) <= 143
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_video_temp_name_fits_a_short_name_limit(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+) -> None:
+    """A streamed part is written under the stored name plus ".part"; that must fit too."""
+    from kiro_crew.dashboard import part_stream
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.files._name_max", lambda _directory: 143, raising=False
+    )
+    temp_names: list[str] = []
+    real_init = part_stream._TempSink.__init__
+
+    def recording_init(self, dest: Path) -> None:
+        real_init(self, dest)
+        temp_names.append(self.tmp.name)
+
+    monkeypatch.setattr(part_stream._TempSink, "__init__", recording_init)
+    mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00" + bytes(range(256)) * 4
+    form = aiohttp.FormData()
+    form.add_field("file", mp4, filename="v" * 120 + ".mp4", content_type="video/mp4")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+
+    [temp_name] = temp_names
+    assert len(temp_name.encode("utf-8")) <= 143
+
+
+def test_the_stored_name_cap_follows_the_file_system_limit() -> None:
+    from kiro_crew.dashboard.file_api.uploads import _fit_stored_name
+
+    # 33 bytes of UUID prefix before the tail, 5 for a streamed part's ".part" after it.
+    assert len(_fit_stored_name("a" * 150 + ".txt", 143)) == 143 - 33 - 5
+    assert _fit_stored_name("a" * 150 + ".txt", 1024) == "a" * 150 + ".txt"
+    assert len(_fit_stored_name("a" * 230 + ".txt", 1024)) == 200
+
+
+def test_name_max_falls_back_when_the_file_system_cannot_say(tmp_path: Path, monkeypatch) -> None:
+    from kiro_crew.dashboard.file_api.uploads import _name_max
+
+    def refuse(_path: str, _name: str) -> int:
+        raise OSError("not supported")
+
+    assert _name_max(tmp_path) > 0
+    monkeypatch.setattr(os, "pathconf", refuse, raising=False)
+    assert _name_max(tmp_path) == 255
+    monkeypatch.delattr(os, "pathconf", raising=False)
+    assert _name_max(tmp_path) == 255
 
 
 @pytest.mark.asyncio
