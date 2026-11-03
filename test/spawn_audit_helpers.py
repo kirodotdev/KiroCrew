@@ -163,6 +163,22 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from a worker thread, never the event loop --
         # ``test/test_acp_pi_node_guard.py`` pins the wrap, the order and the thread.
         "acp/harness/pi_node.py::_node_version",
+        # The codex host-binary version probe, the same shape as the opencode
+        # version probe above. ONE fixed argv -- the host ``codex`` the harness
+        # resolved (mise, then the augmented PATH) plus the literal ``--version``
+        # -- no shell, a 10s timeout, stdin closed, an environment of only ``PATH``
+        # and ``HOME`` (plus, on Windows, the fixed start-up variables a process
+        # needs to start), and a cwd that is the session work dir; the agent
+        # supplies nothing to it in a turn, and stdout is read for a version alone.
+        # SANDBOX-WRAPPED before it is spawned: the caller
+        # (``acp/harness/codex.py::_host_codex_version``) hands it an argv already
+        # through ``wrap_argv_async`` with the session's credential mask, after the
+        # floor check in ``resolve_spawn_masks``, and reclaims the launcher on every
+        # path. The child runs in its own process group, killed and reaped on
+        # timeout. Called from a worker thread, never the event loop --
+        # ``test/test_codex_host_binary.py`` (``TestVersionProbeIsSandboxed``,
+        # ``TestVersionChild``) pins the wrap and the reaping.
+        "acp/harness/codex.py::_codex_version_child",
         # The DeepSeek Harness gate read-back, the same shape as the pi one above:
         # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async``
         # before it reaches this function, so the sandbox and credential mask are
