@@ -1031,6 +1031,24 @@ class TestVersionNewer:
             ("not-a-version", "1.0.0", False),
             ("1.0.0", "", False),
             ("", "", False),
+            # A PEP 440 suffix with no separator, as every insider build stamps.
+            ("0.5.0", "0.4.0rc3", True),
+            # The final release is newer than its own release candidate.
+            ("0.4.0", "0.4.0rc3", True),
+            ("v0.4.0", "0.4.0rc3", True),
+            ("1.0.0", "1.0.0-beta.1", True),
+            ("1.0.0+build.9", "1.0.0-rc.1", True),
+            # ...but not the other way round, and two pre-releases stay unordered.
+            ("0.4.0rc3", "0.4.0", False),
+            ("0.4.0rc4", "0.4.0rc3", False),
+            ("1.0.0-rc.1", "1.0.0+build.9", False),
+            # A leading "v" on either side.
+            ("v1.1.0", "1.0.0", True),
+            ("1.1.0", "v1.0.0", True),
+            # A numeric semver pre-release, and padding the old int() parse accepted.
+            ("2.0.0-1", "1.0.0", True),
+            ("1.0.0-0.3.7", "0.9.0", True),
+            (" 1.1.0", "1.0.0\n", True),
         ],
     )
     def test_version_newer(self, registry_ver, installed_ver, expected):
