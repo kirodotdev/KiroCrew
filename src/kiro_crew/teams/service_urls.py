@@ -146,7 +146,11 @@ class ServiceUrlStore:
                     self._read_rows
                 )
             except Exception:
-                logger.debug("Teams: serviceUrl store read failed", exc_info=True)
+                logger.warning("Teams: serviceUrl store could not be loaded", exc_info=True)
+                # A read that returned and then failed to load fails the same way
+                # every time, so keep the file aside before the next write rather
+                # than writing this process's few routes over it.
+                self._unparseable = True
                 self._loaded = True
                 return
             self._read_failed = read_failed
@@ -351,9 +355,12 @@ class ServiceUrlStore:
         if not isinstance(conversations, dict):
             return empty
         identities = data.get("identities")
+        if not isinstance(identities, dict):
+            # Unusable, like a non-string row below: drop it and keep the routes.
+            identities = {}
         by_identity = {
             key.lower(): value
-            for key, value in (identities or {}).items()
+            for key, value in identities.items()
             if isinstance(key, str) and isinstance(value, str)
         }
         out: dict[str, tuple[str, float]] = {}
@@ -373,7 +380,11 @@ class ServiceUrlStore:
             if not isinstance(url, str) or not connector_host_allowed(url):
                 continue
             seen = row.get("seen_at")
-            out[conversation_id] = (url, float(seen) if isinstance(seen, (int, float)) else 0.0)
+            try:
+                seen_at = float(seen) if isinstance(seen, (int, float)) else 0.0
+            except OverflowError:  # an integer too large for a float
+                seen_at = 0.0
+            out[conversation_id] = (url, seen_at)
         if len(out) > _MAX_ENTRIES:
             # Adopt only the newest rows. A file that arrived oversize would
             # otherwise be loaded whole and then evicted down on the event loop.
