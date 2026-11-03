@@ -32,7 +32,7 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
-  /** Slack Code: the registered switches. */
+  /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
 }
 
@@ -423,7 +423,7 @@ export function SlackPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      {/* ── Slack Code: switches and the manifest update ──
+      {/* ── Slack Code: switches, code-channel defaults, manifest update ──
           Right below the tokens, above the rest of the configuration: turning
           a switch on is followed by updating the Slack app, and both happen
           in this one card, with the page's own save inside it. */}

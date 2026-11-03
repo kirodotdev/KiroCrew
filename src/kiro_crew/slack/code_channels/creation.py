@@ -34,6 +34,68 @@ ORIGIN_CONTEXT_BLOCK_ID = "agent_channel_origin_context"
 
 _PERSON_SUBTYPES = (None, "file_share")
 
+#: Raw Slack id shapes for sender attribution: a workspace (``T``), an
+#: Enterprise Grid org (``E``) and a user (``U``, or ``W`` for an org-wide
+#: user, as in a ``<@...>`` mention). Anchored and case-sensitive, verbatim the
+#: shapes Shared Crew's reader checks ``slack_sender`` against, so a row this
+#: writes is one the reader accepts.
+_SLACK_TEAM_ID = re.compile(r"\AT[A-Z0-9]{1,31}\Z")
+_SLACK_ENTERPRISE_ID = re.compile(r"\AE[A-Z0-9]{1,31}\Z")
+_SLACK_USER_ID = re.compile(r"\A[UW][A-Z0-9]{1,31}\Z")
+
+
+def slack_sender(event: dict[str, Any]) -> dict[str, str] | None:
+    """Who sent *event*, as raw Slack ids for the bound session's user row.
+
+    ``{"team_id": "T...", "enterprise_id": "E..." or "", "user_id": "U..."}``,
+    or None -- the key is then left off the row -- for anything that is not a
+    person's own message (a bot copy, an edit, Slack's origin-context copy) and
+    whenever an id is missing or not a Slack id. Plain data for attribution
+    (Shared Crew reads it); nothing decides access from it.
+    """
+    if not is_directed_human_prompt(event) or _has_origin_context(event):
+        return None
+    return _validated_sender(event.get("team"), event.get("enterprise") or "", event.get("user"))
+
+
+def slack_sender_of_action(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Who clicked in a Slack interaction *payload*, in :func:`slack_sender`'s shape.
+
+    An interaction is always a person's click; its ids are read from the
+    payload's ``user``, ``team`` and ``enterprise`` objects, and validated the
+    same way.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    def _id(field: str) -> Any:
+        value = payload.get(field)
+        return value.get("id") if isinstance(value, dict) else None
+
+    return _validated_sender(_id("team"), _id("enterprise") or "", _id("user"))
+
+
+def _validated_sender(team: Any, enterprise: Any, user: Any) -> dict[str, str] | None:
+    if not (isinstance(team, str) and _SLACK_TEAM_ID.fullmatch(team)):
+        return None
+    if not (isinstance(user, str) and _SLACK_USER_ID.fullmatch(user)):
+        return None
+    if enterprise and not (
+        isinstance(enterprise, str) and _SLACK_ENTERPRISE_ID.fullmatch(enterprise)
+    ):
+        return None
+    return {"team_id": team, "enterprise_id": enterprise or "", "user_id": user}
+
+
+def _has_origin_context(event: dict[str, Any]) -> bool:
+    blocks = event.get("blocks")
+    if not isinstance(blocks, list):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("block_id") == ORIGIN_CONTEXT_BLOCK_ID
+        for block in blocks
+    )
+
 
 def is_directed_human_prompt(event: dict[str, Any]) -> bool:
     """A person's own message (never a bot's, never an edit or a join)."""

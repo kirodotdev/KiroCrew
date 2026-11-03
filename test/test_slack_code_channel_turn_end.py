@@ -32,6 +32,7 @@ def _turn(
         _mirror_active_task_title="",
         _mirror_chan="C0CODE",
         _mirror_stream_ts="",
+        _mirror_thinking_ts="",
         _mirror_thread="300.000001",
         _seen_tool_identity=set(),
         _turn_started=0.0,
