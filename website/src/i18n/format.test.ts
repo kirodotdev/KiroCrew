@@ -343,6 +343,13 @@ describe('fmtRelative', () => {
     expect(fmtRelative(new Date(now + 300_000), { now })).toBe('in 5m')
   })
 
+  it('keeps the number when asked, so a countdown never reads "tomorrow"', () => {
+    const in47h = new Date(now + 47 * 3600 * 1000)
+    expect(fmtRelative(in47h, { now })).toBe('tomorrow')
+    expect(fmtRelative(in47h, { now, numeric: 'always' })).toBe('in 1d')
+    expect(fmtRelative(at(86400), { now, numeric: 'always' })).toBe('1d ago')
+  })
+
   it('renders a missing timestamp as an em dash', () => {
     expect(fmtRelative(null)).toBe('—')
     expect(fmtRelative(0)).toBe('—')
