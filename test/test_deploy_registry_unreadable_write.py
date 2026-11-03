@@ -15,6 +15,8 @@ import logging
 from pathlib import Path
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
+from stray_line_helpers import too_deep_to_decode
 
 from kiro_crew.deploy import profiles as profiles_mod
 
@@ -159,3 +161,23 @@ def test_a_missing_registry_still_migrates_the_legacy_one(
     monkeypatch.setattr(profiles_mod, "_legacy_registry_path", lambda: legacy)
     _add_gamma()
     assert _names(registry) == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
+def test_a_registry_nested_past_the_limit_is_moved_aside_before_the_write(
+    registry: Path,
+) -> None:
+    """``json.loads`` raises ``RecursionError`` on it, which is not a ``ValueError``.
+
+    It is as unreadable as truncated JSON, so the write keeps its bytes aside and
+    starts from an empty registry instead of raising out of the profile add.
+    """
+    content = too_deep_to_decode().encode("ascii")
+    registry.write_bytes(content)
+    try:
+        _add_gamma()
+    except RecursionError:
+        pytest.fail("a registry nested past the limit raised out of the locked write")
+    assert _names(registry) == ["gamma"]
+    [aside] = _asides(registry)
+    assert aside.read_bytes() == content
