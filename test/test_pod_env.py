@@ -27,6 +27,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
 
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.testing.wait import default_timeout
 
 
 class TestSeedSanitization:
@@ -740,16 +741,34 @@ class TestEnvFileConcurrentWrite:
         rt.write_env_file(c, "demo", {"CHECKOUT": "/first"})
 
         blocked = threading.Event()
+        arrived = threading.Event()
+        real_file_lock = rt.file_lock
+
+        class _ArrivalFileLock:
+            """Reports that a writer reached the lock file, then takes the real lock."""
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                self._real = real_file_lock(*args, **kwargs)
+
+            def __enter__(self) -> object:
+                arrived.set()
+                return self._real.__enter__()
+
+            def __exit__(self, *exc: object) -> object:
+                return self._real.__exit__(*exc)
 
         def competing_writer() -> None:
             rt.write_env_file(c, "demo", {"SEED": "/s"})
             blocked.set()
 
         with rt.pod_name_mutex(c, "demo"):
+            monkeypatch.setattr(rt, "file_lock", _ArrivalFileLock)
             t = threading.Thread(target=competing_writer)
             t.start()
+            assert arrived.wait(
+                timeout=default_timeout()
+            ), "the competing writer never reached the lock"
             # The transaction holds the mutex, so the other writer cannot proceed.
-            # flake-ok: 1 s absence window while the mutex is held -- moved verbatim
             assert not blocked.wait(timeout=1.0), "a writer entered during the transaction"
             rt.write_env_file(c, "demo", {"APPROVAL": "yolo"})
         t.join(timeout=30)

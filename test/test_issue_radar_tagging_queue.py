@@ -25,6 +25,7 @@ import contextlib
 import json
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -36,6 +37,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import routes, store
+from kiro_crew.testing.wait import default_timeout
 
 
 def _merge(*args, ui_language: str = "", **kwargs):
@@ -608,8 +610,9 @@ class TestTaggingCacheLockSerializesWriters(unittest.TestCase):
 
         def merge():
             try:
-                # flake-ok: pre-existing 5 s barrier bound; an expiry raises into errors, which the test asserts empty, moved verbatim; tracked for a de-flake pass
-                start.wait(timeout=5)
+                # The suite's shared lost-run ceiling: both workers reach the barrier
+                # long before it, and an expiry raises into errors.
+                start.wait(timeout=default_timeout())
                 for n in range(100, 120):
                     _merge("o", "r", {str(n): [{"name": "docs", "reason": ""}]}, root=self.tmp)
             except BaseException as exc:  # pragma: no cover - surfaced below
@@ -617,8 +620,9 @@ class TestTaggingCacheLockSerializesWriters(unittest.TestCase):
 
         def prune():
             try:
-                # flake-ok: pre-existing 5 s barrier bound; an expiry raises into errors, which the test asserts empty, moved verbatim; tracked for a de-flake pass
-                start.wait(timeout=5)
+                # The suite's shared lost-run ceiling: both workers reach the barrier
+                # long before it, and an expiry raises into errors.
+                start.wait(timeout=default_timeout())
                 for n in range(1, 21):
                     store.drop_tagging_suggestions("o", "r", [n], root=self.tmp)
             except BaseException as exc:  # pragma: no cover - surfaced below
@@ -627,9 +631,13 @@ class TestTaggingCacheLockSerializesWriters(unittest.TestCase):
         threads = [threading.Thread(target=merge), threading.Thread(target=prune)]
         for t in threads:
             t.start()
+        # One deadline for both joins: if both workers hang, the waits must not add up past
+        # the runner's timeout, or it kills the test before the assertion names them.
+        deadline = time.monotonic() + default_timeout()
         for t in threads:
-            # flake-ok: pre-existing 30 s join bound whose expiry is silent before the errors check, moved verbatim; tracked for a de-flake pass
-            t.join(timeout=30)
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        hung = [t.name for t in threads if t.is_alive()]
+        assert not hung, f"worker thread(s) still running past the lost-run ceiling: {hung}"
         self.assertEqual(errors, [])
 
         final = store.read_tagging_cache("o", "r", self.tmp)
