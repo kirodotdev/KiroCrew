@@ -5955,6 +5955,15 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "Aprovações de ferramentas das sessões deste colega: {{n}}",
+      "trust": "Confiar nesta sessão",
+      "trust_hint": "Aprova isto e deixa esta sessão usar ferramentas sem perguntar até o {{productName}} reiniciar.",
+      "questions_label": "Perguntas das sessões deste colega",
+      "question_from": "{{name}} pergunta",
+      "answer_not_sent": "Sua resposta para {{name}} não foi enviada. Ela voltou para a caixa de mensagem de {{name}}.",
+      "answer_maybe_lost": "Sua resposta para {{name}} pode não ter chegado. Abra {{name}} para conferir."
+    },
     "agentLabel": {
       "builtin_conductor": "Maestro"
     },

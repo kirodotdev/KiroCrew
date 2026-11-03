@@ -1616,6 +1616,15 @@
     }
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "Tool approvals from this crewmate's sessions: {{n}}",
+      "trust": "Trust this session",
+      "trust_hint": "Approves this and lets this session run tools without asking until {{productName}} restarts.",
+      "questions_label": "Questions from this crewmate's sessions",
+      "question_from": "{{name}} asks",
+      "answer_not_sent": "Your answer to {{name}} did not send. It is back in {{name}}'s message box.",
+      "answer_maybe_lost": "Your answer to {{name}} may not have arrived. Open {{name}} to check."
+    },
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },

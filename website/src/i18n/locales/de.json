@@ -5805,6 +5805,15 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "mateWorkers": {
+      "approvals_label": "Tool-Freigaben aus den Sitzungen dieses Crewmates: {{n}}",
+      "trust": "Dieser Sitzung vertrauen",
+      "trust_hint": "Gibt dies frei und lässt diese Sitzung Tools ohne Nachfrage nutzen, bis {{productName}} neu startet.",
+      "questions_label": "Fragen aus den Sitzungen dieses Crewmates",
+      "question_from": "{{name}} fragt",
+      "answer_not_sent": "Deine Antwort an {{name}} wurde nicht gesendet. Sie steht wieder im Eingabefeld von {{name}}.",
+      "answer_maybe_lost": "Deine Antwort an {{name}} ist vielleicht nicht angekommen. Öffne {{name}}, um nachzusehen."
+    },
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },
