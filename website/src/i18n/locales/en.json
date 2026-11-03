@@ -4010,6 +4010,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "You can still start the backup yourself, but it uploads the sessions archive without redaction.",
         "backup_archive": "Stored backups",
         "backup_restore": "Restore",
+        "backup_show_all_archives": "Show all ({{count}})",
         "backup_restore_caveat": "Restore needs read access to the backup folder. The recommended least-privilege policy deliberately grants write only, so it will be denied unless the account's credentials are broader.",
         "backup_remote_error": "Couldn't read the stored backups just now.",
         "backup_status_failed": "Couldn't read the backup status.",

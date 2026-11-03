@@ -5350,6 +5350,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "你仍然可以自己启动备份，但会话存档会不经脱敏直接上传。",
         "backup_archive": "已存储的备份",
         "backup_restore": "恢复",
+        "backup_show_all_archives": "显示全部（{{count}}）",
         "backup_restore_caveat": "恢复需要对备份文件夹的读取权限。推荐的最小权限策略有意只授予写入权限，因此除非该账户的凭证权限更宽，否则恢复会被拒绝。",
         "backup_remote_error": "目前无法读取已存储的备份。",
         "backup_status_failed": "无法读取备份状态。",

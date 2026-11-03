@@ -875,3 +875,147 @@ describe('DrivePage sections: per-install backup attribution', () => {
     expect(screen.getAllByTestId('backup-archive-row')).toHaveLength(before)
   })
 })
+
+describe('DrivePage sections: the stored-archive list reaches every row, announced and keyboard-safe', () => {
+  const OTHER = 'c'.repeat(32)
+  const self = (n: number) => ({
+    key: `snapshots/${INSTALL_ID}/2026-09-0${n}.tar`, size: 10, modified: `2026-09-0${n}T00:00:00Z`,
+    install: INSTALL_ID, origin: 'self' as const,
+  })
+
+  function stubArchives(snapshot: RemoteBackup['snapshot']) {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: false, runs: {}, install: { id: INSTALL_ID, label: 'This Mac' },
+      remote: { ...emptyRemote, snapshot, installs: [{ id: INSTALL_ID, label: 'This Mac', origin: 'self' }] },
+    } as BackupStatus)
+  }
+
+  async function open() {
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    return within(await screen.findByTestId('backup-archive'))
+  }
+
+  it('shows the newest five per kind and offers the rest behind Show all', async () => {
+    stubArchives([1, 2, 3, 4, 5, 6, 7].map(self))
+    const archive = await open()
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(5)
+    const showAll = archive.getByTestId('backup-show-all-archives')
+    expect(showAll).toHaveTextContent('Show all (7)')
+    fireEvent.click(showAll)
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(7)
+    expect(archive.queryByTestId('backup-show-all-archives')).toBeNull()
+    // The control is gone, so focus moves to the first archive it revealed.
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[5]).toHaveFocus())
+  })
+
+  it('offers no Show all when every archive is already listed', async () => {
+    stubArchives([1, 2].map(self))
+    const archive = await open()
+    expect(archive.getAllByTestId('backup-archive-row')).toHaveLength(2)
+    expect(archive.queryByTestId('backup-show-all-archives')).toBeNull()
+  })
+
+  it('names each Restore with its archive key', async () => {
+    stubArchives([1, 2].map(self))
+    const archive = await open()
+    const buttons = archive.getAllByTestId('backup-restore')
+    expect(buttons[0]).toHaveAccessibleName(`Restore snapshots/${INSTALL_ID}/2026-09-01.tar`)
+    expect(buttons[1]).toHaveAccessibleName(`Restore snapshots/${INSTALL_ID}/2026-09-02.tar`)
+  })
+
+  it('announces the restored path through a status region', async () => {
+    stubArchives([self(1)])
+    vi.mocked(awsControlApi.backupRestore).mockResolvedValue({
+      downloaded: true, path: '/home/u/.kiro/restore/x', bytes: 10, origin: 'self', install: INSTALL_ID,
+    })
+    const archive = await open()
+    // Mounted empty before the restore: a region inserted already filled is
+    // not announced by every screen reader.
+    const region = screen.getByTestId('backup-restored-status')
+    expect(region).toHaveAttribute('role', 'status')
+    expect(region).toBeEmptyDOMElement()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    const restored = await screen.findByTestId('backup-restored')
+    expect(region).toContainElement(restored)
+    expect(restored).toHaveTextContent('/home/u/.kiro/restore/x')
+  })
+
+  it('Show all pressed during a restore does not pull focus back once it settles', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([1, 2, 3, 4, 5, 6, 7].map(self))
+    const archive = await open()
+    fireEvent.click(archive.getAllByTestId('backup-restore')[0])
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[0]).toBeDisabled())
+    fireEvent.click(archive.getByTestId('backup-show-all-archives'))
+    // The reader goes on to another control while the restore runs.
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/s', bytes: 10, origin: 'self', install: INSTALL_ID })
+    await waitFor(() => expect(archive.getAllByTestId('backup-restore')[5]).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+
+  it('Cancel pressed during another restore does not pull focus back once it settles', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([
+      { key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-02T00:00:00Z', install: OTHER, origin: 'other' },
+      self(1),
+    ])
+    const archive = await open()
+    const foreign = archive.getByRole('button', { name: new RegExp(`${OTHER}/o\\.tar`) })
+    fireEvent.click(foreign)
+    // With the strip still open, the reader restores their own archive instead.
+    fireEvent.click(archive.getByRole('button', { name: /2026-09-01\.tar/ }))
+    await waitFor(() => expect(foreign).toBeDisabled())
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-no'))
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/s', bytes: 10, origin: 'self', install: INSTALL_ID })
+    await waitFor(() => expect(foreign).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+
+  it('moves focus into the confirm strip and back to the row Restore', async () => {
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    const restore = archive.getByTestId('backup-restore')
+    restore.focus()
+    fireEvent.click(restore)
+    const no = archive.getByTestId('backup-restore-confirm-no')
+    await waitFor(() => expect(no).toHaveFocus())
+    fireEvent.click(no)
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toHaveFocus())
+  })
+
+  it('after a confirmed restore, focus returns to the row once Restore is enabled again', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-yes'))
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeDisabled())
+    finish({ downloaded: true, path: '/tmp/o', bytes: 10, origin: 'other', install: OTHER })
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toHaveFocus())
+  })
+
+  it('does not pull focus back after a confirmed restore when the reader moved on meanwhile', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof awsControlApi.backupRestore>>) => void
+    vi.mocked(awsControlApi.backupRestore).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    stubArchives([{ key: `snapshots/${OTHER}/o.tar`, size: 10, modified: '2026-09-01T00:00:00Z', install: OTHER, origin: 'other' }])
+    const archive = await open()
+    fireEvent.click(archive.getByTestId('backup-restore'))
+    fireEvent.click(archive.getByTestId('backup-restore-confirm-yes'))
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeDisabled())
+    // The reader goes on to another control while the restore runs.
+    const toggle = archive.getByRole('switch')
+    toggle.focus()
+    finish({ downloaded: true, path: '/tmp/o', bytes: 10, origin: 'other', install: OTHER })
+    await screen.findByTestId('backup-restored')
+    await waitFor(() => expect(archive.getByTestId('backup-restore')).toBeEnabled())
+    expect(toggle).toHaveFocus()
+  })
+})

@@ -5598,6 +5598,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Vous pouvez toujours démarrer la sauvegarde vous-même, mais l’archive des sessions est alors envoyée sans masquage.",
         "backup_archive": "Sauvegardes stockées",
         "backup_restore": "Restaurer",
+        "backup_show_all_archives": "Tout afficher ({{count}})",
         "backup_restore_caveat": "La restauration nécessite un accès en lecture au dossier de sauvegarde. La stratégie de moindre privilège recommandée n'accorde volontairement que l'écriture, elle sera donc refusée sauf si les identifiants du compte sont plus étendus.",
         "backup_remote_error": "Impossible de lire les sauvegardes stockées pour le moment.",
         "backup_status_failed": "Impossible de lire l'état des sauvegardes.",

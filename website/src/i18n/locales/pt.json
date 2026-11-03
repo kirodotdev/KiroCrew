@@ -5598,6 +5598,7 @@
         "backup_nightly_sessions_blocked_next_redaction": "Você ainda pode iniciar o backup manualmente, mas o arquivo de sessões é enviado sem ocultação.",
         "backup_archive": "Backups armazenados",
         "backup_restore": "Restaurar",
+        "backup_show_all_archives": "Mostrar tudo ({{count}})",
         "backup_restore_caveat": "A restauração precisa de acesso de leitura à pasta de backups. A política de privilégio mínimo recomendada concede deliberadamente apenas escrita, portanto será negada a menos que as credenciais da conta sejam mais amplas.",
         "backup_remote_error": "Não foi possível ler os backups armazenados agora.",
         "backup_status_failed": "Não foi possível ler o status do backup.",
