@@ -52,7 +52,6 @@ dead-identifier	docs/app-kit/api-reference.md	setAppConfig
 dead-identifier	docs/app-kit/api-reference.md	setDefaultSlot
 dead-identifier	docs/app-kit/api-reference.md	setGatewayConfig
 dead-identifier	docs/app-kit/api-reference.md	setSlotModel
-dead-identifier	docs/app-kit/manifest-reference.md	FeatureCard
 dead-identifier	docs/architecture/design-notes/mcp-gateway-oversize-response.md	unix_timestamp
 dead-identifier	docs/architecture/mcp.md	computer_call
 dead-identifier	docs/build/release.md	DebUpdater
