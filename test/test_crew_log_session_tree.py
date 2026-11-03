@@ -17,7 +17,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog, session_tree
+from kiro_crew.crew_log import CrewLog, CrewLogError, session_tree
 from kiro_crew.crew_log import store as crew_store
 from kiro_crew.crew_log.session_tree import (
     CHAIN_END_CAP,
@@ -1224,7 +1224,7 @@ def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
 
     from kiro_crew.crew_log.schema import Entry
 
-    with pytest.raises(Exception):
+    with pytest.raises(CrewLogError):
         # The premise of this test: the emitter cannot write it.
         _opened(_log("sid-refused", "chat-1"), "chat-1", previous="sid-old")
 
