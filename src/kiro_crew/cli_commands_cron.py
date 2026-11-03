@@ -720,9 +720,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 source="cli",
                 resources=f"job_id={args.job_id} reason=not_found",
             )
-            print(f"Job not found: {args.job_id}")
-            # Same exit as remove/pause/resume/trigger on a missing job, so a
-            # script that updates a stale id sees the failure.
+            print(f"Job not found: {args.job_id}", file=sys.stderr)
+            # Same exit and stream as remove/pause/resume/trigger on a missing
+            # job, so a script that updates a stale id sees the failure.
             sys.exit(1)
 
     elif action == "remove":
@@ -763,14 +763,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if svc.enable_job(args.job_id, enabled=False):
             print(f"Paused job: {args.job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {args.job_id}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "resume":
         if svc.enable_job(args.job_id, enabled=True):
             print(f"Resumed job: {args.job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {args.job_id}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "trigger":
@@ -780,7 +780,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         port, _evidence_backed = resolve_client_port_ex(None)
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(args.job_id, port, secret_path)
-        print(msg)
+        # The success line is the command's output; a failure reason goes to
+        # stderr like every other cron refusal.
+        print(msg, file=sys.stdout if ok else sys.stderr)
         sel().log_api_access(
             caller="cli",
             operation="cron.trigger",
@@ -815,7 +817,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
             source="cli",
             resources=f"script={args.script} reason={type(e).__name__}",
         )
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Set env vars before loading module so top-level code can see them
@@ -827,7 +829,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
     # Load the script module
     spec = importlib.util.spec_from_file_location("_cron_preview_module", script_path)
     if spec is None or spec.loader is None:
-        print(f"Error: cannot load {script_path}")
+        print(f"Error: cannot load {script_path}", file=sys.stderr)
         sys.exit(1)
     module = importlib.util.module_from_spec(spec)
     # Registered before exec, as the production child does: dataclasses resolves
@@ -836,11 +838,12 @@ def _cron_preview(args: argparse.Namespace) -> None:
     spec.loader.exec_module(module)
     func = getattr(module, func_name, None)
     if func is None:
-        print(f"Error: function '{func_name}' not found in {script_path}")
+        print(f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr)
         sys.exit(1)
     if inspect.iscoroutinefunction(func):
         print(
-            f"Error: function '{func_name}' is async; cron preview only supports synchronous functions"
+            f"Error: function '{func_name}' is async; cron preview only supports synchronous functions",
+            file=sys.stderr,
         )
         sys.exit(1)
 
