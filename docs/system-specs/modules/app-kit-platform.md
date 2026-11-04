@@ -77,6 +77,23 @@ removes:
 No key grants a capability, and voice stays off. `ChatEmbed.hide.test.tsx`
 checks each key both ways and compiles the union against an unknown key.
 
+## Embedded chat `renderers`
+
+`ChatEmbed`'s `renderers` prop (`readonly MessageRenderer[]`) is handed
+unchanged to its `ChatMessageList`, which merges it over the built-in registry
+with `mergeRenderers`, memoized on the array's identity: kind-matched
+built-ins, then host entries, then role-keyed built-ins. Reusing a built-in id
+drops that entry with every role it drew (the built-in `assistant` entry also
+draws the `streaming` tail), and a role claim without `match` outranks the
+role-keyed refinements (the compaction and session-reload notice on
+`assistant`). The documented restyling pattern therefore claims exactly what
+`resolveRenderer(m, defaultMessageRenderers)` gives the built-in `assistant`
+entry and wraps that entry's render. Renderers draw rows only: the composer,
+Stop, queue, approvals and follow-ups are mounted as before, and removing a
+part stays `hide`'s job. `ChatEmbed.renderers.test.tsx` checks that pattern
+draws the settled and the streaming reply while the user row and the
+compaction notice keep their built-in rows.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
