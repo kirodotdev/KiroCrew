@@ -1451,3 +1451,36 @@ def release_engine_installs(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(release_apply, "_install_engine", _record)
     yield calls
+
+
+@pytest.fixture(autouse=True)
+def _drain_dashboard_verify_slot() -> None:
+    """A verify thread that outlived its route's reply window still owns its browser
+    profile; the test that started it waits for it so the profile is removed within
+    the test's own scope.
+
+    ``dashboard_verify._SLOT`` is the authoritative drain signal: ``shutil.rmtree``
+    runs inside ``_drive``'s ``finally`` block before ``_SLOT.release()`` is called
+    in ``_run_in_slot``, so ``_SLOT.locked() == False`` means the profile is already
+    gone. This fixture covers every file that exercises the dashboard save, snapshot
+    or verify paths, including ``test_dashboard_save_tool*.py``,
+    ``test_dashboard_snapshot.py``, ``test_dashboard_verify.py``,
+    ``test_agent_panel_routes_dashboard.py``, ``test_agent_panel_routes_page.py``,
+    ``test_dashboard_preview_keep.py``, ``test_dashboard_gallery_approvals.py``,
+    ``test_session_dashboard.py`` and ``test_change_cards_settings.py``.
+
+    The import is deferred so the ~34 k tests that never touch the dashboard
+    browser runner pay no import cost: ``sys.modules`` lookup at teardown is
+    effectively free.
+    """
+    yield
+    dv = sys.modules.get("kiro_crew.dashboard_verify")
+    if dv is None or not dv._SLOT.locked():
+        return
+    from kiro_crew.testing.wait import wait_until
+
+    wait_until(
+        lambda: not dv._SLOT.locked(),
+        timeout=dv.RUN_TIMEOUT_SECONDS + 5.0,
+        describe=lambda: "dashboard verify slot still locked after test ended",
+    )
