@@ -119,35 +119,26 @@ def mrr_at_k(ranked: Sequence[str], gold: Sequence[str], k: int) -> float:
 def average_precision_at_k(ranked: Sequence[str], gold: Sequence[str], k: int) -> float:
     """Average precision at ``k`` for a single query (binary relevance).
 
-    Precision is taken at every rank inside the window that holds a gold
-    document, and the sum divided by ``min(|gold|, k)``.
+    Precision is taken at every rank in the window that holds a gold document,
+    and the sum divided by ``min(|gold|, k)``.
 
-    What this adds over the metrics already here: ``mrr`` stops at the FIRST
-    hit, so a query whose second gold doc lands at rank 9 rather than rank 2
-    scores identically under it. ``recall_all`` sees both placements as 1.0 as
-    long as the window contains them. Average precision separates them, which
-    is the signal the multi-gold classes (``multi_hop``, ``reinforcement``)
-    need once ``recall_any`` is saturated and only ranking quality is left to
-    measure.
+    ``mrr`` stops at the first hit and ``recall_all`` only checks the window, so
+    neither tells a second gold doc at rank 9 from one at rank 2. Average precision
+    does, which the multi-gold classes (``multi_hop``, ``reinforcement``) need once
+    ``recall_any`` is saturated.
 
-    The denominator is truncated rather than the textbook ``|gold|`` for the
-    reason :func:`ndcg_at_k` truncates its ideal ranking: a query with more gold
-    docs than fit in the window would otherwise be capped below 1.0 by
-    arithmetic rather than by ranking quality, and the two metrics would
-    disagree about what a perfect run is. The cost is that this is not directly
-    comparable to a published MAP computed over full gold, so the cut-off must
-    travel with the number wherever it is reported.
+    The denominator is truncated, not the textbook ``|gold|``, for the reason
+    :func:`ndcg_at_k` truncates its ideal ranking: otherwise a query with more gold
+    than fits in the window is capped below 1.0 by arithmetic, and the two metrics
+    disagree about a perfect run. So this is not comparable to a published MAP over
+    full gold; report the cut-off with the number.
 
-    Each gold doc counts once even if the ranked list repeats it. The sibling
-    scorers are immune to duplicates by construction (they compare sets) or
-    unaffected in practice; here a repeat would inflate the running hit count
-    and can push the result above 1.0, which is a wrong number rather than a
-    debatable one.
+    Each gold doc counts once even if the ranked list repeats it; a repeat would
+    inflate the hit count and can push the result above 1.0.
 
-    Lives here rather than in ``retrieval.py`` for the reason :func:`mrr_at_k`
-    does: that module's scorers are frozen against a differential harness, and
-    registering a new metric there would add a key the committed memory
-    baselines do not carry.
+    Lives here, not in ``retrieval.py``, for the reason :func:`mrr_at_k` does: that
+    module's scorers are frozen against a differential harness, and a new metric
+    there would add a key the committed memory baselines lack.
     """
     if not gold:
         return 0.0
@@ -495,49 +486,35 @@ def golden_set_dir() -> Path:
 def default_golden_set_path() -> Path:
     """Path to the golden set a no-argument run measures: v2.
 
-    v2, not v1, because v1 cannot discriminate: on it every class scores 1.000
-    recall under BOTH a keyword-only and a semantic retriever, so the number
-    confirms only that the harness ran. That is a property of v1's shape rather
-    than its size -- each of its gold documents is the only one in that corpus
-    using its topic's vocabulary, so matching a single term wins. v2 carries
-    competing distractors, and the legs separate on it: keyword-only
-    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.834 / MRR@3 0.804 /
-    MAP@3 0.781, against 0.926 / 0.900 / 0.898 for the semantic leg measured with
-    ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.250 keyword
-    versus 1.000 semantic. MAP separates the two legs more widely than either
-    companion (0.117, against 0.092 nDCG and 0.096 MRR), which is the multi-gold
-    ranking signal it exists to expose. Re-measure the semantic triple after a
-    model or quantization change; only the keyword triple is reproducible from
-    the corpus alone.
+    v1 cannot discriminate: every class scores 1.000 recall under both a
+    keyword-only and a semantic retriever, because each gold document is the only
+    one in its corpus using its topic's vocabulary. v2 adds competing distractors,
+    and the legs separate: keyword-only (FTS5 + graph, no model, deterministic)
+    scores nDCG@3 0.834 / MRR@3 0.804 / MAP@3 0.781, against 0.926 / 0.900 / 0.898
+    for the semantic leg with ``qwen3-embedding:0.6b``; ``multi_hop`` recall_all@3
+    reads 0.250 keyword versus 1.000 semantic. MAP separates the legs widest (0.117,
+    against 0.092 nDCG and 0.096 MRR). Re-measure the semantic triple after a model
+    or quantization change; only the keyword triple is reproducible from the corpus.
 
-    The gold labels are blind-audited rather than author-asserted: three
-    annotators on separate model families relabelled all 46 queries from an
-    anonymized packet (ids masked, classes and gold sets withheld, corpus
-    order shuffled), agreeing with the file on 43, 42 and 40 of 46. Agreement is
-    evidence the questions are unambiguous, NOT proof the labels are right --
-    every annotator was a language model, so a shared blind spot reads as
-    consensus. The five queries the annotators split on are rewritten so one
-    reading is right, gold sets unchanged (``label_revision`` 2).
-    Externally-anchored relevance judgments are the standing gap.
+    The gold labels are blind-audited: three annotators on separate model families
+    relabelled all 46 queries from an anonymized packet (ids masked, classes and
+    gold sets withheld, corpus order shuffled) and agreed with the file on 43, 42
+    and 40. That shows the questions are unambiguous, not that the labels are
+    right: every annotator was a language model, so a shared blind spot reads as
+    consensus. The five split queries are rewritten to one right reading, gold sets
+    unchanged (``label_revision`` 2). Externally-anchored judgments are still missing.
 
-    Consequence for anyone comparing runs: a v1 report and a v2 report measure
-    DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
-    stops that comparison -- ``bench kb-retrieval`` PRINTS its report and writes no
-    file (it has no ``--out-dir``), and ``bench compare`` only diffs saved
-    memory-retrieval reports, so it never sees a KB run at all. The one guard is
-    the corpus identity in the printed header, and the corpus NAME alone is not
-    enough of one: the blind audit's two label corrections change v2's gold
-    labels under the unchanged name ``kb_golden_v2``, so a print scored against
-    the original labels (keyword nDCG@3 0.825, ``multi_hop`` recall_all@3 0.400)
-    and one scored against the corrected labels (0.834, 0.250) differ by a
-    labelling change, not by retriever movement. The header therefore carries
-    the set's ``label_revision`` beside the name -- ``KB retrieval eval:
-    kb_golden_v2 (label revision 2)`` -- and a print made from the original
-    labels reads either the bare name or ``(unrevised labels)``. Two prints are
-    comparable only when both name AND revision match; read both before putting
-    two of these numbers side by side, and bump ``label_revision`` with every
-    edit under an existing name that can move a score -- a gold label, a
-    question or a document.
+    v1 and v2 reports measure different corpora and are not comparable, and nothing
+    stops the comparison: ``bench kb-retrieval`` only prints (no ``--out-dir``), and
+    ``bench compare`` only diffs saved memory-retrieval reports. The printed header
+    is the one guard, and the name alone is not enough: the audit's two label
+    corrections kept the name ``kb_golden_v2``, so the original labels (keyword
+    nDCG@3 0.825, ``multi_hop`` recall_all@3 0.400) and the corrected ones (0.834,
+    0.250) differ by labelling, not retriever movement. The header therefore reads
+    ``KB retrieval eval: kb_golden_v2 (label revision 2)``; original labels print
+    the bare name or ``(unrevised labels)``. Compare two prints only when name AND
+    revision match, and bump ``label_revision`` with every edit under an existing
+    name that can move a score: a gold label, a question or a document.
     """
     return golden_set_dir() / "kb_golden_v2.json"
 

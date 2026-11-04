@@ -330,32 +330,20 @@ def _metric_block(
 ) -> tuple[dict[str, float], dict[int, int], dict[int, str]]:
     """Metrics at each cut-off, the count measurable at each, and WHICH queries.
 
-    The measurability filter is the load-bearing part, and it exists because a
-    session-level cut-off is NOT free to choose. Retrieval asks the store for
-    ``limit`` *fragments*; the distinct sessions among them are however many they
-    happen to span. Measured on LoCoMo with a 20-fragment window: 8-14 distinct
-    sessions per query (median 12). So "the top 20 sessions" is not observable
-    from that window for ANY query, and computing it anyway silently reports a
-    falsely-lowered recall -- the metric would be bounded by the window rather
-    than by the ranker.
+    A cut-off counts only for queries whose ranked list has at least ``k`` entries.
+    Retrieval asks for ``limit`` fragments, and the distinct sessions among them vary:
+    on LoCoMo a 20-fragment window spans 8-14 sessions per query (median 12), so
+    "top 20 sessions" is never observable and scoring it would report a recall
+    bounded by the window, not the ranker. A bigger window is not the fix: MMR
+    reranks the returned set, so it would measure a different configuration than
+    production. The measurable count is returned so the report prints the real
+    denominator.
 
-    Enlarging the window is not the fix: MMR reranking is applied to the returned
-    set, so asking for more fragments changes the composition of the result and
-    therefore measures a different configuration than the one production runs.
-
-    A cut-off is therefore counted only for queries whose observed ranked list has
-    at least ``k`` entries, and the surviving count is returned so the report can
-    print the denominator instead of implying the full corpus.
-
-    The third return value is a DIGEST of the eligible query ids per cut-off, and
-    the count alone is not a substitute for it: eligibility depends on how many
-    distinct items the window happened to expose, so a ranking change can make one
-    query eligible and another ineligible and leave the count identical. Two means
-    over different populations would then pass a count check and be published as an
-    exact delta. A digest rather than the id list because a stored baseline is
-    committed to git and reviewed by a human -- 1977 ids per cut-off would make
-    that diff unreadable, and same-or-different is the only question the comparison
-    needs to answer.
+    The third value is a digest of the eligible query ids per cut-off. The count
+    alone can stay the same while a ranking change swaps which queries are
+    eligible, so two means over different populations would pass as an exact
+    delta. A digest, not the id list, because baselines are committed and reviewed
+    in git, and 1977 ids per cut-off would make that diff unreadable.
     """
     out: dict[str, float] = {}
     measurable: dict[int, int] = {}
