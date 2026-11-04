@@ -66,8 +66,19 @@ def test_install_runs_venv_then_hash_pinned_pip_and_writes_the_marker(
     # ``--clear`` empties the directory it is given: the venv's own, never the
     # prefix that also holds the downloaded Chromium.
     assert calls[0][-1] == str(install.venv_dir(prefix)) == str(prefix / "venv")
+    # The packaged interpreter has no ``ensurepip``: the venv is made without pip
+    # and the gateway's pip installs into it.
+    assert "--without-pip" in calls[0]
     assert str(install.venv_python(prefix)).startswith(str(prefix / "venv"))
-    assert calls[1][:4] == [str(install.venv_python(prefix)), "-I", "-m", "pip"]
+    assert calls[1][:7] == [
+        sys.executable,
+        "-I",
+        "-m",
+        "pip",
+        "--python",
+        str(install.venv_python(prefix)),
+        "install",
+    ]
     assert "--require-hashes" in calls[1] and calls[1][-1] == str(install.LOCK_FILE)
     marker = json.loads((prefix / install.MARKER_FILE).read_text(encoding="utf-8"))
     assert marker["version"] == HARNESS_VERSION

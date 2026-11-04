@@ -100,8 +100,6 @@ _SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("PYTHON", "PIP_")
 
 #: pip flags: hashes are mandatory, nothing is prompted, no version nag on stderr.
 _PIP_ARGS: tuple[str, ...] = (
-    "-m",
-    "pip",
     "install",
     "--require-hashes",
     "--no-input",
@@ -310,16 +308,36 @@ def _install_harness(
         notify(STAGE_CREATING_VENV, str(prefix))
         # ``--clear`` empties the venv directory, and only it: Chromium lives in
         # ``<prefix>/chromium``, beside ``<prefix>/venv``, and is not touched.
+        # ``--without-pip``: the packaged interpreter ships pip but not
+        # ``ensurepip``, so a venv that bootstraps its own pip dies. The gateway's
+        # pip installs into the venv instead (``--python`` below).
         _step(
             run,
-            [sys.executable, *_ISOLATED, "-m", "venv", "--clear", str(venv_dir(prefix))],
+            [
+                sys.executable,
+                *_ISOLATED,
+                "-m",
+                "venv",
+                "--clear",
+                "--without-pip",
+                str(venv_dir(prefix)),
+            ],
             _VENV_TIMEOUT_SECS,
             STAGE_CREATING_VENV,
         )
     notify(STAGE_INSTALLING_HARNESS, HARNESS_VERSION)
     _step(
         run,
-        [str(python), *_ISOLATED, *_PIP_ARGS, str(LOCK_FILE)],
+        [
+            sys.executable,
+            *_ISOLATED,
+            "-m",
+            "pip",
+            "--python",
+            str(python),
+            *_PIP_ARGS,
+            str(LOCK_FILE),
+        ],
         _PIP_TIMEOUT_SECS,
         STAGE_INSTALLING_HARNESS,
     )
