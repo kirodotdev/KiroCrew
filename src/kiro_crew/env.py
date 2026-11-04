@@ -58,77 +58,46 @@ _EXTRA_PATH_DIRS = (
 
 # --- extending the MCP binary search path -------------------------------------
 #
-# ``_EXTRA_PATH_DIRS`` above is a fixed set of guesses and can never be
-# complete: WHICH directory a package manager drops an MCP launcher into is
-# ecosystem-, distribution- and site-specific. A launcher installed outside that
-# list is invisible to every consumer of :func:`augmented_path` — the MCP probe,
-# the agent-config command resolver, and gatewayd's rewriter — so a server
-# declared by bare name never launches and the session simply comes up short of
-# tools, which reads as a missing capability rather than a launch failure.
+# ``_EXTRA_PATH_DIRS`` is a fixed set of guesses and can never be complete. A
+# launcher installed outside it is invisible to every consumer of the search path
+# (the MCP probe, the agent-config resolver, gatewayd's rewriter), so a server
+# declared by bare name never launches and the session silently lacks its tools.
 #
-# So the list is extensible from two sides, merged in :func:`mcp_search_path`.
-# Fixing it at that one function is deliberate: it is the path all three of those
-# consumers resolve against, so one contributed directory reaches all of them
-# without any of them knowing it exists.
+# Two sources extend it, both merged in :func:`mcp_search_path`, the one path all
+# three consumers resolve against:
 #
-# * ``mcp.extra_path_dirs`` in the config — an operator on one host.
-# * :func:`register_mcp_path_dirs` — a packaged/downstream build or an embedding
-#   runtime, which has no per-user config file to edit.
+# * ``mcp.extra_path_dirs`` in the config -- an operator on one host.
+# * :func:`register_mcp_path_dirs` -- a packaged build or embedding runtime with no
+#   per-user config file.
 #
-# Both go through the same absolute-only :func:`_validated_bin_dir` gate as this
-# module's own entries, and both rank ahead of :func:`augmented_path`'s guesses:
-# a directory somebody named explicitly is more specific than a built-in guess,
-# so it must win when the same command name exists in both. A spec's own
-# ``env.PATH`` still outranks everything -- an operator pin cannot be displaced.
+# Both pass the absolute-only :func:`_validated_bin_dir` gate and rank ahead of the
+# built-in guesses: a directory somebody named explicitly is more specific. A
+# spec's own ``env.PATH`` still outranks everything.
 #
-# The contribution reaches ONLY the resolution path, never
-# :func:`spec_env_path` (whose result :func:`emit_env` persists into consumed
-# config files) and never :func:`augmented_path` (the generic composition). Both
-# exclusions are load-bearing and are argued at :func:`mcp_search_path`.
+# The contribution reaches resolution only, never :func:`spec_env_path` (whose
+# result :func:`emit_env` persists into config files) and never
+# :func:`augmented_path`; :func:`mcp_search_path` argues both exclusions.
 #
-# ONE exception, for gatewayd: :func:`mcp_runtime_path` puts these directories on
-# the DAEMON's inherited PATH, which every pooled backend inherits in turn. A
-# contributed directory therefore reaches spawned processes, not resolution
-# alone. That is deliberate. The rewriter resolves a wrapper out of a contributed
-# dir, but the wrapper's own ``exec`` of a bare tool name is resolved by the
-# CHILD against its inherited PATH, so a resolution-only contribution does not
-# suffice to start such a server: it exits rc=127. Both exclusions above hold
-# even so -- :func:`augmented_path` and :func:`spec_env_path` keep the
-# contribution out, :func:`mcp_runtime_path` wraps the former rather than
-# altering it, and nothing is persisted.
+# Exception 1, gatewayd: :func:`mcp_runtime_path` puts these dirs on the DAEMON's
+# PATH, which every pooled backend inherits. A wrapper resolved out of a
+# contributed dir ``exec``s a bare tool name against the CHILD's PATH, so
+# resolution alone would exit rc=127. :func:`mcp_runtime_path` wraps
+# :func:`augmented_path` rather than altering it, and nothing is persisted.
+# Exception 2, the agent child (kiro-cli): see :func:`append_mcp_path_dirs`.
 #
-# A second exception, the agent child (kiro-cli), which starts an unwrapped
-# bare-name server itself: see :func:`append_mcp_path_dirs`.
+# Liveness: resolution callers read the current snapshot on every call. The
+# daemon's PATH is fixed when ``manager._spawn_once`` spawns it, and an ADOPTED
+# survivor never gets a new one (``manager``'s adoption gates compare the
+# target-stem map and code fingerprint, not PATH), hence ``restart=True`` on
+# ``mcp.extra_path_dirs``. A cold backend whose spec declares its own PATH does see
+# an edit live: ``gatewayd._acquire_backend`` composes it through
+# :func:`mcp_search_path` after ``_declared_env_pairs`` calls
+# ``KiroCrewConfig.load``, which re-pushes the snapshot.
 #
-# The gatewayd exception is also where the setting stops being live. A resolution caller
-# reads the current snapshot on every call, so an edit reaches it immediately;
-# the daemon's PATH is a process environment fixed when ``manager._spawn_once``
-# spawns it, and an ADOPTED survivor never has a new one applied (``manager``'s
-# adoption gates compare the target-stem map and the code fingerprint, neither of
-# which sees a PATH). Adding or clearing a directory therefore governs the
-# daemon, and every pooled backend that inherits its environment, only from the
-# next daemon onwards, which is why ``mcp.extra_path_dirs`` carries
-# ``restart=True``.
-#
-# One backend shape is the exception and applies an edit LIVE: a cold backend
-# whose spec declares its own PATH. ``gatewayd._acquire_backend`` composes that
-# value through :func:`mcp_search_path`, and the ``_declared_env_pairs`` call
-# that reads the declared sidecar first goes through ``KiroCrewConfig.load``,
-# whose loader re-pushes ``mcp.extra_path_dirs`` into the snapshot above. Such a
-# backend spawned after the edit therefore sees the new directory without a
-# restart. ``restart=True`` still states the operator-facing rule, because the
-# daemon's own PATH -- the case that decides whether a bare launcher name
-# resolves at all -- is fixed at spawn.
-#
-# The config value is PUSHED here by the loader (:func:`publish_config_path_dirs`,
-# called from ``KiroCrewConfig.load``) rather than read here. That is not
-# indirection for its own sake: :func:`mcp_search_path` is reached from the event
-# loop by every MCP probe (``probe_server``) and by the agent-config resolver, so
-# pulling the config here would stat/read/validate ``config.json`` on the loop.
-# Pushing keeps this module's whole search-path construction free of IO, and
-# costs nothing: every process that spawns an MCP server loads the config at
-# startup, and each later ``load()`` refreshes the snapshot, so an edited setting
-# reaches every RESOLUTION caller in this process without a restart.
+# The loader PUSHES the config value here (:func:`publish_config_path_dirs`, from
+# ``KiroCrewConfig.load``) instead of this module reading it, because
+# :func:`mcp_search_path` runs on the event loop (``probe_server``, the
+# agent-config resolver) and must do no IO.
 _registered_path_dirs: tuple[str, ...] = ()
 _config_path_dirs: object = ()
 _path_dirs_lock = threading.Lock()
@@ -159,26 +128,17 @@ def _warn_rejected_bin_dir(raw: object, source: str) -> None:
 def _validated_bin_dirs(values: object, source: str) -> list[str]:
     """Validate an operator-supplied LIST of bin directories, dropping bad ones.
 
-    ``~`` is expanded first (:func:`os.path.expanduser`, so ``~/.pixi/bin`` and a
-    ``~otheruser/bin`` both resolve the way an operator expects), then each entry
-    passes the same :func:`_validated_bin_dir` gate as this module's own
-    well-known dirs — one absolute directory, no path separator, no NUL. A
-    rejected entry is dropped rather than failing the whole list: one typo must
-    not cost an operator every other directory they declared, nor abort PATH
-    construction for every spawn.
+    ``~`` is expanded (:func:`os.path.expanduser`), then each entry passes
+    :func:`_validated_bin_dir`: one absolute directory, no path separator, no NUL.
+    A bad entry is dropped, not fatal, so one typo cannot cost the other entries.
 
-    A ``~otheruser`` prefix makes :func:`os.path.expanduser` call
-    ``pwd.getpwnam`` (POSIX) / the SAM database (Windows) SYNCHRONOUSLY, which on
-    an LDAP/SSSD/AD-backed host can block for as long as the directory service
-    takes to answer. That is tolerable on the paths that reach this at startup or
-    off the event loop, but NOT on the gateway's live ``.env`` PATH hot-reload,
-    which runs on the loop -- so that one caller expands and validates its
-    additions OFF the loop first (see :func:`extend_process_path` and
-    ``config.live.ConfigWatch._cycle``), and nothing on the loop reaches this
-    with an unexpanded ``~otheruser`` entry.
+    A ``~otheruser`` prefix makes ``expanduser`` query ``pwd.getpwnam`` / the SAM
+    database synchronously, which can block on an LDAP/SSSD/AD host. The live
+    ``.env`` PATH hot-reload runs on the event loop, so it expands OFF the loop first
+    (:func:`extend_process_path`, ``config.live.ConfigWatch._cycle``).
 
-    *values* is typed ``object`` because both sources are hand-editable and can
-    legally parse as something other than a list of strings.
+    *values* is ``object`` because both sources are hand-edited and may not parse as
+    a list of strings.
     """
     if not isinstance(values, (list, tuple)):
         if values not in (None, ""):
@@ -197,19 +157,13 @@ def _validated_bin_dirs(values: object, source: str) -> list[str]:
 def register_mcp_path_dirs(*dirs: str) -> tuple[str, ...]:
     """Contribute directories to the MCP binary search path. Returns the accepted ones.
 
-    The programmatic half of the seam described above: a downstream build, a
-    packaged distribution, or a host embedding Kiro Crew can name the directories
-    ITS package manager installs MCP launchers into, without forking this module
-    and without a per-user config file. Call it during startup, before the first
-    session or MCP probe; :func:`augmented_path` reads the registry on every
-    call, so a later registration still takes effect (nothing is cached).
+    For a downstream build or embedding host that has no per-user config file.
+    Call it at startup; the registry is read on every resolution, so a later
+    registration still takes effect.
 
-    Entries are validated (:func:`_validated_bin_dirs`) and deduped, so calling
-    this twice with the same directory is a no-op rather than a doubled PATH
-    entry — an idempotent installer hook can just call it again. Registration
-    order is precedence order, and the whole registry ranks behind
-    ``mcp.extra_path_dirs``: an operator's own host setting outranks a
-    distribution default.
+    Entries are validated (:func:`_validated_bin_dirs`) and deduped, so repeating a
+    call is a no-op. Registration order is precedence order, and the registry ranks
+    behind ``mcp.extra_path_dirs``: a host setting outranks a distribution default.
     """
     global _registered_path_dirs
     accepted = _validated_bin_dirs(list(dirs), "register_mcp_path_dirs")
@@ -222,16 +176,10 @@ def register_mcp_path_dirs(*dirs: str) -> tuple[str, ...]:
 def publish_config_path_dirs(values: object) -> None:
     """Record ``mcp.extra_path_dirs`` for :func:`augmented_path` to merge.
 
-    Called by ``KiroCrewConfig.load`` on every load, which is what keeps the
-    snapshot current without this module ever reading the config -- see the
-    section comment above for why the direction matters. Stores the value AS
-    AUTHORED and validates it at use: validation is pure string work, so keeping
-    it out of here keeps the load path's cost to one tuple assignment.
-
-    Idempotent and safe from any thread; a load that reports no setting clears
-    the snapshot, so removing the setting takes effect too. A malformed value is
-    stored as-is and rejected (with a warning) at use, so this cannot turn a
-    scalar into a directory entry.
+    Called by ``KiroCrewConfig.load`` on every load (see the section comment for
+    why the config is pushed). Stores the value as authored and validates it at
+    use, so a load costs one tuple assignment and a malformed value is rejected,
+    with a warning, at use. Thread-safe; a load with no setting clears the snapshot.
     """
     global _config_path_dirs
     # Copied to a tuple so a caller mutating its list afterwards cannot mutate
@@ -259,20 +207,15 @@ def _extra_mcp_path_dirs() -> list[str]:
 def prepare_env_path_additions(value: str) -> tuple[str, ...]:
     """Expand and validate a ``.env`` ``PATH`` line into absolute dirs to ADD.
 
-    The part of :func:`extend_process_path` that does NOT touch ``os.environ``,
-    split out so a caller on the event loop can run it OFF the loop. Each entry
-    goes through the absolute-directory gate the other operator lists use
-    (:func:`_validated_bin_dirs`, so ``~``/``~otheruser`` expands via
-    :func:`os.path.expanduser` and a relative or unexpanded entry such as
-    ``$HOME/bin`` is dropped with a warning), then is deduped in declared order.
+    The part of :func:`extend_process_path` that does not touch ``os.environ``.
+    Entries pass :func:`_validated_bin_dirs` (``~`` expands; a relative or
+    unexpanded entry such as ``$HOME/bin`` is dropped with a warning), then are
+    deduped in declared order.
 
-    This is where the only call that can BLOCK lives: a ``~otheruser`` entry
-    makes ``os.path.expanduser`` call ``pwd.getpwnam`` / the SAM database
-    synchronously, which an LDAP/SSSD/AD lookup can stall. The gateway's live
-    ``.env`` hot-reload (``config.live.ConfigWatch._cycle``) therefore calls THIS
-    off the loop and hands the result to :func:`extend_process_path`, so the only
-    work left on the loop is the ``os.environ`` mutation. Pure: no ``os.environ``
-    write, so it is safe to run in a worker thread.
+    Split out because a ``~otheruser`` lookup can block on a directory service:
+    ``config.live.ConfigWatch._cycle`` runs this in a worker thread and hands the
+    result to :func:`extend_process_path`, leaving only the ``os.environ`` write
+    on the loop.
     """
     wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
     return tuple(_dedup_dirs(_validated_bin_dirs(wanted, ".env PATH")))
@@ -281,23 +224,15 @@ def prepare_env_path_additions(value: str) -> tuple[str, ...]:
 def extend_process_path(value: str, *, prepared: tuple[str, ...] | None = None) -> None:
     """Append the directories of a data-home ``.env`` ``PATH`` line to this process's ``PATH``.
 
-    The ``.env`` loader seeds the environment with ``setdefault``, and a process
-    always has a ``PATH``, so this key cannot be applied the way every other one
-    is. The line is read as directories to ADD, never as a replacement: each
-    entry goes through :func:`prepare_env_path_additions` (``~``/``~otheruser``
-    expands, a relative or unexpanded entry such as ``$HOME/bin`` is dropped with
-    a warning), and lands behind the ``PATH`` the process already has, so it can
-    add a launcher but never shadow a system tool. The existing string is kept
-    byte for byte and an entry it already holds is skipped, so the repeated loads
-    of the file do not grow it.
+    The ``.env`` loader seeds with ``setdefault`` and a process always has a
+    ``PATH``, so this key needs its own rule: the line names directories to ADD
+    (validated by :func:`prepare_env_path_additions`), appended behind the existing
+    ``PATH`` so they can add a launcher but never shadow a system tool. The
+    existing string is kept byte for byte and held entries are skipped, so
+    repeated loads do not grow it.
 
-    *prepared* lets a caller that already ran :func:`prepare_env_path_additions`
-    OFF the event loop pass its result in, so the expand/validate step -- the one
-    that can block on a ``~otheruser`` directory-service lookup -- is not repeated
-    on the loop; only the ``os.environ`` mutation here runs on it. When omitted,
-    the expansion runs inline, which is what the boot and off-loop dashboard
-    callers want. A *prepared* value must be the result of
-    :func:`prepare_env_path_additions` over this same *value*.
+    *prepared* is :func:`prepare_env_path_additions` over this same *value*, run
+    off the event loop by the caller; when omitted the expansion runs inline.
 
     Nothing else about the environment widens. An agent child still receives its
     environment through the launch tail's scrub, and the terminal completion
@@ -321,16 +256,10 @@ def extend_process_path(value: str, *, prepared: tuple[str, ...] | None = None) 
 _NVM_ROOTS = ("{home}/.nvm", "{xdg_config}/nvm")
 _NVM_VERSION_GLOBS = tuple(f"{root}/versions/node/*/bin" for root in _NVM_ROOTS)
 
-# Directories a Node VERSION MANAGER installs a real ``node``/``npm`` into.
-# Deliberately NARROW and separate from ``_EXTRA_PATH_DIRS``: that list is a
-# broad "where might an MCP binary live" search path (it includes
-# ``~/.local/bin`` and, via :func:`augmented_path`, the running interpreter's
-# own ``bin``). Build callers prepend these entries to a PINNED PATH, so
-# reusing the broad list would defeat the pinning.
-#
-# Candidates are generous on purpose -- each is validated by probing for an
-# executable ``node`` inside it, so a layout guess that does not exist on this
-# host simply drops out instead of polluting PATH.
+# Directories a Node VERSION MANAGER installs a real ``node``/``npm`` into. Kept
+# narrow and separate from the broad MCP search list ``_EXTRA_PATH_DIRS``: build
+# callers prepend these to a PINNED PATH, which the broad list would defeat.
+# Candidates may be generous: each is kept only if it holds an executable ``node``.
 _NODE_MANAGER_GLOBS = (
     # mise -- the manager ``install.sh --mise`` and ``ensure-node.sh`` use.
     "{mise_data}/installs/node/*/bin",
@@ -341,25 +270,16 @@ _NODE_MANAGER_GLOBS = (
     # fnm, both layouts: XDG default and legacy ``~/.fnm``.
     "{home}/.local/share/fnm/node-versions/*/installation/bin",
     "{home}/.fnm/node-versions/*/installation/bin",
-    # fnm's out-of-the-box location on macOS: fnm does NOT follow XDG there,
-    # it uses the Apple data dir (``~/Library/Application Support/fnm``). This
-    # is the default on a plain macOS install with no ``FNM_DIR``/``XDG_DATA_HOME``
-    # override, so a glob tried on every platform (it harmlessly drops out where
-    # the dir does not exist) is what keeps the probe from a false "no Node".
+    # fnm's default on macOS: it uses the Apple data dir there, not XDG. Globbed
+    # on every platform; where the dir is absent it drops out.
     "{home}/Library/Application Support/fnm/node-versions/*/installation/bin",
-    # The layout the retired nvm/fnm scan also globbed (``<ver>/bin`` directly
-    # under the fnm root). Real fnm never produces it, but keeping the glob
-    # makes the consolidated search a strict superset of what it replaced —
-    # entries are validated/deduped downstream, so a layout that does not
-    # exist on this host simply drops out.
+    # ``<ver>/bin`` directly under the fnm root. Real fnm never produces it; the
+    # glob is harmless where absent.
     "{home}/.fnm/node-versions/*/bin",
 )
-# Shim / single-dir managers, which have no per-version path to glob.
-# Every one of these also appears in ``_EXTRA_PATH_DIRS`` above.
-# The repetition is deliberate, not an oversight: that list is the broad
-# MCP-binary search path and this one is the narrow build toolchain, and entries
-# here are additionally gated on actually containing an executable ``node``. If
-# a manager moves its shim dir, BOTH lists need editing.
+# Shim / single-dir managers, which have no per-version path to glob. Each also
+# appears in the broad ``_EXTRA_PATH_DIRS`` list on purpose (this one is the
+# narrow, ``node``-gated build list): if a manager moves its shim dir, edit BOTH.
 _NODE_MANAGER_DIRS = (
     "{mise_data}/shims",
     "{home}/.volta/bin",
@@ -484,26 +404,16 @@ def _manager_version_bin_dirs(
     all_versions: bool,
     patterns: tuple[str, ...] = _NODE_MANAGER_GLOBS,
 ) -> list[str]:
-    """Scan the per-version manager roots (:data:`_NODE_MANAGER_GLOBS`).
+    """Scan the per-version manager roots (*patterns*, default all of them).
 
-    *patterns* narrows the scan to a subset of those globs
-    (:func:`nvm_version_bin_dirs` passes nvm's), with the same ordering.
+    - ``all_versions=False`` (build PATH, :func:`node_bin_dirs`): only the best
+      version per root that holds an executable ``node``; a build wants one
+      real toolchain, not every stale major.
+    - ``all_versions=True`` (MCP discovery, :func:`node_all_bin_dirs`): every
+      existing version bin dir, ``node`` or not, because an ``npm i -g`` binary
+      lives under whichever version was active at install time.
 
-    The two callers need DIFFERENT policies, chosen deliberately:
-
-    - ``all_versions=False`` (build PATH, :func:`node_bin_dirs`): only the BEST
-      version per root, and only dirs that actually hold an executable ``node``
-      (:func:`_has_node`) — a build subprocess wants exactly one real toolchain,
-      not every stale major on the box.
-    - ``all_versions=True`` (MCP binary discovery, :func:`node_all_bin_dirs`):
-      EVERY version's bin dir that exists. A globally-installed MCP binary
-      (``npm i -g``) can live under any installed Node version — not just the
-      newest — and the dir does not need ``node`` beside it to be worth
-      searching, so filtering to the best version (or requiring ``node``) would
-      silently stop finding binaries that were found before.
-
-    Within each root, entries are ordered best version first
-    (:func:`_node_version_key`: numeric versions outrank alias names).
+    Within each root, best version first (:func:`_node_version_key`).
     """
     out: list[str] = []
     for pattern in patterns:
@@ -573,23 +483,16 @@ def node_bin_dirs() -> tuple[str, ...]:
        a plainly-installed Node from reading as "no Node at all" on a daemon
        whose ``$PATH`` omits it.
 
-    Every entry is verified to contain an executable ``node``, so the result is
-    only ever real toolchain directories. Only the BEST version per manager root
-    is returned: these entries go on the PATH of build subprocesses, and mise
-    alone can contribute ~18 install and alias directories on a developer box --
-    a PATH that long slows every exec lookup and buries the intended toolchain
-    behind stale majors (node 16/18 against a ``>=22`` engines field).
+    Every entry holds an executable ``node``. Only the best version per manager
+    root is kept: mise alone can add ~18 install and alias dirs, which slows every
+    exec lookup and buries the toolchain behind stale majors.
 
-    Why this exists: ``install.sh --mise`` and ``ensure-node.sh`` -- the
-    supported install path -- put node under ``$HOME``. A non-login gateway
-    (systemd / launchd) does not inherit those on ``$PATH``, and build callers
-    additionally pin PATH to system dirs, so without this the build cannot see
-    the very node Kiro Crew installed for it.
+    Why: ``install.sh --mise`` and ``ensure-node.sh`` put node under ``$HOME``,
+    which a non-login gateway (systemd / launchd) and PATH-pinned build callers
+    never see.
 
-    Cached for the process lifetime: the globs must run once, matching
-    :func:`node_all_bin_dirs`. A node installed while a long-lived
-    gateway is running is not seen until restart; call ``cache_clear()`` if it
-    ever needs re-discovery without one.
+    Cached for the process lifetime (the globs run once); a node installed later
+    needs a restart or ``cache_clear()``.
     """
     home = os.path.expanduser("~")
     mise_data = mise_data_dir(home)
@@ -625,13 +528,9 @@ def node_bin_dirs() -> tuple[str, ...]:
     out: list[str] = []
     seen: set[str] = set()
     for d in ordered:
-        # Normalize BEFORE the dedup check and before emitting. The glob branch
-        # yields `str(Path(...))` while the template branch yields the format
-        # string verbatim, so without this one function emits two spellings of
-        # the same directory -- on Windows "C:\home/.volta/bin" alongside
-        # "C:\home\.volta\bin". Windows tolerates forward slashes for filesystem
-        # calls (so the dir is still FOUND), but these strings are joined onto
-        # PATH and compared, and two spellings would also slip past `seen`.
+        # Normalize before dedup: globs yield `str(Path(...))`, templates yield the
+        # raw format string, so on Windows "C:\home/.volta/bin" and
+        # "C:\home\.volta\bin" would both reach PATH and slip past `seen`.
         d = os.path.normpath(d)
         if d in seen:
             continue
@@ -674,11 +573,8 @@ def _node_all_bin_dirs(
 ) -> tuple[str, ...]:
     """Cached body of :func:`node_all_bin_dirs`, keyed on its inputs.
 
-    Keyed on every root the globs format (``home``, ``mise_data``,
-    ``xdg_config``, the Windows globs from ``env_node_windows``) — matching the retired helper's ``home`` keying — so a
-    caller under a different HOME or config dir (tests patching ``expanduser``
-    or ``XDG_CONFIG_HOME``) gets a fresh scan instead of the previous key's
-    dirs, while the steady-state gateway still globs exactly once.
+    Keyed on every root the globs format, so a caller under a different HOME or
+    config dir gets a fresh scan while the steady-state gateway globs once.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -707,28 +603,14 @@ def _node_all_bin_dirs(
 def node_all_bin_dirs() -> tuple[str, ...]:
     """EVERY per-version node bin dir: manager installs, then Homebrew node kegs.
 
-    Managers are mise / asdf / nvm / fnm, all versions; the kegs come from
-    :func:`_homebrew_keg_node_bin_dirs`.
+    The broad MCP-discovery companion to :func:`node_bin_dirs`: an ``npm i -g``
+    binary lands under whichever version was active, so every existing version
+    dir is searched, ``node`` or not (policy in :func:`_manager_version_bin_dirs`).
+    Best version first within each root (:func:`_node_version_key`).
 
-    The broad MCP-binary search companion to :func:`node_bin_dirs`: a
-    globally-installed MCP binary (``npm i -g``) lands in the bin dir of
-    whichever Node version was active at install time, so PATH-based discovery
-    (:func:`augmented_path`) must see every version's bin dir — narrowing to
-    the best version per root would silently stop finding binaries installed
-    under a non-best version, with no error message. Dirs are included when
-    they exist; unlike the build tier they are NOT required to hold ``node``
-    (see :func:`_manager_version_bin_dirs` for the policy split).
-
-    Ordered best version first within each manager root — numeric versions
-    outrank alias names (:func:`_node_version_key`), so ``24.16.0`` is searched
-    before an ``lts-krypton`` alias rather than after it.
-
-    Cached for the process lifetime via :func:`_node_all_bin_dirs` (keyed on
-    the live ``home``/``mise_data``), matching :func:`node_bin_dirs`: the
-    filesystem glob must run exactly once — repeating it risks a GIL-contention
-    wedge. A Node version installed while the long-lived gateway is running is
-    not visible until restart; call ``_node_all_bin_dirs.cache_clear()`` if it
-    ever needs re-discovery without one.
+    Cached via :func:`_node_all_bin_dirs`: the glob must run once, since
+    repeating it risks a GIL-contention wedge. A version installed later needs a
+    restart or ``_node_all_bin_dirs.cache_clear()``.
     """
     home = os.path.expanduser("~")
     windows_globs = env_node_windows.manager_globs(home)
@@ -768,34 +650,19 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
 def resolve_uv() -> str | None:
     """Absolute path to a usable ``uv``, or ``None`` when genuinely absent.
 
-    ``uv`` is a DECLARED dependency (``setup.cfg``) shipped as a wheel, so a
-    stock ``pip install kirocrew`` always has the binary — but not necessarily
-    on ``PATH``: the wheel puts it in the venv's scripts dir, and an installed
-    systemd/launchd gateway runs with a minimal ``PATH``. So it is resolved
-    through the installed package first and looked up by name second:
+    The ``uv`` wheel puts the binary in the venv's scripts dir, which a
+    systemd/launchd gateway's minimal ``PATH`` omits. So:
 
-    1. ``uv.find_uv_bin()`` — the wheel's own locator. It raises ``UvNotFound``
-       (a ``FileNotFoundError`` subclass) on an install repackaged without the
-       binary, and a path it returns is only trusted when the file exists;
-    2. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
+    1. ``uv.find_uv_bin()``, trusted only when the file exists (it raises
+       ``UvNotFound``, a ``FileNotFoundError``, on a repackaged install);
+    2. ``shutil.which("uv")``, so a user's own uv still works;
     3. ``None``.
 
-    Never raises: an absent uv is a reportable condition for the caller (the
-    pptx-maker engine reports "unavailable", pod provisioning falls back to
-    pip). This is the ONE spelling of the ladder — pod provisioning and the
-    pptx-maker engine both consume it, so the minimal-``PATH`` case cannot be
-    handled two different ways.
-
-    The result is always absolute. ``shutil.which`` returns a RELATIVE path when
-    the ``PATH`` entry it matched is relative (``.``, ``bin``), and pod
-    provisioning runs uv with ``cwd=<checkout>``, where that relative path no
-    longer resolves: ``Popen`` raises ``FileNotFoundError`` before the pip
-    fallback can run. A relative hit is SKIPPED rather than absolutized against
-    the caller's cwd: a binary found through a relative ``PATH`` entry is
-    whatever happens to sit in the current directory, which is not the trust
-    level the rest of the ladder has, and the caller's fallback (pip) is the
-    right answer for it. The wheel locator's answer is trusted and only
-    normalised.
+    Never raises: pptx-maker reports "unavailable" and pod provisioning falls
+    back to pip. The result is always absolute. A ``which`` hit through a
+    relative ``PATH`` entry is SKIPPED, not absolutized: pod provisioning runs uv
+    with ``cwd=<checkout>`` where it would not resolve, and whatever sits in the
+    current directory does not deserve the trust the rest of the ladder has.
     """
     if _uv_package is not None:
         try:
