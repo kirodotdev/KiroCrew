@@ -8,6 +8,7 @@
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
 import { activeLocale } from '../../i18n/format'
+import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -599,13 +600,13 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
       // Names with characters that need URL encoding (e.g. spaces → %20) are
       // sent via the body-form route PUT /api/agents so a path-normalising
       // proxy cannot decode the path segment to an HTTP delimiter and return 502.
-      if (encodeURIComponent(name) !== name) {
+      // Same predicate as the server's `agent_record_write`.
+      if (needsProxySafePath(name)) {
         return put('/api/agents', { ...body, name }).then(j)
       }
       return put('/api/agents/' + encodeURIComponent(name), body).then(j)
     },
-    deleteKirocrewAgent: (name: string) =>
-      del('/api/agents/' + encodeURIComponent(name)).then(j),
+    deleteKirocrewAgent: (name: string) => del(agentPath(name)).then(j),
     /** Stage a crew's picture on the server (a `.pending` file only — the
      *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
      *  keeping the editor's Apply→Save two-step a real commit point). */
@@ -651,7 +652,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     uploadCrewAvatar: (name: string, file: Blob) => {
       const form = new FormData()
       form.append('file', file, 'avatar.png')
-      return fetch('/api/agents/' + encodeURIComponent(name) + '/avatar', {
+      return fetch(agentPath(name, '/avatar'), {
         method: 'POST',
         body: form,
       }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>

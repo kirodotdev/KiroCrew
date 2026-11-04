@@ -29,6 +29,7 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle, crewmate_carried, crewmate_stage
 from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
 from kiro_crew.dashboard import change_cards as cards
+from kiro_crew.dashboard.agent_name_segment import agent_route_name
 from kiro_crew.dashboard.change_cards import (
     CARD_TTL_SECONDS,
     MAX_LIVE_CARDS_PER_SLOT,
@@ -507,7 +508,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
                 job_id = f"job{len(writes.calls)}"
                 return web.json_response({"ok": True, "id": job_id, "revision": f"fp-{job_id}"})
             if key == "delete_crew":
-                writes.crews.pop(request.match_info["name"], None)
+                writes.crews.pop(agent_route_name(request), None)
             if key == "delete_cron":
                 expect = request.get(routes.REQ_CARD_UNDO_CRON_EXPECT)
                 writes.calls[-1] = (method, request.path, {"expect": expect})
@@ -531,6 +532,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
     app["avatars"] = avatars
     app.router.add_post("/api/agents", route("POST", "create"))
     app.router.add_delete("/api/agents/{name}", route("DELETE", "delete_crew"))
+    app.router.add_delete("/api/agents/b64/{name_b64}", route("DELETE", "delete_crew"))
     app.router.add_put("/api/members/{slug}/goals/long-term", route("PUT", "goal"))
     app.router.add_put("/api/members/{slug}/rules", route("PUT", "rules"))
     app.router.add_post("/api/crons", route("POST", "cron"))
@@ -858,7 +860,7 @@ def test_a_failed_later_step_lands_partial_with_a_working_undo(world, monkeypatc
     assert [(s["method"], s["path"]) for s in undo] == [
         ("DELETE", "/api/members/m1/import-files"),
         ("PUT", "/api/members/m1/rules"),
-        ("DELETE", "/api/agents/Release%20Captain"),
+        ("DELETE", "/api/agents/b64/UmVsZWFzZSBDYXB0YWlu"),
     ]
     assert undone == [200, 200, 200]
     assert store.get(card_id)["status"] == "undone" and writes.crews == {}

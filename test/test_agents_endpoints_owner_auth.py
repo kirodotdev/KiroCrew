@@ -49,6 +49,8 @@ _EXPECTED_MUTATING_ROUTES = {
     ("PUT", "/api/agents"),
     ("PUT", "/api/agents/{name}"),
     ("DELETE", "/api/agents/{name}"),
+    ("DELETE", "/api/agents/b64/{name_b64}"),
+    ("POST", "/api/agents/b64/{name_b64}/avatar"),
 }
 
 
@@ -102,7 +104,7 @@ async def test_every_mutating_agents_route_refuses_non_owner() -> None:
     assert routes  # belt and braces; the walk test above pins the floor
     async with TestClient(TestServer(app)) as client:
         for method, canonical in sorted(routes):
-            path = canonical.replace("{name}", "some-agent")
+            path = canonical.replace("{name_b64}", "c29tZS1hZ2VudA").replace("{name}", "some-agent")
             resp = await client.request(method, path, headers={"X-Test-User": "someone-else"})
             assert resp.status == 403, (
                 f"{method} {canonical} answered {resp.status} for a non-owner "
@@ -119,7 +121,7 @@ async def test_every_mutating_agents_route_refuses_app_tokens() -> None:
     routes = _mutating_agents_routes(app)
     async with TestClient(TestServer(app)) as client:
         for method, canonical in sorted(routes):
-            path = canonical.replace("{name}", "some-agent")
+            path = canonical.replace("{name_b64}", "c29tZS1hZ2VudA").replace("{name}", "some-agent")
             resp = await client.request(method, path, headers={"X-Test-App": "some-app"})
             assert resp.status == 403, (
                 f"{method} {canonical} answered {resp.status} for an "

@@ -69,6 +69,27 @@ def register(app: web.Application) -> None:
     # served through the authenticated API so remote dashboards work)
     app.router.add_get("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_get)
     app.router.add_post("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_upload)
+    # The same crew routes with the name as a base64url segment, for a name a
+    # path-normalising proxy would decode into a bare space and answer 502 on
+    # (`kiro_crew/agent_url_path.py`). Same handlers, so the same
+    # owner gate. aiohttp tries the longer static prefix `/api/agents/b64`
+    # first whatever the order here, so what keeps a crew named `b64` on its
+    # own routes is that no twin shares a method AND segment pattern with a
+    # path-form route (`test_no_b64_twin_shadows_a_path_form_route`).
+    app.router.add_delete("/api/agents/b64/{name_b64}", handlers.api_kirocrew_agent_delete)
+    app.router.add_get("/api/agents/b64/{name_b64}/avatar", handlers.api_kirocrew_agent_avatar_get)
+    app.router.add_post(
+        "/api/agents/b64/{name_b64}/avatar", handlers.api_kirocrew_agent_avatar_upload
+    )
+    app.router.add_get("/api/agents/b64/{name_b64}/capabilities", api_member_capabilities)
+    app.router.add_post("/api/agents/b64/{name_b64}/capabilities/preview", api_member_capabilities)
+    app.router.add_post(
+        "/api/agents/b64/{name_b64}/capabilities/detach", api_member_capabilities_detach
+    )
+    app.router.add_put("/api/agents/b64/{name_b64}/capabilities", api_member_capabilities)
+    app.router.add_get("/api/agents/b64/{name_b64}/worker-kit", api_member_worker_kit)
+    app.router.add_post("/api/agents/b64/{name_b64}/worker-kit/preview", api_member_worker_kit)
+    app.router.add_put("/api/agents/b64/{name_b64}/worker-kit", api_member_worker_kit)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
     app.router.add_post("/api/capability/agents/install", handlers.api_capability_agents_install)
