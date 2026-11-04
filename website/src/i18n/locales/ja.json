@@ -8058,6 +8058,9 @@
         "press_again_to_clear": "もう一度押すとクリアします",
         "reject": "却下",
         "search": "検索…",
+        "decided_clear_failed": "この通知を削除できませんでした。一覧でこの通知の ✕（{{button}}）を押すと再試行できます。",
+        "decision_failed_retry": "リクエストが失敗したため、この決定は記録されていない可能性があります。もう一度お試しください。承認または却下をもう一度押しても、決定が二重に適用されることはありません。",
+        "decision_recorded": "決定は記録されました。",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
         "try_a_different_search": "別の検索を試す"

@@ -8450,6 +8450,9 @@
         "press_again_to_clear": "Appuie à nouveau pour effacer",
         "reject": "Refuser",
         "search": "Rechercher…",
+        "decided_clear_failed": "Cette notification n’a pas pu être retirée. Pour réessayer, appuie sur son ✕ ({{button}}) dans la liste.",
+        "decision_failed_retry": "Cette décision n’a peut-être pas été enregistrée, car la requête a échoué. Réessaie : appuyer à nouveau sur Approuver ou Refuser n’appliquera pas ta décision deux fois.",
+        "decision_recorded": "Ta décision a été enregistrée.",
         "show_less": "Afficher moins",
         "show_muted_count": "Afficher en sourdine ({{count}})",
         "try_a_different_search": "Essaie une autre recherche"

@@ -8450,6 +8450,9 @@
         "press_again_to_clear": "Premi di nuovo per cancellare",
         "reject": "Rifiuta",
         "search": "Cerca…",
+        "decided_clear_failed": "Non è stato possibile rimuovere questa notifica. Per riprovare, premi la sua ✕ ({{button}}) nell’elenco.",
+        "decision_failed_retry": "Questa decisione potrebbe non essere stata registrata perché la richiesta non è riuscita. Riprova: premere di nuovo Approva o Rifiuta non applicherà la tua decisione due volte.",
+        "decision_recorded": "La tua decisione è stata registrata.",
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
         "try_a_different_search": "Prova una ricerca diversa"
