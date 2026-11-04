@@ -318,8 +318,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
     # Browser turn replays (``browser_harness.recording``): per-chat frames of the
-    # pages the agent and the person saw. Same model as the ledgers: only the
-    # owner-only replay routes read them, so no file-tool reader is legitimate.
+    # pages seen. Only the owner-only replay routes read them, like the ledgers.
     "browser-recordings",
     # The cross-process work root (``work_root``). Not credentials either: the
     # hazard is WRITE, and it is specific to this root's deterministic keys. A key
@@ -367,13 +366,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     "playwright-extension-token",
     # The Browser Harness venv the gateway executes for its daemon and helper
     # worker, with Kiro's Chromium beside it (``browser_harness.install``).
-    # READONLY in-sandbox, fenced from file tools so the agent cannot swap the
-    # interpreter the gateway runs against the user's whole Chrome.
+    # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
     "browser-harness",
     # The Harness daemon's runtime directory: its IPC socket (the Windows port file
     # carries the IPC token), pid file and log (``browser_harness.supervisor``).
-    # Whoever can open the socket drives the user's Chrome over raw CDP, so the
-    # gateway is the only client; masked in every sandbox mode too.
+    # Whoever can open the socket drives the user's Chrome, so only the gateway may.
     "browser-harness-ipc",
     # Kiro's Chromium profile. Cookies from a takeover login live here, and the
     # agent must never read them as a file; also sandbox-masked.
