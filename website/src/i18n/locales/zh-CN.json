@@ -21238,6 +21238,8 @@
     "switch_own_copy_body": "此 Bot 基于其专属的定制副本。切换到其他模板会丢弃该副本——之后无法再次选择它。",
     "band_added": "已添加到 {{name}}",
     "band_added_empty": "尚未添加任何能力。使用“添加能力”复制一些进来。",
+    "band_added_empty_builtin": "{{name}} 是内置代理，因此无法在此为其添加任何内容。",
+    "band_added_empty_fixed": "无法在此为 {{name}} 添加任何内容。",
     "band_added_note": "移除后可通过“添加能力”重新添加",
     "band_comes_with": "{{name}} 自带",
     "band_comes_with_note": "内置，无法移除",

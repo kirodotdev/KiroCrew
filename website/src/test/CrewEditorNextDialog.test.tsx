@@ -673,6 +673,41 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const added = await within(dialog).findByTestId('next-band-added')
     expect(within(added).getByTestId('next-band-added-empty')).toBeInTheDocument()
   })
+
+  it('points a mate that owns its file at the Add abilities button it shows', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, scope: 'mate' } })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(added).toHaveTextContent('removed ones can be added back with Add abilities')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('Nothing added yet. Use Add abilities to copy some in.')
+    expect(await within(dialog).findByTestId('next-pane-advanced')).toBeInTheDocument()
+  })
+
+  it('tells a built-in agent its abilities are fixed, never naming the hidden Add abilities button', async () => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode: 'shared' })
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('oncall is a built-in agent, so nothing can be added to it here.')
+    expect(added).not.toHaveTextContent('Add abilities')
+    expect(within(dialog).queryByTestId('next-pane-advanced')).toBeNull()
+  })
+
+  it.each([
+    ['a shared custom agent', { mode: 'shared' as const, source: 'custom' as const }],
+    ['a forked copy of a built-in agent', { mode: 'inherited' as const, source: 'builtin' as const }],
+    ['a legacy forked copy', { mode: 'legacy_snapshot' as const, source: 'unknown' as const }],
+  ])('tells a crewmate on %s that nothing can be added here, never naming the hidden button', async (_label, { mode, source }) => {
+    mockCaps.get.mockResolvedValue({ ...CAPS_VIEW, mode, template: { ...CAPS_VIEW.template, source } })
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(within(added).getByTestId('next-band-added-empty')).toHaveTextContent('Nothing can be added to oncall here.')
+    expect(added).not.toHaveTextContent('built-in')
+    expect(added).not.toHaveTextContent('Add abilities')
+  })
 })
 
 describe('CrewEditorNextDialog — Behavior / Approvals', () => {

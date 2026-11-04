@@ -22212,6 +22212,8 @@
     "switch_own_copy_body": "Este Bot baseia-se na sua própria cópia personalizada. Mudar para outro modelo descarta essa cópia: ela não pode ser selecionada de novo.",
     "band_added": "Adicionadas a {{name}}",
     "band_added_empty": "Nada adicionado ainda. Use Adicionar habilidades para copiar algumas.",
+    "band_added_empty_builtin": "{{name}} é um agente integrado, então nada pode ser adicionado a ele aqui.",
+    "band_added_empty_fixed": "Nada pode ser adicionado a {{name}} aqui.",
     "band_added_note": "as removidas podem ser adicionadas de novo com Adicionar habilidades",
     "band_comes_with": "Já vem com {{name}}",
     "band_comes_with_note": "integradas, não podem ser removidas",

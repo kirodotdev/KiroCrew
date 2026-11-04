@@ -21725,6 +21725,8 @@
     "switch_own_copy_body": "Dieser Bot basiert auf einer eigenen angepassten Kopie. Der Wechsel zu einer anderen Vorlage verwirft diese Kopie – sie kann nicht erneut ausgewählt werden.",
     "band_added": "Zu {{name}} hinzugefügt",
     "band_added_empty": "Noch nichts hinzugefügt. Nutze „Fähigkeiten hinzufügen“, um welche zu übernehmen.",
+    "band_added_empty_builtin": "{{name}} ist ein eingebauter Agent, daher kann hier nichts hinzugefügt werden.",
+    "band_added_empty_fixed": "Zu {{name}} kann hier nichts hinzugefügt werden.",
     "band_added_note": "entfernte kannst du mit „Fähigkeiten hinzufügen“ wieder hinzufügen",
     "band_comes_with": "In {{name}} enthalten",
     "band_comes_with_note": "integriert, nicht entfernbar",
