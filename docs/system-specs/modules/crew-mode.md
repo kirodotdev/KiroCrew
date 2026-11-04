@@ -4098,7 +4098,12 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   **`hooks`, `permissions` and `toolsSettings` are carried exactly**
   (`mate_spec_policy.layer_policy`): each hook is added beside the base's, each
   permission rule beside the base's rules, and a `toolsSettings` entry is copied
-  whole for a tool the base sets nothing for. **`toolsSettings` is an allowlist**
+  whole for a tool the base sets nothing for. An `mcp` `allow` the worker's
+  `allowedTools` list would drop lands as that list's matching `@server` /
+  `@server/tool` refs (`mate_spec_policy._carry_mcp_allow`), also for a server the
+  base declares, whose own `allowedTools` refs the file does not carry; the
+  ceiling then filters the merged list like any other grant. Only when those refs
+  cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
   the read and write tools, and `web_fetch.blocked`, each only when KAS's
@@ -4107,8 +4112,8 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   `denyByDefault`, `trusted`, `subagent.availableAgents` even when empty), is
   refused by name. One that cannot land as written (anything outside the
   allowlist, an entry for a tool the base sets differently or under another
-  spelling of it, a `permissions` block KAS would refuse whole, an `allow` rule
-  KAS's projection drops beside the worker's `allowedTools` list
+  spelling of it, a `permissions` block KAS would refuse whole, a built-in
+  `allow` rule KAS's projection drops beside the worker's `allowedTools` list
   (`kas_tool_view.permission_allow_derivable`), a hook past the
   `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
