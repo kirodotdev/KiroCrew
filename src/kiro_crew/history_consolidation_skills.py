@@ -626,7 +626,13 @@ def _stage_skill_update(
     90s, fail-open); (c) use the redacted merge as the proposed body, else
     fall back to the candidate's own procedure (also on oversize); (d) stage
     under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
-    audit with outcome ``staged_update``."""
+    audit with outcome ``staged_update``.
+
+    When an update is already queued on the current live version, (b) merges
+    into ITS body. If that merge succeeds, the candidate also takes the queued
+    triggers and description, and staging removes exactly that queued
+    candidate (``supersede_slug``). Otherwise nothing is superseded and the
+    new candidate is queued beside it."""
     loader = self._skills_loader
     if loader is None:
         return
@@ -689,6 +695,35 @@ def _stage_skill_update(
     # one input reaching the model raw. (Redaction also runs on the merge
     # OUTPUT, which is too late to protect the prompt.)
     live_prose = _redact(_strip_skill_frontmatter(live_body))
+    # An update already queued for this skill, from an earlier session, is
+    # the merge base, so a successful merge carries its requirement and can
+    # replace it. Only one built on the current live version counts; an older
+    # one is refused as stale at approval anyway, so merging from live is the
+    # better base. A queued one that ships a script this candidate does not
+    # ship is not used either: approval copies only the approved candidate's
+    # scripts, so a body merged from it would cite a script this candidate
+    # lacks. Unknown queued scripts count as such a script.
+    from kiro_crew.skill_runtime.pending_updates import queued_update_for
+    from kiro_crew.skills_script_refs import shippable_script_name
+
+    _queued = queued_update_for(loader, target_key, base_version)
+    if _queued is not None:
+        _staged_script_names = {
+            fn
+            for fn in (
+                str(s.get("filename", "")).strip() for s in (scripts or []) if isinstance(s, dict)
+            )
+            if shippable_script_name(fn)
+        }
+        _queued_scripts = _queued.get("scripts")
+        if _queued_scripts is None or not set(_queued_scripts) <= _staged_script_names:
+            _queued = None
+    _merge_base_is_queued = False
+    if _queued is not None:
+        _queued_prose = _redact(_strip_skill_frontmatter(_queued.get("content")))
+        if _queued_prose:
+            live_prose = _queued_prose
+            _merge_base_is_queued = True
 
     merged: "str | None" = None
     if live_prose and self._event_loop is not None:
@@ -728,6 +763,15 @@ def _stage_skill_update(
     # candidate did not supply one.
     _live_triggers = _frontmatter_value(live_body, "triggers")
     _live_description = _frontmatter_value(live_body, "description")
+    # The queued update is replaced only when its body actually reached the
+    # merged text. On a failed, oversized or unavailable merge this candidate
+    # carries only its own procedure, so the queued one stays beside it.
+    _supersede = _queued if (used_merge and _merge_base_is_queued) else None
+    if _supersede is not None:
+        # The queued update already carries the live triggers merged with its
+        # own, so it is the base this candidate's triggers are added to.
+        _live_triggers = _merge_trigger_lists(_live_triggers, str(_supersede.get("triggers") or ""))
+        _live_description = str(_supersede.get("description") or "") or _live_description
     _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
     _staged_description = description or _live_description
     with self._skill_publication_guard(
@@ -747,6 +791,10 @@ def _stage_skill_update(
             base_version=base_version,
             refusal=refusal,
             rejected_scripts=rejected_scripts,
+            supersede_slug=_supersede["slug"] if _supersede is not None else None,
+            supersede_created_at=(
+                (_supersede.get("created_at") or None) if _supersede is not None else None
+            ),
         )
         if name:
             publication.mark_committed()
@@ -881,6 +929,12 @@ def _process_auto_skills(
             # for good. Downgrade to a NEW candidate instead: it only overlaps
             # another *proposal*, which the human reviews side by side anyway.
             if verdict == VERDICT_UPDATE and target:
+                # An UPDATE naming a queued UPDATE candidate is about that
+                # candidate's live skill: point it there, so it is merged into
+                # the queued update instead of queued beside it as a new skill.
+                from kiro_crew.skill_runtime.pending_updates import live_target_of_pending_update
+
+                target = live_target_of_pending_update(self._skills_loader, target) or target
                 try:
                     _target_is_live = self._skills_loader.read_auto_skill_body(target) is not None
                 except Exception:

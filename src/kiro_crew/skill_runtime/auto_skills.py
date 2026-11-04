@@ -660,6 +660,84 @@ def _auto_slug_available(
     return not pending_dir.exists() or loader._read_pending_meta(slug).get("kind") == "update"
 
 
+def _pending_script_names(pdir: Path, meta: dict) -> set[str] | None:
+    """Every script a pending candidate ships, from its metadata and its tree.
+
+    Names under ``scripts/`` are relative paths. ``None`` when either source
+    cannot be read: a ``scripts`` field that is not a list of strings, a
+    ``scripts`` entry that is a symlink or not a directory, or a failed walk.
+    """
+    names: set[str] = set()
+    listed = meta.get("scripts", [])
+    if not isinstance(listed, list) or not all(isinstance(n, str) for n in listed):
+        return None
+    names.update(listed)
+    sdir = pdir / "scripts"
+    if sdir.is_symlink():
+        return None
+    if not sdir.exists():
+        return names
+    if not sdir.is_dir():
+        return None
+    try:
+        for entry in sdir.rglob("*"):
+            if entry.is_symlink() or not entry.is_dir():
+                names.add(entry.relative_to(sdir).as_posix())
+    except OSError:
+        return None
+    return names
+
+
+def _supersede_pending_update(
+    loader: SkillsLoader,
+    root: Path,
+    target: str,
+    slug: str,
+    *,
+    created_at: str | None,
+    keep: str,
+    kept_scripts: list[str],
+) -> tuple[str, str] | None:
+    """Remove the one queued UPDATE candidate ``slug`` the caller merged from.
+
+    The caller holds :func:`_auto_slug_claim_lock`. The directory is removed
+    only when it is still that candidate: its metadata names ``kind ==
+    "update"`` and this ``target``, and, when ``created_at`` is given, the
+    same ``created_at``. Anything else (unreadable metadata, another target,
+    a candidate re-staged under the same slug) is left alone. Returns
+    ``(slug, consumed_at)`` when removed so the caller can retire its
+    notification once the lock is released, else ``None``.
+
+    The queued candidate is also kept when it ships any script not in
+    ``kept_scripts`` (the filenames the new candidate wrote): approval copies
+    only the approved candidate's scripts, so removing it would drop a script
+    its merged body may cite. Scripts that cannot be listed keep it too.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if slug == keep or not sk._AUTO_NAME_PATTERN.match(slug):
+        return None
+    child = root / slug
+    if child.is_symlink() or not child.is_dir():
+        return None
+    meta = loader._read_pending_meta(slug)
+    if meta.get("kind") != "update" or meta.get("target") != target:
+        return None
+    if created_at and meta.get("created_at") != created_at:
+        return None
+    queued_scripts = _pending_script_names(child, meta)
+    if queued_scripts is None or not queued_scripts <= set(kept_scripts):
+        return None
+    consumed_at = datetime.now(tz=timezone.utc).isoformat()
+    try:
+        shutil.rmtree(child)
+    except OSError:
+        logger.warning("Could not remove superseded pending update %s", slug)
+        return None
+    logger.info("Superseded pending skill update %s (target %s)", slug, target)
+    return (slug, consumed_at)
+
+
 def stage_skill_candidate(
     loader: SkillsLoader,
     slug: str,
@@ -676,6 +754,8 @@ def stage_skill_candidate(
     refusal: ClaimRefusal | None = None,
     missing_scripts: list[str] | None = None,
     rejected_scripts: dict[str, list[str]] | None = None,
+    supersede_slug: str | None = None,
+    supersede_created_at: str | None = None,
 ) -> str | None:
     """Write a skill candidate to the pending queue (not live).
 
@@ -701,6 +781,12 @@ def stage_skill_candidate(
     not ship, and ``rejected_scripts`` maps each script the static validator
     refused to its findings. Each is written into ``.meta.json`` only when
     non-empty, so the reviewer sees why a cited script is absent.
+
+    ``supersede_slug`` names the queued UPDATE candidate this one was merged
+    from. For an update, that one candidate is removed once this one is fully
+    written, if it is still a ``kind == "update"`` candidate for the same
+    ``target`` (and, when ``supersede_created_at`` is given, the same
+    ``created_at``). No other queued candidate is touched.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
     from kiro_crew.skills_script_refs import bound_rejected_scripts, shippable_script_name
@@ -816,6 +902,27 @@ def stage_skill_candidate(
             # Roll back the atomic claim so the slug can be re-staged cleanly.
             shutil.rmtree(pdir, ignore_errors=True)
             raise
+        # The caller merged this candidate from the queued update it names, so
+        # that one candidate is superseded. It is removed only AFTER this
+        # candidate is fully written, so a failed write above leaves the queue
+        # as it was.
+        superseded = (
+            _supersede_pending_update(
+                loader,
+                root,
+                target,
+                supersede_slug,
+                created_at=supersede_created_at,
+                keep=pdir.name,
+                kept_scripts=script_names,
+            )
+            if _claim == "pending-update" and target and supersede_slug
+            else None
+        )
+    if superseded is not None:
+        sk._emit_pending_consumed(
+            {"slug": superseded[0], "outcome": "superseded", "consumed_at": superseded[1]}
+        )
     logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
     # Notify any registered observer (the gateway wires a bell-feed
     # notification + a ``skills.pending_changed`` WS event) so a candidate
