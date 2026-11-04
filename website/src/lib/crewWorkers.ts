@@ -83,7 +83,14 @@ export interface LiveCrewWorkerRow extends CrewWorkerRowLike {
  *  describe another gateway's crew and are left out. */
 export function liveCrewWorkers(slots: readonly LiveCrewWorkerRow[], root: string): CrewWorker[] {
   if (!root) return []
-  return slots.filter(s => s.crew_root === root && !s.peer_id).map(s => ({
+  return slots.filter(s => s.crew_root === root && !s.peer_id).map(s => liveWorkerRow(s, root))
+}
+
+/** One open slot row shaped as a worker-list row: the one mapping both the Crew
+ *  tab (`liveCrewWorkers`) and a crewmate's Sessions tab (`liveMateWorkers`) use,
+ *  so a row reads the same status on both. */
+function liveWorkerRow(s: LiveCrewWorkerRow, root: string): CrewWorker {
+  return {
     key: s.key,
     title: s.title || '',
     agent: s.agent || '',
@@ -95,7 +102,18 @@ export function liveCrewWorkers(slots: readonly LiveCrewWorkerRow[], root: strin
     ledger_item: '',
     created_by: s.created_by || root,
     dispatched_by: s.created_by || root,
-  }))
+  }
+}
+
+/** A crewmate (mate) thread's OPEN sessions from the slot store, shaped as
+ *  worker-list rows: those stamped `mate_root` for it, at any depth, as
+ *  `liveCrewWorkers` reads `crew_root`. Birth attribution (`created_by`) alone does
+ *  not count: an adopted or released session keeps it but is no longer the mate's.
+ *  The mate's Sessions tab merges them with `GET .../crew-workers` like the Crew
+ *  tab does. */
+export function liveMateWorkers(slots: readonly (LiveCrewWorkerRow & { mate_root?: string })[], root: string): CrewWorker[] {
+  if (!root) return []
+  return slots.filter(s => s.mate_root === root && !s.peer_id && s.key !== root).map(s => liveWorkerRow(s, root))
 }
 
 /** The worker list as shown: the route's rows (which win where both name a key,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, mergeCrewWorkers, crewRowCounts } from './crewWorkers'
+import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, liveMateWorkers, mergeCrewWorkers, crewRowCounts } from './crewWorkers'
 import type { CrewWorker } from '../types'
 
 describe('crewWorkers', () => {
@@ -122,5 +122,28 @@ describe('crewWorkers', () => {
     // No workers, or every worker finished: nothing to show.
     expect(crewRowCounts([])).toEqual([])
     expect(crewRowCounts(['done', 'done'])).toEqual([])
+  })
+})
+
+describe('liveMateWorkers', () => {
+  it("lists a mate's stamped sessions at any depth, never the mate, a peer's row or one that left its tree", () => {
+    const rows = [
+      { key: 'dm-ada' },
+      { key: 'c1', created_by: 'dm-ada', mate_root: 'dm-ada', running: true },
+      { key: 'adopted', created_by: 'dm-ada' },
+      { key: 'g1', created_by: 'c1', mate_root: 'dm-ada', pending_approval: true },
+      { key: 'p1', created_by: 'dm-ada', mate_root: 'dm-ada', peer_id: 'peer' },
+      { key: 'other', created_by: 'dm-bob', mate_root: 'dm-bob' },
+    ]
+    const out = liveMateWorkers(rows, 'dm-ada')
+    expect(out.map(w => [w.key, w.group])).toEqual([['c1', 'working'], ['g1', 'approval']])
+    expect(liveMateWorkers(rows, '')).toEqual([])
+  })
+})
+
+describe('live worker rows', () => {
+  it('reads one status for a row on the Crew tab and the mate tab', () => {
+    const row = { key: 'w', running: true, needs_input: true, crew_root: 'r', mate_root: 'r' }
+    expect(liveMateWorkers([row], 'r')[0]).toEqual(liveCrewWorkers([row], 'r')[0])
   })
 })
