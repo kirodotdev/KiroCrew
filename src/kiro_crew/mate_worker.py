@@ -52,9 +52,12 @@ MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
 #: The worker's own principles, appended to its source-defined prompt
 #: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named.
-MATE_WORKER_PROMPT = crewmate_prompts.fill(
-    "worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX
+#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
+#: after them are the same text ``kirocrew-worker`` carries.
+MATE_WORKER_PROMPT = (
+    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
+    + "\n\n"
+    + crewmate_prompts.text("worker.coding_rules")
 )
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
