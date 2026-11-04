@@ -46,6 +46,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.autonudge import (
@@ -408,27 +409,32 @@ class TestDeliverResultRouting:
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_slack_only_arm_posts_dm_without_notifying(self):
+    async def test_slack_only_arm_posts_dm_without_notifying(self, monkeypatch):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = _mock_slack(dm="D9")
-        await orch._deliver_result("Title", "task", "result", "slack")
-        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
-        assert orch.slack.post_message.await_count >= 1
-        assert orch.slack.post_message.await_args.args[0] == "D9"
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": "D9"}})
+            orch.slack = wire.client
+            await orch._deliver_result("Title", "task", "result", "slack")
+        [opened] = wire.sent("conversations.open")
+        assert opened.get("users") == "U_OWNER"
+        assert [(p.get("channel"), p.get("text")) for p in wire.posts()] == [
+            ("D9", "💓 *Title*\n\nresult")
+        ]
         # "slack" is Slack-ONLY: no bell notification.
         ds.notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_slack_only_arm_survives_dm_failure(self):
+    async def test_slack_only_arm_survives_dm_failure(self, monkeypatch):
         orch = _make_orchestrator()
         orch.dashboard_state = None
-        orch.slack = _mock_slack()
-        orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
-        await orch._deliver_result("Title", "task", "result", "slack")
-        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
-        orch.slack.post_message.assert_not_awaited()
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("conversations.open", "user_not_found")
+            orch.slack = wire.client
+            await orch._deliver_result("Title", "task", "result", "slack")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert wire.posts() == []
 
     @pytest.mark.asyncio
     async def test_slack_channel_arm_without_ts_posts_to_the_channel(self, monkeypatch):
@@ -440,52 +446,62 @@ class TestDeliverResultRouting:
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = _mock_slack(dm="D7")
-        await orch._deliver_result("Title", "task", "result", "slack:C1")
-        orch.slack.open_dm.assert_not_awaited()
-        assert orch.slack.post_message.await_args.args[0] == "C1"
-        assert orch.slack.post_message.await_args.args[2] is None
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await orch._deliver_result("Title", "task", "result", "slack:C1")
+        assert wire.sent("conversations.open") == []
+        [post] = wire.posts()
+        assert (post.get("channel"), post.get("text")) == ("C1", "💓 *Title*\n\nresult")
+        assert "thread_ts" not in post.args
         ds.notify.assert_called_once()
         assert ds.notify.call_args.args[0] == "heartbeat"
 
     @pytest.mark.asyncio
-    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self):
+    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self, monkeypatch):
         # A truncated tag ("slack:") has no channel to post to: posting to ""
         # would raise inside the swallowed except and lose the report, so the
         # owner-DM leg still covers it.
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = _mock_slack(dm="D7")
-        await orch._deliver_result("Title", "task", "result", "slack:")
-        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
-        assert orch.slack.post_message.await_args.args[0] == "D7"
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": "D7"}})
+            orch.slack = wire.client
+            await orch._deliver_result("Title", "task", "result", "slack:")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert [(p.get("channel"), p.get("text")) for p in wire.posts()] == [
+            ("D7", "💓 *Title*\n\nresult")
+        ]
         ds.notify.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_default_arm_notifies_even_when_dm_unavailable(self):
+    async def test_default_arm_notifies_even_when_dm_unavailable(self, monkeypatch):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = _mock_slack(dm=None)
-        with _slack_default_deliver():
-            await orch._deliver_result("Title", "task", "result", "")
-        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
-        orch.slack.post_message.assert_not_awaited()
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": ""}})
+            orch.slack = wire.client
+            with _slack_default_deliver():
+                await orch._deliver_result("Title", "task", "result", "")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert wire.posts() == []
         ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
 
     @pytest.mark.asyncio
-    async def test_default_arm_notifies_after_post_failure(self):
+    async def test_default_arm_notifies_after_post_failure(self, monkeypatch):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = _mock_slack()
-        orch.slack.post_message = AsyncMock(side_effect=RuntimeError("rate limited"))
-        with _slack_default_deliver():
-            await orch._deliver_result("Title", "task", "result", "")
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.postMessage", "ratelimited")
+            orch.slack = wire.client
+            with _slack_default_deliver():
+                await orch._deliver_result("Title", "task", "result", "")
         # The Slack failure is swallowed; the bell still fires.
-        orch.slack.post_message.assert_awaited_once()
-        assert orch.slack.post_message.await_args.args[0] == "D1"
+        [post] = wire.posts()
+        assert post.get("channel") == "D0WIRE"
+        assert "result" in post.get("text")
         ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
 
 

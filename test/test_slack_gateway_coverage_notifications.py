@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from slack_gateway_coverage_helpers import _awaited, _make_orchestrator, _mock_dashboard_state
+from slack_wire_helpers import slack_wire
 
 from kiro_crew import subagent as _sa
 from kiro_crew.slack import gateway as gw
@@ -223,16 +224,19 @@ class TestTaskNotify:
         assert text == "*Task 3 requires approval*\nrun the deploy?"
 
     @pytest.mark.asyncio
-    async def test_denied_title_also_dms_the_owner(self):
+    async def test_denied_title_also_dms_the_owner(self, monkeypatch):
         orch = _make_orchestrator()
         orch.dashboard_state = None
-        orch.slack = MagicMock()
-        orch.slack.open_dm = AsyncMock(return_value="D1")
-        orch.slack.post_message = AsyncMock()
         notify = self._capture(orch)
 
-        await notify("Task 3 denied", "nope")
-        orch.slack.post_message.assert_awaited_once_with("D1", "*Task 3 denied*\nnope")
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": "D1"}})
+            orch.slack = wire.client
+            await notify("Task 3 denied", "nope")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert [(p.get("channel"), p.get("text")) for p in wire.posts()] == [
+            ("D1", "*Task 3 denied*\nnope")
+        ]
 
     @pytest.mark.asyncio
     async def test_ordinary_title_does_not_dm(self):
@@ -250,18 +254,18 @@ class TestTaskNotify:
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dm_failure_is_swallowed(self):
+    async def test_dm_failure_is_swallowed(self, monkeypatch):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
-        orch.slack = MagicMock()
-        orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
-        orch.slack.post_message = AsyncMock()
         notify = self._capture(orch)
 
-        await notify("Task 3 requires approval", "run it?")
-        orch.slack.open_dm.assert_awaited_once()
-        orch.slack.post_message.assert_not_awaited()
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("conversations.open", "user_not_found")
+            orch.slack = wire.client
+            await notify("Task 3 requires approval", "run it?")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert wire.posts() == []
         assert ds.notify.call_args.args == ("taskrunner", "Task 3 requires approval", "run it?")
 
 
