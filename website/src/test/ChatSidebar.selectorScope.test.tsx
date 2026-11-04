@@ -3,7 +3,7 @@
  * not on every streaming token. Uses a hoisted render counter on the component.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -125,7 +125,25 @@ function mountSidebar(slots: ChatSlot[], chat: Record<string, unknown>, activeSl
       </Provider>
     </QueryClientProvider>,
   )
-  return { store, ...result }
+  return { store, queryClient: qc, ...result }
+}
+
+/**
+ * Waits until the freshly mounted sidebar has stopped rendering on its own.
+ *
+ * The row-animation gate covers only the reads that place rows. The chat-tags
+ * query is outside it, and its answer hands every row a new `tagById`, so each
+ * row renders once more. A fixed warm-up cannot be relied on: on a loaded runner
+ * that answer arrives after it and is counted inside a measured window. So wait
+ * until no query is in flight, then let one zero-delay timer pass inside `act`,
+ * which commits the observer notifications react-query queues on a zero-delay
+ * timer when a query settles.
+ */
+async function settleSidebar(queryClient: QueryClient) {
+  await act(async () => { await new Promise(r => setTimeout(r, 100)) })
+  await settleSidebarRowAnim()
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0), { timeout: 5000 })
+  await act(async () => { await new Promise(r => setTimeout(r, 0)) })
 }
 
 /** Runs `body`, lets React flush, and returns how many times the sidebar rendered. */
@@ -147,7 +165,7 @@ describe('ChatSidebar store subscription scope', () => {
       { key: 'slot-a', title: 'A', running: false, messages: 1 },
       { key: 'slot-b', title: 'B', running: false, messages: 1 },
     ] as unknown as ChatSlot[]
-    const { store } = mountSidebar(
+    const { store, queryClient } = mountSidebar(
       slots,
       {
         activeSlot: 'slot-a',
@@ -158,8 +176,7 @@ describe('ChatSidebar store subscription scope', () => {
       'slot-a',
     )
 
-    await act(async () => { await new Promise(r => setTimeout(r, 100)) })
-    await settleSidebarRowAnim()
+    await settleSidebar(queryClient)
     sidebarRenders.n = 0
 
     expect(await rendersDuring(() => {})).toBe(0) // Control: no dispatch → no render
@@ -174,7 +191,7 @@ describe('ChatSidebar store subscription scope', () => {
 
   it('does not re-render on a subagent chunk for the ACTIVE slot when count unchanged', async () => {
     const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }] as unknown as ChatSlot[]
-    const { store } = mountSidebar(
+    const { store, queryClient } = mountSidebar(
       slots,
       {
         activeSlot: 'slot-a',
@@ -183,8 +200,7 @@ describe('ChatSidebar store subscription scope', () => {
       'slot-a',
     )
 
-    await act(async () => { await new Promise(r => setTimeout(r, 100)) })
-    await settleSidebarRowAnim()
+    await settleSidebar(queryClient)
     sidebarRenders.n = 0
 
     // Same-slot streaming: count unchanged so derived selector should not re-render.
@@ -197,7 +213,7 @@ describe('ChatSidebar store subscription scope', () => {
 
   it('DOES re-render when a new subagent spawns (count changes)', async () => {
     const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }] as unknown as ChatSlot[]
-    const { store } = mountSidebar(
+    const { store, queryClient } = mountSidebar(
       slots,
       {
         activeSlot: 'slot-a',
@@ -206,8 +222,7 @@ describe('ChatSidebar store subscription scope', () => {
       'slot-a',
     )
 
-    await act(async () => { await new Promise(r => setTimeout(r, 100)) })
-    await settleSidebarRowAnim()
+    await settleSidebar(queryClient)
     sidebarRenders.n = 0
 
     const delta = await rendersDuring(() => {
