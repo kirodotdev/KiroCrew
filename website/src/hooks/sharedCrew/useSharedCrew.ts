@@ -31,6 +31,31 @@ export function useSharedCrewViewer(enabled = true) {
   return useQuery({ queryKey: sharedCrewKeys.viewer, queryFn: () => api.sharedCrewViewer(), enabled, staleTime: 60_000, retry: false })
 }
 
+function useGuestQuery() {
+  return useQuery({ queryKey: sharedCrewKeys.guest, queryFn: () => api.sharedCrewIsGuest(), staleTime: 60_000, retry: false })
+}
+
+/** Whether this tab is a Shared Crew guest (never true until the server says so). */
+export function useIsGuest(): boolean {
+  return useGuestQuery().data === true
+}
+
+/** Whether the owner-only rail entries may show: only once `/api/auth/me` has answered and this
+ *  tab is not a guest. Until then (pending, or the read failed) they stay hidden, so a guest never
+ *  sees the owner's pages flash by before the answer arrives. */
+export function useShowsOwnerPages(): boolean {
+  const { isSuccess, data } = useGuestQuery()
+  return isSuccess && data === false
+}
+
+/** Why the identity read failed, or `null`. The server still decides what a guest may do;
+ *  this only keeps a failed read from passing as "not a guest" without a word. */
+export function useGuestIdentityError(): string | null {
+  const { error } = useGuestQuery()
+  if (!error) return null
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** This Crew's People/setup mode. A missing or failing route is a query error,
  *  which every consumer renders as an error, never as a personal Crew. */
 export function useSharedCrewMode(enabled = true, { fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {

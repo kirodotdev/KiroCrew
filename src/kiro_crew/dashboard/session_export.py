@@ -86,7 +86,7 @@ from aiohttp import hdrs, web
 
 from kiro_crew.config.loader import _raw_config
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.session_markdown import (
     MARKDOWN_FILE_SUFFIX,
     write_markdown_file,
@@ -487,7 +487,7 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
                 export_format == _FORMAT_JSON
                 and _export_layer_b_permitted()
                 and _export_layer_b_requested(request)
-                and is_owner_dashboard_request(request)
+                and is_host_owner_dashboard_request(request)
             ),
         )
     except TranscriptBusy:

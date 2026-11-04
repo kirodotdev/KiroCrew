@@ -39,7 +39,7 @@ from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
-    is_owner_dashboard_request,
+    is_host_owner_dashboard_request,
     stale_owner_session_response,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -410,8 +410,11 @@ async def _require_monitor_owner(
     request: web.Request,
     operation: str,
 ) -> web.Response | None:
-    """Require the configured dashboard owner before reading monitor state."""
-    if is_owner_dashboard_request(request):
+    """Require the configured dashboard owner before reading monitor state.
+
+    The strict host-owner form: a monitor probes a provider with the owner's credentials.
+    """
+    if is_host_owner_dashboard_request(request):
         await _audit_monitor_access(request, operation, "allowed")
         return None
     await _audit_monitor_access(

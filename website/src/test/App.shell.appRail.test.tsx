@@ -13,6 +13,8 @@ import { APP_NAV_HIDDEN_KEY, APP_NAV_ORDER_KEY } from '../lib/appNavHidden'
 
 const haptic = vi.hoisted(() => vi.fn())
 vi.mock('../lib/haptic', () => ({ haptic }))
+// Whether this tab is a Shared Crew guest is a query; the order model does not need one.
+vi.mock('../hooks/sharedCrew/useSharedCrew', () => ({ useIsGuest: () => false, useShowsOwnerPages: () => true }))
 
 const row = (name: string): AppNavRow => ({ path: `/apps/${name}`, id: `app-${name}`, label: name, group: 'Apps', icon: <span /> })
 const APPS = [row('a'), row('b'), row('c')]

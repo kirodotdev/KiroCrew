@@ -79,6 +79,8 @@ vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { cont
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
+    // The owner's session: the identity read the rail and the Owner-only gate wait on.
+    sharedCrewIsGuest: vi.fn().mockResolvedValue(false),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
     sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04', bonus_credits: [{ name: 'Launch bonus', used: 250, total: 1000, days_left: 30 }], email: 'owner@example.com', account_type: 'Social' } }),
@@ -534,10 +536,11 @@ describe('App routing', () => {
     return shellSettled()
   })
 
-  it('renders nav items', () => {
+  it('renders nav items', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Customize')).toBeInTheDocument()
+    // The owner's pages show once the identity read has answered "not a guest".
+    expect(await screen.findByText('Customize')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library
@@ -1602,10 +1605,10 @@ describe('App routing', () => {
     return shellSettled()
   })
 
-  it('keeps theme controls available from Settings', () => {
+  it('keeps theme controls available from Settings', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Theme controls live in Settings > Display rather than the shell header.
-    expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(await screen.findByText('Settings')).toBeInTheDocument()
     return shellSettled()
   })
 

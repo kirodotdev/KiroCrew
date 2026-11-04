@@ -31,7 +31,7 @@ answers ``202 {ok, total, run_id}`` at once and runs the resumes as a
 gateway-owned task held in ``state._background_tasks``. One run at a time: a
 press while a run is in flight answers ``409 resume_all_running`` and
 dispatches nothing. The outcome reaches owner sockets as one
-``resume_all_done`` frame (``broadcast_ws_owners``); the per-slot changes
+``resume_all_done`` frame (``broadcast_to_collaborators``: a guest can press it too); the per-slot changes
 reach every client through the ordinary slots push as each slot starts.
 
 At most ``RESUME_ALL_MAX_RUNNING`` resumed turns run at once. A candidate's
@@ -373,9 +373,11 @@ def _claims(request: web.Request) -> dict[str, Any]:
 
 
 def _broadcast_outcome(state: DashboardState, outcome: dict[str, Any]) -> None:
+    from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
+
     frame = {k: list(v) if isinstance(v, list) else v for k, v in outcome.items()}
     try:
-        state.broadcast_ws_owners(RESUME_ALL_DONE_FRAME, frame)
+        broadcast_to_collaborators(state, RESUME_ALL_DONE_FRAME, frame)
     except Exception:
         logger.warning(
             "resume-all: outcome push failed (run %s)", outcome.get("run_id"), exc_info=True

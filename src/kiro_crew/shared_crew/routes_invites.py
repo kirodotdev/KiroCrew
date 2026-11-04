@@ -19,7 +19,7 @@ import binascii
 import functools
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from aiohttp import web
@@ -27,8 +27,13 @@ from aiohttp import web
 from kiro_crew.shared_crew import access_set
 from kiro_crew.shared_crew import tailscale_invite_store as store
 from kiro_crew.shared_crew import tailscale_invites as invites
-from kiro_crew.shared_crew.contracts import Provenance
-from kiro_crew.shared_crew.identity import PROVIDER_TAILSCALE, viewer_principal
+from kiro_crew.shared_crew.contracts import Provenance, principal_id_for
+from kiro_crew.shared_crew.guest_scope import guest_job_tag, record_guest_revocation
+from kiro_crew.shared_crew.identity import (
+    PROVIDER_TAILSCALE,
+    TAILNET_ISSUER,
+    viewer_principal,
+)
 from kiro_crew.shared_crew.preview import preview_only
 from kiro_crew.shared_crew.tailscale_api import CODE_RATE_LIMITED, TailscaleApiError
 
@@ -129,14 +134,14 @@ async def _owner_refusal(request: web.Request) -> web.Response | None:
 
 async def _owner_refusal_decision(request: web.Request) -> web.Response | None:
     from kiro_crew.dashboard.handlers._shared import _is_restricted_session
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
     if not _dashboard_user(request) or request.get("app") != "":
         return _error(403, "forbidden")
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         return _error(403, "restricted_session")
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         return _error(403, "owner_only")
     viewer = viewer_principal(request)
     if viewer.provenance is Provenance.LOCAL_OPERATOR:
@@ -288,6 +293,14 @@ async def api_revoke(request: web.Request) -> web.Response:
         # The share is gone at Tailscale, but the seed could not be cleared.
         return _error(503, exc.code)
     await close_revoked_sockets(request.app, withdrawn)
+    unpaused: list[str] = []
+    await pause_revoked_schedules(request.app, tailnet_principal_ids(withdrawn), unpaused)
+    if unpaused:
+        # The share is withdrawn, but some of the person's schedules may still be
+        # running with the owner's approvals. That is not a success: answer an error
+        # the dashboard already shows, so the owner pauses them (Schedule page) rather
+        # than assuming the revoke finished.
+        return _error(503, "schedules_not_paused")
     return web.json_response(result)
 
 
@@ -325,6 +338,121 @@ async def close_revoked_sockets(app: web.Application, logins: frozenset[str]) ->
         except Exception:  # noqa: BLE001 -- one socket never blocks the rest
             logger.debug("closing a revoked person's socket failed", exc_info=True)
     return closed
+
+
+#: Tries to pause one revoked person's schedule before it is reported as still running.
+_PAUSE_ATTEMPTS = 3
+#: Seconds to wait before the next try; times the attempt number.
+_PAUSE_BACKOFF_SECS = 0.2
+
+
+async def pause_revoked_schedules(
+    app: web.Application,
+    principal_ids: Iterable[str],
+    unpaused: list[str] | None = None,
+) -> int:
+    """Pause the schedules the revoked people created. Never raises.
+
+    *principal_ids* names the people by principal id, whatever path admitted them
+    (Tailscale, SSM). A schedule a guest created is stamped with the guest's
+    principal (``guest_scope.guest_job_tag``) and would otherwise keep running,
+    with the owner's approvals, after the guest lost access. The owner resumes one
+    that should keep running.
+
+    Each job is paused on its own and tried a few times, so one busy store does not
+    abandon the rest. A job still running after that has its id appended to
+    *unpaused* (when given), for the caller to report.
+    """
+    import asyncio
+
+    principal_ids = tuple(principal_ids)
+    record_guest_revocation(principal_ids)
+    state = app.get("state")
+    crons = getattr(state, "crons", None)
+    tags = {guest_job_tag(pid) for pid in principal_ids if pid}
+    if not tags or crons is None:
+        return 0
+    paused = 0
+    try:
+        jobs = await crons.list_jobs_async()
+        # An unreadable store lists as empty: say so rather than report nothing to pause.
+        crons.raise_if_store_unreadable()
+    except Exception:  # noqa: BLE001 -- the revoke itself has already succeeded
+        logger.warning("listing a revoked person's schedules failed", exc_info=True)
+        if unpaused is not None:
+            unpaused.append("*")
+        return 0
+    for job in jobs:
+        if job.created_by not in tags:
+            continue
+        for attempt in range(_PAUSE_ATTEMPTS):
+            try:
+                if await crons.enable_job_async(job.id, enabled=False):
+                    paused += 1
+                break
+            except Exception:  # noqa: BLE001 -- retried, then reported
+                logger.warning("pausing a revoked person's schedule failed", exc_info=True)
+                if attempt + 1 < _PAUSE_ATTEMPTS:
+                    await asyncio.sleep(_PAUSE_BACKOFF_SECS * (attempt + 1))
+                elif unpaused is not None:
+                    unpaused.append(job.id)
+    if paused:
+        state.push_refresh("crons")
+    return paused
+
+
+#: After the tries in ``pause_job_after_revoke`` fail, one more try this often, this many times.
+_RETRY_SECS = 5.0
+_RETRY_ROUNDS = 120
+#: The background retries, held so a task is not collected before it finishes.
+_pending_pauses: set[Any] = set()
+
+
+async def _retry_pause(state: Any, job_id: str) -> None:
+    import asyncio
+
+    for _ in range(_RETRY_ROUNDS):
+        await asyncio.sleep(_RETRY_SECS)
+        try:
+            await state.crons.enable_job_async(job_id, enabled=False)
+        except Exception:  # noqa: BLE001 -- retried until the rounds run out
+            continue
+        state.push_refresh("crons")
+        return
+    logger.error("a revoked guest's schedule %s is still enabled after every retry", job_id)
+
+
+async def pause_job_after_revoke(state: Any, job_id: str) -> web.Response:
+    """The refusal for a request whose guest was revoked mid-flight, after pausing its job.
+
+    The revoke sweep may have run before the request committed, so the job it made is
+    paused here. A pause that fails (a busy store) is tried again, then kept retrying
+    in the background, and the answer is 503 ``schedules_not_paused`` so the failure is
+    seen instead of a plain refusal while the job stays enabled.
+    """
+    import asyncio
+
+    for attempt in range(_PAUSE_ATTEMPTS):
+        try:
+            await state.crons.enable_job_async(job_id, enabled=False)
+        except Exception:  # noqa: BLE001 -- retried, then kept retrying and reported
+            logger.warning("pausing a revoked guest's schedule failed", exc_info=True)
+            if attempt + 1 < _PAUSE_ATTEMPTS:
+                await asyncio.sleep(_PAUSE_BACKOFF_SECS * (attempt + 1))
+            continue
+        return _error(403, "owner_only")
+    task = asyncio.get_running_loop().create_task(_retry_pause(state, job_id))
+    _pending_pauses.add(task)
+    task.add_done_callback(_pending_pauses.discard)
+    return _error(503, "schedules_not_paused")
+
+
+def tailnet_principal_ids(logins: Iterable[str]) -> frozenset[str]:
+    """The principal ids of the tailnet *logins* a revoke withdrew."""
+    return frozenset(
+        principal_id_for(PROVIDER_TAILSCALE, TAILNET_ISSUER, login.strip().lower())
+        for login in logins
+    )
 
 
 @preview_only

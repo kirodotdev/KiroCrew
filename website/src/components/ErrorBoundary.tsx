@@ -3,6 +3,8 @@ import { AlertTriangle } from 'lucide-react'
 import { recordEvent } from '../rum'
 import AskAgentButton, { askAgentHard } from './AskAgentButton'
 import { recordError } from '../utils/errorReport'
+import { ApiError, apiErrorCode } from '../api/apiError'
+import OwnerOnlyState from './OwnerOnlyState'
 
 import { i18nT } from '../i18n/t'
 interface State { error: Error | null }
@@ -83,6 +85,8 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (!this.state.error) return this.props.children
+    // A guest's 403 from an owner-only route is not a crash.
+    if (this.state.error instanceof ApiError && this.state.error.status === 403 && apiErrorCode(this.state.error) === 'owner_only') return <OwnerOnlyState />
     // Use 'in' rather than truthiness so an explicit `fallback={null}` renders
     // nothing (the extension-slot case: a faulty contribution disappears
     // instead of showing the default error card), while an omitted fallback

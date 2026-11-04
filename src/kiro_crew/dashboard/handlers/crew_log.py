@@ -78,6 +78,7 @@ from kiro_crew.dashboard.handlers.crew_log_scope import (
     _target_class_refusal,
     _workspace_refusal,
 )
+from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
 from kiro_crew.work_vocab import WORK_FOLD_NAME as _WORK_FOLD
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -1417,7 +1418,7 @@ class CrewLogPublisher:
             # every other socket gets *data*, exactly as before (websocket_hub).
             broadcast_slot_fold(slot, data, delta)
             return
-        self._state.broadcast_ws_owners(SLOT_FRAME, data)
+        broadcast_to_collaborators(self._state, SLOT_FRAME, data)
 
     def _schedule_session(
         self, session_id: str, fold: str, revision: int, seq: int, value: "dict[str, Any]"
@@ -1490,7 +1491,8 @@ class CrewLogPublisher:
         self._sent.move_to_end(session_id)
         while len(self._sent) > MAX_CACHED_SESSIONS:
             self._sent.popitem(last=False)
-        self._state.broadcast_ws_owners(
+        broadcast_to_collaborators(
+            self._state,
             FRAME,
             {
                 "session_id": session_id,
@@ -1602,7 +1604,7 @@ class CrewLogPublisher:
         # whose sessions all grew in one burst, is one re-read, not one each.
         slots: dict[str, None] = {slot: None for slot in grown.values() if slot}
         for slot in slots:
-            self._state.broadcast_ws_owners(SLOT_FRAME, {"slot": slot})
+            broadcast_to_collaborators(self._state, SLOT_FRAME, {"slot": slot})
 
     def _watchers(self) -> bool:
         """Whether a dashboard user has a socket open."""

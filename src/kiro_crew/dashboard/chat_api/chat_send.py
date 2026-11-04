@@ -320,9 +320,9 @@ def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: s
 
         if not crew_mode.APPROVAL_ROUTING_LIVE:
             return ""
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-        if not is_owner_dashboard_request(request):
+        if not is_host_owner_dashboard_request(request):
             return ""
         from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 
@@ -606,9 +606,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # (on its ``_run_chat`` call or its queue entry) -- the one mark a crew-scoped
     # session read accepts. Decided once, here, so the three delivery paths below cannot
     # disagree about it.
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    _owner_sent = _person_send and is_owner_dashboard_request(request)
+    _owner_sent = _person_send and is_host_owner_dashboard_request(request)
     if _requested_key and (_guide_tab or _ui_lang) and _owner_sent:
         from kiro_crew.dashboard.guide_observe import note_chat_sender
 

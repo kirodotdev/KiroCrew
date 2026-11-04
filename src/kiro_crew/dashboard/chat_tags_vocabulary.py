@@ -47,7 +47,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     string_field_error,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     MEMBER_CHAT_PRINCIPAL_KEY,
@@ -209,7 +209,9 @@ async def api_chat_tag_create(request: web.Request) -> web.Response:
     if not isinstance(status_raw, bool):
         return web.json_response({"error": "invalid status", "code": "invalid_status"}, status=400)
     status = status_raw
-    record_protected_identity = rl_source == "dashboard" and is_owner_dashboard_request(request)
+    record_protected_identity = rl_source == "dashboard" and is_host_owner_dashboard_request(
+        request
+    )
     try:
         tag = await create_tag_definition_off_loop(
             state,
@@ -257,7 +259,7 @@ async def api_chat_tag_adopt(request: web.Request) -> web.Response:
     if (
         source != "dashboard"
         or member_principal.startswith("member:")
-        or not is_owner_dashboard_request(request)
+        or not is_host_owner_dashboard_request(request)
     ):
         sel().log_api_access(
             caller=caller,

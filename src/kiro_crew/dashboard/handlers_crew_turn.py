@@ -469,7 +469,7 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
     envelope and sends nothing to the crew.
     """
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
     from kiro_crew.dashboard.handlers_instances import _guard
     from kiro_crew.shared_crew.admission import OperationKind, ReasonCode, error_body, http_status
     from kiro_crew.shared_crew.admission_gate import (
@@ -486,7 +486,7 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
     # Owner-only, the same bar as the proxy and the capability reads: this runs
     # with the owner's AWS credentials and sends the crew's control secret, so an
     # authenticated non-owner (a Slack-minted dashboard subject) must not reach it.
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit(_AUDIT_OP, "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew chat is owner-only")
 

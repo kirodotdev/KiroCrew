@@ -68,9 +68,9 @@ async def remote_chat_refusal(request: web.Request) -> web.Response | None:
 
     if not session_environments_enabled():
         return None
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         return None
     state = request.app.get("state")
     get_slot = getattr(state, "get_slot", None)

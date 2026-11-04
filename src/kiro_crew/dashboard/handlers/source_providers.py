@@ -896,7 +896,7 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
 def owner_view_for_request(request: web.Request) -> bool:
     """Whether the owner's credential-redaction switch may apply to THIS request.
 
-    :func:`is_owner_dashboard_request` with the fail direction spelled out: any
+    :func:`is_host_owner_dashboard_request` with the fail direction spelled out: any
     request the owner predicate cannot evaluate (no ``state`` on the app, an
     unexpected shape) is NOT an owner view, so the caller falls back to the
     unconditional redaction pass. Used only by the owner-view seams
@@ -904,13 +904,18 @@ def owner_view_for_request(request: web.Request) -> bool:
     calling the predicate directly.
     """
     try:
-        return is_owner_dashboard_request(request)
+        return is_host_owner_dashboard_request(request)
     except Exception:
         return False
 
 
-def is_owner_dashboard_request(request: web.Request) -> bool:
-    """Return whether request has a configured or implicit local owner identity."""
+def is_host_owner_dashboard_request(request: web.Request) -> bool:
+    """Return whether request has a configured or implicit local owner identity.
+
+    The strict form: the host's owner and nobody else. Credential-backed
+    access, disclosure controls and the owner's connections to other crews
+    ask this, so a Shared Crew guest never reaches them.
+    """
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
@@ -919,6 +924,19 @@ def is_owner_dashboard_request(request: web.Request) -> bool:
     if owner_id:
         return caller == owner_id
     return caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
+
+
+def is_owner_dashboard_request(request: web.Request) -> bool:
+    """Return whether request may use the owner's in-Crew abilities.
+
+    The host owner, or a Shared Crew guest on a route outside the owner-only
+    list (:mod:`kiro_crew.shared_crew.guest_scope`).
+    """
+    if is_host_owner_dashboard_request(request):
+        return True
+    from kiro_crew.shared_crew.guest_scope import guest_acts_as_owner
+
+    return guest_acts_as_owner(request)
 
 
 def _audit_source_api(
@@ -946,7 +964,7 @@ def _authorize_owner_request(request: web.Request, operation: str) -> web.Respon
 
     When no owner is configured, a signed machine-local bootstrap identity
     (``local-app`` / ``local-startup``) IS the owner, for reads and mutations
-    alike. The allow branch delegates to :func:`is_owner_dashboard_request`
+    alike. The allow branch delegates to :func:`is_host_owner_dashboard_request`
     rather than re-deriving it, so this gate cannot drift from the rule every
     other owner-gated dashboard surface follows, the secrets vault among them.
     Scoping the allowance to reads here made an install with no Slack credential
@@ -966,7 +984,7 @@ def _authorize_owner_request(request: web.Request, operation: str) -> web.Respon
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
     if not owner_id:
-        if is_owner_dashboard_request(request):
+        if is_host_owner_dashboard_request(request):
             return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
         stale = stale_owner_session_response(request)

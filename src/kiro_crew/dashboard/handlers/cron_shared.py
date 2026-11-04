@@ -12,6 +12,8 @@ never imports it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from typing import Any
 
 from aiohttp import web
 
@@ -19,6 +21,7 @@ from kiro_crew.cron import CronStoreUnreadable
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.guest_scope import is_guest_session
 from kiro_crew.validation import MAX_SHORT_STRING
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.cron")
@@ -199,4 +202,59 @@ async def _refuse_foreign_app_job(
     )
     if refused is not None:
         return _owner_denial_response(request)
+    return None
+
+
+def _guest_unattended_response() -> web.Response:
+    """The 403 a guest meets on a job that runs without a person approving each step."""
+    return web.json_response(
+        {"error": "this schedule is owner-only", "code": "owner_only"}, status=403
+    )
+
+
+def _attended_revision(job: Any) -> str:
+    """``"attended"`` for a job a person approves step by step, else ``"unattended"``."""
+    unattended = (
+        getattr(job, "approval_mode", "") == "auto"
+        or getattr(job, "script", "")
+        or getattr(job, "command", "")
+    )
+    return "unattended" if unattended else "attended"
+
+
+async def guest_unattended_refusal(
+    request: web.Request, state: DashboardState, job_ids: Iterable[str]
+) -> web.Response | None:
+    """403 when a Shared Crew guest acts on a job that runs unattended.
+
+    An auto-approved prompt, or a script or command the owner set up, runs
+    without a person approving each step. A guest does not rewrite, run, re-enable,
+    convert or delete one; the owner does. Every other caller is not judged here.
+
+    Every path that changes or triggers such a job calls this, and the store then
+    judges the record it reloads under its lock (a guest's check here reads an
+    earlier copy). A new route that edits, runs or removes a job joins this list:
+
+    * ``PATCH /api/crons/{id}`` -- ``api_cron_update``; every field, not only the prompt
+      (store: ``require_attended``)
+    * ``POST /api/crons/{id}/run`` -- ``api_cron_run`` (store: ``run_job(require_attended)``)
+    * ``POST /api/crons/{id}/to-chat`` -- ``api_cron_to_chat``
+    * ``POST /api/crons/{id}/enable`` with ``enabled`` true -- ``api_cron_enable``
+      (store: ``enable_job_async(require_attended)``); pausing stays a guest's
+    * ``DELETE /api/crons/{id}`` -- ``api_cron_delete`` (store: compare-and-delete)
+    * ``DELETE /api/crons`` -- ``api_cron_batch_delete`` (store: compare-and-delete per id)
+
+    ``test_every_cron_path_that_changes_or_triggers_a_job_checks_for_an_unattended_one``
+    fails when one of them stops calling it.
+    """
+    if not is_guest_session(request):
+        return None
+    for job_id in job_ids:
+        stored = await state.crons.get_job_async(job_id)
+        if stored is not None and (
+            getattr(stored, "approval_mode", "") == "auto"
+            or getattr(stored, "script", "")
+            or getattr(stored, "command", "")
+        ):
+            return _guest_unattended_response()
     return None

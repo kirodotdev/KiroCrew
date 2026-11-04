@@ -489,12 +489,26 @@ def enable_job(
 
 
 async def enable_job_async(
-    self: CronService, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    enabled: bool = True,
+    *,
+    expected_owner: str | None = None,
+    require_attended: bool = False,
 ) -> bool:
     """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
 
-    Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+    Raises :class:`CronStoreBusy` (retryable) on sustained contention. With
+    ``require_attended``, starting a job that runs unattended raises
+    :class:`CronPendingMismatch`, judged on the record reloaded under the lock.
     """
+    if require_attended:
+        ok = await asyncio.to_thread(
+            self._enable_job_locked, job_id, enabled, require_attended=True
+        )
+        if ok:
+            self._arm_timer()
+        return ok
     ok = (
         await asyncio.to_thread(
             self._enable_job_locked, job_id, enabled, expected_owner=expected_owner

@@ -9971,6 +9971,7 @@
     },
     "schedulePage": {
       "actions": "Actions",
+      "guest": "Guest",
       "owning_session_help": "A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.",
       "owning_session_tooltip": "Owning session: {{key}}",
       "view_calendar": "Calendar",

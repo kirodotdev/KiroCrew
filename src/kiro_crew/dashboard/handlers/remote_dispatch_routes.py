@@ -51,7 +51,7 @@ from aiohttp import web
 import kiro_crew
 from kiro_crew import session_ledger
 from kiro_crew.apps.version import versions_compatible
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
     ProxyReplyUnredactable,
@@ -273,7 +273,7 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         raise CrewCallError(
             403, "private_memory", "a private-memory session cannot drive another crew"
         )
-    if str(request.get("user") or "") and not is_owner_dashboard_request(request):
+    if str(request.get("user") or "") and not is_host_owner_dashboard_request(request):
         _audit(caller_key, verb, "denied", error="non-owner identity rejected")
         raise CrewCallError(403, "owner_only", "crew= is owner-only")
     try:

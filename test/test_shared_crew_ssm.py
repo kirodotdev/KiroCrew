@@ -22,7 +22,11 @@ from aiohttp import web
 
 from kiro_crew.config.sections_shared_crew import SharedCrewConfig, shared_crew_config_from
 from kiro_crew.dashboard import ssm_gate, tailnet_live_allowlist
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_host_owner_dashboard_request,
+    is_owner_dashboard_request,
+)
+from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware
 from kiro_crew.dashboard.token_auth import generate_token, token_auth_middleware
 from kiro_crew.shared_crew import access, access_set, routes_ssm, ssm, ssm_invites
 from kiro_crew.shared_crew.contracts import CapabilityState, Provenance
@@ -326,10 +330,15 @@ async def _whoami(request: web.Request) -> web.Response:
             "provenance": actor.principal.provenance.value,
             "kind": actor.principal.kind.value,
             "owner": is_owner_dashboard_request(request),
+            "host_owner": is_host_owner_dashboard_request(request),
             "internal_auth": request.get("internal_auth") is True,
             "app": request.get("app"),
         }
     )
+
+
+async def _echo(request: web.Request) -> web.Response:
+    return web.json_response({"reached": True})
 
 
 async def _identity_gate(request: web.Request) -> web.Response:
@@ -355,11 +364,13 @@ async def servers() -> AsyncIterator[Servers]:
                 internal_secret="s3cret",
                 internal_paths=frozenset({"/api/internal-only"}),
                 ssm_gate=ref,
-            )
+            ),
+            slot_ownership_middleware,
         ]
     )
     app["state"] = SimpleNamespace(owner_id="")
     app.router.add_get("/api/whoami", _whoami)
+    app.router.add_post("/api/echo", _echo)
     app.router.add_get("/api/identity-gate", _identity_gate)
     app.router.add_get("/api/internal-only", _whoami)
     routes_ssm.register(app)
@@ -479,7 +490,7 @@ async def test_a_forwarded_connection_is_never_the_owner_even_holding_every_cred
     )
     assert status == 200
     assert body["user"] == f"ssm:{invite_id}"
-    assert body["owner"] is False
+    assert body["host_owner"] is False
     assert body["provenance"] == Provenance.SSM_INVITE.value
     assert body["internal_auth"] is False and body["app"] == ""
     # The owner-only routes refuse the guest.
@@ -865,6 +876,96 @@ async def test_the_owner_makes_and_revokes_invites(servers: Servers) -> None:
         ) as resp:
             assert resp.status == 404
     assert ssm_invites.verify(credential) is None
+
+
+def _revoke_request(invite_id: str, crons: Any) -> Any:
+    from unittest.mock import MagicMock
+
+    return SimpleNamespace(
+        match_info={"invite_id": invite_id}, app={"state": MagicMock(crons=crons)}
+    )
+
+
+def _crons(jobs: list[Any]) -> Any:
+    from unittest.mock import AsyncMock, MagicMock
+
+    crons = MagicMock()
+    crons.list_jobs_async = AsyncMock(return_value=jobs)
+    crons.enable_job_async = AsyncMock(return_value=True)
+    return crons
+
+
+@pytest.mark.asyncio
+async def test_revoking_an_invite_pauses_the_schedules_that_person_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.shared_crew import guest_scope
+
+    monkeypatch.setattr(guest_scope, "_REVOKED_AT", {})
+    monkeypatch.setattr(routes_ssm, "_owner_refusal", AsyncMock(return_value=None))
+    invite_id, _ = ssm_invites.create("Dana")
+    other_id, _ = ssm_invites.create("Lee")
+    tag = guest_scope.guest_job_tag
+    theirs = SimpleNamespace(id="j1", created_by=tag(ssm_principal(invite_id).id))
+    lees = SimpleNamespace(id="j2", created_by=tag(ssm_principal(other_id).id))
+    owners = SimpleNamespace(id="j3", created_by="")
+    crons = _crons([theirs, lees, owners])
+
+    response = await routes_ssm.api_revoke(_revoke_request(invite_id, crons))
+
+    assert response.status == 200
+    crons.enable_job_async.assert_awaited_once_with("j1", enabled=False)
+    assert ssm_invites.verify(f"{invite_id}.x") is None
+
+
+@pytest.mark.asyncio
+async def test_a_revoke_that_cannot_pause_a_schedule_is_reported_like_the_tailnet_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.shared_crew import guest_scope, routes_invites
+
+    monkeypatch.setattr(guest_scope, "_REVOKED_AT", {})
+    monkeypatch.setattr(routes_invites, "_PAUSE_BACKOFF_SECS", 0)
+    monkeypatch.setattr(routes_ssm, "_owner_refusal", AsyncMock(return_value=None))
+    invite_id, _ = ssm_invites.create("Dana")
+    job = SimpleNamespace(
+        id="j1", created_by=guest_scope.guest_job_tag(ssm_principal(invite_id).id)
+    )
+    crons = _crons([job])
+    crons.enable_job_async = AsyncMock(side_effect=RuntimeError("busy"))
+
+    response = await routes_ssm.api_revoke(_revoke_request(invite_id, crons))
+
+    assert response.status == 503
+    assert json.loads(response.text)["code"] == "schedules_not_paused"
+    assert ssm_invites.public_rows() == [], "the invite is withdrawn either way"
+
+
+@pytest.mark.asyncio
+async def test_an_ssm_guest_is_stopped_by_the_guest_checkpoint_like_a_tailnet_guest(
+    servers: Servers,
+) -> None:
+    """Host-path denial and owner-only writes run for a request that came in over SSM."""
+    _, credential = ssm_invites.create("Dana")
+    cookie = await _join(servers.ssm, credential)
+    url = f"http://127.0.0.1:{servers.ssm}"
+    async with _jar() as client:
+        async with client.post(f"{url}/api/echo", json={"input": "hi"}, cookies=cookie) as resp:
+            assert (resp.status, (await resp.json())["reached"]) == (200, True)
+        async with client.post(
+            f"{url}/api/echo", json={"path": "/etc/hosts"}, cookies=cookie
+        ) as resp:
+            assert (resp.status, (await resp.json())["code"]) == (403, "owner_only")
+        async with client.post(
+            f"{url}/api/echo?workspace_dir=/srv/owner", json={}, cookies=cookie
+        ) as resp:
+            assert resp.status == 403
+        async with client.post(f"{url}/api/themes/install", json={}, cookies=cookie) as resp:
+            assert (resp.status, (await resp.json())["code"]) == (403, "owner_only")
 
 
 @pytest.mark.asyncio

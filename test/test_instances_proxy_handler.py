@@ -25,7 +25,7 @@ class TestProxyHandlerPolicy:
         # satisfy the gate explicitly. The deny path has its own test below.
         from kiro_crew.dashboard.handlers import source_providers as sp
 
-        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: True)
+        monkeypatch.setattr(sp, "is_host_owner_dashboard_request", lambda r: True)
         from kiro_crew.instances.registry import InstancesRegistry
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
@@ -91,7 +91,7 @@ class TestProxyHandlerPolicy:
         from kiro_crew.dashboard.handlers_instances import api_instances_proxy
 
         req = self._req(tmp_path, monkeypatch, path="api/chat/slots")
-        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: False)
+        monkeypatch.setattr(sp, "is_host_owner_dashboard_request", lambda r: False)
         monkeypatch.setattr(sp, "stale_owner_session_response", lambda r: None)
         resp = await api_instances_proxy(req)
         assert resp.status == 403
@@ -360,7 +360,7 @@ class TestProxyRedactsPeerReplies:
         _enable(tmp_path, monkeypatch)
         from kiro_crew.dashboard.handlers import source_providers as sp
 
-        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: True)
+        monkeypatch.setattr(sp, "is_host_owner_dashboard_request", lambda r: True)
         from kiro_crew.instances.registry import InstancesRegistry
 
         async def _iter():

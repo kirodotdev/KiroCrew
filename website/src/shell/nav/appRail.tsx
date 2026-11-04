@@ -8,6 +8,8 @@ import { useDndSensors } from '../../hooks/useDndSensors'
 import { usePreviewFlagRevision } from '../../hooks/usePreviewFlag'
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from '../../lib/appNavHidden'
 import { useNavPinned } from '../../lib/navPinned'
+import { hiddenForGuest } from '../../lib/ownerOnly'
+import { useShowsOwnerPages } from '../../hooks/sharedCrew/useSharedCrew'
 import { haptic } from '../../lib/haptic'
 import { surfacePreviewEnabled } from '../../surfaces/registry'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -42,6 +44,9 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   // propagation paths (same-tab event + cross-tab `storage`), so toggling the
   // pin control in a page header repaints the rail without a reload.
   const pinnedNavIds = useNavPinned()
+  // A Shared Crew guest, or a tab not yet known to be the owner's, is not shown the owner's pages
+  // (apps, customize, webhooks, settings).
+  const isGuest = !useShowsOwnerPages()
   // ONE derivation feeding BOTH rail list paths (the Apps group just below and
   // the Main group in the rail markup `App.tsx` renders). Filtering per call site is what leaks an
   // unreleased surface: the first preview-gated Apps-group surface would have
@@ -49,7 +54,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   // for the same reason — a `pinnable` sub-item filtered in only one branch
   // would appear on the rail in the other without the user pinning it.
   const advertisedNavItems = useMemo(
-    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && (!n.pinnable || pinnedNavIds.has(n.id))),
+    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && (!n.pinnable || pinnedNavIds.has(n.id)) && !(isGuest && hiddenForGuest(n.id))),
     // The revision is an invalidation token: what `surfacePreviewEnabled` reads
     // lives in localStorage, not in React state, so nothing else here can
     // express the dep. The directive stays on ONE line directly above the deps
@@ -57,7 +62,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
     // rationale wrapped after it aims the directive at its own continuation and
     // suppresses nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [previewFlagRevision, pinnedNavIds],
+    [previewFlagRevision, pinnedNavIds, isGuest],
   )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
@@ -84,7 +89,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
     // `mc-app-nav-order` is empty or has never listed it (its slot is then
     // implicit in this natural order, and persisting only the visible ids
     // would erase it).
-    const all = [...advertisedNavItems.filter(n => n.group === 'Apps'), ...appNavItems]
+    const all = [...advertisedNavItems.filter(n => n.group === 'Apps'), ...(isGuest ? [] : appNavItems)]
     const orderMap = new Map(appNavOrder.map((id, i) => [id, i]))
     const sortedAll = appNavOrder.length === 0
       ? all
@@ -93,7 +98,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
       sortedAppGroupAllIds: sortedAll.map(n => n.id),
       sortedAppGroup: sortedAll.filter(n => !appNavHidden.has(n.id)),
     }
-  }, [advertisedNavItems, appNavItems, appNavOrder, appNavHidden])
+  }, [advertisedNavItems, appNavItems, appNavOrder, appNavHidden, isGuest])
   // dnd-kit fires this once the sensor's constraint is met (the 250ms touch hold
   // or the mouse distance), so the tap marks the pick-up itself, not the touch.
   // Touch is the only sensor with an engine under it; elsewhere haptic no-ops.

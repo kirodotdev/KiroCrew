@@ -797,6 +797,10 @@ class CronService:
         # atomically with the write; a field on the shared ``CronJob`` would be
         # clobbered by concurrent callers, a caller's own dict is not.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Precondition for a caller that may only change an attended job (a Shared
+        # Crew guest): judged on the record reloaded under the lock, since the
+        # owner can make the job unattended between the caller's read and here.
+        require_attended = kwargs.pop("require_attended", False)
         # Not a field: the session making this write, recorded on the
         # auto-pause-limit audit row (see CronJob.audit_auto_pause_limit_change).
         audit_actor = kwargs.pop("audit_actor", "") or ""
@@ -817,6 +821,8 @@ class CronService:
                     raise CronPendingMismatch("active grant pin changed concurrently")
                 if expect_stamp is not None and job.app_manifest_digest != expect_stamp:
                     raise CronPendingMismatch("manifest stamp changed concurrently")
+                if require_attended and (job.approval_mode == "auto" or job.script or job.command):
+                    raise CronPendingMismatch("job runs unattended")
                 # ``list_jobs`` hands out these very objects, so a failed save must
                 # restore them (on the SAME object), or the app bridge's manifest
                 # stamp would stop retrying a write that never landed. Only this
@@ -988,7 +994,12 @@ class CronService:
             return "removed"
 
     def _enable_job_locked(
-        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+        self,
+        job_id: str,
+        enabled: bool = True,
+        *,
+        expected_owner: str | None = None,
+        require_attended: bool = False,
     ) -> bool:
         """Lock/reload/mutate/save core; app ownership is checked under the lock.
 
@@ -1003,6 +1014,14 @@ class CronService:
                 if job.id == job_id:
                     if expected_owner is not None and job.created_by != expected_owner:
                         raise PermissionError("Cron job ownership violation")
+                    if (
+                        require_attended
+                        and enabled
+                        and (job.approval_mode == "auto" or job.script or job.command)
+                    ):
+                        # A Shared Crew guest may not start an unattended job; judged
+                        # on the record reloaded under the lock.
+                        raise CronPendingMismatch("job runs unattended")
                     # A request that moves the job's pause state is ordered after
                     # every terminal record frozen before it, so a pending record
                     # keeps this choice (``_apply_held_run_record``). So is a

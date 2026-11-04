@@ -299,10 +299,10 @@ def _caller_is_owner(request: web.Request) -> bool:
     gets the bytes as-is, and anyone else still meets the content scan.
     """
     from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
 
-    return bool(is_owner_dashboard_request(request))
+    return bool(is_host_owner_dashboard_request(request))
 
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:

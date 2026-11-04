@@ -7405,7 +7405,9 @@
       "sessions": "Sessões"
     },
     "errorBoundary": {
+      "back_to_chat": "Voltar ao chat",
       "lazy_page_load_failed": "Não foi possível carregar esta página. Verifique a conexão com o gateway e tente novamente.",
+      "owner_only": "Somente para o proprietário",
       "reload_page": "Recarregar página",
       "something_went_wrong": "Algo deu errado",
       "try_again": "Tentar novamente"
@@ -18013,6 +18015,7 @@
     },
     "schedulePage": {
       "actions": "Ações",
+      "guest": "Convidado",
       "owning_session_help": "Um job sem sessão proprietária é invisível para o cron_list no chat e é gerenciado a partir desta página ou da CLI.",
       "owning_session_tooltip": "Sessão proprietária: {{key}}",
       "view_calendar": "Calendário",

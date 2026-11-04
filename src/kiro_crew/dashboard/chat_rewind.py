@@ -407,9 +407,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         dispatch_commit = False
 
         # Decided at request time, carried by the dispatch: see ``api_chat``.
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-        _owner_sent = is_owner_dashboard_request(request)
+        _owner_sent = is_host_owner_dashboard_request(request)
 
         async def _rewind_dispatch() -> None:
             await dispatch_ready.wait()

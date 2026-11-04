@@ -7213,7 +7213,9 @@
       "sessions": "সেশন"
     },
     "errorBoundary": {
+      "back_to_chat": "চ্যাটে ফিরে যান",
       "lazy_page_load_failed": "এই পৃষ্ঠাটি লোড করা যায়নি। গেটওয়ের সংযোগ পরীক্ষা করে আবার চেষ্টা করো।",
+      "owner_only": "শুধুমাত্র মালিকের জন্য",
       "reload_page": "পৃষ্ঠা রিলোড করুন",
       "something_went_wrong": "কিছু ভুল হয়েছে",
       "try_again": "আবার চেষ্টা করুন"
@@ -17563,6 +17565,7 @@
     },
     "schedulePage": {
       "actions": "অ্যাকশন",
+      "guest": "অতিথি",
       "owning_session_help": "মালিক সেশন ছাড়া কোনো জব চ্যাটের cron_list-এ দেখা যায় না এবং এই পৃষ্ঠা বা CLI থেকে পরিচালিত হয়।",
       "owning_session_tooltip": "মালিক সেশন: {{key}}",
       "view_calendar": "ক্যালেন্ডার",

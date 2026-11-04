@@ -62,6 +62,7 @@ from kiro_crew.dashboard.token_auth import effective_request_app
 from kiro_crew.history import mint_row_mid, monotonic_transcript_ts
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.shared_crew.guest_scope import is_guest_session
 
 # Layering: chat_handlers must stay importable before this module finishes
 # loading, so a MODULE-LEVEL import of chat_handlers here risks an import cycle:
@@ -309,6 +310,25 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
     return validated, None
 
 
+def _without_local_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*messages* with every image opener escaped (``![`` becomes ``!\\[``). Blocking.
+
+    Persisting a row copies the file a ``![alt](/abs/path)`` names into the session's
+    attachments, where a guest could read it, and a row is persisted again on every
+    flush of the window. ``persist_inline_images`` returns a text unchanged unless it
+    contains ``![``, so a guest's imported row that holds no ``![`` at all is never
+    copied from, at this write or any later one, whatever the markup nests inside it.
+    One pass is enough: replacing ``![`` by ``!\\[`` cannot create another ``![``. Rewriting
+    only the local references instead would not be: stripping the inner one from
+    ``![![z](/c.png)](/srv/p.png)`` leaves a live ``![z](/srv/p.png)``.
+    """
+    for message in messages:
+        content = message["content"]
+        if "![" in content:
+            message["content"] = content.replace("![", "!\\[")
+    return messages
+
+
 def _resolve_agent(name: str) -> str:
     """Return *name* if this instance has an agent by that name, else ``""``.
 
@@ -428,6 +448,9 @@ async def _install_arrived_bundle(
             error="bundle rejected",
         )
         return err
+    if is_guest_session(request):
+        # No ``![`` survives in a guest's rows, so no later flush copies a host file either.
+        await asyncio.to_thread(_without_local_images, bundle["messages"])
 
     messages = bundle["messages"]
     # Agent resolution scans the agents directory and parses each manifest, so it

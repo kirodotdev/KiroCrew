@@ -44,7 +44,7 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # check-status gate in api_chat_slots).
     from kiro_crew.dashboard.handlers.source_providers import (
         ensure_gitlab_hosts_loaded,
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
 
     state: DashboardState = request.app["state"]
@@ -99,7 +99,7 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # gating here would withhold nothing it does not already have.
     return web.json_response(
         slot.source_links_payload(
-            include_check_status=is_owner_dashboard_request(request),
+            include_check_status=is_host_owner_dashboard_request(request),
             dashboard_user=bool(request.get("is_dashboard_user")),
         )
     )

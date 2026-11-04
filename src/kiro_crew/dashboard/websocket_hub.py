@@ -431,11 +431,15 @@ class WebSocketHub:
             # boundary the ``/api/members`` reads apply. A non-owner dashboard
             # session (a Telegram, Teams or Webex allowlist link) is a dashboard
             # user too, so the owner set decides: ``register_ws`` fills it from
-            # ``is_owner_dashboard_request``.
+            # ``is_host_owner_dashboard_request``. A Shared Crew guest's socket is
+            # admitted beside it, as the guest holds the ``/api/members`` reads.
             from kiro_crew.dashboard.ws_event_scope import MEMBER_LOG_EVENTS
+            from kiro_crew.shared_crew.collaborators import is_collaborator_actor
 
-            if msg_type in MEMBER_LOG_EVENTS and ws not in (
-                getattr(self._owner, "_owner_ws_clients", None) or set()
+            if (
+                msg_type in MEMBER_LOG_EVENTS
+                and ws not in (getattr(self._owner, "_owner_ws_clients", None) or set())
+                and not is_collaborator_actor(ws.get("_shared_crew_actor"))
             ):
                 try:
                     from kiro_crew.dashboard.ws_event_scope import (

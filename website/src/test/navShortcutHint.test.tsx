@@ -52,6 +52,8 @@ vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../api/client', () => ({
   api: {
+    // The owner's session: the rail shows the owner's pages once this has answered.
+    sharedCrewIsGuest: vi.fn().mockResolvedValue(false),
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),

@@ -25,7 +25,7 @@ class _Req:
     """Request stub mirroring aiohttp's mapping surface.
 
     ``user`` is "local-app" because the handler's owner gate is POSITIVE
-    (``is_owner_dashboard_request``): with no configured owner_id only the local
+    (``is_host_owner_dashboard_request``): with no configured owner_id only the local
     dashboard subjects pass, so a bare truthy user would fail the second gate.
     """
 
@@ -229,7 +229,7 @@ class TestPeerApprovalState:
     async def test_a_non_owner_dashboard_subject_is_refused(self, monkeypatch):
         _enable_instances(monkeypatch)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
             lambda _r: False,
         )
         state = _state({"/api/status": (True, {"yolo": True})})
@@ -474,7 +474,7 @@ class TestGates:
         """
         _enable_instances(monkeypatch)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
             lambda _r: False,
         )
 

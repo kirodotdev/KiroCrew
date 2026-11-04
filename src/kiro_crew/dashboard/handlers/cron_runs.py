@@ -42,10 +42,12 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
+    guest_unattended_refusal,
 )
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.guest_scope import is_guest_session
 
 from ._shared import guard_owner_surface_routes, read_bounded_json
 
@@ -63,6 +65,8 @@ async def api_cron_run(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.run")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
     # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
     # crons.json directly. The cache-only `list_jobs()` would not see that job
@@ -96,7 +100,13 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # run_job claims the job synchronously while the call is evaluated; the
     # wrapper task is handed to the claim on the same line so cancel() can
     # reach a run still parked in its store refresh.
-    task = asyncio.create_task(state.crons.run_job(job_id))
+    if is_guest_session(request):
+        # The record that runs is read again inside run_job; a guest's run is
+        # judged on that one, so an owner switching the job to auto meanwhile
+        # starts nothing.
+        task = asyncio.create_task(state.crons.run_job(job_id, require_attended=True))
+    else:
+        task = asyncio.create_task(state.crons.run_job(job_id))
     state.crons.attach_run_task(job_id, task)
     state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
@@ -145,6 +155,8 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.to_chat")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     slot_name = f"cron-{job_id}"
     # The job's tab key is held by an app's slot: it is not adopted (see
     # slot_ownership.app_holds_gateway_key), so there is no tab to open.

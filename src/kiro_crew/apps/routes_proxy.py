@@ -221,8 +221,8 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
        request that also carries an owner cookie can never inherit the owner's trust.
     2. ``app-token``: the caller holds an app token.
     3. ``owner-session``: a dashboard session cookie authenticated the request, not a
-       ``?token=`` link, and the shared owner predicate matches. Only this kind names
-       an owner.
+       ``?token=`` link, and the host-owner predicate matches (a Shared Crew guest is
+       never an owner here). Only this kind names an owner.
     4. ``none``: everything else.
     """
     if request.get("internal_auth") is True:
@@ -230,9 +230,11 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
     if request.get("app"):
         return PRINCIPAL_APP_TOKEN, ""
     if request.get("is_dashboard_user") is True and request.get("auth_from_query_token") is False:
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import (
+            is_host_owner_dashboard_request,
+        )
 
-        if is_owner_dashboard_request(request):
+        if is_host_owner_dashboard_request(request):
             return PRINCIPAL_OWNER_SESSION, str(request.get("user") or "")
     return PRINCIPAL_NONE, ""
 

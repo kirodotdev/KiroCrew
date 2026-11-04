@@ -45,7 +45,7 @@ from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, targ
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
-    is_owner_dashboard_request,
+    is_host_owner_dashboard_request,
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
@@ -111,7 +111,7 @@ def _guard(
             status=401,
         )
     # Owner gate: delegated to the shared helper's predicate + stale relabel.
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit(operation, "denied", error="non-owner rejected")
         return _owner_denial_response(
             request,

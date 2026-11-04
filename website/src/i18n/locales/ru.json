@@ -7597,7 +7597,9 @@
       "sessions": "Сессии"
     },
     "errorBoundary": {
+      "back_to_chat": "Назад в чат",
       "lazy_page_load_failed": "Не удалось загрузить эту страницу. Проверь подключение к шлюзу и попробуй ещё раз.",
+      "owner_only": "Только для владельца",
       "reload_page": "Перезагрузить страницу",
       "something_went_wrong": "Что-то пошло не так",
       "try_again": "Повторить"
@@ -18463,6 +18465,7 @@
     },
     "schedulePage": {
       "actions": "Действия",
+      "guest": "Гость",
       "owning_session_help": "Задача без сессии-владельца невидима для cron_list в чате и управляется с этой страницы или через CLI.",
       "owning_session_tooltip": "Сессия-владелец: {{key}}",
       "view_calendar": "Календарь",

@@ -7213,7 +7213,9 @@
       "sessions": "Sitzungen"
     },
     "errorBoundary": {
+      "back_to_chat": "Zurück zum Chat",
       "lazy_page_load_failed": "Diese Seite konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
+      "owner_only": "Nur für den Eigentümer",
       "reload_page": "Seite neu laden",
       "something_went_wrong": "Etwas ist schiefgelaufen",
       "try_again": "Erneut versuchen"
@@ -17563,6 +17565,7 @@
     },
     "schedulePage": {
       "actions": "Aktionen",
+      "guest": "Gast",
       "owning_session_help": "Ein Job ohne besitzende Sitzung ist für cron_list im Chat unsichtbar und wird über diese Seite oder die CLI verwaltet.",
       "owning_session_tooltip": "Besitzende Sitzung: {{key}}",
       "view_calendar": "Kalender",
