@@ -620,10 +620,12 @@ def test_a_stale_world_readable_artifact_tmp_is_not_published_at_its_mode(home: 
 
 def test_observed_channel_history_is_owner_only(home: Path) -> None:
     from kiro_crew.channel_history import ChannelHistory
+    from kiro_crew.executors import channel_history_executor
 
     history = ChannelHistory(history_dir=home / "channel-history")
     history.set_observe("C123")
     history.push("C123", "U1", "a private message", msg_ts="1.0")
+    channel_history_executor().submit(lambda: None).result(timeout=10)  # drain the disk lane
 
     files = list((home / "channel-history").rglob("*.jsonl"))
     assert files, "the observe-mode history must be persisted"
@@ -634,10 +636,12 @@ def test_observed_channel_history_outside_the_home_keeps_the_umask_default(
     tmp_path: Path,
 ) -> None:
     from kiro_crew.channel_history import ChannelHistory
+    from kiro_crew.executors import channel_history_executor
 
     history = ChannelHistory(history_dir=tmp_path / "shared-history")
     history.set_observe("C123")
     history.push("C123", "U1", "a message", msg_ts="1.0")
+    channel_history_executor().submit(lambda: None).result(timeout=10)  # drain the disk lane
 
     files = list((tmp_path / "shared-history").rglob("*.jsonl"))
     assert files
