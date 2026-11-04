@@ -164,9 +164,7 @@ class TestPostEphemeral:
     ) -> None:
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}]
         async with slack_wire(wire_session) as wire:
-            await wire.client.post_ephemeral(
-                "C1", "U1", "fallback", blocks=blocks, thread_ts="ts1"
-            )
+            await wire.client.post_ephemeral("C1", "U1", "fallback", blocks=blocks, thread_ts="ts1")
         assert [call.args for call in wire.sent("chat.postEphemeral")] == [
             {
                 "channel": "C1",
@@ -291,7 +289,9 @@ class TestTeamIdInjection:
             wire.client.record_channel_team("C1", "TWORK")
             await wire.client.update_message("C1", "ts1", text="x")
             await wire.client.delete_message("C1", "ts1")
-        assert [(c.method, c.get("channel"), c.get("ts"), c.get("team_id")) for c in wire.calls] == [
+        assert [
+            (c.method, c.get("channel"), c.get("ts"), c.get("team_id")) for c in wire.calls
+        ] == [
             ("chat.update", "C1", "ts1", "TWORK"),
             ("chat.delete", "C1", "ts1", "TWORK"),
         ]
@@ -308,7 +308,9 @@ class TestTeamIdInjection:
         assert c._web.reactions_remove.await_args.kwargs["team_id"] == "TWORK"
 
     @pytest.mark.asyncio
-    async def test_post_ephemeral_injects_cached_team(self, wire_session: pytest.MonkeyPatch) -> None:
+    async def test_post_ephemeral_injects_cached_team(
+        self, wire_session: pytest.MonkeyPatch
+    ) -> None:
         async with slack_wire(wire_session) as wire:
             wire.client.record_channel_team("C1", "TWORK")
             await wire.client.post_ephemeral("C1", "U1", "hi")

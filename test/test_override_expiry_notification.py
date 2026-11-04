@@ -174,7 +174,9 @@ class TestDmOwner:
     async def test_posts_to_owner_dm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async with slack_wire(monkeypatch) as wire:
             await _dm_owner(_slack_state(slack_client=wire.client), "hello owner")
-        assert [(c.method, c.get("users"), c.get("channel"), c.get("text")) for c in wire.calls] == [
+        assert [
+            (c.method, c.get("users"), c.get("channel"), c.get("text")) for c in wire.calls
+        ] == [
             ("conversations.open", "U123", None, None),
             ("chat.postMessage", None, "D0WIRE", "hello owner"),
         ]
