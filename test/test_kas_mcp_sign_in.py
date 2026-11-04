@@ -98,7 +98,10 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": pending_reset, "result": {"success": True}})
     elif mid is not None and method is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
-""" % {"dead": _DEAD_URL, "live": _LIVE_URL}
+""" % {
+    "dead": _DEAD_URL,
+    "live": _LIVE_URL,
+}
 
 _STUB_AGENT_SPEC = {
     "name": "kirocrew",
@@ -767,7 +770,7 @@ def _sign_in_provider(seen: list):
         if False:
             yield None
 
-    async def deliver(message, send, _incarnation):
+    async def deliver(message, send, _incarnation, **_kwargs):
         async for event in send(message):
             yield event
 
