@@ -175,9 +175,12 @@ function createReconnect({
       glog(`liveness: gateway.lock holder pid ${incumbentPids} does not hold :${PORT} — waiting up to ${LOCK_HOLDER_START_GRACE_MS}ms for it to exit or start serving`);
       sendStatus("Waiting for the gateway to finish starting…");
       const outcome = await waitForIncumbentExit(incumbentPids, "liveness", {
+        // A holder that answers while it shuts down is still draining: keep
+        // waiting for it to exit instead of reconnecting to it.
         isServing: async () => {
-          try { await checkBackend(HEALTH_URL); return true; }
+          try { await checkBackend(HEALTH_URL); }
           catch { return false; }
+          return (await fetchGatewayReadiness()) !== "shutting-down";
         },
         timeoutMs: LOCK_HOLDER_START_GRACE_MS,
         pollMs: 1000,

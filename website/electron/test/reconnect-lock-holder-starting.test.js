@@ -42,6 +42,7 @@ function harness({
   isWindows = false,
   portFree = true,
   holderExitsAfterMs = null,
+  readiness = () => "ready",
 }) {
   const events = [];
   let startAt = null;
@@ -73,7 +74,7 @@ function harness({
     probeGatewayPortBinding: async () => "free",
     probeGatewayPortOwner: async () => "kirocrew",
     fetchHealthInfo: async () => ({ app: "kirocrew", version: "0.11.1.5" }),
-    fetchGatewayReadiness: async () => "ready",
+    fetchGatewayReadiness: async () => readiness(clock - (startAt ?? clock)),
     snapshotGatewayPortPids: async () => snapshot,
     unverifiedIncumbent: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows }),
     waitForIncumbentExit: (pids, _label, options = {}) => waitForProcessExit({
@@ -129,6 +130,19 @@ describe("liveness recovery into a held gateway.lock (POSIX)", () => {
     });
     await h.run();
     assert.deepEqual(actions(h.events), ["lock-probe", "ownership reused-local", "connect"]);
+  });
+
+  // A holder that answers while it shuts down is draining, not starting:
+  // recovery waits for it to exit and then spawns, never reconnects to it.
+  it("waits out a holder that answers while shutting down, then spawns", async () => {
+    const h = harness({
+      lockProbe: () => ({ verdict: "captured", pid: HOLDER_PID }),
+      servesAfterMs: 0,
+      holderExitsAfterMs: 10_000,
+      readiness: () => "shutting-down",
+    });
+    await h.run();
+    assert.deepEqual(actions(h.events), ["lock-probe", "spawn", "connect"]);
   });
 
   it("spawns after the start grace when the holder never serves and never exits", async () => {
