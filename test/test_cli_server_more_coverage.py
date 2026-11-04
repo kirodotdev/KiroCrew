@@ -38,6 +38,7 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
 )
 
 from kiro_crew import cli_server, kiro_cli
+from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
 # --------------------------------------------------------------------------
@@ -167,7 +168,7 @@ def git_checkout(monkeypatch, tmp_path):
     # cannot leak into these tests. Tests that want the step reachable resolve
     # one explicitly.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
-    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
+    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("built"))
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
     # Pin the install ROUTE. The real probe reads the test interpreter's own
     # Scripts dir, so on a Windows dev box running from a checkout these tests
@@ -527,6 +528,38 @@ class TestUpdateGitPath:
         # pip's own reason reaches the console, not just the exit code.
         assert "wheel error" in capsys.readouterr().out
 
+    def test_frontend_build_failure_installs_then_exits(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The moved tree still gets its install; the update then fails and names its log."""
+        from kiro_crew.platform import release_apply
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        log_path = git_checkout / "frontend-build.log"
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: FrontendBuildResult("failed", log_path, "vite: build failed"),
+        )
+        installs: list[object] = []
+        monkeypatch.setattr(release_apply, "apply_release", lambda *a, **k: installs.append(a) or 0)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert len(installs) == 1
+        out = capsys.readouterr().out
+        assert str(log_path) in out
+        assert "vite: build failed" in out
+        assert "Kiro Crew updated!" not in out
+
+    def test_skipped_frontend_build_still_updates(self, monkeypatch, git_checkout, capsys) -> None:
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.setattr(
+            cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("skipped")
+        )
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+
     def test_success_updates_kiro_cli_and_refreshes_agent_config(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -534,7 +567,11 @@ class TestUpdateGitPath:
         monkeypatch.setattr(subprocess, "run", stub)
         monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         built: list[Path] = []
-        monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: built.append(p))
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: built.append(p) or FrontendBuildResult("built"),
+        )
         cli_server._update()
         out = capsys.readouterr().out
         assert "Kiro Crew updated!" in out

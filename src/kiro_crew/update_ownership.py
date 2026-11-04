@@ -89,6 +89,8 @@ class _Entry:
 _live: list[_Entry] = []
 _deferred_restart_until: float | None = None
 _restart_refusal: str | None = None
+#: Whether the stale-asset watchdog's import probe may clear the refusal.
+_refusal_probe_clears = True
 #: Bumped by every :func:`refuse_restart`, so evidence gathered before a
 #: refusal was recorded cannot clear it.
 _refusal_generation = 0
@@ -162,14 +164,20 @@ def clear_restart_deferral() -> None:
     _deferred_restart_until = None
 
 
-def refuse_restart(reason: str) -> None:
+def refuse_restart(reason: str, *, import_probe_clears: bool = True) -> None:
     """An update stayed up instead of restarting; a restart now would fail.
 
     Recorded once the update has moved the tree and could not sync its
-    dependencies, including when it raised after the move.
+    dependencies or build its frontend, including when it raised after the move.
+
+    *import_probe_clears* is False for a refusal an import probe cannot speak
+    for: a failed frontend build leaves a stale or missing bundle that a probe
+    of the supervisor's command does not look at, so only a later update that
+    completes clears it.
     """
-    global _restart_refusal, _refusal_generation
+    global _restart_refusal, _refusal_generation, _refusal_probe_clears
     _restart_refusal = reason
+    _refusal_probe_clears = import_probe_clears
     _refusal_generation += 1
 
 
@@ -185,10 +193,13 @@ def clear_restart_refusal(*, recorded_by: int | None = None) -> None:
     leaves the state the refusal describes on disk. The stale-asset watchdog
     clears it too, with *recorded_by*, when a probe of the supervisor's own
     command proved the relaunch would start: an install repaired out of band.
-    That clears only a refusal recorded before the probe began.
+    That clears only a refusal recorded before the probe began, and never one
+    recorded with ``import_probe_clears=False``.
     """
     global _restart_refusal
-    if recorded_by is None or recorded_by == _refusal_generation:
+    if recorded_by is None:
+        _restart_refusal = None
+    elif recorded_by == _refusal_generation and _refusal_probe_clears:
         _restart_refusal = None
 
 

@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.frontend import FrontendBuildResult
+
 
 def _init_repo(path) -> None:
     """Make *path* the top level of a real git working tree.
@@ -754,7 +756,10 @@ class TestUpdateDivergenceGuard:
         # before these steps, and they are not what these tests assert on.
         monkeypatch.setattr("kiro_crew.cli_server.shutil.which", lambda *_: None)
         monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *_: None)
-        monkeypatch.setattr("kiro_crew.cli_server.build_frontend_sync", lambda *_: None)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.build_frontend_sync",
+            lambda *_: FrontendBuildResult("built"),
+        )
         monkeypatch.setattr("kiro_crew.cli_server.dep_sync.sync_or_reinstall", lambda *a, **k: 0)
         monkeypatch.setattr("builtins.input", lambda *_: answer)
 
