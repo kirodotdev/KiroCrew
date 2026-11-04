@@ -106,7 +106,11 @@ def _probe(session_key: str) -> Armed:
 def _band(value: Any) -> str:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return "unsure"
-    return "yes" if value > YES else "no" if value < NO else "unsure"
+    if value > YES:
+        return "yes"
+    if value < NO:
+        return "no"
+    return "unsure"
 
 
 def _noul_value(answers: dict[str, Any], qid: str) -> float:

@@ -771,11 +771,12 @@ class Loop:
         if self.notes:
             out["notes"] = list(self.notes)
         if state is not None:
-            out["state"] = (
-                state.get("grid")
-                if "grid" in state
-                else state.get("read") if "read" in state else str(state.get("text", ""))[:1500]
-            )
+            if "grid" in state:
+                out["state"] = state.get("grid")
+            elif "read" in state:
+                out["state"] = state.get("read")
+            else:
+                out["state"] = str(state.get("text", ""))[:1500]
         out.update(more)
         return out
 

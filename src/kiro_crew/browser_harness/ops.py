@@ -922,7 +922,12 @@ async def _select_option(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]
     raw = args.get("values")
     if raw is None:
         raw = args.get("value")
-    values = [str(v) for v in raw] if isinstance(raw, list) else [] if raw is None else [str(raw)]
+    if isinstance(raw, list):
+        values = [str(v) for v in raw]
+    elif raw is None:
+        values = []
+    else:
+        values = [str(raw)]
     if not values:
         return refusal("bad_values", "select_option needs `values` (a list) or `value`")
     await _step(ctx, f"Select in {ref}")
