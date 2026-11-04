@@ -109,15 +109,8 @@ class TestRestartHintIsSchemaDriven:
 class TestRestartRequiredOverHttp:
     """The same schema hint, but answered by the endpoint the dashboard calls.
 
-    ``_changed_paths_need_restart`` is unit-tested above; this drives the two
-    doors in front of it. That matters because the value the USER sees is the
-    JSON field: the four keys ``PUT`` can apply are hot, the whole point of the
-    watcher is that they never report a restart, and only a real request proves
-    the response says so.
-
-    ``PATCH`` is the other door and deliberately carries no ``restart_required``
-    at all: every path in its allow-list is hot, so a hint there would be a
-    field that is always ``False``.
+    The four keys ``PUT`` can apply are hot, so the response must not report a restart.
+    ``PATCH`` carries no ``restart_required``: every path in its allow-list is hot.
     """
 
     @staticmethod

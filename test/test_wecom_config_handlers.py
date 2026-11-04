@@ -451,14 +451,9 @@ def test_the_config_and_env_writes_run_under_the_live_config_hold(
 
 
 def test_set_config_write_failure_leaves_consistent_pair(tmp_path: Path, monkeypatch) -> None:
-    """On a SET, config.json is written FIRST.  If it fails, .env is never
-    touched — old credentials + old metadata, always a consistent pair.
-    This mirrors the Teams and Webex config-first SET pattern.
+    """On a SET, config.json is written first; if it fails, .env is never touched.
 
-    The config write only fires on the SET path when `staged` is non-empty
-    (i.e. at least one config field differs from stored).  This test includes
-    ``enabled: True`` in the body to ensure `staged` has an entry and the
-    config-write failure path is exercised."""
+    ``enabled: True`` makes `staged` non-empty, so the config write happens."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
     env = tmp_path / ".env"
@@ -508,15 +503,8 @@ def test_set_config_write_failure_preserves_process_only_credential(
     """WeCom SET with config-write failure must NOT clobber credentials that
     live ONLY in os.environ (not in .env).
 
-    Scenario:
-      - os.environ["WECOM_BOT_ID"]  = "env-only-bot-id"  (process-only)
-      - os.environ["WECOM_SECRET"]  = "env-only-secret"   (process-only)
-      - .env file has no WECOM_* entries at all
-      - the config.json write raises (disk full)
-
-    With config-first ordering: the config write fails before
-    the .env write, so os.environ is never mutated by the
-    handler.  Both process-only credentials are trivially preserved.
+    The credentials exist only in os.environ and the config write raises, so the
+    handler stops before the .env write.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 

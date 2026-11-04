@@ -239,19 +239,10 @@ async def test_api_agent_config_put_does_not_clobber_sidecar(tmp_path):
 
 @pytest.mark.asyncio
 async def test_api_agent_config_put_uses_atomic_write(tmp_path):
-    """PUT must persist the installed spec via write_config_atomically, not a
-    bare write_text.
+    """PUT persists the installed spec via write_config_atomically, never a bare write_text.
 
-    A truncating in-place write leaves the spec corrupt
-    on a mid-write crash or disk-full, breaking every subsequent session start
-    because kiro-cli reads the spec at spawn.  The fix routes the write through
-    write_config_atomically (temp-file + os.replace), matching the mc_cfg sidecar
-    write already in the same handler.
-
-    This test patches write_config_atomically at the site the handler imports it
-    from and asserts it is called exactly once with the right args; it also
-    patches Path.write_text to assert the handler never falls back to a bare,
-    non-atomic write on the installed-spec path.
+    A truncating write leaves the spec corrupt on a crash or full disk, and kiro-cli
+    reads the spec at every session spawn.
     """
 
     installed = tmp_path / "kirocrew.json"
@@ -311,12 +302,8 @@ async def test_api_agent_config_put_uses_atomic_write(tmp_path):
 async def test_agent_config_write_holds_the_mcp_transaction_lock(tmp_path):
     """The agent-spec write participates in the MCP transaction lock.
 
-    Agent spec files are a census source for the MCP config transactions in
-    ``handlers/mcp.py``, which read current state and then act on it while
-    holding ``_get_mcp_lock``. A config write landing between that read and the
-    act would have the transaction commit a decision about contents that changed
-    underneath it. External writers cannot be serialized; the gateway's own
-    writer must be.
+    MCP config transactions in ``handlers/mcp.py`` read agent specs and act on them
+    under ``_get_mcp_lock``; a write between the read and the act would go unseen.
     """
     import contextlib
 
@@ -420,23 +407,10 @@ async def test_agent_config_write_holds_the_mcp_transaction_lock(tmp_path):
 async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
     """Every durable write happens inside ONE shielded offload, none outside it.
 
-    Holding the lock is not enough. A cancelled PUT unwinds the async context and
-    releases ``_get_mcp_lock`` while a bare ``asyncio.to_thread`` worker keeps
-    writing, so an MCP config transaction can take the lock, read the OLD state,
-    act on it, and only then have the worker publish a change the transaction
-    never saw. ``_offload_config_write`` exists for exactly this: it drains the
-    worker before the lock is released (its own drain behaviour is pinned in
-    mcp_config_files.py).
-
-    This asserts the structural property that makes the window unrepresentable,
-    in the form the invariant actually needs: there is exactly ONE dispatch
-    through the shielded offload, and all three durable writes -- the bookkeeping
-    lift, the removedTools sidecar and the installed spec -- happen inside it.
-    A second dispatch, or any write outside one, re-creates a cancellation point
-    between two writes however wide the lock is.
-
-    It pins the write set and its containment, not the offloaded callable's name:
-    a name check would pass while the other two writes ran on the event loop.
+    A cancelled PUT releases ``_get_mcp_lock`` while a bare ``asyncio.to_thread``
+    worker keeps writing; ``_offload_config_write`` drains it first. All three writes
+    (bookkeeping lift, removedTools sidecar, installed spec) must sit in one dispatch,
+    or a cancellation point opens between two of them.
     """
     installed = tmp_path / "kirocrew.json"
     installed.write_text(json.dumps({"name": "kirocrew"}))
@@ -526,20 +500,10 @@ async def test_agent_config_write_goes_through_one_shielded_offload(tmp_path):
 async def test_agent_config_put_persists_nothing_before_the_transaction_lock(tmp_path):
     """A PUT cancelled while WAITING for the transaction lock must leave no trace.
 
-    ``_McpFileLock.__aenter__`` awaits ``run_in_executor(acquire_lock)``, so the
-    lock WAIT is a cancellation point -- and a contended flock makes that wait
-    unbounded, however long the other holder takes. A gateway shutdown (or a
-    client disconnect) that cancels the request there raises out of
-    ``__aenter__``, so the handler never reaches the agent-spec write. Anything
-    it already persisted at that moment is a HALF-APPLIED PUT: the removedTools
-    bookkeeping in ``config.json`` records that the user dropped a shipped tool
-    while the spec on disk still grants it, and nothing ever reconciles the two
-    -- the next upgrade honours the bookkeeping and silently removes a tool the
-    user never saw removed.
-
-    Pins the invariant structurally rather than probabilistically: NO durable
-    write happens before the lock is held, so every write in the sequence
-    commits under the same lock and cancellation at the wait tears nothing.
+    The lock wait in ``_McpFileLock.__aenter__`` is a cancellation point. A write made
+    before it would leave removedTools bookkeeping in ``config.json`` out of step with
+    the spec, and the next upgrade would silently remove a tool. No write may precede
+    the lock.
     """
     installed = tmp_path / "kirocrew.json"
     installed.write_text(json.dumps({"name": "kirocrew", "tools": ["a", "c"]}))
@@ -618,19 +582,9 @@ async def test_agent_config_put_persists_nothing_before_the_transaction_lock(tmp
 async def test_agent_config_put_lock_releases_only_after_every_write_landed(tmp_path):
     """The transaction lock must not release while ANY write of the PUT is in flight.
 
-    The half of the invariant about cancellation. Holding the lock across all
-    three durable writes is not enough on its own: if any of them is reached
-    through an await that is a plain cancellation point, a cancel delivered
-    there unwinds ``async with`` and releases the lock while the worker thread
-    it dispatched keeps writing. The next PUT (or any MCP transaction) then
-    enters the lock against an in-flight write and reads a state no writer ever
-    committed -- the very interleaving the lock exists to forbid.
-
-    Pinned structurally rather than probabilistically: at the moment the lock
-    is released, EVERY durable write of the PUT must already have completed.
-    That is only representable when the writes form one uninterruptible unit,
-    so this fails on any shape that leaves a cancellable await between the
-    lock and a write.
+    A cancel at a plain await releases the lock while a worker thread keeps writing,
+    so the next transaction reads a state no writer committed. At release time every
+    durable write of the PUT must already have completed.
     """
     import contextlib
     import threading
@@ -756,16 +710,9 @@ async def test_agent_config_put_lock_releases_only_after_every_write_landed(tmp_
 async def test_agent_config_put_unreadable_config_persists_nothing(tmp_path, monkeypatch):
     """A fallible READ must not sit after a durable write.
 
-    The other half of the invariant. ``read_config_for_update`` fails closed on
-    a corrupt ``config.json`` and the handler answers 500 -- correct only while
-    nothing has been written yet. Reached AFTER the bookkeeping lift, the same
-    500 leaves ``agent_model_state.json`` recording a model for a spec that was
-    never written: bookkeeping durable while the spec it describes is not, which
-    is exactly the half-applied state the transaction lock was widened to make
-    unreachable.
-
-    Pins all three durable targets byte-identical, so the property is "nothing
-    was persisted" rather than "the write I happened to think of was skipped".
+    ``read_config_for_update`` fails closed on a corrupt ``config.json``. After the
+    bookkeeping lift, that 500 would leave ``agent_model_state.json`` naming a model
+    for a spec never written. All three durable targets must stay byte-identical.
     """
     from kiro_crew.config.loader import ConfigReadError
 
@@ -844,19 +791,10 @@ async def test_agent_config_put_keeps_a_concurrent_config_write_that_lands_befor
 ):
     """A ``config.json`` write landing before the worker must not be reverted.
 
-    The read that feeds the ``removedTools`` write must not happen in the handler,
-    one executor hop before the worker published the result. Any concurrent
-    whole-file ``config.json`` writer landing in that gap -- ``api_default_agent``
-    does exactly such a read-modify-write, and takes no lock at all -- had its
-    unrelated fields silently reverted when the PUT renamed its already-stale
-    snapshot into place. Nothing reports that: the setting simply goes back to
-    its old value.
-
-    Injects that writer at exactly that point, the offload dispatch. On the
-    pre-fix shape the baseline is already captured by the time this runs, so the
-    write below is lost; with the read moved inside the unit, immediately
-    adjacent to the write it feeds, it is the READ that runs afterwards and the
-    concurrent field survives.
+    The read feeding the ``removedTools`` write must sit inside the offloaded unit. A
+    read in the handler leaves a gap where a whole-file writer such as
+    ``api_default_agent`` lands, and the stale snapshot then silently reverts it.
+    The writer is injected at the offload dispatch, so only an in-unit read keeps it.
     """
     import contextlib
 
@@ -928,16 +866,9 @@ async def test_agent_config_put_failed_config_write_leaves_bookkeeping_untouched
 ):
     """A failing ``config.json`` write must leave the bookkeeping sidecar untouched.
 
-    The unit is non-cancellable but NOT rollback-atomic, so its ORDER is what
-    decides the damage a failed write leaves behind. With the bookkeeping lift
-    running first, an I/O failure on the ``config.json`` write (permission,
-    quota, disk full, a failed atomic rename) answered 500 with
-    ``agent_model_state.json`` already recording a model for a spec that never
-    landed -- strictly worse than the pre-lock ordering, which wrote
-    ``config.json`` before bookkeeping.
-
-    Pins the restored prefix: the ``config.json`` write is the first durable
-    step, so its failure leaves the other two targets byte-identical.
+    The unit is non-cancellable but not rollback-atomic, so order decides the damage.
+    The ``config.json`` write must be the first durable step; if bookkeeping ran first,
+    an I/O failure would leave ``agent_model_state.json`` naming an unwritten spec.
     """
     installed = tmp_path / "kirocrew.json"
     installed.write_text(json.dumps({"name": "kirocrew", "tools": ["a", "c"]}))
@@ -1015,17 +946,9 @@ async def test_agent_config_put_failed_config_write_leaves_bookkeeping_untouched
 async def test_offload_config_write_drains_through_repeated_cancellation():
     """The drain itself must survive being cancelled.
 
-    ``_offload_config_write`` shields the write and, on ``CancelledError``,
-    re-awaits the future to drain the worker. A bare ``await future`` in that
-    handler is itself cancellable: a SECOND cancellation arriving during the
-    drain cancels the drain, so the caller unwinds -- releasing the MCP
-    transaction lock -- while the worker thread is still writing. That is the
-    exact window the offload exists to close, so it must hold under repeated
-    cancellation, not just the first one.
-
-    Pins all three guarantees: the write runs to completion before control
-    returns, the ``CancelledError`` still escapes, and completion happens
-    BEFORE it escapes.
+    A bare ``await future`` drain is cancellable, so a second cancel would release the
+    MCP transaction lock mid-write. The write must complete, and only then may the
+    ``CancelledError`` escape.
     """
     import threading
 
@@ -1102,18 +1025,10 @@ async def test_offload_config_write_propagates_write_errors():
 
 @pytest.mark.asyncio
 async def test_default_agent_write_holds_the_config_lock(tmp_path):
-    """PUT /api/config/default-agent read-modify-writes config.json, so it must
-    hold the same in-process lock every sibling RMW in the dashboard takes.
+    """PUT /api/config/default-agent holds the dashboard config lock for its RMW.
 
-    The agent-config PUT moved its own RMW into a WORKER THREAD, holding
-    ``_get_config_lock`` across the offload. The event loop therefore does not
-    serialize the two for free: an unlocked read here can capture a baseline
-    the worker is about to republish, and the last atomic rename silently
-    reverts the other side's unrelated settings.
-
-    Instrumentation, not a true race: the lock has to cover BOTH halves of the
-    read-modify-write, and a recorder proves that deterministically where a
-    timing test would only prove it sometimes.
+    The agent-config PUT runs its RMW in a worker thread, so the event loop does not
+    serialize the two. A recorder checks the lock covers both read and write.
     """
     import contextlib
 
@@ -1147,11 +1062,8 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     def _recording_locked(path, *, mutate, **kwargs):  # noqa: ANN001 - real signature
         """Observe both halves of the locked read-modify-write.
 
-        The read is not a separate call the handler makes: it happens
-        inside ``update_config_locked``, immediately before it invokes *mutate*.
-        Recording at the callback is therefore the read, and recording after the
-        primitive returns is the write -- the same two observations as before,
-        taken where they now happen.
+        The read happens inside ``update_config_locked`` just before *mutate* runs,
+        so the callback marks the read and the return marks the write.
         """
 
         def _observed_mutate(data: dict) -> dict:
@@ -1203,15 +1115,9 @@ async def test_agent_config_put_governs_against_the_ceiling_current_at_commit(
 ):
     """The governance verdict must be taken INSIDE the locked region.
 
-    The transaction lock is a cross-process flock and its wait is unbounded, so
-    a ceiling revoked while this PUT queues behind another transaction leaves a
-    pre-lock verdict stale — and the write then republishes an auto-approve
-    grant governance has already withheld, which is precisely the bypass the
-    filter exists to close.
-
-    Modelled deterministically rather than by timing: the fake transaction lock
-    revokes the grant as it is acquired, i.e. strictly after any pre-lock
-    snapshot and strictly before any durable write.
+    The lock wait is unbounded, so a ceiling revoked meanwhile makes a pre-lock verdict
+    stale and the write would republish a withheld auto-approve grant. The fake lock
+    revokes the grant as it is acquired.
     """
     import contextlib
 

@@ -81,13 +81,9 @@ def test_episodic_max_count_is_floored_at_one() -> None:
 def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
     """The opt-in must survive ``load()`` and a later ``save()``.
 
-    ``DashboardConfig`` is built field-by-field in ``load()``, so a nested
-    section that nobody wires up is silently dropped: the documented
-    ``kirocrew config set dashboard.tailscale.enabled true`` would land in
-    config.json, read back as ``False``, and — because ``to_dict()`` re-serializes
-    the default — be rewritten to ``false`` by the next unrelated ``save()``.
-    That makes the whole feature inert while looking configured, so both halves
-    are pinned here: hydration, and the round trip that would erase it.
+    ``load()`` builds ``DashboardConfig`` field by field, so an unwired nested section
+    reads back as ``False`` and the next ``save()`` rewrites it. Both hydration and
+    the round trip are pinned.
     """
     assert KiroCrewConfig().dashboard.tailscale.enabled is False
     assert _load_from_dict({}).dashboard.tailscale.enabled is False
@@ -534,14 +530,10 @@ class TestKnowledgePoolIdleTtl:
 
 
 class TestOrchestratorWatchdogThemeAreParsed:
-    """load() must actually parse the watchdog and dashboard-theme fields from
-    config.json. They are advertised in config-baseline.json and served by
-    /api/config/schema, and real consumers read them (acp/session_handle_watchdog.py
-    .watchdog), but the cls(...) construction passed no watchdog= kwarg and
-    DashboardConfig omitted theme_mode/
-    theme_color/onboarded — so config values were silently ignored (defaults
-    always won) and the server-authoritative theme never round-tripped (the
-    onboarding modal re-armed on every gateway restart)."""
+    """load() parses the watchdog and dashboard-theme fields from config.json.
+
+    acp/session_handle_watchdog.py reads ``.watchdog``, and a theme that does not
+    round-trip re-arms the onboarding modal on every gateway restart."""
 
     def test_retired_orchestrator_section_loads_and_is_ignored(self) -> None:
         cfg, warnings = _load_from_dict_with_logs(

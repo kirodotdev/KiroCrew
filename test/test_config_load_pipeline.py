@@ -68,9 +68,7 @@ def _section_fields() -> list[tuple[str, type]]:
     ]
 
 
-# ---------------------------------------------------------------------------
 # SectionReader: the one place a section default is resolved.
-# ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass
@@ -123,9 +121,7 @@ class TestSectionReader:
         assert reader.read("count", sections._safe_int, 5, 9) == 5
 
 
-# ---------------------------------------------------------------------------
 # build_config: the document into a config, without the filesystem.
-# ---------------------------------------------------------------------------
 
 
 class TestBuildConfig:
@@ -326,9 +322,7 @@ class TestBuildConfig:
         assert cfg._extra_keys == {"agent": {"no_such_key": 2}}
 
 
-# ---------------------------------------------------------------------------
 # read_config_document: the files (or the cache) into a document.
-# ---------------------------------------------------------------------------
 
 
 class TestReadConfigDocument:
@@ -376,9 +370,7 @@ class TestReadConfigDocument:
         assert len(stats) == 2
 
 
-# ---------------------------------------------------------------------------
 # persist_write_back and the whole load.
-# ---------------------------------------------------------------------------
 
 
 class TestPersistWriteBack:
