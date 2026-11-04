@@ -23,3 +23,20 @@ export function expectCardListsHostRecords(card: HTMLElement, records: readonly 
   const targets = entries.map(e => within(e).queryByTestId('blocked-link-entry-target')?.textContent ?? null)
   expect(targets).toEqual(own.map(r => (r.path != null ? `${r.domain}${r.path}` : r.domain)))
 }
+
+/**
+ * The same, for a card whose host has been allowed: it lists the host's
+ * records exactly as above, but its title now names the host as allowed
+ * rather than blocked, so the title and the Allow outcome cannot disagree
+ * (#18675).
+ */
+export function expectCardListsHostRecordsAllowed(card: HTMLElement, records: readonly Rec[], host: string): void {
+  const own = records.filter(r => r.domain === host)
+  expect(card.textContent).toContain(i18nT('components.redaction.link_title_host_allowed'))
+  expect(card.textContent).not.toContain(i18nT('components.redaction.link_title_host'))
+  expect(card.textContent).not.toMatch(/this link/i)
+  const entries = within(card).getAllByTestId('blocked-link-entry')
+  expect(entries).toHaveLength(own.length)
+  const targets = entries.map(e => within(e).queryByTestId('blocked-link-entry-target')?.textContent ?? null)
+  expect(targets).toEqual(own.map(r => (r.path != null ? `${r.domain}${r.path}` : r.domain)))
+}
