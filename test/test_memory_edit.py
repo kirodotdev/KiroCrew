@@ -112,6 +112,15 @@ def test_literal_search_matches_stored_text_with_backslashes_and_quotes(store, v
     assert listed["total"] == 1, (value, query, listed["total"])
 
 
+def test_literal_search_lists_a_deeply_nested_value(store):
+    value: object = "deep note"
+    for _ in range(600):
+        value = [value]
+    assert store.set_semantic("user.deep", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": "deep note"})
+    assert listed["total"] == 1
+
+
 def test_every_preview_page_reuses_the_signed_operation_and_original_expiry(store, monkeypatch):
     seed(store)
     monkeypatch.setattr(memory_edit.time, "time", lambda: 1000)
