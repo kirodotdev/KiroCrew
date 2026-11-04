@@ -715,6 +715,17 @@ function createTightLogFile(logPath, { fs, log = () => {} } = {}) {
  * `blocked` from an ordinary first launch, because the two want opposite
  * handling — nothing to preserve is safe, failing to preserve is not.
  */
+/**
+ * The errno code of a failed fs call (`ENOSPC`, `EACCES`, `EBUSY`), or `error`.
+ *
+ * Only the code, never `e.message`: Node puts the full path in the message, and
+ * the reason this feeds reaches the renderer, which is told no path.
+ */
+function errnoCode(e) {
+  const code = e && e.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code) ? code : "error";
+}
+
 function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
   const previousPath = previousNativeLogPath(logPath);
   let redactedHere = false;
@@ -775,7 +786,13 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
       // The file stays, token and all, so at least its mode has to be owner-only.
       // A chmod changes no byte of the evidence, so it is safe on this path.
       tightenLogMode(logPath, { fs, log });
-      return { rotated: false, blocked: true, previousPath: null, redacted: false };
+      return {
+        rotated: false,
+        blocked: true,
+        previousPath: null,
+        redacted: false,
+        reason: `redaction reported ${redaction.skipped}`,
+      };
     }
     // Overwrites any older generation, which is the point: two files, not N.
     // `renameSync` replaces an existing destination on Windows too (libuv
@@ -796,7 +813,13 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
     log(`native log rotate failed at ${logPath}: ${e && e.message}`);
     // Same as the aborted branch: the un-rotated file stays, so tighten its mode.
     tightenLogMode(logPath, { fs, log });
-    return { rotated: false, blocked: true, previousPath: null, redacted: redactedHere };
+    return {
+      rotated: false,
+      blocked: true,
+      previousPath: null,
+      redacted: redactedHere,
+      reason: `rotate failed (${errnoCode(e)})`,
+    };
   }
 }
 
@@ -812,7 +835,7 @@ function rotateNativeLog(logPath, { fs, log = () => {} } = {}) {
  * @param {(opts: object) => void} [deps.startCrashReporter]
  * @param {object} [deps.fs]                 Injected for the rotate step.
  * @param {(msg: string) => void} [deps.log]
- * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
+ * @returns {{logPath: string, previousPath: string|null, rotated: boolean, blocked: boolean, fileLogOffReason: string|null, switches: string[], crashReporter: boolean, tightenLiveLog: () => boolean}}
  *   `tightenLiveLog` must be called once the app is ready, i.e. after Chromium
  *   has opened `--log-file`. Calling it earlier is harmless but pointless.
  */
@@ -829,11 +852,12 @@ function initNativeLogging({
   let blocked = false;
   let previousPath = null;
   let redacted = true;
+  let reason = null;
 
   // Before the switches: Chromium opens this path during initialization, so the
   // previous generation has to be moved aside first or it is appended to (or
   // clobbered) instead of preserved.
-  if (fs) ({ rotated, blocked, previousPath, redacted } = rotateNativeLog(logPath, { fs, log }));
+  if (fs) ({ rotated, blocked, previousPath, redacted, reason } = rotateNativeLog(logPath, { fs, log }));
 
   // Chromium creates `--log-file` at the process umask (0644 on a normal macOS
   // install) and records the dashboard session token on every renderer console
@@ -905,11 +929,21 @@ function initNativeLogging({
       `kept=${blocked ? (redacted ? "redacted" : "UNREDACTED") : "none"} ` +
       `switches=${applied.join(",") || "none"} minidumps=${crashReporter}`
   );
+  // What the crash notice tells the user when the sink is off this launch, so the
+  // chromium.log they are asked to attach is not mistaken for a current one. The
+  // same sentence as the NOT-armed line above, minus the path: this one crosses
+  // into the renderer, and it is built only from fixed words and an errno code,
+  // so it cannot carry a path or a token from the file it describes.
+  const fileLogOffReason = blocked
+    ? `${NATIVE_LOG_BASENAME} could not be rotated (${reason || "error"}), ` +
+      `so the file sink is skipped this launch`
+    : null;
   return {
     logPath,
     previousPath,
     rotated,
     blocked,
+    fileLogOffReason,
     switches: applied,
     crashReporter,
     tightenLiveLog,

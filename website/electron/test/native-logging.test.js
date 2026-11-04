@@ -318,6 +318,9 @@ describe("rotateNativeLog", () => {
       blocked: true,
       previousPath: null,
       redacted: true,
+      // The fake's error carries no errno code, so the pathless reason falls
+      // back to the fixed word.
+      reason: "rotate failed (error)",
     });
     assert.equal(fs.files.has(LIVE), true, "the live log must survive a failed rotate");
     assert.equal(lines.length, 1);
@@ -1249,6 +1252,53 @@ describe("initNativeLogging verdict line", () => {
   it("says nothing was kept on an ordinary rotation", () => {
     const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
     assert.match(verdictOf(fs), /kept=none/);
+  });
+});
+
+// The crash notice reads `fileLogOffReason` to tell the user the chromium.log
+// they attach is not this launch's. It crosses into the renderer, so it must be
+// pathless and must never echo an fs error's message (Node puts the path there).
+describe("initNativeLogging fileLogOffReason", () => {
+  const init = (fs) => initNativeLogging({ logsDir: "/logs", appendSwitch: () => {}, fs });
+
+  it("is null when the sink is armed", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: TOKENED_LINE } });
+    assert.equal(init(fs).fileLogOffReason, null);
+    assert.equal(init(fakeFs({ present: [] })).fileLogOffReason, null);
+  });
+
+  it("names the redaction failure when it aborted the rotation", () => {
+    const fs = fakeFs({
+      present: [LIVE],
+      contents: { [LIVE]: TOKENED_LINE },
+      throwWriteOn: `${LIVE}.redact.tmp`,
+    });
+    const reason = init(fs).fileLogOffReason;
+    assert.match(reason, /^chromium\.log could not be rotated \(redaction reported [a-z-]+\)/);
+    assert.match(reason, /skipped this launch/);
+  });
+
+  it("carries the errno code of a failed rename, never its message or path", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: "evidence\n" } });
+    fs.renameSync = () => {
+      const err = new Error(`ENOSPC: no space left on device, rename '${LIVE}' token=abc.def`);
+      err.code = "ENOSPC";
+      throw err;
+    };
+    const reason = init(fs).fileLogOffReason;
+    assert.match(reason, /rotate failed \(ENOSPC\)/);
+    assert.equal(reason.includes("/logs"), false, "no path may reach the renderer");
+    assert.equal(reason.includes("token"), false, "nor the error message");
+  });
+
+  it("falls back to a fixed word for an error without a well-formed code", () => {
+    const fs = fakeFs({ present: [LIVE], contents: { [LIVE]: "evidence\n" } });
+    fs.renameSync = () => {
+      const err = new Error("boom");
+      err.code = "/home/someone/secret";
+      throw err;
+    };
+    assert.match(init(fs).fileLogOffReason, /rotate failed \(error\)/);
   });
 });
 });
