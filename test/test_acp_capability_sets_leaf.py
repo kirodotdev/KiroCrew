@@ -1,24 +1,9 @@
 """The capability sets must be askable without importing ``kiro_crew.acp``.
 
-Importing anything under
-``kiro_crew.acp`` executes that package's ``__init__`` (client + runtime), and
-``kiro_crew.acp`` is a FORBIDDEN_ROOT for the agent-SDK boundary gate -- so every
-consumer outside the ACP layer that asked a capability question had to add a
-forbidden edge, against a baseline that may only shrink. Onboarding a new harness
-means teaching outside consumers (readiness, prerequisite, MCP wiring) to ask these
-sets, so that cost was about to be paid repeatedly.
-
-Definitions now live in the leaf :mod:`kiro_crew.agent_sdk.backends` -- moved there
-from ``kiro_crew/acp_backends.py`` by RFC PR 3, which pulls the capability
-mechanism inside the agent-SDK boundary -- and are re-exported from ``acp.types``
-for existing importers. These tests pin both halves: the leaf stays reachable
-without the ACP package, and the re-export keeps working.
-
-``kiro_crew.acp_backends`` survives as a pure re-export shim, so both spellings
-still import and both still read one registry. The definition-home test below
-asserts the sets are defined in the SDK module and NOT in that shim, because a
-definition left behind in the shim is a definition an outside consumer can reach
-without crossing the boundary at all.
+``kiro_crew.acp`` is a FORBIDDEN_ROOT for the agent-SDK boundary gate, so the sets are
+defined in the leaf :mod:`kiro_crew.agent_sdk.backends` and re-exported from
+``acp.types``. ``kiro_crew.acp_backends`` is a pure re-export shim; a definition in it
+would be reachable without crossing the boundary.
 """
 
 from __future__ import annotations
@@ -82,11 +67,8 @@ CAPABILITY_SETS = (
 def test_defined_in_the_leaf_not_in_the_acp_package(name: str) -> None:
     """The definition must sit in ``agent_sdk.backends``, never back in ``acp.types``.
 
-    A future edit that moves one back would compile and pass every other test while
-    silently re-imposing a forbidden edge on each consumer that reads it. The third
-    assertion covers the other direction: a set re-defined in the ``acp_backends``
-    shim would be readable without ever crossing the boundary, which is what the
-    move was for.
+    Moving one back passes every other test but adds a forbidden edge. The third
+    assertion keeps sets out of the ``acp_backends`` shim too.
     """
     leaf = "\n".join(
         path.read_text(encoding="utf-8")
@@ -130,16 +112,10 @@ def test_the_re_export_is_the_same_object(name: str) -> None:
 
 
 def test_reading_a_capability_set_does_not_load_the_acp_package() -> None:
-    """The whole point of the move, and the reason it needs a test.
+    """Reading a set must not import ``kiro_crew.acp``.
 
-    The boundary gate counts import edges; it cannot see that this one is now
-    avoidable. If the sets drifted back behind ``kiro_crew.acp``, every consumer
-    would silently start paying that package again -- and the gate would stay green
-    because those consumers are already in its baseline.
-
-    Runs in a subprocess: by the time this test executes, the suite has imported
-    most of the package already, so an in-process ``sys.modules`` check proves
-    nothing.
+    The boundary gate stays green here because those consumers are in its baseline.
+    Runs in a subprocess, since the suite has already imported most of the package.
     """
     probe = (
         "import sys\n"
@@ -206,16 +182,9 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # definition; codex mounts exactly the array it is sent, so it is judged by it.
     assert ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-    # The provider-advertised-model seams. claude for the spelling fold; codex
-    # because its configOptions ``model`` select is the ONLY source of ids the
-    # adapter accepts back, so the capture is what the picker reads; opencode and
-    # pi for the same capture reason, their ids being ``provider/model`` pairs drawn
-    # from the operator's own provider list. The settings seed stays claude-only —
-    # the two opt-ins are independent, and a deliberate edit this pin forces to be
-    # seen.
-    # deepseek joins for that same capture reason, in its strongest form: its
-    # select's values are JSON-encoded ``[provider, model]`` pairs from its own live
-    # catalog, which nothing can spell from a stored bare model name.
+    # claude for the spelling fold; codex, opencode, pi and deepseek because only the
+    # captured select holds ids the adapter accepts (``provider/model`` pairs, or
+    # deepseek's JSON ``[provider, model]``). The settings seed stays claude-only.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
         {
             ACP_BACKEND_CLAUDE,
@@ -246,16 +215,9 @@ def test_model_registry_namespace_maps_every_known_backend() -> None:
 def test_a_harness_that_persists_a_catalog_owns_its_own_namespace() -> None:
     """A member of ADVERTISED_MODEL_SELECTION must not share the kiro bucket.
 
-    That set is exactly the harnesses whose advertised models are CAPTURED off
-    ``session/new`` and persisted to the cross-session provider-model cache, and this
-    key is the bucket they are persisted into. So a member with no entry of its own
-    falls back to ``acp`` and its catalog replaces kiro-cli's -- the picker then offers
-    kiro-cli whatever the other harness happened to advertise.
-
-    Derived from the SET rather than from a list of ids, which is what the spot-check
-    above cannot do: it named four backends, and a fifth joining the set was invisible
-    to it. Each of these harnesses draws its ids from the operator's own provider
-    configuration, so no two of them may share a bucket either.
+    These harnesses persist captured models under this key; sharing ``acp`` would
+    replace kiro-cli's catalog. Derived from the set, so a new member is covered, and
+    no two members may share a bucket.
     """
     kiro_namespace = model_registry_namespace(ACP_BACKEND_KIRO)
     seen: dict = {}
@@ -277,11 +239,8 @@ def test_a_harness_that_persists_a_catalog_owns_its_own_namespace() -> None:
 def test_acp_runtime_is_a_superset_of_session_sharing() -> None:
     """The documented relationship between the two sets, asserted rather than described.
 
-    Running on AcpRuntime is necessary for session sharing but not sufficient: KAS
-    runs there and is still excluded, because its teardown removes the record a
-    continuation would load. A future edit that adds a harness to sharing without
-    adding it to the runtime set would describe a backend that multiplexes sessions
-    without a multiplexer.
+    AcpRuntime is necessary, not sufficient: KAS runs there but is excluded, since its
+    teardown removes the record a continuation would load.
     """
     assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME

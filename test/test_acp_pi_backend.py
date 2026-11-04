@@ -1,26 +1,11 @@
 """The pi spawn path: two components, a gate loaded INTO the harness, and its proof.
 
-Three things are pinned here, and they fail apart:
-
-* **Resolution.** Two components resolved separately -- the ``pi-acp`` adapter on
-  the Node-entry ladder and the ``pi`` agent on the plain-binary ladder -- so the
-  not-found message names the half that is missing.
-* **The gate launcher.** pi has no permission gate to configure, so Kiro Crew's own
-  extension is loaded into it through a launcher the adapter is told to run in
-  place of ``pi``. The launcher forwards every argument and appends the extension
-  flag; nothing is written into the work dir or the operator's pi directory.
-* **The read-back.** What makes this routing VERIFIED rather than declared: pi's
-  own command registry is asked, off the event loop and before the first prompt,
-  whether the probe command loaded from Crew's file.
-
-The read-back's refusal vocabulary is exercised through
-``acp_tool_gate.gate_extension_issue``, which owns it, rather than by asserting on
-message wording at the call site.
-
-Where the gate is placed at spawn, the envelope, and the read-back against a real
-child are in ``test_acp_pi_backend_spawn.py``; a session's reasoning-effort channel,
-its model pin, cancel and the signed-out error in ``test_acp_pi_backend_session.py``.
-``acp_pi_backend_helpers.py`` holds what the three share.
+Pinned: resolution of ``pi-acp`` and ``pi`` separately (the error names the missing
+half); the launcher that loads Kiro Crew's gate extension into pi, which has no gate of
+its own, writing nothing to disk; and the read-back of pi's command registry before the
+first prompt. Refusal wording belongs to ``acp_tool_gate.gate_extension_issue``.
+Siblings: ``test_acp_pi_backend_spawn.py``, ``test_acp_pi_backend_session.py``,
+``acp_pi_backend_helpers.py``.
 """
 
 from __future__ import annotations
@@ -497,11 +482,8 @@ class TestGateLauncher:
     def test_the_extension_never_drops_the_arguments_it_forwards(self):
         """An oversize call is bounded value by value or refused, never sent without its keys.
 
-        The keys the host's path checks read (``path``, ``file_path``) must survive,
-        and a shell command is never cut: the host's deny rules read its text, so it
-        is forwarded whole and judged on its content like on every other harness,
-        and only an envelope too large to carry at all is refused -- a deny rule
-        cannot judge text it did not see.
+        ``path`` and ``file_path`` must survive, and a shell command is never cut, since
+        deny rules read its text; an envelope too large to carry is refused.
         """
         source = Path(pi_gate_extension_path()).read_text(encoding="utf-8")
         assert "input: null" not in source
@@ -1118,12 +1100,8 @@ class TestTheReadBackStderrDiagnosis:
     def test_nothing_the_child_wrote_is_ever_published(self):
         """The structural guarantee: output is drawn from the vocabulary, or empty.
 
-        This is what makes the credential question unanswerable rather than
-        answered. A scheme that echoes the child's bytes has to show no credential
-        survives any rejoining of them, and the redactors' patterns need contiguity
-        and label anchors that a single inserted byte destroys. Matching instead of
-        echoing means there is no path from a child byte to published text, so a
-        hostile stderr cannot produce one whatever it contains.
+        Redactors need contiguous text that one inserted byte breaks, so output is
+        matched against the vocabulary and no child byte is ever echoed.
         """
         allowed = set(self._phrases())
         secrets = (

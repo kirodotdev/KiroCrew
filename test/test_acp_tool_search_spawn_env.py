@@ -226,13 +226,10 @@ def test_deferral_requires_the_pinned_install(case, tmp_path, monkeypatch) -> No
 
 class TestTheServerSet:
     def test_it_names_the_opt_in_servers_the_eligible_set_drops(self) -> None:
-        """The whole reason this set exists rather than reusing
-        ``emission_eligible_mcp_servers``.
+        """Why this set exists beside ``emission_eligible_mcp_servers``.
 
-        An ``opt_in`` server the user granted is in their spec serving tools, so it
-        churns the ``tools`` array exactly like an always-on one. The eligible set
-        answers a different question ("would a rebuild re-add it") and drops every
-        one of them, which would leave the granted ones deferring.
+        A granted ``opt_in`` server churns the ``tools`` array like an always-on one, but
+        the eligible set ("would a rebuild re-add it") drops it.
         """
         owned = agent_mod.crew_owned_mcp_servers()
         for opt_in in ("kirocrew-dashboard", "kirocrew-work", "kirocrew-crew-log"):
@@ -248,13 +245,10 @@ class TestTheServerSet:
         assert agent_mod.emission_eligible_mcp_servers() <= agent_mod.crew_owned_mcp_servers()
 
     def test_it_carries_the_edition_seam_and_claims_no_prefix(self) -> None:
-        """The composition IS the contract, and asserting a ``kirocrew-`` prefix
-        instead would be vacuous.
+        """The set is the managed map plus the edition adapter's extras.
 
-        The set is the managed map plus the edition adapter's extras. The public
-        build's adapter returns nothing, so a prefix assertion would pass without
-        ever seeing an extra — and the seam does not constrain its keys, so a caller
-        may not assume one. Pin what is actually promised.
+        A ``kirocrew-`` prefix check would be vacuous: the public adapter returns nothing,
+        and the seam does not constrain its keys.
         """
         from kiro_crew.agent import _MANAGED_MCP_SERVERS, _extra_mcp_servers
 

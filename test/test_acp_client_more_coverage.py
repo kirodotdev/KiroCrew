@@ -1,18 +1,10 @@
 """Additional coverage for :mod:`kiro_crew.acp.client`.
 
-Every test in this family drives real product code with injected fakes at the boundary the
-product actually calls (``glob``/``subprocess``/``kiro_sessions_dir``/the hook and
-skill-observer getters), never a live subprocess, sandbox, git or network. The
-POSIX-only tests are marked as such because the branches they exercise
-(``os.kill``, ``/proc``, ``ps``, AF_UNIX sockets) have no Windows equivalent.
-
-This module pins the module-level model and advisory helpers, the stdout and stderr
-drains, the ``SSH_AUTH_SOCK`` repair and process-tree helpers, the client's accessors and
-guards, reset, ``ensure_ready`` and the JSON-RPC transport. The frames a live session
-exchanges live in ``test_acp_client_more_coverage_session_frames.py``, the skill-read,
-hook, audit and advertised-model wiring in ``test_acp_client_more_coverage_observers.py``,
-and the codec refusals in ``test_acp_client_more_coverage_encode_refusal.py``; the shared
-client factory, notification builder and kiro-cli pin in
+Fakes sit at the boundary the product calls; no live subprocess, sandbox, git or network.
+POSIX-only tests use ``os.kill``, ``/proc``, ``ps`` or AF_UNIX sockets.
+Sibling modules: ``test_acp_client_more_coverage_session_frames.py``,
+``test_acp_client_more_coverage_observers.py``,
+``test_acp_client_more_coverage_encode_refusal.py``; helpers in
 ``acp_client_more_coverage_helpers.py``.
 """
 
@@ -686,13 +678,8 @@ class TestEnsureReady:
     async def test_tool_gate_refusal_does_not_retry_the_spawn(self, tmp_path):
         """A gate refusal is a configuration fact, so a respawn re-reads it.
 
-        ``AcpToolGateUnroutable`` documents itself Non-retryable, but it subclasses
-        ``AcpError``, so the generic transport ladder would retry it: attempt 0
-        tears the child down, respawns, hits the identical refusal, and only then
-        raises. That is one wasted spawn plus teardown, and it spends the reconnect
-        budget the distinct type exists to protect.
-
-        Revert-verified: dropping the dedicated handler makes both counters 2.
+        ``AcpToolGateUnroutable`` subclasses ``AcpError``, so without its own handler
+        the transport ladder would retry it and waste a spawn of the reconnect budget.
         """
         client = _client(tmp_path)
         spawns = {"n": 0}
@@ -726,15 +713,8 @@ class TestEnsureReady:
     def test_sandbox_preflight_translates_the_gate_refusal(self, monkeypatch):
         """The RAW gate exception must not escape the preflight.
 
-        ``acp_tool_gate`` is a leaf module that cannot import this one, so its
-        ``ToolGateUnroutable`` is a plain ``Exception``. That makes it invisible to
-        BOTH handlers around the spawn: it is not an ``AcpError``, so the transport
-        ladder cannot see it, and it is not ``AcpToolGateUnroutable``, so the
-        dedicated non-retrying handler cannot either. Raised raw, a sandbox-floor
-        refusal escaped ``ensure_ready`` entirely and skipped the cleanup every
-        other refusal path runs.
-
-        Revert-verified: dropping the translation raises the raw type and fails here.
+        The leaf module's ``ToolGateUnroutable`` is a plain ``Exception``, invisible to
+        both spawn handlers, so raw it would escape ``ensure_ready`` and skip cleanup.
         """
         from kiro_crew import acp_tool_gate
 
@@ -750,14 +730,8 @@ class TestEnsureReady:
     async def test_sandbox_preflight_is_bounded_on_a_stalled_disk(self, monkeypatch):
         """A preflight that never returns must not hold the spawn open.
 
-        The mask half canonicalizes the home and override roots on disk, and on a
-        stalled mount that wait has no end of its own; nothing else on the spawn
-        path bounds it (``ensure_ready`` times the handshake AFTER the spawn). The
-        deadline turns that into a retryable ``AcpError`` naming the slow disk, and
-        the adapter is not started without its mask.
-
-        Revert-verified: dropping the ``wait_for`` makes this test hang on the
-        stalled worker instead of raising.
+        Canonicalizing roots on a stalled mount never ends, and ``ensure_ready`` times
+        only the handshake. The deadline raises a retryable ``AcpError`` instead.
         """
         import threading
 

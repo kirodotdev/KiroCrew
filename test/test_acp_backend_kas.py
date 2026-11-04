@@ -115,17 +115,8 @@ class TestBackendPredicates:
         """The property IS membership in ACP_BACKENDS_ACP_RUNTIME, over every known
         backend rather than a hand-picked three.
 
-        The narrower form this replaces asserted the property equalled ``not
-        is_claude_backend``, which holds only while claude is the single harness off
-        the shared runtime. Several harnesses are off it, and one that is NOT claude
-        is on it, so that equality is an accident of one snapshot of the table --
-        and an accident is the thing a membership edit can satisfy without meaning
-        to. Membership is the durable statement (harness-parity H5/H6).
-
-        The expected members are spelled in ``ON_THE_ACP_RUNTIME`` above rather than
-        read back off the set the property consults, so opting a harness in has to
-        be written twice to land green; the equality assertion below is what ties
-        the two spellings together.
+        ``not is_claude_backend`` is not the same set (harness-parity H5/H6). Members are
+        spelled in ``ON_THE_ACP_RUNTIME``, so opting a harness in is written twice.
         """
         provider = _build_provider(backend)
         assert provider.is_acp_runtime_backend is (backend in ON_THE_ACP_RUNTIME)
@@ -142,11 +133,8 @@ class TestBackendPredicates:
     def test_a_harness_off_the_runtime_need_not_be_claude(self):
         """The backends where the negation and the membership disagree.
 
-        These are non-claude harnesses that are also off the shared runtime, so
-        ``not is_claude_backend`` answers True where the property answers False.
-        They are the evidence that the positive form carries information the
-        negation does not -- without at least one of them the two spellings would be
-        interchangeable and the block above would pin nothing.
+        Without at least one non-claude harness off the runtime the test above would pin
+        nothing.
         """
         off_the_runtime = sorted(ACP_BACKENDS_KNOWN - ON_THE_ACP_RUNTIME - {ACP_BACKEND_CLAUDE})
         assert off_the_runtime, (
@@ -162,18 +150,9 @@ class TestBackendPredicates:
     def test_codex_is_on_the_runtime_and_separately_in_the_eviction_set(self):
         """codex is a member that is not kiro-shaped, and two sets answer for it.
 
-        One codex-acp process serves N sessions and keeps them apart, which is the
-        whole question ACP_BACKENDS_ACP_RUNTIME asks -- so the shared-runtime start
-        path is the right transport for it, and a provider that answered False here
-        would open one adapter per session.
-
-        Transport membership does not by itself grant a teardown that disposes a
-        session; that is ACP_BACKENDS_SESSION_EVICTION's question, and codex answers
-        it on its own evidence: its teardown verb is ``session/close``, after which
-        the sessionId stops answering (measured live). Both are pinned here to keep
-        the two questions from collapsing into one: a call site that read the
-        transport answer where the eviction answer belongs would admit the next
-        runtime-capable harness whose teardown frees nothing.
+        One codex-acp process serves N sessions (ACP_BACKENDS_ACP_RUNTIME). Eviction is
+        a separate question (ACP_BACKENDS_SESSION_EVICTION): ``session/close`` disposes the
+        session. Both are pinned so neither answer stands in for the other.
         """
         assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is True
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
@@ -292,11 +271,8 @@ def _load_agent_config(agent_data: dict, tmp_path: Path) -> KiroCrewConfig:
 class TestConfigRoundTrip:
     """What an operator persists must survive an actual load from disk.
 
-    Setting ``cfg.agent.acp_backend`` in memory (as the tests above do) proves
-    nothing about persistence: ``load()`` builds ``AgentConfig`` by listing every
-    field explicitly, so a field it forgets is silently dropped to its default —
-    and because ``to_dict`` serializes generically, the next ``save()`` then
-    writes that default back over the operator's setting.
+    ``load()`` lists every ``AgentConfig`` field explicitly, so a forgotten field drops to
+    its default and the next ``save()`` overwrites the operator's setting.
     """
 
     def test_the_field_is_consumed_on_load(self, tmp_path):
@@ -571,11 +547,8 @@ class TestSaveKeepsAnAbsentChoiceAbsent:
 class TestBackendThreading:
     """Every runtime this provider spawns must carry the selected backend.
 
-    The provider constructs ``AcpRuntime`` at more than one point — the initial
-    start and the respawn after the runtime dies mid ``session/load`` — and a
-    site that omits the kwarg silently spawns kiro-cli for a KAS session, which
-    then persists under the kiro label. An AST ratchet rather than a behavioral
-    test because the respawn needs a process-death race to reach.
+    A site that omits the kwarg spawns kiro-cli for a KAS session. An AST ratchet because
+    the respawn site needs a process-death race to reach.
     """
 
     def test_every_runtime_construction_passes_the_backend(self):
@@ -626,12 +599,8 @@ class TestCompanionRuntimeInheritsBackend:
 class TestNoImportCycle:
     """``config.loader`` must import standalone, before anything ACP.
 
-    The gateway and desktop entrypoints import the config module first, so a
-    module-scope import of ``kiro_crew.acp.types`` from here is a cycle: reaching
-    that module executes the ``kiro_crew.acp`` package init, which imports the
-    ACP client and runtime, which import this module back. In-process tests
-    cannot see it — by the time they run, something has usually imported
-    ``kiro_crew.acp`` already — so this asserts it in a fresh interpreter.
+    Importing ``kiro_crew.acp.types`` here runs the package init, which imports this module
+    back. A fresh interpreter is used because in-process tests already imported it.
     """
 
     def test_config_loader_imports_alone(self):
@@ -727,12 +696,8 @@ class TestAKiroCliPickRunsOnKasOnceV3IsConfirmed:
 class TestAProcessOutsideTheGatewayReachesTheSameVerdict:
     """A process that never runs the gateway floor still moves a Kiro CLI pick.
 
-    The gateway records its KAS-floor verdict in process state; the CLI, an eval
-    run and a peer server do not run that floor, so ``ensure_kiro_cli_kas_verdict``
-    runs the same one bounded ``acp --help`` probe before the first spawn and
-    promotes a stored Kiro CLI pick to KAS on positive evidence only. Without it
-    those processes start the v2 launch where kiro-cli already serves v3 (the
-    a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+    ``ensure_kiro_cli_kas_verdict`` runs one bounded ``acp --help`` probe and promotes to
+    KAS on positive evidence only (a-kiro-cli-choice-runs-on-kas in docs/decisions).
     """
 
     @pytest.fixture
