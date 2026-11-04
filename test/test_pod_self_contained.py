@@ -555,14 +555,9 @@ def test_run_is_refused_because_it_writes_beside_the_spec():
 def test_chat_and_tui_verbs_stay_refused_in_a_pod():
     """Both verbs stay on the exclusion list.
 
-    The original premise was `cli_chat._tui`: it resolved the CONFIG dashboard
-    port with a literal 5476 fallback, never `KIROCREW_PORT`, so a pod landed on
-    the LIVE gateway — and `chat` was excluded with it because `chat --tui`
-    branched into the same function. `_tui` has since been deleted as dead code
-    (the `tui` subcommand and its Ink bundle were already gone), so that source
-    premise cannot be asserted. The exclusion is kept in force rather
-    than relaxed: admitting either verb is a pod-safety decision on its own
-    evidence, not a side effect of removing an unreachable function.
+    Admitting either verb into a pod is a pod-safety decision that needs its own
+    evidence; the code path that justified the exclusion is gone, so nothing here
+    can prove either verb targets the pod's `KIROCREW_PORT`.
     """
     for verb in ("chat", "tui"):
         with pytest.raises(rt.PodError, match=f"refusing `{verb}`"):
