@@ -190,7 +190,7 @@ def test_a_kiro_cli_client_spawn_runs_the_check_first(tmp_path: Path) -> None:
             patch.object(
                 client_start,
                 "require_shared_template_within_ceiling",
-                side_effect=lambda agent, backend: calls.append((agent, backend)),
+                side_effect=lambda agent, backend, **_kw: calls.append((agent, backend)),
             )
         ],
         observe=lambda client: seen.append(client._agent),

@@ -11,7 +11,8 @@ Instance fields written: ``_native_skill_projection``, ``_skill_projection_gener
 ``_skill_projection_issued``, ``_skill_projection_lock_obj``,
 ``_skill_projection_unadopted``, ``_switched_models``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_spawn_skill_projection``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_launch_agent``, ``_refuse_over_ceiling_mode``,
+``_spawn_skill_projection``,
 ``_wire_mode_id``, ``_work_dir``.
 """
 
@@ -459,6 +460,31 @@ def _refuse_if_view_superseded(
     )
 
 
+async def _refuse_over_ceiling_mode(
+    self: AcpRuntime, session_id: str, mode_agent: str, launch_name: str | None
+) -> None:
+    """End *session_id* and refuse when activating *mode_agent* would run denied grants.
+
+    *launch_name* is the name ``set_mode`` sends: a skill view, which is checked
+    itself, or ``None``/the authored name, whose claimants are checked
+    (``fork_refresh.require_shared_template_within_ceiling``).
+    """
+    from kiro_crew import agent as agent_mod
+
+    try:
+        await asyncio.to_thread(
+            agent_mod.require_shared_template_within_ceiling,
+            mode_agent,
+            # A runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO``
+            # is ""), so the check runs: the fail-closed answer.
+            getattr(self, "_acp_backend", ""),
+            launch_name=launch_name,
+        )
+    except agent_mod.SharedTemplateOverCeiling as exc:
+        await self.terminate_session(session_id)
+        raise AcpRuntimeError(str(exc)) from exc
+
+
 async def _activate_mode_bracketed(
     self: AcpRuntime,
     session_id: str,
@@ -528,20 +554,11 @@ async def _activate_mode_bracketed(
         # The host reads *mode_agent*'s spec from disk here and honours its own
         # grants before Crew's gate, and Crew never rewrites a crew-bound spec it
         # does not own: the same over-ceiling refusal the spawn runs, for the agent
-        # this line activates rather than the one the process was spawned as.
-        from kiro_crew import agent as agent_mod
-
-        try:
-            await asyncio.to_thread(
-                agent_mod.require_shared_template_within_ceiling,
-                mode_agent,
-                # A runtime that names no backend is kiro-cli's (``ACP_BACKEND_KIRO``
-                # is ""), so the check runs: the fail-closed answer.
-                getattr(self, "_acp_backend", ""),
-            )
-        except agent_mod.SharedTemplateOverCeiling as exc:
-            await self.terminate_session(session_id)
-            raise AcpRuntimeError(str(exc)) from exc
+        # this line activates rather than the one the process was spawned as. With
+        # a projection the name sent is a skill view, prepared below, and it is
+        # that view which is checked, before each send.
+        if getattr(self, "_native_skill_projection", None) is None:
+            await self._refuse_over_ceiling_mode(session_id, mode_agent, None)
     try:
         projection_now: Any = None
         used_generation = 0
@@ -698,6 +715,8 @@ async def _activate_mode_bracketed(
                     missed = None
             if sent_alias is not None:
                 self._refuse_if_view_unverified(mode_agent, used_generation)
+                if not wire_registered:
+                    await self._refuse_over_ceiling_mode(session_id, mode_agent, sent_alias)
             try:
                 await self._send_and_await(METHOD_SET_MODE, wire, timeout=budget, **untranslated)
             except AcpModeNotFound as exc:
