@@ -8139,7 +8139,9 @@
       "show_paste_preview": "显示粘贴预览",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 还有 {{count}} 行",
-      "preview_gesture_hint": "双击插入完整文本 · 按 Backspace 删除粘贴内容"
+      "preview_gesture_hint": "双击插入完整文本 · 按 Backspace 删除粘贴内容",
+      "expand_pasted_lines_other": "展开粘贴的 {{count}} 行",
+      "collapse_pasted_lines_other": "收起粘贴的 {{count}} 行"
     },
     "privacyChapter": {
       "continue": "继续",
@@ -10659,6 +10661,12 @@
         "generic": "在此会话中允许：这条规则不再阻止任何命令，直到你关闭这个聊天（会话选项 → 关闭会话）或 {{productName}} 重启"
       },
       "pill_blocked": "等待审批：{{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}}，{{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}}（已暂停）— {{time}} {{tz}}",
+      "job_name_paused": "{{name}}（已暂停）"
     }
   },
   "hooks": {
@@ -19798,7 +19806,8 @@
       "agents_active_other": "{{n}} 个活动",
       "slots_open_other": "{{n}} 个空闲槽位",
       "summary": "{{present}}，{{active}}，{{open}}",
-      "scene_label": "场景"
+      "scene_label": "场景",
+      "scene_button": "{{label}} 场景：{{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "隐藏控制项",

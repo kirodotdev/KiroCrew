@@ -492,5 +492,7 @@
   "apps.designCritique.composer.critique_this_flow_count_screens",
   "apps.designCritique.scopingPicker.critique_this_flow_count_screens",
   "apps.designCritique.composer.staged_flow_hint",
-  "apps.designCritique.designCritiquePage.rail_flow"
+  "apps.designCritique.designCritiquePage.rail_flow",
+  "components.pastedChip.collapse_pasted_lines",
+  "components.pastedChip.expand_pasted_lines"
 ]

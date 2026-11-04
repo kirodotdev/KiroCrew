@@ -6399,6 +6399,12 @@
       "offer_open": "Open {{host}}",
       "copy_failed": "Couldn't copy. Select the text in the app and copy it yourself.",
       "more_actions": "More actions"
+    },
+    "weekGrid": {
+      "job_at": "{{name}} at {{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (paused) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (paused)"
     }
   },
   "hooks": {
@@ -11395,7 +11401,8 @@
       "agents_active_other": "{{n}} active",
       "slots_open_one": "{{n}} slot open",
       "slots_open_other": "{{n}} slots open",
-      "summary": "{{present}} · {{active}} · {{open}}"
+      "summary": "{{present}} · {{active}} · {{open}}",
+      "scene_button": "{{label}} scene: {{desc}}"
     },
     "layoutEditorHarness": {
       "title": "Layout editor harness",

@@ -2,6 +2,7 @@ import { useMemo, useEffect, useState } from 'react'
 import type { CronJob } from '../types'
 import { browserTimeZone, convertCronTime, hourFractionInTz, jobSourceZone, todayCronDowInTz } from '../utils/tz'
 import { fmtDateFields, fmtWeekday } from '../i18n/format'
+import { i18nT } from '../i18n/t'
 
 /** Grid columns, Monday-first. `DAY_COUNT` carries the index contract that
  *  CRON_TO_GRID maps into; `dayLabel(i)` renders the localized name. Splitting
@@ -14,6 +15,9 @@ const dayLabel = (gridIndex: number) => fmtWeekday(gridIndex + 1)
 const CRON_TO_GRID: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 0: 6 }
 
 interface Slot { job: CronJob; day: number; hour: number; minute: number }
+
+/** A slot's run time as zero-padded HH:MM. */
+const slotTime = (s: Slot) => `${s.hour.toString().padStart(2, '0')}:${s.minute.toString().padStart(2, '0')}`
 
 /** Extract interval seconds from an "every <number><s|m|h>" schedule. */
 function parseEveryFromSchedule(s: string): number | null {
@@ -252,8 +256,8 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
                       // Hover cue is a fill-brighten, not a border/ring tint: at 2.5px a
                       // border tint is invisible, so brighten the coloured dot itself.
                       className={`w-2.5 h-2.5 rounded-full ${s.color} cursor-pointer hover:brightness-125 ${!s.job.enabled ? 'opacity-30' : ''} ${selectedId === s.job.id ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
-                      title={`${s.job.name}${!s.job.enabled ? ' (paused)' : ''} — ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
-                      aria-label={`${s.job.name} at ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
+                      title={i18nT(s.job.enabled ? 'components.weekGrid.job_title' : 'components.weekGrid.job_title_paused', { name: s.job.name, time: slotTime(s), tz })}
+                      aria-label={i18nT('components.weekGrid.job_at', { name: s.job.name, time: slotTime(s), tz })}
                       onClick={() => onSelect(s.job)}
                     />
                   ))}
@@ -279,7 +283,7 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
               onClick={() => onSelect(j)}
             >
               <span className={`w-2.5 h-2.5 rounded-full ${COLORS[idx % COLORS.length]} ${!j.enabled ? 'opacity-30' : ''}`} />
-              {j.name}{!j.enabled ? ' (paused)' : ''}
+              {j.enabled ? j.name : i18nT('components.weekGrid.job_name_paused', { name: j.name })}
             </button>
           ))}
         </div>

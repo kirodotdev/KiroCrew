@@ -3167,7 +3167,11 @@
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
       "preview_more_lines_one": "… {{count}} more line",
       "preview_more_lines_other": "… {{count}} more lines",
-      "preview_gesture_hint": "Double-click to insert the full text · Backspace removes the paste"
+      "preview_gesture_hint": "Double-click to insert the full text · Backspace removes the paste",
+      "expand_pasted_lines_one": "Expand pasted {{count}} line",
+      "expand_pasted_lines_other": "Expand pasted {{count}} lines",
+      "collapse_pasted_lines_one": "Collapse pasted {{count}} line",
+      "collapse_pasted_lines_other": "Collapse pasted {{count}} lines"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "I understand, publish publicly",

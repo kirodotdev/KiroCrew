@@ -8535,7 +8535,13 @@
       "preview_more_lines_many": "… {{count}} altre righe",
       "preview_more_lines_one": "… {{count}} altra riga",
       "preview_more_lines_other": "… {{count}} altre righe",
-      "preview_gesture_hint": "Doppio clic per inserire il testo completo · Backspace rimuove l'incollato"
+      "preview_gesture_hint": "Doppio clic per inserire il testo completo · Backspace rimuove l'incollato",
+      "expand_pasted_lines_one": "Espandi {{count}} riga incollata",
+      "expand_pasted_lines_many": "Espandi {{count}} righe incollate",
+      "expand_pasted_lines_other": "Espandi {{count}} righe incollate",
+      "collapse_pasted_lines_one": "Comprimi {{count}} riga incollata",
+      "collapse_pasted_lines_many": "Comprimi {{count}} righe incollate",
+      "collapse_pasted_lines_other": "Comprimi {{count}} righe incollate"
     },
     "privacyChapter": {
       "continue": "Continua",
@@ -11121,6 +11127,12 @@
         "generic": "Consenti in questa sessione: questa regola smette di bloccare qualsiasi comando, finché non chiudi questa chat (Opzioni della sessione → Chiudi la sessione) o {{productName}} si riavvia"
       },
       "pill_blocked": "In attesa di approvazione: {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}} alle {{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (in pausa) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (in pausa)"
     }
   },
   "hooks": {
@@ -20736,7 +20748,8 @@
       "slots_open_many": "{{n}} slot liberi",
       "slots_open_other": "{{n}} slot liberi",
       "summary": "{{present}} · {{active}} · {{open}}",
-      "scene_label": "Scena"
+      "scene_label": "Scena",
+      "scene_button": "Scena {{label}}: {{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "Nascondi i controlli",

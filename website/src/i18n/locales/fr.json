@@ -8535,7 +8535,13 @@
       "preview_more_lines_many": "… {{count}} lignes de plus",
       "preview_more_lines_one": "… {{count}} ligne de plus",
       "preview_more_lines_other": "… {{count}} lignes de plus",
-      "preview_gesture_hint": "Double-clic pour insérer le texte complet · Retour arrière supprime le collage"
+      "preview_gesture_hint": "Double-clic pour insérer le texte complet · Retour arrière supprime le collage",
+      "expand_pasted_lines_one": "Déplier {{count}} ligne collée",
+      "expand_pasted_lines_many": "Déplier {{count}} lignes collées",
+      "expand_pasted_lines_other": "Déplier {{count}} lignes collées",
+      "collapse_pasted_lines_one": "Replier {{count}} ligne collée",
+      "collapse_pasted_lines_many": "Replier {{count}} lignes collées",
+      "collapse_pasted_lines_other": "Replier {{count}} lignes collées"
     },
     "privacyChapter": {
       "continue": "Continuer",
@@ -11121,6 +11127,12 @@
         "generic": "Autoriser dans cette session : cette règle ne bloque plus aucune commande, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre"
       },
       "pill_blocked": "En attente d’approbation : {{command}}"
+    },
+    "weekGrid": {
+      "job_at": "{{name}} à {{time}} {{tz}}",
+      "job_title": "{{name}} — {{time}} {{tz}}",
+      "job_title_paused": "{{name}} (en pause) — {{time}} {{tz}}",
+      "job_name_paused": "{{name}} (en pause)"
     }
   },
   "hooks": {
@@ -20736,7 +20748,8 @@
       "slots_open_many": "{{n}} emplacements libres",
       "slots_open_other": "{{n}} emplacements libres",
       "summary": "{{present}} · {{active}} · {{open}}",
-      "scene_label": "Scène"
+      "scene_label": "Scène",
+      "scene_button": "Scène {{label}} : {{desc}}"
     },
     "worldsPopout": {
       "hide_controls": "Masquer les commandes",
