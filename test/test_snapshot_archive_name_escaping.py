@@ -82,11 +82,8 @@ class TestArchiveRootNamesAreEscaped:
     def test_two_roots_are_named_without_their_escapes(self, home, tmp_path, capsys):
         """The ambiguity refusal names what it found, so it must escape those names.
 
-        The roots are written as tar METADATA rather than as real directories. That is
-        both the portable form -- Windows rejects control characters in a filename
-        outright, so the escape could never exist on disk there -- and the honest one: a
-        hostile root name reaches us inside an archive someone else wrote, which is
-        exactly the surface being tested.
+        The roots are tar METADATA, not real directories: Windows rejects control characters
+        in filenames, and a hostile name arrives inside someone else's archive anyway.
         """
         bundle = tmp_path / "two-roots.tar.gz"
         with tarfile.open(bundle, "w:gz") as tf:

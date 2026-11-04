@@ -129,11 +129,9 @@ def test_the_dashboard_import_twins_refuse_a_dangling_link_too(tmp_path, monkeyp
 def test_a_staged_link_is_refused_where_open_cannot_refuse_links(tmp_path, monkeypatch):
     """Windows shape, simulated: no O_NOFOLLOW and no dir_fd.
 
-    There a by-name ``os.open`` follows a reparse point and the target passes the
-    regular/one-link checks, so the source must be opened through
-    ``open_file_no_reparse`` (which settles the final name in the open itself) and
-    handed over as a descriptor. The stand-in below refuses a link the way the
-    Windows ``CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)`` path does, with ELOOP.
+    A by-name ``os.open`` follows a reparse point there, so the source goes through
+    ``open_file_no_reparse``. The stand-in refuses a link with ELOOP, as
+    ``CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)`` does.
     """
     import errno
 

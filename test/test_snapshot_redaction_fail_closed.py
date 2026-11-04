@@ -86,10 +86,8 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
     def test_no_branch_skips_a_table_it_could_not_read(self):
         """A table that cannot be read must refuse; a DERIVED one may be skipped.
 
-        Pinned as two properties rather than a ban on `continue`, because the FTS shadow
-        tables are legitimately skipped -- they are regenerated from the content table, so
-        skipping them is part of redacting rather than a hole in it. What must never come
-        back is turning an unreadable table into a silent pass.
+        FTS shadow tables are regenerated from the content table, so skipping them is
+        part of redacting, which is why this is not a ban on `continue`.
         """
         import inspect
 
@@ -97,10 +95,8 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
         assert (
             "except sqlite3.DatabaseError:\n                    continue" not in src
         ), "an unreadable table is skipped instead of refusing the database"
-        # Asserted as the STATES that must refuse, not as a count of occurrences in one
-        # function. The count broke the moment the paged row read was extracted into a helper
-        # -- the refusal had moved, not disappeared -- which is a refactor, not a regression.
-        # Naming each state also says WHICH one went missing when this fails.
+        # Asserted per state that must refuse, not as a count in one function, so a refusal
+        # moved into a helper still passes and a failure names the missing state.
         source = src + inspect.getsource(redact._paged_rows)
         for state, fragment in (
             ("a table with no readable columns", "no readable columns"),
@@ -120,11 +116,8 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
     def test_an_fts_database_survives_and_loses_the_credential(self, tmp_path):
         """The fail-closed rule must not delete the Knowledge Library.
 
-        FTS5 keeps two `WITHOUT ROWID` shadow tables, so refusing on that basis would drop
-        every knowledge database from the outbound copy. Redacting the content and
-        rebuilding the index is what removes the term: the inverted index holds it as
-        index structure, so a redacted content table with a stale index still answers a
-        search for the credential.
+        FTS5 keeps two `WITHOUT ROWID` shadow tables. The index must be rebuilt after
+        redacting, or a stale inverted index still answers a search for the credential.
         """
         key = "ghp_" + "C" * 36
         stage = tmp_path / "stage"
@@ -170,16 +163,9 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
     def test_a_contentless_fts_index_refuses_the_upload(self, tmp_path):
         """A contentless index has no content table, so the skip-and-rebuild rule is false.
 
-        The FTS storage tables are skipped because they are DERIVED: cleaning the content
-        table and rebuilding the index is what removes the term. `content=''` has no content
-        table at all, so its tokens live ONLY in that storage -- skipping it means nothing
-        ever examines them and nothing regenerates them from a cleaned source.
-
-        Measured before this guard existed: an AWS access key is a separator-free
-        alphanumeric run, so FTS5 stores it as one token instead of splitting it, the scanner
-        matches that shape, and a full pass reported `replacements={}` while the token sat in
-        the file. Lowercasing by the tokenizer is not a control -- an `sk`-style or hex key is
-        lowercase to begin with.
+        With `content=''` the tokens live only in the FTS storage, so skipping it means
+        nothing examines them. FTS5 stores a separator-free key as one whole token, and
+        tokenizer lowercasing is no control: `sk`-style and hex keys are lowercase already.
         """
         db = tmp_path / "memory.db"
         conn = redact.sqlite3.connect(str(db))
@@ -203,11 +189,9 @@ class TestATableThatCannotBeInspectedRefusesTheUpload:
     def test_an_external_content_fts_database_is_redacted_and_kept(self, tmp_path):
         """The shape this product actually uses: `content=items, content_rowid=id`.
 
-        With external content there is no `_content` shadow table and the virtual table is
-        READ-ONLY for content, so the term can only leave the index by rebuilding it from
-        the redacted base table. A fixture using a standard fts5 table passes without the
-        rebuild for the wrong reason -- writing through the virtual table happens to fix
-        both halves there -- which is why this case is pinned separately.
+        Here the term leaves the index only by a rebuild from the redacted base table. A
+        standard fts5 fixture would pass without the rebuild, since writing through the
+        virtual table fixes both halves there.
         """
         key = "ghp_" + "E" * 36
         stage = tmp_path / "stage"
@@ -372,12 +356,8 @@ class TestADeclaredRowidColumnDoesNotBecomeTheUpdateHandle:
         body = src[src.index("def _redact_database") :]
         assert "WHERE rowid = ?" not in body, "the UPDATE hardcodes rowid again"
         assert "SELECT rowid," not in body, "the SELECT hardcodes rowid again"
-        # The SELECT now lives in the paging helper, so counting `{handle}` in one function
-        # does not express the property -- and the property itself got STRONGER: the alias
-        # is computed once in `_redact_database` and PASSED to the helper, so the two
-        # statements cannot drift by construction rather than by convention. Asserted as
-        # that: the helper takes the handle as a parameter and interpolates it, and the caller
-        # hands it the same variable the UPDATE uses.
+        # The alias is computed once in `_redact_database` and passed to the paging helper,
+        # so the SELECT and the UPDATE interpolate the same variable.
         paged = inspect.getsource(redact._paged_rows)
         assert "handle: str" in paged, "the paging helper no longer receives the handle"
         assert "{handle}" in paged, "the SELECT stopped interpolating the passed handle"
@@ -391,14 +371,9 @@ class TestADeclaredRowidColumnDoesNotBecomeTheUpdateHandle:
 class TestTheRollbackLedgerRecordsWhatWasTouchedNotWhatWasDeclared:
     """`installed` decides whether recovery DELETES a file, so it must mean "reached".
 
-    It was populated with every file the component DECLARES, before the copy loop ran. A
-    bundle may legitimately carry only some of them and the loop skips the rest, so those
-    files were never backed up and never written -- yet recovery saw "installed, no saved
-    copy, target exists", concluded the restore had created them, and deleted the operator's
-    own untouched files while reporting a successful rollback.
-
-    Both halves are asserted here, because a fix that only stops the deletion could do it by
-    breaking the legitimate undo.
+    A bundle may carry only some declared files; recording the rest would make recovery
+    read "installed, no saved copy, target exists" and delete the operator's own files.
+    Both halves are asserted, so stopping the deletion cannot break the legitimate undo.
     """
 
     def _bundle_for_config(self, tmp_path, carried):
@@ -447,12 +422,10 @@ class TestTheRollbackLedgerRecordsWhatWasTouchedNotWhatWasDeclared:
             assert live.read_text(encoding="utf-8") == f"OPERATOR DATA {name}"
 
     def test_a_file_this_run_really_created_is_still_undone(self, home, tmp_path):
-        """The other half: the legitimate undo must survive the fix.
+        """The other half: a file this run created is still removed by the rollback.
 
-        `hooks.json` is absent live and present in the bundle, so the restore CREATES it.
-        Recovery has no saved copy to put back and must remove the creation -- that is what
-        "no pre-restore state" restores to. A fix that simply stopped recording would leave
-        this file behind and silently keep a file the operator never had.
+        `hooks.json` is absent live and present in the bundle, so the restore CREATES it,
+        and recovery must remove it: that is what "no pre-restore state" restores to.
         """
         created = "hooks.json"
         assert not (home / created).exists()
@@ -486,20 +459,15 @@ class TestTheRollbackLedgerRecordsWhatWasTouchedNotWhatWasDeclared:
 class TestAPinnedRefusalMidMutationStillRollsBack:
     """A refusal is not an OSError, and the rollback handler must still see it.
 
-    The mutation phase reaches the pinned primitives, which REFUSE rather than raise
-    OSError: `must_create=True` rejects a root recreated after its own rmtree, and a fatal
-    skip reporter rejects a file it cannot copy whole. Both fire mid-mutation. If the
-    handler only names OSError, the one failure class phase-two rollback exists for walks
-    past it and leaves live state half replaced.
+    The pinned primitives refuse mid-mutation (`must_create=True`, a fatal skip reporter);
+    a handler naming only OSError would leave live state half replaced.
     """
 
     def test_a_refusal_during_the_mutation_phase_triggers_recovery(
         self, home, tmp_path, capsys, monkeypatch
     ):
-        # `home` is the fixture that points `snap._mc_dir` at an isolated directory. Without
-        # it this test passes VACUOUSLY: the restore writes into the ambient data home while
-        # the assertions inspect an untouched tmp tree, so "ORIGINAL survived" is true because
-        # nothing ever ran. Caught by mutation-testing the handler and seeing green.
+        # `home` points `snap._mc_dir` at an isolated directory. Without it the restore writes
+        # into the ambient data home and "ORIGINAL survived" passes because nothing ran.
         (home / "workspace" / "memory").mkdir(parents=True)
         (home / "workspace" / "memory" / "keep.md").write_text("ORIGINAL", encoding="utf-8")
         # A REAL database on both sides: the pre-flight refuses an unopenable payload
@@ -562,11 +530,8 @@ class TestAPinnedRefusalMidMutationStillRollsBack:
 class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
     """The guard is the MECHANISM, not the file type.
 
-    An earlier version keyed on `%PDF-` and its comment claimed measurement had shown the
-    ASCII PDF to be the one text container that reaches the rewrite. That measurement covered
-    BINARY containers (ZIP, gzip, PNG, tar, Flate-PDF, all already refused by the NUL test)
-    and was over-read into a claim about all of them. A text WARC is the counterexample:
-    UTF-8, NUL-free, and every record declares its own `Content-Length`.
+    Keying on `%PDF-` misses text containers: a WARC is UTF-8, NUL-free, and every record
+    declares its own `Content-Length`, so a rewrite would shift its extents.
     """
 
     def test_a_warc_is_refused_rather_than_shifted(self, tmp_path):
@@ -633,9 +598,8 @@ class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
 class TestAnFtsTriggerIsExemptOnlyForTheDeletionsThatAreMaintenance:
     """The exemption is per DELETE, not per trigger.
 
-    The first version waved a whole trigger through as soon as any FTS name appeared anywhere
-    in it, so a trigger that maintains the index AND deletes unrelated rows was exempt -- a
-    rule justified for one of a thing's statements, applied to all of them.
+    A trigger that maintains the index AND deletes unrelated rows is not exempt just because
+    an FTS name appears in it.
     """
 
     def _db(self, path, trigger_body):
@@ -669,10 +633,8 @@ class TestAnFtsTriggerIsExemptOnlyForTheDeletionsThatAreMaintenance:
     def test_a_trigger_whose_only_deletion_is_fts_maintenance_still_rides(self, tmp_path):
         """The must-still-work half: a full-text index is kept in step by deleting its rows.
 
-        A plain (not external-content) fts5 table is used deliberately: `DELETE FROM` is legal
-        there, whereas on an external-content table the sync idiom is
-        `INSERT INTO t(t, rowid, ...) VALUES('delete', ...)` and a raw DELETE corrupts the
-        index -- which is what the first version of this test did, and sqlite said so.
+        A plain fts5 table on purpose: on an external-content table a raw DELETE corrupts
+        the index, and the sync idiom is `INSERT INTO t(t, rowid, ...) VALUES('delete', ...)`.
         """
         db = tmp_path / "memory.db"
         self._db(db, "DELETE FROM notes_fts WHERE rowid = OLD.id;")
@@ -744,10 +706,8 @@ class TestATriggerThatDeletesRowsRefusesTheUpload:
 class TestTheDatabaseRestageChecksAndOpensTheSameFile:
     """The screening and the SQLite open must not be two independent path walks.
 
-    `src.resolve()` re-walked every ancestor after the loop had screened the file by name,
-    so a swapped ancestor could redirect the open at a database the screen never inspected.
-    The parent chain is resolved once and pinned, the final name is checked THROUGH that
-    pinned parent, and the URI is built from the same resolved chain.
+    A second walk (`src.resolve()`) would let a swapped ancestor redirect the open, so the
+    parent chain is pinned once and both the name check and the URI use it.
     """
 
     @pytest.mark.skipif(
@@ -759,11 +719,8 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
     def test_a_swapped_ancestor_cannot_redirect_the_open(self, tmp_path, monkeypatch):
         """The swap is INJECTED mid-loop, because a statically-planted link proves nothing.
 
-        `rglob` does not descend a symlinked directory, so a link placed before the pass runs
-        is never enumerated and the test passes no matter what the code does -- the first
-        version of this test was exactly that, and a mutant restoring `src.resolve()` sailed
-        through it. The real claim is about a swap AFTER the file was enumerated and screened,
-        so the swap is performed from inside the chain check, on its first call.
+        `rglob` does not descend a symlinked directory, so a link planted beforehand is never
+        enumerated. The swap runs inside the chain check, after the file was screened.
         """
         real = tmp_path / "live"
         (real / "workspace").mkdir(parents=True)
@@ -812,13 +769,9 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
     def test_a_platform_without_dir_fd_still_restages(self, tmp_path, monkeypatch):
         """Windows, simulated the way this repo already simulates it.
 
-        `os.supports_dir_fd` is EMPTY on Windows, so `os.open(..., dir_fd=fd)` raises
-        `NotImplementedError` there -- not "works but weaker". The first version of the chain
-        check passed `dir_fd` unconditionally and took the whole database pass down on
-        Windows; `pinned_fs.supports_pinned_walk()` exists for exactly this and was not
-        consulted. Both halves are simulated here: the capability report is emptied AND
-        `os.open` refuses a `dir_fd`, so a missing gate fails rather than silently passing on
-        a platform that happens to support it.
+        On Windows `os.open(..., dir_fd=fd)` raises `NotImplementedError`, so the chain check
+        must consult `pinned_fs.supports_pinned_walk()`. Both halves are simulated (empty
+        `supports_dir_fd` and an `os.open` that refuses `dir_fd`) so a missing gate fails here.
         """
         real = tmp_path / "live"
         real.mkdir()
@@ -894,10 +847,8 @@ class TestASavedCoreFileLinkIsPutBackAsALink:
     """`_backup_and_copy` MOVES a symlinked core file aside, so a link in the rollback
     directory is a state this code creates on purpose.
 
-    Recovery tested `saved.is_dir()` then `saved.is_file()`, both of which dereference. A
-    relative link stops resolving once it sits in the rollback directory, so it matched
-    neither branch: the replacement at the live name was deleted as an undone creation, the
-    link stayed behind in the rollback directory, and the recovery reported success.
+    A relative link stops resolving in the rollback directory, so `is_dir()` and `is_file()`
+    (which dereference) both miss it.
     """
 
     def test_a_relative_symlink_survives_the_round_trip(self, home, tmp_path):
@@ -909,7 +860,7 @@ class TestASavedCoreFileLinkIsPutBackAsALink:
         # Exactly what the backup pass does with a symlinked core file: move the LINK.
         shutil.move(str(home / "crons.json"), str(backup / "crons.json"))
         saved = backup / "crons.json"
-        # The two branch tests are both false here -- that is the whole defect.
+        # Both dereferencing branch tests are false here.
         assert saved.is_symlink() and not saved.is_file() and not saved.is_dir()
         # The restore wrote its own replacement before something later failed.
         (home / "crons.json").write_text('{"jobs": [{"name": "from-archive"}]}', encoding="utf-8")
@@ -945,10 +896,8 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
     """Redaction substitutes text of a DIFFERENT length, so it may only rewrite bytes whose
     meaning does not depend on position.
 
-    The file path already refused a NUL-bearing file for exactly this reason. Two places had
-    no equivalent guard: a byte-valued database column, and a text-shaped container whose
-    own layout records byte offsets. Both shipped a corrupted off-host copy and reported it
-    clean, which on a backup is the worst available outcome.
+    The NUL guard covers binary files; this covers a byte-valued database column and a
+    text container whose layout records byte offsets.
     """
 
     def test_a_blob_carrying_a_credential_refuses_instead_of_being_rewritten(self, tmp_path):
@@ -978,9 +927,7 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
     def test_a_blob_with_no_credential_still_rides(self, tmp_path):
         """The refusal must key off a HIT, not off the column being binary.
 
-        Embeddings and thumbnails are the normal contents of a byte column. Refusing every
-        database that merely HAS one would replace the feature with an unconditional refusal
-        -- the same failure mode measured for the refuse-on-length-change remedy.
+        Embeddings and thumbnails are the normal contents of a byte column.
         """
         import struct
 
@@ -1000,11 +947,9 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
         assert after == clean
 
     def test_an_ascii_pdf_is_refused_rather_than_shifted(self, tmp_path):
-        """Measured to be the ONE offset-dependent container that reaches the rewrite.
+        """An uncompressed ASCII PDF passes the NUL guard, and its `xref` holds byte offsets.
 
-        ZIP, gzip, PNG, tar and a Flate-stream PDF are all already refused by the NUL guard
-        -- each is either not UTF-8 or carries NUL. An uncompressed ASCII PDF is neither,
-        and its `xref` holds byte offsets that a variable-length edit invalidates.
+        ZIP, gzip, PNG, tar and a Flate-stream PDF are not UTF-8 or carry NUL.
         """
         pdf = tmp_path / "doc.pdf"
         body = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ncred AKIAIOSFODNN7EXAMPLE\n"
@@ -1032,13 +977,8 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
 class TestCronValidationMatchesWhatTheReaderNeeds:
     """A malformed cron shape must never reach the merge reader's field access.
 
-    Superseded mechanism: an earlier revision pre-flighted the shape in
-    `_refuse_corrupt_source_databases` and raised `SourceComponentUnsound`. The M1 base
-    guards this on the MERGE side instead -- `_usable_cron_shape` classifies the shape and
-    `_merge_crons` SKIPS an unusable one and continues, so the reader never calls `.get`
-    on a str or iterates a non-list. The property (a bad entry is never handed to the
-    reader) is unchanged; where it is enforced moved, so these pin `_usable_cron_shape`
-    and the merge-skips-and-continues behaviour.
+    `_usable_cron_shape` classifies the shape and `_merge_crons` skips an unusable one and
+    continues, so the reader never calls `.get` on a str or iterates a non-list.
     """
 
     def test_a_jobs_list_of_strings_is_rejected_by_the_shape_guard(self, home, tmp_path) -> None:
@@ -1076,9 +1016,7 @@ class TestCronValidationMatchesWhatTheReaderNeeds:
     def test_the_merge_reader_never_sees_a_bad_entry(self, home, tmp_path, capsys):
         """End to end: a malformed jobs list is skipped and live crons are left intact.
 
-        The merge does not crash and does not corrupt the operator's crons -- it skips the
-        unusable file and reports the rest complete, which is the M1 skip-and-continue
-        contract (not the old whole-restore refusal).
+        The merge skips the unusable file and reports the rest of the restore complete.
         """
         (home / "crons.json").write_text('{"jobs": [{"name": "mine"}]}', encoding="utf-8")
         payload = tmp_path / "kirocrew-snapshot-20260101T000000Z"
@@ -1096,10 +1034,7 @@ class TestCronValidationMatchesWhatTheReaderNeeds:
             [str(bundle), "--mode", "merge", "--force", "--components", "crons"] + unpinnable_argv()
         )
         out = capsys.readouterr().out
-        # 0, not 1: the merger SKIPS an unusable crons file and carries on with the rest of
-        # the restore. Asserted rather than left implicit, because the return code is exactly
-        # what this contract changed -- an earlier revision refused the whole restore here,
-        # which turned one misshapen component into a failed restore of every other one.
+        # 0, not 1: one misshapen component must not fail the restore of every other one.
         assert rc == 0, out
         assert "Traceback" not in out, out
         assert '{"jobs": [{"name": "mine"}]}' == (home / "crons.json").read_text(
@@ -1109,13 +1044,10 @@ class TestCronValidationMatchesWhatTheReaderNeeds:
 
 class TestTheUploadPathDoesNotConsultConfigAtAll:
     def test_the_switch_is_read_through_the_redactor_not_the_config(self):
-        """Stronger than the import-placement rule this replaces.
+        """The upload path reads no config in any form.
 
-        That rule pinned WHERE the config import sat, to stop a hoist-back. The upload path
-        does not read config at all: the redaction opt-out moved behind the keystone fence
-        on the backup directory, because a switch in agent-writable `config.json` is one the
-        agent can flip to publish live credentials through a sanctioned path. So the thing
-        worth pinning is that no config read comes back here in any form.
+        The redaction opt-out sits behind the keystone fence on the backup directory: a
+        switch in agent-writable `config.json` would let the agent publish live credentials.
         """
         import inspect
 

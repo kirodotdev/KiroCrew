@@ -1,11 +1,8 @@
 """The copy that leaves the host is redacted; the copy on local disk is not.
 
-The boundary is the copy that crosses off-host, not the archive. A local bundle sits on
-the machine that already holds these secrets, so redacting it would destroy the only copy
-that restores complete and buy nothing. What crosses the boundary is a separate, redacted
-copy, produced by ``snapshot.prepare_redacted_copy`` -- the seam an off-host sender
-consumes. The destination itself (bucket, hardening, consent, transport) belongs to the
-AWS Control app; what stays here is rewriting the bytes that leave.
+A local bundle sits on the machine that already holds these secrets, and redacting it would
+destroy the only copy that restores complete. ``snapshot.prepare_redacted_copy`` makes the
+separate copy an off-host sender consumes; the destination belongs to the AWS Control app.
 """
 
 from __future__ import annotations
@@ -301,12 +298,8 @@ class TestNothingUnprovableLeavesTheHost:
     ):
         """Dropping the payload IS shipping a broken backup, so this refuses instead.
 
-        This asserted that an unprovable product database was removed and the remainder
-        sent. That produces an off-host copy which reports success and restores nothing,
-        discovered only once the machine it came from is gone -- the exact failure the
-        feature exists to prevent. The database the backup carries is not a file that may
-        be silently omitted, so the copy is refused and names it, and the complete local
-        archive is left untouched.
+        A copy without it reports success and restores nothing, found only once the source
+        machine is gone. The refusal names the database and leaves the local archive intact.
         """
         out = _bundle_with(
             tmp_path, {"workspace/knowledge/knowledge.db": b"this is not a database"}
@@ -384,14 +377,9 @@ class TestRestoreAnnouncesARedactedBundle:
 class TestNoRowidIsBelowTheScan:
     """Every row is scanned, whatever its rowid -- including negative ones.
 
-    A pager that opens with `last = -1` and always selects `handle > ?` skips any row whose
-    rowid was <= -1 was never yielded and its credential shipped in the "redacted" copy
-    while the report still claimed a successful replacement. SQLite lets you set an explicit
-    negative INTEGER PRIMARY KEY, so nothing exotic is needed to land there.
-
-    The INT64 minimum is included deliberately: it is the row that any FIXED sentinel floor
-    would still miss, so it is what distinguishes the actual fix (no floor on the first
-    page) from merely lowering the old one.
+    A pager starting at `last = -1` with `handle > ?` would skip rows at rowid <= -1, and
+    SQLite allows an explicit negative INTEGER PRIMARY KEY. The INT64 minimum is the row any
+    FIXED sentinel floor would still miss, so the first page must have no floor.
     """
 
     TOKEN = "AKIAIOSFODNN7EXAMPLE"
@@ -435,16 +423,9 @@ class TestNoRowidIsBelowTheScan:
 class TestAWriteOnlyTriggerThatReplacesARowIsRefused:
     """A body with no `DELETE` can still destroy a row, and those forms are refused.
 
-    `INSERT OR REPLACE` and `REPLACE INTO` delete the conflicting row and insert in its
-    place. The refusal looked only for `DELETE FROM`, so a trigger whose body only ever
-    "writes" could clobber a row in a table this pass never looked at -- and the fixpoint
-    can observe a settled database, never bring back a row that is gone.
-
-    Both directions are asserted, because a guard that fires on everything is as wrong as
-    one that fires on nothing: the two REPLACE spellings refuse, and a plain value-copying
-    trigger still goes through the fixpoint and gets cleaned. Refusing every non-FTS UPDATE
-    trigger was measured twice and rejected -- it discards the fixpoint and refuses the
-    product's own external-content index -- so the narrowness here is the point.
+    `INSERT OR REPLACE` and `REPLACE INTO` delete the conflicting row, and the fixpoint cannot
+    bring back a row that is gone. A plain value-copying trigger must still be cleaned:
+    refusing every non-FTS UPDATE trigger would refuse the product's own index.
     """
 
     TOKEN = "AKIAIOSFODNN7EXAMPLE"
@@ -514,14 +495,9 @@ class TestAWriteOnlyTriggerThatReplacesARowIsRefused:
 class TestFtsDetectionIsCaseInsensitive:
     """SQLite stores DDL verbatim, and its own docs write `USING FTS5(...)`.
 
-    The detector folded only the all-lowercase spelling, so a table created the documented
-    way was not recognised as full-text: its `WITHOUT ROWID` shadow tables were scanned as
-    ordinary ones and the pager's `SELECT MAX(<handle>)` raised `no such column: rowid`,
-    refusing the ENTIRE backup of a sound database. A legitimate backup lost to a spelling.
-
-    Both halves are pinned: the uppercase table now redacts, AND the contentless refusal
-    still fires for an uppercase declaration -- a case fix that quietly stopped recognising
-    `content=''` would trade a false refusal for a real leak.
+    An unrecognised FTS table's `WITHOUT ROWID` shadow tables raise `no such column: rowid`
+    in the pager and refuse the whole backup. The contentless refusal must still fire for an
+    uppercase `CONTENT=''`, or a case fix trades a false refusal for a leak.
     """
 
     TOKEN = "AKIAIOSFODNN7EXAMPLE"
@@ -567,19 +543,10 @@ class TestFtsDetectionIsCaseInsensitive:
 class TestAGeneratedColumnCannotCarryACredentialOffHost:
     """`PRAGMA table_info` omits GENERATED columns, and they are read-only.
 
-    So the row pass can neither see nor rewrite one. Two existing guards cover most of the
-    exposure -- the schema scan refuses a credential written as a literal in the generation
-    expression, and a STORED column is recomputed when its source is updated -- but neither
-    covers a credential ASSEMBLED across columns: no single value matches, the DDL holds
-    nothing, and the generated column materialises the whole key.
-
-    Reproduced before the fix with `a='AKIA'`, `b='IOSFODNN7EXAMPLE'` and
-    `joined AS (a || b) STORED`: nothing refused, and the outbound copy carried the key.
-
-    Refused rather than redacted, because a derived column cannot be rewritten in place. The
-    discrimination is asserted too: a generated column with nothing sensitive must NOT refuse,
-    and an FTS table -- whose own columns present as hidden flag 1 rather than 2 or 3 -- must
-    keep working, or this hardening becomes an outage for every full-text backup.
+    So the row pass can neither see nor rewrite one. A credential ASSEMBLED across columns
+    (`a || b`) matches no single value and no DDL literal, so it is refused. A harmless
+    generated column must not refuse, and FTS columns (hidden flag 1, not 2 or 3) must keep
+    working.
     """
 
     HEAD = "AKIA"
@@ -615,10 +582,8 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     def test_a_bytes_valued_generated_column_is_scanned_too(self, tmp_path):
         """`isinstance(value, str)` alone would walk straight past this one.
 
-        The form matters. `a || b` over blobs yields TEXT, so that shape is caught by a
-        str-only filter anyway; `CAST(... AS BLOB)` genuinely stores bytes -- verified by
-        `typeof()` reporting `blob` and the driver handing back a `bytes` -- which is what
-        makes the bytes branch reachable rather than merely defensive.
+        `a || b` yields TEXT even over blobs; `CAST(... AS BLOB)` really stores bytes, as the
+        `typeof()` probe confirms.
         """
         stage = tmp_path / "stage"
         stage.mkdir()
@@ -658,18 +623,9 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
 class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
     """The FTS rebuild must not be gated on `hits`, which cannot see this case.
 
-    An external-content FTS index keeps its own tokenized copy and does NOT auto-sync, so a
-    base table can move on and leave the index holding text no live row contains. The row scan
-    then reports `hits == 0` -- correctly, the rows are clean -- and a rebuild gated on that
-    never runs. VACUUM does not save it either: VACUUM repacks live content and never
-    re-tokenizes, and the stale doclist IS live content of the shadow table.
-
-    Reproduced before the fix: base row updated to drop the credential without syncing the
-    index, no refusal, and the egress copy still answered a MATCH for the key afterwards.
-
-    Asserted through a QUERY, and on the lowercased form in the bytes, because FTS5's default
-    tokenizer lowercases terms -- checking only the credential's own casing reports a clean
-    file for a database that still answers a search for it.
+    An external-content FTS index does NOT auto-sync, so it can hold text no live row has
+    while the row scan reports `hits == 0`. VACUUM never re-tokenizes. Asserted through a
+    QUERY and on the lowercased bytes, because FTS5's default tokenizer lowercases terms.
     """
 
     HEAD = "AKIA"
@@ -725,17 +681,9 @@ class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
 class TestATriggerOverwritingAnotherTableIsRefused:
     """The redaction's own UPDATE can fire a trigger that overwrites UNRELATED rows.
 
-    Not a credential-survival problem -- a data-loss one, which is why the earlier trigger
-    measurements do not answer it. `UPDATE unrelated SET note='CLOBBERED'` runs when this pass
-    rewrites a value, and the operator's row reads 'CLOBBERED' in the copy that is uploaded
-    and later RESTORED. The fixpoint can observe a settled database; it cannot restore a value
-    that is gone.
-
-    Refused by TARGET, and the scope is the whole point. Two broader rules were measured and
-    fail: refusing every non-FTS UPDATE-writing trigger discards the fixpoint and the
-    product's own FTS index, and refusing any body containing an `UPDATE` breaks a mirror
-    column, which is ordinary and provably cleaned. The three tests below are the shapes that
-    must stay allowed; without them this class would read as a licence to widen the rule.
+    A data-loss problem: the clobbered row rides the upload and is later RESTORED, and the
+    fixpoint cannot bring a value back. Refused by TARGET; broader rules would refuse the
+    product's own FTS index or an ordinary mirror column, the allowed shapes pinned below.
     """
 
     KEY = "AKIA" + "IOSFODNN7EXAMPLE"
@@ -771,12 +719,10 @@ class TestATriggerOverwritingAnotherTableIsRefused:
         assert note == "the operator's own note"
 
     def test_an_unbound_update_on_its_own_table_refuses(self, tmp_path):
-        """The residual the previous rule left open, now closed.
+        """An UPDATE on the trigger's own table with no row bound rewrites EVERY row.
 
-        `UPDATE items SET note='CLOBBERED'` names the trigger's own table, so a rule keyed only
-        on the target let it through -- and with no row bound it rewrites EVERY row of the table
-        it fires on. Distinguished from the mirror column below by whether the statement is
-        bound to the triggering row at all, not by which table it names.
+        Told apart from the mirror column below by binding to the triggering row, not by
+        which table it names.
         """
         stage = self._run(
             tmp_path,
@@ -829,15 +775,9 @@ class TestATriggerOverwritingAnotherTableIsRefused:
 class TestAWideEncodedCredentialCannotRideOutUnscanned:
     """UTF-16LE with no BOM decodes as valid UTF-8, because NUL is a legal codepoint.
 
-    So the read succeeds, the text reads `A\\x00K\\x00I\\x00A...`, and no credential pattern can
-    match across the NULs. `_scrub` returns 0 hits and the file is reported handled while the
-    credential rides out intact. The NUL check that would have caught it sat inside `if hits:`,
-    where it only ever guarded against CORRUPTING a NUL-bearing file that did match.
-
-    Treating every NUL-bearing file as opaque was the prescribed remedy and is wrong: a workspace
-    routinely holds binary blobs, and `test_a_nul_bearing_file_with_no_credential_still_rides`
-    asserts an ordinary tar rides. Scanning the wide-encoding interpretations closes the bypass
-    without refusing files that carry nothing -- both halves are asserted below.
+    The text reads `A\\x00K\\x00I\\x00A...`, so no pattern matches across the NULs and `_scrub`
+    finds 0 hits. Treating every NUL-bearing file as opaque would refuse ordinary binary
+    blobs, so the wide encodings are scanned instead; both halves are asserted below.
     """
 
     KEY = "AKIA" + "IOSFODNN7EXAMPLE"
