@@ -1075,7 +1075,7 @@ def main() -> None:
 
         _policy(args)
     elif args.command == "knowledge":
-        _knowledge(args)
+        sys.exit(_knowledge(args))
     elif args.command == "secrets":
         # Dispatch through the module-level `importlib` rather than a
         # function-local `from kiro_crew.cli_commands import …`: the latter trips
