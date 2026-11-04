@@ -1320,6 +1320,81 @@ class MemoryStore:
             if self._write_index_row(path_str, content, quiet=True):
                 self._index_stale.discard(path_str)
 
+    def _mark_ondisk_drift_stale(self) -> None:
+        """Mark markdown files whose on-disk text differs from the index as stale.
+
+        ``_index_stale`` is otherwise only populated by a WRITE through this store
+        whose index update failed: an edit made to a file directly on disk (an
+        editor, a sync tool, another process not going through the writers) never
+        enters that set, so ``_catch_up_stale_index`` never re-indexes it and the
+        edit stays unfindable. This closes that gap by comparing each enumerable
+        markdown source's current content against the row the index holds for it
+        and marking the path stale when they differ or the row is missing; the
+        existing catch-up then re-indexes it under the writers' own locks before
+        the query reads the index.
+
+        Best-effort and read-only: a file or index read that fails is skipped, so
+        a transient error never fails the search. Enumerates the same sources
+        ``rebuild_index`` does (the two fixed files plus ``history/*.md``) so no
+        source is reconciled that a rebuild would not index.
+
+        One indexed row is read at a time, keyed by path, rather than the whole
+        ``memory_fts`` content column: with many large history files the column
+        is far bigger than any single capped source, and holding it all would
+        itself be the exhaustion the per-file cap exists to prevent.
+        """
+        conn = None
+        try:
+            conn = self._get_db()
+            # An empty index is not reconciled here: building it from the files is
+            # ``rebuild_index``'s job, and search reports an unbuilt index as such
+            # rather than silently populating it. Reconciliation only re-aligns an
+            # index already in use with a file edited out of band under it.
+            if (conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone() or (0,))[0] == 0:
+                return
+            paths = [self._preferences_file, self._projects_file]
+            try:
+                paths.extend(self._files.glob(self._history_dir, "*.md"))
+            except Exception:
+                logger.debug("FTS drift scan: history glob failed; fixed only", exc_info=True)
+            for path in paths:
+                path_str = str(path)
+                if path_str in self._index_stale:
+                    continue  # already queued; the read happens under the catch-up lock
+                try:
+                    # Size-capped reader: the history dir is agent-writable, so a
+                    # planted oversized/sparse file must not be read whole into
+                    # memory on every search. A refused, oversized or unreadable
+                    # source raises here and is skipped (left for rebuild_index,
+                    # which keeps the existing index rather than erasing it).
+                    on_disk = self._files.read_entry(path, require_readable=True).content
+                except Exception:
+                    logger.debug("FTS drift scan: %s unreadable; kept", path_str, exc_info=True)
+                    continue
+                # "" from the capped reader means absent-but-admitted for the fixed
+                # files; an absent file simply has no row to drift from, so skip it.
+                if on_disk == "" and not self._files.exists(path):
+                    continue
+                row = conn.execute(
+                    "SELECT content FROM memory_fts WHERE path = ? LIMIT 1", (path_str,)
+                ).fetchone()
+                # The capped reader keeps a Windows file's CRLF while the index
+                # stores LF, so fold both to the same newline shape before
+                # comparing or every file would look drifted on every search.
+                indexed_content = row[0] if row is not None else None
+                if indexed_content is None or _normalize_newlines(indexed_content) != (
+                    _normalize_newlines(on_disk)
+                ):
+                    with self._index_lock:
+                        self._index_stale.add(path_str)
+        except Exception:
+            # An unreadable index is the self-heal / rebuild path's problem, not
+            # this reconciliation's; leave the stale set untouched.
+            logger.debug("FTS drift scan: index unreadable; skipped", exc_info=True)
+        finally:
+            if conn is not None:
+                conn.close()
+
     def _catch_up_stale_index(self) -> None:
         """Re-index the stale paths before a search, one directory lock at a time.
 
@@ -1460,9 +1535,13 @@ class MemoryStore:
         require_memory_ready(self._memory_store_name)
         if self._memory_version == 2:
             return self._member_store().search_memory(query, limit=limit)
+        # A file edited directly on disk (not through this store's writers) never
+        # entered _index_stale, so reconcile the on-disk markdown against the
+        # index first; this also re-queues any write whose index update failed.
+        self._mark_ondisk_drift_stale()
         if self._index_stale:
-            # A file whose index update failed earlier is re-indexed before the
-            # query reads the index, so it is found once the cause has cleared.
+            # A file whose index update failed earlier, or one edited out of band,
+            # is re-indexed before the query reads the index, so it is found.
             self._catch_up_stale_index()
         conn = None
         try:
