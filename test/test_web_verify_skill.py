@@ -25,15 +25,16 @@ def test_web_verify_skill_exists_with_frontmatter() -> None:
     assert "triggers:" in body
     # The loop is worthless if the agent never looks at the frame it captured.
     assert "read the file" in body.lower()
-    assert "playwright-cli screenshot" in body
+    assert 'browser(op="screenshot")' in body
 
 
-def test_web_verify_keeps_the_playwright_guard() -> None:
-    """No silent pretending when no browser backend is installed."""
+def test_web_verify_keeps_the_no_pretending_guard() -> None:
+    """No silent pretending when no browser backend is available."""
     flat = _flat(WEB_VERIFY)
-    assert "command -v playwright-cli" in flat, "must probe before claiming a capture"
+    assert "browsing is not set up on this host" in flat, "must name the tool's own refusal"
+    assert "command -v agent-browser" in flat, "must probe the second backend"
     assert "do NOT fake it" in flat
-    assert "npm install -g @playwright/cli" in flat
+    assert "playwright-cli" not in flat, "the Playwright CLI is gone; no skill may point at it"
 
 
 def _flat(path: Path) -> str:
@@ -62,13 +63,13 @@ def test_browser_skills_name_the_settings_toggle_not_only_a_cli() -> None:
 
 
 def test_browser_skills_do_not_point_at_a_toggle_that_no_longer_exists() -> None:
-    """Installing the CLI provides the capability, so no skill may promise a switch.
+    """Installing the engine provides the capability, so no skill may promise a switch.
 
     This assertion is the inverse of the one it replaces, and deliberately so.
     Under the MCP stack the enabler was a Settings toggle and the risk was a
-    skill claiming the CLI could flip it. The toggle is gone: presence of
-    `playwright-cli` on PATH is capability availability. The live risk is therefore
-    a skill telling the user to go turn on a setting that does not exist, which
+    skill claiming a CLI could flip it. The toggle is gone: the Browser Harness
+    being installed is capability availability. The live risk is therefore a
+    skill telling the user to go turn on a setting that does not exist, which
     is a dead end no amount of retrying resolves.
     """
     for skill in (WEB_VERIFY, WEB_BROWSE):
@@ -97,14 +98,16 @@ def test_browser_skills_do_not_assert_mode_off_as_fact() -> None:
 
 
 def test_web_verify_names_all_three_capture_backends() -> None:
-    """A missing browser CLI must not read as 'verification impossible'."""
+    """A refused loopback origin must not read as 'verification impossible'."""
     body = WEB_VERIFY.read_text(encoding="utf-8")
-    assert "playwright-cli" in body
+    assert "`browser` MCP tool" in body
     assert "agent-browser open" in body
     assert "pod-e2e" in body
-    # Only the playwright-cli session is what the panel shows; the others are
+    # Only the browser tool's session is what the chat shows live; the others are
     # offline captures, and a skill that blurs that oversells what the user saw.
-    assert "not** appear in the Browser panel" in body
+    assert "not** appear in the chat's live view" in body
+    # The tool refuses loopback unless listed, so the skill must say where to list it.
+    assert "Local preview origins" in body
 
 
 def test_web_verify_bounds_the_frame_count() -> None:

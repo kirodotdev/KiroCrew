@@ -84,7 +84,6 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "merge_queued_messages",
             "default_memory_mode",
             "widget_density",
-            "use_builtin_browser",
             "verbosity",
             "quick_send",
             "session_grid",
@@ -119,6 +118,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "social_share_enabled",
             "social_share_sites",
             "decisions_enabled",
+            "browse_enabled",
             "model_picker_hidden_models",
             "model_picker_configured",
             "upload_max_mb",
@@ -313,25 +313,6 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["link_patterns"] = cleaned
-        # Apply ONLY when it is the sole submitted setting. The Browser panel
-        # sends it alone; the Chat settings panel PUTs the whole config object
-        # from its own (possibly stale) cache, and applying it on that path would
-        # let a Chat-panel save silently revert a toggle another client changed
-        # (lost update).
-        if body.keys() == {"use_builtin_browser"}:
-            val = body["use_builtin_browser"]
-            if not isinstance(val, bool):
-                _sel().log_tool_invocation(
-                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
-                )
-                return web.json_response(
-                    {
-                        "error": "use_builtin_browser must be a boolean",
-                        "code": "invalid_use_builtin_browser",
-                    },
-                    status=400,
-                )
-            updates["use_builtin_browser"] = val
         if "verbosity" in body:
             # An older client may still send the retired ``ultra``; store
             # what it now means instead of rejecting the write. Spelled out
@@ -717,6 +698,12 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     # Both rows evaluated in one hop, each audited once, never short-circuited.
     hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
+    # Same again for the browser: Settings -> Browser and the live card show the
+    # policy line instead of their controls. Presentation only; every browser route
+    # and the engine refuse on their own (``browser_harness/governance.py``).
+    from kiro_crew.browser_harness.governance import browse_denied_async
+
+    browse_denied = await browse_denied_async(audit=False)
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -724,7 +711,6 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
             "default_memory_mode": cfg.dashboard.default_memory_mode,
             "widget_density": cfg.dashboard.widget_density,
-            "use_builtin_browser": cfg.dashboard.use_builtin_browser,
             "verbosity": cfg.dashboard.verbosity,
             "quick_send": cfg.dashboard.quick_send,
             "session_grid": cfg.dashboard.session_grid,
@@ -780,6 +766,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # the Decisions (Jev) feature-preview card; the owner's own switch is
             # the keystone behind `/api/decisions/consent`, never a field here.
             "decisions_enabled": not decisions_denied,
+            # Read-only: the `capabilities.browse` governance answer. False makes
+            # Settings -> Browser and the live browser card say browsing is off by
+            # policy, with no install or takeover control.
+            "browse_enabled": not browse_denied,
             # Read-write (unlike the host allowlists above): a rule only changes
             # how this dashboard RENDERS text -- it grants no fetch and no CLI
             # any authority -- so the settings editor may manage it.

@@ -361,7 +361,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: One more root-level directory, three entries per tier:
     #:
     #: * ``engines`` -- the KAS engine bundles ``kirocrew kas install`` lays down
-    #:   (``acp/kas_bundle.py``), sealed read-only like ``playwright-cli`` so a
+    #:   (``acp/kas_bundle.py``), sealed read-only like ``browser-harness`` so a
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
@@ -379,6 +379,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
+    #: * ``browser-harness``, ``browser-harness-ipc``, ``browser-profile`` -- the
+    #:   Browser Harness prefix the gateway executes (sealed read-only), the daemon's
+    #:   IPC directory and Kiro's Chromium profile (both hidden). They sit at the
+    #:   data-home root beside writable siblings, exactly where the retired browser
+    #:   CLI's one leaf sat, so leaf-only is the only hold. Three names in, one
+    #:   out, both spellings of the data home: four more entries per tier.
     #:
     #: One more root-level directory, three entries per tier:
     #:
@@ -403,6 +409,19 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``browser-recordings`` -- every chat's browser turn replays
+    #:   (``browser_harness.recording``), read only through the owner-only replay
+    #:   routes. Masked whole beside ``browser-profile`` at the data-home root, so
+    #:   leaf-only is the only hold, like ``work-ledger``.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``kas-mcp-launch`` -- the KAS MCP launch snapshots, which hold MCP
+    #:   servers' env values (``sandbox_leaves``). Masked whole at the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
     #:
     #: One entry per tier for the default home's ``run`` under a relocated data
     #: home (``sandbox_workspace.prime_voice_runtime_sandbox_paths``):
@@ -439,7 +458,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   republished by a rename INSIDE the directory, so the directory's own inode
     #:   stays the same, as for ``seed-provenance``; at the data-home root beside
     #:   writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 309, "cc": 316, "strict": 317}
+    EXPECTED: dict[str, int] = {"standard": 319, "cc": 326, "strict": 327}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

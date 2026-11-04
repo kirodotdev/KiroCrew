@@ -820,8 +820,6 @@ class LaunchTools:
     augmented_path: Callable[[str], str]
     scrub_agent_subprocess_env: Callable[..., dict[str, str]]
     apply_pod_home_remap: Callable[..., dict[str, str]]
-    browser_session_env: Callable[[Mapping[str, str]], dict[str, str]]
-    browser_socket_env: Callable[[Mapping[str, str]], dict[str, str]]
     inject_xdist_auto_cap: Callable[[dict[str, str]], Any]
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
@@ -1199,15 +1197,6 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # node) are identifiable as ours.
     env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     request.env_after_marker(env)
-    # Own browser session per agent process: the CLI resolves a nameless command to
-    # one shared ``default`` browser, so without this two agents navigate and close
-    # each other's pages (see browser_session_env). Per PROCESS, not per agent: a
-    # shared runtime's sessions share this one.
-    browser_env = tools.browser_session_env(env)
-    env.update(browser_env)
-    if browser_env:
-        lifecycle_env = {**os.environ, **browser_env}
-        env.update(await host._to_thread_guarding_sandbox(tools.browser_socket_env, lifecycle_env))
     # The scratch dir was allocated before the sandbox wrap (carved out of the
     # masked root there); hand it to the child as its temp.
     if host._scratch_dir is not None:

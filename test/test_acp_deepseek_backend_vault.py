@@ -175,8 +175,6 @@ def test_every_scrub_class_name_crew_writes_on_the_child_is_reserved() -> None:
         client_module._resolve_spawn_env,
         sandbox.scrub_agent_subprocess_env,
         agent_scratch.scratch_env,
-        client_module.browser_session_env,
-        client_module.browser_socket_env,
         client_module._apply_pod_home_remap,
         client_module.inject_xdist_auto_cap,
     )
@@ -575,7 +573,6 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
     )
     monkeypatch.setattr(client_module, "finish_suspended_spawn", lambda *a, **k: True)
     monkeypatch.setattr(client_module, "_get_child_pids", lambda _pid: [])
-    monkeypatch.setattr(client_module, "browser_session_env", lambda _env: {})
     monkeypatch.setattr(client_module, "inject_xdist_auto_cap", lambda _env: None)
     monkeypatch.setattr(client_module.agent_scratch, "record_owner", lambda *a, **k: "recorded")
     monkeypatch.setattr("kiro_crew.session._track_pid", lambda *a, **k: None)

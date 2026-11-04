@@ -6,7 +6,7 @@ as "install it with: <command>", so its first executable must exist on this host
 its package name must resolve there. The apt family is decided by lineage. The rpm
 family carries ``dnf``, ``yum`` or ``microdnf`` depending on the generation, so the
 manager is probed the way the browser installer probes it
-(``os_deps.rpm_package_manager``). Amazon Linux 2023 reports ``ID_LIKE=fedora`` but
+(``os_release.rpm_package_manager``). Amazon Linux 2023 reports ``ID_LIKE=fedora`` but
 packages no LibreOffice, SUSE's manager is ``zypper``, and an unrecognized
 distribution is unknown: those get no command at all rather than a guessed ``apt`` or
 ``dnf`` line.
@@ -24,8 +24,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import platform_compat, soffice_discovery
-from kiro_crew.browser_cli import os_deps
+from kiro_crew import os_release, platform_compat, soffice_discovery
 
 _APT = "sudo apt install libreoffice"
 _DNF = "sudo dnf install libreoffice"
@@ -53,9 +52,11 @@ def linux_host(monkeypatch):
             fake = mock.Mock(side_effect=OSError("no os-release"))
         else:
             fake = mock.Mock(return_value=release)
-        monkeypatch.setattr(os_deps.platform, "freedesktop_os_release", fake)
+        monkeypatch.setattr(os_release.platform, "freedesktop_os_release", fake)
         monkeypatch.setattr(
-            os_deps.shutil, "which", lambda name: f"/usr/bin/{name}" if name in managers else None
+            os_release.shutil,
+            "which",
+            lambda name: f"/usr/bin/{name}" if name in managers else None,
         )
 
     yield _set

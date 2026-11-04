@@ -30,9 +30,9 @@ from source_corpus import repo_root
 #: its ``server_runtime`` owners and its two pure-data modules): the strict
 #: internal-path literal, the single heap-trim maintainer after the serving bind, the
 #: diag recorder's off switch, the channel manager's broadcast hand-off, the
-#: inherited-trust teardown and its wiring, the crew-log and browser-view drains, both
+#: inherited-trust teardown and its wiring, the crew-log drain, both
 #: runner constructions, both Kiro prerequisite seeds, both skill-read observers, the
-#: migrated-builtin sweep, the browser CLI override, the per-boot secret mint, the
+#: migrated-builtin sweep, the per-boot secret mint, the
 #: dashboard contributor seam and both cron-folder loads. Each guard reads the file
 #: named here, so a construct that moved anywhere else would leave the guard's sight.
 _GUARDED_CONSTRUCTS = (
@@ -49,12 +49,10 @@ _GUARDED_CONSTRUCTS = (
     (r"functools\.partial\(_suspend_override_derived_trust, state\)$", 1, {"server": 1}),
     (r"^    def _on_override_expired\(source: str\) -> None:$", 1, {"server": 1}),
     (r"app\.on_cleanup\.append\(_crew_log_drain\)", 1, {"instances_lifecycle": 1}),
-    (r"app\.on_cleanup\.append\(_browser_view_shutdown\)", 1, {"browser_lifecycle": 1}),
     (r"build_hardened_runner\(app", 2, {"server": 1, "api_entrypoint": 1}),
     (r"KiroPrerequisiteService,$", 2, {"server": 1, "api_entrypoint": 1}),
     (r"register_skill_read_observer\(", 2, {"server": 1, "api_entrypoint": 1}),
     (r"^    from kiro_crew\.apps\.builtins import _MIGRATED_BUILTINS$", 1, {"server": 1}),
-    (r"asyncio\.to_thread\(browser_cli_launch\.cli_env_overrides\)", 1, {"server": 1}),
     (r"_internal_secret = os\.urandom\(16\)\.hex\(\)$", 2, {"server": 1, "api_entrypoint": 1}),
     (r"current_context\(\)\.dashboard\.contribute_routes\(app\)", 1, {"server": 1}),
     (
