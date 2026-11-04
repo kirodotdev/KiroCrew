@@ -117,6 +117,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _InferJob,
         _install_bounded_decode,
         _install_metadata_kv_clear,
+        _runtime_has_blas,
         _trim_native_heap,
     )
     from kiro_crew.embeddings_model import (  # noqa: F401
