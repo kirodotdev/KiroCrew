@@ -182,6 +182,26 @@ def select_provider_backend(
         return backend
     if crew_backend is not None:
         backend = crew_backend.backend
+        if crew_backend.harness_fallback:
+            logger.info(
+                "crewmate session %s: routing to acp_backend=%r (agents.%s.acp_backend=%r "
+                "is a harness Bots cannot run on)",
+                session_key,
+                backend,
+                crew_backend.crew,
+                crew_backend.stored,
+            )
+            return backend
+        if crew_backend.worker_spec_fallback:
+            logger.info(
+                "crewmate session %s: routing to acp_backend=%r (%s's worker spec is one "
+                "agent.member_acp_backend=%r cannot carry)",
+                session_key,
+                backend,
+                crew_backend.crew,
+                member_backend,
+            )
+            return backend
         logger.info(
             "Bot session %s: routing to acp_backend=%r (agents.%s.acp_backend=%r)",
             session_key,

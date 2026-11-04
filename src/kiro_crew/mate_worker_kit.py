@@ -482,12 +482,16 @@ def _carry_policy(member: str, new_spec: dict[str, Any], source: dict[str, Any])
 
 
 def _crewmate_backend(member: str, held: dict[str, Any]) -> str:
-    """The backend crewmate *member*'s worker runs on."""
+    """The backend crewmate *member*'s worker runs on once its file holds *held*.
+
+    Judged on the spec being written: a Bot that follows the Settings harness
+    and gains policy runs on KAS (``crewmate_harness.worker_backend_for_spec``).
+    """
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.mate_worker import crewmate_worker_backend
+    from kiro_crew.crewmate_harness import worker_backend_for_spec
 
     try:
-        return crewmate_worker_backend(KiroCrewConfig.load(), member)
+        return worker_backend_for_spec(KiroCrewConfig.load(), member, bool(held))
     except Exception as exc:  # noqa: BLE001 - an unstartable pin applies nothing
         logger.warning("backend of %s unresolved; refusing its policy", member, exc_info=True)
         raise WorkerKitError(

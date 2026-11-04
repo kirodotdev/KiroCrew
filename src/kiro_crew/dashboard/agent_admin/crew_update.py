@@ -354,6 +354,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     prior = None
     if "model" in body or "worker_model" in body:
         prior = (await asyncio.to_thread(KiroCrewConfig.load)).agents.get(name)
+    # The Bot's harness can depend on its files on disk; read that answer fresh,
+    # off the loop, before any model below is judged on it.
+    from kiro_crew.crewmate_harness import refresh_crew_verdict
+
+    await refresh_crew_verdict(name)
     prior_moves = prior is None or (
         pending_backend is not None and pending_backend != (prior.acp_backend or "")
     )
@@ -392,9 +397,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         harness_moves = pending_backend is not None and pending_backend != (
             cfg.agents[name].acp_backend or ""
         )
-        harness_pinned = bool(
-            pending_backend if pending_backend is not None else cfg.agents[name].acp_backend
-        )
         try:
             # The editor sends `model` with every save. Without a harness move an
             # inherit value or the stored value judges nothing, so a stored pin that
@@ -408,7 +410,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     request,
                     cfg.agent.provider,
                     backend=_pin_entitlement_backend(cfg, name, pending_backend),
-                    harness_pinned=harness_pinned,
                 )
                 if model_reason:
                     return web.json_response(
@@ -427,7 +428,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     request,
                     cfg.agent.provider,
                     backend=_pin_entitlement_backend(cfg, name, pending_backend, for_workers=True),
-                    harness_pinned=harness_pinned,
                 )
                 if model_reason:
                     return web.json_response(

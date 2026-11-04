@@ -14719,7 +14719,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bot 运行在 {{harness}} 上，即此处选择的运行环境。每个 Bot 可以在自己的设置中固定一个。",
+        "crewmate_harness_legacy": "Bot 运行在 {{harness}} 上，由 config.json 中的 agent.member_acp_backend 设定。该设置优先于此处选择的运行环境。",
+        "crewmate_harness_fallback": "Bot 无法运行在 {{settings}} 上，因此改为运行在 {{harness}} 上。每个 Bot 可以在自己的设置中固定运行环境。"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "在聊天上叠加实时滚动与锚点诊断信息",
@@ -20811,7 +20814,11 @@
       "recap_reason_needs_human": "需要有人处理",
       "recap_state_accepted": "已接受",
       "recap_state_rejected": "已拒绝",
-      "recap_state_abandoned": "已放弃"
+      "recap_state_abandoned": "已放弃",
+      "profile_harness_source_settings": "在“设置 → Agent Harness”中设定。",
+      "profile_harness_source_legacy": "由 config.json 中的 agent.member_acp_backend 设定。",
+      "profile_harness_source_fallback": "“设置 → Agent Harness”为 {{settings}}，Bot 无法在其上运行，因此这里是 {{harness}}。",
+      "profile_harness_source_worker_spec": "该 Bot 的工作者使用了 {{settings}} 无法承载的设置，因此这里是 {{harness}}。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",
