@@ -69,12 +69,17 @@ class TestWorkspaceArgparse:
     ) -> None:
         """Req 6.1: workspace subparser with list/create/update/delete."""
         cfg_path = _write_config(tmp_path, _base_config())
-        # Verify each subcommand is accepted by argparse (no SystemExit(2)).
-        for subcmd, argv in [
-            ("list", ["kirocrew", "workspace", "list"]),
-            ("create", ["kirocrew", "workspace", "create", "--name", "newtest"]),
-            ("update", ["kirocrew", "workspace", "update", "staging"]),
-            ("delete", ["kirocrew", "workspace", "delete", "staging"]),
+        # Verify each subcommand is accepted by argparse (no SystemExit(2)) and
+        # leaves the workspace set it promises in the config file.
+        for subcmd, argv, expected in [
+            ("list", ["kirocrew", "workspace", "list"], ["default", "staging"]),
+            (
+                "create",
+                ["kirocrew", "workspace", "create", "--name", "newtest"],
+                ["default", "newtest", "staging"],
+            ),
+            ("update", ["kirocrew", "workspace", "update", "staging"], ["default", "staging"]),
+            ("delete", ["kirocrew", "workspace", "delete", "staging"], ["default"]),
         ]:
             with (
                 unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
@@ -83,6 +88,8 @@ class TestWorkspaceArgparse:
             ):
                 # Should not raise SystemExit(2) (argparse error)
                 main()
+            stored = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert sorted(stored["workspaces"]) == expected, subcmd
             # Re-write config since delete/create mutate it
             _write_config(tmp_path, _base_config())
 

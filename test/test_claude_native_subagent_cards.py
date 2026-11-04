@@ -327,7 +327,10 @@ async def test_a_child_with_no_task_holds_back_only_its_own_row() -> None:
 def test_a_session_that_declares_nothing_keeps_no_child_state() -> None:
     """The per-turn reset is a no-op off the claude backend, including on a client
     built with ``__new__`` that never ran ``__init__``."""
-    _client(ACP_BACKEND_KIRO)._reset_native_child_turn()
+    kiro = _client(ACP_BACKEND_KIRO)
+    kiro._native_child_overflow = 3
+    kiro._reset_native_child_turn()
+    assert kiro._native_child_overflow == 3, "a no-op reset must leave the client untouched"
     AcpClient.__new__(AcpClient)._reset_native_child_turn()
 
 

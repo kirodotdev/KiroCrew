@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +26,7 @@ from meetings_helpers import (  # noqa: F401
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
+from kiro_crew.apps.builtins.meetings.backend.domain.translate import TranslationQueue
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -615,6 +617,18 @@ class TestMeetingSession:
     def _session(self, root: Path, **kwargs) -> sess.MeetingSession:
         return sess.MeetingSession(meeting_id="m", config=store.read_config(root), **kwargs)
 
+    @staticmethod
+    def _queued(session: sess.MeetingSession) -> deque[str]:
+        """Install a real translation queue; return its live pending lines.
+
+        These tests run with no event loop, so the queue keeps what it was given
+        and never starts a worker to translate it.
+        """
+        session.translations = TranslationQueue(
+            meeting_id="m", language="ja", runner=lambda prompt: ""
+        )
+        return session.translations._pending
+
     def test_creates_a_queue_per_enabled_agent_plus_extractor(self, root: Path):
         session = self._session(root)
         assert set(session.agents) == {"note-taker", "sketch-artist", k.TASK_EXTRACTOR_ID}
@@ -683,19 +697,14 @@ class TestMeetingSession:
         filter then drops rather than translating nothing.
         """
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         session.broadcast(f"we discussed {k.CHAT_PREFIX} yesterday")
-        session.translations.enqueue.assert_called_once_with(
-            f"we discussed {k.CHAT_PREFIX} yesterday"
-        )
-        session.translations.enqueue.reset_mock()
         session.broadcast(f"{k.CHAT_PREFIX}room availability is limited")
-        session.translations.enqueue.assert_called_once_with(
-            f"{k.CHAT_PREFIX}room availability is limited"
-        )
-        session.translations.enqueue.reset_mock()
         session.broadcast(k.CHAT_PREFIX)
-        session.translations.enqueue.assert_called_once_with("")
+        assert list(queued) == [
+            f"we discussed {k.CHAT_PREFIX} yesterday",
+            f"{k.CHAT_PREFIX}room availability is limited",
+        ]
 
     def test_a_max_length_typed_line_keeps_its_full_payload_in_translation(self, root: Path):
         """The transcript cap is charged against the payload, not the marker.
@@ -706,18 +715,18 @@ class TestMeetingSession:
         from the raw line first, so a max-length payload survives intact.
         """
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         payload = "x" * k.MAX_TRANSCRIPT_CHARS
         session.broadcast(f"{k.CHAT_PREFIX} {payload}")
-        session.translations.enqueue.assert_called_once_with(payload)
+        assert list(queued) == [payload]
 
     def test_broadcast_translates_the_dictionary_corrected_speech_line(self, root: Path):
         """A speech line's translation source is the corrected text, unprefixed."""
         sess.shared_dictionary().load_terms([{"correct": "DynamoDB", "aliases": ["dynamo db"]}])
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         session.broadcast("we switched to dynamo db")
-        session.translations.enqueue.assert_called_once_with("we switched to DynamoDB")
+        assert list(queued) == ["we switched to DynamoDB"]
 
     def test_expiry(self, root: Path):
         session = self._session(root)
