@@ -66,14 +66,10 @@ _LESSON_NEGATIVE_SEP = " — NOT: "
 def _lesson_fields(decoded: object) -> tuple[str, str | None] | None:
     """Extract ``(rule, negative)`` from a mapping-shaped lesson value.
 
-    The mapping shape — ``{"rule": ..., "category": ..., "negative": ...}`` — is
-    the one place a lesson's two halves exist as separate fields, so reading them
-    back needs no parsing and cannot be confused by a rule whose own text contains
-    ``_LESSON_NEGATIVE_SEP``. Returns ``None`` when *decoded* is not that shape
-    (strings are the legacy in-band form and are read by ``_split_stored``;
-    anything else is not lesson data). A blank or non-string ``negative`` is
-    normalized to ``None`` — mirroring ``write_lesson``'s own input normalization,
-    so a round-trip compares equal to what was submitted.
+    Only the mapping shape keeps the two halves as separate fields, so a rule whose
+    text contains ``_LESSON_NEGATIVE_SEP`` cannot confuse it. Returns ``None`` for any
+    other shape (legacy strings are read by ``_split_stored``). A blank or non-string
+    ``negative`` becomes ``None``, as in ``write_lesson``, so a round-trip compares equal.
     """
     if not isinstance(decoded, dict):
         return None
@@ -91,10 +87,9 @@ def _lesson_fields(decoded: object) -> tuple[str, str | None] | None:
 def _lesson_scope(decoded: object) -> str | None:
     """Extract ``repo_scope`` from a lesson value, or None when unscoped.
 
-    Only the mapping shape can carry a scope. A legacy string row has nowhere to
-    put one, so it reads as unscoped and keeps applying everywhere -- which is
-    what an existing store expects. A blank or non-string value normalizes to
-    None, mirroring the write path, so a round-trip compares equal.
+    Only the mapping shape can carry a scope; a legacy string row reads as unscoped
+    and applies everywhere. A blank or non-string value normalizes to None, as on the
+    write path, so a round-trip compares equal.
     """
     if not isinstance(decoded, dict):
         return None
@@ -107,13 +102,10 @@ def _lesson_scope(decoded: object) -> str | None:
 def _lesson_scope_unusable(decoded: object) -> bool:
     """Whether a lesson carries a ``repo_scope`` that is PRESENT but unusable.
 
-    Absent and present-but-broken are different answers and must not collapse.
-    Absent means "applies everywhere", which is the correct default. A present
-    value that is not a usable string -- a list or a number from an imported or
-    hand-edited row -- means "this was meant to be scoped and we cannot tell
-    where", so the row is withheld at injection rather than admitted globally.
-    Treating it as absent is fail-OPEN: the one direction this gate must never
-    take.
+    Absent means "applies everywhere". A present value that is not usable (a list or
+    number from an imported or hand-edited row) means "meant to be scoped, but we
+    cannot tell where", so the row is withheld at injection. Treating it as absent
+    would fail open.
     """
     if not isinstance(decoded, dict):
         return False
@@ -122,24 +114,19 @@ def _lesson_scope_unusable(decoded: object) -> bool:
     scope = decoded["repo_scope"]
     if scope is None:
         return False
-    # Asks the GATE's own admissibility test rather than carrying a second notion
-    # of "usable". A non-blank string is not enough: "." is a string and the gate
-    # refuses it, so judging by shape marked it usable, it rendered nothing, and it
-    # still counted as stored knowledge -- which silenced the JSONL store and lost
-    # the lessons the user saved. Deferring here is what keeps the two in step.
+    # Use the gate's own admissibility test, not a second notion of "usable": "." is
+    # a non-blank string the gate refuses. A row usable here but refused there renders
+    # nothing yet still counts as stored lessons, which silences the JSONL store.
     return not scope_is_admissible(scope)
 
 
 def _decoded_lesson_value(row: object) -> object:
     """Decode a lesson row's stored value, answering ``None`` on anything malformed.
 
-    Used by the write scan's tier guard, which runs per candidate row. A raise here
-    would abort the whole write over one unreadable neighbour, and the guard's
-    fail-safe direction is "cannot tell" -> the row reads as UNSTATED, which every
-    path treats as a standing rule and therefore protects: a finding cannot retire
-    a row this cannot classify, and a standing submission is not declined as
-    covered by one. Protecting a row that may be a mere finding costs a duplicate;
-    the other direction silently deletes a rule.
+    The write scan's tier guard calls this per candidate row, so a raise would abort
+    the whole write over one bad neighbour. "Cannot tell" reads as UNSTATED, which
+    every path protects as a standing rule: wrongly protecting a finding costs a
+    duplicate, while the other direction silently deletes a rule.
     """
     try:
         value = row["value_json"]  # type: ignore[index]
@@ -156,11 +143,9 @@ def _decoded_lesson_value(row: object) -> object:
 def _lesson_applies(decoded: object) -> str:
     """Read a lesson's authored tier, or ``unclassified`` when it has none.
 
-    Only the mapping shape can carry a tier. A legacy string row has nowhere to
-    put one and reads as unclassified, which is what an existing store expects.
-    The vocabulary and the reason the tier is authored rather than derived live in
-    ``lesson_validation``; this function is only the mapping-shape reader, the
-    same split ``_lesson_scope`` uses for ``repo_scope``.
+    Only the mapping shape can carry a tier; a legacy string row reads as
+    unclassified. The vocabulary, and why the tier is authored rather than derived,
+    live in ``lesson_validation``.
     """
     if not isinstance(decoded, dict):
         return LESSON_APPLIES_UNSTATED
@@ -174,26 +159,15 @@ def _lesson_applies(decoded: object) -> str:
 def _lesson_display_text(decoded: object) -> str:
     """Render a decoded lesson value as the prose that goes into the prompt.
 
-    Lessons are stored in two shapes, and only one of them is a string. The
-    legacy ``learn_add`` form is ``"<rule>"`` or ``"<rule><sep><negative>"``
-    (see ``_LESSON_NEGATIVE_SEP``), while ``write_lesson`` and the onboarding
-    import store a mapping ``{"rule": ..., "category": ..., "negative": ...}``,
-    which keeps the two halves apart without in-band escaping. Interpolating the
-    decoded value directly therefore pasted a Python ``dict`` repr into the system
-    prompt for every imported lesson: the model was handed ``{'rule': 'Prefer dark
-    mode', 'category': 'preference', 'negative': None}`` instead of the rule,
-    spending tokens on punctuation and field names while burying the instruction it
-    is supposed to follow.
+    The legacy ``learn_add`` form is the string ``"<rule>"`` or
+    ``"<rule><sep><negative>"``; ``write_lesson`` and the onboarding import store a
+    mapping. Interpolating a mapping directly would put a Python ``dict`` repr into
+    the prompt, so mapping rows are recomposed with the separator for display only;
+    the fields stay the source of truth. Legacy strings are returned unchanged.
 
-    Stored bytes are read as-is: legacy string rows are returned unchanged (no
-    migration runs, and ``_split_stored`` still parses them where enrichment
-    needs the halves), while mapping rows are recomposed with the separator only
-    for DISPLAY -- the fields, not this rendering, remain the source of truth.
-
-    An unrecognized shape yields ``""`` and is skipped by the caller rather than
-    being stringified as a guess. This runs while a session's prompt is being
-    built, where a raise costs the whole turn, so every branch has to produce a
-    string without trusting the value's type.
+    An unrecognized shape yields ``""`` for the caller to skip. This runs while a
+    prompt is built, where a raise costs the whole turn, so no branch trusts the
+    value's type.
     """
     if isinstance(decoded, str):
         return decoded.strip()
@@ -211,11 +185,10 @@ def _lesson_display_text(decoded: object) -> str:
 def _lesson_fields_for_row(decoded: object, key: str) -> tuple[str, str | None] | None:
     """Extract fields from either stored lesson shape without guessing.
 
-    Mapping rows already separate the rule and NOT-clause. Legacy strings store
-    them in-band, where a rule can itself contain the separator. Try each boundary
-    through ``_split_stored``; that helper accepts one only when the row's key proves
-    the prefix is the original rule. A row keyed by another writer stays one rule,
-    preserving the old fail-safe behavior for ambiguous imports and migrations.
+    Legacy strings store the NOT-clause in-band, where a rule can itself contain the
+    separator. Each boundary is tried through ``_split_stored``, which accepts one only
+    when the row's key proves the prefix is the rule. A row keyed by another writer
+    stays one rule, the fail-safe reading for ambiguous imports and migrations.
     """
     fields = _lesson_fields(decoded)
     if fields is not None:
@@ -238,12 +211,10 @@ def _lesson_fields_for_row(decoded: object, key: str) -> tuple[str, str | None] 
 def _renderable_lesson_text(decoded: object, key: str) -> str:
     """Return prompt text only for a row that may count as lesson population.
 
-    Population and rendering must reject the same malformed, withheld, and
-    volatile legacy rows. Otherwise a row that renders nothing can still make the
-    vector store authoritative and silently suppress valid JSONL lessons.
-    Repository scope is applied later because a valid out-of-project row still
-    proves that the vector store is populated. The row key safely separates a
-    legacy string's rule from its in-band NOT-clause before validation.
+    Population and rendering must reject the same malformed, withheld and volatile
+    rows; otherwise a row that renders nothing can make the vector store authoritative
+    and suppress valid JSONL lessons. Repository scope is applied later, because a
+    valid out-of-project row still proves the store is populated.
     """
     text = _lesson_display_text(decoded)
     if not text:
@@ -262,12 +233,9 @@ def _renderable_lesson_text(decoded: object, key: str) -> str:
 def _lesson_embed_text(decoded: object) -> str:
     """The text a lesson's embedding is computed FROM, matching write_lesson.
 
-    The write path embeds the bare ``rule`` (never the NOT-clause), so every
-    vector that participates in semantic similarity must come from the same
-    input space: a mapping row embeds its ``rule`` field. A legacy string row
-    cannot be split reliably (that ambiguity is what the mapping shape fixes),
-    so it embeds the stored text as-is -- the best available approximation and
-    what those rows have always embedded.
+    The write path embeds the bare ``rule`` (never the NOT-clause), so every vector
+    compared for similarity must come from the same input: a mapping row's ``rule``.
+    A legacy string row cannot be split reliably, so it embeds the stored text as-is.
     """
     if isinstance(decoded, dict):
         fields = _lesson_fields(decoded)
@@ -282,26 +250,19 @@ def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple
     Returns ``(base, stored_clause)``: the stored spelling of the rule, and whether
     a NOT-clause follows it. ``(None, False)`` means this row is not that rule.
 
-    The separator is stored IN-BAND and unescaped, so the value alone is ambiguous:
-    ``A — NOT: B`` is either rule ``A`` with clause ``B``, or a bare rule whose text
-    happens to contain the separator. No amount of text parsing settles that -- both
-    readings are valid, and picking either one by itself loses data in the other case
-    (silently dropping a clause update one way, OVERWRITING an unrelated rule the
-    other).
+    The separator is stored in-band and unescaped, so ``A — NOT: B`` is either rule
+    ``A`` with clause ``B`` or a bare rule containing the separator; text parsing
+    cannot tell, and a wrong guess drops a clause or overwrites an unrelated rule.
+    The key settles it: it is ``md5(rule)`` in the stored casing, so a prefix is the
+    rule only when it hashes to this row's key. That is exact, so every separator
+    boundary can be tried safely.
 
-    The row itself carries the answer: the key is ``md5(rule)`` taken at write time,
-    in the rule's stored casing. So a candidate prefix is the rule only when it
-    hashes to this row's key. That is exact rather than heuristic, and it is why
-    every separator boundary can be tried safely.
+    Rows keyed another way (the onboarding import's sha256, legacy migrations) match
+    only on the whole value, so a case-variant re-submit onto an existing clause does
+    not enrich: a missed enrichment, never an overwrite.
 
-    Rows keyed some other way -- the onboarding import uses sha256, and legacy
-    migrations set their own keys -- match only on the whole value. For those a
-    case-variant re-submit onto an EXISTING clause will not enrich. That is a missed
-    enrichment, never an overwrite: the ambiguous branch always declines.
-
-    Case-insensitivity here is ``lower()``, not ``casefold()`` -- see write_lesson for
-    why. ``casefold()``'s ß-to-ss expansion conflates "Maße" with "Masse", which would
-    make this function confidently return the WRONG row's spelling as ``base``.
+    Case-insensitivity is ``lower()``, not ``casefold()``: ß-to-ss would conflate
+    "Maße" with "Masse" and return the wrong row's spelling as ``base``.
     """
     from kiro_crew import vector_memory  # circular import: the key digest stays in the facade
 
@@ -324,17 +285,13 @@ def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple
 def _lesson_row_text(row: dict) -> str | None:
     """The row's value as lesson TEXT, or None when it has no lesson shape.
 
-    set_semantic accepts any object, so an import or a legacy migration can
-    leave a list or a rule-less dict under a lesson.* key. str() would render
-    a Python repr, and every text comparison in the dedup scan -- the substring
-    dedup and the keyword overlap -- would then match against that repr.
-    Skipping is the honest reading: it is not lesson text.
+    set_semantic accepts any object, so an import or legacy migration can leave a
+    list or a rule-less dict under a lesson.* key; str() would make the dedup scan
+    compare against a Python repr, so such rows are skipped.
 
-    Mapping-shaped rows (write_lesson's own format, and the onboarding
-    import's) render through _lesson_embed_text (the rule only, without
-    the NOT-clause), so deduplication compares rules on the same basis
-    that embedding similarity does — the negative qualifies the rule but
-    does not change its identity.
+    Mapping rows render through _lesson_embed_text (the rule only), so dedup compares
+    rules on the same basis as embedding similarity: the NOT-clause qualifies a rule
+    but does not change its identity.
     """
     text = _lesson_embed_text(json.loads(row["value_json"]))
     return text or None
@@ -343,18 +300,10 @@ def _lesson_row_text(row: dict) -> str | None:
 def _lesson_row_report_text(row: dict) -> str | None:
     """The row's value as the text a SUPERSEDE REPORT must name.
 
-    Deliberately NOT ``_lesson_row_text``. That one renders through
-    ``_lesson_embed_text``, which returns a mapping row's ``rule`` field
-    ALONE -- the NOT-clause is stripped, because dedup has to compare rules
-    on the same basis embedding similarity does. Correct for comparing, and
-    wrong for reporting: a stored lesson's clause carries its sharpest
-    guidance ("prefer ruff -- NOT: for type checking"), so naming only the
-    bare rule hands the user back a lesson they cannot restore. The row is a
-    tombstone, so there is no second place to read the clause from.
-
-    ``_lesson_display_text`` is the recomposition every other human-facing
-    renderer uses (the injected prompt, ``learn list``), so a restored rule
-    reads exactly as it did when stored.
+    Not ``_lesson_row_text``, which strips the NOT-clause for comparison. A report
+    must keep it: the clause often carries the sharpest guidance, and the row is a
+    tombstone, so there is nowhere else to read it from. ``_lesson_display_text`` is
+    what the prompt and ``learn list`` use, so a restored rule reads as stored.
     """
     text = _lesson_display_text(json.loads(row["value_json"]))
     return text or None
@@ -380,21 +329,14 @@ class ExactRuleMatch:
 def lesson_rows_in_scope(rows: list[dict], repo_scope: str | None) -> list[dict]:
     """The lesson rows a write in *repo_scope* may dedup against, in stored order.
 
-    Deduplication is SCOPE-LOCAL. A lesson scoped to one repository and a global
-    one are different lessons even when their wording is close, so a scoped write
-    must never supersede, enrich, or be discarded against a row from another scope.
-    Without this the generic dedup rules (substring containment, >50% keyword
-    overlap, high cosine similarity) reach across scopes and DELETE guidance the
-    submitter never addressed -- writing a repo-scoped rule could retire a global
-    one that merely shared most of its significant words.
+    Deduplication is scope-local: a repo-scoped lesson and a global one are different
+    lessons even with close wording, so the generic dedup rules (substring, keyword
+    overlap, cosine similarity) must never supersede, enrich or discard across scopes.
 
-    A row whose value will not parse is dropped here rather than compared,
-    matching what :func:`_lesson_row_text` does with a value that has no lesson
-    shape. A row whose scope is present but unusable belongs to NO partition. It is
-    withheld at injection, so letting it read as unscoped here would let it dedup
-    away a genuine global write: the caller would be told the lesson was saved
-    while the only row carrying that rule never reaches a prompt. All three readers
-    of this field agree on that.
+    A row whose value will not parse is dropped. A row whose scope is present but
+    unusable belongs to no partition: it is withheld at injection, so reading it as
+    unscoped would let it dedup away a real global write that then never reaches a
+    prompt.
     """
     in_scope = []
     for row in rows:
@@ -423,22 +365,16 @@ def resolve_exact_rule(
 ) -> ExactRuleMatch | None:
     """Pass 1 of ``write_lesson``: find the stored row that IS this rule, if any.
 
-    Resolving the exact match before the generic dedup rules is what makes the
-    outcome independent of scan order: those rules can claim the write on an
-    UNRELATED row -- a superset whose text contains the rule -- and doing both in
-    one loop let an unrelated superset seen first discard an enrichment already
-    selected, dropping the clause on HTTP 200. ``None`` means no stored row is this
-    rule, and the caller runs the generic rules.
+    Resolving the exact match before the generic dedup rules makes the outcome
+    independent of scan order: those rules can claim the write on an unrelated
+    superset row, which must not discard an enrichment of the exact row. ``None``
+    means no stored row is this rule, and the caller runs the generic rules.
     """
     from kiro_crew import vector_memory as vm  # circular import: the result types stay public there
 
-    # lower(), deliberately NOT casefold(). casefold() maps ß to ss, which matches
-    # "Straße" against "STRASSE" -- but the same mapping makes "Maße" and "Masse"
-    # compare EQUAL, and those are different words, so a clause submitted for one
-    # attached itself to the other and the intended lesson was never created. The
-    # two behaviours are inseparable, so this is a trade: lower() never conflates
-    # distinct rules, and its cost is a missed enrichment rather than a corrupted
-    # one. Keep both stores on the same function.
+    # lower(), not casefold(): casefold() maps ß to ss, so "Maße" and "Masse" would
+    # compare equal and a clause for one would attach to the other. lower() costs a
+    # missed "Straße"/"STRASSE" enrichment instead. Keep both stores on the same function.
     rule_norm = rule.strip().lower()
     effective_applies = applies
     for existing in lesson_rows:
@@ -479,10 +415,8 @@ def resolve_exact_rule(
             continue  # not lesson data (list, rule-less dict, ...)
 
         if not negative and stored_clause:
-            # A BARE re-submit of a rule that already carries a clause. Writing
-            # the bare value would delete the stored negative, so keep what is
-            # there. This is also what the call did before the fix, so no caller
-            # sees a change here.
+            # A bare re-submit of a rule that already carries a clause: writing the
+            # bare value would delete the stored negative, so keep it.
             logger.info(
                 "Keeping the stored NOT-clause on %r; re-submit carried none",
                 existing["key"],
@@ -505,17 +439,14 @@ def resolve_exact_rule(
                 "category": stored_category if isinstance(stored_category, str) else category,
                 "negative": negative,
             }
-            # The scope is WRITE-ONCE for the same reason the category is: the
-            # intent of a re-submit-with-clause is "attach the clause", not
-            # "re-scope". Carrying the STORED value forward means enrichment can
-            # never strip a scope, and re-scoping is a delete + re-add.
+            # Scope is write-once for the same reason, so enrichment never strips
+            # one; re-scoping is a delete + re-add.
             stored_scope = _lesson_scope(decoded)
             if stored_scope:
                 enriched["repo_scope"] = stored_scope
-            # The tier is WRITE-ONCE for exactly the same reason, and carrying
-            # the STORED value forward is what keeps enrichment from silently
-            # demoting a standing rule to a past finding. Re-tiering is its own
-            # call (``update_lesson_applies``); re-scoping and recategorizing are a
+            # Tier is write-once too, so enrichment never demotes a standing rule
+            # to a past finding. Re-tiering is its own call
+            # (``update_lesson_applies``); re-scoping and recategorizing are a
             # delete + re-add.
             stored_applies = _lesson_applies(decoded)
             if stored_applies != LESSON_APPLIES_UNSTATED:
@@ -554,38 +485,24 @@ def tier_permissions(existing: dict, applies: str | None) -> tuple[bool, bool]:
     *existing* is the stored row the dedup scan is looking at and *applies* the
     submission's tier; the two answers gate the scan's deletions and its declines.
     """
-    # A finding must never retire a standing rule. The scan's three delete branches
-    # decide on text alone, so a longer `on_topic` write that merely
-    # OVERLAPS an authored `always` rule tombstones it and leaves only the
-    # topic-scoped row -- the same durability loss the JSONL prune is ordered
-    # to avoid, and worse here because a tombstone is silent and every read
-    # path filters it. Asymmetric on purpose: an `always` write may still
-    # retire an `on_topic` row, because promoting guidance to a standing rule
-    # is the direction the user is asking for.
+    # A finding must never retire a standing rule. The scan's delete branches decide
+    # on text alone, so a longer `on_topic` write that overlaps an `always` rule would
+    # silently tombstone it. Asymmetric on purpose: an `always` write may retire an
+    # `on_topic` row, since promoting guidance is what the user asks for.
     #
-    # An `on_topic` write may retire ONLY another `on_topic` row. Comparing
-    # against `always` alone leaves every UNSTATED row unprotected, which is
-    # the inconsistency that matters most in practice: an unstated row is
-    # served AS a standing rule at injection, and on an install whose lessons
-    # predate this field every row is unstated -- so the narrow form protects
-    # nothing on exactly the stores that hold the user's real corrections.
-    # Read-side and write-side must classify a row the same way.
+    # An `on_topic` write may retire only another `on_topic` row. UNSTATED rows are
+    # served as standing rules at injection (and on older installs every row is
+    # unstated), so they must be protected too: read and write sides classify alike.
     existing_applies = _lesson_applies(_decoded_lesson_value(existing))
     existing_is_finding = existing_applies == LESSON_APPLIES_ON_TOPIC
     submission_is_standing = applies != LESSON_APPLIES_ON_TOPIC
     may_retire_existing = submission_is_standing or existing_is_finding
 
-    # The DECLINE needs the mirror of that rule, for the same reason. A
-    # submission is "already covered" only while the covering row arrives at
-    # least as often as the submission would, and tiering is what makes that
-    # conditional: a covering `on_topic` row arrives only when the request is
-    # about it, so declining a STANDING submission contained in one drops the
-    # rule from every unrelated turn and reports `substring_covered` for a
-    # row that does not cover it there. A re-submit is declined identically,
-    # so nothing recovers it. In that one direction the submission is stored
-    # instead, which can leave the standing rule beside the longer finding
-    # that contains it -- the price of not silently refusing to create the
-    # rule, and the safe side of it.
+    # The decline mirrors that rule. A submission is "already covered" only while the
+    # covering row arrives at least as often: an `on_topic` row arrives only on its
+    # topic, so declining a standing submission it contains would drop the rule from
+    # every other turn, and a re-submit would be declined the same way. That one case
+    # stores the submission instead, accepting a standing rule beside the finding.
     covering_row_arrives_less_often = submission_is_standing and existing_is_finding
     return may_retire_existing, covering_row_arrives_less_often
 
@@ -655,18 +572,13 @@ def find_contradiction_candidates(
     an embedding already computed by the caller and avoid a second blocking
     embed of the identical text.
 
-    Candidates are SCOPE-LOCAL: only rows whose stored ``repo_scope`` equals
-    *repo_scope* are considered. Superseding resolves a contradiction by
-    DELETING the losing row, and a repository-scoped rule that contradicts a
-    global one inside its own tree does not contradict it anywhere else --
-    sweeping across scopes would retire the global rule for every other
-    repository on the strength of one repo's exception.
+    Candidates are scope-local (stored ``repo_scope`` equals *repo_scope*):
+    superseding deletes the losing row, and one repository's exception must not
+    retire a global rule for every other repository.
 
-    Each row carries its authored ``applies`` tier. The caller refuses to let
-    a past finding retire a standing or untiered rule, and it can only apply
-    that refusal to a row whose tier it can read -- omitting the tier here
-    made every row read as untiered, which turned that narrowing into a
-    blanket no-op for findings rather than a guard.
+    Each row carries its ``applies`` tier, because the caller refuses to let a past
+    finding retire a standing or untiered rule and can only do so for a row whose
+    tier it can read.
     """
     if rule_emb is None:
         rule_emb = store._try_embed(rule) if store.embed_fn else None
@@ -695,24 +607,12 @@ def find_contradiction_candidates(
             existing_val = _lesson_display_text(decoded)
             if not existing_val:
                 continue
-            # The tier travels WITH the candidate. The sweep's caller refuses to
-            # let a finding retire a standing or legacy rule, and it can only
-            # apply that rule to a row whose tier it can read -- a candidate
-            # shaped {key, rule, similarity} reads as unstated for every row,
-            # which turns "narrow the sweep" into "disable the sweep" for every
-            # on_topic write.
-            #
-            # The stored BODY travels with it too, exactly as read here. The
-            # sweep's delete runs minutes later, after a per-candidate LLM
-            # verdict, so this row is a write-time snapshot: ``_lesson_key``
-            # keys on rule text plus scope alone, so re-tiering that rule in
-            # the meantime (a delete plus a re-add, the documented way to
-            # change a tier) puts a DIFFERENT row under the same key. An
-            # unconditional delete then tombstones the replacement -- and if
-            # the replacement is the `always` tier, it destroys exactly the
-            # row the filter above exists to protect. Handing this body back
-            # as ``expect_value_json`` makes the delete compare-and-delete,
-            # the same guard the inline dedup pass already applies.
+            # The stored body travels with the candidate. The sweep's delete runs
+            # minutes later, after an LLM verdict, and ``_lesson_key`` keys on rule
+            # text plus scope alone, so a re-tier in between (delete + re-add) puts
+            # a different row under the same key. Passing this body back as
+            # ``expect_value_json`` makes the delete compare-and-delete, so it
+            # cannot tombstone the replacement.
             candidates.append(
                 {
                     "key": existing["key"],
@@ -735,16 +635,12 @@ def has_any_lesson(store: VectorMemoryStore) -> bool:
     JSONL store is still the authority, the second means this store already
     answered and the JSONL store must stay silent.
 
-    A ``lesson.*`` key is not sufficient evidence. ``set_semantic`` accepts any
-    object, so an import or a legacy migration can leave a list, a rule-less
-    dict, malformed scope, or volatile pre-boundary row under one. Every
-    renderer skips those rows. Counting one as population would silence the
-    JSONL store while nothing renders, so saved corrections would vanish. The
-    shared predicate keeps this authority check aligned with rendering.
+    A ``lesson.*`` key is not enough: an import or legacy migration can leave a row
+    every renderer skips, and counting it would silence the JSONL store while nothing
+    renders. The shared predicate keeps this check aligned with rendering.
 
-    Selects only ``key`` and ``value_json``, never ``SELECT *``: reading every
-    embedding blob is the duplicate-SELECT cost the rendering path was written
-    to avoid. The key proves whether a legacy in-band separator marks a clause.
+    Selects only ``key`` and ``value_json``, never the embedding blobs. The key proves
+    whether a legacy in-band separator marks a clause.
     """
     rows = store._fetch_all_locked(
         "SELECT key, value_json FROM semantic_memory "
@@ -769,15 +665,11 @@ def get_lessons(store: VectorMemoryStore, limit: int | None = None, offset: int 
     without materializing the rows it skips. The unbounded read has nothing
     to page and ignores it.
 
-    Rows sharing one ``updated_at`` -- two writes inside one clock tick, which
-    a coarse Windows clock makes routine -- are ordered by ``key``. Without it
-    their order is whatever the query plan scans, so the newest-first input
-    :func:`rank_lessons` keeps for its final ties is not defined, and a paged
-    ``LIMIT/OFFSET`` walk is not over a total order and can skip or repeat a
-    row at a page boundary. ``key`` is unique and present in both lineages
-    (``rowid`` is not readable through the crew ``semantic_memory`` view). Key
-    order is an md5 digest order and carries no recency: within one stamp,
-    "newest first" is not defined, only "the same order on every read".
+    Rows sharing one ``updated_at`` (routine on a coarse Windows clock) are ordered
+    by ``key``, so :func:`rank_lessons` ties and a paged ``LIMIT/OFFSET`` walk run
+    over a total order and never skip or repeat a row. ``key`` is unique in both
+    lineages (``rowid`` is not readable through the crew view); its md5 order gives
+    the same order on every read, not recency.
     """
     sql = (
         "SELECT * FROM semantic_memory "
@@ -793,11 +685,8 @@ def get_lessons(store: VectorMemoryStore, limit: int | None = None, offset: int 
         sql += " LIMIT ? OFFSET ?"
         rows = store._fetch_all_locked(sql, (limit, max(0, offset)))
     else:
-        # Unbounded: the whole lesson population, which is what the
-        # _stored_similarity_scorer callers (_rank_lessons,
-        # find_contradiction_candidates) score over — the other half of
-        # the whole-population read volume. The LIMIT branch above is bounded and
-        # so is not a population scan.
+        # Unbounded: the whole population the similarity scorers rank over, so it
+        # is counted as a population scan; the LIMIT branch is not.
         rows = store._fetch_all_locked(sql, scan="semantic")
     return [dict(r) for r in rows]
 
@@ -821,16 +710,11 @@ def count_lessons(store: VectorMemoryStore) -> int:
 def has_any_decodable_lesson(store: VectorMemoryStore) -> bool:
     """Whether any active ``lesson.*`` row holds JSON that decodes at all.
 
-    The tier-authority test for the lessons LIST (``GET /api/lessons``),
-    which is looser than ``has_any_lesson()`` on purpose: the list keeps
-    every row that decodes -- a legacy string, a rule-less mapping, a
-    volatile pre-boundary row -- rendered through ``str()`` and marked
-    withheld, because this list is the only surface that can show such a
-    row so it stays deletable. The list drops only a row whose stored JSON
-    does not decode, so a store holding nothing but those rows has nothing
-    this list can answer with, and the JSONL tier must stay the authority.
-    Selects only ``value_json``, never the embedding blobs, and stops at the
-    first row that decodes.
+    The tier-authority test for the lessons list (``GET /api/lessons``), looser than
+    ``has_any_lesson()`` on purpose: the list shows every row that decodes, marked
+    withheld when needed, so it stays deletable. Only undecodable rows are dropped,
+    so a store holding only those leaves the JSONL tier as the authority. Selects
+    only ``value_json`` and stops at the first row that decodes.
     """
     rows = store._fetch_all_locked(
         "SELECT value_json FROM semantic_memory WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
