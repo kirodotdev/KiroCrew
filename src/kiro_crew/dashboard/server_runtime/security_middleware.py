@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _VIA_PROXY_SUFFIX,
         AUDIT_CLAIMED_KEY,
         PROBE_PATHS,
+        bears_session_cookie_for_host,
         bind_request_forwarded,
         check_host,
         check_origin,
@@ -543,6 +544,14 @@ def build_host_canonical_redirect(
     is that another process holds that family's port, which is the party the
     redirect would hand the cookie to.
 
+    A navigation that already bears THIS gateway's session cookie
+    (``mc_token_<port>`` or ``mc_refresh_<port>`` for the port it dialled) is also
+    served where it was sent. The cookie is host-only, so a browser signed in on
+    127.0.0.1 does not carry it to ``localhost``: the 302 would land it on a host
+    where it has no session, and the page would read "Session expired".
+    Another port's cookie in the same jar is not a session here and does not
+    hold the redirect.
+
     Omitting the callable keeps the redirect ungated, for callers whose
     *canonical_host* is not an ambiguous name (a literal names one listener) and
     for unit tests of the gating rules themselves.
@@ -562,7 +571,10 @@ def build_host_canonical_redirect(
             canonical_host,
             method=request.method,
             sec_fetch_dest=request.headers.get("Sec-Fetch-Dest"),
-            carries_credential=bool(request.query.get("token")),
+            carries_credential=(
+                bool(request.query.get("token"))
+                or bears_session_cookie_for_host(request.headers.get("Host", ""), request.cookies)
+            ),
         ):
             if holds_every_family is not None and not holds_every_family():
                 logger.warning(
