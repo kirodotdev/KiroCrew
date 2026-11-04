@@ -41,24 +41,13 @@ from snowballstemmer import stemmer as _snowball_stemmer
 from .corpus import CAT_UNKNOWN, BenchQuery
 
 # ── Porter stemming ──────────────────────────────────────────────────────────
-# Upstream evaluation.py:10 builds `ps = PorterStemmer()` from nltk and stems
-# EVERY token on both sides inside f1_score (evaluation.py:129-130). Dropping the
-# stemmer is not a cosmetic simplification: it costs real F1 on singular/plural
-# and tense mismatches ("dogs" vs "dog"), so it is ported rather than skipped.
-#
-# nltk is not a Kiro Crew dependency and will not become one for a benchmark, so
-# this uses snowballstemmer's "porter" algorithm, which is already a hard install
-# dependency of the package (setup.cfg: snowballstemmer>=1.0). See the DIVERGENCE
-# note in the module docstring of test_bench_scorers.py: snowballstemmer's
-# "porter" is the *original* Porter algorithm, whereas nltk's PorterStemmer
-# defaults to mode=NLTK_EXTENSIONS, which adds a small irregular-form table
-# ("dying" -> "die", words of length <= 2 left alone). The two agree on the
-# overwhelming majority of English tokens but are not bit-identical.
-#
-# snowballstemmer keeps the in-progress word as mutable instance state, so a
-# shared instance is not thread-safe (same hazard documented at
-# `_snowball_local` in vector_memory_runtime/text_scoring.py). One instance per
-# thread; construction is trivial.
+# Upstream stems EVERY token on both sides in f1_score (evaluation.py:10,
+# 129-130); skipping it costs F1 on plural/tense mismatches ("dogs" vs "dog").
+# nltk is not a dependency, so this uses snowballstemmer's "porter" (already a
+# hard dependency). It is the original Porter algorithm, while nltk defaults to
+# NLTK_EXTENSIONS ("dying" -> "die"); they agree on most tokens but are not
+# bit-identical (see the DIVERGENCE note in test_bench_scorers.py).
+# A snowballstemmer instance is not thread-safe, so keep one per thread.
 _stemmer_local = threading.local()
 
 
@@ -82,15 +71,10 @@ def _stem_tokens(tokens: list[str]) -> list[str]:
 
 
 # ── Normalization ────────────────────────────────────────────────────────────
-# Port of evaluation.py:76-95 `normalize_answer`. Two things here are surprising
-# enough to be worth stating out loud, because both are load-bearing:
-#
-#  1. It strips a leading `,` pass (`s.replace(',', "")`, line 78) BEFORE anything
-#     else. Redundant with punctuation removal, kept for fidelity.
-#  2. The article regex is NOT the SQuAD `(a|an|the)` — upstream extended it to
-#     `(a|an|the|and)` (line 82; the original is left commented out on line 81).
-#     "and" is a conjunction, not an article, and removing it is what makes
-#     comma-joined multi-answer golds degrade gracefully. Do not "fix" this.
+# Port of evaluation.py:76-95 `normalize_answer`. The first `,` removal (line 78)
+# is redundant with punctuation removal but kept for fidelity. The article regex
+# is upstream's `(a|an|the|and)`, not SQuAD's `(a|an|the)` (line 82): dropping
+# "and" lets comma-joined multi-answer golds degrade gracefully. Do not "fix" it.
 _ARTICLE_RE = re.compile(r"\b(a|an|the|and)\b")
 _PUNCTUATION = frozenset(string.punctuation)
 
@@ -205,17 +189,10 @@ def _unscored(query_id: str, metric: str, detail: str) -> AnswerScore:
 
 
 # ── LoCoMo ───────────────────────────────────────────────────────────────────
-# Dispatch is on ``raw_category`` (the dataset-native integer, as a string) and
-# NOT on the normalized CAT_* bucket, for two independent reasons:
-#
-#  1. The normalized buckets deliberately merge questions that upstream scores
-#     *differently* — e.g. anything that lands in a single normalized bucket may
-#     span categories 2/3/4, and category 3 alone carries a gold-truncation rule.
-#  2. The 3-vs-4 name assignment in the normalized vocabulary is inferred from
-#     upstream behavior rather than verified against a spec, while the integer in
-#     the file is ground truth. Branching on the inferred name would make a
-#     naming mistake silently change every number; branching on the integer
-#     cannot.
+# Dispatch on ``raw_category`` (the dataset-native integer), not the CAT_* bucket:
+# one bucket can span categories 2/3/4 that upstream scores differently (only 3
+# truncates its gold), and the 3-vs-4 names are inferred, while the integer is
+# ground truth. A naming mistake must not silently change every number.
 _LOCOMO_SINGLE_F1_CATEGORIES = frozenset({"2", "3", "4"})
 _LOCOMO_MULTI_F1_CATEGORIES = frozenset({"1"})
 _LOCOMO_ADVERSARIAL_CATEGORIES = frozenset({"5"})
@@ -230,13 +207,12 @@ def score_locomo(query: BenchQuery, prediction: str) -> AnswerScore:
     * 1       -> :func:`multi_answer_f1` (mean-of-max partial F1)
     * 5       -> :func:`refusal_score` (substring, not F1)
 
-    and, before any of that, category 3 pre-truncates its gold at the first
-    ``;`` (evaluation.py:200-201) — its golds carry a primary answer followed by
-    elaboration, and scoring against the elaboration deflates recall.
+    Category 3 first truncates its gold at the first ``;`` (evaluation.py:200-201):
+    the text after it is elaboration that would deflate recall.
 
-    Raises ValueError on an unrecognized ``raw_category``, mirroring upstream
-    (evaluation.py:219-221). An unknown category means the adapter is wrong, and
-    silently bucketing it would corrupt the aggregate rather than fail the run.
+    Raises ValueError on an unknown ``raw_category``, as upstream does
+    (evaluation.py:219-221): it means the adapter is wrong, and bucketing it
+    silently would corrupt the aggregate.
     """
     raw = (query.raw_category or "").strip()
 
@@ -409,20 +385,16 @@ def score_longmemeval(
 ) -> AnswerScore:
     """Score one LongMemEval answer with an injected judge.
 
-    ``judge`` takes the built prompt and returns the model's raw reply. Injection
-    rather than an embedded client keeps this module free of network code and lets
-    tests exercise the label rule with a two-line fake.
+    ``judge`` takes the built prompt and returns the raw reply; injecting it keeps
+    network code out of this module.
 
-    The label rule is upstream's, verbatim: ``label = 'yes' in reply.lower()``
-    (evaluate_qa.py:113). It is substring-based, so a hedged reply like
-    "yes, but incorrect" labels positive. That is a real upstream property, not a
-    bug being reproduced by accident — the call is made with max_tokens=10 so the
-    model has no room to hedge in practice.
+    The label rule is upstream's verbatim, ``'yes' in reply.lower()``
+    (evaluate_qa.py:113), so "yes, but incorrect" labels positive; upstream calls
+    with max_tokens=10, which leaves no room to hedge.
 
-    When ``judge is None`` the result is marked unscored (``metric``
-    ``"judge_unavailable"``, ``score`` ``None``) and :func:`aggregate` reports it
-    in the ``unscored`` count instead of averaging it in. An unavailable judge is
-    a missing measurement, never a failed answer.
+    With ``judge is None`` the result is unscored (``metric`` ``"judge_unavailable"``,
+    ``score`` ``None``) and counted as ``unscored`` by :func:`aggregate`: a missing
+    measurement, never a failed answer.
     """
     if judge is None:
         return _unscored(
@@ -470,10 +442,9 @@ def aggregate(scores: Sequence[AnswerScore], queries: Sequence[BenchQuery]) -> d
           "by_metric": {metric: count},
         }
 
-    ``overall`` is ``None`` rather than 0.0 for an all-unscored run so a report
-    cannot render "0% accuracy" for "we never measured". Every mean in here uses a
-    denominator built from scored items only; the unscored count is carried
-    alongside so a reader can see "N of M scored" instead of a depressed number.
+    ``overall`` is ``None``, not 0.0, for an all-unscored run so a report cannot
+    show "0% accuracy" for "never measured". Means divide by scored items only; the
+    unscored count rides alongside so a reader sees "N of M scored".
     """
     by_id = {q.query_id: q for q in queries}
 

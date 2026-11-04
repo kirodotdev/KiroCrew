@@ -66,26 +66,18 @@ CATEGORIES = (
 class BenchTurn:
     """One utterance in a haystack session.
 
-    ``turn_id`` is the join key for turn-level recall and must be unique within
-    the instance. LoCoMo supplies one natively (``dia_id``, e.g. ``"D1:9"``);
-    LongMemEval has no turn id at all, so its adapter synthesizes one from the
-    session id and the turn's index. Treat it as opaque — LongMemEval's session
-    ids carry an ``answer_`` prefix on evidence sessions, and parsing structure
-    out of that would leak the label into the ranking.
+    ``turn_id`` is the turn-level recall join key, unique within the instance:
+    LoCoMo's ``dia_id`` (e.g. ``"D1:9"``), or synthesized from session id and index
+    for LongMemEval. Treat it as opaque: LongMemEval evidence session ids carry an
+    ``answer_`` prefix, and parsing it would leak the label into the ranking.
 
-    ``speaker`` is deliberately a free string rather than a role enum: LongMemEval
-    uses ``user``/``assistant``, LoCoMo uses the participants' actual names.
+    ``speaker`` is a free string (``user``/``assistant`` or participant names).
+    ``timestamp`` is the dataset's raw string; the ingester parses it, since only
+    it knows whether the run wants real dates.
 
-    ``timestamp`` is the dataset's raw string, unparsed and unnormalized. The two
-    datasets use different formats (``"2023/04/10 (Mon) 23:07"`` vs ``"1:56 pm on
-    8 May, 2023"``); parsing is the ingester's job because only it knows whether
-    the run wants real dates or not.
-
-    ``is_evidence`` is turn-level ground truth where the dataset states it
-    directly (LongMemEval's ``has_answer``). It is NOT the same thing as being in
-    some query's gold set — a turn can be marked evidence for a question that
-    this instance's query list does not contain. Scoring joins on the query's
-    ``gold_turn_ids``; this field is retained for corpus diagnostics only.
+    ``is_evidence`` is the dataset's own flag (LongMemEval's ``has_answer``), not
+    membership in a query's gold set; scoring joins on ``gold_turn_ids``, so this
+    field is for corpus diagnostics only.
     """
 
     turn_id: str
@@ -117,29 +109,20 @@ class BenchSession:
 class BenchQuery:
     """One question asked against an instance's haystack.
 
-    ``gold_answer`` is intentionally permitted to be ``None`` and must never be
-    treated as a string to match against. Three upstream cases force this:
+    ``gold_answer`` may be ``None`` and is never a string to match against:
+    LoCoMo adversarial items (category 5, 444 of 1 986) have no ``answer``;
+    LongMemEval ``single-session-preference`` items hold a prose rubric (fed to
+    the judge under ``Rubric:``); its abstention items hold an explanation of
+    unanswerability (fed under ``Explanation:``).
 
-    * LoCoMo's adversarial items (category 5) carry ``adversarial_answer`` and no
-      ``answer`` key at all — 444 of 1 986 items.
-    * LongMemEval's ``single-session-preference`` items put a *prose rubric* in
-      ``answer`` ("The user would prefer responses that suggest resources
-      specifically tailored to Adobe Premiere Pro…"), which the official judge
-      feeds in under a ``Rubric:`` header rather than as a correct answer.
-    * LongMemEval's abstention items put an *explanation of unanswerability* in
-      ``answer``, fed to the judge under an ``Explanation:`` header.
+    ``unanswerable`` marks abstention items (a ``_abs`` suffix on ``question_id``,
+    not a ``question_type``) and LoCoMo adversarial items: the right behavior is
+    refusal, so rewarding recall would reward the wrong thing.
 
-    ``unanswerable`` marks that third family plus LoCoMo's adversarial items: the
-    correct behavior is refusal, so a scorer that rewards recall would reward
-    exactly the wrong thing. Note LongMemEval does not expose abstention as a
-    ``question_type`` — it is a ``_abs`` suffix on ``question_id``.
-
-    ``gold_session_ids`` / ``gold_turn_ids`` are the evidence sets the retrieval
-    ruler scores against. Either may be empty: 4 LoCoMo items ship an empty
-    evidence list, and 7 of its 2 815 evidence refs are dangling (they name a
-    ``dia_id`` present in no conversation). Queries with no resolvable gold are
-    excluded from retrieval metrics rather than counted as misses — scoring a
-    question whose ground truth is missing measures the dataset, not the system.
+    ``gold_session_ids`` / ``gold_turn_ids`` are the retrieval evidence sets and
+    may be empty: 4 LoCoMo items ship no evidence, and 7 of its 2 815 refs name a
+    ``dia_id`` in no conversation. Queries without resolvable gold are excluded
+    from retrieval metrics, not counted as misses, since that measures the dataset.
     """
 
     query_id: str
@@ -161,20 +144,13 @@ class BenchQuery:
     def scorable_retrieval(self) -> bool:
         """Whether retrieval recall is a meaningful thing to measure for this query.
 
-        Two conditions, and the second is easy to state and easy to forget:
+        It needs resolvable gold (``resolve_gold`` can empty a set), and the query
+        must not be ``unanswerable``: refusal is the right outcome there, so scoring
+        recall inverts the metric. MEASURED on LoCoMo: all 446 adversarial items
+        carry gold, 22.6% of the 1 977-query population.
 
-        * there must be resolvable evidence to score against — LoCoMo ships dangling
-          ``dia_id`` refs, and ``resolve_gold`` can empty a gold set entirely;
-        * the query must not be ``unanswerable``. For those the correct behaviour is
-          REFUSAL, so surfacing the evidence is the wrong outcome and rewarding it
-          inverts the metric. This class's own docstring said so while the filter did
-          not apply it — MEASURED on LoCoMo, all 446 adversarial items are
-          unanswerable, all carry gold, and all were therefore being scored: 22.6% of
-          the 1 977-query population, counted with the sign flipped.
-
-        Both live here rather than at the call sites so the retrieval filter and the
-        ``skipped_unscorable`` count cannot disagree, and so a third caller cannot
-        forget one of them.
+        Both checks live here so the retrieval filter and the ``skipped_unscorable``
+        count cannot disagree.
         """
         has_gold = bool(self.gold_session_ids or self.gold_turn_ids)
         return has_gold and not self.unanswerable
