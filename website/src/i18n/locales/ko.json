@@ -8809,6 +8809,10 @@
       "withdraw_hint": "나중에 {{capabilities}} → {{tab}}에서 철회할 수 있습니다.",
       "working": "신뢰 중…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "여기서 프로젝트 스킬을 로드할 수 있는지 확인하지 못했습니다.",
+      "text": "프로젝트 스킬(.kiro/skills)은 아직 Windows에서 로드되지 않습니다. 자세한 내용은 게이트웨이 로그를 확인하세요."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "이 폴더는 더 이상 존재하지 않습니다.",
       "hint": "이 프로젝트 폴더는 자체 스킬을 채팅에 불러올 수 있습니다. 폴더의 신뢰를 철회하면 해당 스킬이 더 이상 불러와지지 않습니다.",

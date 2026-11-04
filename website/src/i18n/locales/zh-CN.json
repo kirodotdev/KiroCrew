@@ -8809,6 +8809,10 @@
       "withdraw_hint": "以后可以在“{{capabilities}} → {{tab}}”中撤销。",
       "working": "正在信任…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "无法检查项目技能能否在此加载。",
+      "text": "项目技能（.kiro/skills）暂时无法在 Windows 上加载。详情请查看网关日志。"
+    },
     "projectSkillsTrustList": {
       "folder_missing": "此文件夹已不存在。",
       "hint": "这些项目文件夹可以把自带技能加载到聊天中。撤销某个文件夹后，它的技能将不再加载。",

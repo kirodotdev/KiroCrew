@@ -8809,6 +8809,10 @@
       "withdraw_hint": "これは後で{{capabilities}} → {{tab}}から取り消せます。",
       "working": "信頼中…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "プロジェクトスキルをここで読み込めるか確認できませんでした。",
+      "text": "プロジェクトスキル（.kiro/skills）は現在 Windows では読み込まれません。詳細はゲートウェイのログを確認してください。"
+    },
     "projectSkillsTrustList": {
       "folder_missing": "このフォルダーはもう存在しません。",
       "hint": "これらのプロジェクトフォルダーは、独自のスキルをチャットに読み込めます。フォルダーの信頼を取り消すと、そのスキルは読み込まれなくなります。",

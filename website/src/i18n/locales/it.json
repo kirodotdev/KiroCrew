@@ -9227,6 +9227,10 @@
       "withdraw_hint": "Puoi revocarla più tardi da {{capabilities}} → {{tab}}.",
       "working": "Impostazione dell’attendibilità…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Impossibile verificare se le skill del progetto possono essere caricate qui.",
+      "text": "Le skill del progetto (.kiro/skills) non vengono ancora caricate su Windows. Il log del gateway contiene i dettagli."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "Questa cartella non esiste più.",
       "hint": "Queste cartelle di progetto possono caricare i propri skill in una chat. Revoca una cartella per non caricarne più gli skill.",

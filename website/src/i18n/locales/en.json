@@ -5726,6 +5726,10 @@
       "withdraw_hint": "You can withdraw this later from {{capabilities}} → {{tab}}.",
       "working": "Trusting…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Could not check whether project skills can load here.",
+      "text": "Project skills (.kiro/skills) do not load on Windows yet. The gateway log has details."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "This folder no longer exists.",
       "hint": "These project folders may load their own skills into a chat. Withdraw a folder to stop its skills loading.",

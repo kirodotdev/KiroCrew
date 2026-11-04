@@ -9227,6 +9227,10 @@
       "withdraw_hint": "Tu peux la retirer plus tard depuis {{capabilities}} → {{tab}}.",
       "working": "Approbation…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Impossible de vérifier si les skills du projet peuvent se charger ici.",
+      "text": "Les skills du projet (.kiro/skills) ne se chargent pas encore sous Windows. Le journal de la passerelle donne les détails."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "Ce dossier n'existe plus.",
       "hint": "Ces dossiers de projet peuvent charger leurs propres skills dans une conversation. Retire un dossier pour que ses skills ne soient plus chargés.",
