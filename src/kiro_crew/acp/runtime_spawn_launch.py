@@ -489,8 +489,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
 
             async with self._skill_projection_lock():
                 generation = self._issue_skill_projection_generation()
+                # Only the launch agent's view is leased: every other session
+                # start re-prepares and leases its own agent's view first.
                 projection = await asyncio.to_thread(
-                    prepare_native_skill_projection, self._work_dir
+                    prepare_native_skill_projection,
+                    self._work_dir,
+                    lease_agents=(self._agent,),
                 )
                 # Issued and adopted under the lock, so nothing newer exists.
                 self._native_skill_projection = projection
@@ -499,7 +503,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # startup are ones it is guaranteed to have loaded, so later
             # projections keep translating them in inbound frames
             # (_activate_mode_bracketed), and holding the object keeps its
-            # lease -- and them -- out of the prune.
+            # lease -- the launch agent's view -- out of the prune.
             self._spawn_skill_projection = projection
             if projection is not None:
                 # Deliberately do NOT set spawn_agent_name here. The shared

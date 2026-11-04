@@ -47,6 +47,14 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 _PROJECTED_MODE_RETRY_DELAYS_SECS: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 1.0)
 
 
+def _leased_agents(projection: Any) -> tuple[str, ...]:
+    """The agents whose views *projection* leases, by authored name."""
+    leased = getattr(projection, "leased_aliases", None)
+    if projection is None or leased is None:
+        return ()
+    return tuple(name for name, alias in projection.aliases.items() if alias in leased)
+
+
 async def _prepare_projection_to_completion(
     prepare: Callable[..., Any], *args: Any, **kwargs: Any
 ) -> tuple[Any, bool]:
@@ -586,6 +594,12 @@ async def _activate_mode_bracketed(
                         self._work_dir,
                         enabled=True,
                         on_lock_unavailable=lock_errors.append,
+                        # This agent, plus every agent the replaced projection
+                        # leased, by NAME: a start whose set_mode is still in
+                        # flight keeps its agent's current view on disk, even
+                        # one an edit just replaced and the retry now sends.
+                        # An edited agent's old view is not carried.
+                        lease_agents=(mode_agent, *_leased_agents(previous)),
                     )
                     if prepared is not None:
                         # set_mode always names the FRESH alias, never an older
@@ -594,9 +608,9 @@ async def _activate_mode_bracketed(
                         # since revoked grants from. Inbound frames keep
                         # translating every alias this process published before
                         # (``recognise``), so an agent the host still lists under
-                        # an older alias stays selectable. Holding
-                        # ``_spawn_skill_projection`` keeps those aliases -- and so
-                        # the host's view of them -- out of the prune.
+                        # an older alias stays selectable. On disk, each start
+                        # holds only the view it activates (``lease_agents``
+                        # below); translation needs no file.
                         spawn = getattr(self, "_spawn_skill_projection", None)
                         if spawn is not None:
                             prepared.recognise(spawn)
