@@ -1,28 +1,13 @@
 """AWS Control P0 — account aggregation, reconnect classification, route gates.
 
-The properties that must hold before anything billable ever ships on this app:
-
-1. **Aggregation is account-shaped and honest.** Profiles group by the account
-   the live probe resolves; a probe failure falls back to the account the
-   registry recorded (grouping stays stable), and a profile with neither lands
-   in the ``unknown`` pseudo-row instead of inventing an account. Summaries
-   are explicit nulls — P0 measured nothing, so the page must say "not
-   measured", never a fake zero.
-2. **The one light per account is derived, not stored**: all-probes-ok → ok,
-   any-failed → degraded, no-account → unknown.
-3. **Every route is gated** — 403 while the app is disabled, owner-only once
-   it is on. Account ids and caller ARNs are what the consent leaf is fenced
-   from, so a non-owner (app token, allow-listed messaging user) must not
-   read them here either.
-4. **Reconnect never executes.** The plan endpoint classifies and returns
-   display text; the profile must be REGISTERED or the request 404s, so
-   attacker-shaped names are never echoed into a guidance card.
-5. **The consent enum grew without changing the mechanism**: ``s3``/``ce``
-   are gated services with labels, and their (profile, region) target resolves
-   through the SAME healthy-first policy the engine uses for the calls those
-   grants authorize — the registry default picks the account, ``_pick_profile``
-   picks the key, and only a state with no working key at all falls back to
-   naming the default so the card can still explain itself.
+1. Profiles group by the probed account, else the registry's, else ``unknown``;
+   summaries are explicit nulls, never a fake zero.
+2. The one light per account is derived: all ok → ok, any failed → degraded.
+3. Every route is 403 while the app is disabled and owner-only once on.
+4. Reconnect never executes, and an unregistered profile 404s so attacker-shaped
+   names are never echoed.
+5. ``s3``/``ce`` consent targets resolve through the same healthy-first policy as
+   the calls they authorize.
 """
 
 from __future__ import annotations
@@ -47,8 +32,8 @@ from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
 
-#: The full one-PR contract, as a table — a route added later without a gate
-#: fails the inventory assertion rather than shipping open.
+#: Every P0 route — a route added without a gate fails the inventory assertion
+#: rather than shipping open.
 P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/accounts"),
     ("GET", "/profiles/available"),
@@ -126,9 +111,7 @@ def _snapshot_of(
         return asyncio.run(accounts_mod.list_accounts(refresh=True))
 
 
-# ---------------------------------------------------------------------------
 # Aggregation
-# ---------------------------------------------------------------------------
 
 
 class TestAggregation:
@@ -209,9 +192,7 @@ class TestAggregation:
             assert calls == 2  # refresh bypasses it
 
 
-# ---------------------------------------------------------------------------
 # Reconnect classification + plan
-# ---------------------------------------------------------------------------
 
 
 class TestReconnect:
@@ -250,9 +231,7 @@ class TestReconnect:
             assert plan["method"] == "terminal"
 
 
-# ---------------------------------------------------------------------------
 # Route gates
-# ---------------------------------------------------------------------------
 
 
 class TestRouteGates:
@@ -405,9 +384,7 @@ class TestRouteGates:
         assert plan["command"] == "aws sso login --profile real"
 
 
-# ---------------------------------------------------------------------------
 # Consent enum extension
-# ---------------------------------------------------------------------------
 
 
 class TestConsentExtension:
@@ -435,13 +412,9 @@ class TestConsentExtension:
 class TestConsentTargetTracksTheOperation:
     """The card must bind to the key the operation would actually run under.
 
-    One policy, three readers: the consent card, the HTTP routes and the nightly
-    backup loop all take a HEALTHY key of the account the registry default names.
-    A second, unfiltered resolution is what these cases guard against — an
-    unhealthy default binds the card to a key with no resolvable account,
-    ``Confirm and enable`` refuses without one, and an account whose healthy
-    sibling key serves every operation then cannot be granted consent at all. The
-    same read in the nightly loop turns that into a silent forever-skip.
+    The card, the routes and the nightly loop all take a healthy key of the default
+    account. An unfiltered read would bind the card to an unhealthy key, and consent
+    could never be granted.
     """
 
     #: One account, two keys: the registry default is broken, its sibling works.
@@ -823,9 +796,7 @@ class TestConsentTargetTracksTheOperation:
         swept.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Storage engine — key validation and presign clamp
-# ---------------------------------------------------------------------------
 
 
 class TestStorageValidation:
@@ -921,9 +892,7 @@ class TestStorageValidation:
             )
 
 
-# ---------------------------------------------------------------------------
 # New-surface guards: consent, confirm gate, restricted sessions, upload cap
-# ---------------------------------------------------------------------------
 
 
 class TestDriveGuards:
@@ -1087,9 +1056,7 @@ class TestDriveGuards:
         assert presign.call_args.args[-1] == routes_mod._DOWNLOAD_URL_SECS
 
 
-# ---------------------------------------------------------------------------
 # Costs cache
-# ---------------------------------------------------------------------------
 
 
 class TestCosts:
@@ -1155,9 +1122,7 @@ class TestCosts:
         assert body["monthToDate"] == 3.42
 
 
-# ---------------------------------------------------------------------------
 # Backup
-# ---------------------------------------------------------------------------
 
 
 class TestBackup:
@@ -1240,9 +1205,7 @@ class TestBackup:
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/a.tar.gz"
 
 
-# ---------------------------------------------------------------------------
 # Drive IAM tier
-# ---------------------------------------------------------------------------
 
 
 class TestDriveIamTier:
@@ -1292,9 +1255,7 @@ class TestDriveIamTier:
         assert not any(s["Sid"].startswith("Drive") for s in doc["Statement"])
 
 
-# ---------------------------------------------------------------------------
 # Round-3 hardening pins
-# ---------------------------------------------------------------------------
 
 
 class TestRound3Hardening:
@@ -1390,9 +1351,7 @@ class TestRound3Hardening:
         record.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # Round-5 pins: publish governance + credential scan on the egress paths
-# ---------------------------------------------------------------------------
 
 
 class TestPublishGovernance:

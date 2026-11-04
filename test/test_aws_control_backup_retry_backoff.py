@@ -1,20 +1,9 @@
 """AWS Control backup: the nightly due check and its retry backoff.
 
-Covers ``due_for_nightly`` reading an unparseable run stamp as due, the
-``nightly_retry_delay_secs`` schedule and ceiling, and ``record_nightly_failure``:
-its per-kind count and ``since`` streak start, the clear a current or recovered
-run applies, the run-witness refusal when a run lands mid-attempt, and how the
-stored error is redacted, stripped of control characters and truncated.
-
-A corrupt or future-dated failure row reads as due, a corrupt count restarts at
-one, and an unwritable state file makes the recorder return ``None`` rather than
-raise.
-
-The install-global record of a nightly that skipped because no AWS key works sits
-beside ``record_nightly_failure``: one warning per streak, the carried ``since``,
-the clear a resolved key applies, a corrupt count restarting the streak, and an
-unusable ``since`` being re-stamped without resetting a valid count.
-Every class points ``_state_path`` into ``tmp_path``.
+Covers ``due_for_nightly``, the ``nightly_retry_delay_secs`` schedule,
+``record_nightly_failure`` (count, ``since``, clears, run-witness refusal, stored
+error) and the install-global "no working AWS key" skip record. Every class points
+``_state_path`` into ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -30,9 +19,7 @@ from aws_control_backup_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
-# ---------------------------------------------------------------------------
 # due_for_nightly — the malformed-timestamp branch
-# ---------------------------------------------------------------------------
 
 
 class TestDueForNightlyBadStamp:
@@ -59,20 +46,15 @@ class TestDueForNightlyBadStamp:
         assert backup.due_for_nightly(ACCOUNT) is True
 
 
-# ---------------------------------------------------------------------------
 # The retry backoff — a failed unattended attempt is recorded, so a
 # deterministic fault stops being re-attempted on every wake
-# ---------------------------------------------------------------------------
 
 
 def _fail(account: str, kind: str, error: str = "eio"):
     """Record a failed unattended attempt the way the nightly loop does.
 
-    The witness is read FIRST and passed in, because ``record_nightly_failure`` requires
-    it: a test that hand-rolled ``run_witness=None`` would be asserting against a
-    protocol the loop does not follow, and the required keyword is what makes that
-    impossible to do by accident. Returns the recorder's own answer -- a record, or
-    ``None`` when the run slot moved and the write was refused.
+    The witness is read first, as the loop does. Returns a record, or ``None`` when the
+    run slot moved and the write was refused.
     """
     return backup.record_nightly_failure(
         account, kind, error, run_witness=backup.nightly_run_witness(account, kind)
@@ -80,17 +62,10 @@ def _fail(account: str, kind: str, error: str = "eio"):
 
 
 class TestNightlyRetryBackoff:
-    """Before this, only COMPLETED runs were recorded.
+    """Failed runs are recorded, so "never ran" differs from "keeps breaking".
 
-    So a deterministic fault -- an unreadable file, a disconnected mount, a full
-    disk -- left the state file unable to tell "never ran" from "keeps breaking":
-    ``due_for_nightly`` took its never-ran branch on every half-hourly wake, each
-    attempt re-staged the whole data home into a fresh temporary directory, and the
-    same traceback repeated at that cadence for as long as the fault lasted.
-
-    Every test here asserts on the DUE-CHECK's answer rather than on the stored
-    row, because the answer is what the loop acts on; the stored row is checked
-    only where the point is what was written.
+    A deterministic fault would otherwise re-stage the whole data home every wake.
+    Tests assert on the due-check's answer, since that is what the loop acts on.
     """
 
     @pytest.fixture(autouse=True)
@@ -160,16 +135,15 @@ class TestNightlyRetryBackoff:
         assert max(backup.NIGHTLY_RETRY_BACKOFF_SECS) < backup.NIGHTLY_WINDOW_SECS
 
     def test_one_failure_still_retries_on_the_next_wake(self):
-        # A single failure is not yet evidence of a pattern, and the issue calls
-        # retrying a transient fault correct. So nothing about a one-off blip
-        # changes: the first recorded failure earns no wait at all.
+        # One failure is not a pattern and retrying a transient fault is correct, so
+        # the first recorded failure earns no wait.
         backup.set_nightly(ACCOUNT, True)
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "transient")
         assert record["consecutive"] == 1
         assert backup.nightly_retry_delay_secs(1) == 0
         assert backup.due_for_nightly(ACCOUNT, now=self._at(record)) is True
 
-    # -- the defect this change closes -------------------------------------
+    # repeated failures back off
 
     def test_a_repeated_failure_withholds_the_next_wake_and_then_releases_it(self):
         # THE regression. With no run record at all -- the reported case, a nightly
@@ -219,21 +193,9 @@ class TestNightlyRetryBackoff:
     def test_only_a_current_run_retires_the_backoff(self, superseded, backoff_set):
         """The four combinations of losing the slot and carrying a standing backoff.
 
-        A success clears the count, and a run whose own record is refused as stale is
-        not a success this document can act on: too stale to write a key is too stale
-        to retire a count a later failure accumulated. So the clear shares the run
-        write's condition, which is what :func:`_merge_pending` says at the other place
-        the two travel together.
-
-        Supersession is produced by raising the stored run's ``sequence``, because
-        ``superseded`` is the same-process half of ``_run_is_newer`` -- it compares the
-        stored record's ``process`` and ``sequence`` against the incoming run's, so a
-        raised sequence makes this process's next run the loser.
-        ``test_a_superseded_run_keeps_the_nightly_backoff`` is what shows two real runs
-        reach that state; this one is what enumerates every combination cheaply.
-
-        MUTATION: move the ``_clear_nightly_failure`` call in ``_record_run_locked`` out
-        of the ``if not superseded:`` branch and the superseded/backoff-set case reddens.
+        A run too stale to write its record is too stale to retire a later count, so the
+        clear shares the run write's condition. Raising the stored ``sequence`` makes
+        this process's next run the loser in ``_run_is_newer``.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -280,16 +242,8 @@ class TestNightlyRetryBackoff:
     def test_a_failure_before_the_winning_run_commits_is_retired_by_that_run(self):
         """The ordering half: WHEN the failure is written decides who meets it.
 
-        A failure recorded before the winning run commits is retired by that run's own
-        mutate, so it is gone whichever condition the clear carries -- the two
-        placements agree here, and this is the ordering that a reader assumes is the
-        only one. The divergent ordering is a failure recorded AFTER the winner commits,
-        which ``test_a_superseded_run_keeps_the_nightly_backoff`` builds with two real
-        writers: there the only run left to meet the row is one whose record was
-        refused.
-
-        Kept separate from the matrix above because the matrix varies WHO the run is
-        while holding the order fixed; this varies the order.
+        Either clear placement retires it here. The diverging order, a failure after the
+        winner commits, is built by ``test_a_superseded_run_keeps_the_nightly_backoff``.
         """
         backup.set_nightly(ACCOUNT, True)
         for _ in range(3):
@@ -655,9 +609,9 @@ class TestNightlyRetryBackoff:
     # -- the row says WHEN the streak started, not only the last attempt ------
 
     def test_the_row_carries_the_streaks_start_as_well_as_the_last_attempt(self):
-        # The issue asks for this by name: an operator has to see that the nightly "has
-        # been failing since a particular day". `at` is the backoff's clock and must be
-        # the latest attempt, so one overwritten stamp cannot answer both questions.
+        # An operator must see that the nightly "has been failing since a particular
+        # day". `at` is the backoff's clock and must be the latest attempt, so one
+        # overwritten stamp cannot answer both questions.
         backup.set_nightly(ACCOUNT, True)
         first = _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
         assert first["since"] == first["at"]  # a streak of one starts where it is
@@ -877,12 +831,8 @@ class TestNightlyRetryBackoff:
 class TestNightlyNoWorkingKeySkip:
     """The install-global record for "no working AWS key, every wake skipped".
 
-    A desktop gateway that cannot find the per-user ``aws`` / helpers has no
-    healthy key, so ``hooks._run_once`` skips before any account resolves. The
-    skip is install-global (no account to key on), warns once per streak, carries
-    a usable ``since``, re-stamps an unusable ``since`` without resetting a valid
-    count, and is cleared when a key resolves, so the accounts read reports
-    a nightly the owner enabled as skipped rather than appearing to run.
+    ``hooks._run_once`` skips before any account resolves, so the record is
+    install-global; the accounts read then shows the nightly as skipped.
     """
 
     @pytest.fixture(autouse=True)

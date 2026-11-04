@@ -1,14 +1,8 @@
 """Consent must precede any billable AWS request.
 
-Three properties, one per step of the fix:
-
-1. The voice-reply provider default is the LOCAL one, so enabling voice reply
-   without naming a provider cannot reach a paid AWS service.
-2. Every gated call site refuses when there is no matching grant, and the grant
-   record lives on the keystone floor where the agent cannot mint it.
-3. The credential source is named (an empty profile is NOT "no account"), and a
-   grant recorded for one account does not survive the profile being repointed
-   at another.
+The voice-reply default provider is local; every gated call site refuses without a
+grant kept on the keystone floor; and a grant does not survive its profile being
+repointed at another account (an empty profile is not "no account").
 """
 
 from __future__ import annotations
@@ -171,15 +165,10 @@ class TestGrantIsOnTheKeystoneFloor:
         assert mode == 0o600
 
     def test_write_lockdown_precedes_content(self, home, monkeypatch):
-        """The authorization record must never exist in a file that has not
-        been locked down yet.
+        """The authorization record never exists in a file not yet locked down.
 
-        On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
-        ``restrict_to_owner`` is the only protection; applying it after the
-        rename would leave the record readable under the inherited ACL for the
-        write window. Asserted by measuring the file's SIZE at lockdown time —
-        zero means no payload byte existed yet. A post-write stat passes on the
-        wrong ordering too, so it cannot distinguish the two.
+        On Windows the DACL from ``restrict_to_owner`` is the only protection. The file
+        size at lockdown must be zero; a post-write stat passes on either order.
         """
         from kiro_crew import platform_compat
 
@@ -250,12 +239,8 @@ class TestGrantIsOnTheKeystoneFloor:
     def test_a_failed_lockdown_preserves_the_previous_store(self, home, monkeypatch):
         """A failed NEW write must not destroy the PREVIOUS, healthy store.
 
-        Every failure inside ``atomic_write`` happens before the rename, so the
-        final path still holds the last successfully written (and locked-down)
-        record. Both pre-push reviews flagged the alternative — an unlink on any
-        OSError — as data loss: one transient failure would have wiped every
-        recorded authorization. The empty-home test above cannot see that
-        destruction, so this variant seeds a real grant first.
+        Failures in ``atomic_write`` happen before the rename, so an unlink on OSError
+        would wipe every grant. Seeds a real grant, which the empty-home test cannot.
         """
         from kiro_crew import platform_compat
         from kiro_crew.config.loader import aws_consent_path
@@ -361,7 +346,7 @@ class TestGate:
         What is lost is not a working authorization -- an unreadable store grants
         nothing -- but it may hold the operator's other service grant. Preserved
         rather than refused, because refusing would leave a corrupt file
-        unrecoverable from the dashboard. Found in review.
+        unrecoverable from the dashboard.
         """
         from kiro_crew.config.loader import aws_consent_path
 
@@ -465,11 +450,8 @@ class TestPollySynthesisRefuses:
 class TestAccountIsVerifiedNotAssumed:
     """A profile NAME is not an account: the live account is checked too.
 
-    ``aws configure set credential_process ... --profile <name>`` repoints an
-    existing profile at a different account without touching the credential
-    files, and that command is NOT on the shell denylist -- measured, not
-    assumed. So a grant keyed only on the profile name would keep authorizing
-    calls after the account under it changed. Found in review.
+    ``aws configure set credential_process ... --profile <name>`` repoints a profile
+    at another account and is not on the shell denylist.
     """
 
     def test_same_account_authorizes(self, home):
@@ -502,11 +484,8 @@ class TestAccountIsVerifiedNotAssumed:
     def test_unresolvable_account_is_refused_not_assumed(self, home):
         """Fail CLOSED when the account cannot be re-checked.
 
-        An earlier revision allowed this so a transient STS fault would not stop
-        voice output, but that let a repointed profile bill an unconfirmed
-        account -- and on a host with boto3 but no ``aws`` CLI the account was
-        never verified at all. Refusing costs little, because a grant can only
-        exist where the probe once succeeded.
+        Allowing it would let a repointed profile bill an unconfirmed account. Refusing
+        costs little: a grant exists only where the probe once succeeded.
         """
         _grant(profile="voice", region="us-east-1", account="111122223333")
         unknown = aws_consent.Identity(ok=False, detail="network down")
@@ -544,7 +523,7 @@ class TestAccountIsVerifiedNotAssumed:
 
         The probe is free and goes to the account the operator already consented
         to, so paying it per call costs latency, not money -- and the window it
-        removes is exactly what this check exists for. Found in review.
+        removes is exactly what this check exists for.
         """
         _grant(profile="voice", region="us-east-1", account="111122223333")
         same = aws_consent.Identity(ok=True, account="111122223333")
@@ -584,11 +563,8 @@ class TestAccountIsVerifiedNotAssumed:
 class TestConcurrentWithdrawalFailsClosed:
     """A consent that disappears mid-check must not authorize the call.
 
-    The probe spawns a subprocess, so ``authorize`` has a real suspension point
-    in the middle -- long enough for the operator to press Withdraw or for
-    another request's drift check to revoke. Removing the probe cache in the
-    previous round widened that window, so the grant is re-asserted immediately
-    before the allow. Found in review.
+    The probe spawns a subprocess, so a withdrawal can land mid-``authorize``; the
+    grant is re-asserted just before the allow.
     """
 
     def test_grant_withdrawn_before_the_probe_is_denied(self, home):
@@ -732,14 +708,9 @@ class TestConcurrentWithdrawalFailsClosed:
 class TestConsentEndpointRequiresTheOwner:
     """Confirming a charge spends the OWNER's money, so it is an owner action.
 
-    Narrower than "authenticated" and narrower than "not an app". Two caller
-    classes had to be shut out and only the first is obvious: an app token (an
-    app declaring the endpoint's permission would mint a grant with no human in
-    the loop) and an allowed MESSAGING user (a Slack allow-listed non-owner who
-    runs ``!dashboard`` authenticates with ``app == ""``, so an app-only check let
-    them authorize spending in the owner's account). Reads are refused too: the
-    GET names the account id and caller ARN a keystone read is fenced from. Both
-    found in review.
+    Shuts out app tokens and allowed messaging users: a Slack non-owner running
+    ``!dashboard`` has ``app == ""``. Reads are refused too: the GET names the account
+    id and caller ARN.
     """
 
     def _req(
@@ -1009,12 +980,8 @@ class TestEffectiveTargetReadsLiveConfig:
 class TestThereIsNoCliGrantSurface:
     """The agent must not be able to grant itself permission to spend.
 
-    An earlier revision shipped a ``kirocrew aws-consent grant`` verb behind an
-    env-var guard. Review found that single layer bypassable (an in-process agent
-    can unset the variable, and unlike ``kirocrew cloud`` the verb was not also
-    shell-denied), so the surface was removed rather than hardened: the
-    authenticated dashboard is available on every install. This pins that it
-    stays removed -- re-adding a terminal grant re-opens the hole.
+    An env-var guard on a terminal grant verb is bypassable by an in-process agent;
+    the authenticated dashboard is the only grant surface.
     """
 
     def test_cli_exposes_no_consent_command(self):
@@ -1159,7 +1126,7 @@ class TestDescribeVoicesEndpoint:
         assert body == {"voices": []}
         assert spawn.call_count == 0
         # Routed through refuse_and_log, so the denial is audited like every
-        # other gated call site rather than only logged. Found in review.
+        # other gated call site rather than only logged.
         assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied"]
 
 
@@ -1374,7 +1341,7 @@ class TestConsentEndpoint:
         ``bedrock_kb_conflict_check_failed``. A grant write that fails, here
         for Polly, propagates as the unhandled error it is (the same as every
         other consent write), instead of telling the operator a Bedrock source
-        could not be checked. Found in review."""
+        could not be checked."""
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
         resolved = aws_consent.Identity(ok=True, account="111122223333", arn="arn:aws:iam::1:u/x")
@@ -1406,7 +1373,6 @@ class TestConsentEndpoint:
         The consent card and the provider fields are separate queries, so an
         operator could read account A, change the profile, then click Confirm.
         Without this the POST would record account B while A was on screen.
-        Found in review.
         """
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
@@ -1456,7 +1422,7 @@ class TestConsentEndpoint:
 
     @pytest.mark.parametrize("bad", [[], {}, 7, None, True])
     def test_a_non_string_service_is_rejected_not_a_500(self, home, bad):
-        """``{"service": []}`` reached ``list.strip()`` and 500ed. Found in review."""
+        """A non-string ``service`` is rejected before ``list.strip()`` can 500."""
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
         resp = asyncio.run(handler.api_aws_consent_post(self._post({"service": bad})))
@@ -1473,16 +1439,9 @@ class TestConsentEndpoint:
 class TestAuditDecisionRedactsBeforeTruncate:
     """``audit_decision`` must redact ``detail`` BEFORE clipping it to 200 chars.
 
-    The ``resources`` string reaches the durable Security Event Log through
-    ``log_api_access``. SEL's own write-path pass runs over what it is handed,
-    so a credential that the caller has already cut in half at index 200 is a
-    fragment no credential grammar matches, and the partial secret persists in a
-    dashboard-readable audit log. Same invariant as ``redact_and_truncate``:
-    redaction runs over the FULL text, and only then is the text clipped.
-
-    The site sits inside an ``if detail else service`` ternary, so the second
-    test pins the branch the redact-first rewrite must not disturb: an empty
-    ``detail`` still emits the bare ``service`` with no ``": "`` separator.
+    A credential cut at index 200 matches no grammar, so SEL's own pass misses it.
+    Same rule as ``redact_and_truncate``. The second test pins that an empty ``detail``
+    emits the bare ``service`` with no ``": "``.
     """
 
     SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
@@ -1539,14 +1498,9 @@ class TestAuditDecisionRedactsBeforeTruncate:
 class TestRevocationCannotBeDenied:
     """An agent must not be able to block the owner's withdrawal of consent.
 
-    The store is serialised by an in-process lock, so there is no lock FILE beside
-    the grant for a sandboxed agent to hold. ``is_sensitive_path`` does cover such
-    a sibling, but that is the evadable tier: a runtime-constructed path escapes
-    the text and argv matchers. Sealing the leaf read-only would not close it
-    either, because ``flock(LOCK_EX)`` succeeds on an ``O_RDONLY`` descriptor, so a
-    read-only bind still admits the exclusive hold. What the hold costs is the
-    owner's REVOKE, which leaves consent active for later billable calls: a denial
-    of revocation rather than a disclosure. These pin that there is no such file.
+    The store uses an in-process lock, so no lock file exists for an agent to hold.
+    ``flock(LOCK_EX)`` works on an ``O_RDONLY`` descriptor, so a read-only seal would
+    not stop a hold. These pin that there is no such file.
     """
 
     def test_the_module_defines_no_file_lock(self):
@@ -1600,13 +1554,8 @@ class TestRevocationCannotBeDenied:
 class TestAuditWritesStayOffTheEventLoop:
     """``audit_decision`` writes the Security Event Log, so it must not run inline.
 
-    That write also INITIALISES the log on first use, so a large or corrupt tail
-    makes one call slow, and a slow call on the loop stalls every other request
-    and the heartbeat. Three async paths reach it and all three offload: the
-    endpoints' owner refusal, the per-call verification in :func:`authorize`, and
-    the refusal in :func:`refuse_and_log`. Each case records which thread the
-    audit ran on, because "it is awaited" is not the property being held --
-    running somewhere other than the loop thread is.
+    The first write initialises the log, so one call can be slow. Each case records
+    the thread the audit ran on, because being awaited is not the property.
     """
 
     @staticmethod
@@ -1681,20 +1630,11 @@ class TestAuditWritesStayOffTheEventLoop:
 
 
 class TestConfirmNeverImportsTheConnectorOnTheLoop:
-    """``bedrock_kb`` imports boto3 at module level: several hundred milliseconds
-    of synchronous import on a process that has not used Bedrock yet. The POST
-    reaches that module for its lock, its lookup and its ``TargetLookupError``,
-    and every one of those imports must run in the worker that records the
-    grant: a Polly or Transcribe confirmation on a fresh gateway must not load it
-    at all, and a Bedrock one must not load it on the loop, where the import
-    would freeze every chat turn and the heartbeat for its whole length.
+    """``bedrock_kb`` imports boto3 at module level, so it loads only in the worker.
 
-    The module is dropped from ``sys.modules`` first so the import really loads
-    it, and a meta-path finder records the thread each load runs on. The finder
-    loads nothing itself (it answers None), so the real module still arrives;
-    ``monkeypatch`` puts the ORIGINAL module object back afterwards, in both
-    ``sys.modules`` and the package attribute, so a later test that patches the
-    object it imported still patches the one the code imports.
+    A Polly or Transcribe confirmation must not load it at all. A meta-path finder
+    records each load's thread and answers None; ``monkeypatch`` restores the original
+    module object so later patches still hit the one the code imports.
     """
 
     _MODULE = "kiro_crew.knowledge.connectors.bedrock_kb"

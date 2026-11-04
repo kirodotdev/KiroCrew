@@ -27,9 +27,7 @@ from aws_control_routes_helpers import (
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
 from kiro_crew.deploy.engine import AWSError
 
-# ---------------------------------------------------------------------------
 # Backup — status, run, nightly, restore
-# ---------------------------------------------------------------------------
 
 
 class TestBackupEndpoints:
@@ -115,11 +113,8 @@ class TestBackupEndpoints:
     def _run_backup(self, kind, *, start=None, sdk_present=True):
         """Drive ``POST /backup/{account}/run``.
 
-        The handler does not perform the backup itself: it claims a durable Job SDK
-        run and returns its id. So this stubs the SDK rather than the backup
-        functions. The runner's own behaviour -- resolving its account, refusing
-        a key that names none, and the reconciliation of a run left behind by a
-        dead gateway -- lives in ``test_aws_control_backup_job.py``.
+        The handler only claims a Job SDK run, so this stubs the SDK. The runner is
+        tested in ``test_aws_control_backup_job.py``.
         """
         from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 
@@ -499,16 +494,9 @@ class TestBackupEndpoints:
         assert body["nightlySessions"] is False
 
     def test_the_status_payload_says_when_this_account_is_not_the_scheduled_one(self):
-        # The grant is settable on every registered account and the nightly loop
-        # runs for the one the default key belongs to, so a grant recorded on any
-        # other account is authorized and unreachable at once. The payload has to
-        # carry that, or the console can only show a schedule nothing honours.
-        #
-        # The host is pinned SUPPORTED and the redaction gap cleared, because both
-        # outrank the account by design. Without that this asserts the account
-        # answer on a platform whose truthful answer is the capability one, so the
-        # outcome turns on the runner rather than on the code. Pinning them keeps
-        # the assertion universal rather than gating it behind a platform check.
+        # The nightly loop runs only for the default account, so a grant on another
+        # account is authorized and unreachable; the payload must say so. The host is
+        # pinned supported and the redaction gap cleared, since both outrank the account.
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
         req = _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
@@ -821,12 +809,8 @@ class TestBackupEndpoints:
     def _restore_for_real(self, body: dict, tmp_path, *, get_file=None):
         """Run the route against the REAL ``restore_download``.
 
-        The rest of this class stands a mock in for that function, which is the right
-        shape for testing the route's own translation of a result into a response.
-        It is the wrong shape for asserting what the backend DECIDES: a mock returns
-        whatever the test says, so an assertion about a refusal is really an
-        assertion about the mock. Only ``storage.get_file`` is stubbed here -- the
-        classification and both override gates are the shipped ones.
+        A mocked function cannot show what the backend DECIDES, so only
+        ``storage.get_file`` is stubbed; the classification and override gates are real.
         """
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -890,9 +874,7 @@ class TestBackupEndpoints:
         got.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # Install label — rename THIS install (display only, local, no AWS)
-# ---------------------------------------------------------------------------
 
 
 class TestInstallLabel:
@@ -951,9 +933,7 @@ class TestInstallLabel:
         assert ".kirocrew" not in body["error"]
 
 
-# ---------------------------------------------------------------------------
 # IAM policy render
-# ---------------------------------------------------------------------------
 
 
 class TestIamPolicy:
