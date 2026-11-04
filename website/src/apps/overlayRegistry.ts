@@ -24,6 +24,14 @@ export interface OverlayProps {
    * after the gesture are kept instead of lost. Read at mount only.
    */
   initialQuery?: string
+  /**
+   * The control focused when the host's open gesture fired -- the header button,
+   * a nav row, or the chat composer. The host captures it before mounting this
+   * overlay (and its loading fallback), so the overlay can return focus there on
+   * dismiss without having to read it after mount, when the fallback's input
+   * would be the active element. Read at mount only.
+   */
+  opener?: HTMLElement | null
 }
 
 export type LazyOverlay = React.LazyExoticComponent<ComponentType<OverlayProps>>

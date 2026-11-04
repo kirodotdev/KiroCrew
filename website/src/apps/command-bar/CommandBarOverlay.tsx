@@ -16,6 +16,7 @@ import { buildShareableUrl } from '../../utils/shareUrl'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+import { focusComposerNow } from '../../pages/chat/composerFocus'
 import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -60,10 +61,12 @@ export default function CommandBarOverlay({
   open,
   onClose,
   initialQuery = '',
+  opener = null,
 }: {
   open: boolean
   onClose: () => void
   initialQuery?: string
+  opener?: HTMLElement | null
 }) {
   const ime = useImeGuard()
   const vv = useVisualViewport()
@@ -173,6 +176,33 @@ export default function CommandBarOverlay({
   // which slot is active. Read, never subscribed -- the selectors below are the
   // subscriptions.
   const store = useAppStore()
+  // Return focus to the opener when the bar closes, on EVERY close -- Escape, an
+  // outside click, a programmatic close, a row that navigates or runs an action
+  // in place -- EXCEPT a row that switches chats, which hands focus to the new
+  // chat's composer instead. The host mounts the bar once per open and unmounts
+  // it to close, so this runs on that unmount.
+  //
+  // A switch is detected by the active slot changing between open and close
+  // rather than by instrumenting each activation branch: `switchSlot.pending`
+  // and a new-session create both set `activeSlot` synchronously before the bar
+  // closes, so the slot read in the cleanup already reflects a switch that this
+  // close carried out. On a switch the composer focus is owned by the session
+  // activation (see paletteOpenSessionFocusesComposer), so the bar stays out of
+  // it. Otherwise it focuses the opener the host captured at the gesture; if that
+  // control is gone by now it falls back to the composer, the same place the
+  // quick-search surfaces land focus when their opener is gone.
+  useEffect(() => {
+    const slotAtOpen = store.getState().chat.activeSlot
+    return () => {
+      if (store.getState().chat.activeSlot !== slotAtOpen) return // a switch owns focus
+      if (!opener) return // nothing was focused at the gesture: leave focus alone
+      // `opener` is the host's capture from before this dialog existed, so it is
+      // never an element inside the bar: a plain connectedness check is enough.
+      // Gone by now: fall back to the composer, the quick-search surfaces' rule.
+      if (opener.isConnected) opener.focus({ preventScroll: true })
+      else focusComposerNow()
+    }
+  }, [store, opener])
   // Live session state, read straight from the store the dashboard already keeps
   // current over its socket. This is what lets the root LEAD with the sessions that
   // owe the user something without issuing a request: the facts are already here,
@@ -196,7 +226,14 @@ export default function CommandBarOverlay({
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
   // handler below, which needs it to pop a scope before it closes the bar (and
   // claims it through the IME latch first).
-  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  // `restoreFocus: false`: the trap still moves focus into the bar on open, but
+  // the bar owns the return itself (the effect below), because the trap can only
+  // read the element to restore to AFTER mount -- by when the chunk's loading
+  // fallback has handed focus to the bar's own input -- and because it would
+  // restore on every close, including a chat switch whose new composer must keep
+  // focus. The `opener` prop carries the real opener, captured by the host at the
+  // gesture, and the effect returns focus there on every close except a switch.
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false, restoreFocus: false })
   const {
     sessions,
     openSessionsKey,

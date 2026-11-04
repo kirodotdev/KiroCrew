@@ -80,10 +80,37 @@ export interface UseCommandPalette {
   close: () => void
   /** Flip open ⇄ closed (backs the ⌘K alias). */
   toggle: () => void
+  /**
+   * The element focused at the instant the surface was asked to open -- the
+   * header button, a nav row, or the chat composer. Captured HERE, by the code
+   * that owns the gesture, because the overlay cannot read it reliably: its
+   * chunk loads behind a Suspense fallback whose own input holds focus by the
+   * time the overlay first renders, so an opener read inside the overlay would
+   * be that loading field, not the control the user came from. The surface
+   * returns focus here when it is dismissed.
+   */
+  opener: HTMLElement | null
 }
 
 export function useCommandPalette(): UseCommandPalette {
   const [open, setOpen] = useState(false)
+  // The control to hand focus back to on dismiss, captured at the gesture. A
+  // ref, not state: it is read only when the surface closes, so it needs no
+  // re-render. Capturing it the instant open is requested is what makes it the
+  // real opener rather than anything a later mount moves focus to.
+  const openerRef = useRef<HTMLElement | null>(null)
+  // A mirror of `open`, kept current, so the open gestures can tell the closed
+  // -> open edge from a toggle/re-open fired while already open WITHOUT reading
+  // it inside a `setOpen` updater (which StrictMode double-invokes). The opener
+  // is captured only on that edge, so an already-open re-trigger never
+  // overwrites the original opener with the bar's own input.
+  const openRef = useRef(false)
+  useEffect(() => { openRef.current = open }, [open])
+  const captureOpenerIfOpening = useCallback(() => {
+    if (openRef.current) return
+    const el = document.activeElement
+    openerRef.current = el instanceof HTMLElement && el !== document.body ? el : null
+  }, [])
   // Timestamp of the last *bare* Shift keydown, for double-tap detection.
   // 0 means "no pending first tap".
   const lastShiftRef = useRef(0)
@@ -99,9 +126,9 @@ export function useCommandPalette(): UseCommandPalette {
   // representing a pane switch. Seeded at mount to suppress the initial effect.
   const lastInstanceRef = useRef({ hostModelPresent, activeId: visibleActiveInstanceId })
 
-  const openPalette = useCallback(() => setOpen(true), [])
+  const openPalette = useCallback(() => { captureOpenerIfOpening(); setOpen(true) }, [captureOpenerIfOpening])
   const close = useCallback(() => setOpen(false), [])
-  const toggle = useCallback(() => setOpen(v => !v), [])
+  const toggle = useCallback(() => { captureOpenerIfOpening(); setOpen(v => !v) }, [captureOpenerIfOpening])
 
   // Switching the visible pane dismisses the palette.
   //
@@ -165,6 +192,7 @@ export function useCommandPalette(): UseCommandPalette {
       if (config.mode === 'mod-k' && isModKEvent(e)) {
         e.preventDefault()
         lastShiftRef.current = 0
+        captureOpenerIfOpening()
         setOpen(v => !v)
         return
       }
@@ -173,6 +201,7 @@ export function useCommandPalette(): UseCommandPalette {
       if (customBound && config.custom && chordMatchesEvent(e, config.custom)) {
         e.preventDefault()
         lastShiftRef.current = 0
+        captureOpenerIfOpening()
         setOpen(v => !v)
         return
       }
@@ -192,6 +221,7 @@ export function useCommandPalette(): UseCommandPalette {
         const now = Date.now()
         if (lastShiftRef.current !== 0 && now - lastShiftRef.current <= DOUBLE_SHIFT_WINDOW_MS) {
           lastShiftRef.current = 0
+          captureOpenerIfOpening()
           setOpen(true)
         } else {
           lastShiftRef.current = now
@@ -206,7 +236,7 @@ export function useCommandPalette(): UseCommandPalette {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [captureOpenerIfOpening])
 
-  return { open, openPalette, close, toggle }
+  return { open, openPalette, close, toggle, opener: openerRef.current }
 }
