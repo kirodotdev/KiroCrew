@@ -3170,11 +3170,13 @@ that constant is what has to rise instead. Because the key's help text is the
 only statement of this an operator reads, `test_config_baseline.py` pins the
 sentence against that arithmetic rather than leaving it to review;
 `initialize_timeout_secs` (10) bounds a fresh backend's first
-`initialize` and is threaded onto each `Backend` as a constructor field (on Windows the
-effective deadline is floored to 30 s by `_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS` through
-`_effective_initialize_timeout_secs`, since a Windows cold start routinely overruns the
-POSIX-measured 10 s default and would otherwise be reaped and respawned; a configured
-value already above the floor and every POSIX host are unchanged);
+`initialize` and is threaded onto each `Backend` as a constructor field (on every
+platform the effective deadline is floored to 30 s by
+`_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS` through `_effective_initialize_timeout_secs`:
+right after a daemon restart several backends cold-start at once and take 13-15 s, and a
+Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
+about to answer; a configured value already above the floor is unchanged, and the spawn
+gate's initialize watcher and its slow-init fraction read the same effective value);
 `host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
 0) cap what the host budget admits across pooled, private and fallback
 backends, where `0` means derive from the available-memory sample the gateway

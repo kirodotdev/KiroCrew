@@ -478,6 +478,32 @@ class TestSpawnBackend:
             await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
 
     @pytest.mark.asyncio
+    async def test_posix_spawn_arms_the_cold_start_floor(
+        self, fake_spawn: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor reaches the Backend the daemon spawns, not just the helper:
+        a POSIX spawn on the shipped 10s default arms a 30s first-handshake
+        deadline, and an explicit larger value is kept."""
+        fake_spawn["with_stderr"] = False
+        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", False)
+        backend = await spawn_backend(
+            _pool_key(),
+            "cmd",
+            [],
+            {},
+            "/nonexistent-work-dir",
+            initialize_timeout_secs=backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS,
+        )
+        assert (
+            backend.initialize_timeout_secs == backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS
+        )
+        higher = backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS + 15.0
+        backend = await spawn_backend(
+            _pool_key(), "cmd", [], {}, "/nonexistent-work-dir", initialize_timeout_secs=higher
+        )
+        assert backend.initialize_timeout_secs == higher
+
+    @pytest.mark.asyncio
     async def test_no_stderr_pipe_means_no_drain_task(self, fake_spawn: dict[str, Any]) -> None:
         fake_spawn["with_stderr"] = False
         backend = await spawn_backend(_pool_key(), "cmd", [], {}, "/nonexistent-work-dir")
