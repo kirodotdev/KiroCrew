@@ -94,46 +94,21 @@ logger = logging.getLogger(__name__)
 # overlay dir as ready.
 _FINGERPRINT_NAME = ".rewrite-fingerprint"
 
-# Bump when the rewrite's OUTPUT shape changes for identical inputs (new stub
-# flags, changed overlay layout, ...) so upgraded installs regenerate instead
-# of serving overlays produced by older logic. The package version is also in
-# the fingerprint, so a release bump invalidates regardless; this constant is
-# the explicit knob for in-development changes.
-# 5: the stub's flags ride inside one STUB_FLAGS_FLAG envelope, so a kept
-# plain-flag overlay would keep exposing its raw metadata to cmd.exe.
-# Deliberately NOT bumped for the retained legacy settings overlay: the
-# per-agent overlay bytes do not depend on it, the leftover overlay file is
-# retained and ignored (never consumed), and a stored ``settings_overlay``
-# output signature is not rejected — it keeps vouching for the leftover's ACL
-# relock — so an older fingerprint still validates correctly, and bumping would
-# gratuitously defeat the transient-keep gate (which compares stored vs current
-# inputs) on the first upgraded boot.
-# 6: target commands and recorded probes carry their on-disk Windows casing.
-# 7: the wrapped entry's command is normalised to a cmd.exe-safe spelling on
-# Windows (8.3 short form when the interpreter path carries a metacharacter),
-# and kept overlays must fingerprint that derived spelling to avoid launching
-# through cmd.exe with a quote-stripped interpreter path.
-# 8: a registry-governed or muted entry passes through unwrapped instead of
-# becoming a broker stub. The inputs are unchanged for such an entry, so a kept
-# overlay keeps a stub whose name ``session_servers.injection_server_names``
-# still collects -- launching, at session level, the very server the marker
-# hands to the administrator's catalog and the mute silences. The output shape
-# for identical inputs is what changed, which is exactly what this knob rejects.
-# 9: a reserved kirocrew-* entry launches the managed invocation, not the
-# spec's command (``_repair_control_plane_entry``). That invocation is an input
-# the spec files cannot see -- it moves on every upgrade and on a relocated
-# install -- so it is fingerprinted as ``managed_control_plane`` below, and the
-# bump regenerates every kept overlay whose stub still hashes the spec's command.
-# 10: an agent whose spec sets ``includeMcpJson: false`` gets no injected
-# settings stubs. Its inputs are unchanged, so a kept overlay would keep
-# mounting the excluded servers at ``session/new``.
-# 11: credential vendors joined ``UNPOOLABLE_SERVERS``. The denylist is not a
-# fingerprint input, so a kept overlay from before would keep the vendor's stub
-# and its backend would keep running outside every chat sandbox.
-# 12: an agent named with the reserved ``crewmate:`` prefix gets no overlay. A
-# cached or kept one from before would keep stubs whose identity app-callback
-# governance reads as a crewmate's; a keep that skips this check is refused by
-# name after the loop.
+# Bump when the rewrite's OUTPUT shape changes for identical inputs, so a kept
+# overlay built by older logic is regenerated. The package version is in the
+# fingerprint too; this is the knob for in-development changes.
+# 5: stub flags ride in one STUB_FLAGS_FLAG envelope (raw metadata hidden from
+# cmd.exe). The retained legacy settings overlay needs no bump: per-agent bytes
+# do not depend on it, and a bump would defeat the transient-keep gate.
+# 6: target commands and probes carry their on-disk Windows casing.
+# 7: the wrapped command uses a cmd.exe-safe spelling (8.3 short form).
+# 8: a registry-governed or muted entry passes through unwrapped, not stubbed.
+# 9: a reserved kirocrew-* entry launches the managed invocation, which is
+# fingerprinted as ``managed_control_plane``.
+# 10: ``includeMcpJson: false`` gets no injected settings stubs.
+# 11: credential vendors joined ``UNPOOLABLE_SERVERS`` (not a fingerprint input).
+# 12: a reserved ``crewmate:`` agent gets no overlay; a keep that skips this
+# check is refused by name after the loop.
 _FINGERPRINT_SCHEMA = 12
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
@@ -181,36 +156,22 @@ def _rewrite_inputs_fingerprint(
       :func:`platform_compat.isolated_python_argv`), so an interpreter move, a
       user-site policy change, or a change to the stub's own interpreter
       options regenerates the overlays.
-    * ``python_cmd_safe`` — the cmd.exe-safe spelling of ``sys.executable``
-      actually written as the overlay ``command`` on Windows. A volume's 8.3
-      name generation being toggled (or the alias stripped with ``fsutil
-      8dot3name strip``) changes this without touching ``python`` or any
-      other input, and a kept overlay would launch an interpreter path that
-      does not resolve — so the derived spelling is fingerprinted alongside
-      its source.
-    * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
-      ``shutil.which`` resolution of bare command names (``path_augment`` is
-      :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
-      augmentation-and-dedup half of the search, which depends on ambient
-      state like ``MISE_DATA_DIR`` and on ``mcp.extra_path_dirs`` that
-      ``path_env`` cannot see, so editing that setting invalidates the
-      cache instead of reusing a stale resolution). The
-      other half of which()'s input — the CONTENTS of the searched
-      directories — is not stat-able here; it is covered by the stored
-      per-probe results, which the cache-hit path re-runs and compares (see
+    * ``python_cmd_safe`` — the cmd.exe-safe spelling written as ``command`` on
+      Windows. Toggling 8.3 name generation changes it without touching
+      ``python``, and a kept overlay would launch a path that does not resolve.
+    * ``path_env`` / ``pathext`` / ``path_augment`` — feed ``shutil.which`` for
+      bare command names. ``path_augment`` is
+      :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH, which
+      reads ambient state (``MISE_DATA_DIR``, ``mcp.extra_path_dirs``) that
+      ``path_env`` cannot see. Directory CONTENTS are covered by the stored
+      per-probe results the cache-hit path re-runs (see
       :class:`_RewritePassNotes`).
     * ``forward_declared_env`` — decides whether an env-declaring server is
-      pooled at all (the withheld-env pre-classification), so flipping the
-      config flag must regenerate the overlays.
-    * ``pool_identity_env`` — decides which secret-prefixed keys are hashed into
-      the PoolKey and passed on stub argv, so editing the list must regenerate
-      the overlays. Without this, naming a key would take effect only once some
-      unrelated input changed, and until then the stub would keep hashing the old
-      set while gatewayd hashed the new one — the coherence gate would refuse to
-      forward, so the feature would silently not work.
-    * ``read_buffer_limit`` — the per-stream read ceiling stamped into every
-      stub's ``--read-limit``, for the same reason as ``pool_identity_env``:
-      a kept overlay would keep launching stubs with the old ceiling.
+      pooled at all.
+    * ``pool_identity_env`` — which secret-prefixed keys are hashed into the
+      PoolKey and stub argv. A stale overlay would hash the old set while
+      gatewayd hashes the new one, and the coherence gate would refuse.
+    * ``read_buffer_limit`` — stamped into every stub's ``--read-limit``.
     * ``schema`` / ``package`` — invalidate on rewriter logic changes.
     * ``mate_sources`` — present only on a pass that also rewrites the crewmate
       files (:mod:`kiro_crew.mcp_gateway.mate_overlays`): their folder, the
@@ -610,20 +571,14 @@ def rewrite_agents(
 
     With *mate_source_dir* (``~/.kiro/mates/agents``) the same pass also writes
     one overlay per crewmate file to ``<overlay_dir>/mates/`` under the stub
-    identity ``crewmate:<id>`` (see :mod:`kiro_crew.mcp_gateway.mate_overlays`).
-    Those go through this pass's launch approvals, sidecar ledger, fingerprint,
-    cache and prune exactly as the agent overlays do, and get no settings
-    injection: the worker's servers are its crewmate file's own. Any exception
-    in that crewmate half is caught and logged: its overlays, sidecars and
-    targets are dropped, the pass is uncached with ``live_incomplete`` set, and
-    the agent overlays, prune and sidecar prune run as without it (the
-    fingerprint is computed but not stored, as on any uncached pass).
+    identity ``crewmate:<id>`` (see :mod:`kiro_crew.mcp_gateway.mate_overlays`),
+    handled like agent overlays but with no settings injection. An exception in
+    that crewmate half drops its outputs and leaves the pass uncached with
+    ``live_incomplete`` set; the agent half still runs.
 
-    Never modifies ``source_dir``. Idempotent — safe to call on every
-    Kiro Crew startup. When no input changed since the last completed run
-    (see :func:`_rewrite_inputs_fingerprint`) the rewrite loop is skipped and
-    the cached ``(results, target_env)`` is returned; the stale-file prune
-    still runs on that path.
+    Never modifies ``source_dir``. Idempotent. When no input changed since the
+    last completed run (see :func:`_rewrite_inputs_fingerprint`) the cached
+    ``(results, target_env)`` is returned; the stale-file prune still runs.
 
     Args:
         source_dir: Usually ``~/.kiro/agents/``.
@@ -637,16 +592,11 @@ def rewrite_agents(
             so the stub's PoolKey matches KiroCrew's sandbox policy.
         approval_mode: Value from ``config.agent.approval_mode`` — same.
         stub_servers: Server names from ``config.mcp_gateway.stub_servers``.
-            A stdio server gets a stub when its name is in this set — that list is
-            the ONLY trigger. A per-agent-spec ``poolable: true`` is retired and
-            deliberately ignored here: both real gates (the broker start gate and
-            the session overlay) read the config list, so honouring the spec key
-            produced a stub nothing pointed at. It is still stripped before the
-            entry reaches kiro-cli, and still reported as ``entry_poolable`` for
-            information only. An unstubbed server is left untouched for the
-            session to launch itself, which is what keeps the default free of both
-            a daemon and a stub process. ``None`` is treated as an empty set,
-            meaning nothing is rewritten at all.
+            A stdio server gets a stub only when its name is in this set. A
+            per-spec ``poolable: true`` is ignored (both real gates read the
+            config list), stripped before kiro-cli, and reported as
+            ``entry_poolable`` for information only. ``None`` means nothing is
+            rewritten.
         pooling_enabled: ``config.mcp_gateway.enabled``. Sharing is global over
             the stub set: when ``False`` no stub is marked shareable, so each
             connection gets its own backend while the stubs stay in place — the
@@ -888,44 +838,17 @@ def rewrite_agents(
     transient_keep: set[str] = set()
 
     # A settings read that FAILED is not a settings file that declared nothing.
-    # ``settings_poolable`` is empty on that path because the pass could not
-    # ASK, so an agent overlay written from it reflects a fact this pass never
-    # established: every globally-declared poolable server silently stops being
-    # pooled for the rest of this gateway's lifetime. Its tools do not vanish --
-    # the raw entry still merges from the real settings file -- but it runs
-    # per-session and unpooled, with none of the identity the stub carries. The
-    # pass is already uncacheable (``notes.source_read_failed`` was set at the
-    # read site), so a restart self-heals; the degraded window is a whole
-    # gateway lifetime.
+    # Rewriting from the empty ``settings_poolable`` would unpool every global
+    # poolable server for the whole gateway lifetime. So an agent with a
+    # previous overlay keeps it (it already carries the injected globals); an
+    # agent with none is still written, since refusing would unpool its OWN
+    # servers too.
     #
-    # Refuse to rewrite instead, exactly as the per-agent transient read
-    # failure below does -- but only where refusing PRESERVES something. An
-    # agent that has a previous overlay keeps it: that overlay carries both its
-    # own wrapped servers and the injected globals, so nothing is dropped. An
-    # agent with NO previous overlay is still written, because there the empty
-    # injection set is not the conflation this guards against -- no injected
-    # copy exists to drop, and refusing would leave that agent with no overlay
-    # at all, unpooling its OWN servers too. That is strictly worse than the
-    # fault warrants, and worse than what this pass does today.
-    #
-    # The trade on a kept overlay is staleness in the other direction, and it is
-    # bounded to the injection set alone: a keep is only honest when NOTHING
-    # ELSE the overlay encodes has changed. Keeping one otherwise defers the
-    # agent's own spec (an autoApprove entry removed, a server disabled) and the
-    # policy knobs _build_stub_entry bakes into every stub argv (--sandbox-mode,
-    # --approval-mode, --poolable, work dir, socket, identity keys) -- all
-    # deliberate instructions, unlike a transient fault. So the keep is gated on
-    # _overlay_inputs_unchanged: the stored fingerprint must show this pass's
-    # inputs matching the ones that overlay was built from, every input except
-    # the settings entry the failed read made unknowable. One comparison covers
-    # every dimension, so a future fingerprinted input is covered without being
-    # enumerated at this site.
-    #
-    # Gated on nothing else: with an empty stub set nothing is wrapped and
-    # ``_injectable_settings_servers`` returns nothing whatever the file says, so
-    # a keep and a rewrite produce identical bytes there. An extra
-    # ``bool(stub_set)`` term would be unobservable -- no test can distinguish
-    # it -- so the fingerprint comparison below carries the whole decision.
+    # A keep is honest only when nothing else the overlay encodes changed (the
+    # agent's spec, the stub argv knobs _build_stub_entry bakes in), so it is
+    # gated on _overlay_inputs_unchanged: every fingerprinted input except the
+    # unreadable settings entry must match. With an empty stub set a keep and a
+    # rewrite produce identical bytes, so no extra gate is needed.
     injection_unknown = settings_read_transient
     # A keep SERVES artifacts this pass did not write, so it must carry the same
     # guarantees the other serve-without-writing path does. Vouch for the shared
