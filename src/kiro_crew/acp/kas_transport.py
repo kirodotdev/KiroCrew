@@ -11,13 +11,17 @@ Who answers the engine's credential callback is a per-spawn choice:
   credential store and consume the engine's ``_kiro/auth/getAccessToken``
   request itself. This is the default here, and the whole story for an operator
   who signs in with ``kiro-cli login``.
-- With the flag OMITTED, kiro-cli's v3 launcher leaves the wire untouched: the
-  same request travels upstream to the ACP client, i.e. to Crew. Crew takes this
+- ``--auth-method client`` makes kiro-cli leave the wire untouched: the same
+  request travels upstream to the ACP client, i.e. to Crew. Crew takes this
   shape when its own vault (:mod:`kiro_crew.auth`, the sign-in that lives in the
   dashboard) holds an identity, and answers from
   :meth:`kiro_crew.auth.provider.KasAuthProvider.get_access_token_callback`. The
   refresh token never leaves Crew; the engine sees an access token and its
-  expiry.
+  expiry. The flag is passed unless the installed kiro-cli is known to be below
+  :data:`kiro_crew.kiro_cli.KAS_AUTH_CLIENT_MIN_KIRO_CLI`; from that floor an
+  omitted flag means ``cli``. Below the floor the Crew-owned spawn omits the
+  flag, which those releases read as client-owned. An unknown version gets the
+  flag, so a release that lacks the value stops at argument parse.
 
 Crew does NOT locate kiro-cli's *extracted* KAS bundle and run it: that would
 make Crew depend on kiro-cli's internal on-disk layout (a
@@ -82,13 +86,15 @@ KAS_RELAY_ENGINE_FLAG = "--agent-engine"
 KAS_RELAY_ENGINE = "v3"
 
 #: Auth owner flag. ``cli`` keeps token resolution inside the kiro-cli process,
-#: which already holds that store's OIDC refresh token. OMITTING the flag is
-#: kiro-cli's client-owned default: the engine's ``_kiro/auth/getAccessToken``
-#: request reaches the ACP client, and Crew answers it from its own vault. There
-#: is deliberately no third spelling here -- host ownership is the absence of the
-#: flag, which is what every kiro-cli release that has the flag at all does.
+#: which already holds that store's OIDC refresh token. ``client`` sends the
+#: engine's ``_kiro/auth/getAccessToken`` request to the ACP client, and Crew
+#: answers it from its own vault. An omitted flag is ``cli`` from
+#: :data:`kiro_crew.kiro_cli.KAS_AUTH_CLIENT_MIN_KIRO_CLI` and ``client`` below
+#: it, so a Crew-owned spawn names ``client`` unless the installed release is
+#: known to be below that floor.
 KAS_RELAY_AUTH_FLAG = "--auth-method"
 KAS_RELAY_AUTH_OWNER = "cli"
+KAS_RELAY_AUTH_CLIENT = "client"
 
 #: The connection-level request the engine raises for a credential when Crew is
 #: the auth owner. Covenant method name only; the response shape Crew returns is
@@ -106,19 +112,23 @@ METHOD_KAS_AUTH_GET_ACCESS_TOKEN = "_kiro/auth/getAccessToken"
 KAS_AUTH_CALLBACK_ERROR_CODE = -32000
 
 
-def build_kas_argv(kiro_bin: str, *, host_auth: bool = False) -> list[str]:
+def build_kas_argv(
+    kiro_bin: str, *, host_auth: bool = False, client_flag: bool = False
+) -> list[str]:
     """argv for a KAS stdio session served by kiro-cli's ACP relay.
 
     ``host_auth=False`` (default) pins ``--auth-method cli``: kiro-cli owns the
-    credential and Crew never sees the engine's token callback. This is
-    byte-for-byte the argv Crew has always built, so an operator with no Crew
-    sign-in gets exactly the previous behavior.
+    credential and Crew never sees the engine's token callback. *client_flag*
+    has no effect on this branch.
 
-    ``host_auth=True`` omits the flag. kiro-cli then leaves the engine's
-    ``_kiro/auth/getAccessToken`` request on the wire for Crew to answer from
-    :mod:`kiro_crew.auth`. The caller decides this from whether the vault holds
-    an identity (see ``AcpRuntime._resolve_spawn_plan``); this function only
-    renders the choice.
+    ``host_auth=True`` hands the engine's ``_kiro/auth/getAccessToken`` request
+    to Crew, which answers from :mod:`kiro_crew.auth`. With *client_flag* set it
+    renders ``--auth-method client``; without it the flag is omitted, which is
+    client-owned only on releases below
+    :data:`kiro_crew.kiro_cli.KAS_AUTH_CLIENT_MIN_KIRO_CLI`, so the caller
+    clears it only for a release known to be below that floor. The caller decides
+    both from the vault and the installed release (see
+    ``AcpRuntime._resolve_spawn_plan``); this function only renders the choice.
 
     No ``--agent``: Crew binds its agent by sending ``_meta.kiro.customAgents``
     on ``session/new`` and then activating it with ``session/set_mode`` (see
@@ -140,6 +150,8 @@ def build_kas_argv(kiro_bin: str, *, host_auth: bool = False) -> list[str]:
     ]
     if not host_auth:
         argv += [KAS_RELAY_AUTH_FLAG, KAS_RELAY_AUTH_OWNER]
+    elif client_flag:
+        argv += [KAS_RELAY_AUTH_FLAG, KAS_RELAY_AUTH_CLIENT]
     return argv
 
 

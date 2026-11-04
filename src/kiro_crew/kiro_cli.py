@@ -115,6 +115,24 @@ _STATE_DB_TIMEOUT_SECS = 5.0
 #: A changelog entry is not a probe; a release nobody ran stays above the floor.
 SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 
+#: Lowest kiro-cli release where a Crew-owned KAS relay spawn passes
+#: ``--auth-method client``.
+#:
+#: From this release an omitted ``--auth-method`` means ``cli``: kiro-cli answers
+#: the engine's ``_kiro/auth/getAccessToken`` from its own store, so Crew's vault
+#: is never asked. ``client`` is what hands that request to Crew. Observed: the
+#: no-flag default is client-owned on 2.35.1 and cli-owned on 2.35.2, 2.37.1 and
+#: 3.0.0. ``client`` parses on 2.35.2; on 2.37.1 and 3.0.0, signed out, it also
+#: forwards the request to the ACP client. Forwarding with kiro-cli signed in has
+#: not been measured.
+#:
+#: The floor errs low on purpose, and an unknown version is treated as at or
+#: above it. A release that lacks the value refuses the flag at argument parse,
+#: before ``initialize``, so a gate that is too generous fails closed. A gate that
+#: is too strict keeps the flag off a release that needs it, and turns run on
+#: kiro-cli's own account instead of the vault's.
+KAS_AUTH_CLIENT_MIN_KIRO_CLI: tuple[int, int, int] = (2, 35, 2)
+
 #: Lowest verified release for both kiro and KAS where deferred Crew tools avoid
 #: the thinking-signature rejection. Older or unknown engines keep Crew tools resident.
 #: Empirical, not a named upstream fix: thinking turns before and after a deferred
@@ -142,6 +160,17 @@ _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
+
+
+def kas_auth_client_flag_supported(version: tuple[int, int, int] | None) -> bool:
+    """Whether a Crew-owned KAS relay spawn on *version* passes ``--auth-method client``.
+
+    True unless *version* is known and below the floor. An unknown version is
+    True: a release that lacks the value stops at argument parse, which fails
+    closed, while an omitted flag on a release at or above the floor runs on
+    kiro-cli's own credential.
+    """
+    return version is None or version >= KAS_AUTH_CLIENT_MIN_KIRO_CLI
 
 
 def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
