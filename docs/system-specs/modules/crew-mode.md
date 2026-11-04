@@ -2959,8 +2959,10 @@ and key-results compare-and-sets accept the scrubbed form the page was shown as
 keeps the stored text (`member_goals.keep_unscrubbed`), so saving one milestone
 never replaces another's real text with redaction placeholders. Deleting a mate removes its check-in schedules
 (`crew_removal._remove_goal_check_ins`) unless another live crew still derives
-the slug; the goal record stays, like the rules file. Both deletes run it, the
-route and `kirocrew agent delete`, through `crew_removal._remove_member_leftovers`.
+the slug; the goal record stays, like the rules file. Every removal of a mate
+runs it through `crew_removal._remove_member_leftovers`: the route,
+`kirocrew agent delete`, the `POST /api/agents/sync` prune of a package mate
+whose spec is gone, and the startup prune of never-chatted generated mates.
 
 Since such a mate has a goal and no description, the Profile card's About
 shows its first goal, marked **From the goal**, while the description is
@@ -3153,7 +3155,11 @@ other missing member stays refused. A recorded `kirocrew-skill-view-*`
 name is mapped back to its source agent through the projection's sidecar
 (`source_agent_name`) before either lookup. The headless `start_api_server` / `--slack-only`
 entrypoint has no dashboard and does not run it) and settles that without any
-UI — removal only; nothing is created or rebound:
+UI — removal only; nothing is created or rebound. Each removed row then gets
+the teardown a delete runs (`crew_removal._remove_member_leftovers`, from
+`_kick_crewmate_prune` before the gate opens): a staged avatar and the goal
+check-ins switched on from its Goals tab go with it, resolved from the
+sync-shaped record the row was judged as. The pass itself:
 
 - **Candidate** = a row that is exactly what the sync wrote: its name is its
   `kiro_agent`; its raw `source` is a string in `builtin`, `package` or `aim`
@@ -4224,9 +4230,12 @@ things here and leaves every other git step to the worker's prompt
    the cwd is matched as the same path in the checkout, asked of git each time
    (`crewmate_worktree.source_path`; config.md, "Project AWS profiles").
 3. **It goes with the crewmate.** Deleting the crewmate, from the dashboard
-   or with `kirocrew agent delete` (`crew_removal._remove_member_leftovers`,
+   or with `kirocrew agent delete`, or a prune removing it (the agent sync's,
+   the startup pass's) (`crew_removal._remove_member_leftovers`,
    `crewmate_worktree.remove_for_member`) lists `<workspace>/worktrees/<slug>` and removes each folder git registers as
    a worktree of its repository with `git worktree remove` (never `--force`).
+   A slug another live crew still derives keeps them all, as it keeps the
+   goal check-ins.
    One with uncommitted changes, ignored files or a repository that configures a
    checkout filter is kept and logged; so is anything git does not register.
    Branches stay, and the repositories' own checkouts are never touched.

@@ -356,9 +356,20 @@ async def _remove_member_leftovers(
         report.extend(("removed", "goal check-in", job) for job in jobs or ())
     # One with uncommitted changes is kept; its branches and the repositories'
     # own checkouts are never touched.
+    # Worktrees sit under the slug, so a slug another live crew still derives
+    # keeps them, as it keeps the goal check-ins.
     from kiro_crew.crewmate_worktree import remove_for_member
+    from kiro_crew.members import member_slug
 
-    trees = await _drained_to_thread(remove_for_member, name, cfg)
+    def _trees() -> tuple[list[str], list[str]] | None:
+        try:
+            claimed = _member_slug_is_claimed(member_slug(name, cfg))
+        except Exception:
+            logger.warning("crew delete: could not resolve the slug of %r", name, exc_info=True)
+            return None
+        return ([], []) if claimed else remove_for_member(name, cfg)
+
+    trees = await _drained_to_thread(_trees)
     if trees is None:
         report.append(("failed", "worktree", ""))
     else:
