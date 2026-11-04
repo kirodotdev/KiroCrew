@@ -145,7 +145,8 @@ describe('Design Critique start button — reads the catalog, not a literal', ()
   it('takes the composer flow label from the catalog, count included', async () => {
     await withSentinel(
       'zh-CN',
-      'apps.designCritique.composer.critique_this_flow_count_screens',
+      // zh-CN has a single plural form, so `_other` is the value it renders.
+      'apps.designCritique.composer.critique_this_flow_count_screens_other',
       'SENTINEL-COMPOSER-FLOW {{count}}',
       () => {
         render(<Composer {...composerProps} staged={[staged('a'), staged('b')]} />)
@@ -170,7 +171,7 @@ describe('Design Critique start button — reads the catalog, not a literal', ()
   it('takes the scoping flow label from the catalog, count included', async () => {
     await withSentinel(
       'zh-CN',
-      'apps.designCritique.scopingPicker.critique_this_flow_count_screens',
+      'apps.designCritique.scopingPicker.critique_this_flow_count_screens_other',
       'SENTINEL-SCOPE-FLOW {{count}}',
       () => {
         render(<ScopingPicker {...pickerProps(3, ['s0', 's1'])} />)
@@ -198,11 +199,26 @@ describe('Design Critique start button — the two surfaces agree', () => {
     // Per-file namespaces are this repo's convention, so the same sentence is
     // stored twice. That is only safe while the two copies stay in step, and a
     // translator editing one and not the other is exactly how they drift.
-    for (const leaf of ['critique_this_flow_count_screens', 'critique_this_screen']) {
+    for (const leaf of [
+      'critique_this_flow_count_screens_one',
+      'critique_this_flow_count_screens_other',
+      'critique_this_screen',
+    ]) {
       const a = i18next.getResource('en', 'translation', 'apps.designCritique.composer.' + leaf)
       const b = i18next.getResource('en', 'translation', 'apps.designCritique.scopingPicker.' + leaf)
       expect(a).toBeTruthy()
       expect(b).toEqual(a)
     }
+  })
+})
+
+describe('Design Critique flow label — the noun agrees with the count', () => {
+  it.each([
+    'apps.designCritique.composer.critique_this_flow_count_screens',
+    'apps.designCritique.scopingPicker.critique_this_flow_count_screens',
+  ])('%s reads "1 screen" at one and "2 screens" at two', async (key) => {
+    await i18next.changeLanguage('en')
+    expect(i18next.t(key, { count: 1 })).toBe('Critique this flow · 1 screen')
+    expect(i18next.t(key, { count: 2 })).toBe('Critique this flow · 2 screens')
   })
 })
