@@ -40,6 +40,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import parse_text_chunk
+from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.session_handle_native_children import (
     NATIVE_CHILD_LABEL_CAP,
     NATIVE_CHILD_ROSTER_CAP,
@@ -253,16 +254,7 @@ def _note_session_message(
     return self._native_child_roster()
 
 
-def _parent_tool_use(update: dict[str, Any]) -> str:
-    """The Agent call a frame is stamped with, or ``""`` for an unstamped frame.
-
-    The adapter stamps ``parentToolUseId`` as a string only on a subagent's frames;
-    the parent's own frames carry none, or carry it as null.
-    """
-    meta = update.get("_meta")
-    claude_meta = meta.get("claudeCode") if isinstance(meta, dict) else None
-    value = claude_meta.get("parentToolUseId") if isinstance(claude_meta, dict) else None
-    return value if isinstance(value, str) else ""
+_parent_tool_use = parent_tool_use
 
 
 def _native_child_of(self: AcpClient, session_id: object, update: dict[str, Any]) -> str:

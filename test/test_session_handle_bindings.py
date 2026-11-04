@@ -306,6 +306,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_refusal_steer": ("property", False, "a6632a57e602", "session_handle_class"),
     "supports_steer": ("property", False, "a6632a57e602", "session_handle_class"),
     "supports_steer_retract": ("property", False, "a6632a57e602", "session_handle_class"),
+    "take_batch_refusal": ("function", False, "85a6851f62f8", "session_handle_class"),
     "wait_for_compaction": ("function", True, "0258399cca12", "session_handle_compaction"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "dc863b4461ff", "session_handle_mcp"),
