@@ -36,6 +36,7 @@ import kiro_crew.sel as sel_mod
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import sel as kiro_crew_sel
+from kiro_crew import sel_chain_lock as kiro_crew_sel_chain_lock
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
 from kiro_crew.testing.wait import async_wait_until, wait_until
 
@@ -543,14 +544,15 @@ log.flush()
         legacy.write_bytes(b"k" * 63 + b"\x1a")
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
 
-        real_mkdir = Path.mkdir
+        real_mkdir = os.mkdir
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
+        # os.mkdir: pathlib and the owner-only helper both create through it.
+        def uncreatable_trust(path, *args, **kwargs):
+            if Path(path) == trust:
                 raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
+            return real_mkdir(path, *args, **kwargs)
 
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(os, "mkdir", uncreatable_trust):
             log = SecurityEventLog(base_dir=tmp_path, sync=True)
             assert log._hmac_key_file == legacy, "precondition: fallback not taken"
             assert log._chain_lock_target() == (legacy, False, None), (
@@ -610,14 +612,13 @@ log.flush()
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
         assert not legacy.exists(), "precondition: the key migrated out of the log dir"
 
-        real_mkdir = Path.mkdir
+        # The directory exists here, so refuse the acquire's creation step
+        # itself: a real mkdir accepts an existing directory.
+        def uncreatable_trust(path):
+            assert Path(path) == trust
+            raise PermissionError("read-only config dir")
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
-                raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
-
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(kiro_crew_sel_chain_lock, "mkdirs_owner_only", uncreatable_trust):
             with pytest.raises(OSError):
                 log._chain_lock_target()
 
@@ -651,14 +652,13 @@ log.flush()
         # The agent plants a long-enough file at the legacy key path.
         legacy.write_bytes(b"p" * 64)
 
-        real_mkdir = Path.mkdir
+        # The directory exists here, so refuse the acquire's creation step
+        # itself: a real mkdir accepts an existing directory.
+        def uncreatable_trust(path):
+            assert Path(path) == trust
+            raise PermissionError("agent-triggered refusal")
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
-                raise PermissionError("agent-triggered refusal")
-            return real_mkdir(self, *args, **kwargs)
-
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(kiro_crew_sel_chain_lock, "mkdirs_owner_only", uncreatable_trust):
             with pytest.raises(OSError):
                 log._chain_lock_target()
 
@@ -687,14 +687,15 @@ log.flush()
         legacy.write_bytes(b"k" * 64)
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
 
-        real_mkdir = Path.mkdir
+        real_mkdir = os.mkdir
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
+        # os.mkdir: pathlib and the owner-only helper both create through it.
+        def uncreatable_trust(path, *args, **kwargs):
+            if Path(path) == trust:
                 raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
+            return real_mkdir(path, *args, **kwargs)
 
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(os, "mkdir", uncreatable_trust):
             log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert log._hmac_key_file == legacy, "precondition: signing at the legacy path"
         # The static screens now pass, so only the pin can refuse.

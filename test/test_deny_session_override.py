@@ -1267,3 +1267,76 @@ class TestApproveRouteEndToEnd:
             resp = await client.post("/api/chat/slots/selected/approve", json=body)
         assert resp.status < 500
         assert not fut.done() or fut.result() not in ("deny_override_once", "approved")
+
+
+def _title_gate(key: str, needle: str) -> MagicMock:
+    """A context builder whose gate refuses on *key* only a call whose title holds *needle*."""
+
+    def _judge(title, **kw):
+        if needle in title and key not in kw.get("deny_waivers", frozenset()):
+            verdict = ToolHookResult.deny(f"{DENY_REASON_PREFIX}{key}")
+            verdict.tier = "deny-rules"
+            return verdict
+        return ToolHookResult.allow()
+
+    cb = MagicMock()
+    cb.hooks.on_tool_call.side_effect = _judge
+    cb.build_message.return_value = ("hello", None)
+    return cb
+
+
+class TestBatchCascadeKeepsTheRuleRefusal:
+    """A deny-rules refusal cut short by an earlier rejection in its batch."""
+
+    @pytest.mark.asyncio
+    async def test_the_cascaded_call_reads_the_rule_not_user_denied(self, tmp_path, monkeypatch):
+        import asyncio
+
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_title_gate(_RM_ROOT, "rm -rf"))
+        slot = _make_slot()
+        first = _shell_event(
+            title="Running: ls",
+            request_id="req-0",
+            tool_input=json.dumps({"command": "ls"}),
+        )
+        _set_stream(
+            client,
+            [
+                first,
+                _shell_event(request_id="req-1"),
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done."),
+                _complete_event(),
+            ],
+        )
+        task = asyncio.create_task(_answer_approval(slot, "req-0", "rejected"))
+        try:
+            with _patch_stats():
+                await finished(
+                    _run_chat(
+                        state,
+                        slot,
+                        "hello",
+                        _directive_user_origin=True,
+                        _directive_owner_origin=True,
+                    ),
+                    "the chat turn completing",
+                )
+            await await_until(task, what="the first card being answered")
+        finally:
+            await _drain(task)
+
+        client.approve_tool.assert_not_called()
+        rejected = [c.args[0] for c in client.reject_tool.call_args_list]
+        assert rejected == ["req-0", "req-1"]
+        rows = [m.get("content") or "" for m in slot.messages if m.get("role") == "tool"]
+        cascaded = [r for r in rows if "rm -rf" in r]
+        assert cascaded, rows
+        assert all(_RM_ROOT in r and "(rejected)" not in r for r in cascaded), cascaded
+        # No override card is shown for the cascaded call.
+        assert not [
+            m
+            for m in _permission_rows(slot)
+            if json.loads(m["cls"]).get("request_id") == "req-1"
+            and DENY_OVERRIDE_META_KEY in json.loads(m["cls"])
+        ]

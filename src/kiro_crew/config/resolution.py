@@ -429,25 +429,37 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
-def _subtract_overlay(merged: dict, overlay: dict) -> dict:
+def _subtract_overlay(merged: dict, overlay: dict, base: dict | None = None) -> dict:
     """Remove leaf values from *merged* that are owned by the overlay.
 
     For nested dicts, recurse. For leaf keys present in both overlay and
     merged with the same value, remove from the result so they only live
     in config.local.json.
+
+    *base* is what ``config.json`` itself stores. A leaf it holds is the base
+    file's own value, so an overlay-owned leaf goes back to that stored value
+    instead of being removed: the overlay wins at load either way, and dropping
+    the overlay later still finds the base value underneath.
     """
     result = dict(merged)
     for key, ov_value in overlay.items():
         if key not in result:
             continue
+        base_value = base.get(key) if isinstance(base, dict) else None
+        stored = isinstance(base, dict) and key in base
         if isinstance(ov_value, dict) and isinstance(result[key], dict):
-            cleaned = _subtract_overlay(result[key], ov_value)
+            cleaned = _subtract_overlay(
+                result[key], ov_value, base_value if isinstance(base_value, dict) else None
+            )
             if cleaned:
                 result[key] = cleaned
             else:
                 del result[key]
         elif result[key] == ov_value:
-            del result[key]
+            if stored:
+                result[key] = base_value
+            else:
+                del result[key]
     return result
 
 

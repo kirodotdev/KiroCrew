@@ -9,7 +9,7 @@ sensitivity check.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -25,7 +25,7 @@ def _make_app(index=None) -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = index
+    state.file_indexes.ensure = AsyncMock(return_value=index)
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""
@@ -78,7 +78,7 @@ class TestFileIndexDirs:
     async def test_index_includes_dir_entries(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("widgets", _scorer)
             by_name = {r["name"]: r for r in results}
@@ -95,7 +95,7 @@ class TestFileIndexDirs:
         """An empty dir has no files, so it can only appear if dirs are walked."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgetsempty", _scorer)}
             assert "widgetsempty" in names
@@ -106,7 +106,7 @@ class TestFileIndexDirs:
     async def test_index_kinds_filter(self, tmp_path):
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             dirs = idx.search("widgets", _scorer, 15, "dirs")
             assert dirs, "expected at least one directory hit"
@@ -126,7 +126,7 @@ class TestFileIndexDirs:
         """Dot-prefixed dirs ARE candidates; skip-listed dirs are not."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
             assert ".widgetshidden" in names, "dot-prefixed dir must be offered as a candidate"
@@ -145,7 +145,7 @@ class TestFileIndexDirs:
         """
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             for q in ("git", "cache"):
                 names = {r["name"] for r in idx.search(q, _scorer, 50, "dirs")}
@@ -160,7 +160,7 @@ class TestFileIndexDirs:
         hidden.mkdir()
         (hidden / "widgetsinside").mkdir()
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
             assert ".secretcfg" not in names, "does not match query, not expected here"
@@ -178,7 +178,7 @@ class TestFileIndexDirs:
             return 10.0 if q in name.lower() else 0.0
 
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             results = idx.search("alpha", flat_scorer)
             kinds = [r["kind"] for r in results]
@@ -305,7 +305,7 @@ class TestApiFileSearchDirs:
         """The fast path must pass the kinds param through to FileIndex.search."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
-        await idx.start()
+        await idx.build()
         try:
             app = _make_app(index=idx)
             async with TestClient(TestServer(app)) as client:

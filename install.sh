@@ -49,6 +49,7 @@ unset PYTHONPATH PYTHONHOME
 USE_MISE=0
 WITH_VOICE=0
 KAS_DOWNLOAD_FAILED=0
+KAS_HOST_UNSUPPORTED=0
 WITH_KAS=1
 for _arg in "$@"; do
     case "$_arg" in
@@ -853,8 +854,16 @@ if [ -n "$_kirocrew" ]; then
         # agent.kas_bundle true`), never the installer's. A failed download
         # (offline host, CDN outage) leaves a working install, so it only warns.
         info "Downloading the built-in KAS engine (kirocrew kas install)…"
-        if "$_kirocrew" kas install; then
+        # Exit 3 is `kas install`'s "this host cannot run the engine"
+        # (cli_kas.py HOST_UNSUPPORTED_EXIT): it already printed why, and a
+        # retry cannot help, so no retry advice follows it.
+        _kas_rc=0
+        "$_kirocrew" kas install || _kas_rc=$?
+        if [ "$_kas_rc" -eq 0 ]; then
             ok "Built-in KAS engine installed (switch it on: kirocrew config set agent.kas_bundle true)"
+        elif [ "$_kas_rc" -eq 3 ]; then
+            KAS_HOST_UNSUPPORTED=1
+            warn "This host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it."
         else
             KAS_DOWNLOAD_FAILED=1
             warn "Could not download the built-in KAS engine; Kiro Crew is installed without it."
@@ -896,7 +905,7 @@ echo ""
 echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected another ACP backend):"
 echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
 echo "       ${GREEN}kiro-cli login${RESET}"
-if [ "$WITH_KAS" -eq 1 ]; then
+if [ "$WITH_KAS" -eq 1 ] && [ "$KAS_HOST_UNSUPPORTED" -eq 0 ]; then
 echo "       To try the built-in KAS engine instead (shadow testing, off by default):"
 if [ "$KAS_DOWNLOAD_FAILED" -eq 1 ]; then
 echo "       ${GREEN}kirocrew kas install${RESET}  (the download failed during install; retry it first)"

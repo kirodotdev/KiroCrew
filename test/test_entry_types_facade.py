@@ -87,21 +87,21 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
         ("ledger/recorded", "ce8a9e0246ca5f62f01fe4d9edaad4b9"),
         ("object/observed", "e7708ecf53c90b1b1e5e5340c59a97e0"),
         ("radar/recorded", "f5da674a52d214bb4b0e46b717ff3042"),
-        ("work/recorded", "c3e783d7203bdb8eb045991123c16eb3"),
+        ("work/recorded", "f57d411b72324b94a218229ba1d16cba"),
         ("work/charged", "dfafeefd53bcb426be1351ea831bb481"),
         ("panel/published", "3bed4520ab9f3b183255124dfa140c1e"),
-        ("dashboard/instance_changed", "f8187ea96d4c04bc538184bbbbffaca2"),
-        ("dashboard/agentic_value", "5fa08587836bf07bca2f89201f0ffc28"),
-        ("dashboard/agentic_refused", "8a1ec793a0785956734a05b7783512c8"),
+        ("dashboard/instance_changed", "e89026634b8f99bc617fc02e0839cecc"),
+        ("dashboard/agentic_value", "9ba35f808be9aa3cd45712079b8a9403"),
+        ("dashboard/agentic_refused", "84c3b73827ca0cc5c8d2125efa82e869"),
         ("card/proposed", "3aa4b12a8444db31ec2704d9b4206cf1"),
         ("card/finished", "7b65b135a4f6c271df8f31f42152632b"),
         ("guide/offered", "721d8590a703806a77e0e40a10ef2048"),
         ("guide/started", "ebf18278dee992c5eea17a2d0b0341d6"),
         ("guide/finished", "613fdb310da277c35eea97f7911d901b"),
-        ("dashboard/goal_recorded", "d9a0196325963ff3db8e6fbdf7c84004"),
-        ("dashboard/waiting_changed", "cb4f1800ba39b67fd925d785de126b7b"),
-        ("dashboard/custom_value", "3c78f3968518a1daa901339fc1e79045"),
-        ("dashboard/custom_failed", "0169da3ba9c5fa0dc40e1a2bb781f91e"),
+        ("dashboard/goal_recorded", "efb93c3415691b9494f59daee2952a64"),
+        ("dashboard/waiting_changed", "c66ee05089867149eb2c7cdfa2e2d8a5"),
+        ("dashboard/custom_value", "081599d743b2ec9d384eb75653350287"),
+        ("dashboard/custom_failed", "144633a23583fc8f2eca57e14a8120b6"),
     ),
     KIND_CREW: (
         ("crew/dispatch", "5820b02abe6583c997f2cf40fb1465ff"),
@@ -112,7 +112,7 @@ _GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
 #: SHA-256 of ``render_markdown(kind)`` when the registry was split into owners. The
 #: member kind declares nothing here, so its digest is of the heading alone.
 _GOLDEN_RENDER: dict[str, str] = {
-    KIND_SESSION: "0fb5441d588b73b1ebcce67d22e93a74b3624dd18ebde280b5a21a7b60da7b3b",
+    KIND_SESSION: "0856e41ce4481047ec6ef742615e5e5635d472b98da826752d25e94d569eb2de",
     KIND_CREW: "b6938d4f70730ae5ffce4ec6983a609443976a9fca7b013c04152e426dd8be8e",
     "member": "5cb4ea02ed8121eb6b285806b4723251aed568df0aa54b9ac8505c9ad389fa8d",
 }

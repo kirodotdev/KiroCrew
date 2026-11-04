@@ -47,6 +47,7 @@ from kiro_crew.acp.runtime import (
 )
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
@@ -67,6 +68,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.runtime_ownership import (
@@ -487,6 +489,12 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_withheld_credentials_notice(self) -> str:
+        """See ``AcpSessionHandle.kas_withheld_credentials_notice``."""
+        value = getattr(self._handle, "kas_withheld_credentials_notice", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
@@ -772,7 +780,15 @@ class AcpSessionProvider(LLMProvider):
             # it instead of hitting its generic `except Exception`.
             raise AcpError(str(exc)) from exc
         finally:
+            # End the shared turn FIRST so the tenancy release is never delayed
+            # or skipped, then record any child this turn forked while the
+            # leader is still alive (it stays alive past the turn), so a leader
+            # that exits before teardown does not leave them unrecorded and
+            # their group reported "kill failed". The record is bounded and a
+            # cancel during it propagates, so releasing the claim first keeps
+            # that release off the record's cancel path.
             await self._end_shared_turn(claim)
+            await record_live_children_after_turn(self)
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""
@@ -852,6 +868,7 @@ class AcpSessionProvider(LLMProvider):
             raise AcpError(str(exc)) from exc
         finally:
             await self._end_shared_turn(claim)
+            await record_live_children_after_turn(self)
 
     async def _connection_failure_is_signed_out(self, exc: AcpError) -> bool:
         """Whether a pre-output connection failure is really a missing sign-in.
@@ -975,6 +992,10 @@ class AcpSessionProvider(LLMProvider):
             )
         )
 
+    def take_batch_refusal(self, request_id: str | int) -> str | None:
+        """The handle's batch-guard refusal reason for *request_id*, taken once."""
+        return self._handle.take_batch_refusal(request_id)
+
     async def reject_tool(self, request_id: str | int) -> None:
         """Reject a pending tool permission request."""
         await self._guarded(self._handle.reject_tool(request_id))
@@ -1028,6 +1049,11 @@ class AcpSessionProvider(LLMProvider):
     def session_id(self) -> str:
         """The ACP session ID."""
         return self._handle.session_id
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """See AcpSessionHandle.session_activity_at."""
+        return self._handle.session_activity_at
 
     def is_alive(self) -> bool:
         """True if the underlying runtime is still alive.
@@ -1297,6 +1323,21 @@ class AcpSessionProvider(LLMProvider):
         if not isinstance(backend, str) or backend not in ACP_BACKENDS_HARNESS_MANAGED:
             return None
         return backend
+
+    @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the KAS engine serving this session listed its compaction verb.
+
+        Identity is positive: only a KAS session asks its handle
+        (``AcpSessionHandle._kas_compact_advertised``, which fails closed on a
+        missing ``initialize`` record). Every other backend answers ``False``, the
+        ABC default. Only a literal ``True`` passes, so a mocked handle never
+        reads as advertised.
+        """
+        if self.backend == ACP_BACKEND_KAS:
+            probe = getattr(self._handle, "_kas_compact_advertised", None)
+            return callable(probe) and probe() is True
+        return False
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

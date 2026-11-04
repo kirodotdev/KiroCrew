@@ -209,7 +209,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
 #: supplied. They are copied into the child's own slot when it is created, as a
 #: per-session pick, so a later profile edit does not reach a child already open;
 #: the note says "copied" so the reply does not read as a live link to the profile.
-_PROFILE_COPY_NOTE = "copied from your crewmate profile at creation"
+_PROFILE_COPY_NOTE = "copied from your Bot profile at creation"
 
 
 class _Created(NamedTuple):
@@ -380,7 +380,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         on_model += f" ({_PROFILE_COPY_NOTE}: {', '.join(inherited)})"
     if resp.get("inherited_model_dropped"):
         on_model += (
-            " (your crewmate profile's worker model is not usable here, so the "
+            " (your Bot profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
     if resp.get("autocompact_pct") is not None:
@@ -437,7 +437,14 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
     discloses nothing the refusal withholds: dispatch the TEMPLATE of that name on
     the caller's own memory (what a one-item worker needs), or let the owner's own
     tab make the create. A request that already asked for the template gets the
-    second remedy alone, since the first is what it just tried.
+    owner's remedies alone, since the first is what it just tried.
+
+    Picking the agent again in the refused chat is NOT a remedy, and the text says
+    so because it is the one a reader reaches for. Every chat that gets here has
+    messages: a different member is refused ``member_session_pinned``, and the same
+    agent is recorded through ``record_agent_selection(replace=True)``, which never
+    vouches. The binder that does vouch runs only for a chat with no messages, which
+    is why a NEW chat with this session's agent is a remedy that works.
     """
     if refused.code != "memory_delegation_denied":
         return ""
@@ -445,11 +452,13 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
         return (
             " The template dispatch binds this session's OWN memory, and that binding is "
             "what could not be verified. A member's memory binding cannot be changed in "
-            "Settings; the owner can re-select this session's agent (which re-binds its "
-            "memory) or run the dispatch from their own chat tab."
+            "Settings, and picking an agent again in this chat does not verify it. The "
+            "owner can run the dispatch from their own chat tab, or start a new chat with "
+            "this session's agent (a new chat is verified when it is created) and "
+            "dispatch from there."
         )
     return (
-        " The agent you named is a crew member whose private memory this session may "
+        " The agent you named is a Bot whose private memory this session may "
         "not bind; a member's memory binding cannot be changed in Settings. Re-send "
         'with `agent_kind: "template"` to run that agent\'s shared template on your own '
         "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "

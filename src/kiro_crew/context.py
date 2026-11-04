@@ -1302,8 +1302,6 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
-    from kiro_crew.agent_files import is_kirocrew_default_agent
-
     inherit = provider_type == PROVIDER_ACP
     pinned = pinned_skill_globs(session_key, project_dir=project_dir, inherit_defaults=inherit)
     if pinned is not None:
@@ -1317,11 +1315,9 @@ def _skills_injection_plan(
         )
     else:
         globs = []
-    is_custom = (
-        bool(agent)
-        and not is_kirocrew_default_agent(agent)
-        and agent not in WHOLE_CATALOG_TEMPLATES
-    )
+    # ``WHOLE_CATALOG_TEMPLATES`` holds every default agent, so it is the whole test:
+    # ``session_skill_globs`` reads the same set, and the two cannot disagree.
+    is_custom = bool(agent) and agent not in WHOLE_CATALOG_TEMPLATES
     return (bool(globs) or not is_custom), globs
 
 

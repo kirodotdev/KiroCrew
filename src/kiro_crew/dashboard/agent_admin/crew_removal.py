@@ -356,9 +356,20 @@ async def _remove_member_leftovers(
         report.extend(("removed", "goal check-in", job) for job in jobs or ())
     # One with uncommitted changes is kept; its branches and the repositories'
     # own checkouts are never touched.
+    # Worktrees sit under the slug, so a slug another live crew still derives
+    # keeps them, as it keeps the goal check-ins.
     from kiro_crew.crewmate_worktree import remove_for_member
+    from kiro_crew.members import member_slug
 
-    trees = await _drained_to_thread(remove_for_member, name, cfg)
+    def _trees() -> tuple[list[str], list[str]] | None:
+        try:
+            claimed = _member_slug_is_claimed(member_slug(name, cfg))
+        except Exception:
+            logger.warning("crew delete: could not resolve the slug of %r", name, exc_info=True)
+            return None
+        return ([], []) if claimed else remove_for_member(name, cfg)
+
+    trees = await _drained_to_thread(_trees)
     if trees is None:
         report.append(("failed", "worktree", ""))
     else:
@@ -441,7 +452,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 nonlocal retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
-                    raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+                    raise UnknownMemoryStore(f"Bot {name!r} was removed concurrently")
                 # Identity re-enforced on the RAW record this locked read
                 # returned, BEFORE the del and before any crew-log / avatar /
                 # private-copy cleanup. ``agents[name]["member_id"]`` is the
@@ -458,7 +469,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 if doc.get("default_agent") == name or (
                     isinstance(agent_section, dict) and agent_section.get("default_agent") == name
                 ):
-                    raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
+                    raise UnknownMemoryStore(f"Bot {name!r} became the default")
                 entry = agents[name]
                 stores = coerce_dict_section(doc, "memory_stores")
                 store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""

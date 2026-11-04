@@ -12,12 +12,15 @@ import CrewBoardMenuItem from './CrewBoardMenuItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import SourceLinksSubmenu from './SourceLinksSubmenu'
 import { SessionTurnLimitSubmenu } from './SessionTurnLimitMenu'
+import OfflineMenuReason from './OfflineMenuReason'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
 import { selectSlotSubagentsActive } from '../store/chatSlice'
+import { useConnected } from '../hooks/useConnected'
+import { offlineMenuRow } from '../utils/offline'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { useNewFolderMove } from '../hooks/useNewFolderMove'
 import { api } from '../api/client'
@@ -95,6 +98,10 @@ export interface SessionActionsMenuProps {
   /** Extra items rendered in the top "informational" group (header-only today:
    *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
   infoSlots?: React.ReactNode[]
+  /** One extra item rendered in the navigation group, directly after the pop-out rows
+   *  (header-only today: Split down). It changes the window layout the way pop-out
+   *  does, so it sits beside it, and no row above it moves. */
+  layoutSlot?: React.ReactNode
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
   /**
@@ -151,12 +158,12 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Reference in chat (sidebar rows only) · Copy link · Copy session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Reference in chat (sidebar rows only) · Copy link · Copy session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, layoutSlot, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -179,6 +186,7 @@ export default function SessionActionsMenu({
   // its behaviour). `unread` comes from dashboard.unreadSlots — the same source
   // toggleRead reads — and pin/folder/colour from the slot itself.
   const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
+  const connected = useConnected()
   const slot = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
   const isPinned = !!slot?.pinned
   const isMutesOpened = !!slot?.mutes_opened
@@ -245,24 +253,24 @@ export default function SessionActionsMenu({
     // Modifiers to the tab itself
     [
       onRename && (
-        <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
+        <Item key="rename" {...offlineMenuRow(connected, i18nT('utils.offline.rename_sessions'), i18nT('components.sessionActionsMenu.rename'), onRename)} {...uiLocation('sessions.row-menu.rename')}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
       onAutoTitle && (
-        <Item key="auto-title" onSelect={onAutoTitle}>
+        <Item key="auto-title" {...offlineMenuRow(connected, i18nT('utils.offline.rename_sessions'), i18nT('pages.chatPage.auto_title'), onAutoTitle)}>
           <Sparkles size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.auto_title')}
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
         <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
-      <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
+      <Item key="pin" {...offlineMenuRow(connected, i18nT('utils.offline.change_pin'), isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin'), () => togglePin(slotKey))} {...uiLocation('sessions.row-menu.pin')}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
       // Per-row mute, keyed to THIS row's slotKey (not the active tab), so a
       // background session can be silenced while the user works elsewhere.
-      <Item key="mute" onSelect={() => toggleMuted(slotKey)}>
+      <Item key="mute" {...offlineMenuRow(connected, i18nT('utils.offline.change_mute'), isMuted ? i18nT('components.sessionActionsMenu.unmute') : i18nT('components.sessionActionsMenu.mute'), () => toggleMuted(slotKey))}>
         {/* A speaker, not the bell: the bell belongs to "Mute sessions this one
          *  opens" just below, and the two must not read as one control. */}
         {isMuted
@@ -295,7 +303,7 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
-      <Item key="mute-opened" onSelect={() => toggleMutesOpened(slotKey)}>
+      <Item key="mute-opened" {...offlineMenuRow(connected, i18nT('utils.offline.change_mute'), isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens'), () => toggleMutesOpened(slotKey))}>
         <BellOff size={13} className="shrink-0 text-muted" /> {isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens')}
       </Item>,
       // The mute toggle has no server re-read; a failed PATCH leaves the row on
@@ -331,7 +339,8 @@ export default function SessionActionsMenu({
           variant={variant}
           folders={movableFolders}
           currentFolderId={currentFolderId}
-          onPick={(folderId) => move(slotKey, folderId)}
+          onPick={(folderId) => { if (!connected) return; move(slotKey, folderId) }}
+          offlineVerb={i18nT('utils.offline.move_sessions')}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
           sortMode={folderSortMode}
           onNewFolder={newFolderMove ? () => newFolderMove.open(slotKey) : undefined}
@@ -405,7 +414,7 @@ export default function SessionActionsMenu({
         </Item>
       ),
       onDuplicate && (
-        <Item key="duplicate" onSelect={onDuplicate}>
+        <Item key="duplicate" {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.duplicate'), onDuplicate)}>
           <GitFork size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
         </Item>
       ),
@@ -436,6 +445,7 @@ export default function SessionActionsMenu({
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
+      layoutSlot,
       // Stage a reference to this session in the open chat's composer — the
       // menu form of dragging the row into the composer. Self-hiding: the
       // caller passes the handler only when a reference can be staged right now
@@ -552,7 +562,7 @@ export default function SessionActionsMenu({
         key="reload"
         disabled={reloadBlocked}
         title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
-        onSelect={() => reload(slotKey)}
+        {...offlineMenuRow(connected, i18nT('utils.offline.reload_sessions'), i18nT('components.sessionActionsMenu.reload_session'), () => reload(slotKey))}
       >
         <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
         {reloadBlocked && (
@@ -573,23 +583,31 @@ export default function SessionActionsMenu({
     [
       (() => {
         const CloseGlyph = closeNeutral ? Unlink : X
+        const closeText = closeLabel ?? i18nT('components.sessionActionsMenu.close_session')
         return (
-          <Item key="close" className={closeNeutral ? undefined : 'text-danger focus:text-danger'} onSelect={() => close(slotKey)}>
+          <Item
+            key="close"
+            {...offlineMenuRow(connected, i18nT('utils.offline.close_sessions'), closeText, () => close(slotKey))}
+            className={connected && !closeNeutral ? 'text-danger focus:text-danger' : undefined}
+          >
             {closeHint ? (
               <>
                 <CloseGlyph size={13} className="self-start mt-0.5 shrink-0" />
                 <span className="flex min-w-0 flex-col">
-                  <span>{closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</span>
+                  <span>{closeText}</span>
                   <span className="max-w-[15rem] whitespace-normal text-[11px] leading-snug text-muted" data-testid="close-item-hint">{closeHint}</span>
                 </span>
               </>
             ) : (
-              <><CloseGlyph size={13} /> {closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</>
+              <><CloseGlyph size={13} /> {closeText}</>
             )}
           </Item>
         )
       })(),
     ],
+    // LAST on purpose: a gateway drop while the menu is open mounts this row, and
+    // anywhere above the items it would shift them under a mid-aim pointer.
+    !connected ? [<OfflineMenuReason key="offline-reason" />] : [],
   ])
 
   return (

@@ -606,20 +606,10 @@ class TestResolveKiroBinEnvOverride:
             "--agent",
             client._agent,
         )
-        # No inherited snapshot descriptor: the installed binary is exec'd in
-        # place, so there is nothing to hand down to the wrapper chain.
-        #
-        # macOS is the exception, and for a different fd:
-        # bind_voice_safe_agent_workspace opens the agent workspace as a
-        # directory descriptor there so the child enters it by fchdir instead of
-        # re-resolving a pathname a same-UID symlink retarget could aim
-        # elsewhere. _spawn hands that descriptor to create_subprocess_limited
-        # as chdir_fd, which folds exactly that one fd into pass_fds so the
-        # spawn shim inherits it. Off darwin the binding returns None, so
-        # chdir_fd is None and pass_fds stays absent. The binding is also gated
-        # on the harness owning an internal sandbox (ACP_BACKENDS_INTERNAL_SANDBOX,
-        # which the default Kiro backend built here belongs to), so a backend
-        # outside that set stays on the pathname cwd whatever the platform says.
+        # No inherited snapshot descriptor: the installed binary is exec'd in place.
+        # On macOS bind_voice_safe_agent_workspace passes one directory fd as chdir_fd
+        # (fchdir resists a symlink retarget), so pass_fds holds exactly that fd. Off
+        # darwin, or outside ACP_BACKENDS_INTERNAL_SANDBOX, pass_fds stays absent.
         if sys.platform == "darwin":
             pass_fds = spawn_call.kwargs["pass_fds"]
             # Exactly the bound workspace descriptor, nothing else: no snapshot
@@ -746,11 +736,8 @@ class TestResolveKiroBinEnvOverride:
 class TestMiseNodeInstallsDir:
     """ACP node resolution must honour mise's real data root.
 
-    ``_mise_node_installs_dir`` must not hardcode ``~/.local/share/mise``,
-    silently missing installs whenever ``MISE_DATA_DIR`` or ``XDG_DATA_HOME``
-    relocated the data dir — while ``env.mise_data_dir`` already resolved the
-    same root correctly for the build toolchain. These pin the consolidated
-    behaviour for the helper and both of its consumers' entry points.
+    ``_mise_node_installs_dir`` must follow ``MISE_DATA_DIR`` and ``XDG_DATA_HOME`` like
+    ``env.mise_data_dir``, for the helper and both consumers.
     """
 
     @pytest.fixture(autouse=True)

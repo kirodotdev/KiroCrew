@@ -1,37 +1,19 @@
 """Privileged-intent grant probe for the Discord application.
 
-Discord's three privileged Gateway intents (Message Content, Server Members,
-Presence) are toggled in the Developer Portal, never in Kiro Crew's config, so
-the two can disagree without anything on the Kiro Crew side noticing. A thread
-allow-list can be perfectly configured while Message Content is off, and the
-result is not an error but silence: Discord delivers thread messages with empty
-content, or closes the Gateway with code 4014. The app itself is the only
-witness, and it reports the state as a flags bitfield on
-``GET /oauth2/applications/@me``.
+The privileged Gateway intents (Message Content, Server Members, Presence) are
+toggled in the Developer Portal, not in Kiro Crew's config. With Message Content
+off, thread messages arrive empty (or the Gateway closes with 4014) and nothing
+errors, so the probe reads the app's flags from ``GET /oauth2/applications/@me``.
 
-Each intent occupies a PAIR of flag bits: an unlimited bit, set once the app is
-verified for 100 or more servers, and a limited bit for the ordinary
-unverified case. Both mean the toggle is ON, so a grant decodes to a tri-state
-(:data:`INTENT_ENABLED` / :data:`INTENT_LIMITED` / :data:`INTENT_DISABLED`) and
-never to a bare boolean. A boolean built from the unlimited bit alone reports
-every working small install as "off", which is the opposite of the truth and
-sends the operator to re-toggle a switch that is already on.
+Each intent has two flag bits: unlimited (app verified for 100+ servers) and
+limited (unverified). Either means ON, so a grant decodes to a tri-state
+(:data:`INTENT_ENABLED` / :data:`INTENT_LIMITED` / :data:`INTENT_DISABLED`);
+reading the unlimited bit alone would report every small install as off.
 
-This is the Discord analogue of :mod:`kiro_crew.slack.scope_probe`, and it
-carries the same two contracts:
-
-* **Read-only.** One GET with no body. It reads what the install granted and
-  changes nothing.
-* **Never fatal.** Every failure path (no token, rejected token, HTTP error,
-  malformed body, network fault) returns :data:`INTENT_UNKNOWN` with a short
-  reason instead of raising, because its caller is ``kirocrew doctor``, and a
-  diagnostic that dies on a network hiccup produces no report at all.
-
-The probe owns its own :class:`aiohttp.ClientSession` and is driven from the
-caller's own event loop (``kirocrew doctor`` gives it a throwaway
-``asyncio.run``), so it never borrows the gateway's loop or the live
-:class:`~kiro_crew.discord.client.DiscordClient` session, whose REST ladder
-serves message traffic.
+Like :mod:`kiro_crew.slack.scope_probe`, it is read-only (one GET) and never
+fatal: every failure returns :data:`INTENT_UNKNOWN` with a reason, because its
+caller is ``kirocrew doctor``. It owns its own :class:`aiohttp.ClientSession` on
+the caller's loop and never borrows the live ``DiscordClient`` session.
 """
 
 from __future__ import annotations

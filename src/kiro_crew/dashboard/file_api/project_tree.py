@@ -649,10 +649,14 @@ async def api_project_tree(request: web.Request) -> web.Response:
                 {"error": "Folder cannot be listed", "code": refusal}, status=status
             )
 
+    # ``hidden=1`` (the Files panel's "Show hidden files" toggle) also lists the
+    # git-ignored dot-files; off, the listing is exactly what it was.
+    show_hidden = request.query.get("hidden") == "1"
+
     def _run() -> dict:
         if not prefix:
-            return _project_tree_listing(base)
-        result = _project_tree_listing(base, prefix, listing_root, identity)
+            return _project_tree_listing(base, show_hidden=show_hidden)
+        result = _project_tree_listing(base, prefix, listing_root, identity, show_hidden)
         return _project_tree_rebase(result, base, prefix)
 
     # The listing, its redaction and its serialization all run in ONE worker
@@ -890,13 +894,64 @@ def _project_tree_nested_ignored(base: str, segments: tuple[str, ...]) -> frozen
     )
 
 
+def _project_tree_ignored_dotfiles(base: str, subdir: str) -> list[str]:
+    """The git-ignored dot-FILES of *base* (or of its folder *subdir*), for ``hidden=1``.
+
+    The Files panel's "Show hidden files" toggle: a ``.env`` that ``.gitignore``
+    names is otherwise absent from a git listing. Only a file whose own name starts
+    with ``.`` is added. ``--directory`` reports an ignored folder (``node_modules/``,
+    ``build/``) as one ``name/`` entry instead of its contents, and those entries are
+    dropped, so nothing inside an ignored folder is ever added. Every candidate also
+    passes the same sensitive-path gate the walk applies (:func:`_project_tree_fence`),
+    on its real path, and one under a skip-listed folder is dropped. A failed git run
+    adds nothing.
+    """
+    rc, out, _ = _run_git_bounded(
+        [
+            "git",
+            "-c",
+            "core.fsmonitor=",
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            *(["--", subdir] if subdir else []),
+        ],
+        cwd=base,
+        env={**os.environ, "GIT_LITERAL_PATHSPECS": "1"} if subdir else os.environ.copy(),
+        timeout=15,
+    )
+    if rc != 0:
+        return []
+    found: list[str] = []
+    for path in out.split("\0"):
+        if not path or path.endswith("/"):
+            continue
+        # git names paths with ``/``, which ``PurePath`` splits on every platform.
+        parts = PurePath(path).parts
+        if not parts[-1].startswith("."):
+            continue
+        if any(part in _PROJECT_TREE_SKIP_DIRS for part in parts[:-1]):
+            continue
+        if is_sensitive_resolved_path(os.path.realpath(os.path.join(base, path))):
+            continue
+        found.append(path)
+    return found
+
+
 def _project_tree_listing(
     base: str,
     subdir: str = "",
     native: str = "",
     identity: tuple[int, int] | None = None,
+    show_hidden: bool = False,
 ) -> dict:
     """The tree listing of *base*, or of its folder *subdir*: git, else the walk.
+
+    *show_hidden* adds the git-ignored dot-files to a git listing
+    (:func:`_project_tree_ignored_dotfiles`); the walk already lists dot-files.
 
     For *subdir* the paths come back relative to that folder. git runs from the
     project root *base* with *subdir* as a literal pathspec, never with the
@@ -964,7 +1019,10 @@ def _project_tree_listing(
             # first but files keep at least half, the files round-robin
             # across direct parent directories, so a large subtree cannot
             # consume every file row.
-            listed = sorted(p for p in ls_out.split("\0") if p)
+            listed = [p for p in ls_out.split("\0") if p]
+            if show_hidden:
+                listed += _project_tree_ignored_dotfiles(base, subdir)
+            listed.sort()
             if subdir:
                 # Relative to the folder, as the walk's paths are; git names
                 # nothing outside the pathspec.

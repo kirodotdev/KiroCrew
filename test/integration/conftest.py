@@ -134,7 +134,7 @@ cross-home flake three tests later.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
-     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``,
+     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_SKIPPED``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
      removal evidence and scan completeness of the home's
      ``kiro/agents`` directory, which the next boot would read as its own until
@@ -802,6 +802,7 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_STEMS.clear()
     config_loader._MATERIALIZED_SEEN.clear()
     config_loader._MATERIALIZED_COMPLETE = False
+    config_loader._MATERIALIZED_SKIPPED = None
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     dashboard_updates._auto_effect = None
@@ -874,6 +875,7 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_STEMS
         and not config_loader._MATERIALIZED_SEEN
         and not config_loader._MATERIALIZED_COMPLETE
+        and config_loader._MATERIALIZED_SKIPPED is None
         and not config_loader._MATERIALIZED_AGENTS_READY
         and governance._CONFIRM_PATTERNS_MEMO is None
         and config_loader._boot_raw_env is None

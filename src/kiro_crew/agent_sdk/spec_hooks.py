@@ -1027,6 +1027,7 @@ def crew_fired_spec_hooks(
     *,
     translates_tools_settings: bool = False,
     session_key: str = "",
+    discards_mcp_oauth: bool = False,
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -1038,8 +1039,9 @@ def crew_fired_spec_hooks(
     cannot be read; the caller fails PreToolUse closed on that. *project_dir* is
     :func:`spec_project_dir` of the session. *translates_tools_settings* is true
     only for a KAS session, the one backend that receives ``toolsSettings`` as
-    ``permissions`` rules. *session_key* reads a crewmate's worker as
-    that session's merged spec (:func:`_agent_spec`).
+    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
+    the backend that drops a remote MCP server's ``oauth`` block. *session_key*
+    reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
     """
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
@@ -1047,7 +1049,11 @@ def crew_fired_spec_hooks(
 
     spec, origin = _agent_spec_with_origin(agent_id, project_dir, session_key)
     hooks, unconfirmable = _convert(agent_id, spec)
-    lost = spec_keys_without_carrier(spec, translates_tools_settings=translates_tools_settings)
+    lost = spec_keys_without_carrier(
+        spec,
+        translates_tools_settings=translates_tools_settings,
+        discards_mcp_oauth=discards_mcp_oauth,
+    )
     # Copies, so the cached conversion keeps no origin: the same hooks can come
     # from a user-level spec in one session and a project spec in another.
     tagged = [dataclasses.replace(h, spec_origin=origin) for h in hooks]
@@ -1245,18 +1251,28 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
         # circular import: the ACP layer imports the config loader, which sits
         # below this module; resolved at call time like the other seams here.
         from kiro_crew.acp.kas_agents import pre_tool_hook_matchers
-        from kiro_crew.acp.kas_permissions import hook_gated_capabilities
+        from kiro_crew.acp.kas_hook_mcp import approved_mcp_servers
+        from kiro_crew.acp.kas_permissions import (
+            cached_mcp_tool_names,
+            hook_gated_auto_approved,
+            hook_gated_capabilities,
+        )
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
         spec = _agent_spec(agent_id, None, session_key)
-        return hook_gated_capabilities(pre_tool_hook_matchers(agent_id, spec))
+        covered = hook_gated_capabilities(
+            pre_tool_hook_matchers(agent_id, spec),
+            mcp_servers=approved_mcp_servers(approved),
+            mcp_tool_names=cached_mcp_tool_names,
+        )
+        return hook_gated_auto_approved(covered, approved)
 
     try:
-        covered = await asyncio.to_thread(_covered)
+        still_approved = await asyncio.to_thread(_covered)
     except Exception:  # noqa: BLE001 - re-projecting is the safe direction
         logger.warning("PreToolUse hook coverage for %r could not be read; re-projecting", agent_id)
         return True
-    return bool(covered & approved)
+    return bool(still_approved)
 
 
 #: :func:`invalidate_stale_kas_session`'s answers.

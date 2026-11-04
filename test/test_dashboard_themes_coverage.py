@@ -1,21 +1,8 @@
 """Coverage tests for ``kiro_crew.dashboard.handlers.themes`` — HTTP surface.
 
-``test_theme_install.py`` covers the pure validation core plus a few module
-helpers; this file covers the parts a validator test never reaches: the six
-aiohttp handlers (list / create / install / detail / asset / overlay / topbar),
-the blocking workers they offload to the discovery pool (``_list_themes_sync``,
-``_do_install``), the local/GitHub source resolvers, and the refusal branches —
-invalid JSON, slug traversal, governance denial, read-only installed packs,
-unsupported asset types, and cross-platform pack install/serving.
-
-Every test points ``KIROCREW_HOME`` at ``tmp_path`` so ``_themes_dir()``
-resolves inside the sandbox: nothing is written outside it. No network, no git,
-no real subprocess — ``_clone_github``'s spawn is replaced with a stub so only
-its URL guard and error mapping are exercised.
-
-Platform notes: install and serving exercise the real descriptor-containment
-chokepoint on every supported OS. Tests that need to create symbolic links run
-where the process has that capability, including privileged Windows CI runners.
+Covers the aiohttp handlers, their offloaded workers, the source resolvers and the
+refusal branches; ``test_theme_install.py`` covers the pure validation core.
+``KIROCREW_HOME`` points at ``tmp_path``, and ``_clone_github``'s spawn is stubbed.
 """
 
 from __future__ import annotations
@@ -413,12 +400,8 @@ class TestApiThemesCreate:
 class TestApiThemesCreateOffLoop:
     """The create handler's filesystem work must never run on the loop.
 
-    On a UNC data home ``mkdir``/``exists`` are SMB-backed and can block for
-    as long as the network takes; one such call on the loop stalls every other
-    request the gateway serves. Spy on ``Path.mkdir``/``exists``/``is_dir``/
-    ``is_file`` for the handler's paths (and the data home itself) and assert
-    every call happened on a worker thread — the same discipline pinned
-    for the detail route's target stats.
+    On a UNC data home each call is SMB-backed and can block the loop for as long
+    as the network takes.
     """
 
     @pytest.mark.asyncio
@@ -516,11 +499,8 @@ class TestResolveLocalSource:
     ) -> None:
         """A UNC path names a HOST, so stat-ing one is the vulnerability itself.
 
-        `\\\\attacker\\share` reaching `is_dir()` makes Windows open an SMB
-        connection and authenticate, handing this gateway's credentials to a host
-        the caller chose. So the assertion that matters is not merely that the
-        path is refused -- it is that **no filesystem call happens at all**. Any
-        stat is wired to fail the test.
+        Any stat makes Windows authenticate to the caller's host, so every stat is
+        wired to fail the test.
         """
         monkeypatch.setattr(th, "IS_WINDOWS", True)
         monkeypatch.setattr(th, "unc_probe_allowed", lambda _p: False)
@@ -540,12 +520,8 @@ class TestResolveLocalSource:
     ) -> None:
         """The screen must not blanket-ban UNC.
 
-        On a roaming profile the home directory is itself a UNC share, which is the
-        one legitimate source of a UNC pack path -- telling that apart from
-        `\\\\attacker\\share` is `unc_probe_allowed`'s whole job. So a permitted UNC
-        path must reach the ordinary checks instead of being refused for its shape.
-        This is the exact inverse of the refusal test above: there `is_dir` must
-        never be called, here it must be.
+        A roaming-profile home is itself a UNC share, so a path `unc_probe_allowed`
+        permits must reach `is_dir`.
         """
         monkeypatch.setattr(th, "IS_WINDOWS", True)
         monkeypatch.setattr(th, "unc_probe_allowed", lambda _p: True)
@@ -603,16 +579,9 @@ class TestCloneGithubGuard:
     def _no_real_sandbox(self, monkeypatch: pytest.MonkeyPatch):
         """Keep every test in this class off the real sandbox chokepoint.
 
-        `_clone_github` routes its argv through `sandboxed_spawn_argv` BEFORE it
-        calls subprocess.run, and that raises SandboxUnavailableError on any host
-        without an OS sandbox backend -- which is every GitHub Actions runner. So
-        stubbing subprocess.run alone passes on a dev desk (namespace backend
-        present) and fails in CI before reaching the branch under test.
-
-        The third element is a scratch PATH (or falsy), not a callable -- the
-        product does `Path(cleanup).unlink(missing_ok=True)`. `None` means "no
-        scratch file to remove". Being autouse, this lands before the test body,
-        so a test that needs a real scratch path just re-stubs it and wins.
+        `sandboxed_spawn_argv` raises SandboxUnavailableError on hosts with no OS
+        sandbox (every GitHub Actions runner), so stubbing subprocess.run alone fails
+        in CI. The third element is a scratch path or `None`, not a callable.
         """
         monkeypatch.setattr(
             th, "sandboxed_spawn_argv", lambda argv, *a, **k: (list(argv), {}, None)
@@ -737,16 +706,9 @@ class TestCopyInstalledThemeSwapGuards:
     ) -> None:
         """A Windows junction is not a symlink, and that distinction is the bug.
 
-        ``os.path.islink`` returns False for a junction and ``os.walk`` reports one
-        as an ordinary directory, so a guard that only checked ``islink`` would
-        DESCEND a junction. A pack carrying a junction back to its own root then
-        recurses until a path-length ``OSError`` escapes the handler as a 500 —
-        reachable the moment local install is enabled on Windows. The guard must
-        therefore consult the junction-aware predicate, not ``islink``.
-
-        Patched on ``th`` rather than on ``platform_compat`` because the module
-        binds the name with ``from ... import``, so that namespace is the one the
-        call actually resolves through.
+        ``os.path.islink`` is False for a junction, so a junction back to the pack root
+        would recurse until an ``OSError`` 500. Patched on ``th`` because the module
+        binds the name with ``from ... import``.
         """
         src = _make_pack(tmp_path / "pack")
         (src / "nested").mkdir()
@@ -1164,12 +1126,8 @@ class TestApiThemeDetailSlugGuard:
 class TestApiThemeDetailStatsOffLoop:
     """The detail handler's target stats must never run on the event loop.
 
-    On a UNC data home each ``exists()``/``is_dir()`` is SMB-backed and can
-    block for as long as the network takes; a stat on the loop stalls every
-    other request the gateway serves. Spy on ``Path.exists``/``Path.is_dir``
-    for the handler's two target paths and assert every such stat happened on
-    a worker thread — the same discipline pinned for the asset routes'
-    offloaded ``_resolve_theme_asset``.
+    On a UNC data home each stat is SMB-backed and can block the loop for as long
+    as the network takes.
     """
 
     @pytest.mark.asyncio
@@ -1718,15 +1676,9 @@ class TestApiThemeTopbar:
 class TestResolveLocalSourceAncestorLinks:
     r"""An ancestor link is refused before the path is ever resolved.
 
-    The UNC screen in `_resolve_local_source` is lexical, so it only sees the
-    path it was handed. A path that looks entirely local but sits BENEATH a
-    link to `\\attacker\share` therefore passes it, and the leaf
-    `is_link_or_junction` check tests only the final component. The first
-    `is_dir()` is what resolves the chain -- and on Windows resolving it is
-    what authenticates to the attacker's host. These tests pin the ancestor
-    screen that has to run before that call. The link's own reparse target is
-    stubbed to a UNC share so the refusal is the same on every host: a LOCAL
-    target is admitted on Windows (see ``TestRealLocalJunctionAncestor``).
+    The UNC screen is lexical, so a local-looking path beneath a link to
+    `\\attacker\share` passes it, and the first `is_dir()` would authenticate to
+    that host. The reparse target is stubbed to a UNC share so every host refuses.
     """
 
     @staticmethod
@@ -1773,12 +1725,8 @@ class TestResolveLocalSourceAncestorLinks:
     def test_the_walk_runs_BEFORE_the_leaf_probe(self, tmp_path, monkeypatch):
         """The leaf probe is itself an lstat, which resolves every ancestor.
 
-        `is_link_or_junction(p)` does not follow the FINAL component, but it
-        still resolves the ones above it -- so running it before the ancestor
-        walk would traverse the very junction the walk exists to refuse, and
-        make the SMB connection anyway. Wiring the leaf predicate to raise
-        proves the walk returned first: if the order regresses, this explodes
-        instead of failing an assertion.
+        Run first, it would traverse the junction the walk refuses; the leaf
+        predicate is wired to raise to prove the walk returned first.
         """
         real = tmp_path / "real"
         real.mkdir()
@@ -1807,13 +1755,8 @@ class TestResolveLocalSourceAncestorLinks:
     ):
         """macOS `/tmp` and `/var` are symlinks to `/private/*`.
 
-        An unconditional ancestor walk refuses every install from a temp dir on
-        macOS -- a platform this change does not otherwise touch. The walk is
-        Windows-only because the harm it prevents is that the PROBE is the
-        attack, which is a UNC property; on POSIX the real guard is
-        `is_sensitive_path` applied to the RESOLVED path. `tmp_path` is already
-        resolved, so the linked ancestor has to be built explicitly here or the
-        regression hides.
+        The ancestor walk is Windows-only, or it would refuse every macOS temp-dir
+        install. `tmp_path` is already resolved, so the linked ancestor is built here.
         """
         monkeypatch.setattr(th, "IS_WINDOWS", False)
         real = tmp_path / "private_real"

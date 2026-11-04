@@ -216,7 +216,8 @@ describe('ArtifactsPage — card previews per kind', () => {
     })]
     seed({ artifacts: arts })
     renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(screen.getByText(/by\s+dana/)).toBeInTheDocument())
+    // One catalog sentence with the name inside it, so the whole line is one text node.
+    await waitFor(() => expect(screen.getByText('By dana')).toBeInTheDocument())
   })
 })
 

@@ -241,6 +241,15 @@ Examples:
         "The CLI does not create folders — create them in the dashboard's Schedule page.",
     )
     cron_add.add_argument(
+        "--project-path",
+        dest="project_path",
+        default="",
+        metavar="DIR",
+        help="Run the job's agent session in this project directory, so that "
+        "repo's own .kiro/steering/ and AGENTS.md load (absolute path to an "
+        "existing directory; agent jobs only). Omit to keep today's directory.",
+    )
+    cron_add.add_argument(
         "--approval-mode",
         dest="approval_mode",
         choices=["auto"],
@@ -291,6 +300,14 @@ Examples:
         default=None,
         help="New agent name (empty string resets to agent.default_agent, "
         "or the kirocrew agent when that is unset or not eligible)",
+    )
+    cron_update.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        metavar="DIR",
+        help="New project directory for the job's agent session (empty string "
+        "clears it, back to the default directory)",
     )
     cron_update.add_argument(
         "--approval-mode",
@@ -355,7 +372,7 @@ def register_spawn_parser(sub: _Commands) -> None:
 Examples:
   kirocrew spawn run 'check my open CRs'        # Wait for result
   kirocrew spawn run --async 'analyze logs'     # Fire-and-forget
-  kirocrew spawn run --crew ops 'triage alerts' # Run as crew member 'ops'
+  kirocrew spawn run --crew ops 'triage alerts' # Run as Bot 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
   kirocrew spawn list                           # Show active subagents
@@ -380,7 +397,7 @@ Examples:
         "--crew",
         metavar="NAME",
         help=(
-            "Run as this crew member, with its memory store and template; "
+            "Run as this Bot, with its memory store and template; "
             "an unknown member is refused, never replaced"
         ),
     )

@@ -18,6 +18,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, open_feed, real_dashboard_state
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _fake_async_proc,
@@ -238,12 +240,13 @@ class TestAutoApplyUpdate:
         ds.push_update_progress.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_non_mainline_branch_skips(self):
+    async def test_non_mainline_branch_skips(self, tmp_path):
         orch = _make_orchestrator()
         proc = AsyncMock()
         proc.communicate = AsyncMock(return_value=(b"feat/test\n", b""))
         proc.returncode = 0
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}, clear=False):
             with (
@@ -268,10 +271,11 @@ class TestAutoApplyUpdate:
         exec_config.assert_not_called()
         spawn.assert_awaited_once()
         assert "--abbrev-ref" in spawn.await_args.args
-        ds.push_update_progress.assert_not_called()
+        assert ds._update_progress is None
+        assert drain(feed) == []
 
     @pytest.mark.asyncio
-    async def test_failure_path_resolves_the_restart_hint_off_the_event_loop(self):
+    async def test_failure_path_resolves_the_restart_hint_off_the_event_loop(self, tmp_path):
         # The except handler prints `restart_command_hint()`, which stats the
         # per-user unit file under the account's home; a disconnected network
         # home holds that stat for as long as it is disconnected. Called on the
@@ -283,7 +287,7 @@ class TestAutoApplyUpdate:
         # `LOOP BLOCKED` instead of the command — deterministic, not a timing
         # race, because nothing but the loop can set the event.
         orch = _make_orchestrator()
-        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state = real_dashboard_state(tmp_path)
         loop_ran = threading.Event()
 
         def slow_hint() -> str:
@@ -307,9 +311,10 @@ class TestAutoApplyUpdate:
             # flake-ok: pre-existing unbounded await of the serving probe, moved verbatim; tracked for a de-flake pass
             await serving
 
-        orch.dashboard_state.push_update_progress.assert_called_once_with(
-            "failed", "Restart failed — run: kirocrew restart"
-        )
+        assert orch.dashboard_state._update_progress == {
+            "step": "failed",
+            "detail": "Restart failed — run: kirocrew restart",
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -841,7 +846,7 @@ class TestAutoApplyUpdateGitPath:
         ds.push_refresh.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mandatory_no_diff_is_visible_to_the_operator(self):
+    async def test_mandatory_no_diff_is_visible_to_the_operator(self, tmp_path):
         """A floor-mandated no-diff apply refreshes the badge without a restart.
 
         Reaching the no-diff branch means the required code is already on disk
@@ -855,7 +860,8 @@ class TestAutoApplyUpdateGitPath:
         no-diff path which only clears.
         """
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
 
         _fake_exec = _git_exec_fake(diff_rc=0)
@@ -864,16 +870,15 @@ class TestAutoApplyUpdateGitPath:
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
                 with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
                     await orch._auto_apply_update(mandatory=True)
+        sent = drain(feed)
         # The reload latch must not be armed: no "restarting" step is pushed.
-        assert not any(
-            call.args and call.args[0] == "restarting"
-            for call in ds.push_update_progress.call_args_list
-        )
+        steps = [e["step"] for e in sent if e.get("_type") == "update_progress"]
+        assert "restarting" not in steps
         # The bar is cleared (not left stuck) and the badge is refreshed so the
         # pending mandatory update stays visible — the signal that distinguishes
         # it from the voluntary no-diff path, which does not refresh.
-        ds.clear_update_progress.assert_called()
-        ds.push_refresh.assert_called_with("update_available")
+        assert ds._update_progress is None
+        assert {"_type": "refresh", "kinds": "update_available"} in sent
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -952,10 +957,11 @@ class TestAutoApplyUpdateVenvPath:
             yield
 
     @pytest.mark.asyncio
-    async def test_venv_update_full_path(self):
+    async def test_venv_update_full_path(self, tmp_path):
         """Full venv update: fetch, diff, reset, pip install, restart."""
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
@@ -985,8 +991,11 @@ class TestAutoApplyUpdateVenvPath:
         assert str(mock_install.call_args[0][0]) == str(Path("/tmp/proj"))
         assert str(mock_install.call_args[0][1]) == sys.executable
 
-        ds.push_update_progress.assert_any_call("pulling", "Fetching latest changes…")
-        ds.push_update_progress.assert_any_call("building", "Building frontend…")
+        sent = [
+            (e["step"], e["detail"]) for e in drain(feed) if e.get("_type") == "update_progress"
+        ]
+        assert ("pulling", "Fetching latest changes…") in sent
+        assert ("building", "Building frontend…") in sent
 
     @pytest.mark.asyncio
     async def test_kiro_cli_update_timeout_kills_child_and_stays_nonfatal(self):

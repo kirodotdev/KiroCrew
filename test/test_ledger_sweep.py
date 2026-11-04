@@ -1063,6 +1063,25 @@ def test_a_copied_work_store_never_sends_the_purge_at_the_canonical_ledger():
     assert {c.store for c in result.removed} == {canonical.name}
 
 
+def test_purge_summary_does_not_call_a_keyed_copy_keyless():
+    """A copy skipped because its key names another store HAS a key, so the
+    purge summary must not count it as "without a key"."""
+    import shutil
+
+    canonical = _work_ledger()
+    copy = canonical.parent / f"{canonical.name}-copy"
+    shutil.copytree(canonical, copy)
+
+    report = sweep.scan(older_than_days=30)
+    assert {c.store: c for c in report.candidates}[copy.name].key == CONDUCTOR
+
+    result = sweep.purge(report)
+    assert {c.store for c in result.skipped_unaddressable} == {copy.name}
+
+    summary = sweep.render(report, purged=result)[-1]
+    assert summary == "  purged 1, skipped 1 report-only", summary
+
+
 def test_a_copied_session_store_is_reported_and_never_purged():
     import shutil
 

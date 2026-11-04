@@ -255,6 +255,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     cap_project_root_walk,
     close_skills_loaders,
     close_subagent_managers,
+    command_crons_run_here,
     drain_breadcrumb_writes,
     forget_env_at_teardown,
     healthy_host_memory,
@@ -279,6 +280,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_enterprise_profile_pin,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_sandbox_launch_mark,
+    _fresh_aws_bin_dir_trust,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
     _history_cleanup_throttle_closed,
@@ -528,6 +530,7 @@ def _fresh_update_ownership(_floor_monkeypatch):
     _floor_monkeypatch.setattr(update_ownership, "_live", registry)
     _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
     _floor_monkeypatch.setattr(update_ownership, "_restart_refusal", None)
+    _floor_monkeypatch.setattr(update_ownership, "_refusal_probe_clears", True)
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
@@ -549,6 +552,21 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
+    """Give every test its own record of the MCP sign-in links children sent.
+
+    ``mcp_oauth_provenance`` is process state that every emitted banner adds to,
+    and a read shows a banner's link only for a recorded URL. Rebound per test, so
+    a link one test emitted is not vouched for in the next.
+    """
+    from collections import OrderedDict
+
+    from kiro_crew.dashboard import mcp_oauth_provenance
+
+    _floor_monkeypatch.setattr(mcp_oauth_provenance, "_emitted", OrderedDict())
 
 
 @pytest.fixture(autouse=True)
@@ -589,6 +607,7 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
+    _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
 
 
 @pytest.fixture

@@ -283,7 +283,7 @@ describe('CrewEditorModal — single editing experience', () => {
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     // No classic dialog, and the retired Classic/New toggle is gone. The one
     // dialog is the New editor, named for the crewmate it edits.
-    expect(screen.getAllByRole('dialog', { name: /Edit mate/ })).toEqual([next])
+    expect(screen.getAllByRole('dialog', { name: /Edit Bot/ })).toEqual([next])
     expect(within(next).queryByTestId('crew-editor-experience-toggle')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-classic')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-next')).toBeNull()
@@ -344,7 +344,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     // The switcher would repoint the binding away from the crewmate's own file.
     expect(within(dialog).queryByRole('combobox', { name: /built from/i })).toBeNull()
     // A generic mate label, never the file's id and never a template provenance.
-    expect(owned).toHaveTextContent('Mate')
+    expect(owned).toHaveTextContent('Bot')
     expect(owned).not.toHaveTextContent('c0ffee12')
     fireEvent.click(within(dialog).getByTestId('next-open-advanced'))
     expect(await within(dialog).findByTestId('next-pane-builtFrom')).toBeInTheDocument()
@@ -363,7 +363,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(name).not.toHaveTextContent('c0ffee12')
     const added = within(dialog).getByTestId('next-band-added')
     expect(added).toHaveTextContent('Added to On-Call Pager')
-    expect(added).not.toHaveTextContent('Added to Mate')
+    expect(added).not.toHaveTextContent('Added to Bot')
   })
 
   it("splits what the owned config's worker carries into Comes-with and Added bands", async () => {
@@ -513,7 +513,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     mockCaps.get.mockResolvedValue({ ...view, revision: 'r2' })
     fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
     expect(await within(dialog).findByTestId('next-builtfrom-remove-error')).toHaveTextContent(
-      "This mate's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
+      "This Bot's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
     )
     expect(mockCaps.save).not.toHaveBeenCalled()
     expect(mockCaps.get.mock.calls.length).toBeGreaterThan(getsBefore)
@@ -542,7 +542,7 @@ describe('CrewEditorNextDialog — section rail', () => {
     const getsBefore = mockCaps.get.mock.calls.length
     fireEvent.click(within(added).getByTestId('next-band-remove-mcpServers-github'))
     const ask = await screen.findByRole('dialog', { name: 'Remove “github”?' })
-    expect(ask).toHaveTextContent('It stops being available to this mate. You can add it back with Add abilities.')
+    expect(ask).toHaveTextContent('It stops being available to this Bot. You can add it back with Add abilities.')
     fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove “github”?' })).toBeNull())
     expect(mockCaps.preview).not.toHaveBeenCalled()
@@ -891,7 +891,7 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     expect(within(dialog).queryByTestId('next-model-pin-unserved')).toBeNull()
     // It says why the pick is not the model in use: which harness lacks it.
     expect(readout).toHaveTextContent(
-      `${acpBackendName({ id: 'codex' })} doesn't offer claude-fable-5, so this mate runs on openai.gpt-5.6-terra.`,
+      `${acpBackendName({ id: 'codex' })} doesn't offer claude-fable-5, so this Bot runs on openai.gpt-5.6-terra.`,
     )
     expect(within(dialog).queryByTestId('next-model-uses-line')).toBeNull()
   })
@@ -927,7 +927,7 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     const dialog = await openNew()
     const readout = await within(dialog).findByTestId('next-model-pin-unserved')
     // The session leaves the pin unsent and stays on the harness's default model.
-    expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this mate's sessions run on .+'s default model instead/)
+    expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this Bot's sessions run on .+'s default model instead/)
     expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 })
@@ -1018,7 +1018,7 @@ describe('CrewEditorNextDialog — Memory', () => {
   it('names a private V2 store in the status line', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
-    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This mate has its own memory (V2).')
+    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This Bot has its own memory (V2).')
   })
 
   it('shows only the diagnostic for a store another member owns', async () => {

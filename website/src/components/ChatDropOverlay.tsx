@@ -104,8 +104,12 @@ export function useChatFileDrop(
 
 export default function ChatDropOverlay({
   active,
+  label,
 }: {
   active: boolean
+  /** Overrides the default "Drop to attach" copy — the Files rail reuses
+   *  this same overlay for its own drop target with its own wording. */
+  label?: string
 }) {
   const reduceMotion = useReducedMotion()
 
@@ -147,7 +151,7 @@ export default function ChatDropOverlay({
               }}
             />
             <span className="mt-4 text-[13px] font-medium text-text-strong">
-              {i18nT('components.chatInput.drop_to_attach')}
+              {label ?? i18nT('components.chatInput.drop_to_attach')}
             </span>
           </motion.div>
         </motion.div>

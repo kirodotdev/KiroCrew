@@ -16,11 +16,8 @@ from kiro_crew.testing.clock import ManualClock
 class TestCompactionResetsContextStats:
     """A completed compaction must drop the stale context-usage counts.
 
-    Without the drop, the pre-compaction
-    counts carried an authoritative ``context_tokens_from_usage=True`` flag, so
-    ``_track_metadata`` refused to apply any fresh percentage and every
-    ``context_usage`` broadcast re-sent the old numbers — the dashboard bar
-    never moved after a compact.
+    The old counts carry ``context_tokens_from_usage=True``, which makes
+    ``_track_metadata`` ignore every fresh percentage.
     """
 
     def _client(self, tmp_path):
@@ -202,13 +199,9 @@ class TestCompactionResetsContextStats:
 class TestCompactionFailureTurnBudget:
     """A `failed` compaction must FAIL THE TURN, not hang it.
 
-    kiro-cli can report compaction `failed` and then abandon the prompt it was
-    compacting for: no session/prompt response and no end_turn ever arrive, so
-    the read loop drained in silence to the caller's full prompt ceiling
-    (hours) while the slot stayed occupied — the user waited it out or pressed
-    Stop. The budget bounds that wait and the turn ends with
-    STOP_REASON_COMPACTION_FAILED. No retry is attempted: compaction stays
-    kiro-cli's, this only makes its failure fail cleanly.
+    kiro-cli can report `failed` and then never answer the prompt, so a budget ends
+    the turn with STOP_REASON_COMPACTION_FAILED instead of the hours-long ceiling.
+    No retry: compaction stays kiro-cli's.
     """
 
     def _failed_msg(self, params: dict | None = None):

@@ -218,6 +218,26 @@ describe('BrowserLiveCard faces', () => {
     expect(writes.visibility.mock.calls.at(-1)).toEqual([S, false])
   })
 
+  it('sends a visibility change again after the gateway did not take it', async () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    render(card())
+    writes.visibility.mockRejectedValueOnce(new Error('offline'))
+    act(() => intersect(true))
+    await waitFor(() => expect(writes.visibility).toHaveBeenCalledTimes(1))
+    // The card leaves and returns on screen; the lost "visible" must go out again.
+    act(() => intersect(false))
+    act(() => intersect(true))
+    expect(writes.visibility.mock.calls).toEqual([[S, true], [S, false], [S, true]])
+  })
+
+  it('does not repeat a visibility the gateway already took', () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    render(card())
+    act(() => intersect(true))
+    act(() => intersect(true))
+    expect(writes.visibility.mock.calls).toEqual([[S, true]])
+  })
+
   it('sanitises the page title and the step labels', () => {
     act(() => browserLiveStore.applyEvent(ev({ title: '<img src=x onerror=alert(1)>Paint', step: { index: 0, label: 'click <b>here</b>' } })))
     render(card())

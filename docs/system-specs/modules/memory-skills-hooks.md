@@ -1690,7 +1690,9 @@ skips it without guessing:
   member's `member_id` is empty;
 - the record's `owner_member`, when set, equals that member's alias, and
   `member-memory.json` is absent or its `owner_member` equals that alias; a
-  malformed manifest refuses. Both labels are writer-populated and a rebinding
+  malformed manifest (unreadable, not UTF-8, not JSON, nested past the
+  recursion limit, or naming no `owner_member`) refuses that store alone, and
+  the scan goes on to the next store. Both labels are writer-populated and a rebinding
   can leave them naming another member, so two labels that agree with each
   other but not with the bound member are refused rather than adopted;
 - `memory.db` exists, is a regular file with exactly one name (`st_nlink == 1`:
@@ -2066,7 +2068,13 @@ exist is skipped, as kiro-cli skips it: the snapshot carries one core
 projection skips it without a note. "Does not exist" means a root-first lstat
 walk meets a missing component and no link; a declared link (dangling or not),
 an unreadable or non-regular file, a managed-state path and an out-of-root path
-still refuse. Missing optional root guides change the snapshot instead. The
+still refuse. One exception: a resource the template declares by ABSOLUTE path
+whose real path leaves its admitted root (a cloud desktop's `~/workplace` linked
+to `/workplace/<user>`) is left out unread; the snapshot names it in one core
+`essential-context#outside-skipped:<template>` note and the KAS projection skips
+it with a warning, because kiro-cli follows the link and loads it natively. A
+project-relative declaration through a link still refuses. Missing optional root
+guides change the snapshot instead. The
 project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does
@@ -2714,7 +2722,9 @@ self-contained file with no WAL to pair.
   operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
   the interval guard and `newest_backup` (restore's default choice) read
   `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
-  toward `keep` and never restored without `--from`. The interval guard measures
+  toward `keep` and never restored without `--from`. The store picker's
+  `backup_count` and `newest_backup` (`GET /api/memory/stores`) read the same view,
+  so such a file neither adds to the count nor hides the newest real backup. The interval guard measures
   from the newest backup stamped at or before the current time and logs a warning
   for any stamped after it (taken under a wrong clock): a future stamp neither keeps
   every pass skipping until the clock catches up, nor turns the guard off so that
@@ -4346,7 +4356,11 @@ Neither refusal is silent. On an unsupported platform the loader logs one WARNIN
 process (unless `skills.project_skills_enabled` is off) naming the platform limit, and
 the enforcement audit's reason says the platform lacks the traversal rather than "no
 grant"; the warning names no project, because checking whether `.kiro/skills` exists
-would be the path lookup the gate refuses to make. On POSIX, a component the no-follow
+would be the path lookup the gate refuses to make. The Skills page says the same in one
+muted line: `GET /api/skills/-/trust` returns `platform_unsupported: true` when any chat
+slot has a project, `skills.project_skills_enabled` is on, and the platform lacks the
+traversal. It reads the slots, the config and the platform only, so it looks up no
+project path either; grant and revoke snapshots always carry `false`. On POSIX, a component the no-follow
 chain refuses is logged as a WARNING naming that component (a symlinked directory and a
 file both read as "a symlink or not a directory", since Linux reports both with
 the same errno), once per (base, component, errno) per process, saying the component
@@ -4508,6 +4522,38 @@ shows, its token cost, and how to make a session summarize well — so the agent
 help a user enable and interpret it. It does not enable the feature or trigger
 generation, and holds no runtime-written frontmatter, since a builtin skill is
 re-synced by `rmtree` + `copytree` on upgrade.
+
+The bundled `feature-request` skill is the in-session answer when a user asks to
+report a problem or send feedback; both phrases are among its triggers, and its
+description names them for the skill index. Before it gathers anything it routes
+the report, first match wins: a security vulnerability goes to `SECURITY.md`'s
+private email and is never drafted or filed in public; something broken on this
+install goes to the Report a Problem dialog, or `kirocrew doctor --bundle` without
+the dashboard, both of which build the redacted diagnostics bundle and link to
+the tracker the edition's `FeedbackTrackerProvider` names; a question or early
+idea goes to Discussions; anything else continues to the skill's GitHub filing
+workflow. The "Request a Feature" button does not load the skill but seeds
+`FEATURE_REQUEST_PROMPT_FALLBACK`, which carries the same three routes ahead of
+its own filing workflow. `website/src/test/featureRequestRouting.test.ts` holds
+both copies to these checks: each `issues/new?template=` form they name exists
+in `.github/ISSUE_TEMPLATE/`; the security and Discussions links are the ones
+its `config.yml` lists, cited whole rather than inside a longer link, and
+`SECURITY.md` says not to open a public issue and gives a `mailto:` address; the
+security route equals the text the test pins for that copy, ignoring only paired
+`**` bold outside code and the amount of whitespace; the security route comes
+first, which in the skill means that "Route it first", parsed as CommonMark up
+to the next heading of the same or a higher level, is the intro paragraph and
+then one list whose first item cites the security policy, so nothing but the
+intro comes before that item, and in the fallback means that the security route
+is the first line after the greeting and the greeting the first after the
+opening line; the other routes follow it in the order above; the
+Report a Problem labels and the Settings › About › Support › Report a Problem
+path are the strings in `en.manual.json`; and the fallback cites the same
+`kirocrew` commands as the skill. `test/test_feature_request_skill_routing.py`
+checks the description length and the triggers, and parses each `kirocrew`
+command the skill cites with the `doctor` registrar in `cli_parser_gateway.py`,
+abbreviations off. Wording outside the security route, the other routes' prose,
+the repository link and the plain and prefilled new-issue links are not checked.
 
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
@@ -5772,6 +5818,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     to `atomic_write`, so it must land for all three surfaces at once rather than
     by reverting one of them to an in-place write that a mid-write failure or a full
     disk would turn into data loss.
+    Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
+    create-only, so it never replaces a file. It creates the file through
+    `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned
+    directory, with an identity-checked rollback), and an existing name answers
+    409 `name_collision`. The bytes are written under the final name, so a reader
+    can see a partially written file while the upload runs, and a failed write
+    removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
@@ -5928,7 +5981,7 @@ security decision or the copied content.
 | 422 | `script_validation_failed` | `script_validation_failed` | Body adds `report`: the `validate_scripts` `{filename: [finding, ...]}` map, redaction-scrubbed by `_redact_validation_report` (every filename and finding string through `redact_exfiltration_urls` + `redact_credentials`, redacted BEFORE shortening so a cut cannot leave a credential fragment the scrubber no longer recognises) and BOUNDED at retention: at most `_PENDING_SCRIPT_MAX_ENTRIES` filename entries, `_VALIDATION_REPORT_MAX_FINDINGS` findings each, `_VALIDATION_REPORT_MAX_STRING_CHARS` characters per string. Anything dropped — including entries whose redacted names collide — is counted once under a `<truncated>` key, so a shortened report never reads as a complete one. Raised on the raw scripts, or on the re-validation after in-place redaction. |
 | 409 | `pending_approval_refused` | any other | Body adds `reason`: `target_missing` or `stale_base` (update candidates), `invalid_layout`, `redaction_failed`, or `promotion_failed`. |
 
-Success is 200 `{"approved": "<auto/name>"}`; a malformed slug is still an uncoded 400 `invalid slug`, and a non-refusal exception an uncoded 500 `internal error`. Before this contract every refusal collapsed into one uncoded 409 (`not found, a live skill already exists, or script validation failed`). **Dismiss has no 409**: 200 `{"dismissed": slug}`, uncoded 400 `invalid slug`, 404 `pending_skill_not_found` (the same code as approve's not-found, so the dashboard's refetch-and-explain recovery keys on one code), uncoded 500. **Dismiss-all** has no 409 either: it REQUIRES a JSON object body with a non-empty `slugs` string array — 400 `invalid_body`, `invalid_slugs` or `slugs_required` otherwise — and answers 200 `{"dismissed_count": n}` or 500 `internal_error`. The detail 404 is coded: `pending_skill_unreadable` when the candidate is still staged but `get_pending_skill` refuses to read it (its files are not a plain directory, such as a symlink), `pending_skill_not_found` otherwise. The `script_validation` verdict the list and detail payloads may carry, and the SEL outcomes of a refused approval, are specified under Auto Skill Creation → Pending review contract.
+Success is 200 `{"approved": "<auto/name>"}`; a malformed slug is still an uncoded 400 `invalid slug`, and a non-refusal exception an uncoded 500 `internal error`. Before this contract every refusal collapsed into one uncoded 409 (`not found, a live skill already exists, or script validation failed`). **Dismiss** takes an optional JSON body `{"content_sha256": "<the detail read's value>"}`. With it, `dismiss_pending_skill` takes the slug claim lock, hashes one fresh pinned read of the candidate with the same digest approve uses, and deletes only on a match; a different or unreadable candidate answers 409 `pending_skill_changed` (SEL reason `content_changed`) and stays queued, and an unacquired lock answers 409 `pending_dismiss_refused` with `reason: "lock_unavailable"`. The Skills tab sends the value when the card has read the candidate and, on that 409, says the candidate changed and reads it again. No body, or a body without the field, dismisses the candidate as found. Otherwise: 200 `{"dismissed": slug}`, uncoded 400 `invalid slug`, 404 `pending_skill_not_found` (the same code as approve's not-found, so the dashboard's refetch-and-explain recovery keys on one code), uncoded 500. **Dismiss-all** has no 409: it REQUIRES a JSON object body with a non-empty `slugs` string array — 400 `invalid_body`, `invalid_slugs` or `slugs_required` otherwise — and answers 200 `{"dismissed_count": n}` or 500 `internal_error`. The detail 404 is coded: `pending_skill_unreadable` when the candidate is still staged but `get_pending_skill` refuses to read it (its files are not a plain directory, such as a symlink), `pending_skill_not_found` otherwise. The `script_validation` verdict the list and detail payloads may carry, and the SEL outcomes of a refused approval, are specified under Auto Skill Creation → Pending review contract.
 
 **LLM tool mechanisms:**
 - MCP tools (native): kiro-cli calls directly — **preferred for all LLM-facing operations**. The complete managed-server inventory, emission gates and per-agent opt-in sets are canonical in [MCP architecture](../../architecture/mcp.md#managed-servers).
@@ -6073,7 +6126,9 @@ Two writers reach `auto/` WITHOUT that coordination, and both are known gaps rat
 | `pending-new` | `auto/.pending/<slug>` absent AND `auto/<slug>` unoccupied (a queued candidate whose live name is taken is unapprovable) |
 | `pending-update` | `auto/.pending/<slug>` absent; the live tree does not constrain it |
 
-An UPDATE candidate is queued under `<target-slug>-update` and `approve_pending_update_checked` promotes it over the live `target` in its metadata, never consulting `auto/<candidate-slug>`, so it reserves nothing in the live tree. The `live` test reads the queued candidate's `kind` to tell the two apart and FAILS CLOSED: metadata that is missing, unreadable, or silent about `kind` keeps the slug reserved. Staging therefore holds the lock until `.meta.json` is committed, since `kind` is the field a concurrent publish reads.
+An UPDATE candidate is queued under a fresh `<target-slug>-update-<8 hex>` name (the target truncated to 45 characters, then 8 hex digits from `uuid4`), so a name freed by a replaced or dismissed candidate is never handed to a different one, and `approve_pending_update_checked` promotes it over the live `target` in its metadata, never consulting `auto/<candidate-slug>`, so it reserves nothing in the live tree. The `live` test reads the queued candidate's `kind` to tell the two apart and FAILS CLOSED: metadata that is missing, unreadable, or silent about `kind` keeps the slug reserved. Staging therefore holds the lock until `.meta.json` is committed, since `kind` is the field a concurrent publish reads.
+
+A later UPDATE for a live skill replaces the queued one, and only a queued one nobody changed since staging. When the new candidate supplies a `base_version`, replacement also requires it to match `loader.get_auto_skill_version(target)` under the slug claim lock; a mismatch, unreadable live version, or unreadable new candidate (whose staged digest cannot be computed) keeps every queued update while still staging the new candidate. `_stage_skill_update` always merges from the live body; a queued update is never the merge base, so each pending update holds the live prose merged with its own session's requirement only. When `stage_skill_candidate` writes an update it records `staged_sha256` in `.meta.json`: `_staged_digest`, which reads the candidate back from disk after the write through `_read_candidate_pinned`, the same pinned, byte- and entry-capped reader dismiss and approve use, and hashes it with `_candidate_digest(body, {}, scripts)`. The metadata is left out of that digest because `staged_sha256` itself lives in `.meta.json`. Once the new candidate is fully written, still under the slug claim lock, `_replace_queued_updates` removes every other queued `kind == "update"` candidate for the same `target` whose files still hash to its own recorded `staged_sha256`, and reports each removal through the consumed hook with outcome `superseded` so its bell notification is retired. A candidate is kept, beside the new one, when its `staged_sha256` is missing, not a non-empty string, or different from the digest of its files now (someone edited it, for example during the up-to-90 s merge), and when the pinned read refuses its tree: a link or hardlink anywhere, a non-regular entry such as a FIFO (opened non-blocking, so it never stalls the claim lock), a file over its byte cap, or a tree over the entry or depth budget. A refused tree is never read whole. A failed removal keeps it too. Candidates for other targets and NEW candidates are never touched. In `_process_auto_skills` an UPDATE verdict keeps its target when that target is live, even when it is named like an update candidate; only a target that is not live and names a queued UPDATE candidate is pointed at that candidate's `target`, and only when that target is live. Otherwise the verdict is staged as a NEW candidate.
 
 `_auto_slug_claim_lock` is an advisory exclusive lock on `skills/.auto-slug-claim.lock` — a dot-prefixed plain file at the skills root, skipped by discovery, placed outside `auto/` so taking it does not create the auto namespace as a side effect of a refused claim. It yields whether the lock was ACQUIRED, and an unacquired lock is a REFUSAL: opening the file can fail on a read-only home, and the acquire can lose within its seconds-long ceiling. Each namespace's claim is additionally an atomic `mkdir(exist_ok=False)`, so a claim lost to a concurrent writer refuses instead of overwriting, but `mkdir` alone cannot make the cross-namespace pair safe because the two paths create different directories.
 

@@ -89,6 +89,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _stale_mcp_purge_marker,
     _through_stable_link,
     ensure_kirocrew_on_path,
+    refresh_own_kirocrew_link,
     run_first_run_setup,
 )
 from kiro_crew.agent_parts.shared_home import (
@@ -169,9 +170,11 @@ from kiro_crew.agent_parts.spec_lookup import (
     markdown_spec_for_agent,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
+    _LEDGER_CONDUCTOR_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
     _TEAM_LEAD_SYSTEM_PROMPT,
@@ -252,6 +255,7 @@ from kiro_crew.env import (
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
+    PlatformCompositionError,
     current_context,
 )
 from kiro_crew.platform import redact_log_via_context as redact_log

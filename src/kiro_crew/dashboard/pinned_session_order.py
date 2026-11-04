@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,7 @@ def save(path: Path, keys: list[str]) -> None:
     ``restrict_to_owner`` also refuses a linked parent, so a ``pinned-order``
     symlink planted before the directory was fenced cannot redirect the write.
     """
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(path.parent)
     atomic_write(path, json.dumps(keys), fsync=True, restrict_to_owner=True)
 
 

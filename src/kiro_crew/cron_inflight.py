@@ -278,7 +278,8 @@ def _read_marker(path: Path) -> RunningMarker | None:
     try:
         data = json.loads(raw)
         return _marker_from(data, path)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    # OverflowError: ``int()`` of a pid stored as an infinite float (``1e999``).
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
         return None
 
 
@@ -431,7 +432,7 @@ def read_recorded_attribution(
             return out
 
         return _markers("candidates"), _markers("unrelated_abandoned")
-    except (ValueError, KeyError, TypeError, AttributeError):
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
         return None
 
 

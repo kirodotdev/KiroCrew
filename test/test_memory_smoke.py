@@ -10,6 +10,7 @@ Verifies that memory (semantic, episodic, lessons) is truly useful:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -611,6 +612,12 @@ class TestLessonEmbeddingStorage:
         s2 = VectorMemoryStore(db_path=db)
         s2.init()  # should not raise
         s2.close()
+        conn = sqlite3.connect(db)
+        try:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(semantic_memory)")]
+        finally:
+            conn.close()
+        assert columns.count("embedding") == 1
 
     def test_write_lesson_stores_embedding(self, tmp_path: Path, opened) -> None:
         """New lesson gets embedding blob persisted in DB."""

@@ -1,13 +1,8 @@
 """Tests for dashboard tool approval flow — normal/trust/yolo modes.
 
-The approval-mode routing (normal, trust, yolo, hook verdicts), the slot-level future
-fallback and tool-call id redaction are in ``test_dashboard_approval_modes.py``; batch
-rejection and its cascade, deny-once, background deny-fast, card expiry and the state's
-permission metadata in ``test_dashboard_approval_denials.py``. This module keeps refusal
-recovery, the pending project-reset consume, deny-row title redaction, long read titles,
-the host pre-declined row and the answerer ratchet, which reads this module, both parts
-and the helpers module. The state, stream and answerer helpers they share live in
-``dashboard_approval_helpers.py``.
+Mode routing lives in ``test_dashboard_approval_modes.py``, denials and expiry in
+``test_dashboard_approval_denials.py``, shared helpers in ``dashboard_approval_helpers.py``.
+The answerer ratchet here reads all of those modules.
 """
 
 from __future__ import annotations
@@ -276,13 +271,8 @@ class TestRefusalRecovery:
     async def test_answer_before_the_block_also_gets_awareness_not_a_redo(self, tmp_path):
         """The answer-THEN-block ordering must reach the same awareness body.
 
-        The sibling above covers block-then-answer, where the answer is still in
-        ``assistant_text`` at end of turn. Here the model answers FIRST and then
-        calls the blocked tool, and the tool boundary flushes that answer out of
-        ``assistant_text`` — so the end-of-turn buffer is empty even though the
-        user has already read the answer on screen. Keying the body on that buffer
-        alone sent the resume instruction for this ordering, which is the same
-        duplicate answer at full turn cost.
+        The tool boundary flushes the answer out of ``assistant_text``, so the end-of-turn
+        buffer is empty although the user has read it. Keying on that buffer means a redo.
         """
         cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
@@ -691,11 +681,8 @@ class TestPreToolUseHookBlockRecovery:
     def test_every_hook_deny_path_routes_through_the_shared_helper(self) -> None:
         """A fifth permission path must not be able to deny without recording the reason.
 
-        The four cases above each cover one existing path behaviourally. This one is
-        structural, and it is why the helper exists: rejecting, showing the blocked row
-        and auditing WITHOUT appending the hook's reason is precisely the defect this
-        change fixes -- the model stalls with no idea what it did wrong, while every
-        other assertion still passes. One helper makes that omission unrepresentable.
+        Structural: denying without the hook's reason leaves the model stalled while every
+        behavioural assertion passes, so all paths must use the one helper.
         """
         source = "\n".join(
             turn_file.read_text(encoding="utf-8")
@@ -724,11 +711,8 @@ class TestPreToolUseHookBlockRecovery:
     async def test_blocked_row_and_audit_redact_the_model_authored_title(self, tmp_path) -> None:
         """A credential the model put in the tool title must not reach either surface.
 
-        ``event.title`` prefers the model's own ``description`` field
-        (``_select_tool_title``), so it is LLM-controlled display text. The sibling
-        reject path redacts it before both the transcript row and the audit
-        (``_safe_reject_title``); this path published it verbatim, and the row is both
-        broadcast to the dashboard and persisted to the ConversationLog.
+        ``event.title`` is LLM-controlled (``_select_tool_title``) and must be redacted
+        (``_safe_reject_title``) before the broadcast, persisted row and the audit.
         """
         # Assembled at runtime, never written as one literal: the redactor only
         # fires on credential-SHAPED input (a plain sentinel passes through
@@ -853,17 +837,9 @@ def _assert_deny_surfaces_redacted(slot, audit, secret: str, *, row_suffix: str)
 class TestDenyRowTitleRedaction:
     """Every deny surface must publish the model-authored title redacted.
 
-    ``event.title`` prefers the model's own ``description`` field
-    (``_select_tool_title``), so a credential the model plants there must
-    never reach a transcript row (broadcast to the dashboard AND persisted to
-    the ConversationLog) or a SEL audit ``tool_name``. Each permission path
-    denies through its own control flow, so each gets a behavioral test; the
-    structural test keeps a future path from inlining a raw interpolation.
-
-    Two triggers per path where the path has both: an invalid tool name
-    (length cap — the title is over ``MAX_TOOL_NAME_LEN`` with the credential
-    embedded) and a hook-fire error (title passes validation, PreToolUse
-    raises).
+    ``event.title`` prefers the model's ``description`` (``_select_tool_title``), so a
+    planted credential must reach neither a transcript row nor a SEL ``tool_name``.
+    Triggers: a title over ``MAX_TOOL_NAME_LEN``, and a PreToolUse hook that raises.
     """
 
     # Assembled at runtime, never as one literal: the redactor only fires on
@@ -948,16 +924,9 @@ class TestDenyRowTitleRedaction:
         state, client = _make_state(tmp_path)
         slot = _make_slot()
         slot._trust_reads = True
-        # The name-grant check is stubbed to "no refusal" so this test keeps
-        # measuring what its name claims -- that the trust-reads DENY row and its
-        # SEL record are redacted -- rather than the host's PATH semantics. It
-        # reaches the tier with `ls`, which resolves to a trusted system program on
-        # POSIX but does not exist on Windows, where the check therefore declines
-        # the tier outright, the request falls through to the interactive card, and
-        # the `trust_reads` deny asserted below never happens. Patching the ONE
-        # off-loop entry point every tier goes through is the same seam
-        # `test_chat_runner_coverage_approval.py` uses; the check itself is covered directly
-        # in `test/test_name_grant.py`.
+        # Stub the name-grant check: `ls` does not exist on Windows, where the check would
+        # decline the tier and the `trust_reads` deny below would never happen. The check
+        # itself is covered in `test/test_name_grant.py`.
         _no_refusal = patch.object(
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
         )
@@ -1031,12 +1000,8 @@ class TestDenyRowTitleRedaction:
     def test_no_deny_surface_interpolates_the_raw_title(self) -> None:
         """No module code may interpolate the raw title into a row or audit.
 
-        The behavioral cases above each cover one existing path. This one is
-        structural, and it is why the shared helpers exist: a permission path
-        added later that inlines ``reject`` + row + audit would publish the
-        raw model-authored title again while every behavioral assertion still
-        passes. Rendering each deny shape in exactly one place (its helper)
-        makes that omission unrepresentable.
+        Structural: a new path that inlines ``reject`` + row + audit would publish the raw
+        title while every behavioral case passes, so each deny shape renders in one helper.
         """
         source = "\n".join(
             turn_file.read_text(encoding="utf-8")
@@ -1065,12 +1030,8 @@ class TestDenyRowTitleRedaction:
 class TestLongTitleWithCanonicalIdentity:
     """A ``read`` whose title embeds long image paths must not be refused as a bad name.
 
-    kiro-cli titles a ``read`` with ``image_paths`` by its operation content, so the
-    title grows with the user's filenames while the tool's identity travels beside
-    it as ``AcpEvent.tool_name`` (``_meta.kiro.toolName``). The length cap in
-    ``_validate_tool_name`` protects the case where the title is the ONLY identity;
-    with the canonical name present the title is content, like a shell command
-    line, and the call must proceed.
+    The identity travels as ``AcpEvent.tool_name`` (``_meta.kiro.toolName``). The cap in
+    ``_validate_tool_name`` applies only when the title is the ONLY identity.
     """
 
     _TITLE = "View image " + " ".join(
@@ -1132,24 +1093,12 @@ class TestLongTitleWithCanonicalIdentity:
 class TestHostPreDeclinedRowIsBornResolved:
     """What the permission row's one frame carries when the host declines it.
 
-    The dashboard synthesizes its "needs my action" sound from this row's
-    ``chat_message`` frame (``shouldChimeOnPermissionRow``), gated on the
-    ``resolved`` the frame itself carries; the ``finally``'s in-place
-    ``_mark_permission_resolved`` reaches the client only as an
-    ``approval_resolved`` frame, which retires the card but cannot un-play a
-    sound. So a decline the runner can know before the row exists -- a turn
-    with no budget left to wait, no I/O needed -- is written into the row
-    before the append and its frame arrives ``resolved``. The other host
-    decline, a linked Slack thread the prompt could not be posted to, is known
-    only after the post; the row is published BEFORE the post on purpose
-    (withholding it would hide the card, the chime and the Board's pending
-    state for the post's whole duration on every linked prompt), so a post
-    that fails retires the row through ``approval_resolved`` the moment the
-    decline is recorded, and the arrival chime is the accepted residual.
+    The chime (``shouldChimeOnPermissionRow``) is gated on the frame's ``resolved``, and a
+    later ``approval_resolved`` cannot un-play it. So a no-budget decline is written into
+    the row before the append. A failed Slack post is known only after the row is out, so
+    its chime is the accepted residual.
 
-    The runner tests read the frame at EMISSION: the later mark mutates the very
-    dict ``slot.messages`` keeps, so the transcript's final state cannot tell
-    a row appended resolved from one resolved a tick later.
+    The tests read the frame at EMISSION: the later mark mutates the same dict.
     """
 
     @staticmethod
@@ -1294,15 +1243,8 @@ class TestHostPreDeclinedRowIsBornResolved:
     ):
         """A decision already made must not be overruled by the no-budget decline.
 
-        The row is out and chiming before the Slack post; a user can answer it
-        while the post is still in flight. The wait's window is computed only
-        after the post, from the budget left THEN -- so a post slow enough to
-        exhaust the budget reaches the no-budget branch with a prompt the
-        dashboard already shows (and the resolver already records) as
-        approved. The wait consumes an answer that has already arrived before
-        it consults the window, the way the delivery-failure arms guard their
-        own auto-reject with ``if not fut.done()``; the model is told approved,
-        never rejected.
+        The user can answer during the Slack post, and the window is computed after it.
+        The wait consumes an arrived answer before consulting the window.
         """
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         state.slack_client = AsyncMock()
@@ -1357,13 +1299,8 @@ class TestHostPreDeclinedRowIsBornResolved:
     ):
         """A prompt answered during the post is not reported as auto-declined.
 
-        The row is out and chiming before the Slack post, so the dashboard can
-        answer it while the post is still in flight; if that post then fails,
-        the delivery-failure arm finds a future already done. Its auto-reject
-        is guarded by ``if not fut.done()`` and the transcript notice that says
-        the prompt was auto-declined sits under the same guard: the user who
-        approved is told nothing false, the model is told approved, and the
-        undelivered-prompt decline cause is not recorded.
+        Both the auto-reject and the auto-declined notice sit under ``if not fut.done()``,
+        so an answer given during a failing post stands.
         """
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         state.slack_client = AsyncMock()
@@ -1408,21 +1345,61 @@ class TestHostPreDeclinedRowIsBornResolved:
         state.slack_client.delete_message.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", [True, False], ids=["code-channel", "linked-thread"])
+    async def test_slack_approval_goes_top_level_in_a_bound_code_channel(self, tmp_path, bound):
+        """A code channel's own session asks where it replies: the channel itself.
+
+        Its slot's ``_slack_thread_ts`` is the channel's anchor (kickoff) message,
+        so threading the card under it hides the prompt in a thread nobody reads.
+        The mirror's own rule (``code_channel_post_thread``) decides; an ordinary
+        linked thread still gets the card in its thread.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.slack.code_channels import binding as cc_binding
+
+        anchor = "1700000000.000100"
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        state.slack_client = AsyncMock()
+        state.sessions.get_slack_link = MagicMock(return_value=("", ""))
+        slot = _make_slot()
+        slot._slack_linked = True
+        slot._slack_channel = "C0CODE"
+        slot._slack_thread_ts = anchor
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        async def _post_blocks(_chan, _blocks, _text, _thread_ts=None):
+            await _answer_approval(slot, "req-1", "approved")
+            return "1700000000.000999"
+
+        state.slack_client.post_blocks = AsyncMock(side_effect=_post_blocks)
+
+        def _active(channel_id, thread_ts):
+            if bound and (channel_id, thread_ts) == ("C0CODE", anchor):
+                return SimpleNamespace(channel_id=channel_id)
+            return None
+
+        with _patch_stats(), patch.object(cc_binding, "active_binding", _active):
+            await _run_chat(state, slot, "hello")
+
+        (call,) = [
+            c
+            for c in state.slack_client.post_blocks.await_args_list
+            if c.args[2] == "Manual approval required"
+        ]
+        assert call.args[0] == "C0CODE"
+        assert call.args[3] == (None if bound else anchor)
+        client.approve_tool.assert_awaited_once_with("req-1")
+
+    @pytest.mark.asyncio
     async def test_slack_linked_no_budget_row_is_not_mirrored_and_its_future_is_settled(
         self, tmp_path
     ):
         """A pre-declined row settles its future without a cancellable await.
 
-        The Slack post is the one await between the future's registration and
-        the ``try``/``finally`` that pops it, and its ``except Exception`` does
-        not see the ``CancelledError`` a turn ceiling raises inside it. A prompt
-        pre-declined for lack of budget that still went through the post could
-        therefore leave a future nothing resolves -- the Board keeps the
-        session Blocked and Continue answers 409 until a reload or a slot
-        switch rejects it -- for a card the ``finally`` deletes the moment the
-        post returns. So a row pre-declined at its append is not mirrored at
-        all: the decline is recorded and the future popped exactly as on the
-        interactive path, with no await left on the way there.
+        The Slack post sits before the ``try``/``finally`` that pops the future, and a
+        ``CancelledError`` there would leave it unresolved (session stuck Blocked, Continue
+        409). So a pre-declined row is not mirrored to Slack at all.
         """
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         state.slack_client = AsyncMock()
@@ -1475,20 +1452,9 @@ class TestHostPreDeclinedRowIsBornResolved:
 class TestApprovalAnswerersDoNotRaceTheStream:
     """No answerer may wait on the clock instead of on the approval future.
 
-    An answerer that sleeps a fixed interval and then reads
-    ``_approval_futures`` once is racing the provider stream: when the
-    permission event arrives after the poke, the future is registered with
-    nobody left to answer it, and the turn parks on
-    ``asyncio.wait_for(fut, timeout=...)`` for the whole approval window.
-
-    That window (600s by default) outlives CI's ``--timeout=180``, so the test
-    does not fail — pytest-timeout hard-kills the xdist worker and the run
-    reports ``worker 'gwN' crashed while running <whatever was in flight>``,
-    naming an arbitrary test and discarding the real cause.
-
-    These are source ratchets, not behavioral tests, because the racy shape
-    passes every assertion on an idle machine — only load reveals it, and only
-    as somebody else's crashed worker.
+    Sleeping then reading ``_approval_futures`` once races the stream; a late event parks
+    the turn for the 600s window, past CI's ``--timeout=180``, and crashes some xdist worker.
+    Source ratchets, because the race passes on an idle machine.
     """
 
     @staticmethod

@@ -160,6 +160,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
+                # "Run this next" starts the chosen restored card itself only on
+                # an unreserved slot; a reserved one drains it at the turn's end.
+                ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
                 # The model route's transaction; the in-turn /model <id> on KAS shares it.
                 ("chat_api/slot_model.py", "switch_slot_model"),
                 ("chat_api/slot_note.py", "api_chat_slot_note"),
@@ -258,6 +261,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: execution
             for site in {
+                # Bulk Resume's candidate set reads the fact the slots
+                # projection serializes as running, so the button's count and
+                # the server's total agree; continue_slot_turn still refuses a
+                # reserved slot, reported as skipped.
+                ("chat_resume_all.py", "collect_interrupted_idle"),
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a

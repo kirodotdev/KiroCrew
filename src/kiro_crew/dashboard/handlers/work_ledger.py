@@ -103,6 +103,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
+        _set_pair_field,
+        _widest_retired_bindings,
         _worker_slot,
         _write,
         api_work_ledger_rebuild,
@@ -183,16 +185,23 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.work_ledger_worker import (  # noqa: F401
         _CODE_DONE_WITHOUT_EVIDENCE,
         _WORKER_REPORT_FIELDS,
+        APPROVAL_ANSWERED_TEXT,
         STEER_CREW_LOG_OFF,
         STEER_ITEM_CLOSED,
         STEER_ITEM_TOO_LARGE,
         STEER_NO_ITEM,
         STEER_NO_UNIT,
         STEER_NOT_RECORDED,
+        STEER_NOT_WAITING,
+        _approval_ask_of,
+        _last_report_id,
         _report,
         _steer_unit,
+        _waits_on_approval,
         api_work_brief,
         api_work_report,
+        note_approval_answered,
+        record_approval_answered,
         record_person_steer_result,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
@@ -249,5 +258,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.work_vocab import (  # noqa: F401
         WORK_CONDUCTOR_FIELDS,
+        WORK_MAX_ARTIFACT_VALUE_CHARS,
         WORK_MAX_DEPTH_MAX,
+        WORK_MAX_RETIRE_REASON_CHARS,
     )

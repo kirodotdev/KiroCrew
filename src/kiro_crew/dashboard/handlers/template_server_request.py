@@ -101,7 +101,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     try:
         execution = read_session_execution(slot_history_key(slot))
@@ -119,7 +119,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     return template, "", ""
 
@@ -392,10 +392,15 @@ def _rebuild_specs() -> bool:
     so either counts as not written, and so does a rebuild that raised.
     """
     from kiro_crew.agent import rebuild_agent_config_reporting
+    from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
+    from kiro_crew.platform import PlatformCompositionError
 
     held: list[bool] = []
     try:
         _path, wrote = rebuild_agent_config_reporting(_held_out=held)
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, "a template MCP addition", exc_info=True)
+        return False
     except Exception:  # noqa: BLE001 - reported to the card as not applied
         logger.warning("agent rebuild after a template MCP addition failed", exc_info=True)
         return False

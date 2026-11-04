@@ -245,7 +245,10 @@ URL in the pending ask's text and choices and in those items' text. A bare
 `#N` or a written `owner/repo#N` is never resolved to a repository, so it is
 not read. PR links in the card and buttons for the pending choices come in
 follow-up changes. Each answer
-is cached in process for 15 minutes. Every entry carries `read_at`, or
+is cached in process for 15 minutes. One welcome spends at most 10 seconds in
+total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
+limit the welcome goes out with the cached reads, and every PR still being read
+is `checked: false`. Every entry carries `read_at`, or
 `checked: false` with `not_checked_since` (the last good read, or `never`).
 The prompt allows merged, green, approved or conflict states only from
 `live_prs` or a change newer than the away time; anything else is written as
@@ -256,11 +259,22 @@ left (each fact with source and time), numbered asks (what, why only the
 owner, every option with its consequence, the recommendation and why), problems
 that do not need the owner, and what runs next. It returns one JSON object:
 `status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
-`needs_you` when `needs_you` has items, else `on_track`, and `on_track` or
-`done` beside `needs_you` items reads as `needs_you`), `headline` (at most
-240 characters), `needs_you` (at most four items of 200) and a markdown
-`body` (kept as source, defanged, trailing whitespace dropped, 6,000
-characters, 160 lines; the model's output budget is 40 KiB). Markdown images
+`needs_you` when an ask or waiting item exists, else `on_track`, and
+`on_track` or `done` beside one reads as `needs_you`), `headline` (at most
+240 characters), `asked` (the owner's request restated in one line, 160
+characters; the payload's `owner_request` is its source, and the gateway's
+quote fills it only when there is no `body`), `asks` (at most four, each
+`what`, `why`, `source`, `options` of `label` and `consequence`,
+`recommended` and `recommended_why`; texts 200 characters, a consequence
+160) and a markdown `body` (kept as source, defanged, trailing whitespace
+dropped, 6,000 characters, 160 lines; the model's output budget is 72 KiB).
+An ask's option labels come only from the `waiting_on_you` entry its
+`source` names, at most six: a renamed, added or dropped label keeps the
+source labels and drops the consequences and recommendation, an ask with no
+valid `source` keeps no options, and a recommendation outside the labels is
+dropped. Asks replace the older `needs_you` list (four items of 200), which
+is still read when a reply has no `asks`. In `content`, the asks pass
+through the same inert-body transform as the body. Markdown images
 and `<img>` tags outside a widget or code fence draw as their alt text only
 (a widget frame allows no remote image). The secret and grounding
 scans run last, after every transform, on the exact strings the row would
@@ -328,7 +342,7 @@ its CSP names no CDN script origin (connect, image and font sources are local
 only, as for every widget), it has no link bridge and no bare-link rewrite,
 and the host ignores its `mc-widget-action`, so it never pre-fills the
 composer. It has no star, because an artifact page would draw it under the
-chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
+chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3), as the chat's own PR pills (the bare URLs go through the same `MarkdownRenderer`, with link previews off): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
 unchanged. A page script can still navigate its own frame, which the sandbox
 and CSP cannot forbid. A cap that would cut inside a widget or code fence
 drops that block whole, and the prompt names both caps. A brief stored with a separate `widget` field keeps
@@ -387,6 +401,9 @@ state are composed behind that facade:
   `session_lifecycle_parts/` owners below
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
+- `session_idle_clock.py` — `last_activity`, the bounded clock the idle scan
+  and its post-probe recheck read (see *Idle cleanup*); `session_cleanup.py`
+  imports it as `_last_activity`
 
 `SessionLifecycleService` is defined in `session_lifecycle.py`; its behaviour lives in
 the `session_lifecycle_parts/` owner modules, one responsibility each. A member's body is
@@ -1760,8 +1777,8 @@ against sweep completeness, and are torn down at `close_all`.
   normal Stop, user-follow-up, pending-steer, approval/refusal,
   and one-shot gates remain unchanged; trusted or global auto-approve sessions
   retain the existing notice-only downgrade.
-- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. The popover then shows a note that the threshold does not apply there, because the turn-end gate declines Crew's `/compact` for such a backend at any reading. The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
-- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code, harness-managed and uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
+- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. Only while the session follows the global (no override and no agent default, `harnessManagedNoteBackend`), the popover shows a note that the backend compacts on its own and that setting a threshold there compacts sooner, because the turn-end gate declines Crew's `/compact` for such a backend at the global threshold and honours an explicit one. The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
+- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code backends, harness-managed backends at the global threshold, uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a member of
   `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex, opencode, goose, pi and copilot, plus KAS,
   whose harness-managed case is the first bullet below. They divide by WHERE
@@ -1800,12 +1817,30 @@ against sweep completeness, and are torn down at `close_all`.
   accident:
 
   - `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS) is **declined** at the
-    threshold (`"compact_unsupported"`, see the gate ladder below), read through
-    `harness_managed_compaction_backend`. KAS is also in `ACP_BACKENDS_COMPACT`,
-    so a user's manual `/compact` is served (the session handle sends KAS's
-    `_kiro/session/compact` verb), but Crew's own threshold leaves it alone: it
-    summarizes on its own initiative and its `summarization_completed` frame
-    resets the meter, so declining leaves nothing unmanaged.
+    global threshold (`"compact_unsupported"`, see the gate ladder below), read
+    through `harness_managed_compaction_backend`. KAS is also in
+    `ACP_BACKENDS_COMPACT`, so a user's manual `/compact` is served (the session
+    handle sends KAS's `_kiro/session/compact` verb), but at the global
+    `session.autocompact_pct` Crew leaves it alone: it summarizes on its own
+    initiative and its `summarization_completed` frame resets the meter, so
+    declining leaves nothing unmanaged. An EXPLICIT threshold changes that
+    (`CompactionCoordinator.crew_compacts_harness_managed`): when the session has
+    a per-session override (`pct_overrides`, the slider) or its agent declares
+    `autocompact_pct`, and the backend is also in `ACP_BACKENDS_COMPACT`, the gate
+    does not decline. The reading goes on to the `unconfirmed`, `in_progress` and
+    `cooldown` rungs, and Crew compacts at that threshold through
+    `_compact_session` and `_compact_in_place` like any member backend. The
+    explicit-threshold path also requires the provider's
+    `harness_compact_verb_advertised` (the engine listed `_kiro/session/compact`
+    at `initialize`); without it the reading is declined as at the global
+    threshold. While that compaction runs the key is in `compacting`, so a
+    reading taken meanwhile, including one after a summarization KAS ran itself,
+    is answered `in_progress`. A `/compact` that fails on this path (KAS refuses
+    the verb while its own summarization runs) is not recycled: the failure
+    cooldown is armed and the callback reports `success=False`, because KAS's
+    own summarization still bounds the context. A harness-managed backend
+    outside `ACP_BACKENDS_COMPACT` stays declined, with or without an explicit
+    threshold.
   - `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled**. Its ACP surface
     carries no compaction of any kind, so declining bounded nothing and the
     context grew toward the harness's own window. `_recycle_unmanaged` reaches
@@ -1934,9 +1969,23 @@ against sweep completeness, and are torn down at `close_all`.
   whatever the link names. A refused spec is skipped like a malformed one, so
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
-  60min) of idleness, measured on `session.last_used`, which is refreshed on
-  every acquire and on a successful `release(key)`. Never expires the persistent
-  keys (`_bg`, `_hb`). Dashboard per-tab sessions
+  60min) since the later of `last_used` and the provider's per-session
+  `session_activity_at` monotonic stamp, with the latter capped at one timeout
+  window after `last_used`. `session.last_used` is refreshed on every acquire
+  and on a successful `release(key)`. Passive traffic can therefore defer idle
+  expiration by at most one additional idle window. Beyond two windows since
+  the last dispatched turn, passive traffic alone no longer prevents expiration
+  on the next sweep. This bounds retention because frames can come from a
+  looping backend and do not establish finite work. The runtime stamps with
+  `time.monotonic()` in `acp/runtime_reader_loop.py`; the sweep reads
+  `SessionCleanupDeps.monotonic`, which `session.py` wires to the same clock.
+  Providers without a numeric
+  stamp use `last_used` alone. Busy-turn, attached-subagent, pending-injection
+  and harness-background launch guards apply independently on both axes; their
+  work evidence is separate from the passive-frame clock. Ordinary session-tagged frames can
+  arrive without an attached child or a tracked harness-background launch;
+  those frames receive only the bounded idle grace. Never expires the
+  persistent keys (`_bg`, `_hb`). Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
@@ -2058,7 +2107,8 @@ against sweep completeness, and are torn down at `close_all`.
   then the semaphore (a turn that took it during the await is exactly as live
   as one the scan skipped); then, on the idle axis only, the clock (a turn that
   began AND finished inside the await released the semaphore again but bumped
-  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  `last_used` on its way in, or backend activity within the bounded grace
+  window advanced the effective clock, so the session is not idle now -- the orphan axis
   ignores the clock and re-asserts against the live set instead, below).
   Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates
@@ -2325,14 +2375,16 @@ against sweep completeness, and are torn down at `close_all`.
   `dashboard/state.wire_session_recycle_callback()` from both `server.py`
   start paths to post a user-visible "session recycled" notice into
   `dashboard:` slots, tagged `meta={"kind": "compaction"}` so the [OPTIONS:]
-  backward scan skips it). Idle/orphan sweeps do NOT fire the recycle
-  callback. Linux sums the `/proc` tree; Windows uses
+  backward scan skips it). Idle/orphan sweeps fire the recycle callback only
+  for a session whose harness launched background work past the hold (see
+  "Harness background work" below). Linux sums the `/proc` tree; Windows uses
   `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's
   footprint over libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
   Any other host reads 0 and logs one warning that the ceiling cannot measure.
   On macOS the background runtime's 1536 MiB fallback ceiling applies too.
 - **Harness background work** (`CleanupDeps.provider_background_launch`,
-  `HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
+  `session.harness_background_hold_secs`, default
+  `session_background_hold.HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
   `HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR` = 2): a free semaphore only proves Kiro
   Crew's own prompt returned. Claude Code runs a backgrounded Bash command or a
   Workflow in the session's process tree after the prompt answers `end_turn`,
@@ -2375,6 +2427,18 @@ against sweep completeness, and are torn down at `close_all`.
   notice still names the work. The idle sweep is not memory-driven, so its hold
   has no such ceiling. The probe is not fail-closed: a missing or unreadable
   answer is "nothing launched".
+  The hold's length is `session.harness_background_hold_secs`, read at every
+  RSS tick and idle sweep through `session_background_hold.background_hold_secs`
+  (so a config edit applies at the next one). The loader clamps it to
+  `HARNESS_BACKGROUND_HOLD_SECS_MIN`-`_MAX` (300-86400) and logs a warning when it
+  does; the reader applies the same bounds again and reads a non-number as the
+  default. When the idle sweep does reset a session whose newest launch is past
+  the hold, on either axis, it logs a warning naming the launch, its age and the
+  hold (`hold_expired_reason`), and after a successful `reset` fires the recycle
+  callback with that reason, so the chat says the work may have been stopped. An
+  expiry with no recorded launch, or a declined reset, stays silent as before.
+  The RSS recycle past the hold keeps the plain memory-limit notice: there the
+  memory ceiling, not the hold, is the stated cause.
 
 ## APIs
 
@@ -3157,11 +3221,48 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) The pre-save
+  invariant silently does not hold across versions.) A close flushes the hold before
+  its archive save, so each held note's visible row reaches the transcript a History
+  resume reads; that path does not read `deferred_notes`, so before the flush a note
+  the DELETE had answered 200 for left no row there. A note with no context half is
+  retired by its row's `meta.noteId` in the same write. A note that still owes a
+  context half is flushed differently while the slot is closing (`slot._closing`):
+  its row carries `meta.noteRowFor` instead of `noteId`, so no save retires the
+  durable entry, and the note stays in the hold marked `rowCommitted` with its context
+  intact. The entry is the same `deferred_notes` entry the `/note` POST wrote; no new
+  entry type is added. A restore that finds a `noteRowFor` row for an entry marks it
+  `rowCommitted` (`drop_committed_restored_notes`), and a later non-closing flush
+  delivers only its context to `_pending_context`, appends no second row, and records
+  the id in `_dropped_note_ids` so the next full save retires it. An aborted close
+  keeps the marked note, so the next turn's flush delivers its context. The flush
+  in the save that COMMITS a close (`_close_slot`, the cleanup sweep and
+  `_persist_handover_tail`) passes `retain=False`: it treats a `rowCommitted` note
+  like a non-closing flush and records its id in `_dropped_note_ids`, so that save
+  retires the entry. Any flush that delivers a `rowCommitted` note also renames its
+  row's `noteRowFor` to `noteId` and marks the slot dirty, so the written row carries
+  the retirement too. The hand-over's `rows_only` save keeps the replacement's
+  `deferred_notes` and so retires nothing from `_dropped_note_ids`; without the
+  rename a restart would mark the surviving entry `rowCommitted` and hand the closed
+  slot's context to the replacement's next turn. The context half is then dropped with the closed slot, as
+  the cleanup sweep already did before this change: a History resume never reads
+  the hold, and a kept entry would reach whichever turn next runs after a
+  startup-shaped restore (`adopt_closed`, or a restart once the session is reopened),
+  and count toward the hold ceiling meanwhile. `_note_delivered_live` and
+  `_note_row_committed` accept `noteRowFor` as well as `noteId`, so a `/note` POST
+  whose hold write fails after a closing flush keeps the note and its context rather
+  than discarding it and inviting a retry that duplicates the row. Version skew: an
+  older gateway ignores `noteRowFor` and `rowCommitted`, never retires such an entry,
+  and replays its row on restore, so a downgrade with a closing-window entry on disk
+  shows that note's row twice. The archival flush a close runs after the pop appends its rows
+  with `broadcast=False`: live delivery routes by slot name, and by then a
+  replacement may hold the name. When the archive save then fails and the slot takes
+  its name back, the restore arm delivers those rows live, since the tab never saw
+  them. The pre-save
   exits need no store failure to reach it either; they return before the save is
   attempted, in a window that opens while a turn is in flight. So every hand-over
   exit routes through `_persist_handover_tail(state, name, slot)`, which flushes
-  held notes into the window and writes it with **`closed=False`**. Those rows
+  held notes into the window, also with `broadcast=False` because the replacement
+  holds the name, and writes it with **`closed=False`**. Those rows
   belong on the ORIGINAL's own transcript whether or not the replacement shares it;
   what must not happen is the archive flag and the session teardown, not the write.
   The
@@ -3379,12 +3480,15 @@ those callers are:
 
 | caller | why it ends the conversation |
 |---|---|
-| `dashboard/handlers_channel.py` — `api_channel_clear_context` | the user asked the agent to forget the conversation (`scope=all` also wipes the channel's shared buffer) |
 | `cron_service/service/run_kill.py` — `_reset_and_kill_once`, reached from `cancel` / `_force_reap` | the job is cancelled or reaped, so its conversation is over |
 | `taskrunner_parts/run_scope.py` — `TaskRunner._cleanup_run_sessions` | cancel cleanup ends every step conversation of the run |
 | `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
 | `llm_helpers_parts/background_turns.py` — `_start_fresh_conversation`, reached from `background_turn(fresh_conversation=True)` | the turn's conversation is over; the reset is the fallback when `new_conversation` is unavailable |
 | `session_compaction.py` — critical reset after a failed compaction (`clear_conversation=True`) | the overflowed conversation is cleared, so it is over |
+
+`api_channel_clear_context` is deliberately absent: it ends each member's conversation
+through `discard_conversation`, which cancels that key's children and releases its
+companion runtime itself, so it needs no flag on `reset` to avoid resurrecting them.
 
 The default is the recycle because that is what the overwhelming majority of `reset`'s
 callers are, and the two mistakes do not cost the same — but a MISSED flag costs more than an
@@ -4893,7 +4997,14 @@ the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
 so the scan runs when the initialize handshake proves the agent came up and
 then at the end of every `_finish_create_session()` and `load_session()`,
 because each session start — fresh or resumed — forks another agent process
-and re-initializes MCP servers the earlier scan could not have seen.
+and re-initializes MCP servers the earlier scan could not have seen. The same
+guarded pass also runs at the END of every prompt turn, through
+`process_identity.record_live_children_after_turn()` in both providers' stream
+`finally`, so a child a turn forks is recorded while the leader is verified
+alive and is on the handle a later teardown takes even when the leader exits on
+its own before teardown, together with the leader's group id verified at that
+same point (see [acp-client](acp-client.md) § Pre-teardown tree
+refresh).
 
 Nothing announces a descendant's exit: they are the gateway's
 GRANDchildren, so there is no `SIGCHLD` to catch and no wait to reap (the

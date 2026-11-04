@@ -114,19 +114,9 @@ def _posted_orders(dash: InMemoryDashboardClient) -> dict[str, int]:
 class TestTheTwoSidesCompareNamesIdentically:
     """The tool's sort key and the sidebar's comparator must not disagree.
 
-    `chat_folder_tree` is where an agent picks a `before`/`after` anchor, so a
-    sequence that differs from the rendered one makes the anchor point at the
-    wrong gap.
-
-    The key consults no Unicode table. `str.lower()` reads the interpreter's tables
-    and `String.prototype.toLowerCase` reads the browser's, so a character whose case
-    mapping differs between those two versions would fold differently on each side,
-    and neither side owns both tables.
-
-    `A`-`Z` is the exception, folded through a literal table here and by arithmetic on
-    the frontend. That range is fixed in every Unicode version, so folding it costs no
-    version dependency — and a store written before `order` existed has every sibling
-    tied at 0, which makes this tie-break the whole sort for those sidebars.
+    An agent picks a `before`/`after` anchor from `chat_folder_tree`, so a different
+    sequence points the anchor at the wrong gap. The key folds only `A`-`Z`, because
+    any other case table could differ between the interpreter and the browser.
     """
 
     def test_ascii_case_folds_so_ordering_stays_alphabetical(self) -> None:
@@ -166,10 +156,8 @@ class TestTheTwoSidesCompareNamesIdentically:
     def test_an_astral_name_sorts_by_utf16_code_unit_not_code_point(self) -> None:
         """Python orders str by code point; JavaScript orders by UTF-16 code unit.
 
-        Above U+FFFF the two disagree: an astral character's surrogates begin at
-        0xD800, so U+1F600 sorts AFTER U+FF21 by code point and BEFORE it by code
-        unit. The frontend comparator uses `<` on strings, so the tool has to speak
-        code units or the anchor an agent picks lands in the wrong gap.
+        Above U+FFFF they disagree: U+1F600's surrogates start at 0xD800, so it sorts
+        after U+FF21 by code point and before it by code unit.
         """
         rows = [
             {"id": "aaaaaaaaaaaa", "name": "\U0001f600", "parent_id": "", "order": 0},
@@ -238,11 +226,8 @@ class TestFolderPosition:
     def test_the_renumber_states_its_container_to_the_endpoint(self) -> None:
         """The reorder POST carries ``expected_parent`` naming the destination.
 
-        The batch is computed from a snapshot of the tree, so the claim is what
-        lets the endpoint refuse the renumber (409) when a concurrent reparent
-        moves a sibling between that read and the write. The destination here is
-        the root lane, and the claim for it is the empty string -- a real value,
-        present in the body, not an omitted key.
+        It lets the endpoint refuse (409) when a concurrent reparent moves a sibling
+        after the snapshot. For the root lane the claim is a present empty string.
         """
         out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "Alpha"}, _positioning())
         assert not out.startswith("Error:")
@@ -302,12 +287,9 @@ class TestFolderPosition:
         assert "kirocrew/Travel" in out and "after `kirocrew/0811`" in out
 
     def test_a_free_slot_makes_the_whole_reposition_one_write(self) -> None:
-        """The answer to "several writes cannot be atomic": usually there is one.
+        """A position the store has room for is one PATCH, so it cannot be partial.
 
-        Several writes CAN land half-applied, since the endpoint takes one row at a
-        time. So a position the store already has room for is written as a single
-        PATCH and cannot be partial at all; only adjacent neighbours force the
-        renumber. Alpha is first, so the slot ahead of it is free.
+        Alpha is first, so the slot ahead of it is free.
         """
         out, dash = _call(
             "chat_folder_move", {"folder": "Delta", "before": "Alpha"}, _positioning()
@@ -336,13 +318,8 @@ class TestFolderPosition:
     def test_an_app_cannot_position_a_folder_whose_subtree_holds_a_foreign_one(self) -> None:
         """Positioning takes the descendants with it, so the blast radius is the subtree.
 
-        The app owns the row it names, so the moved-folder check passes. But the
-        person's folder is nested inside it, and repositioning the parent relocates
-        the child -- the same violation the endpoint refuses on a reparent, reached
-        one level down. Placing AppRoot after AppTwo has a free slot, so it is a
-        single order PATCH on AppRoot's own row; the endpoint refuses that write
-        because AppRoot's subtree holds the person's folder, and the tool surfaces
-        the refusal rather than pre-checking it.
+        The app owns AppRoot, but the person's folder is nested inside it. A free slot
+        makes this one PATCH on AppRoot, which the endpoint refuses; the tool surfaces it.
         """
         rows = [
             {
@@ -373,14 +350,8 @@ class TestFolderPosition:
     ) -> None:
         """Ownership lives in the endpoint, not a tool-layer pre-check.
 
-        When a renumber's batch includes a row the app does not own, the reorder
-        endpoint re-validates every row under the store lock and refuses the whole
-        batch, leaving the order untouched. The tool does not pre-check this; it
-        sends the batch and surfaces the endpoint's atomic refusal.
-
-        Moving AppTwo just after AppOne renumbers the contiguous 0,1,2 set, so
-        Person's row (the person's, not the app's) is one of the writes -- which is
-        what the endpoint refuses.
+        Moving AppTwo after AppOne renumbers 0,1,2, so the batch names Person's row and
+        the endpoint refuses the whole batch under the store lock.
         """
         rows = [
             {"id": "aaaaaaaaaaaa", "name": "AppOne", "parent_id": "", "order": 0, "owner_app": "x"},
@@ -407,15 +378,10 @@ class TestFolderPosition:
         assert "pppppppppppp" in _posted_orders(dash), out
 
     def test_an_app_cannot_position_a_folder_it_does_not_own(self) -> None:
-        """The tool refuses the position BEFORE any write -- the pinned no-write case.
+        """The tool refuses the position before any write.
 
-        Positioning is relative, so it does not need a write to its own target: a
-        pure reposition sends no `parent_id`, so the endpoint's reparent rule never
-        fires, and renumbering the app's OWN siblings around the person's folder
-        changes where the person's folder renders with no write to it for the
-        endpoint to refuse. The moved-folder ownership refusal therefore lives in
-        the tool, and it fires before any PATCH or reorder is issued -- this test
-        pins that no write is attempted at all.
+        Renumbering the app's own siblings around the person's folder moves it with
+        no write to it for the endpoint to refuse, so this check lives in the tool.
         """
         rows = [
             {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 0},
@@ -440,13 +406,8 @@ class TestFolderPosition:
     ) -> None:
         """The exact reachable gap: the moved row keeps its order, only siblings write.
 
-        Person(order 1) sits between AppA(0) and AppB(2). Placing Person after AppA
-        leaves Person at the index it already occupies, so `own_pos is None` and no
-        PATCH names Person; without the moved-folder refusal the only writes would
-        renumber the app's OWN siblings, every one owned, and both endpoints would
-        allow it -- the person's folder relocated by an app with nothing refused.
-        The tool-layer moved-folder check closes this: it refuses before computing
-        or issuing any write.
+        Placing Person after AppA leaves it at its index (`own_pos is None`), so every
+        write would name an owned sibling and both endpoints would allow it.
         """
         rows = [
             {"id": "aaaaaaaaaaaa", "name": "AppA", "parent_id": "", "order": 0, "owner_app": "x"},
@@ -468,13 +429,8 @@ class TestFolderPosition:
     ) -> None:
         """The subtree half of the same gap: the moved folder is owned, its child is not.
 
-        AppMid(order 1, app-owned) sits between AppA(0) and AppB(2) and holds the
-        person's PersonKid inside it. Placing AppMid after AppA leaves it at index 1,
-        so `own_pos is None` and no write names AppMid; the moved-folder OWNERSHIP
-        check passes (the app owns AppMid), and without the subtree check the only
-        writes would renumber owned siblings, so both endpoints would allow it -- the
-        person's nested folder relocated with nothing refused. The tool-layer
-        moved-folder SUBTREE check closes this: it refuses before any write.
+        AppMid holds the person's PersonKid and stays at index 1 (`own_pos is None`), so
+        only the tool's subtree check stands between the owned-sibling writes and a move.
         """
         rows = [
             {"id": "aaaaaaaaaaaa", "name": "AppA", "parent_id": "", "order": 0, "owner_app": "x"},
@@ -496,11 +452,8 @@ class TestFolderPosition:
     def test_a_row_deeper_than_the_sidebar_draws_is_listed_at_the_cap_depth(self) -> None:
         """Clamp the indentation, keep the row.
 
-        `renderFolderBlock` returns nothing for `depth > 10`, and the store caps
-        folder count but not nesting, so a deeper chain is legal. Reporting depth 14
-        would claim a level the sidebar never draws — but omitting the row would hide
-        the folder AND the live sessions filed in it from an agent's only tree view,
-        to buy indentation parity on a row nobody can see.
+        `renderFolderBlock` draws nothing past `depth > 10`, but the store allows deeper
+        chains. Omitting the row would hide the folder and its sessions from the agent.
         """
         rows = [
             {
@@ -521,11 +474,8 @@ class TestFolderPosition:
     def test_a_saturated_edge_has_no_free_slot(self) -> None:
         """One past the bound reads back AS the bound, so it is not outside anything.
 
-        `_free_slot_order` earns its single write by naming an order no sibling
-        holds. At the numeric limit that is impossible: the value it would return
-        comes back through the same clamp as the anchor's own order, so the pair
-        ties and the name tie-break — not the requested side — decides where the
-        folder lands. There is no representable slot, so the caller must renumber.
+        At the limit the slot value clamps to the anchor's own order, so the name
+        tie-break would decide the side. The caller must renumber instead.
         """
         limit = mcp_dashboard._CHAT_FOLDER_ORDER_LIMIT
         at_top = [{"id": "aaaaaaaaaaaa", "name": "A", "parent_id": "", "order": limit}]
@@ -539,10 +489,7 @@ class TestFolderPosition:
     def test_the_shared_golden_fixture_orders_identically_on_this_side(self) -> None:
         """One fixture, both suites — see test/fixtures/chat_folder_sibling_order.json.
 
-        `folderTree.test.ts` drives these same rows through `bySidebarOrder`, so the
-        agreement between the tool's order and the sidebar's is checked by one
-        artifact rather than asserted in prose on each side. A coercion that changes
-        on either side fails one of the two runs.
+        `folderTree.test.ts` drives the same rows through `bySidebarOrder`.
         """
         spec = json.loads(
             (
@@ -565,13 +512,10 @@ class TestFolderPosition:
         assert modes_seen == set(mcp_dashboard.FOLDER_SORT_MODES)
 
     def test_no_persisted_order_shape_can_raise_out_of_the_sort_key(self) -> None:
-        """Totality over the store, checked as a set rather than one shape at a time.
+        """Any JSON value for `order` yields an int, since a raise aborts the whole sort.
 
-        The folder store is read with a bare `json.loads`, so `order` can arrive as
-        anything JSON expresses. `1e999` parses to `inf`, and `int(inf)` raises
-        `OverflowError` — which is neither `TypeError` nor `ValueError`. An exception
-        escaping a SORT KEY aborts the whole sort, so one row would take down every
-        folder tool.
+        `1e999` parses to `inf`, and `int(inf)` raises `OverflowError`, which is
+        neither `TypeError` nor `ValueError`.
         """
         junk = [float("inf"), float("-inf"), float("nan"), "abc", [1], {"a": 1}, None, True]
         for value in junk:
@@ -601,11 +545,8 @@ class TestFolderPosition:
     def test_a_same_parent_reposition_sends_no_parent_id(self) -> None:
         """The endpoint reads a present `parent_id` as a reparent.
 
-        It then applies the reparent-only rule that a subtree holding a folder the
-        caller does not own cannot be moved. Sending the CURRENT parent back would
-        put a pure reposition through a guard about a move that is not happening,
-        and an app reordering its own folder that contains one of the person's would
-        be refused for no reason.
+        Sending the current parent would put a pure reposition through the reparent
+        subtree guard, refusing an app that reorders its own folder for no reason.
         """
         out, dash = _call(
             "chat_folder_move", {"folder": "Delta", "before": "Alpha"}, _positioning()
@@ -660,11 +601,8 @@ class TestFolderPosition:
     def test_a_failed_order_write_says_the_position_itself_landed(self) -> None:
         """A refused reorder is reported as atomic, not half-applied.
 
-        The renumber is one atomic request now, so a refusal leaves the stored
-        order untouched -- the message says exactly that and tells the caller to
-        re-run. With the parent unchanged there was no move, so it names a
-        reposition, not a reparent that did not occur -- in the one message a
-        caller reads while deciding what to retry.
+        The renumber is one atomic request, so a refusal leaves the order unchanged.
+        With the parent unchanged, the message names a reposition, not a move.
         """
         out, _ = _call(
             "chat_folder_move",
@@ -681,11 +619,8 @@ class TestFolderPosition:
 class TestPositionRenumberIsAllOrNothingForAnApp:
     """An app may not half-shuffle the person's sidebar.
 
-    Repositioning several siblings is ONE atomic reorder request, and the
-    endpoint re-validates this app's ownership of every row under the store lock.
-    A batch that names a row the app does not own is refused whole, leaving the
-    order untouched -- so the tool relies on the endpoint rather than pre-checking,
-    and a refusal cannot land midway.
+    The renumber is one atomic reorder request, and the endpoint refuses the whole
+    batch under the store lock when it names a row the app does not own.
     """
 
     OWNED = [
@@ -795,13 +730,8 @@ class TestPositionRenumberIsAllOrNothingForAnApp:
     ) -> None:
         """The reparent must NOT commit when the renumber it needs would be refused.
 
-        A cross-parent move sends a reparent PATCH first, then an atomic reorder.
-        When the destination has no free slot, the reorder names sibling rows to
-        renumber; if one of those is the person's, the endpoint refuses the reorder
-        -- but the reparent PATCH has already landed, leaving the folder moved into
-        the new parent yet unpositioned. The tool preflights the batch's ownership
-        for the reparent case, so a batch that would be refused writes NOTHING: no
-        reparent PATCH, no reorder POST. This pins that no write is attempted.
+        The reparent PATCH goes first, so a refused reorder would leave the folder moved
+        but unpositioned. The tool preflights ownership, so nothing is written.
         """
         rows = [
             {

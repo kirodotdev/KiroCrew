@@ -210,11 +210,30 @@ Notification sound is produced entirely on the client and is independent of the
 notification feed, the bell badge, and OS notification-center toasts. The
 WebAudio layer is the **single source of sound**: `website/src/hooks/useNotificationSound.ts`
 synthesizes tones through the Web Audio API (no audio files) and is the only
-component that emits sound. The feed toast's page-context `Notification`
+component that emits a built-in sound (a theme pack's own sound is described
+under "Theme pack sounds" below). The feed toast's page-context `Notification`
 constructor (`website/src/hooks/useNativeNotification.ts`, see "OS toast"
 below) passes `silent: true`, so the OS toast never adds its own system chime
 on top of the WebAudio tone. A browser that
 ignores `silent` degrades to the prior double-sound behavior and no worse.
+
+### Theme pack sounds
+
+An active Level-2 theme pack whose sounds are on and audible (consented, not
+muted, no reduced motion) can sound a notification instead of the built-in
+tone. `ThemeExperienceLayer.tsx` publishes the pack's playable trigger names
+through `themeSound.ts:publishThemeSoundTriggers()`, and both listeners of
+`MC_NOTIFICATION_EVENT` resolve the same event through
+`useNotificationSound.ts:themeTriggerForNotification()`, so exactly one of them
+plays it. The resolution order is: a category the user set in Settings keeps its
+own sound (the pack stays silent for it); else the pack's `category:<kind>`
+trigger; else its `notification` trigger; else the built-in tone. The `all`
+fallback is not treated as a user choice, because a stored value cannot be told
+apart from the default. The allowed `category:<name>` triggers are the
+`SOUND_CATEGORIES` minus `all` (`theme_validate._THEME_AUDIO_NOTIFICATION_CATEGORIES`),
+each capped at `notification`'s 2 seconds. `themeNotificationSound.test.ts`,
+`ThemeExperienceLayer.test.tsx` and `test_theme_install_declarations.py` pin the
+order, the skipped built-in tone and the validator's allowlist and cap.
 
 ### Sound events
 

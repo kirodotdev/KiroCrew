@@ -215,6 +215,160 @@ class TestCronTurnPassesItsIdentity:
         assert kwargs["session_key"] == session_key == "cron:j1"
         assert kwargs["unattended"] is True
 
+    @pytest.mark.asyncio
+    async def test_cron_turn_hands_the_gate_its_alias_not_its_template(self, monkeypatch):
+        # A task profile bound to an agent is looked up by the agent the gate is
+        # given; a cron turn names the alias, as a chat turn does, while the
+        # session runs the template the alias collapses to.
+        from kiro_crew.slack import gateway as gw
+
+        monkeypatch.setattr(gw.live, "snapshot", lambda: None)
+        orch = _make_orchestrator()
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._resolve_cron_agent = lambda *_a, **_k: ("researcher-mode", None, None)
+        job = _job(id="j1", name="probe", agent_id="researcher")
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            turn = gw._cron_stream_with_posttoken_resume
+            await callback(job)
+
+        turn.assert_awaited_once()
+        assert orch.sessions.get_or_create.await_args.kwargs["agent"] == "researcher-mode"
+        assert turn.await_args.kwargs["agent"] == "researcher"
+
+    def test_a_task_profile_bound_to_the_cron_agent_governs_its_turn(self, monkeypatch):
+        from kiro_crew.platform import governance_profiles as gp
+
+        bound = SimpleNamespace(name="researcher-tight")
+        monkeypatch.setattr(gp._STORE, "resolved", lambda: True)
+        monkeypatch.setattr(
+            gp._STORE,
+            "snapshot",
+            lambda: SimpleNamespace(
+                by_bind={("task", "researcher"): "researcher-tight"},
+                by_name={"researcher-tight": bound},
+            ),
+        )
+
+        assert gp.resolve_active_scope("cron:j1", agent="researcher") is bound
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crewmate", [False, True], ids=["member", "crewmate-worker"])
+    async def test_a_member_cron_hands_the_gate_the_member_alias(self, monkeypatch, crewmate):
+        # A cron created from a member's chat with no agent_id captures that
+        # member: its template is the member's kiro_agent, and a crewmate's turn
+        # is swapped onto the worker template. Neither is the name a chat turn
+        # on the member hands the gate; the member's alias is.
+        from kiro_crew import mate_worker
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.slack import gateway as gw
+
+        monkeypatch.setattr(gw.live, "snapshot", lambda: None)
+        monkeypatch.setattr(
+            mate_worker,
+            "cron_worker_execution",
+            lambda execution, _cfg: (
+                execution.with_template(
+                    mate_worker.MATE_WORKER_AGENT, mate_worker.MATE_WORKER_AGENT
+                )
+                if crewmate
+                else None
+            ),
+        )
+        orch = _make_orchestrator()
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        dispatched: list[object] = []
+
+        def _resolve(_execution, agent, **_k):
+            dispatched.append(agent)
+            return (agent, None, None)
+
+        orch._resolve_cron_agent = _resolve
+        captured = ExecutionContext(
+            "beta-id",
+            MemoryStoreRef("member-beta", "beta-id"),
+            "member",
+            "beta-mode",
+            selection_name="beta",
+        )
+        job = _job(id="j1", name="probe", execution_context=captured.to_record())
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            turn = gw._cron_stream_with_posttoken_resume
+            await callback(job)
+
+        turn.assert_awaited_once()
+        template = mate_worker.MATE_WORKER_AGENT if crewmate else "beta-mode"
+        assert dispatched == [template]
+        assert turn.await_args.kwargs["agent"] == "beta"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("agent_id", "live_alias"),
+        [
+            # The dashboard saves a member schedule with a template in `agent`.
+            ("kirocrew-lite", "beta"),
+            # cron_update set `agent` to another member's name on beta's job.
+            ("researcher", "beta"),
+            # The member was renamed since capture: the live alias is its name.
+            ("", "beta-renamed"),
+        ],
+        ids=["dashboard-template-agent", "other-member-agent", "renamed-member"],
+    )
+    async def test_a_member_capture_hands_the_gate_its_live_alias_whatever_the_job_names(
+        self, monkeypatch, agent_id, live_alias
+    ):
+        # The turn runs as the captured member: _resolve_cron_agent pins dispatch
+        # to the member's live record through member_config_for_id. The gate gets
+        # that same record's alias, not the name the job carries in agent_id.
+        from kiro_crew import mate_worker
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.slack import gateway as gw
+
+        monkeypatch.setattr(gw.live, "snapshot", lambda: None)
+        monkeypatch.setattr(mate_worker, "cron_worker_execution", lambda *_a: None)
+        orch = _make_orchestrator()
+        orch._cfg.agents = {
+            live_alias: KiroCrewAgentConfig(kiro_agent="beta-mode", member_id="beta-id"),
+            "researcher": KiroCrewAgentConfig(
+                kiro_agent="researcher-mode", member_id="researcher-id"
+            ),
+        }
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        dispatched: list[object] = []
+
+        def _resolve(_execution, agent, **_k):
+            dispatched.append(agent)
+            return (agent, None, None)
+
+        orch._resolve_cron_agent = _resolve
+        captured = ExecutionContext(
+            "beta-id",
+            MemoryStoreRef("member-beta", "beta-id"),
+            "member",
+            "beta-mode",
+            selection_name="beta",
+        )
+        job = _job(
+            id="j1",
+            name="probe",
+            agent_id=agent_id,
+            member_id="beta-id",
+            execution_context=captured.to_record(),
+        )
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            turn = gw._cron_stream_with_posttoken_resume
+            await callback(job)
+
+        turn.assert_awaited_once()
+        assert dispatched == ["beta-mode"]
+        assert turn.await_args.kwargs["agent"] == live_alias
+
 
 class TestOtherUnattendedSurfacesMarkTheirTurns:
     @pytest.mark.asyncio

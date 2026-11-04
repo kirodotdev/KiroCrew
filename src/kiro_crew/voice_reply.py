@@ -27,11 +27,13 @@ import os
 import re
 import shutil
 import tempfile
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent, speech_providers
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
+from kiro_crew.emoji_list import STANDARD_EMOJIS
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
@@ -58,9 +60,16 @@ from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from markdown_it import MarkdownIt
+    from markdown_it.rules_inline import StateInline
+    from markdown_it.token import Token
+
     from kiro_crew.slack.client import SlackClientOps
 
 logger = logging.getLogger(__name__)
+
+#: Emoji shortcode names dropped from read-aloud text, e.g. ``wave`` for ``:wave:``.
+_EMOJI_SHORTCODES = frozenset(STANDARD_EMOJIS)
 
 
 def resolve_polly_cli() -> str | None:
@@ -376,26 +385,26 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r"</?[a-zA-Z][^>]*>", "", t)
     # Markdown links: [label](url) → label
     t = _MARKDOWN_LINK_RE.sub(r"\1", t)
-    # Bold / italic / strikethrough markers
-    t = re.sub(r"[*_~]+", "", t)
-    # Emoji shortcodes
-    t = re.sub(r":[a-z0-9_+-]+:", "", t)
+    # OPTIONS buttons line, before the bare-URL pass, whose \S+ would take
+    # the closing "]" of a URL inside the line.
+    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
+    # Emphasis and strikethrough markers and known emoji shortcodes, by
+    # markdown token: see _drop_markers.
+    t = _drop_markers(t)
+    # Bare URLs, after the parse, so a marker that closes right after a URL
+    # (~~see https://example.com~~) is paired and dropped first.
+    t = re.sub(r"https?://\S+", " (link) ", t)
     # Unicode emoji
     t = re.sub(
         r"[\U0001f300-\U0001faff\U00002702-\U000027b0\U0000fe00-\U0000fe0f\U0000200d]+",
         "",
         t,
     )
-    # Bare URLs
-    t = re.sub(r"https?://\S+", " (link) ", t)
-    # OPTIONS buttons line
-    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
     # Diff blocks: lines starting with +/- only inside fenced blocks are
     # already removed above; catch stray unified-diff hunks.
     t = re.sub(r"^@@[^@]+@@.*$", "", t, flags=re.MULTILINE)
-    # Collapse whitespace
+    # Collapse blank-line runs
     t = re.sub(r"\n{3,}", "\n\n", t)
-    t = re.sub(r"  +", " ", t)
     # Re-run redaction on the STRIPPED text. Every strip above can make two
     # halves of a secret contiguous (a control comment, `**` emphasis, or an
     # HTML tag interposed inside a key id), so a credential scan that ran on
@@ -403,7 +412,135 @@ def strip_markdown(text: str) -> str:
     # Idempotent on clean text; placeholders survive re-scanning.
     t, _ = redact_exfiltration_urls(t)
     t, _ = redact_credentials(t)
+    # Identifier underscores become word breaks only after the re-scan, so
+    # a token whose pattern includes "_" is matched whole.
+    t = _space_identifier_underscores(t)
+    # Collapse space runs
+    t = re.sub(r"  +", " ", t)
     return t.strip()
+
+
+@cache
+def _speech_markdown() -> MarkdownIt:
+    """The inline parser that finds emphasis, strikethrough and code spans.
+
+    Every other markdown rule is off, so links, paths and plain text come back
+    as text exactly as written. Strikethrough takes one or two tildes, the way
+    GitHub and Slack render it: the built-in rule reads ``~~`` and
+    ``_single_tilde`` reads ``~``, on every ``markdown-it-py`` that
+    ``setup.cfg`` allows. Built on first use: importing ``markdown_it`` costs
+    about 35 ms, and only a voice reply needs it.
+    """
+    from markdown_it import MarkdownIt
+
+    md = MarkdownIt("zero").enable(["emphasis", "strikethrough", "backticks"])
+    md.inline.ruler.after("strikethrough", "single_tilde", _single_tilde)
+    return md
+
+
+def _single_tilde(state: StateInline, silent: bool) -> bool:
+    """Read a lone ``~`` as a strikethrough marker.
+
+    It joins the delimiter list the built-in strikethrough rule uses, so a
+    pair of them becomes ``s_open`` and ``s_close`` tokens and a lone one
+    with no partner stays text.
+    """
+    from markdown_it.rules_inline.state_inline import Delimiter
+
+    if silent or state.src[state.pos] != "~":
+        return False
+    scanned = state.scanDelims(state.pos, True)
+    if scanned.length != 1:
+        return False
+    token = state.push("text", "", 0)
+    token.content = "~"
+    state.delimiters.append(
+        Delimiter(
+            marker=ord("~"),
+            length=0,
+            token=len(state.tokens) - 1,
+            end=-1,
+            open=scanned.can_open,
+            close=scanned.can_close,
+        )
+    )
+    state.pos += 1
+    return True
+
+
+@cache
+def _code_span_markdown() -> MarkdownIt:
+    """The inline parser that finds code spans and nothing else."""
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("zero").enable("backticks")
+
+
+def _inline_tokens(md: MarkdownIt, text: str) -> list[Token]:
+    """The inline tokens of ``text``, which is parsed as one paragraph."""
+    return md.parseInline(text)[0].children or []
+
+
+def _drop_markers(text: str) -> str:
+    """Drop emphasis and strikethrough markers and known emoji shortcodes.
+
+    The parser turns each matched marker pair into open and close tokens,
+    which carry no text and are skipped. A ``*`` inside a text token is a
+    marker with no partner: only the emphasis rule reads ``*``, so it is
+    dropped too, which keeps a key id split by a lone ``**`` whole for the
+    credential re-scan. An unpaired ``_`` or ``~`` is text and stays.
+    """
+    out: list[str] = []
+    for tok in _inline_tokens(_speech_markdown(), text):
+        if tok.type == "text":
+            out.append(_drop_shortcodes(tok.content.replace("*", "")))
+        elif tok.type == "code_inline":
+            out.append(tok.markup + tok.content + tok.markup)
+    return "".join(out)
+
+
+def _drop_shortcodes(text: str) -> str:
+    """Drop each ``:name:`` whose name is a known emoji shortcode.
+
+    Only names in ``STANDARD_EMOJIS`` count, so the digits between the
+    colons of a clock time or a ratio (10:30:45, 16:9:1) are kept. A name
+    made of digits, such as ``100``, counts only when no digit touches its
+    colons, so 16:100:1 is a ratio and stays.
+    """
+    parts = text.split(":")
+    out = [parts[0]]
+    i = 1
+    while i < len(parts):
+        if i + 1 < len(parts) and _is_shortcode(out[-1], parts[i], parts[i + 1]):
+            out[-1] += parts[i + 1]
+            i += 2
+        else:
+            out.append(parts[i])
+            i += 1
+    return ":".join(out)
+
+
+def _is_shortcode(before: str, name: str, after: str) -> bool:
+    """Whether ``:name:``, between ``before`` and ``after``, is a known emoji shortcode."""
+    if name not in _EMOJI_SHORTCODES:
+        return False
+    if not name.isdigit():
+        return True
+    return not (before[-1:].isdigit() or after[:1].isdigit())
+
+
+def _space_identifier_underscores(text: str) -> str:
+    """Speak each ``_`` left in text as a word break: max_retry_count.
+
+    Code spans keep their underscores.
+    """
+    out: list[str] = []
+    for tok in _inline_tokens(_code_span_markdown(), text):
+        if tok.type == "code_inline":
+            out.append(tok.markup + tok.content + tok.markup)
+        else:
+            out.append(" ".join(tok.content.split("_")))
+    return "".join(out)
 
 
 def text_to_ssml(

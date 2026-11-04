@@ -5,16 +5,10 @@ reconnects; ``_run_connection`` runs hello, identify or resume and the read loop
 the op-1 heartbeat loop recycles a connection whose acknowledgement went missing.
 ``_on_dispatch`` normalizes ``READY``, ``RESUMED``, ``MESSAGE_CREATE`` and
 ``INTERACTION_CREATE`` into :class:`DiscordInbound` and :class:`DiscordInteraction`
-records and runs each handler in a task of its own. Each function here whose first
-parameter is ``self`` is bound as the ``DiscordClient`` attribute of the same name in
-:mod:`kiro_crew.discord.client`, which keeps the client's state, so ``self.<name>(...)``
-calls and instance and class patches reach it as they reach a method defined in the
-class body. They read ``_closed``, ``_hb_acked``, ``_hb_task``, ``_intents``,
-``_on_interaction``, ``_on_message``, ``_proxy``, ``_resume_url``, ``_seq``,
-``_session_id``, ``_token``, ``bot_user_id``, ``fatal_error`` and ``ready``, write
-``_closed``, ``_hb_acked``, ``_hb_task``, ``_resume_url``, ``_seq``, ``_session_id``,
-``_ws``, ``application_id``, ``bot_user_id`` and ``fatal_error``, and update
-``_handler_tasks`` and ``ready`` in place. New Gateway work goes here.
+records and runs each handler in a task of its own. Each function whose first parameter
+is ``self`` is bound as the ``DiscordClient`` attribute of the same name, so
+``self.<name>(...)`` calls and patches reach it like a method; the state stays on the
+client. New Gateway work goes here.
 """
 
 from __future__ import annotations
@@ -39,16 +33,11 @@ logger = logging.getLogger("kiro_crew.discord.client")
 
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-# Transport-level WS ping interval (seconds). Deliberately a SECOND liveness
-# layer under Discord's op-1 application heartbeat, because the two have
-# different failure domains: op-1 runs in a cancellable user task and proves
-# the Discord session is alive, while the aiohttp ping runs inside the
-# library's read loop and proves the TCP path (host -> NAT -> edge) is alive.
-# Without it, a NAT-evicted half-open connection blocks the dispatch loop
-# forever with no error while outbound REST keeps working. 60s is longer than
-# Discord's ~41s heartbeat so healthy traffic keeps the path warm anyway, and
-# generous enough that a briefly stalled event loop does not flap the
-# connection with false-positive pong timeouts.
+# Transport-level WS ping interval (seconds), a second liveness layer under the
+# op-1 heartbeat: op-1 proves the Discord session, the aiohttp ping proves the
+# TCP path. Without it a NAT-evicted half-open socket blocks dispatch forever
+# while REST keeps working. 60s exceeds Discord's ~41s heartbeat and tolerates a
+# briefly stalled loop without false pong timeouts.
 _WS_HEARTBEAT_SECS = 60.0
 
 # A Gateway connection must live at least this long for its close to count as

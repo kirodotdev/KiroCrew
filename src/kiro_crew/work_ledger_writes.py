@@ -862,8 +862,13 @@ def apply_worker_report(
 # --------------------------------------------------------------------------- #
 
 
-def apply_person_steer(slot_key: str, item_id: str, text: Any) -> dict[str, Any] | None:
+def apply_person_steer(
+    slot_key: str, item_id: str, text: Any, *, id_salt: str = ""
+) -> dict[str, Any] | None:
     """Record a person's steer into a worker as one ``steer`` event on its item.
+
+    *id_salt* tells apart two steers with the same text in the same second: an
+    approval answer passes the id of the report it answers.
 
     The event is the whole write: no item field moves, so acceptance, verdict and
     state stay the conductor's and the worker's. *text* is already redacted by the
@@ -880,7 +885,7 @@ def apply_person_steer(slot_key: str, item_id: str, text: Any) -> dict[str, Any]
             )
         if item.is_terminal:
             return None
-        event = _commit_item_locked(slot_key, item, "steer", checked_text)
+        event = _commit_item_locked(slot_key, item, "steer", checked_text, id_salt=id_salt)
         return {"item": item, "event": event}
 
 

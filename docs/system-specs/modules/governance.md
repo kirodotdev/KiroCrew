@@ -1874,8 +1874,17 @@ resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
 
 **Unattended turns at the PreToolUse gate.** A cron turn hands
-`stream_and_collect` its own `cron:<job>` session key, so the gate resolves that
-session's profile the same way it does for a chat turn. Cron, heartbeat and
+`stream_and_collect` its own `cron:<job>` session key and the agent's alias or
+crew record name (each step's alias on an `agent_sequence`), the name a chat turn
+on that agent hands the gate, so the gate resolves that session's profile the
+same way it does for a chat turn, including a `task` bind on that name. A
+schedule whose capture selected a member runs as that member, so its gate name
+is the member's own live alias (the record `member_config_for_id` finds for the
+captured `member_id`, the one dispatch resolves through, else the captured
+`selection_name`), even when the job's `agent` names a template or another
+member; the job's `agent` is the gate name only for a capture that selected no
+member. The template the alias collapses to is used only to acquire the session
+and build the message. Cron, heartbeat and
 Slack-thread nudge turns pass `stream_and_collect(unattended=True)`. A
 structured monitor wake runs its gate call under the same marker on every
 surface: `build_tool_gate(unattended=True)` for a Slack thread and for a
@@ -2575,6 +2584,14 @@ refuses on an evaluation error. Edits and stream appends are checked too, so a
 channel withdrawn mid-turn gets no further content, and each refused write is
 audited (`slack.write`). A pure `!stop` stays exempt from the inbound check so a
 withdrawn channel can still halt its turn; its notices are withheld there.
+A code channel's id is unknown until Slack creates it, so before opening one the
+code-channel routing asks `channel_policy.new_channel_refusal`, which admits it
+only when the policy's patterns admit any id (`*`, `C*`); a list of explicit ids
+keeps the request in its thread (audited as a denied `slack.code_channel.create`),
+and the created id is checked again before the channel is bound. Every
+`agents.conversations.*` write that names a channel (`CodeChannelsClient._call`;
+the code-channel workspace's views and context bar) asks `channel_refusal`
+before it is sent, as the real client's posts do.
 
 `channels.posture.slack.allowed_enterprise_ids` (policy-only) is enforced in
 `slack.enterprise.validate_enterprise`: a workspace must satisfy the governance
@@ -3706,10 +3723,28 @@ binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
 
-This describes today's code. The enterprise edition RFC
-([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md),
-D6, 2026-11-02) makes KAS the floor and the baseline minimal set in an
-enterprise build; that code change is pending. The `oss` floor stays kiro-cli.
+That reasoning holds in an `oss` build. In an enterprise build the floor is KAS
+(`acp_backends.governance_floor_backend()`, the enterprise edition RFC
+[rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+D6), and the baseline minimal set is `kas`, so the Kiro CLI harness needs a
+remote rule there. KAS now has a route of its own, Crew's engine bundle
+(`acp/kas_bundle.py`), which is the "binary of its own" the paragraph above
+waits for. A KAS proven unable to start on the route it would take refuses the
+gateway start when the main backend runs KAS, and otherwise refuses each
+gateway session whose resolved backend is KAS (`enterprise_boot.require_kas_harness`,
+`enterprise_boot.refuse_unstartable_kas`); no session the provider factory builds
+falls back to the Kiro CLI harness. An enterprise build has no automatic
+fallback to the Kiro CLI harness anywhere: the Kiro CLI harness runs only as an
+explicit pick (`agent.acp_backend` `"kiro"`) that the remote policy allows. Two
+runtimes outside the provider factory fall back to it in `oss` when their backend
+cannot serve them: the knowledge model pool, which never spawns KAS
+(`knowledge/llm_pool.py`), and Code Review Sage's shared review runtime for a
+backend it does not serve (`code_review_sage/sage_lib/review_pool.py`). In an
+enterprise build both refuse instead, before any process exists
+(`KnowledgeHarnessUnavailable`, `ReviewHarnessDenied`); Sage with no backend
+configured runs on the governed default, KAS, and refuses a KAS that boot proved
+cannot start. A background runtime whose `agent.acp_backend` cannot be read takes
+the build's floor, and refuses that KAS the same way.
 
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.

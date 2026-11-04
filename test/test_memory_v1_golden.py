@@ -40,6 +40,7 @@ import pytest
 
 from kiro_crew import context as ctx
 from kiro_crew import embeddings, resource_status, session_surface, vector_memory
+from kiro_crew.config import loader as config_loader
 from kiro_crew.config import paths as config_paths
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import config_dir
@@ -750,10 +751,19 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     ``config.json`` inode it is about to publish, which the Linux sandbox's pin reads
     (``config.write_provenance``). Config state again, written by the same save, and
     only on POSIX: the Windows writer has no sandbox pin to answer.
+
+    ``superseded_acked.json`` and its ``.lock`` appear only on Windows: a load there
+    that finds ``agent.sandbox_allow_unsandboxed_exec`` absent records ``false`` as
+    acknowledged once (``config.windows_exec_adoption``). Config state again.
     """
     history = seeded.history_file.relative_to(seeded.home).as_posix()
     provenance = set() if sys.platform == "win32" else {"config-provenance/published"}
-    assert _home_files(seeded.home) == provenance | {
+    exec_close = (
+        {"superseded_acked.json", "superseded_acked.json.lock"}
+        if config_loader.unsandboxed_exec_platform_default()
+        else set()
+    )
+    assert _home_files(seeded.home) == provenance | exec_close | {
         "agent-prompt.md",
         "config.json",
         "config.json.bak",

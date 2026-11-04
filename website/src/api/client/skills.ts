@@ -103,7 +103,13 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
      *  409 `pending_approval_refused`. */
     approvePendingSkill: (slug: string, contentSha256: string) =>
       post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', { content_sha256: contentSha256 }).then(j),
-    dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
+    /** `contentSha256`, when the card has read the candidate, makes the server
+     *  dismiss only those bytes: 409 `pending_skill_changed` if it moved since. */
+    dismissPendingSkill: (slug: string, contentSha256?: string) =>
+      post(
+        '/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss',
+        contentSha256 ? { content_sha256: contentSha256 } : {},
+      ).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
     /** Opt a skill in/out of full-body injection when its triggers match.

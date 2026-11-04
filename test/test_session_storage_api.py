@@ -157,6 +157,47 @@ class TestCleanup:
         assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["false", "0", "Off", "no"])
+    async def test_a_spelled_false_dry_run_is_a_real_cleanup(
+        self, stores: tuple[Path, Path], sent: str
+    ) -> None:
+        """``bool("false")`` is True; a spelled false must not be a dry run."""
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        req = _request(
+            "POST",
+            "/api/system/session-storage/cleanup",
+            {"older_than_days": 30, "dry_run": sent},
+        )
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            resp = await handler.api_session_storage_cleanup(req)
+        body = json.loads(resp.body)
+
+        assert resp.status == 200
+        assert body.get("dry_run") is not True
+        assert not (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["true", "yes please", 1])
+    async def test_a_truthy_dry_run_still_moves_nothing(
+        self, stores: tuple[Path, Path], sent: object
+    ) -> None:
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        req = _request(
+            "POST",
+            "/api/system/session-storage/cleanup",
+            {"older_than_days": 30, "dry_run": sent},
+        )
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            resp = await handler.api_session_storage_cleanup(req)
+
+        assert json.loads(resp.body)["dry_run"] is True
+        assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+    @pytest.mark.asyncio
     async def test_stages_and_audits(self, stores: tuple[Path, Path]) -> None:
         _, kiro_home = stores
         _retired(kiro_home, "aaaa1111")
@@ -365,15 +406,9 @@ class TestEmpty:
     def _no_job_leaks(self, request: pytest.FixtureRequest) -> Iterator[None]:
         """The job slot is a module global, so a test must not inherit one.
 
-        Without this a finished job from an earlier test makes the next one's POST
-        look like a second empty, or its status read report a run it never started.
-
-        Teardown WAITS for a still-running job rather than cancelling it. Cancelling
-        the asyncio task only abandons the `to_thread` wrapper - the worker thread
-        keeps running `empty_trash` and keeps deleting files, straight through
-        `tmp_path` teardown, so a failed assertion turned into a real delete racing the
-        fixture that was removing the same tree. Waiting is bounded and, on timeout,
-        fails loudly with the test's name instead of leaving a thread mutating storage.
+        Teardown WAITS for a running job: cancelling the task leaves the `to_thread`
+        worker deleting files through `tmp_path` teardown. The wait is bounded and fails
+        loudly with the test's name on timeout.
         """
         handler._empty_job = None
         yield
@@ -429,12 +464,8 @@ class TestEmpty:
     ) -> None:
         """Refusing an irreversible operation must still record that it was attempted.
 
-        Every other outcome of this endpoint reaches the audit inside ``_run_empty_job``,
-        and before this change an explicit selection reached it even on a failed snapshot,
-        because it DISPATCHED anyway. Failing closed is right -- dispatching without the
-        snapshot deletes whatever answers to the names by the time the worker runs -- but it
-        moved the request off the audited path, and an unrecorded attempt at the one
-        irreversible operation in this surface is a worse hole than the one it closed.
+        Every other outcome is audited inside ``_run_empty_job``. A failed snapshot
+        refuses before dispatch, so it must be audited on its own.
         """
 
         def unreadable(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -718,11 +749,8 @@ class TestEmpty:
     async def test_two_simultaneous_posts_produce_one_job(self, stores: tuple[Path, Path]) -> None:
         """The slot is claimed in the same synchronous step as the check.
 
-        Reading the staged totals first put a suspension point between the guard and
-        the claim: both requests passed, both got a 202, and the second overwrote the
-        first -- so the status endpoint reported a job that (serialized behind the
-        mutation lock) found the trash already gone and said "freed 0", while the
-        delete the user was waiting on had no record at all.
+        A suspension between guard and claim lets both requests get a 202, and the
+        second overwrites the first job's record. The slow totals open that window.
         """
 
         def _slow_totals(batch_ids):  # type: ignore[no-untyped-def]
@@ -800,11 +828,8 @@ class TestEmpty:
     ) -> None:
         """ "Everything staged" that cannot be resolved must delete NOTHING.
 
-        Two properties pull against each other here and both come from real findings:
-        a failure must not wedge the slot forever, and it must not hand the worker
-        "all" to re-enumerate later, which would destroy batches staged after the
-        click. So the job settles with a reason instead of running, and the slot is
-        free for a retry.
+        Handing the worker "all" would destroy batches staged after the click, and the
+        slot must not wedge. So the job settles with a reason and the slot is freed.
         """
 
         def _explode(batch_ids):  # type: ignore[no-untyped-def]
@@ -848,12 +873,8 @@ class TestEmpty:
     ) -> None:
         """The one part of a job a browser renders goes through the same scrubbers.
 
-        A refusal quotes what caused it, which can be the caller's own argument or a
-        string the module was resolving, and this endpoint is pollable - so the text
-        gets the module's `_redact` and a length cap rather than being passed through.
-        Asserted with a credential shape the scrubber recognises (the AWS
-        documentation example key), because that is what "redacted" means here: a
-        pattern match, not a filter over every possible sentence.
+        A refusal can quote caller input on a pollable endpoint, so it gets `_redact` and
+        a length cap. The AWS docs example key is used because `_redact` is a pattern match.
         """
         leak = "refused near AKIAIOSFODNN7EXAMPLE " + ("y" * 900)
 
@@ -891,16 +912,10 @@ class TestEmpty:
     ) -> None:
         """A list of names is not approval, so a failed snapshot cancels the delete.
 
-        Dispatching anyway is wrong, even though the caller has already said WHICH
-        batches and a missing snapshot only costs the progress bar its
-        denominator: the snapshot is what turns those names into approval of the
-        DIRECTORIES they point at, so dispatching without it deletes whatever
-        answers to the names by the time the worker runs. The failure is not
-        always benign either - a staged tree deep enough to exhaust descriptors arrives
-        here as an exception, and writing into the trash is how it gets there.
+        The snapshot turns names into approval of the DIRECTORIES they point at; without
+        it the worker deletes whatever holds the names by then.
 
-        Answered as a settled job carrying the reason, not a 500, so the screen has one
-        shape to read.
+        Answered as a settled job with the reason, not a 500, so the screen reads one shape.
         """
 
         def _explode(batch_ids):  # type: ignore[no-untyped-def]
@@ -1073,11 +1088,8 @@ class TestIndexConstruction:
 class TestTheReclaimRefreshIsCheapToCallPerSession:
     """``move_to_trash`` calls ``refresh`` once per selected session.
 
-    It has to, because a resume that only READS an old transcript writes nothing
-    and is invisible to the mtime guard inside the move loop — the index is where
-    it shows up. Rebuilding the index that often is what has to be made affordable:
-    the rebuild reads and parses the whole session map, and the selection is capped
-    at six figures.
+    A resume that only READS a transcript is invisible to the mtime guard, so the
+    index must be rebuilt that often, and cheaply: selections reach six figures.
     """
 
     def _write_map(self, payload: dict[str, str]) -> Path:
@@ -1183,9 +1195,8 @@ class TestTheReclaimRefreshIsCheapToCallPerSession:
 class TestWhyAReclaimIsRefused:
     """A refusal must name the real reason.
 
-    Both states are refused today, so these tests do not assert new power — they
-    assert that the product stops telling a user a month-old idle conversation is
-    "in use", which is a claim the user can disprove by reading the date next to it.
+    Both states are refused; these pin that a month-old idle conversation is not
+    called "in use".
     """
 
     def test_the_pre_classification_never_reads_a_cached_cotenant_pass(
@@ -1193,12 +1204,9 @@ class TestWhyAReclaimIsRefused:
     ) -> None:
         """_classify derives per-row refusals, so it must enumerate uncached.
 
-        A pre-pass fed a 30s-stale co-tenant set would classify a just-claimed
-        session as eligible; a stale store scan fails independently the same way
-        (a stale-older mtime reads eligible here and too_fresh inside the move).
-        Either way the authority still refuses, but as the all-or-nothing batch
-        failure ``_classify`` exists to prevent. Both halves are counted, so a
-        future change that splits the flag cannot re-cache either half here.
+        A 30s-stale co-tenant set or store scan reads a session eligible that the move
+        then refuses, the all-or-nothing failure ``_classify`` exists to prevent. Both
+        halves are counted, so splitting the flag cannot re-cache either.
         """
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         index = session_storage_module.SessionIndex(stem_to_sid={}, active_sids=frozenset())

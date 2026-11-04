@@ -36,8 +36,6 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.sessions.session_keys = MagicMock(return_value=frozenset())
     state.sessions.resumable_hint = MagicMock(return_value=False)
     state.file_indexes = MagicMock()
-    state.file_indexes.acquire = AsyncMock()
-    state.file_indexes.release = AsyncMock()
     return state
 
 
@@ -180,15 +178,11 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_change_with_no_live_session_does_not_arm_reset(self, tmp_path):
-        """Setting the project on a slot with NO registered session and
-        no eager spawn in flight must NOT arm the deferred reset.
+        """With no session and no eager spawn, a project change must NOT arm the reset.
 
-        get_or_create cold-starts the session already rooted at the new project,
-        so an armed reset would tear that already-correct session down at the
-        first turn's end for nothing — and with tool_search on, the resume pays
-        a full chat-text replay that drops every tool result from turn 1. This
-        mirrors the guard api_chat_slot_model already applies to its own
-        deferred reset."""
+        get_or_create cold-starts at the new project, so a reset would only cost a
+        replay that drops turn 1's tool results. Same guard as api_chat_slot_model.
+        """
         slot = _ChatSlot("test")
         state = _mock_state(slot)
         # No session registered under the slot's key.
@@ -209,14 +203,9 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_change_with_only_scheduled_eager_spawn_does_not_arm_reset(self, tmp_path):
-        """A freshly scheduled eager spawn roots the session at the NEW project
-        (scheduling cancels any prior eager task), so it never carries the old
-        CWD and must NOT by itself arm the reset.
+        """A freshly scheduled eager spawn must NOT by itself arm the reset.
 
-        With no registered provider and no turn in flight, arming would leave a
-        flag that tears the eager spawn's correctly rooted session down at the
-        first turn's end for nothing. The scheduled task is in flight (not
-        done()), yet the reset stays disarmed.
+        Scheduling cancels any prior eager task, so the spawn roots at the NEW project.
         """
         slot = _ChatSlot("test")
         state = _mock_state(slot)
@@ -241,15 +230,10 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_change_with_turn_in_flight_arms_reset(self, tmp_path):
-        """When no session is registered yet and no eager spawn is in flight,
-        but a turn is already running (or its admission is reserved), that
-        turn's get_or_create captured the old project before this change and
-        will register a session rooted at the old CWD. get_provider cannot see
-        it — nothing enters the session map until provider.start() returns — so
-        the reset must still arm on the running signal.
+        """A running turn arms the reset: its get_or_create captured the old project.
 
-        schedule_eager_spawn stands down while a turn runs, so the eager operand
-        is None here and only slot.running keeps the reset owed.
+        get_provider cannot see that session until provider.start() returns, and no
+        eager spawn runs during a turn, so only slot.running keeps the reset owed.
         """
         slot = _ChatSlot("test")
         state = _mock_state(slot)
@@ -275,16 +259,10 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_change_with_cold_start_reserved_under_key_arms_reset(self, tmp_path):
-        """A cold start reserved under the slot's key must arm the reset even
-        when no provider is registered and this slot is not running.
+        """A cold start reserved under the slot's key arms the reset.
 
-        A channel-linked turn (Slack/Discord) resuming on
-        effective_session_key(slot) passes no cwd, so it resolves the stored old
-        CWD and will register a session rooted there. Nothing is in the session
-        map yet (get_provider is None) and this slot's own ``running`` is False,
-        but the allocation reservation is visible through session_keys(). The
-        reset must stay owed, or the old-CWD session is reused and the project
-        change is silently dropped.
+        A channel-linked turn passes no cwd and roots at the old one; only
+        session_keys() shows its reservation.
         """
         slot = _ChatSlot("test")
         state = _mock_state(slot)
@@ -310,15 +288,9 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_change_with_resumable_but_not_live_session_arms_reset(self, tmp_path):
-        """A key with a resumable entry but no live session or reservation must
-        arm the reset.
+        """A resumable on-disk entry with nothing live or reserved arms the reset.
 
-        A channel-linked slot whose session was idle-reaped, or lost in a
-        gateway restart, keeps its resume sid and old cwd on disk while nothing
-        is live (get_provider None), nothing is reserved (session_keys empty)
-        and this slot is not running. The next channel turn resumes that session
-        in the old project and later dashboard turns reuse it, so the reset must
-        stay owed. resumable_hint() reports the on-disk entry.
+        The next channel turn would resume it in the old cwd; resumable_hint() reports it.
         """
         slot = _ChatSlot("test")
         state = _mock_state(slot)

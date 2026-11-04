@@ -104,9 +104,14 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     """
     # Three-way outcome: a user stop is neutral — neither a success nor
     # a failure. The record contract keeps ``error`` unset for stops, so
-    # every consumer below must branch on ``user_stopped`` explicitly
-    # rather than inferring success from an empty error.
-    if info.user_stopped:
+    # the status comes from the record's ending, never from an empty error.
+    # A deadline reap is named as one, so the parent can tell it from the
+    # run's own failure. Imported here: these functions run with the
+    # gateway's module globals.
+    from kiro_crew.subagent_ending import SubagentEnding
+
+    ending = info.ending
+    if ending is SubagentEnding.INTERRUPTED_BY_PARENT:
         # The stop's own origin when the record carries one (a
         # parent-end verb), so the announce does not
         # credit the user with a stop they never pressed.
@@ -115,7 +120,12 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
             "⏹",
             OUTCOME_STOPPED,
         )
-    elif info.error:
+    elif ending is SubagentEnding.REAPED:
+        # A deadline or the reaper ended the run, not the run's own error. The
+        # error text names which one (some never started), so the status stays
+        # neutral about it.
+        status, emoji, single_outcome = "reaped", "❌", OUTCOME_FAILED
+    elif ending is SubagentEnding.FAILED:
         status, emoji, single_outcome = "failed", "❌", OUTCOME_FAILED
     else:
         status, emoji, single_outcome = "completed", "✅", OUTCOME_OK
@@ -369,13 +379,15 @@ def _subagent_wave_digest(
             # keep cap. Imported here: these functions run with the
             # gateway's module globals, which do not carry the notice.
             from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_WORK
+            from kiro_crew.subagent_ending import SubagentEnding
 
             if (info.result or "").endswith(EMPTY_TURN_NOTICE_AFTER_WORK):
                 _kept = " (partial: ended without a closing reply after tool calls)"
             else:
                 _kept = " (partial: backend failed to generate the final response)"
+            _partial = info.ending is SubagentEnding.PARTIAL
             bp["ok_lines"].append(
-                f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
+                f"— `{info.id}` ✅{_kept if _partial else ''} {task_text[:80]}"
                 f"{_model_tag} · {usage}"
                 + (f"\n  → {result_path}" if result_path else "")
                 + (f"\n  {no_tools_note}" if no_tools_note else "")

@@ -553,7 +553,7 @@ def _url_payload_command(n: int) -> str:
 #: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
 #: ``headers`` can hold an API key and only the floor masks it from a foreign child.
 #:
-#: Set to the measured 32,802: the package measures 32,799, plus 3 for one
+#: Set to the measured 32,826: the package measures 32,799, plus 3 for one
 #: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
 #: the mediated-secret request directory (``secret-request-policy``), denied to the
 #: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
@@ -655,7 +655,31 @@ def _url_payload_command(n: int) -> str:
 #: use in ``_DenyWaiver``: it keeps every self-protection floor, the unverifiable
 #: push key and every self-protection or credential-exfil rule out of the override
 #: entirely, so the change only narrows what can be waived.
-_PACKAGE_LINE_BUDGET = 33_959
+#: Raised by 8 more, to 33,967, for the ``kirocrew-bin`` entry in
+#: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
+#: link that decides which ``kirocrew`` an agent shell runs. Deny-only.
+#: Raised by 345 more, from 33,967, for Outlook on the web and Slack links, matched by
+#: structure in ``redaction_entropy._chat_mail_link_spans`` with no pattern: a mail or
+#: calendar item id is base64 with its ``+``, ``/`` and ``=`` percent-escaped, and a
+#: Slack ``client`` link joins its ids and message timestamp into one 40+ char run, so
+#: pass 3 masked both. The link is split by ``urllib.parse.urlsplit``, its host compared
+#: exactly against the four Outlook hosts or a ``slack.com`` host, its path segments
+#: compared as exact tokens, and its ids checked character by character; an Outlook id
+#: must also decode to one whole Exchange id (a folder or message entry id with its
+#: fixed bytes in place), and no piece of the link, cut also at each ``%XX`` escape and
+#: decoded per escaped segment, may be a whole key. No pass widened and no threshold
+#: moved.
+#: Raised by 40 more, from 34,312, for ``exfil_git_object._exfil_blob_hit``: the base64-blob
+#: heuristic judged through one helper that skips a maximal match which is exactly
+#: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
+#: the hash in its query renders. Data and one narrowing helper in their own owner
+#: module beside ``exfil.py``, with its header; no pattern moved.
+#: Raised by 170 more, from 34,352, for ``reveal_store`` (the owner reveal of a
+#: removed credential, RFC redaction §7): a bounded, memory-only store with one
+#: owner-gated reader, plus the optional ``reveal_id`` record key in
+#: ``credential_sources``. Nothing is relaxed: redaction still replaces every
+#: value in every saved copy, channel, log and model replay.
+_PACKAGE_LINE_BUDGET = 34_522
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

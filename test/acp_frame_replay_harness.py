@@ -1,17 +1,10 @@
 """Replay recorded ACP frames into the events the dispatch layer makes of them.
 
-Shared by ``test/test_acp_frame_replay.py``, which asserts the result against a
-committed snapshot, and ``scripts/update_acp_frame_snapshots.py``, which writes
-that snapshot. The split exists because a test must not create files in the repo
-that outlive the run (AUTOSDE ``no-test-side-effects``), so the WRITER is a
-script and the test stays read-only.
-
-Not named ``test_*``, so pytest does not collect it. It lives under ``test/``
-rather than ``src/kiro_crew/testing/`` on purpose: it imports
-``kiro_crew.acp._dispatch``, and a module under ``src/`` outside ``acp/``,
-``agent_sdk/`` and ``providers/`` doing that adds an edge to the
-``check_agent_sdk_boundary.py`` baseline, which this change is not allowed to
-grow.
+Shared by ``test/test_acp_frame_replay.py`` (read-only) and
+``scripts/update_acp_frame_snapshots.py`` (the writer), since a test must not create
+files in the repo (AUTOSDE ``no-test-side-effects``). It lives under ``test/`` because
+importing ``kiro_crew.acp._dispatch`` from ``src/`` would grow the
+``check_agent_sdk_boundary.py`` baseline.
 """
 
 from __future__ import annotations
@@ -46,13 +39,8 @@ from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 def fixture_dir_name(backend: str) -> str:
     """Return the corpus directory name for a backend id.
 
-    The kiro-cli backend's id is the empty string, which is not a filename, so
-    the mapping cannot be identity. It reuses ``POLICY_ID_BY_BACKEND`` -- the
-    module that already had to give every backend id a writable wire name --
-    rather than introducing a second table that could disagree with it. Every
-    caller passes an id from ``ACP_BACKENDS_KNOWN``, all of which have an entry,
-    so an unknown id is a programming error and raises ``KeyError`` rather than
-    being mapped to a directory that does not exist.
+    kiro-cli's id is the empty string, so this reuses ``POLICY_ID_BY_BACKEND``
+    rather than a second table. An unknown id raises ``KeyError``.
     """
     return POLICY_ID_BY_BACKEND[backend]
 
@@ -222,26 +210,12 @@ def replay_frames(
 ) -> list[dict[str, Any]]:
     """Turn a raw frame sequence into the snapshot form.
 
-    Mirrors the dispatch the two reader loops perform: classify, then hand the
-    frame to the parser for its action. Caches are per replay, matching the
-    runtime's per-session caches, so a ``tool_call_update`` recovers the input
-    its originating ``tool_call`` recorded.
+    Mirrors the reader loops: classify, then parse. Caches are per replay, so a
+    ``tool_call_update`` recovers its ``tool_call``'s input. ``gate_envelope_nonce`` is
+    the fixture's ``_meta.gate_envelope_nonce``; absent, no frame is an envelope.
 
-    ``gate_envelope_nonce`` is what a session running Kiro Crew's gate extension
-    hands the permission builder; a fixture recorded on such a session declares
-    the value its extension echoed as ``_meta.gate_envelope_nonce`` so the replay
-    reads its permission frames the way the live session did. Absent, as on every
-    other harness, no frame is read as an envelope.
-
-    The crew log flag is forced ON for the replay. The parsers measure a
-    tool result's full byte count and digest only while that flag is set, since
-    the emitter is its only consumer -- so replaying with it off would record a
-    shorter event than any session with the feature enabled produces, and the
-    corpus would stop pinning the shape it exists to pin. Set here rather than in
-    each caller so the snapshot WRITER and the test that checks it against the
-    committed snapshot cannot disagree about which shape is being recorded. It is
-    restored afterwards: this process runs other tests, and leaving the feature on
-    for them would change what they exercise.
+    The crew log flag is forced on (parsers record byte count and digest only then),
+    here so the writer and the test agree, and restored for other tests.
     """
     prior = os.environ.get("KIROCREW_CREW_LOG")
     os.environ["KIROCREW_CREW_LOG"] = "1"

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.sel_reader import _PIN_BY_FD_SUPPORTED
 from kiro_crew.sel_trust_root import _HMAC_KEY_FILE, _TRUST_SUBDIR
 
@@ -515,7 +516,7 @@ def _chain_lock_target(self: SecurityEventLog) -> tuple[Path, bool, int | None]:
         # 0o700 to match how the trust dir is created for the HMAC key:
         # the sidecar's protection is the directory's, so a laxer mode
         # here would quietly undo it.
-        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(lock_path.parent)
     except OSError:
         # Only an install already SIGNING at the legacy location may switch
         # targets, and that is decided once at init rather than per acquire,

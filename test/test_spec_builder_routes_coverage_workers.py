@@ -125,12 +125,18 @@ class TestGit:
 
     @pytest.mark.asyncio
     async def test_a_command_with_no_arguments_still_audits_a_blank_subcommand(
-        self, tmp_path, _quiet_sel
+        self, tmp_path, sel_private_root
     ):
+        from kiro_crew.sel import sel as real_sel
+
         _spawn, _create, patch = _git_env()
-        with patch:
+        with patch, mock.patch.object(r, "sel", real_sel):
             await r._git(str(tmp_path))
-        assert _quiet_sel.log_tool_invocation.call_args.kwargs["metadata"]["subcommand"] == ""
+        raw = (sel_private_root / "security_events.jsonl").read_text(encoding="utf-8")
+        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        git_rows = [row for row in rows if row["operation"] == "git"]
+        assert git_rows, "the invocation must be audited"
+        assert [row["metadata"]["subcommand"] for row in git_rows] == [""] * len(git_rows)
 
 
 class TestHaltGit:

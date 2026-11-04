@@ -1,29 +1,9 @@
 """The ``project-report`` built-in's own rule: the epic tree and what it rolls up.
 
-The generic built-in cases already resolve this template's fold paths and load its
-manifest. What has no home there is the thing this page is FOR -- it draws the board
-list as a four-level tree and states a number for every node -- and two of those
-properties can be wrong with every other gate green.
-
-**The roll-up.** A task row of the ``workstreams`` fold reports the WHOLE spend of the
-worker session bound to it, which is that fold's own posture: that is what the task
-cost to run. One session bound to two tasks therefore appears twice at the same amount,
-so a tree that ADDED its rows up would bill that session once per task it served --
-the error the fold explicitly refuses to make in a board total. A page contradicting
-the fold about the same money is worse than a page without the number, because the
-reader has no way to tell which of the two is the record.
-
-**The subtask link.** A nested board arrives as a SIBLING row with a ``parent``, not as
-a child, so a page that ignored the link would draw every sub-board as a root of its
-own: the same work twice, once under its task and once beside its epic.
-
-No JS engine is reachable from pytest, so the page's own drawing is evidence only
-through ``scripts/render_dashboard_builtin.py``. What is checked here is (1) the
-template's source, for the rules a regex can actually pin, and (2) the SAMPLE fixture
-those renders are taken from -- because a fixture that stopped exercising nesting or
-the shared-worker case would leave the screenshots green and prove nothing. The second
-is the one that keeps the first honest: a source pin with no data behind it is a
-spelling test.
+Roll-up: a ``workstreams`` task row carries its session's whole spend, so summing rows
+bills a shared session once per task. Subtask link: a nested board arrives as a sibling
+row with a ``parent``, so ignoring it draws the work twice. No JS engine runs here, so
+the source is pinned by regex and the SAMPLE fixture must exercise both cases.
 """
 
 from __future__ import annotations
@@ -398,25 +378,15 @@ class TestTheSampleExercisesTheTree:
 class TestTheNeedsYouCardNamesItsAction:
     """One label for the rows that wait on a reader, and a next step on every row.
 
-    A reader who cannot tell two waiting labels apart treats both as something not to
-    touch, so the label stops carrying the difference and the STEP carries it instead:
-    a question is answered, a blocked task is unblocked. The card is the page's main
-    call to action and every crewmate sees it on open, so a row that names no action
-    is the whole card failing at the one thing it is for.
-
-    Pinned against the source because no JS engine runs here, and against the sample
-    because a source pin with no data behind it is a spelling test: the fixture has to
-    hold BOTH waiting reasons or the two steps are never told apart on a real render.
+    The step carries the difference: a question is answered, a blocked task unblocked.
+    The sample must hold both waiting reasons, or a render never tells the steps apart.
     """
 
     def test_two_kinds_blocked_and_asks_you(self, script: str) -> None:
         """Blocked (red family) and Asks you (purple family) -- two kinds, not one.
 
-        Paperclip collapsed eleven attention sources into two by borrowing the
-        task-status colour vocabulary.  The fold carries ``status == 'blocked'`` vs
-        ``'question'``; that is the same split, so the card borrows the same two
-        families.  A single "Waiting on you" label made both rows look identical and
-        taught the reader that nothing here was worth telling apart.
+        The fold's ``status == 'blocked'`` vs ``'question'`` split maps to two colour
+        families, so the two rows never look identical.
         """
         pushed = re.findall(r"rows\.push\(\{\s*kind:\s*'([^']+)'", script)
         assert pushed, "no row is pushed into the card, so it draws nothing"
@@ -444,15 +414,8 @@ class TestTheNeedsYouCardNamesItsAction:
     def test_the_total_counts_every_row_including_the_crewmates(self, script: str) -> None:
         """A number over the alarm has to match the rows under it.
 
-        REPLACES a pin that held the total to `workers` alone. That pin was right that
-        a count must match its list and wrong about which rows ask for something: the
-        conductor's own instructions say an item written to this field "appears under
-        Needs you with the act it needs", so leaving those rows out of the headline
-        under-reported the one question the field answers.
-
-        The two halves are added, not merged: `workers` is the fold's own number and
-        can exceed the worker rows retained, while the crewmate's rows are counted in
-        hand, so the guard raises `workers` to what is drawn before the sum.
+        Crewmate items appear under Needs you, so the total counts them too. `workers`
+        can exceed the retained rows, so it is raised to what is drawn before the sum.
         """
         block = re.search(r"function needsYou\(list, scope\) \{(.*?)\n  \}", script, re.S)
         assert block, "the page has no needsYou"
@@ -486,7 +449,7 @@ class TestTheNeedsYouCardNamesItsAction:
         it marks the row and has no say in which group the row lands in or whether the
         headline counts it.
         """
-        assert "'mate wrote this'" in script, (
+        assert "'Bot wrote this'" in script, (
             "the crewmate's rows are no longer attributed, so a reader cannot tell "
             "which items came from the crewmate rather than the task record"
         )
@@ -519,11 +482,8 @@ class TestTheNeedsYouCardNamesItsAction:
 class TestTheNeedsYouDeskDesign:
     """The desk's five design choices, each pinned to the source.
 
-    These are complementary to ``TestTheNeedsYouCardNamesItsAction``, which
-    tests the earlier "one label, two steps" rule.  The tests here check the
-    new structural work: two colour families, recency shelves, summary
-    cleaning, owner/no-owner display, scoped zero state, and the bundle header
-    for a session that asks several things in a row.
+    Two colour families, recency shelves, summary cleaning, owner display, scoped zero
+    state, and the bundle header for a session that asks several things in a row.
     """
 
     def test_blocked_uses_s1_and_asks_you_uses_s2(self, script: str) -> None:

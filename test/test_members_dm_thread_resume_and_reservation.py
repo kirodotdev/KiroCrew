@@ -1114,6 +1114,231 @@ class TestPersistenceRestoreGate:
         assert state.unrestored_slot_keys == {other, "chat-1-1"}
         assert state.deferred_member_slot_keys == set()
 
+    def test_a_sticky_failed_boot_read_does_not_block_the_retry(self, tmp_path, monkeypatch):
+        """The whole-config mark a failed boot read leaves stays until restart.
+
+        The retry exists for that boot-mid-write case: once the crewmate
+        resolves again, it rebuilds the thread instead of answering unknown.
+        """
+        from kiro_crew.config import loader
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+
+        state = _make_state(tmp_path)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"agents": {CREW: {"member_id": slug}}}), encoding="utf-8")
+        loader._mark_file_degraded(path)  # what the failed boot read left behind
+        cfg = KiroCrewConfig.load()
+        assert loader.DEGRADED_WHOLE_CONFIG in cfg.degraded_sections
+        assert cfg.agents[CREW].member_id == slug
+        rehydrate = AsyncMock(return_value=object())
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        monkeypatch.setattr(member_slot_retry, "resume_parked_sends", AsyncMock())
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == 1
+        rehydrate.assert_awaited_once_with(state, key)
+        assert state.unrestored_slot_keys == set()
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "resolved",
+            "resolved_whole",
+            "ambiguous",
+            "base",
+            "overlay",
+            "agents",
+            "whole",
+            "load_error",
+            "binding_error",
+            "absent",
+        ],
+    )
+    def test_retry_uses_one_resolution(self, tmp_path, monkeypatch, caplog, case):
+        from kiro_crew import members as members_facade
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+        from kiro_crew.members_parts import dm_bindings as bindings
+
+        state = _make_state(tmp_path)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+        cfg = KiroCrewConfig()
+        if case == "resolved":
+            cfg.agents = {CREW: KiroCrewAgentConfig(member_id=slug)}
+            # A failed earlier read cannot poison the successful retry.
+            with patch.object(members_facade, "read_bytes_with_retry", side_effect=OSError):
+                assert bindings.read_dm_binding_for_slot(key) is None
+        if case == "resolved_whole":
+            cfg.agents = {CREW: KiroCrewAgentConfig(member_id=slug)}
+        if case == "ambiguous":
+            # Two matches in a healthy config are not a deletion.
+            cfg.agents = {
+                CREW: KiroCrewAgentConfig(member_id=slug),
+                OTHER: KiroCrewAgentConfig(member_id=slug),
+            }
+        cfg._base_unreadable = case == "base"
+        cfg._overlay_unreadable = case == "overlay"
+        cfg._degraded_sections = frozenset(
+            {"agents"} if case == "agents" else {"*"} if case in {"whole", "resolved_whole"} else ()
+        )
+        load = MagicMock(return_value=cfg)
+        if case == "load_error":
+            load.side_effect = OSError("config read failed")
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        real_read = bindings.read_bytes_with_retry
+        loop_thread = threading.get_ident()
+        reads = []
+
+        def read(path):
+            assert threading.get_ident() != loop_thread
+            reads.append(path)
+            if case == "binding_error" and len(reads) == 1:
+                raise OSError("transient binding read failure")
+            return real_read(path)
+
+        monkeypatch.setattr(members_facade, "read_bytes_with_retry", read)
+        resolution = MagicMock(wraps=bindings.resolve_dm_binding_outcome)
+        monkeypatch.setattr(bindings, "resolve_dm_binding_outcome", resolution)
+
+        async def rebuild(_state, name):
+            assert state.unrestored_slot_keys == {key}
+            assert name == key
+            return object()
+
+        rehydrate = AsyncMock(side_effect=rebuild)
+        parked = AsyncMock()
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        monkeypatch.setattr(member_slot_retry, "resume_parked_sends", parked)
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        resolves = case in {"resolved", "resolved_whole"}
+        assert built == (1 if resolves else 0)
+        pruned = resolves or case == "absent"
+        assert state.unrestored_slot_keys == (set() if pruned else {key})
+        assert len(reads) == 1
+        assert load.call_count == (0 if case == "binding_error" else 1)
+        resolution.assert_called_once_with(key)
+        assert state.deferred_member_slot_keys == set()
+        if resolves:
+            rehydrate.assert_awaited_once_with(state, key)
+            parked.assert_awaited_once_with(state)
+        else:
+            rehydrate.assert_not_awaited()
+            parked.assert_not_awaited()
+            assert ("dropping it" if case == "absent" else "keeping its seed") in caplog.text
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("resolved", "resolved"),
+            ("legacy", "resolved"),
+            ("absent", "confirmed_absent"),
+            ("ambiguous", "unknown"),
+            ("ambiguous_degraded", "unknown"),
+            ("unrelated_degradation", "confirmed_absent"),
+            ("base", "unknown"),
+            ("overlay", "unknown"),
+            ("agents", "unknown"),
+            ("whole", "unknown"),
+            ("resolved_degraded", "resolved"),
+            ("resolved_whole", "resolved"),
+            ("resolved_base", "resolved"),
+            ("missing", "unknown"),
+            ("malformed", "unknown"),
+            ("noncanonical", "unknown"),
+            ("other_generation", "unknown"),
+            ("generation_mismatch", "unknown"),
+            ("foreign_member", "unknown"),
+            ("ordinary", "unknown"),
+            ("bad_key", "unknown"),
+            ("load_value_error", "unknown"),
+            ("resolver_error", "unknown"),
+            ("read_error", "unknown"),
+        ],
+    )
+    def test_dm_binding_resolution_outcomes(self, monkeypatch, case, expected):
+        from kiro_crew import execution_context
+        from kiro_crew import members as members_facade
+        from kiro_crew.members_parts import dm_bindings as bindings
+
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        path = dm_binding_path(slug)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cfg = KiroCrewConfig()
+        if case in {
+            "resolved",
+            "resolved_degraded",
+            "resolved_whole",
+            "resolved_base",
+            "ambiguous",
+            "ambiguous_degraded",
+            "resolver_error",
+        }:
+            cfg.agents = {"renamed": KiroCrewAgentConfig(member_id=slug)}
+        if case in {"ambiguous", "ambiguous_degraded"}:
+            cfg.agents["duplicate"] = KiroCrewAgentConfig(member_id=slug)
+        cfg._base_unreadable = case in {"base", "resolved_base"}
+        cfg._overlay_unreadable = case == "overlay"
+        cfg._degraded_sections = frozenset(
+            {
+                "agents": {"agents"},
+                "resolved_degraded": {"agents"},
+                "resolved_whole": {"*"},
+                "ambiguous_degraded": {"*"},
+                "whole": {"*"},
+                "unrelated_degradation": {"dashboard"},
+            }.get(case, ())
+        )
+        if case in {"legacy", "foreign_member"}:
+            data.pop("member_id")
+            if case == "foreign_member":
+                data["member"] = OTHER
+        if case == "noncanonical":
+            data["slot_key"] = "chat-1-1"
+        if case in {"other_generation", "generation_mismatch"}:
+            data["memory_store"] = "replacement"
+            if case == "other_generation":
+                data["slot_key"] = member_slot_key(slug, "replacement")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        if case == "missing":
+            path.unlink()
+        if case == "malformed":
+            path.write_text("{", encoding="utf-8")
+        if case == "ordinary":
+            key = "chat-1-1"
+        if case == "bad_key":
+            key = None
+        load = MagicMock(return_value=cfg)
+        if case == "load_value_error":
+            load.side_effect = ValueError("config unavailable")
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        if case == "resolver_error":
+            monkeypatch.setattr(
+                execution_context, "member_config_for_id", MagicMock(side_effect=RuntimeError)
+            )
+        if case == "read_error":
+            monkeypatch.setattr(
+                members_facade, "read_bytes_with_retry", MagicMock(side_effect=RuntimeError)
+            )
+        outcome = bindings.resolve_dm_binding_outcome(key)
+        if expected == "resolved":
+            assert isinstance(outcome, dict)
+            assert outcome["member"] == (CREW if case == "legacy" else "renamed")
+            assert outcome["slot_key"] == key
+        else:
+            assert outcome is bindings.DmBindingOutcome(expected)
+        if case in {"noncanonical", "other_generation", "foreign_member", "legacy"}:
+            load.assert_not_called()
+
     def test_a_transient_retry_failure_keeps_the_reopen_seed(self, tmp_path, monkeypatch):
         """A read error on the retry is the next boot's to decide, not a reason to prune."""
         from types import SimpleNamespace
@@ -1141,33 +1366,61 @@ class TestPersistenceRestoreGate:
         # The retry still ran its one attempt: no second pass is owed.
         assert state.deferred_member_slot_keys == set()
 
+    @pytest.mark.parametrize("read_window", ["binding", "config"])
     def test_a_thread_closed_during_the_retrys_binding_read_is_not_rebuilt(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, read_window
     ):
-        from kiro_crew import members as members_mod
+        from kiro_crew import members as members_facade
         from kiro_crew.dashboard import chat_persistence as cp
         from kiro_crew.dashboard import member_slot_retry
         from kiro_crew.dashboard.channel_slots import note_slot_closed
+        from kiro_crew.members_parts import dm_bindings as bindings
 
         state = _make_state(tmp_path)
-        key = member_slot_key(CREW)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
         state.unrestored_slot_keys = {key}
         state.deferred_member_slot_keys = {key}
-        rebuilt: list[str] = []
-
-        def read_then_close(name):
-            # The user opens and closes the thread while the read runs.
-            note_slot_closed(state, name)
-            return {"member": CREW, "slot_key": name}
-
-        async def rehydrate(_state, name, **_kw):
-            rebuilt.append(name)
-            return None
-
-        monkeypatch.setattr(members_mod, "read_dm_binding_for_slot", read_then_close)
+        cfg = KiroCrewConfig(agents={CREW: KiroCrewAgentConfig(member_id=slug)})
+        real_read = bindings.read_bytes_with_retry
+        resolution = MagicMock(wraps=bindings.resolve_dm_binding_outcome)
+        monkeypatch.setattr(bindings, "resolve_dm_binding_outcome", resolution)
+        rehydrate = AsyncMock(return_value=None)
         monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
-        assert asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0)) == 0
-        assert rebuilt == [] and key not in state._slots
+        windows = []
+
+        async def run():
+            hop = LoopHop(asyncio.get_running_loop())
+            loop_thread = threading.get_ident()
+
+            async def close():
+                note_slot_closed(state, key)
+
+            def in_window(window):
+                assert threading.get_ident() != loop_thread
+                windows.append(window)
+                if window == read_window:
+                    hop.run(close(), "close during binding resolution")
+
+            def read(path):
+                in_window("binding")
+                return real_read(path)
+
+            def load():
+                in_window("config")
+                return cfg
+
+            monkeypatch.setattr(members_facade, "read_bytes_with_retry", read)
+            monkeypatch.setattr(KiroCrewConfig, "load", load)
+            result = await member_slot_retry.retry_deferred_member_slots(state, delay=0)
+            hop.check()
+            return result
+
+        assert asyncio.run(run()) == 0
+        resolution.assert_called_once_with(key)
+        assert windows == ["binding", "config"]
+        rehydrate.assert_not_awaited()
+        assert key not in state._slots
         assert state.unrestored_slot_keys == set()
 
     def test_a_deferred_thread_another_path_built_still_leaves_the_seed(self, monkeypatch):

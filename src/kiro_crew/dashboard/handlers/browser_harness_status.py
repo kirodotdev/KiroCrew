@@ -257,29 +257,13 @@ async def api_browser_harness_install(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    _start_install_job(state, components, refresh=refresh)
-    if refresh and "chromium" in components:
-        await _hold_kiro_chromium(_supervisor(request), state._browser_harness_install_task)
+    replacing = _supervisor(request) if refresh and "chromium" in components else None
+    if replacing is not None:
+        # No start may launch Kiro's Chromium from now on; the job stops a running
+        # copy before it installs.
+        replacing.replacing_chromium = True
+    _start_install_job(state, components, refresh=refresh, replacing=replacing)
     return web.json_response(await asyncio.to_thread(_status_payload, request), status=202)
-
-
-async def _hold_kiro_chromium(supervisor: HarnessSupervisor, job: asyncio.Task[None]) -> None:
-    """For a Redownload: keep Kiro's own Chromium down until the install ends.
-
-    A running copy runs from the files the swap moves (``chromium._swap_in``), so it
-    is stopped, and no start may launch it again while the job runs. The person's
-    own Chrome is left alone: Redownload does not touch it. The job is started
-    first, so a second Redownload meanwhile gets the usual 409.
-    """
-
-    def _release(_task: asyncio.Task[None]) -> None:
-        supervisor.replacing_chromium = False
-
-    await supervisor.stop_for_chromium_replace()
-    if job.done():
-        _release(job)
-    else:
-        job.add_done_callback(_release)
 
 
 async def api_browser_harness_test(request: web.Request) -> web.Response:
@@ -327,7 +311,21 @@ def _requested_components(body: dict[str, Any]) -> tuple[str, ...] | None:
     return components
 
 
-def _start_install_job(state: Any, components: tuple[str, ...], *, refresh: bool = False) -> None:
+def _start_install_job(
+    state: Any,
+    components: tuple[str, ...],
+    *,
+    refresh: bool = False,
+    replacing: HarnessSupervisor | None = None,
+) -> None:
+    """Reserve the install job at once and run it as a task.
+
+    *replacing* (a Redownload of Chromium): the job stops Kiro's own Chromium before
+    it installs, since a running copy runs from the files the swap moves
+    (``chromium._swap_in``), and opens the supervisor's start gate again when it
+    ends. The stop is inside the job, so the swap can never begin while the browser
+    is still going down, and a second Redownload meanwhile still gets the usual 409.
+    """
     loop = asyncio.get_running_loop()
     job = InstallJob.start(components)
     state._browser_harness_install_job = job
@@ -337,6 +335,8 @@ def _start_install_job(state: Any, components: tuple[str, ...], *, refresh: bool
 
     async def _run() -> None:
         try:
+            if replacing is not None:
+                await replacing.stop_for_chromium_replace()
             await harness_install.install(
                 config_dir(), _on_stage, components=components, refresh=refresh
             )
@@ -349,6 +349,9 @@ def _start_install_job(state: Any, components: tuple[str, ...], *, refresh: bool
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
             job.finish(job.id, STATUS_FAILED, str(exc)[-harness_install.ERROR_DETAIL_CAP :])
             return
+        finally:
+            if replacing is not None:
+                replacing.replacing_chromium = False
         job.finish(job.id, STATUS_SUCCEEDED)
 
     state._browser_harness_install_task = asyncio.create_task(_run())

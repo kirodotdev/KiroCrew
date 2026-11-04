@@ -39,6 +39,7 @@ from kiro_crew.dashboard import warm_task_brief_inputs as inputs
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.slot_preparing import preparing_message
 from kiro_crew.dashboard.slot_retention import _MAX_FOREGROUND_KEY
+from kiro_crew.dashboard.warm_task_brief_inputs import language_of as _language_of
 from kiro_crew.dashboard.warm_task_brief_inputs import parse_epoch as _parse_epoch
 from kiro_crew.dashboard.warm_task_brief_inputs import row_epoch as _row_epoch
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
@@ -68,8 +69,9 @@ WARM_TASK_BRIEF_TIMEOUT_SECS = 60.0
 # changed while it ran.
 WARM_TASK_BRIEF_ATTEMPTS = 2
 # Room for every field at its cap in a three-byte script, plus JSON escaping
-# of a widget's quotes, so a full brief is never cut into a failure line.
-WARM_TASK_BRIEF_MAX_OUTPUT_BYTES = 40 * 1024
+# of a widget's quotes and four full asks, so a full brief is never cut into a
+# failure line.
+WARM_TASK_BRIEF_MAX_OUTPUT_BYTES = 72 * 1024
 # A return while a turn runs waits for the turn to end, at most this long, and
 # only while the owner keeps the thread on screen.
 WARM_TASK_BRIEF_DEFER_MAX_SECS = 30 * 60
@@ -90,6 +92,10 @@ _MAX_ITEMS = 4
 _MAX_DONE_ITEMS = 4
 _MAX_EXTRA_SECTIONS = 2
 _MAX_EXTRA_TITLE_CHARS = 60
+# One structured ask (section 3.9.3): its options are the source entry's own,
+# at most as many as the waiting list keeps per entry.
+_MAX_ASK_OPTIONS = 6
+_MAX_CONSEQUENCE_CHARS = 160
 # The free-form catch-up text: kept line by line, capped as a whole. Room for
 # four asks of four lines each, plus one picture the model chose (a mermaid
 # diagram, a table or an <mcwidget>).
@@ -138,19 +144,24 @@ _TEXT_LABEL_KEYS = (
     "asked",
     "finished",
     "next",
+    "why",
+    "recommended",
 )
 # One "|"-separated row per language, in _TEXT_LABEL_KEYS order: the four
 # status words, then the section labels.
 _TEXT_LABEL_ROWS = {
-    "en": "On track|Waiting on you|Blocked|Done|Needs you|Left|You asked|Done so far|Next",
-    "zh": "进展顺利|等你处理|卡住了|已完成|需要你|还剩|你让我做|已做完|下一步",
-    "ja": "順調|あなた待ち|止まっています|完了|あなたの番|残り|ご依頼|済んだこと|次に",
-    "ko": "순조로움|답변 대기|막힘|완료|확인 필요|남은 일|요청하신 일|한 일|다음",
-    "ru": "По плану|Ждёт вас|Застряло|Готово|Нужно от вас|Осталось|Вы просили|Сделано|Дальше",
-    "hi": "ठीक चल रहा है|आपका इंतज़ार|अटका है|पूरा हुआ|आपसे चाहिए|बाकी|आपने कहा था|हो चुका|आगे",
+    "en": "On track|Waiting on you|Blocked|Done|Needs you|Left|You asked|Done so far|Next"
+    "|Why|Recommended",
+    "zh": "进展顺利|等你处理|卡住了|已完成|需要你|还剩|你让我做|已做完|下一步|原因|建议",
+    "ja": "順調|あなた待ち|止まっています|完了|あなたの番|残り|ご依頼|済んだこと|次に|理由|おすすめ",
+    "ko": "순조로움|답변 대기|막힘|완료|확인 필요|남은 일|요청하신 일|한 일|다음|이유|추천",
+    "ru": "По плану|Ждёт вас|Застряло|Готово|Нужно от вас|Осталось|Вы просили|Сделано|Дальше"
+    "|Почему|Совет",
+    "hi": "ठीक चल रहा है|आपका इंतज़ार|अटका है|पूरा हुआ|आपसे चाहिए|बाकी|आपने कहा था|हो चुका|आगे"
+    "|क्यों|सुझाव",
     "bn": (
         "ঠিকঠাক চলছে|আপনার অপেক্ষায়|আটকে আছে|শেষ|"
-        "আপনার কাছে দরকার|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর"
+        "আপনার কাছে দরকার|বাকি|আপনি বলেছিলেন|যা হয়েছে|এরপর|কেন|পরামর্শ"
     ),
 }
 _TEXT_LABELS = {
@@ -202,12 +213,13 @@ Write these parts in order, leaving out any that would be empty:
 1. The goal, in one sentence.
 2. Since you left (as of {now}): real changes only, each with its source and
    time, for example "GitHub 23:47" or "worker report 22:10".
-3. Needs you, numbered. For each ask: what it is, why only the owner can do
-   it, every option with what happens if it is chosen, which one you
-   recommend and why. Use the waiting_on_you options exactly as written; never
-   add, drop or rename one. An ask that live_prs or a newer change shows already
-   done goes under part 2 instead. An ask about someone else's pull request says whose it
-   is.
+3. Needs you: the "asks" list, not the body. For each ask: what it is, why
+   only the owner can do it, every option with what happens if it is chosen,
+   which one you recommend and why. An ask that answers a waiting_on_you entry
+   names it by "source" (its index) and copies that entry's options exactly, in
+   order; never add, drop or rename one. Any other ask has no options. An ask
+   that live_prs or a newer change shows already done goes under part 2
+   instead. An ask about someone else's pull request says whose it is.
 4. Problems that do not need the owner, each with its cause.
 5. What you will do next without the owner.
 
@@ -221,10 +233,15 @@ count. If a fact is missing, say you are not sure.
 Return exactly one JSON object:
 {{"status": "on_track" | "needs_you" | "blocked" | "done",
  "headline": "<part 1, at most {headline_cap} characters>",
- "needs_you": ["<one short line per ask in part 3>", ...],
- "body": "<parts 2 to 5>"}}
+ "asked": "<owner_request restated in one line, at most {asked_cap} characters>",
+ "asks": [{{"what": "...", "why": "<why only the owner can do it>",
+   "source": <waiting_on_you index, or null>,
+   "options": [{{"label": "<copied label>", "consequence": "<what happens>"}}],
+   "recommended": "<one option label, or empty>", "recommended_why": "..."}}],
+ "body": "<parts 2, 4 and 5>"}}
 
-"needs_you" holds at most {max_items} items of at most {item_cap} characters;
+"asks" holds at most {max_items} asks, each text at most {item_cap} characters
+and each consequence at most {consequence_cap};
 it is [] when nothing waits on the owner. "body" is markdown of at most
 {body_cap} characters and {body_lines} lines, mostly short "- " lines; a
 picture that would pass either cap is dropped whole. When a picture helps the
@@ -242,7 +259,7 @@ images or [OPTIONS] lines.
 
 The gateway draws every open work item whose status is "blocked" or "question"
 with reason "approval" or "needs_human" (those wait on the owner). Never
-repeat them: put in "needs_you" only owner actions that are not such a work
+repeat them: put in "asks" only owner actions that are not such a work
 item.
 
 Write in the language of "owner_recent_messages".
@@ -252,30 +269,6 @@ UNTRUSTED TASK SNAPSHOT
 {snapshot}
 END UNTRUSTED TASK SNAPSHOT
 """
-
-
-def _language_of(text: str) -> str:
-    """The fixed-line language for *text*, judged only by its script."""
-    counts = {"zh": 0, "ja": 0, "ko": 0, "ru": 0, "hi": 0, "bn": 0}
-    for char in text:
-        point = ord(char)
-        if 0x3040 <= point <= 0x30FF:
-            counts["ja"] += 1
-        elif 0x4E00 <= point <= 0x9FFF or 0x3400 <= point <= 0x4DBF:
-            counts["zh"] += 1
-        elif 0xAC00 <= point <= 0xD7AF or 0x1100 <= point <= 0x11FF:
-            counts["ko"] += 1
-        elif 0x0400 <= point <= 0x04FF:
-            counts["ru"] += 1
-        elif 0x0900 <= point <= 0x097F:
-            counts["hi"] += 1
-        elif 0x0980 <= point <= 0x09FF:
-            counts["bn"] += 1
-    # Kana marks Japanese even beside more Han characters.
-    if counts["ja"]:
-        return "ja"
-    best = max(counts, key=lambda lang: counts[lang])
-    return best if counts[best] else "en"
 
 
 @dataclass(frozen=True)
@@ -311,6 +304,8 @@ class TaskSnapshot:
     # What waits on the owner now: the "Waiting on you" list
     # (``member_waiting.waiting_items``), newest first.
     waiting: tuple[dict[str, Any], ...] = ()
+    # The ``[OPTIONS:]`` line the owner was left with, copied onto the brief.
+    pending_options: str = ""
 
     def away_anchor(self, seen_at: float | None = None) -> float | None:
         """When the owner was last known present: the latest of *seen_at*
@@ -728,6 +723,8 @@ def _snapshot_sync(
             why.append(reason)
         return None
 
+    from kiro_crew.dashboard import member_waiting
+
     history_key = slot_history_key(slot)
     log = state.conversation_log
     if log is None:
@@ -799,6 +796,7 @@ def _snapshot_sync(
         progress=_goal_progress(conductor_record, items),
         turns=tuple(turns),
         previous_claim=_record_claim(rows),
+        pending_options=member_waiting.pending_options(rows) or "",
         ledger_digest=inputs.ledger_digest(conductor_record, items_raw, session_state),
         previous_digest=_claim_digest(rows),
         last_claim_at=_claim_epoch(rows),
@@ -1047,6 +1045,7 @@ def _payload(
         "open_items": inputs.open_item_entries(snapshot.work_items, anchor, work_item_is_terminal),
         "running_worker_sessions": snapshot.running_workers,
         "goal": _goal(snapshot),
+        "owner_request": snapshot.original_request,
         "goal_progress": ({"accepted": progress[0], "total": progress[1]} if progress else None),
         "session_state": {
             key: snapshot.session_state[key]
@@ -1077,11 +1076,39 @@ def _build_prompt(
         role=role,
         role_hint=role_hint,
         headline_cap=_MAX_HEADLINE_CHARS,
+        asked_cap=_MAX_ASKED_CHARS,
+        consequence_cap=_MAX_CONSEQUENCE_CHARS,
         item_cap=_MAX_ITEM_CHARS,
         max_items=_MAX_ITEMS,
         body_cap=_MAX_BODY_CHARS,
         body_lines=_MAX_BODY_LINES,
     )
+
+
+@dataclass(frozen=True)
+class Ask:
+    """One structured ask (section 3.9.3). Option labels are the source
+    waiting entry's own, never the model's; ``recommended`` is one of them."""
+
+    what: str
+    why: str = ""
+    # ``(label, consequence)``, in the source entry's order.
+    options: tuple[tuple[str, str], ...] = ()
+    recommended: str = ""
+    recommended_why: str = ""
+
+    def as_meta(self) -> dict[str, Any]:
+        return {
+            "what": self.what,
+            "why": self.why,
+            "options": [{"label": label, "consequence": c} for label, c in self.options],
+            "recommended": self.recommended,
+            "recommended_why": self.recommended_why,
+        }
+
+    def texts(self) -> list[str]:
+        parts = [self.what, self.why, self.recommended, self.recommended_why]
+        return parts + [part for option in self.options for part in option]
 
 
 @dataclass(frozen=True)
@@ -1106,6 +1133,8 @@ class Brief:
     waiting_total: int = 0
     # The gateway's link row: one per pull request it read live (3.9.3).
     links: tuple[inputs.PrRef, ...] = ()
+    # The model's structured asks, labels checked against their source.
+    asks: tuple[Ask, ...] = ()
 
     def as_meta(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -1125,6 +1154,8 @@ class Brief:
             meta["waiting_total"] = self.waiting_total
         if self.links:
             meta["links"] = [ref.url for ref in self.links]
+        if self.asks:
+            meta["asks"] = [ask.as_meta() for ask in self.asks]
         return meta
 
     def model_text(self) -> str:
@@ -1134,6 +1165,8 @@ class Brief:
         model text a new brief carries, so it is left out."""
         parts = [self.headline, self.asked, self.remaining, self.body]
         parts.extend(self.done + self.needs_you + self.next)
+        for ask in self.asks:
+            parts.extend(ask.texts())
         for title, items in self.extra:
             parts.append(title)
             parts.extend(items)
@@ -1414,6 +1447,48 @@ def _waiting_on_owner(
     return tuple(waiting[:_MAX_WAITING]), len(waiting)
 
 
+def _clean_ask(raw: object, waiting: tuple[dict[str, Any], ...]) -> Ask | None:
+    """One model ask, checked against its source (section 3.9.3).
+
+    Labels must equal the named ``waiting`` entry's options, in order. On a
+    mismatch the source labels stay and the model's consequences and
+    recommendation go; an ask with no valid source keeps no options at all."""
+    if not isinstance(raw, dict):
+        return None
+    what = _clean(raw.get("what"), _MAX_ITEM_CHARS)
+    if not what:
+        return None
+    index = raw.get("source")
+    labels: list[str] = []
+    if type(index) is int and 0 <= index < len(waiting):
+        labels = [str(o) for o in waiting[index].get("options") or []][:_MAX_ASK_OPTIONS]
+    given = raw.get("options")
+    written = [o for o in given if isinstance(o, dict)] if isinstance(given, list) else []
+    copied = bool(labels) and [str(o.get("label") or "").strip() for o in written] == [
+        label.strip() for label in labels
+    ]
+    options = tuple(
+        (
+            _clean(label, _MAX_ITEM_CHARS),
+            _clean(written[i].get("consequence"), _MAX_CONSEQUENCE_CHARS) if copied else "",
+        )
+        for i, label in enumerate(labels)
+    )
+    recommended = str(raw.get("recommended") or "").strip()
+    pick = next(
+        (shown for shown, label in zip(options, labels) if label.strip() == recommended), None
+    )
+    return Ask(
+        what=what,
+        why=_clean(raw.get("why"), _MAX_ITEM_CHARS),
+        options=options,
+        recommended=pick[0] if copied and pick else "",
+        recommended_why=(
+            _clean(raw.get("recommended_why"), _MAX_ITEM_CHARS) if copied and pick else ""
+        ),
+    )
+
+
 _HEADLINE_KEYS = ("headline", "now", "message")
 
 
@@ -1421,6 +1496,7 @@ def _parse_result(
     text: str,
     fallback_asked: str = "",
     work_items: tuple[dict[str, Any], ...] = (),
+    waiting: tuple[dict[str, Any], ...] = (),
 ) -> Brief | None:
     """Validate the model's JSON into a :class:`Brief`, or ``None``.
 
@@ -1429,7 +1505,8 @@ def _parse_result(
     still yields a short card instead of a failure line. A missing ``asked``
     falls back to the original request the gateway quoted. *work_items* is the
     ledger the waiting list is read from; any list the model returns for it,
-    and any ``progress`` count, is ignored.
+    and any ``progress`` count, is ignored. *waiting* is the snapshot's
+    "waiting_on_you" list, the only source of an ask's option labels.
     """
     raw = _extract_json_of_type(
         text,
@@ -1443,18 +1520,27 @@ def _parse_result(
     )
     if not headline:
         return None
-    needs_you = _clean_items(raw.get("needs_you"))
-    waiting, waiting_total = _waiting_on_owner(work_items)
+    asks_raw = raw.get("asks")
+    asks = tuple(
+        ask
+        for item in (asks_raw if isinstance(asks_raw, list) else [])
+        if (ask := _clean_ask(item, waiting)) is not None
+    )[:_MAX_ITEMS]
+    # The structured asks replace the older one-line list.
+    needs_you = () if asks else _clean_items(raw.get("needs_you"))
+    owner_items, waiting_total = _waiting_on_owner(work_items)
     body = _clean_body(raw.get("body"))
     status = raw.get("status")
-    owed = bool(needs_you or waiting_total)
+    owed = bool(asks or needs_you or waiting_total)
     # A chip saying "on track" or "done" above things that wait contradicts itself.
     if status not in _STATUSES or (owed and status in ("on_track", "done")):
         status = "needs_you" if owed else "on_track"
     return Brief(
         status=str(status),
         headline=headline,
-        # A free-form body carries the reminder itself.
+        # The owner's request, restated in one line by the model. A
+        # free-form body carries the reminder itself, so the gateway's quote
+        # fills in only when there is no body.
         asked=_clean(raw.get("asked"), _MAX_ASKED_CHARS)
         or ("" if body else _clean(fallback_asked, _MAX_ASKED_CHARS)),
         remaining=_clean(raw.get("remaining"), _MAX_REMAINING_CHARS),
@@ -1463,8 +1549,9 @@ def _parse_result(
         next=_clean_items(raw.get("next")),
         extra=_clean_extra(raw.get("extra")),
         body=body,
-        waiting=waiting,
+        waiting=owner_items,
         waiting_total=waiting_total,
+        asks=asks,
     )
 
 
@@ -1545,15 +1632,17 @@ def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
 def _gateway_only(brief: "Brief", language: str) -> "Brief":
     """The brief with every model field dropped: the gateway's waiting cards
     and one line saying the summary could not be written (section 3.9.6)."""
+    # The model's own asks are gone, so only the gateway's list can owe the
+    # owner something; a "blocked" read is kept rather than shown on track.
+    if brief.waiting_total:
+        status = "needs_you"
+    elif brief.status == "blocked":
+        status = "blocked"
+    else:
+        status = "on_track"
     return replace(
         brief,
-        # The model's own asks are gone, so only the gateway's list can owe the
-        # owner something; a "blocked" read is kept rather than shown on track.
-        status=(
-            "needs_you"
-            if brief.waiting_total
-            else ("blocked" if brief.status == "blocked" else "on_track")
-        ),
+        status=status,
         headline=_FAILURE_TEXT[language],
         asked="",
         remaining="",
@@ -1563,6 +1652,7 @@ def _gateway_only(brief: "Brief", language: str) -> "Brief":
         extra=(),
         body="",
         links=(),
+        asks=(),
     )
 
 
@@ -1621,6 +1711,22 @@ def _brief_text(brief: Brief, language: str) -> str:
     owed = tuple(f"{title}: {ask}" if ask else title for title, ask in brief.waiting)
     unlisted = brief.waiting_total - len(brief.waiting)
     section(labels["needs"], owed + ((f"+{unlisted}",) if unlisted > 0 else ()) + brief.needs_you)
+    if brief.asks and not owed:
+        lines.append(f"{labels['needs']}:")
+    asks: list[str] = []
+    for number, ask in enumerate(brief.asks, 1):
+        asks.append(f"{number}. {ask.what}")
+        if ask.why:
+            asks.append(f"   {labels['why']}: {ask.why}")
+        asks.extend(f"   - {label}: {c}" if c else f"   - {label}" for label, c in ask.options)
+        if ask.recommended:
+            because = f" ({ask.recommended_why})" if ask.recommended_why else ""
+            asks.append(f"   {labels['recommended']}: {ask.recommended}{because}")
+    if asks:
+        # Ask text reaches every reader of ``content`` too, so it is made
+        # inert like the body: no live widget, link or address.
+        # Ask fields are plain text, so their HTML is escaped as well.
+        lines.append(html.escape(_inert_body("\n".join(asks)), quote=False))
     if brief.body:
         lines.append(_inert_body(brief.body))
     if brief.remaining:
@@ -1636,6 +1742,19 @@ def _brief_text(brief: Brief, language: str) -> str:
     return "\n".join(lines)
 
 
+def _live_options(slot: "_ChatSlot", settled: TaskSnapshot) -> str:
+    """The choices to copy at post time, for every brief post.
+
+    The slot's in-memory window wins when it decides: a note appended after
+    the last flush is in memory before it is on disk.
+    """
+    from kiro_crew.dashboard import member_waiting
+
+    rows = list(getattr(slot, "messages", None) or [])
+    in_memory = member_waiting.pending_options(rows)
+    return settled.pending_options if in_memory is None else in_memory
+
+
 def _post_message(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -1645,8 +1764,11 @@ def _post_message(
     fingerprint: str,
     brief: Brief | None = None,
     grounding_miss: str = "",
+    options: str = "",
 ) -> dict[str, Any]:
-    """Post one ordinary crewmate message; the normal flush loop persists it."""
+    """Post one crewmate message; *options* is its one live, gateway-copied marker."""
+    if options:
+        content = f"{content}\n\n{options}"
     from kiro_crew.dashboard.state import append_and_surface
 
     meta: dict[str, Any] = {"kind": kind, "fingerprint": fingerprint}
@@ -1790,7 +1912,14 @@ async def _run_warm_task_brief(
         # Nothing to catch up on: one fixed line, no model call. It carries no
         # card, so it claims no task status (a blocked task stays blocked).
         quiet = _QUIET_TEXT[language].format(at=inputs.clock(anchor))
-        _post_message(state, slot, quiet, kind=_RESULT_KIND, fingerprint=snapshot.fingerprint)
+        _post_message(
+            state,
+            slot,
+            quiet,
+            kind=_RESULT_KIND,
+            fingerprint=snapshot.fingerprint,
+            options=_live_options(slot, fresh),
+        )
         return
     # From here the thread shows the "preparing your catch-up" indicator
     # without marking a turn: the deferral below still reads ``slot.running``.
@@ -1804,8 +1933,14 @@ async def _run_warm_task_brief(
     # What the owner sees must still be true when it posts: an ask answered or
     # a ledger write during the model call makes the result stale. Regenerate
     # once from the new state; a second change posts nothing this visit.
+    # One time limit covers the live reads of every attempt; only the time
+    # spent reading counts, never the model call or the wait between.
+    read_left = inputs.LIVE_READ_TOTAL_SECS
+    options = ""
     for _attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
-        live = tuple(await inputs.read_live_prs(_live_refs(fresh)))
+        read_started = time.monotonic()
+        live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
+        read_left -= time.monotonic() - read_started
         asked_at = time.time()
         text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
         # Once the indicator shows, the result lands as ordinary history even
@@ -1814,13 +1949,16 @@ async def _run_warm_task_brief(
         settled = await _settled(state, slot, snapshot, deadline, require_foreground=False)
         if settled is None:
             return
+        # The buttons come from the last re-read: a reply or note that landed
+        # during the model call changes what the chip bar would offer.
+        options = _live_options(slot, settled)
         if settled.waiting == fresh.waiting and settled.ledger_digest == fresh.ledger_digest:
             break
         fresh = settled
     else:
         _skip(slot.key, "changed_during_write")
         return
-    brief = _parse_result(text, fresh.original_request, fresh.work_items)
+    brief = _parse_result(text, fresh.original_request, fresh.work_items, fresh.waiting)
     if brief is None:
         _post_message(
             state,
@@ -1828,6 +1966,7 @@ async def _run_warm_task_brief(
             _FAILURE_TEXT[language],
             kind=_FAILURE_KIND,
             fingerprint=snapshot.fingerprint,
+            options=options,
         )
         return
     # Section 3.9.6, after the PR filter above: a commit SHA or time the input
@@ -1857,4 +1996,5 @@ async def _run_warm_task_brief(
         fingerprint=snapshot.fingerprint,
         brief=brief,
         grounding_miss=miss,
+        options=options,
     )

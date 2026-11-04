@@ -647,16 +647,18 @@ class TestHmacKeyTrustDirMigration:
         SecurityEventLog init before the fallback can run."""
         key = b"k" * 32
         (tmp_path / "sel_hmac.key").write_bytes(key)
-        real_mkdir = Path.mkdir
+        real_mkdir = os.mkdir
 
-        def _deny_trust_mkdir(self, *args, **kwargs):  # noqa: ANN001
-            if self.name == "trust":
-                raise PermissionError(30, "Read-only file system", str(self))
-            return real_mkdir(self, *args, **kwargs)
+        # os.mkdir, not Path.mkdir: every directory-creation path (pathlib and
+        # the owner-only helper alike) bottoms out there.
+        def _deny_trust_mkdir(path, *args, **kwargs):  # noqa: ANN001
+            if os.path.basename(os.fspath(path)) == "trust":
+                raise PermissionError(30, "Read-only file system", os.fspath(path))
+            return real_mkdir(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "mkdir", _deny_trust_mkdir)
+        monkeypatch.setattr(os, "mkdir", _deny_trust_mkdir)
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        monkeypatch.setattr(Path, "mkdir", real_mkdir)
+        monkeypatch.setattr(os, "mkdir", real_mkdir)
         assert log._hmac_key == key
         # Key stayed at (and is reported from) the legacy location.
         assert (tmp_path / "sel_hmac.key").exists()

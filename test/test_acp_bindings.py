@@ -40,6 +40,8 @@ from kiro_crew.providers.acp import AcpProvider
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_acp_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
@@ -99,6 +101,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "disown_work_dir": ("function", False, "b60c5fea256e", "acp_lifecycle"),
     "exit_code": ("property", False, "8dc15be1dfda", "acp"),
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "acp"),
+    "harness_compact_verb_advertised": ("property", False, "a6632a57e602", "acp"),
     "harness_managed_compaction_backend": ("property", False, "f21e39ec5ffb", "acp"),
     "has_active_turn": ("function", False, "a6632a57e602", "acp"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),
@@ -151,6 +154,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
     "switches_by_relaunch": ("property", False, "a6632a57e602", "acp"),
+    "session_activity_at": ("property", False, "c2eec8a41739", "acp"),
     "session_id": ("property", False, "bb418bb7ece8", "acp"),
     "set_delete_delay": ("function", False, "ef2ab8d662c5", "acp"),
     "set_model": ("function", True, "9c3df1e3fc63", "acp_model_effort"),
@@ -166,6 +170,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_effort": ("function", False, "a6632a57e602", "acp_model_effort"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
+    "take_batch_refusal": ("function", False, "85a6851f62f8", "acp"),
     "tested_version_notice": ("property", False, "bb418bb7ece8", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "touch_activity": ("function", False, "b60c5fea256e", "acp"),
@@ -173,6 +178,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
+    "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
 }
 
@@ -385,16 +391,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

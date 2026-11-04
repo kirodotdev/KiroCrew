@@ -49,8 +49,14 @@ import ErrorNotice from './ErrorNotice'
 import { Btn, Checkbox } from './ui'
 // App-event → theme-audio bridge: real chat/notification events route to the
 // active theme's manifest sounds (message-received / notification triggers).
-import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound'
-import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
+import {
+  MC_THEME_SOUND_EVENT,
+  activeThemeSoundTriggers,
+  publishThemeSoundTriggers,
+  type ThemeSoundDetail,
+} from '../hooks/themeSound'
+import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
+import { loadSoundSettings, themeTriggerForNotification } from '../hooks/useNotificationSound'
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
@@ -215,7 +221,7 @@ function ConsentDialogShell({ onEscape, initialFocusRef, children }: {
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-safe-or-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="theme-consent-title"
@@ -543,20 +549,39 @@ export default function ThemeExperienceLayer() {
     prevAudioRef.current = { slug: slug ?? '', manifest: assets?.audio, canPlay: audioEnabled }
   }, [slug, audioEnabled, assets, playTrigger, enqueueAudio])
 
+  // Tell the built-in notification tones which triggers this theme can play
+  // right now, so a notification the theme sounds is not also played as a
+  // built-in tone. Published only while the theme's audio is audible; an
+  // audio-off theme leaves the built-in tones alone.
+  useEffect(() => {
+    if (!soundsOn || !audioEnabled) return
+    const triggers = assets?.audio?.triggers ?? {}
+    const playable = Object.keys(triggers).filter((k) => typeof triggers[k]?.src === 'string')
+    if (playable.length === 0) return
+    return publishThemeSoundTriggers(playable)
+  }, [soundsOn, audioEnabled, assets])
+
   // App-event → theme-audio bridge. Real app events drive the manifest's
-  // event-triggered sounds (the 7-name taxonomy's message-received / notification
-  // slots): an agent reply arriving fires MC_THEME_SOUND_EVENT{message-received},
-  // and the existing notification event (shared with useNotificationSound) maps to
-  // the `notification` trigger. playTrigger self-gates on consent/mute/reduced-
-  // motion + a matching manifest entry, so an event with no matching trigger (or a
-  // muted theme) is a silent no-op. Only attach while Sounds is on.
+  // event-triggered sounds: an agent reply arriving fires
+  // MC_THEME_SOUND_EVENT{message-received}, and the existing notification event
+  // (shared with useNotificationSound) maps to the category's own trigger
+  // (`category:<kind>`), else the generic `notification` trigger. Both listeners
+  // resolve through themeTriggerForNotification, so exactly one of them plays a
+  // given notification, and a category the user chose a sound for in Settings
+  // keeps that sound. playTrigger self-gates on consent/mute/reduced-motion + a
+  // matching manifest entry, so an event with no matching trigger (or a muted
+  // theme) is a silent no-op. Only attach while Sounds is on.
   useEffect(() => {
     if (!soundsOn) return
     const onThemeSound = (e: Event) => {
       const trig = (e as CustomEvent<ThemeSoundDetail>).detail?.trigger
       if (typeof trig === 'string' && trig) playTrigger(trig)
     }
-    const onNotification = () => playTrigger('notification')
+    const onNotification = (e: Event) => {
+      const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind
+      const trig = themeTriggerForNotification(kind, loadSoundSettings(), activeThemeSoundTriggers())
+      if (trig) playTrigger(trig)
+    }
     window.addEventListener(MC_THEME_SOUND_EVENT, onThemeSound)
     window.addEventListener(MC_NOTIFICATION_EVENT, onNotification)
     return () => {

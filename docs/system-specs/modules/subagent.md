@@ -1568,7 +1568,8 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   memoized per directory in an `AgentsDirMemo` pinned to
   `agents_dir_revision` (names, mtime AND ctime, size, inode, mode, link
   count, the in-process spec generation, and a SHA-256 of the bytes of any
-  entry younger than the racy window) — a
+  entry younger than the racy window, or of every entry on Windows, where
+  `st_ctime_ns` is creation time) — a
   blocking read, so it never runs on the gateway loop: the
   event-loop entry points resolve `subagent.parent_spawn_policy` (parent
   template + declaration) through `asyncio.to_thread` and hand it to
@@ -1589,8 +1590,9 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   spec (`cp -p`, `rsync -t`, a restore) would serve its previous, permissive
   allowlist for ever; the non-blocking `cached_agent_specs` serves empty rows
   on a cold cache, and an empty read would admit a spawn the declaration
-  forbids. When the revision cannot prove freshness (Windows, a symlinked
-  spec, an entry younger than two seconds) the walk simply runs uncached.
+  forbids. When the revision cannot prove freshness (a symlinked spec, a
+  young entry it cannot hash, more bytes than its digest budget) the walk
+  simply runs uncached.
 - **Target** = the EFFECTIVE child template (`execution.template_id`: explicit
   `agent`, the inherited parent template, or a `crew=`/`target_member` member's
   `kiro_agent`), matched with `fnmatch.fnmatchcase` against each glob. Only
@@ -2488,6 +2490,8 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 | `stopped` | `user_stopped=True`, `error` **unset** | neutral: user killed it; partial result preserved; NOT a success, NOT a failure |
 | `failed` | `error` set | failure (tombstoned, counted in Stats) |
 | `completed` | neither | success |
+
+`outcome` is the coarse fold of `SubagentInfo.ending`, a `SubagentEnding` (`subagent_ending.py`) decided by `classify_ending` in one fixed order: `user_stopped` gives `interrupted_by_parent` (`stopped`); an `error` gives `reaped` when a deadline or the reaper wrote it (`_deadline_ending`, set by the run's own `wait_for` timeout, `_force_reap`'s synthesis and `_record_reap_ending`) and `failed` otherwise, including a run that recorded its own error before a reap tore it down (both `failed`); `partial` without an error gives `partial` (`completed`); anything else is `completed`. The parent's completion announce (`_compose_subagent_completion`) takes its status from the ending, so a reaped run reads `reaped` rather than `failed`, with the error text naming the deadline or limit, and the wave digest marks a completed member partial from it. Nothing else carries the ending: the `subagent_done` frame, tombstones and replays carry `outcome`. The terminal report makes the ending final through `TerminalCoordinator._finish` in one order, settle then record then flip: pending credits are settled, the crew log closer and the terminal metric are written, `done` is set and the report hold armed, and only then is `subagent_done` broadcast.
 
 - A user stop is neutral **in the record itself**: `cancel()` sets `user_stopped=True` and neither it nor `_force_reap` ever synthesizes an `error` for it.
 - **A completed ending is a claim, taken first or not at all.** A run whose stream delivered a whole answer takes `SubagentInfo._ending_claimed` synchronously, before any await, unless a stop already did (`done`, `_reap_started`, `user_stopped`, or an `error` a failed child under `on_child_failure=fail_parent` or an expired wait stamped while its cancel is still scheduled); every stop path then treats the claim as `done` — a Stop returns False (with no stagger-queue lookup, since a registered run is never queued), a parent end and a reap stamp nothing, and neither a failed child under `on_child_failure=fail_parent` nor an expired wait stamps an `error` on it — so a stop landing while the claimed run writes its result can no longer leave the run returning with no ending recorded (see the ending claim under Unexpected-Cancel Recovery).
@@ -3880,6 +3884,19 @@ when the parent's own call already returned every member it carries:
   members whose whole block the reply carries (`_carried_in_reply`; a member
   whose block ends past the `MAX_RESPONSE_LEN` cut is left out). A cancelled,
   refused, abandoned, crashed, torn or brokered answer marks nothing.
+  `spawn_status` sends the same mark for its one run when the read is a full
+  read of a finished run (`done: true`, `outcome: "completed"`, no
+  `offset`/`limit`/`grep`, no `result_meta`) and the whole reply after
+  `sanitize_string` fits within `MAX_RESPONSE_LEN`, because that reply holds
+  the result the completion event carries: it answers through
+  `subagent_read_collected.StatusReadAnswer`, whose `on_answered(True)` POSTs
+  it. A running, paged, grepped, over-cap or failed read, a stopped or failed
+  run, a missing or unknown outcome, and a caller with no resolvable session
+  answer plain text and mark nothing. The live done response includes
+  `outcome` and `stopped`, matching the disk fallback. The
+  gateway applies every rule below to that mark too, so for a parent that
+  settles at release a read in a later turn than the one that spawned the run
+  flags nothing and its completion is still delivered.
 - **Only the caller's own children are marked.** `mark-collected` sets
   `SubagentInfo._collected_inline` on each named record whose
   `parent_session_key` is the authorised claim; an unknown id, another parent's
@@ -3973,8 +3990,10 @@ when the parent's own call already returned every member it carries:
   `_delivered_inline`, asked at the same two points.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
-  `reset(parent_key, skip_if_busy=True)`, which declines while a turn holds the
-  session. Who holds it decides the rest. Every branch that retires a key goes
+  `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines
+  while a turn holds the session or while `_cron_injecting` counts the key.
+  Both are read under the reset's own lock, atomically with the pop. Who holds
+  it decides the rest. Every branch that retires a key goes
   through `CronService.retire_finished_session_key`, which leaves a key the job's
   live run registered (a newer run, waiting for the permit or holding it) to that
   run's own finalizer, unless that run is done with it. Each cron engine marks
@@ -3985,6 +4004,10 @@ when the parent's own call already returned every member it carries:
   again, by any run, takes the mark off:
   - the reset happened, or no session was left: the job's active-session key is
     retired;
+  - the reset declined while `_cron_injecting` still counts the key (another
+    delivery began after this cleanup's own read): the session and the key are
+    left to that delivery, whose own cleanup runs this reset again after it
+    delivers;
   - a cron run's own task holds the permit (`SessionManager.turn_holder` is in
     `_cron_runs_holding`, which `_cron_callback` fills from before the run's
     first acquire to its end): the session and the key are left to that run's

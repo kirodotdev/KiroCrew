@@ -490,6 +490,11 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** Reveal one removed credential to the owner. The value lives only in
+     *  gateway memory; a 410 means it is gone (restart or expiry). The caller
+     *  keeps the answer in memory only: never in storage or a query cache. */
+    revealRedactedValue: (slot: string, id: string) =>
+      post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
   }
 
   return { posture, policies, secrets, consents }

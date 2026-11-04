@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import member_mount_checks
 import pytest
 
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
@@ -331,7 +332,9 @@ def panel_granted(monkeypatch):
     return members_mod
 
 
-class TestClaudePanelAppend:
+class TestClaudePanelAppend(
+    member_mount_checks.NonMemberSessionIsUntouched, member_mount_checks.KiroBackendIsUntouched
+):
     def _run(self, stub, restricted=frozenset(), disabled=frozenset()) -> list[dict]:
         return AcpClient._append_member_panel_server(stub, _base_servers(), restricted, disabled)
 
@@ -345,11 +348,6 @@ class TestClaudePanelAppend:
         } in out[
             -1
         ]["env"]
-
-    def test_non_member_session_is_untouched(self, panel_granted):
-        stub = _ClientStub()
-        stub._session_key = "dashboard_abc123"
-        assert self._run(stub) == _base_servers()
 
     def test_the_switch_off_withholds(self, monkeypatch):
         import kiro_crew.members as members_mod
@@ -378,11 +376,6 @@ class TestClaudePanelAppend:
         stub = _ClientStub()
         stub._claude_settings_authored = False
         stub._claude_settings_shared = True
-        assert self._run(stub) == _base_servers()
-
-    def test_kiro_backend_is_untouched(self, panel_granted):
-        stub = _ClientStub()
-        stub.backend = ACP_BACKEND_KIRO
         assert self._run(stub) == _base_servers()
 
     def test_same_named_entry_is_replaced_not_duplicated(self, panel_granted):

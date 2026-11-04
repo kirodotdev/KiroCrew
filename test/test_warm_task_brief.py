@@ -513,9 +513,14 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     slot = _Slot()
     state.slots[slot.key] = slot
     state._foreground_slots[1] = slot.key
-    snapshot = _snapshot()
+    snapshot = replace(_snapshot(), pending_options="[OPTIONS: Old]")
+    # A note with new choices lands during the model call: the brief copies
+    # the choices of the last re-read, not of the read before the call.
+    after_call = replace(_claimed(snapshot), pending_options="[OPTIONS: Push | Hold]")
 
     async def read_snapshot(*args, **kwargs):
+        if call_kwargs:
+            return after_call
         return _claimed(snapshot) if slot.flushed else snapshot
 
     kinds_at_call = []
@@ -596,7 +601,9 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
         "You asked: Fix the failing test\n"
         "Done so far:\n- Reproduced the failure\n"
         "Next:\n1. Apply the fix\n2. Rerun CI\n"
-        "Risk:\n- The fix touches a shared helper"
+        "Risk:\n- The fix touches a shared helper\n\n"
+        # The owner's pending choices stay as working buttons under the brief.
+        "[OPTIONS: Push | Hold]"
     )
     prompt = call_kwargs["prompt"]
     assert '"goal": "Fix the test"' in prompt
@@ -1870,3 +1877,34 @@ def test_only_a_delivered_catch_up_lets_the_next_unchanged_return_be_quiet(resul
     ]
     digest = warm_task_brief._claim_digest(rows)
     assert warm_task_brief._is_quiet(_quiet_snapshot(), digest, 0.0) is quiet
+
+
+@pytest.mark.asyncio
+async def test_a_note_in_the_live_window_wins_over_the_settled_disk_read(monkeypatch):
+    state = _State()
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    snapshot = replace(_snapshot(), pending_options="[OPTIONS: Push | Hold]")
+
+    async def read_snapshot(*args, **kwargs):
+        return _claimed(snapshot) if slot.flushed else snapshot
+
+    async def run_model(*args, **kwargs):
+        # A note lands in memory during the call; the disk re-read misses it.
+        slot.rows.append(
+            {"role": "inject", "content": "[OPTIONS: New | Cancel]", "cls": "reconcile-note"}
+        )
+        return json.dumps(
+            {"status": "on_track", "headline": "Back.", "asked": "Fix the failing test"}
+        )
+
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    assert _posted(slot)[-1]["content"].endswith("\n\n[OPTIONS: New | Cancel]")

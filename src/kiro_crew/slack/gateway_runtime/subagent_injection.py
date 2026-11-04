@@ -1441,7 +1441,16 @@ async def _reset_cron_parent_when_idle(
             # Any other turn, on a tab that shows the job or a person's own,
             # keeps the session it is using, left to the idle sweep, and the
             # finished run's key is retired now.
-            reset = await self.sessions.reset(parent_key, skip_if_busy=True)
+            # skip_if_injecting: a hand-off that began after the read above
+            # is seen under the reset's own lock; its own reset runs later.
+            reset = await self.sessions.reset(parent_key, skip_if_busy=True, skip_if_injecting=True)
+            if not reset and self._cron_injecting.get(parent_key, 0) > 0:
+                logger.info(
+                    "Cron session %s: last subagent done while another delivery began; "
+                    "left to that delivery's reset",
+                    parent_key,
+                )
+                return
             if not reset and self.sessions.is_busy(parent_key):
                 holder = self.sessions.turn_holder(parent_key)
                 if holder is not None and holder in self._cron_runs_holding:

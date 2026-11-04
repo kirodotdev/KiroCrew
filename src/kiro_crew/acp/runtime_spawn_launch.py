@@ -1206,14 +1206,9 @@ def _known_server_tool_names(server: str) -> list[str] | None:
     sandboxed probe fills. ``None`` when the cache has no list -- the caller
     then leaves that server to KAS's own deferral.
     """
-    from kiro_crew.mcp_discovery import _get_cached
+    from kiro_crew.acp.kas_permissions import cached_mcp_tool_names
 
-    try:
-        _status, tools, *_rest = _get_cached(server)
-    except Exception:
-        logger.debug("no tool list for MCP server %s at handshake", server, exc_info=True)
-        return None
-    return list(tools) if tools else None
+    return cached_mcp_tool_names(server)
 
 
 async def _with_mcp_sign_in_storage(runtime: AcpRuntime, base: dict[str, Any]) -> dict[str, Any]:

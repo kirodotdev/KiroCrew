@@ -156,7 +156,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   const dragRef = useRef({ id: -1, startX: 0, startY: 0, baseX: 0, baseY: 0, active: false })
   const open = selected !== null
   const {
-    zoom, setZoom, pan, setPan, pinching, clampPan,
+    zoom, setZoom, pan, setPan, pinching, clampPan, contentCentre,
     trackPointerDown, trackPointerMove, trackPointerUp, reset,
   } = usePinchZoom({
     targetRef: imgRef,
@@ -204,12 +204,11 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
     lastTapRef.current = { t: 0, x: 0, y: 0 }
     suppressClickRef.current = true
     if (zoom > SCREENSHOT_ZOOM_MIN) { setZoom(SCREENSHOT_ZOOM_MIN); setPan({ x: 0, y: 0 }); return }
-    const cx = window.innerWidth / 2
-    const cy = window.innerHeight / 2
+    const { x: cx, y: cy } = contentCentre()
     const z = DOUBLE_TAP_ZOOM
     setZoom(z)
     setPan(clampPan((e.clientX - cx) * (1 - z), (e.clientY - cy) * (1 - z), z))
-  }, [zoom, setZoom, setPan, clampPan])
+  }, [zoom, setZoom, setPan, clampPan, contentCentre])
 
   const onImgPointerDown = useCallback((e: React.PointerEvent<HTMLImageElement>) => {
     // Clear here (not on the wrapper) because the <img> stops propagation, so
@@ -347,7 +346,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
           // Click-to-dismiss on the backdrop is a mouse affordance; keyboard
           // users close with Escape (AppStoreDialog) and step with the arrows.
           <AppStoreDialog
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-xs"
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-xs p-safe"
             dialogRef={dialogRef}
             onClose={closeViewer}
             onBackdropClick={() => {

@@ -123,6 +123,7 @@ async def stream_and_collect(
     fallback_models: Sequence[str] = (),
     allow_image: bool = True,
     undelivered_watch_key: str = "",
+    on_event: Callable[[LLMEvent], Awaitable[None]] | None = None,
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -210,6 +211,12 @@ async def stream_and_collect(
             harness never delivered
             (:class:`kiro_crew.undelivered_call_watch.UndeliveredCallWatch`).
             Empty watches nothing.
+        on_event: Optional async observer awaited with every raw provider
+            event, in stream order, before this helper acts on it. A caller
+            that must apply session directives from the turn hands it
+            ``messaging.directive_tracker.DirectiveTracker.observe``. Raising
+            from it is logged and swallowed, so observation cannot fail the
+            turn.
 
     Returns:
         The complete response text.
@@ -288,6 +295,13 @@ async def stream_and_collect(
                         _undelivered_watch.on_call(event)
                     elif event.kind == EVENT_TOOL_RESULT:
                         await _undelivered_watch.on_result(event)
+                if on_event is not None:
+                    try:
+                        await on_event(event)
+                    except Exception:
+                        logger.warning(
+                            "stream_and_collect: on_event observer failed", exc_info=True
+                        )
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
                     if on_chunk:

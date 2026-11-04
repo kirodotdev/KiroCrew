@@ -440,7 +440,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     // is not the reference: it portals to a separate stacking context, while a
     // z-[100] here would tie a DOM-earlier takeover and win on document order.
     <div
-      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise p-safe"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget && !required) dismiss() }}
     >

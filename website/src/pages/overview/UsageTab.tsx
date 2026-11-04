@@ -14,14 +14,8 @@ import { TokenDailyChart } from './TokenDailyChart'
 import { TokenStackedAreaChart } from './TokenStackedAreaChart'
 import { formatCost } from '../../utils/formatCost'
 
-import { fmtNumber, fmtPercent } from '../../i18n/format'
+import { fmtCompact, fmtElapsed, fmtNumber, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
-}
-
 const EM_DASH = '\u2014'
 
 /** A day's credits, localized, in the Billing card's two decimals; a dash when the day has no figure. */
@@ -104,14 +98,14 @@ export default function UsageTab() {
         <Card>
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.token_usage')}</CardTitle>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-            <Row label={i18nT('pages.overview.usageTab.input_tokens')} value={fmtNum(data.tokens.input)} />
-            <Row label={i18nT('pages.overview.usageTab.output_tokens')} value={fmtNum(data.tokens.output)} />
-            {data.tokens.cacheCreation > 0 && <Row label={i18nT('pages.overview.usageTab.cache_creation')} value={fmtNum(data.tokens.cacheCreation)} />}
-            {data.tokens.cacheRead > 0 && <Row label={i18nT('pages.overview.usageTab.cache_read')} value={fmtNum(data.tokens.cacheRead)} />}
-            <Row label={i18nT('pages.overview.usageTab.total_tokens')} value={fmtNum(data.tokens.total)} />
+            <Row label={i18nT('pages.overview.usageTab.input_tokens')} value={fmtCompact(data.tokens.input)} />
+            <Row label={i18nT('pages.overview.usageTab.output_tokens')} value={fmtCompact(data.tokens.output)} />
+            {data.tokens.cacheCreation > 0 && <Row label={i18nT('pages.overview.usageTab.cache_creation')} value={fmtCompact(data.tokens.cacheCreation)} />}
+            {data.tokens.cacheRead > 0 && <Row label={i18nT('pages.overview.usageTab.cache_read')} value={fmtCompact(data.tokens.cacheRead)} />}
+            <Row label={i18nT('pages.overview.usageTab.total_tokens')} value={fmtCompact(data.tokens.total)} />
             {data.costUsd != null && <Row label={i18nT('pages.overview.usageTab.total_cost')} value={formatCost(data.costUsd)} />}
             {data.totalTurns != null && data.totalTurns > 0 && <Row label={i18nT('pages.overview.usageTab.total_turns')} value={data.totalTurns} />}
-            {data.totalDurationMs != null && data.totalDurationMs > 0 && <Row label={i18nT('pages.overview.usageTab.total_api_time')} value={`${(data.totalDurationMs / 1000).toFixed(1)}s`} />}
+            {data.totalDurationMs != null && data.totalDurationMs > 0 && <Row label={i18nT('pages.overview.usageTab.total_api_time')} value={fmtElapsed(data.totalDurationMs)} />}
           </div>
         </Card>
       )}

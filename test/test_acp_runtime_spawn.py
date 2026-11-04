@@ -28,15 +28,8 @@ from kiro_crew.testing.wait import await_until
 
 def test_runtime_uses_clients_augmented_kiro_bin_resolver():
     """Every spawn path must resolve kiro-cli via the SAME augmented-PATH resolver
-    as AcpClient (honours KIROCREW_KIRO_BIN + augmented_path so a non-login
-    gateway finds a ~/.local/bin install). A bare shutil.which(PATH) duplicate
-    regressed the kiro/_bg path to 'kiro-cli not found in PATH'. Assert
-    single-source.
-
-    Read as SOURCE rather than by identity because each kiro-family harness
-    resolves the binary at call time, which is what lets a test patch the
-    resolver at its definition site instead of at a re-export that may not
-    exist."""
+    as AcpClient, so a non-login gateway finds a ~/.local/bin install; a bare
+    shutil.which(PATH) misses it. Read as source: harnesses resolve at call time."""
     import inspect
 
     import kiro_crew.acp.client as client_mod
@@ -54,24 +47,9 @@ def test_runtime_uses_clients_augmented_kiro_bin_resolver():
 async def test_runtime_missing_kiro_bin_reports_the_directories_it_searched(backend):
     """The runtime spawn path must DIAGNOSE a missing Kiro CLI, not just name it.
 
-    ``AcpClient._spawn`` already separates "this binary is not installed" from
-    "its install directory is outside the search" by naming every directory it
-    walked (see ``test_spawn_kiro_missing_bin_reports_only_resolver_search_dirs``
-    and ``env.describe_search_path``). The runtime sibling raised a bare
-    ``kiro-cli not found in PATH``, which is both less information and factually
-    wrong: resolution also walks ``%LOCALAPPDATA%\\Kiro-Cli``,
-    ``%ProgramFiles%\\Kiro-Cli`` and the ``KIROCREW_KIRO_BIN`` override, none of
-    which is PATH.
-
-    That gap misleads. A "not found in PATH" message invites running
-    ``where kiro-cli``, getting nothing, seeing the gateway's OWN ``kirocrew.exe``
-    in the app bundle, and concluding the agent CLI is renamed and this
-    lookup is stale. It is not: ``kirocrew`` is Kiro Crew's own console
-    script and ``kiro-cli`` is a separate prerequisite the message never said it
-    was looking for anywhere but PATH.
-
-    Both spawn branches are covered because both resolve the same binary and both
-    have to answer the same question.
+    Like ``AcpClient._spawn`` (``env.describe_search_path``), it names every directory
+    walked: resolution also checks ``%LOCALAPPDATA%\\Kiro-Cli``, ``%ProgramFiles%\\Kiro-Cli``
+    and ``KIROCREW_KIRO_BIN``, so "not found in PATH" would be wrong.
     """
     import kiro_crew.acp.client as client_mod
 

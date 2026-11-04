@@ -255,9 +255,9 @@ class CronSDK:
         Raises ``ValueError`` on rejection (SEL-audited).
         """
         if command:
-            from kiro_crew.mcp_cron import _vet_shell_command
+            from kiro_crew.mcp_cron import _command_cron_platform_refusal, _vet_shell_command
 
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 sel().log_api_access(
                     caller="cron_sdk",

@@ -32,12 +32,14 @@ def test_an_ordinary_second_press_escalation_still_discards_the_session_queue(
     task.done.return_value = False
     slot.task = task
     slot._stop_state = "soft_pending"  # a cooperative cancel is already pending
+    slot._queue.append({"id": "q1", "content": "dropped by the kill"})
     state.sessions.is_compacting = MagicMock(return_value=False)
     state.sessions.stop_turn = AsyncMock(return_value="hard")
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
 
     asyncio.run(stop_slot_turn(state, slot))
 
+    assert list(slot._queue) == []
     assert state.sessions.stop_turn.await_args.kwargs["force"] is True
     assert state.sessions.stop_turn.await_args.kwargs["preserve_queue"] is False
 
@@ -307,6 +309,8 @@ async def test_interrupt_declined_by_the_precheck_leaves_the_turn_untouched(monk
     status, data = await _post_interrupt(state)
 
     assert status == 200 and data["outcome"] == "compacting"
+    # Declined before the body read, so no card was selected.
+    assert data["queue_selected"] is False
     state.sessions.stop_turn.assert_not_awaited()
     assert not fut.done(), "a declined interrupt must not reject the turn's approvals"
     assert slot._stop_state == "idle"
@@ -460,12 +464,14 @@ def test_force_true_on_an_idle_stop_state_reaches_the_hard_stop_not_the_decline(
     task = MagicMock()
     task.done.return_value = False
     slot.task = task
+    slot._queue.append({"id": "q1", "content": "dropped by the kill"})
     state.sessions.is_compacting = MagicMock(return_value=True)
     state.sessions.stop_turn = AsyncMock(return_value="hard")
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
 
     asyncio.run(stop_slot_turn(state, slot, force=True))
 
+    assert list(slot._queue) == []
     state.sessions.stop_turn.assert_awaited_once()
     assert state.sessions.stop_turn.await_args.kwargs["force"] is True
     # The escape from a compaction decline keeps the SESSION queue (a linked

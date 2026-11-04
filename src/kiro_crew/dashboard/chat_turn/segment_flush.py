@@ -41,7 +41,11 @@ from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
-from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
+from kiro_crew.security import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    redact,
+    redact_and_truncate,
+)
 from kiro_crew.security.credential_sources import credential_records
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent
@@ -403,6 +407,24 @@ def _give_back_run(
 def _redact_segment(
     slot: _ChatSlot, text: str, *, _ordered_out: list[bool] | None = None
 ) -> tuple[str, list[dict], list[dict]]:
+    """:func:`_redact_segment_unkept`, keeping only the saved records' values.
+
+    Every pass inside mints handles into one pending map; only the handles in
+    the records this returns are kept in ``security.reveal_store``.
+    """
+    pending: dict[str, str] = {}
+    out = _redact_segment_unkept(slot, text, _ordered_out=_ordered_out, _reveal_pending=pending)
+    _commit_reveals(slot, out[2], pending)
+    return out
+
+
+def _redact_segment_unkept(
+    slot: _ChatSlot,
+    text: str,
+    *,
+    _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
+) -> tuple[str, list[dict], list[dict]]:
     """Redact one assistant segment as one text and describe every placeholder.
 
     ``text`` is the segment as it streamed: each delta redacted on its own.
@@ -451,7 +473,9 @@ def _redact_segment(
     _reset_segment_copy(slot)
     shown = _reflow_label_and_audit(slot, text)
     if raw == "":
-        return _redact_segment_text(slot, shown, _ordered_out=_ordered_out)
+        return _redact_segment_text(
+            slot, shown, _ordered_out=_ordered_out, _reveal_pending=_reveal_pending
+        )
     if not text:
         # Streamed deltas with no streamed text left: nothing was shown.
         return "", [], []
@@ -464,7 +488,9 @@ def _redact_segment(
         try:
             whole = reflow_and_label_glued_option_marker(raw)[0]
             order: list[bool] = []
-            saved = _redact_segment_text(slot, whole, _ordered_out=order)
+            saved = _redact_segment_text(
+                slot, whole, _ordered_out=order, _reveal_pending=_reveal_pending
+            )
             if removed:
                 per_delta, _, _ = _redact_segment_text(slot, shown)
                 # Never edit the raw copy to drop such a value: a mask changes
@@ -481,7 +507,11 @@ def _redact_segment(
                     and saved[0]
                     != (
                         strict := _redact_segment_text(
-                            slot, whole, tuple(removed), _ordered_out=strict_order
+                            slot,
+                            whole,
+                            tuple(removed),
+                            _ordered_out=strict_order,
+                            _reveal_pending=_reveal_pending,
                         )
                     )[0]
                 ):
@@ -668,11 +698,15 @@ def _redact_segment_text(
     judged_sri_values: Collection[str] = (),
     *,
     _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
     """Both removers over ``text``, with the records each placeholder needs.
 
     ``_ordered_out`` gets ``[True]``, or ``[False]`` when a record has no
     placeholder of its own, so the records do not pair with them by order.
+    ``_reveal_pending``, when given, gets each removed value under the
+    ``reveal_id`` its record carries; nothing is kept until
+    :func:`_commit_reveals` keeps the ones whose records are saved.
     """
     if _ordered_out is not None:
         _ordered_out[:] = [True]
@@ -698,7 +732,37 @@ def _redact_segment_text(
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)
-    return redacted, blocked_links, credential_records(matches, slot.credential_evidence)
+    return (
+        redacted,
+        blocked_links,
+        credential_records(matches, slot.credential_evidence, reveal_pending=_reveal_pending),
+    )
+
+
+def _commit_reveals(slot: _ChatSlot, records: Iterable[Any], pending: dict[str, str]) -> None:
+    """Keep in gateway memory the removed values of the records being SAVED.
+
+    Only these: a pass whose records are thrown away (the per-delta check, a
+    strict retry that lost, a flush that failed closed) leaves nothing behind
+    in ``security.reveal_store``. A value the store refuses (too large, no
+    slot) leaves its record with ``reveal_id`` None, which reads as not kept.
+    """
+    # Imported here: this module's functions also run from the chat_runner
+    # facade's namespace, which does not carry these names.
+    from kiro_crew.security import reveal_store
+    from kiro_crew.security.credential_sources import REVEAL_KEY
+
+    scope = str(getattr(slot, "key", "") or "")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        handle = record.get(REVEAL_KEY)
+        if not isinstance(handle, str):
+            continue
+        value = pending.get(handle)
+        if value is None or not reveal_store.STORE.stash_as(handle, value, scope=scope):
+            record[REVEAL_KEY] = None
+    pending.clear()
 
 
 def _append_command_reply(slot: _ChatSlot, text: str) -> None:
@@ -718,7 +782,11 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
     turn, not to a command answered without one.
     """
     ordered: list[bool] = []
-    redacted, blocked_links, redactions = _redact_segment_text(slot, text, _ordered_out=ordered)
+    pending: dict[str, str] = {}
+    redacted, blocked_links, redactions = _redact_segment_text(
+        slot, text, _ordered_out=ordered, _reveal_pending=pending
+    )
+    _commit_reveals(slot, redactions, pending)
     meta: dict[str, Any] = {}
     if blocked_links:
         meta["blocked_links"] = blocked_links

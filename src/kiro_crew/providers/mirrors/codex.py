@@ -96,18 +96,6 @@ _D = Disposition
 _ACP_BASELINE_TRANSPORT = "stdio"
 
 
-def _work_ledger_server() -> str:
-    """The work-ledger server's name, read from its own module.
-
-    Deferred rather than spelled: this module derives Crew's server names instead
-    of restating them, and ``mcp_work`` reaches ``mcp_core``, which the mirror
-    registry has no reason to load at import time.
-    """
-    from kiro_crew.mcp_work import SERVER_NAME
-
-    return SERVER_NAME
-
-
 def _stub_registered_servers(args: Any) -> list[str] | None:
     """Every ``--server`` value a broker-stub argv names, or ``None`` if it is not one.
 
@@ -139,17 +127,21 @@ def _stub_registered_servers(args: Any) -> list[str] | None:
     return servers
 
 
-def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: str) -> bool:
-    """Whether *stub* is the gateway's work-ledger broker stub for THIS session.
+def is_session_bound_crew_stub(stub: Mapping[str, Any], session_token: str) -> bool:
+    """Whether *stub* is the gateway's broker stub for one of Crew's servers, for THIS session.
 
-    The work ledger is identity-bound, so codex withholds it like every other
-    managed Crew server that is not the control plane. A broker stub is the one
+    Crew's identity-bound servers are withheld on codex because an element the
+    spec describes cannot carry this session's identity. A broker stub is the one
     form that can still work here: the gateway rewriter authored it from the
-    managed launch, and the session it serves is named by the stub token the
-    broker checks on every call, not by anything the spec chose. This admits
-    exactly that shape and nothing near it:
+    managed launch, the session it serves is named by the stub token the broker
+    checks on every call, and gatewayd hands the server that caller per call. So
+    this admits exactly that shape and nothing near it:
 
-    * the name is the work-ledger server's;
+    * the name is one of Crew's identity-bound servers
+      (:func:`_identity_bound_crew_servers`) that consumes the per-call caller
+      gatewayd injects (``managed_server_is_session_bound`` is False for it). A
+      server that reads identity from its own process could serve only one
+      session from a pooled backend, so it is not admitted;
     * it is a stdio element whose argv runs the broker stub module and registers
       under exactly one ``--server``, that same name;
     * its ``env`` is exactly one pair: :data:`STUB_SESSION_TOKEN_ENV` carrying
@@ -160,9 +152,22 @@ def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: st
     Fails closed: anything unreadable answers ``False``. Grants and restrictions
     are not decided here; the caller still applies them.
     """
+    from kiro_crew.mcp_discovery_managed import managed_server_is_session_bound
+
     if not session_token:
         return False
-    server = _work_ledger_server()
+    server = stub.get("name")
+    if not isinstance(server, str) or server not in _identity_bound_crew_servers():
+        return False
+    if managed_server_is_session_bound(server):
+        return False
+    return _is_stub_for(stub, server, session_token)
+
+
+def _is_stub_for(stub: Mapping[str, Any], server: str, session_token: str) -> bool:
+    """Whether *stub* is exactly the broker-stub shape for *server* bound to *session_token*."""
+    if not session_token:
+        return False
     if stub.get("name") != server:
         return False
     if str(stub.get("type") or _ACP_BASELINE_TRANSPORT) != _ACP_BASELINE_TRANSPORT:
@@ -356,10 +361,10 @@ def codex_elements(
     appearing unusable -- :func:`codex_withheld_servers` drops them upstream of
     this function. The projection additionally reconstructs an explicitly granted
     dashboard entry before attaching identity; its broker stub may carry verified
-    per-call identity instead. The work ledger is admitted only as the gateway's
-    broker stub bound to this session's token
-    (:func:`is_session_bound_work_ledger_stub`); a spec-described work-ledger
-    entry stays withheld and is never handed a credential.
+    per-call identity instead. Every other identity-bound server is admitted only
+    as the gateway's broker stub bound to this session's token
+    (:func:`is_session_bound_crew_stub`); a spec-described entry for one stays
+    withheld and is never handed a credential.
 
     A folded name is still claimed only once, first writer keeping it: two spec
     entries CAN legitimately fold together (``"my server"`` and ``"my_server"``),
@@ -448,6 +453,8 @@ def codex_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        # A crewmate's worker reads its own spec by its session's record.
+        session_key=session_key,
     )
     withheld = codex_withheld_servers(projection.restricted)
     kept: list[dict[str, Any]] = []
@@ -481,10 +488,10 @@ def codex_projection(
             continue
         name = stub.get("name")
         # A dashboard stub is produced by the gateway rewriter, which rebuilds
-        # managed launches and verifies each caller. A work-ledger stub is admitted
-        # only in its exact gateway shape, bound to this session's token. Both
-        # keep the spec restrictions.
-        admissible = name == MEMBER_DISPATCH_SERVER or is_session_bound_work_ledger_stub(
+        # managed launches and verifies each caller. Any other Crew server's stub
+        # is admitted only in its exact gateway shape, bound to this session's
+        # token. All keep the spec restrictions.
+        admissible = name == MEMBER_DISPATCH_SERVER or is_session_bound_crew_stub(
             stub, session_token
         )
         if name in withheld and not (
@@ -556,11 +563,11 @@ class CodexMirror(AgentConfigMirror):
                 "holding it. Every OTHER managed Crew server is withheld rather than "
                 "mounted credential-less, since it would answer not_bound to every "
                 "call, and that set is DERIVED as the managed servers minus the "
-                "control plane -- see _identity_bound_crew_servers. Two gateway "
+                "control plane -- see _identity_bound_crew_servers. Gateway "
                 "broker stubs are the exceptions, since gatewayd verifies their "
-                "caller: a granted dashboard stub, and a work-ledger stub only in "
-                "its exact shape bound to this session's stub token "
-                "(is_session_bound_work_ledger_stub). The array and "
+                "caller and supplies it per call: a granted dashboard stub, and any "
+                "other caller-aware Crew server's stub only in its exact shape bound "
+                "to this session's stub token (is_session_bound_crew_stub). The array and "
                 "the withhold set come from ONE parse of the spec "
                 "(session_mcp_projection), so a narrowing that lands between two "
                 "reads of a user-writable file cannot leave a narrowed server "

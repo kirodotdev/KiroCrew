@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -537,12 +538,28 @@ def _has_user_queued_followup(slot: "_ChatSlot") -> bool:
     The promise-only guards use this to decide "did the USER intervene". Every
     entry that is runner/system orchestration (`_queue_entry_is_orchestration`) is
     excluded; anything left is user speech, which must block or purge a pending
-    recovery so the user's intent wins."""
-    return any(not _queue_entry_is_orchestration(q) for q in getattr(slot, "_queue", []))
+    recovery so the user's intent wins.
+
+    A restored card the user has not sent is excluded too: no drain runs it, so
+    it is not a follow-up that takes over from a retry, continuation or replay.
+    Counting it would switch those off for as long as the card waits. A restored
+    card the user chose to run counts like any other entry."""
+    return any(
+        not _queue_entry_is_orchestration(q)
+        and not (q.get(RESTORED_QUEUE_KEY) and not q.get(RESTORED_SEND_CHOSEN_KEY))
+        for q in getattr(slot, "_queue", [])
+    )
 
 
-def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
+def _drop_stale_admissions(
+    state: DashboardState, slot: _ChatSlot, *, selected_id: str | None = None
+) -> None:
     """Drop queued entries whose admission-time containment has lapsed.
+
+    A restored card the user has not sent is left out: no drain runs it, and
+    the restore path strips its containment snapshot, so judging it here would
+    delete a card the user is meant to send, edit or delete. It is judged when
+    the user sends it: a card marked chosen, or the one ``selected_id`` names.
 
     Authorization is decided when a prompt is ADMITTED (`authorize_target` for
     `session_send`, the authenticated composer for a human typing into a busy
@@ -614,6 +631,12 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         # at requeue (`_queue_recovery`, the manual continue), so a recovery in
         # a channel-born session still drains: its stamp records linked=True.
         if q.get("kind") in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND):
+            continue
+        if (
+            q.get(RESTORED_QUEUE_KEY)
+            and not q.get(RESTORED_SEND_CHOSEN_KEY)
+            and (selected_id is None or q.get("id") != selected_id)
+        ):
             continue
         changed = _sc.newly_held_constraints(
             now,

@@ -1,10 +1,7 @@
 """The reason a hook failed must outlive the AppContext.
 
-``register_app_routes`` records WHY it could not wire an app up
-(``ctx.health.mark_degraded``), but the context it writes to was dropped on the
-gateway startup path — only ``on_app_enable`` ever read it back. An app that was
-installed, trusted and enabled therefore looked exactly like an app that was
-never installed: the dispatcher answers 404 either way.
+``register_app_routes`` records WHY via ``ctx.health.mark_degraded``. Startup must read
+it back, since the dispatcher answers 404 for a broken app and a missing one alike.
 """
 
 from __future__ import annotations
@@ -447,11 +444,8 @@ class TestListAppsSurfacesHookHealth:
 class TestShutdownSweepRunsDespiteDiscoveryFailure:
     """The gateway-shutdown backend sweep survives a failing app-dir walk.
 
-    ``on_gateway_shutdown`` enumerates installed apps (``list_apps`` walks the
-    apps dir) to dispatch on_shutdown hooks. That walk lives INSIDE the try
-    whose ``finally`` stops the spawned backends: a filesystem failure during
-    shutdown must not skip stopping the backends this gateway spawned — the
-    exact orphan class the sweep exists to prevent.
+    The ``list_apps`` walk sits inside the try whose ``finally`` stops spawned backends,
+    so a filesystem failure there must not orphan them.
     """
 
     @pytest.mark.asyncio

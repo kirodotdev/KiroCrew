@@ -122,6 +122,33 @@ visible area (a chat container, a modal). Safe area is **padding, not size**:
 `padding-bottom: env(safe-area-inset-bottom)`, which resolves to 0 without
 `viewport-fit=cover`.
 
+**Inset all four edges, not only top and bottom.** Side insets are real: the notch sits
+on one side in iOS landscape, and a foldable's outer display can move the system
+controls to the side. A `fixed inset-0` container that lays out a dialog or a sheet
+uses `p-safe` (it had no padding) or `p-safe-or-<n>` (it had `p-<n>`: the same gutter,
+widened only where an inset is wider). A dim backdrop with nothing laid out inside it
+bleeds to every edge and needs neither. A fixed surface whose width is the viewport minus
+a gutter (`w-[calc(100%-4rem)]`) subtracts twice the wider side inset as well,
+`w-[calc(100%-max(4rem,var(--safe-area-x)+var(--safe-area-x)))]`, because a centred box
+keeps the same gutter on both sides. Write the doubling as a sum, not `2*`. Every one of these is 0 where the platform reports no inset, so
+nothing moves on a desktop. `src/test/safeArea.guard.test.ts` enforces both rules and
+lists the surfaces that inset their content themselves.
+
+**A fold resizes the viewport live.** A book-style foldable reports widths from about
+380px (the outer display, and each of two side-by-side windows on the inner one) to
+about 950px (the inner display in landscape), so folding or unfolding with the dashboard
+open crosses the `md` breakpoint in both directions. The shell switches its grid in
+place and the route element underneath is never unmounted, which is what keeps the open
+chat and its draft. Do not key a shell or a page on `useIsMobile()`, and do not branch a
+route element's component type on it. `src/test/App.foldResize.test.tsx` walks those
+widths.
+
+**`useIsMobile()` is the one form signal.** During an animated form switch the hook
+reports the form being drawn, which can trail the live media query by a frame or two. A
+component that decides phone versus desktop layout reads the hook, not its own
+`matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
+grids, which may flip a frame early without harm.
+
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
 *inner*, so there is no axis left to reach what the magnification pushed outside the

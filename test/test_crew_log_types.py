@@ -377,7 +377,7 @@ def _isolated_home(tmp_path, monkeypatch):
     assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
 
-# --- what is declared ------------------------------------------------------
+# what is declared
 
 
 def test_every_type_written_today_is_declared_and_nothing_else_is():
@@ -667,7 +667,7 @@ def test_the_sampled_types_are_the_ignorable_ones():
     }
 
 
-# --- the canonical examples validate --------------------------------------
+# the canonical examples validate
 
 
 @pytest.mark.parametrize("entry_type", sorted(CANONICAL))
@@ -846,7 +846,7 @@ def test_a_token_mapping_is_required_whole_but_only_once_it_is_there():
     assert [e["data"] for e in _entries()[1:]] == [payload]
 
 
-# --- what is not declared passes through ---------------------------------
+# what is not declared passes through
 
 
 @pytest.mark.parametrize(
@@ -890,7 +890,7 @@ def test_a_non_mapping_payload_is_left_to_require_data():
     assert (code, field) == (CODE_BAD_DATA, "data")
 
 
-# --- the append path enforces it -----------------------------------------
+# the append path enforces it
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
@@ -971,7 +971,7 @@ def test_an_undeclared_crew_append_is_untouched_by_the_registry():
     assert crew.last_seq == 2
 
 
-# --- the real writers satisfy the registry -------------------------------
+# the real writers satisfy the registry
 
 
 def test_every_entry_a_real_turn_produces_validates():
@@ -1199,7 +1199,7 @@ def test_a_repaired_log_reopens_with_its_closers_on_disk():
         validate_data("session", entry["type"], entry["data"])
 
 
-# --- the reference tables -------------------------------------------------
+# the reference tables
 
 
 def test_the_markdown_dump_covers_every_type_and_field():
@@ -1266,7 +1266,7 @@ def test_the_module_runs_as_a_command():
     assert "# Declared `session` crew log entry types" in result.stdout
 
 
-# --- the declarations are well formed ------------------------------------
+# the declarations are well formed
 
 
 def test_a_declaration_that_names_an_unknown_json_type_is_a_build_error():

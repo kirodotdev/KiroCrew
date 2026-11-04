@@ -40,6 +40,9 @@ _ITEM_TEXT_CHARS = 400
 # minutes (the repo's GitHub polling rule).
 MAX_LIVE_PRS = 5
 LIVE_PR_TTL_SECS = 15 * 60
+# Total time one welcome may spend inside live reads, every attempt included.
+# A read still running at the limit is abandoned and its PRs are "not checked".
+LIVE_READ_TOTAL_SECS = 10.0
 _MAX_LIVE_CACHE = 256
 CHECKS_NOT_READ = "not fully read"
 _RECENT_OWNER_TURNS = 3
@@ -473,14 +476,21 @@ def facts_of(response: object) -> dict[str, Any] | None:
             checks[check.state] += 1
     # A check read that did not finish says nothing about green or red.
     complete = bool(getattr(response, "checks_complete", True))
+    # A closed or merged PR's checks are not reported; an open one whose check
+    # read did not finish says so in words, which survive the None-dropping in
+    # read_live_prs.
+    reported: dict[str, int] | str | None
+    if response.state != "open":
+        reported = None
+    elif complete:
+        reported = checks
+    else:
+        reported = CHECKS_NOT_READ
     return {
         "state": "draft" if response.state == "open" and response.draft else response.state,
         "review": response.review_decision or "",
         "mergeable": response.mergeability or "",
-        # A closed or merged PR's checks are not reported; an open one whose
-        # check read did not finish says so in words, which survive the
-        # None-dropping in read_live_prs.
-        "checks": ((checks if complete else CHECKS_NOT_READ) if response.state == "open" else None),
+        "checks": reported,
     }
 
 
@@ -498,9 +508,12 @@ probe_github: Callable[[list[str]], dict[str, dict[str, Any] | None]] = _probe_g
 _live_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
-async def read_live_prs(refs: Sequence[PrRef], now: float | None = None) -> list[dict[str, Any]]:
+async def read_live_prs(
+    refs: Sequence[PrRef], now: float | None = None, budget: float = LIVE_READ_TOTAL_SECS
+) -> list[dict[str, Any]]:
     """One entry per ref: its live state and read time, or ``checked: false``
-    with the time of the last good read. Never raises."""
+    with the time of the last good read. The GitHub read gets *budget*
+    seconds; past it every PR it was reading is not checked. Never raises."""
     now = time.time() if now is None else now
     stale = [
         ref.url
@@ -509,7 +522,12 @@ async def read_live_prs(refs: Sequence[PrRef], now: float | None = None) -> list
     ]
     if stale:
         try:
-            fresh = await asyncio.to_thread(probe_github, stale)
+            if budget <= 0:
+                raise TimeoutError
+            fresh = await asyncio.wait_for(asyncio.to_thread(probe_github, stale), budget)
+        except TimeoutError:
+            logger.info("warm task brief live PR read hit its %.1fs limit", budget)
+            fresh = {}
         except Exception:
             logger.debug("warm task brief live PR read failed", exc_info=True)
             fresh = {}
@@ -544,3 +562,27 @@ def public_live(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return fit(
         ({k: v for k, v in e.items() if not k.startswith("_")} for e in entries), LIVE_PRS_CHARS
     )
+
+
+def language_of(text: str) -> str:
+    """The fixed-line language for *text*, judged only by its script."""
+    counts = {"zh": 0, "ja": 0, "ko": 0, "ru": 0, "hi": 0, "bn": 0}
+    for char in text:
+        point = ord(char)
+        if 0x3040 <= point <= 0x30FF:
+            counts["ja"] += 1
+        elif 0x4E00 <= point <= 0x9FFF or 0x3400 <= point <= 0x4DBF:
+            counts["zh"] += 1
+        elif 0xAC00 <= point <= 0xD7AF or 0x1100 <= point <= 0x11FF:
+            counts["ko"] += 1
+        elif 0x0400 <= point <= 0x04FF:
+            counts["ru"] += 1
+        elif 0x0900 <= point <= 0x097F:
+            counts["hi"] += 1
+        elif 0x0980 <= point <= 0x09FF:
+            counts["bn"] += 1
+    # Kana marks Japanese even beside more Han characters.
+    if counts["ja"]:
+        return "ja"
+    best = max(counts, key=lambda lang: counts[lang])
+    return best if counts[best] else "en"

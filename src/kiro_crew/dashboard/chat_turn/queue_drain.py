@@ -9,9 +9,14 @@ import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_delivery import (
+    BACKGROUND_START_TASKS,
+    START_BACKGROUND_META_KEY,
+)
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
+    banner_meta,
     queue_entry_is_user_origin,
     queued_text_for_display,
     quote_meta,
@@ -36,7 +41,11 @@ from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
     REFUSAL_WAKE_LOOP_ID_META_KEY,
 )
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, source_channels_of
+from kiro_crew.dashboard.slot_queue_repository import (
+    RESTORED_QUEUE_KEY,
+    RESTORED_SEND_CHOSEN_KEY,
+    source_channels_of,
+)
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
@@ -557,7 +566,7 @@ async def _start_next_queued_turn(
     # qualifying.
     # Everything below — the note flush peeking at queue[0], the user-intervention
     # purge, the dequeue itself — must see only entries that may still deliver.
-    _drop_stale_admissions(state, slot)
+    _drop_stale_admissions(state, slot, selected_id=required_queue_id)
     # The sweep may have dropped that recovery, leaving a new turn at the head.
     if (
         predecessor_actor
@@ -696,16 +705,25 @@ async def _start_next_queued_turn(
     )
     restored_ids = _RESTORED_DRAIN_IDS.get().get(slot.key)
     if restored_ids is not None and not required_queue_id and not hold_users:
-        required_queue_id = next(
-            (
-                item["id"]
-                for item in slot._queue
-                if not item.get(RESTORED_QUEUE_KEY) or item["id"] in restored_ids
-            ),
-            None,
-        )
-        if required_queue_id is None:
-            return False
+        # The opening sweep left every unsent restored card unjudged, and the
+        # restore path stripped its containment snapshot. Judge the card picked
+        # here against this slot's current constraints before it runs: a card
+        # the sweep drops is gone, and the next eligible entry is picked.
+        while True:
+            required_queue_id = next(
+                (
+                    item["id"]
+                    for item in slot._queue
+                    if not item.get(RESTORED_QUEUE_KEY) or item["id"] in restored_ids
+                ),
+                None,
+            )
+            if required_queue_id is None:
+                return False
+            _drop_stale_admissions(state, slot, selected_id=required_queue_id)
+            _forget_swept_replays(slot)
+            if any(item.get("id") == required_queue_id for item in slot._queue):
+                break
 
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
@@ -722,6 +740,42 @@ async def _start_next_queued_turn(
         next_msg, consumed = _dequeue_next_system_message(slot, system_only=teardown_held)
     elif auto_priority and (run := responsive_chat.dequeue_waiting_run(slot)) is not None:
         next_msg, consumed = run
+    elif not required_queue_id and any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue):
+        # Restored entries are handed back as cards the user sends, edits or
+        # deletes: their turn may have run un-persisted, so no drain resends
+        # them on its own (a turn's end, a Resume's recovery). Only a card the
+        # user sent runs one: named here (``required_queue_id``), or marked
+        # chosen by a "run this next" that stopped a running turn. Entries
+        # queued in this process still drain, in order, past the waiting cards.
+        # The opening sweep ran before this function's awaits, and a card can be
+        # marked chosen during them (a "run this next" click). Judge the entry
+        # picked here against the slot's current constraints, with no await
+        # between that check and the pop; an entry the check drops is gone and
+        # the next one is picked.
+        while True:
+            live = next(
+                (
+                    i
+                    for i, item in enumerate(slot._queue)
+                    if not item.get(RESTORED_QUEUE_KEY) or item.get(RESTORED_SEND_CHOSEN_KEY)
+                ),
+                None,
+            )
+            if live is None:
+                break
+            picked_id = slot._queue[live].get("id")
+            _drop_stale_admissions(state, slot, selected_id=picked_id)
+            _forget_swept_replays(slot)
+            live = next(
+                (i for i, item in enumerate(slot._queue) if item.get("id") == picked_id), None
+            )
+            if live is not None:
+                break
+        if live is None:
+            next_msg, consumed = None, []
+        else:
+            popped = slot.queue_pop(live)
+            next_msg, consumed = popped["content"], [popped]
     else:
         # ``required_queue_id`` is an explicit request to run exactly one card.
         # Promotion selects it; merging here would consume unrelated queued user
@@ -916,6 +970,7 @@ async def _start_next_queued_turn(
         _pop_meta = {
             **attachment_meta(item.get("meta")),
             **quote_meta(item.get("meta"), user_origin=queue_entry_is_user_origin(item)),
+            **banner_meta(item.get("meta")),
         }
         from kiro_crew.dashboard.chat_delivery import normalize_send_id
 
@@ -1031,8 +1086,15 @@ async def _start_next_queued_turn(
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
-    # last writer would be quoted another sender's words.
-    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY, "author"):
+    # last writer would be quoted another sender's words. A code channel's
+    # Slack sender (``slack_sender``) names the person whose words the row
+    # holds, so it follows the same rule.
+    for _address_key in (
+        CHANNEL_RECIPIENT_META_KEY,
+        SEND_ORIGIN_META_KEY,
+        "author",
+        "slack_sender",
+    ):
         _addresses = [
             (
                 (item.get("meta") or {}).get(_address_key)
@@ -1061,6 +1123,8 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
+    # Start plumbing too, read per entry below; it says nothing about the row.
+    _drained_meta.pop(START_BACKGROUND_META_KEY, None)
     if "quote" in _drained_meta:
         # The row's quote record follows the row's text: as typed only when
         # every consumed entry is the human's own (`deliver_as_typed`), else
@@ -1228,6 +1292,12 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
+    # A BACKGROUND start only when EVERY consumed entry asked for one: a person's
+    # typed message drained in the same batch keeps its FOREGROUND start.
+    if consumed and all(
+        (item.get("meta") or {}).get(START_BACKGROUND_META_KEY) is True for item in consumed
+    ):
+        _run_kwargs["_turn_start_background"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -1296,6 +1366,8 @@ async def _start_next_queued_turn(
             _run_chat(state, slot, next_msg, **_run_kwargs),
         )
     slot.task = task
+    if _run_kwargs.get("_turn_start_background"):
+        BACKGROUND_START_TASKS.add(task)
     # A recovery replay of a Regenerate's message takes over its target now
     # that ``slot.task`` gave it the slot's generation.
     adopt_regenerate_target(slot, consumed, task)

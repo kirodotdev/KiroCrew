@@ -53,6 +53,7 @@ from kiro_crew.dashboard.transcript_snapshot import (
 from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.redaction_allow import allowed_hosts_for
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -137,12 +138,17 @@ def _fork_execution_context(
 
 
 def _bind_fork_execution(source, child_key: str, execution) -> None:
-    from kiro_crew.execution_context import bind_session_execution
+    from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
-    bind_session_execution(child_key, execution)
+    # The child's identity is copied from the source's own record, which the
+    # source can write, so the fork never vouches on that record's word. It
+    # carries own-store authority only when the gateway already vouches the source
+    # for the same member and store; otherwise a fork of a member conversation
+    # could never open a worker on its own memory.
+    bind_session_execution(child_key, execution, vouch=source_vouch_agrees(source[0], execution))
 
 
 def _forget_fork_child_binding(child_key: str) -> None:
@@ -1283,7 +1289,18 @@ async def fork_slot(
             # channel turn keeps the origin it actually had.
             carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
-        await save_slot_off_loop(state, new_slot)
+        # Every row is a copy of a parent row, so the parent's stored display
+        # verdicts already judge them. Without this the birth save rescans the
+        # whole copied window whenever the process cache has gone cold (a
+        # restart, or other sessions' renders): 1,624 scans and 2.7 s of a
+        # 2.9 s fork for a 25 MB parent. Stored tags carry the workspace's
+        # allowed link hosts and the save judges with none, so with any host
+        # allowed no tag would match; the scope is skipped rather than seeding
+        # the parent's sidecar with tags no render reads.
+        reuse = not await asyncio.to_thread(allowed_hosts_for, slot.workspace)
+        await save_slot_off_loop(
+            state, new_slot, verdict_source=slot_history_key(slot) if reuse else None
+        )
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:
         # The child's row was announced when the mint block exited. A partial

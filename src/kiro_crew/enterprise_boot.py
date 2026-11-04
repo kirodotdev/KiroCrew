@@ -110,6 +110,174 @@ def refuse_policy_boot(exc: BaseException) -> None:
     )
 
 
+#: The fix when the KAS relay's kiro-cli is too old to serve the KAS engine.
+KAS_FIX_UPDATE_KIRO_CLI = (
+    "Run `kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, " f"{_RESTART}."
+)
+
+#: The same, when Kiro Crew's own engine could run here instead (the bundle route).
+KAS_FIX_UPDATE_KIRO_CLI_OR_BUNDLE = (
+    "Run `kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, or set "
+    f"`agent.kas_bundle` to true so KAS runs on Kiro Crew's own engine, {_RESTART}."
+)
+
+#: The fix when the bundle route was chosen automatically (kiro-cli missing or signed
+#: out) and its engine cannot run on this machine.
+KAS_FIX_ENGINE_UNAVAILABLE = (
+    "Install kiro-cli and sign in to it (`kiro-cli login`) so KAS runs through its "
+    f"relay, {_RESTART}."
+)
+
+#: The same, when ``agent.kas_bundle`` is on: that setting keeps the bundle route
+#: whatever kiro-cli can do, so it must be turned off for the relay to be used.
+KAS_FIX_ENGINE_UNAVAILABLE_CONFIGURED = (
+    "Set `agent.kas_bundle` to false, and install kiro-cli and sign in to it "
+    f"(`kiro-cli login`) so KAS runs through its relay, {_RESTART}."
+)
+
+#: The fix when the check itself failed, so the cause is not known.
+KAS_FIX_UNKNOWN = f"Run `kirocrew doctor` to see why KAS cannot start, {_RESTART}."
+
+
+def _bundle_can_run() -> bool:
+    """Whether Kiro Crew's own engine is installed, or installable on this machine."""
+    from kiro_crew.agent_sdk import backend_install, kas_bundle
+
+    return kas_bundle.installed_bundle() is not None or backend_install._engine_installable_here()
+
+
+def kas_unrunnable(*, kas_route: object = None) -> tuple[str, str] | None:
+    """``(failed, fix)`` when KAS is PROVEN unable to start on this host, else ``None``.
+
+    KAS has two routes (``acp/kas_route.py``): Crew's own engine bundle, or
+    kiro-cli's ACP relay. This checks the route the next KAS spawn takes, by the same
+    rule the spawn applies. On the bundle route KAS can start when the pinned engine
+    is installed or this host can run the engine the gateway would install. On the
+    relay it can start unless kiro-cli's ``acp --help`` RAN and does not offer the
+    engine. An unknown verdict (a failed spawn) is not proof and answers ``None``:
+    that spawn's own error then names the cause. The fix names the other route when
+    that one could help. Blocking: reads config and the sign-in stores, and spawns
+    one bounded ``acp --help``. *kas_route* is a test seam.
+    """
+    from kiro_crew.agent_sdk import kas_bundle, kas_engine_verdict
+
+    route = kas_bundle.kas_route() if kas_route is None else kas_route
+    if getattr(route, "bundle", False):
+        if _bundle_can_run():
+            return None
+        # Not chosen automatically means ``agent.kas_bundle`` keeps this route.
+        configured = not getattr(route, "automatic", False)
+        return (
+            "KAS cannot start: its engine is not installed and this machine cannot run it",
+            KAS_FIX_ENGINE_UNAVAILABLE_CONFIGURED if configured else KAS_FIX_ENGINE_UNAVAILABLE,
+        )
+    offers_kas, reason = kas_engine_verdict()
+    if offers_kas is False and reason:
+        fix = KAS_FIX_UPDATE_KIRO_CLI_OR_BUNDLE if _bundle_can_run() else KAS_FIX_UPDATE_KIRO_CLI
+        return f"KAS cannot start: {reason}", fix
+    return None
+
+
+def _main_runs_kas(cfg: object) -> bool:
+    """Whether this install's MAIN sessions run on KAS, through the one selection gate.
+
+    Only the main backend decides the gateway start. Absent, it defaults to KAS, the
+    enterprise default this check exists for. A policy-allowed Kiro CLI pick keeps the
+    start (the decision entry "A Kiro CLI harness choice runs on Kiro Crew's KAS path")
+    whatever the member backend says: a session that does run KAS is refused at its own start
+    (:func:`refuse_unstartable_kas`). Resolved through ``resolve_selected_backend``,
+    because a value the policy denied degrades to the floor (KAS).
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, resolve_selected_backend
+
+    agent = getattr(cfg, "agent", None)
+    return resolve_selected_backend(getattr(agent, "acp_backend", None)) == ACP_BACKEND_KAS
+
+
+#: Why KAS cannot start on this host, recorded at boot when the main sessions do not
+#: run KAS, so the start goes on. Any later session whose backend is KAS (a crewmate
+#: DM or worker, a ``spawn_run(backend=...)`` override, a main backend switched to KAS)
+#: is refused at its own start with this ``(failed, fix)`` by
+#: :func:`refuse_unstartable_kas`, instead of spawning a KAS that cannot run. ``None``
+#: when KAS was not proven unable to start, or nothing was checked.
+_kas_refusal: tuple[str, str] | None = None
+
+
+def kas_refusal() -> tuple[str, str] | None:
+    """The ``(failed, fix)`` recorded for sessions on KAS, or ``None``."""
+    return _kas_refusal
+
+
+def require_kas_harness(cfg: object, *, test_mode: bool = False) -> None:
+    """In an enterprise build, exit when the main sessions run KAS and it cannot start.
+
+    RFC ``rfc-crew-enterprise-edition.md`` D6: KAS is the enterprise harness and the
+    ``agent_backend`` floor, and a KAS proven unable to start on its route refuses the
+    start instead of falling back to the Kiro CLI harness. The start is refused only
+    when the MAIN backend runs KAS (:func:`_main_runs_kas`); a check that raises then
+    refuses too, like :func:`require_kiro_login`.
+
+    Otherwise the start goes on and the verdict is recorded in :func:`kas_refusal`,
+    which refuses each later session on KAS at its own start. A check that raises
+    there records nothing: an unknown is not proof.
+
+    The record is cleared first, so each boot judges this host afresh. Skipped in
+    ``--test-mode`` (*test_mode*), as the gateway's KAS floor probe is: an offline test
+    boot never probes the developer's kiro-cli. Does nothing in an ``oss`` build.
+    Blocking: one bounded ``acp --help`` probe (``_KAS_HELP_PROBE_TIMEOUT_SECS``) on
+    the relay route.
+    """
+    global _kas_refusal
+    _kas_refusal = None
+    if not edition.is_enterprise() or test_mode:
+        return
+    try:
+        main_kas = _main_runs_kas(cfg)
+    except Exception as exc:
+        logger.warning("Enterprise boot KAS role check raised", exc_info=True)
+        refuse_boot(f"KAS could not be checked ({type(exc).__name__})", KAS_FIX_UNKNOWN)
+    try:
+        refusal = kas_unrunnable()
+    except Exception as exc:
+        logger.warning("Enterprise boot KAS check raised", exc_info=True)
+        if main_kas:
+            refuse_boot(f"KAS could not be checked ({type(exc).__name__})", KAS_FIX_UNKNOWN)
+        return
+    if main_kas:
+        if refusal is not None:
+            refuse_boot(*refusal)
+        return
+    _kas_refusal = refusal
+    if refusal is not None:
+        logger.warning(
+            "%s. Kiro Crew starts, because its main sessions do not run on KAS; "
+            "sessions that run on KAS are refused until this is fixed. %s",
+            refusal[0],
+            refusal[1],
+        )
+
+
+def refuse_unstartable_kas() -> None:
+    """Raise :class:`~kiro_crew.crewmate_harness.KasUnavailable` when boot recorded that
+    KAS cannot start on this host (:func:`kas_refusal`).
+
+    The provider factory calls it for a session whose selected backend is KAS, after
+    the selection gate and before any process exists, so the gate keeps its
+    never-raises contract (H3) and the Kiro CLI path gains nothing (H13). Same refusal
+    code as an unstartable crewmate pin (H17), so every caller that handles that
+    refusal handles this one. Nothing falls back to the Kiro CLI harness. In-memory
+    only; does nothing in an ``oss`` build or when nothing was recorded.
+    """
+    if not edition.is_enterprise():
+        return
+    refusal = _kas_refusal
+    if refusal is None:
+        return
+    from kiro_crew.crewmate_harness import KasUnavailable
+
+    raise KasUnavailable(*refusal)
+
+
 async def require_kiro_login(*, assume_ready: bool = False) -> KiroPrerequisiteService | None:
     """In an enterprise build, exit unless the one enterprise sign-in resolves now.
 

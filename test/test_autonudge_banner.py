@@ -222,13 +222,9 @@ class TestDefaultRowIsUnchanged:
 class TestBannerDivergesTheRowFromThePrompt:
     @pytest.mark.asyncio
     async def test_row_shows_the_banner_and_the_prompt_keeps_the_message(self) -> None:
-        """TEST 2 — the one that actually proves the feature.
+        """The row shows the banner while the prompt keeps the full message.
 
-        Four assertions, because three of them can pass while the change is
-        still wrong: the row could carry the banner AND the message (no saving),
-        or the prompt could have been shortened alongside the row (instruction
-        silently deleted). The prompt assertions are the ones that catch the
-        defect this change must not introduce.
+        The prompt assertions catch a banner that shortened the model's copy too.
         """
         loop = _loop(banner="babysit cycle — see the loop file")
         row, prompt = await _fire(loop)
@@ -283,23 +279,9 @@ class TestBannerDivergesTheRowFromThePrompt:
 class TestNonStringBannerCannotWedgeTheLoop:
     """A truthy NON-STRING ``banner`` must not crash a dashboard fire.
 
-    ``banner: str`` is a plain dataclass annotation, unenforced at runtime, and
-    ``_load`` constructs a loop straight from parsed JSON with no coercion. So a
-    store carrying ``"banner": 5`` yields ``loop.banner == 5``; the fire path then
-    called ``(5 or "").strip()`` -> ``5.strip()`` -> ``AttributeError``. The fire
-    raises, nothing is delivered, and ``_run_fire_cycle`` re-arms an undelivered
-    cycle with backoff — so the loop rearms forever and never delivers again.
-
-    THREE arms, because no one of them alone has coverage:
-
-    1. bad input fires AND lands on the ``tagged`` fallback — asserting only that
-       it does not raise would pass under a fix that treats EVERY banner as
-       absent, silently deleting the feature this PR exists to add;
-    2. a valid string banner still renders through ``render_nudge_message`` — the
-       arm that catches exactly that over-broad fix;
-    3. whitespace-only still falls through to ``tagged`` — the behaviour the
-       comment block at the call site defends, and the likeliest casualty of a
-       type-guard rewrite.
+    ``_load`` builds a loop from raw JSON, so ``"banner": 5`` reaches the fire path; a
+    crash there re-arms the undelivered cycle forever. The good-input arm catches a fix
+    that treats every banner as absent.
     """
 
     @pytest.mark.parametrize("bad", [5, 1.5, ["x"], {"a": 1}, object()])
@@ -353,14 +335,10 @@ class TestNonStringBannerCannotWedgeTheLoop:
 
 
 class TestLoadNormalizesANonStringBanner:
-    """The boundary repair, matching ``repair_sentinel_path``'s existing shape.
+    """``_load`` repairs a non-string banner and persists the repair.
 
-    The call-site guard alone stops the crash, but leaves the bad value in the
-    store: every boot reloads ``"banner": 5`` and silently suppresses the banner
-    with no signal. ``_load`` already repairs the fields whose corrupt value has a
-    demonstrated runtime consequence — ``stop_sentinel_path`` via an isinstance
-    check, ``idle_secs`` / ``next_due_ts`` via ``_repair_number`` — so this follows
-    that selective convention rather than making ``_load`` validate every field.
+    Without it every boot reloads ``"banner": 5`` and suppresses the banner silently.
+    Same shape as ``repair_sentinel_path``.
     """
 
     def _write_store(self, tmp_path, banner) -> None:
@@ -423,22 +401,9 @@ class TestLoadNormalizesANonStringBanner:
     async def test_a_non_string_banner_is_never_logged_by_value(self, tmp_path, caplog) -> None:
         """The warning must name the TYPE, never interpolate the value.
 
-        "Non-string" does not mean "value-free": a hand-edited store can hold a
-        one-element list whose member is a credential, and this warning reaches
-        the log ring and the ``/api/logs`` SSE stream. The log-record redaction
-        filter cannot save it either — it is seeded with *literal known* secret
-        values, so an arbitrary token in a store file is invisible to it.
-
-        Asserts on ``record.args`` as well as the formatted text because ``%r``
-        formats LAZILY: the raw object sits in ``args`` until a handler renders
-        it, so a handler that serialises ``args`` structurally sees it without
-        ever producing the interpolated string. Measured caveat, so the next
-        reader does not overrate it: this assertion is NOT independently
-        falsifiable through caplog. Both an args-only mutation (a stale trailing
-        arg the format string does not consume) and a restored ``%r`` fail the
-        TEXT assertion first, because logging's own formatting-error path dumps
-        the entire record — args included — into the emitted text. It is kept as
-        a cheap guard for the non-caplog handler shape, not as proven coverage.
+        A list banner can hold a credential, the warning reaches ``/api/logs``, and the
+        redaction filter knows only literal secrets. The ``record.args`` check guards
+        handlers that serialise args; through caplog the text check fails first.
         """
         secret = "AKIAIOSFODNN7EXAMPLE"
         self._write_store(tmp_path, [secret])
@@ -479,21 +444,9 @@ class TestLoadNormalizesANonStringBanner:
 class TestLoadEnforcesTheBannerCap:
     """The 500-char cap must hold on the LOAD path, not only on the write path.
 
-    Both authorized write paths reject an over-cap banner with a 400
-    (``autonudge_authz``), so nothing that arrived through the API can exceed it.
-    The store is not one of those paths — ``autonudge.json`` is a file an agent
-    can write directly — and ``_load`` is the only other way a banner reaches
-    memory, so an unbounded value gets in with no bound applied anywhere.
-
-    That matters because the banner is then scanned synchronously: ``_load``
-    itself runs both redactors over it, and the fire path runs
-    ``render_nudge_message`` plus the same two passes on every cycle. Those scans
-    are linear in the banner's length, and nothing else bounds it.
-
-    Treated as ABSENT rather than truncated, matching this loader's existing
-    convention for an invalid persisted value: the sibling non-string arm sets
-    ``""`` and marks the store dirty, and ``repair_sentinel_path`` does the same.
-    Truncating would invent a banner the operator never wrote.
+    An agent can write ``autonudge.json`` directly, and every cycle scans the banner
+    synchronously. An over-cap banner is treated as ABSENT: truncating would invent a
+    banner the operator never wrote.
     """
 
     def _write_store(self, tmp_path, banner) -> None:
@@ -517,13 +470,7 @@ class TestLoadEnforcesTheBannerCap:
 
     @pytest.mark.asyncio
     async def test_an_oversized_persisted_banner_is_blanked_at_load(self, tmp_path) -> None:
-        """A persisted banner over the cap is treated as ABSENT at load — a value
-        the authorized write path would have rejected is not invented back by
-        truncation, and the row falls back to the full message.
-
-        Fails on the unmodified tree, where the oversized banner survives the
-        load intact because no length bound exists on this path at all.
-        """
+        """A persisted banner over the cap is blanked at load, not truncated."""
         oversized = "b" * (MAX_BANNER_CHARS + 50)
         self._write_store(tmp_path, oversized)
         svc = AutoNudgeService(base_dir=tmp_path)
@@ -538,10 +485,10 @@ class TestLoadEnforcesTheBannerCap:
 
     @pytest.mark.asyncio
     async def test_a_valid_persisted_credential_banner_is_scrubbed_at_load(self, tmp_path) -> None:
-        """A banner reaching the store past the authorized write paths (hand-edited
-        file, direct agent ``svc.add``, or persisted before this scrub existed) is
-        credential-scrubbed at load and re-persisted, so ``GET /api/autonudge``
-        (``asdict``), the WS broadcast, and the fire path can never serve it raw."""
+        """A banner that bypassed the write paths is credential-scrubbed at load.
+
+        It is re-persisted, so ``GET /api/autonudge``, the WS broadcast and the fire
+        path never serve it raw."""
         self._write_store(tmp_path, "deploy with AKIAIOSFODNN7EXAMPLE now")
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
@@ -578,11 +525,10 @@ class TestLoadEnforcesTheBannerCap:
     async def test_an_over_cap_banner_that_redaction_shrinks_is_still_blanked(
         self, tmp_path
     ) -> None:
-        """GPT finding: blanking must key on the ORIGINAL length too. An exfil URL
-        that redaction replaces with a shorter placeholder can drop a >cap banner
-        below the cap; keying only on the scrubbed length would KEEP a value the
-        write path would have rejected. The over-cap original is blanked
-        regardless of how far masking shrinks it."""
+        """Blanking keys on the ORIGINAL length, not the scrubbed one.
+
+        Redaction can shrink an over-cap exfil URL below the cap, and the write path
+        would have rejected the original."""
         oversized_url = "https://evil.example.com/steal?d=" + "Z" * (MAX_BANNER_CHARS + 100)
         assert len(oversized_url) > MAX_BANNER_CHARS, "fixture must exceed the cap"
         self._write_store(tmp_path, oversized_url)
@@ -599,13 +545,7 @@ class TestLoadEnforcesTheBannerCap:
 
     @pytest.mark.asyncio
     async def test_a_banner_at_the_cap_loads_intact(self, tmp_path) -> None:
-        """Negative control: the bound must be inclusive at exactly the cap.
-
-        Without this, a fix that blanked every banner — or used ``>=`` — would
-        pass the arm above while destroying the feature. The byte comparison also
-        proves ``_store_dirty`` stayed False, so a valid store is not rewritten
-        on every boot.
-        """
+        """The bound is inclusive at exactly the cap, and a valid store is not rewritten."""
         at_cap = "b" * MAX_BANNER_CHARS
         self._write_store(tmp_path, at_cap)
         before = (tmp_path / "autonudge.json").read_bytes()
@@ -623,11 +563,8 @@ class TestLoadEnforcesTheBannerCap:
 class TestLoadScrubsThePersistedMessage:
     """``_load`` credential-scrubs the sibling ``message`` field, not just ``banner``.
 
-    The load-scrub's rationale — the store is writable out-of-band (hand-edited
-    ``autonudge.json``, direct ``svc.add``) and served RAW by ``GET /api/autonudge``
-    — applies identically to ``message``, which the authorized write paths already
-    scrub. Unlike the banner this is redaction ONLY: ``message`` is the payload the
-    model receives and has no fallback row, so it is never blanked on length.
+    Redaction only: ``message`` is the model's payload with no fallback row, so it is
+    never blanked on length.
     """
 
     def _write_store(self, tmp_path, message) -> None:
@@ -679,13 +616,9 @@ class TestLoadScrubsThePersistedMessage:
 
 
 class TestPersistenceRoundTrip:
-    """``_load`` filters unknown keys, which is what makes this additive.
+    """``_load`` filters unknown keys, so ``banner`` loads both ways round.
 
-    Both directions are pinned because only one of them is obvious. Old store /
-    new code is the upgrade everyone will hit. New store / OLD code is the
-    DOWNGRADE — a user reverting the release — and it is the direction that
-    would justify bumping ``_STORE_VERSION`` if it raised. It does not, so the
-    version stays at 1 rather than signalling a break that is not happening.
+    The downgrade (new store, old code) does not raise, so ``_STORE_VERSION`` stays 1.
     """
 
     def _write_store(self, tmp_path, loops: list[dict]) -> None:
@@ -923,14 +856,10 @@ class TestRestSurface:
 
     @pytest.mark.asyncio
     async def test_an_at_cap_banner_is_accepted_on_update(self, monkeypatch) -> None:
-        """Negative control on the UPDATE boundary specifically.
+        """An at-cap banner is accepted on PATCH as well as POST.
 
-        ``test_at_cap_banner_is_accepted`` pins this for POST, which enters
-        ``authorize_and_add_nudge``; PATCH enters ``authorize_and_update_nudge``,
-        a SEPARATE validator with its own cap checks. Without a PATCH-side
-        boundary control, a ``>=`` in the update path's post-redaction check would
-        reject every legitimate at-cap banner on update while every POST test
-        stayed green -- a gap a break-arm found rather than a review.
+        PATCH goes through ``authorize_and_update_nudge``, a separate validator with
+        its own cap checks.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -947,12 +876,8 @@ class TestRestSurface:
     ) -> None:
         """The cap must bind the value STORED, not the one received.
 
-        ``[REDACTED: credential]`` is 22 characters and replaces a 20-character
-        AWS access key ID, so an at-cap banner carrying one measures 502 once
-        scrubbed. Checking the cap only before redaction accepts it with a 200 and
-        persists a value that breaches the bound — which the loader then blanks on
-        a later boot, losing the operator's banner with no error ever surfaced.
-        A 400 at the door is the visible answer.
+        ``[REDACTED: credential]`` (22 chars) replaces a 20-char key, so this at-cap
+        banner measures 502 once scrubbed; the loader would later blank it silently.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -995,14 +920,9 @@ class TestRestSurface:
 
     @pytest.mark.asyncio
     async def test_an_at_cap_banner_redaction_shrinks_is_still_accepted(self, monkeypatch) -> None:
-        """Negative control: redaction that does NOT grow the value stays accepted.
+        """Redaction that does NOT grow the value stays accepted.
 
-        The exfiltration placeholder replaces the whole matched URL and here
-        measures 39 characters SHORTER, so this at-cap banner ends well inside the
-        bound. Without this, a fix that rejected any banner whose redaction
-        changed it — or that simply lowered the cap — would pass the two arms
-        above while refusing legitimate input. Complements
-        ``test_at_cap_banner_is_accepted``, which pins the clean at-cap case.
+        The exfiltration placeholder is 39 characters shorter than the URL it replaces.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1023,36 +943,24 @@ class TestRestSurface:
 
 
 class TestMonitorToolsCanSetTheBanner:
-    """F2: the arming surface that produced the measured harm must be able to set it.
+    """The MCP ``monitor_start`` / ``monitor_update`` tools can set the banner.
 
-    design-review and first-principles-review converge: counted setters = 0, so
-    the field ships dead and the 51.8%-of-session bloat continues for every loop
-    armed the normal way. The lane states the remedy as a disjunction -- wire ONE
-    existing arming surface -- and names two: the MCP ``monitor_start`` schema and
-    the dashboard popover. The MCP tools are the smaller change AND are what armed
-    the babysit loop the PR's own measurement came from, so wiring them is what
-    makes the shipped remedy reachable by the measured offender.
-
-    Routed through the SAME authorised seam the REST endpoints use
-    (``authorize_and_add_nudge`` / ``authorize_and_update_nudge``), so the cap and
-    the two redaction passes are the existing ones -- no second validation path.
+    They route through the same authorised seam as REST (``authorize_and_add_nudge`` /
+    ``authorize_and_update_nudge``), so the cap and redaction passes are shared.
     """
 
     SECRET = "AKIAIOSFODNN7EXAMPLE"
 
     @pytest.fixture()
     def default_install(self, monkeypatch):
-        """A bound dashboard session, so the monitor tools emit a directive
-        rather than refusing. Mirrors the fixture in
-        ``test_autonudge_stop_auth.py``, which is where these tools' contract
-        tests live: ``monitor_update`` now requires a strict session binding, so
-        an empty key is refused before the banner patch is built."""
+        """A bound dashboard session, so the monitor tools emit a directive.
+
+        ``monitor_update`` requires a strict session binding and refuses an empty key."""
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1-1")
         return monkeypatch
 
     def test_monitor_start_carries_a_banner_into_the_directive(self, default_install) -> None:
-        """Fails on the unmodified tree: ``banner`` is not a declared field, so
-        ``validate_tool_args`` rejects the call outright."""
+        """``banner`` is a declared field, so ``validate_tool_args`` accepts it."""
         result = _call_tool_inner(
             "monitor_start", {"message": "watch CI until green", "banner": "watching CI"}
         )
@@ -1079,12 +987,10 @@ class TestMonitorToolsCanSetTheBanner:
         assert args["patch"]["banner"] == ""
 
     def test_a_banner_over_the_cap_is_rejected_at_the_tool(self, default_install) -> None:
-        """The schema bound is the entry filter; the authz seam still owns the
-        post-redaction cap.
+        """The schema bound is the entry filter; the authz seam owns the post-redaction cap.
 
-        The message is asserted, not just the exception type: before the field is
-        declared this raises ``ValidationError`` too -- for "unknown field" -- so a
-        bare ``pytest.raises`` would pass vacuously and prove nothing.
+        The message is checked because an undeclared field also raises
+        ``ValidationError`` ("unknown field").
         """
         with pytest.raises(ValidationError) as excinfo:
             _call_tool_inner(
@@ -1105,12 +1011,9 @@ class TestMonitorToolsCanSetTheBanner:
         assert len(args["banner"]) == MAX_BANNER_CHARS
 
     def test_omitting_the_banner_leaves_the_payload_shape_untouched(self, default_install) -> None:
-        """Negative control, and the reason the field is added CONDITIONALLY.
+        """With no banner the monitor_start payload carries no ``banner`` key.
 
-        ``test_autonudge_stop_auth.py`` pins the monitor_start payload with EXACT
-        dict equality, so emitting ``banner`` unconditionally would break a
-        contract test belonging to another file. This assertion follows the
-        finite-runtime default while keeping the banner absent.
+        ``test_autonudge_stop_auth.py`` pins this payload with exact dict equality.
         """
         result = _call_tool_inner("monitor_start", {"message": "watch CI", "max_cycles": 5})
         args = session_directive.decode(result, "monitor_start")
@@ -1124,12 +1027,10 @@ class TestMonitorToolsCanSetTheBanner:
 
     @pytest.mark.asyncio
     async def test_the_applier_hands_the_banner_to_the_authorised_seam(self) -> None:
-        """The end of the wire: the consumer must PASS it, not just accept it.
+        """The applier PASSES the banner to the authorised seam, not just accepts it.
 
-        Both applier call sites name every kwarg explicitly -- there is no
-        ``**patch`` splat -- so omitting it here would advertise a field that is
-        silently dropped, which is the defect class already fixed once on this PR
-        in the slot-close restore path.
+        Its call sites name every kwarg explicitly (no ``**patch`` splat), so a missed
+        kwarg drops the field silently.
         """
         from kiro_crew.dashboard import session_directive_apply as sda
 
@@ -1151,17 +1052,10 @@ class TestMonitorToolsCanSetTheBanner:
 
 
 class TestChannelBoundLoopsRefuseABanner:
-    """A banner is dead config on a channel-bound loop, so the authorizer says so.
+    """A banner is dead config on a channel-bound loop, so the authorizer refuses it.
 
-    ``_fire`` routes a channel key to ``_fire_slack_nudge`` / ``_fire_discord_nudge``
-    / ``_fire_webex_nudge``; none of them reads ``loop.banner``, and both read
-    sites live inside ``_fire_dashboard_nudge``. Accepting and PERSISTING a field
-    those paths can never honour is a silent no-op the caller cannot detect --
-    worse than a refusal, because the loop arms and looks configured.
-
-    Both chokepoints are covered on purpose. Refusing only on ``add`` would leave
-    ``PATCH /api/autonudge/{id}`` able to set the same dead field on the same
-    loop, so the hole would move rather than close.
+    Only ``_fire_dashboard_nudge`` reads ``loop.banner``. Both add and PATCH refuse, so
+    the field cannot be set through either.
     """
 
     @pytest.fixture
@@ -1183,13 +1077,10 @@ class TestChannelBoundLoopsRefuseABanner:
     async def test_add_refuses_a_banner_on_a_ROUTABLE_channel_session(
         self, audits: list[dict]
     ) -> None:
-        """The arm that demonstrates the DEFECT, not merely the fix.
+        """A routable channel session refuses a banner before ``svc.add``.
 
-        A routable session is required for that: without one the add is refused
-        with a 404 long before the banner is looked at, so the request would
-        change colour when the guard lands while never having proved that a
-        banner was accepted and PERSISTED. Here the pre-fix path reaches
-        ``svc.add`` and carries ``banner`` into the store.
+        The session must be routable: without one the add is refused with a 404 before
+        the banner is looked at, and the test would pin nothing.
         """
         channel = object()  # identity-stable: the admission check compares `is`
         state = SimpleNamespace(
@@ -1221,12 +1112,10 @@ class TestChannelBoundLoopsRefuseABanner:
     async def test_add_refuses_a_banner_on_every_channel_namespace(
         self, slot_key: str, audits: list[dict]
     ) -> None:
-        """Coverage that the guard fires for all three namespaces, not just slack.
+        """The guard returns the CHANNEL reason for all three namespaces.
 
-        Honest about its own limits: with no routable session these requests are
-        refused anyway (404) before the guard lands, so this arm proves the guard
-        fires and returns the CHANNEL reason for each namespace -- the proof that
-        a banner was otherwise accepted lives in the routable-session arm above.
+        With no routable session these would be refused anyway; the routable arm above
+        proves the banner was otherwise accepted.
         """
         svc = MagicMock()
         svc.add = AsyncMock()
@@ -1267,12 +1156,7 @@ class TestChannelBoundLoopsRefuseABanner:
 
     @pytest.mark.asyncio
     async def test_add_accepts_a_blank_banner_on_a_channel_loop(self, audits: list[dict]) -> None:
-        """Blank means "no banner", so it must not be read as setting one.
-
-        Without this arm the guard could be written as ``banner is not None`` and
-        still pass the refusal test above, while breaking every channel-bound
-        caller that passes the default ``banner=""``.
-        """
+        """Blank means "no banner", so channel callers passing ``banner=""`` still arm."""
         svc = MagicMock()
         svc.add = AsyncMock(
             return_value=NudgeLoop(id="loop-1", slot_key="slack:1785", message="go")
@@ -1335,11 +1219,7 @@ class TestChannelBoundLoopsRefuseABanner:
     async def test_update_resolves_the_loop_BY_ID_not_by_position(self, audits: list[dict]) -> None:
         """Two loops, and the channel-bound one is FIRST in the list.
 
-        Added because a break-arm exposed that the single-loop cases cannot see
-        the difference: with one loop in the store, "match the id" and "take the
-        first" select the same object, so neither arm proves the lookup is keyed
-        on anything. Here a positional lookup refuses a perfectly legal dashboard
-        patch by reading the wrong loop's slot key.
+        With one loop, "match the id" and "take the first" pick the same object.
         """
         channel_loop = NudgeLoop(id="loop-1", slot_key="slack:1785", message="go")
         target = NudgeLoop(id="loop-9", slot_key="chat-1-123", message="go")
@@ -1364,12 +1244,7 @@ class TestChannelBoundLoopsRefuseABanner:
     async def test_update_refuses_when_the_TARGET_is_the_channel_loop(
         self, audits: list[dict]
     ) -> None:
-        """The mirror of the arm above, so the pair covers both directions.
-
-        Same two-loop store, but the id names the channel-bound one. Without this
-        the id-keyed lookup could be satisfied by a rule that always picks the
-        dashboard loop.
-        """
+        """Same two-loop store, but the id names the channel-bound loop."""
         channel_loop = NudgeLoop(id="loop-1", slot_key="slack:1785", message="go")
         dashboard_loop = NudgeLoop(id="loop-9", slot_key="chat-1-123", message="go")
         svc = MagicMock()
@@ -1414,14 +1289,10 @@ class TestChannelBoundLoopsRefuseABanner:
 
 
 class TestTheNudgeMetaCarriesNoAbridgedMarker:
-    """The nudge meta is byte-identical on a bannered and an unbannered row.
+    """The nudge meta is exactly ``cycle`` and ``loop_id``, banner or not.
 
-    An earlier revision tagged bannered rows with an ``abridged`` boolean intended
-    for a dashboard badge, but no consumer was ever built (``NudgeCard`` reads only
-    ``cycle``/``loop_id``/``body``), so the flag was broadcast-and-persisted schema
-    surface with zero readers and has been removed. The banner content in the row's
-    ``content`` already distinguishes it; the meta carries exactly ``cycle`` and
-    ``loop_id`` whether or not a banner shows.
+    ``NudgeCard`` reads only ``cycle``/``loop_id``/``body``, so an ``abridged`` flag
+    would be schema with no reader.
     """
 
     @pytest.mark.asyncio
@@ -1432,8 +1303,7 @@ class TestTheNudgeMetaCarriesNoAbridgedMarker:
 
     @pytest.mark.asyncio
     async def test_a_bannered_and_plain_row_have_identical_meta_keys(self) -> None:
-        """Item-2 contract: a bannered row's meta stays byte-identical to a plain
-        row's — the feature adds no meta key at all."""
+        """A bannered row's meta has the same keys as a plain row's."""
         _r1, _p1, bannered = await _fire_full(_loop(banner="watching PR #123 for CI"))
         _r2, _p2, plain = await _fire_full(_loop(banner=""))
         assert "abridged" not in bannered and "abridged" not in plain
@@ -1498,11 +1368,8 @@ class TestARealProducerSetsTheBanner:
 class TestTheServiceExposesGetByIdForTheUpdatePath:
     """The update-path channel refusal resolves the loop through ``svc.get_by_id``.
 
-    A test fake that DEFINED ``get_by_id`` hid that the real ``AutoNudgeService``
-    lacked it, so the refusal shipped dead: ``hasattr(svc, "get_by_id")`` was
-    False on the instance ``get_instance()`` returns, the guard was skipped, and a
-    banner on a channel-bound loop was accepted on PATCH. This pins the accessor on
-    the REAL service surface, so the guard can never regress to unreachable again.
+    Pinned on the REAL service: the fakes above define ``get_by_id``, and without it
+    on ``AutoNudgeService`` the guard is skipped.
     """
 
     @pytest.mark.asyncio
@@ -1519,11 +1386,8 @@ class TestTheServiceExposesGetByIdForTheUpdatePath:
 class TestBanneredRowShowsTheBannerEveryCycle:
     """With a banner set, the transcript row is the short stand-in on EVERY cycle.
 
-    Credential redaction is NOT done at this fire sink — it lives at the write
-    paths (``normalize_banner`` on every authorized producer: the REST add/update
-    authorizers, the MCP tools, and ``/goal``) and at ``_load`` for a banner that
-    reached the store another way, so ``loop.banner`` is already scrubbed by the
-    time it renders here.
+    Redaction happens at the write paths (``normalize_banner``) and at ``_load``, not
+    at this fire sink.
     """
 
     @pytest.mark.asyncio

@@ -13,7 +13,7 @@ import { api } from '../api/client'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useNativeBrowser } from '../hooks/useNativeBrowser'
-import { normalizeLocalOrigin, previewAllowsUrl } from '../utils/localPreviewOrigins'
+import { normalizeLocalOrigin, previewAllowsUrl, urlHostPort } from '../utils/localPreviewOrigins'
 import { sendErrorToChat } from '../utils/errorReport'
 import {
   PENDING_KEY_PREFIX, PREVIEW_PENDING_EVENT, PREVIEW_URL_EVENT, URL_KEY_PREFIX,
@@ -257,7 +257,8 @@ function usePreviewOrigins() {
 function originToAllow(url: string): string | null {
   try {
     const u = new URL(url)
-    return normalizeLocalOrigin(u.host)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    return normalizeLocalOrigin(urlHostPort(u))
   } catch {
     return null
   }
@@ -267,6 +268,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   const storageKey = sessionKey ? `${URL_KEY_PREFIX}${sessionKey}` : null
   const pendingKey = sessionKey ? `${PENDING_KEY_PREFIX}${sessionKey}` : null
   const [nav, setNav] = useState<NavState>(EMPTY_NAV)
+  // The target the native view was last pointed at (what the list is checked
+  // against, not the cookie-isolated host it loads). `commitNative` navigates the
+  // view without touching `nav`, so `url` alone goes stale once the user moves.
+  const [nativeTarget, setNativeTarget] = useState('')
   const [draft, setDraft] = useState('')
   // A chat-fed URL awaiting an explicit "Load preview" click (null = none).
   const [pending, setPending] = useState<string | null>(null)
@@ -313,6 +318,35 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     [originsLoaded, origins],
   )
 
+  // The list gates what stays up as well as what opens: an origin removed while its
+  // page is showing closes the native view, so the refusal below it can be seen
+  // (the view paints over the panel and would hide it). The page judged is the one
+  // the view is on now. A page the view reached on its own (a link, a redirect)
+  // counts once it has been seen allowed; one that never was is not this list's to
+  // close, as before.
+  const nativeSeen = useRef(new Set<string>())
+  useEffect(() => {
+    const seen = nativeSeen.current
+    if (!nativeOpen) { seen.clear(); return }
+    if (!originsLoaded) return
+    const hostPort = (u: string) => {
+      try { return urlHostPort(new URL(u)) } catch { return '' }
+    }
+    const sameOrigin = (a: string, b: string) => {
+      try { return new URL(a).origin === new URL(b).origin } catch { return false }
+    }
+    // What the panel pointed the view at is listed by construction. An origin it
+    // loaded through the cookie-isolation rewrite is judged by that target, not by
+    // the rewritten host the view reports.
+    const base = nativeTarget || url
+    if (base) seen.add(hostPort(base))
+    const live = native.state?.url || ''
+    const shown = live && base && !sameOrigin(live, isolateFrameTarget(base)) ? live : base || live
+    if (!shown) return
+    if (previewAllowsUrl(shown, origins)) seen.add(hostPort(shown))
+    else if (seen.has(hostPort(shown))) native.close()
+  }, [nativeOpen, nativeTarget, url, originsLoaded, origins, native, native.state?.url])
+
   const persist = useCallback((u: string) => {
     if (storageKey && u) safeSetItem(storageKey, u)
   }, [storageKey])
@@ -342,6 +376,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       setNav(saved ? { stack: [saved], index: 0 } : EMPTY_NAV)
       setDraft(saved)
     }
+    setNativeTarget('')
+    nativeSeen.current.clear()
     setDeviceId('responsive')
   }, [storageKey, pendingKey])
 
@@ -393,7 +429,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     // An ALLOWED target goes to the native view when one is available: the real
     // page, where annotation works. A refused target never reaches it; the
     // iframe path shows the card that says why.
-    if (native.available && allowsNow(norm)) native.open(isolateFrameTarget(norm))
+    if (native.available && allowsNow(norm)) {
+      setNativeTarget(norm)
+      native.open(isolateFrameTarget(norm))
+    }
   }, [persist, pendingKey, native, allowsNow])
 
   // Navigation while the NATIVE surface is showing. The iframe `commit` above
@@ -407,6 +446,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     setDraft(norm)
     if (!allowsNow(norm)) return
     persist(norm)
+    setNativeTarget(norm)
     native.navigate(isolateFrameTarget(norm))
   }, [persist, native, allowsNow])
 

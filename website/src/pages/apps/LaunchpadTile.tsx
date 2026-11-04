@@ -101,9 +101,12 @@ export default function LaunchpadTile({
   const iconUrlDark = installedIcon(m?.iconPathDark, m?.iconUrlDark, app.name)
   const pageIcon = m?.ui?.pages?.[0]?.icon || ''
 
-  const disabled = !app.enabled
+  // A built-in app the gateway skipped at boot has no routes, so it renders like a
+  // disabled app and its tile opens the detail page, which says why.
+  const unavailable = !!app.unavailable
+  const disabled = !app.enabled || unavailable
   const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
-  const openable = app.enabled && (hasUI || !!m?.openCommand)
+  const openable = app.enabled && !unavailable && (hasUI || !!m?.openCommand)
   const canUninstall = app.lifecycle !== 'locked'
 
   // Status caption under the name: an in-flight management action wins (the
@@ -117,11 +120,13 @@ export default function LaunchpadTile({
   const actionInFlight = !!actionLoading && actionLoading.startsWith(`${name}:`)
   const caption = actionInFlight
     ? i18nT('apps.commandBar.working')
-    : !pinnable
-      ? i18nT('pages.libraryPage.tile_no_sidebar_page')
-      : pinned
-        ? i18nT('pages.libraryPage.tile_pinned')
-        : i18nT('pages.libraryPage.tile_unpinned')
+    : unavailable
+      ? i18nT('pages.libraryPage.tile_unavailable')
+      : !pinnable
+        ? i18nT('pages.libraryPage.tile_no_sidebar_page')
+        : pinned
+          ? i18nT('pages.libraryPage.tile_pinned')
+          : i18nT('pages.libraryPage.tile_unpinned')
 
   return (
     <div
@@ -179,7 +184,9 @@ export default function LaunchpadTile({
         aria-label={i18nT('pages.libraryPage.tile_actions', { name: display })}
         className="flex items-center gap-0.5 rounded-lg min-h-[24px]"
       >
-        {disabled ? (
+        {/* The stored switch, not `disabled`: an unavailable app that is still
+            enabled shows its Unavailable caption here, not an Enable button. */}
+        {!app.enabled ? (
           // The button stays mounted while its own action runs and says so in
           // its label, so keyboard focus stays on it. `aria-disabled` rather than
           // `disabled`: a disabled button drops the focus it holds.
@@ -240,7 +247,8 @@ export default function LaunchpadTile({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            {disabled ? (
+            {/* The stored switch, not `disabled`: an unavailable app may still be enabled. */}
+            {!app.enabled ? (
               <DropdownMenuItem
                 disabled={actionInFlight}
                 onSelect={() => onAction(name, 'enable')}

@@ -165,7 +165,7 @@ def _read_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
         if age > _MANIFEST_CACHE_TTL:
             return None  # stale
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
 
 
@@ -747,7 +747,7 @@ def _read_external_registry_cache(
         # name and subdirectory gates live in the facade (see
         # ``registry._admit_cached_index_entries``), reached at call time.
         return _facade()._admit_cached_index_entries(data)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
 
 

@@ -21,6 +21,7 @@ from dashboard_owner_helpers import as_owner
 from kiro_crew.connections.oauth_clients import client_id_env_name, client_secret_env_name
 from kiro_crew.connections.registry import get_preregistered_providers
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.secrets import SecretVault
 
 BASE = "/api/connections/oauth-clients"
@@ -669,12 +670,38 @@ async def test_a_failed_projection_refresh_is_reported_not_hidden(home, monkeypa
         assert body["code"] == "projection_refresh_failed"
         assert body["client"]["client_secret_set"] is True
         assert SECRET not in json.dumps(body)
+        assert "governance" not in body["error"]
     finally:
         await client.close()
 
     # Committed regardless.
     held = SecretVault(home).get(GITHUB_VAULT_NAME)
     assert held is not None and held.reveal() == SECRET
+
+
+@pytest.mark.asyncio
+async def test_a_composition_refused_refresh_names_governance(home, monkeypatch):
+    """The rebuild stopped because this host's enterprise setup could not be built:
+    the same committed-record, stale-projection answer, with a reason naming the cause."""
+
+    async def _refused(slug: str) -> str:
+        return "composition_refused"
+
+    monkeypatch.setattr(connections, "_refresh_client_projections", _refused)
+
+    client = await _client()
+    try:
+        resp = await client.put(f"{BASE}/github", json={"client_secret": SECRET})
+        assert resp.status == 500
+        body = await resp.json()
+        assert body["code"] == "projection_refresh_failed"
+        assert "enterprise setup could not be built (governance)" in body["error"]
+        assert body["client"]["client_secret_set"] is True
+        resp = await client.delete(f"{BASE}/github")
+        assert resp.status == 500
+        assert "(governance)" in (await resp.json())["error"]
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -746,6 +773,11 @@ async def test_rollback_leaves_a_secret_someone_else_wrote_in_between(home, monk
             False,
             id="raised",
         ),
+        pytest.param(
+            lambda **_: (_ for _ in ()).throw(PlatformCompositionError("companion missing")),
+            "composition_refused",
+            id="composition-refused",
+        ),
     ],
 )
 async def test_the_projection_refresh_tells_a_decline_from_a_failure(
@@ -769,7 +801,7 @@ async def test_the_projection_refresh_tells_a_decline_from_a_failure(
     monkeypatch.setattr(connections, "_get_mcp_lock", _NoLock)
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
-    assert await _REAL_REFRESH("github") is expected
+    assert await _REAL_REFRESH("github") == expected
 
 
 @pytest.mark.asyncio

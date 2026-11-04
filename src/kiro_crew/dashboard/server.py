@@ -171,6 +171,7 @@ from kiro_crew.dashboard.port_reclaim import (  # noqa: F401
     RECLAIMED,
     reclaim_stale_gateway_port,
 )
+from kiro_crew.dashboard.refresh_tokens import bears_session_cookie_for_host  # noqa: F401
 from kiro_crew.dashboard.relay_headers import relay_header_strip_middleware  # noqa: F401
 from kiro_crew.dashboard.routes import register_all
 from kiro_crew.dashboard.server_internal_paths import (  # noqa: F401
@@ -594,7 +595,10 @@ _BASE_CSP = (
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
-    "object-src 'none'; base-uri 'self'; frame-ancestors {frame_ancestors}"
+    # form-action does not fall back to default-src, so without it an injected
+    # <form> could post to any host. Every dashboard form posts to its own origin.
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "frame-ancestors {frame_ancestors}"
 )
 
 # Loopback preview origins — always framable AND connectable (see the
@@ -1520,7 +1524,7 @@ async def start_dashboard(
     try:
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
-        logger.warning("mate-owned-config migration failed", exc_info=True)
+        logger.warning("bot-owned-config migration failed", exc_info=True)
 
     await _restore_dashboard_sessions(state, cfg)
 

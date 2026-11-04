@@ -245,6 +245,7 @@ from kiro_crew.skills_review import (  # noqa: F401
     _VALIDATION_REPORT_MAX_STRING_CHARS,
     _VALIDATION_REPORT_TRUNCATION_KEY,
     PendingApprovalRefused,
+    PendingDismissRefused,
 )
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts  # noqa: F401
 from kiro_crew.skills_selection import (  # noqa: F401
@@ -1132,12 +1133,12 @@ class SkillsLoader:
         """Return the version number to snapshot the CURRENT live body under."""
         return _versions._resolve_snapshot_version(self, versions_dir, fm_version)
 
-    def dismiss_pending_skill(self, slug: str) -> bool:
+    def dismiss_pending_skill(self, slug: str, content_sha256: str | None = None) -> bool:
         """Delete a pending candidate. Returns True if it existed.
 
         Contract and rationale: ``skill_runtime.auto_skills.dismiss_pending_skill``.
         """
-        return _auto_skills.dismiss_pending_skill(self, slug)
+        return _auto_skills.dismiss_pending_skill(self, slug, content_sha256)
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed.

@@ -5,7 +5,6 @@ import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
 import type { FeatureVideo, FeatureVideoLibrary } from '../../api/client/featureDiscovery'
 import { useAppSelector } from '../../store'
-import Glass from '../Glass'
 import ErrorNotice from '../ErrorNotice'
 import { recordError } from '../../utils/errorReport'
 
@@ -44,7 +43,8 @@ export function pickExploreVideo(videos: FeatureVideo[], random: () => number = 
  * (`GET /api/feature-videos/library`) and is hidden when none are left. Watching
  * or closing records the clip's permanent Feature Videos verdict (RFC 8.2), so
  * it holds on this machine across browsers. Fixed layout; the clip's title is
- * manifest data.
+ * manifest data. It is a plain block, not its own glass pane, so it reads as
+ * part of the Explore panel and its close as closing only the clip.
  */
 export default function ExploreIntroVideo({ className }: { className?: string }) {
   const qc = useQueryClient()
@@ -116,7 +116,7 @@ export default function ExploreIntroVideo({ className }: { className?: string })
     void record(video.id, seenSent.current ? 'seen' : 'dismissed').then(ok => { if (ok) setClosed(true) })
   }
   return (
-    <Glass variant="panel" radius={16} className={className} data-testid="explore-intro-video">
+    <div className={className} data-testid="explore-intro-video">
       <div className="flex items-center gap-3">
         <span aria-hidden="true" className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center bg-accent-subtle text-accent">
           <Play size={14} />
@@ -191,6 +191,6 @@ export default function ExploreIntroVideo({ className }: { className?: string })
           />
         </div>
       )}
-    </Glass>
+    </div>
   )
 }

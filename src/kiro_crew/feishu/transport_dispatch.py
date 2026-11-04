@@ -5,7 +5,7 @@ hands the ``LarkInbound`` (carrying the ``message_id`` reply anchor) to
 :meth:`FeishuDispatcher.handle_message`, which mirrors the WeCom transport
 dispatch:
 
-    command intercept (/new, /compact)
+    command intercept (/new, /compact, /agent, /stop, /help)
     -> construct FeishuRenderer
     -> session acquire -> context build
     -> TurnDriver.run(provider, renderer)   # shared redaction + approval ladder
@@ -30,6 +30,7 @@ from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_age
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.feishu.client import CHAT_GROUP
+from kiro_crew.feishu.commands import build_help, parse_command
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import (
     FEISHU_CAPABILITIES,
@@ -42,6 +43,7 @@ from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
+    note_user_stop,
     recycle_backend,
     recycle_warning_should_send,
 )
@@ -65,7 +67,15 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
+from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.safety_override import safety_override
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+    force_stop_keeping_others,
+)
 from kiro_crew.start_priority import person_priority
 
 if TYPE_CHECKING:
@@ -83,6 +93,13 @@ logger = logging.getLogger(__name__)
 # (spawn_run etc.) instead of kiro-cli's bare built-in default.  Mirrors the
 # Slack / Telegram / WeCom paths' _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+# /stop's three replies, worded as Weixin's. The cancel is COOPERATIVE: it only
+# writes session/cancel, so the turn stops at its next safe point -- hence
+# "stopping", not "stopped".
+_STOPPING = "⏹ 正在停止当前回复…"
+_STOP_FAILED = "⚠ 停止失败，请重试。"
+_NOTHING_RUNNING = "ℹ 当前没有正在生成的回复。"
 
 
 class FeishuDispatcher:
@@ -183,7 +200,15 @@ class FeishuDispatcher:
 
         # Recheck governance only after this accepted callback is census-visible;
         # otherwise the off-loop policy read opens an uncounted restart window.
-        if not await inbound_permitted("feishu"):
+        # The pure-cancel exemption is claimed only for a message Feishu itself
+        # will act on as /stop: Feishu has no buttons, so a typed stop is the only
+        # way to halt a turn the channel already started. A cancel word another
+        # channel spells (`停止`, `!stop`) is no stop here, so it gets the strict
+        # gate rather than a pass into the busy path's steer.
+        raw_cmd = (inbound.command_text or text).strip()
+        cmd = parse_command(raw_cmd)
+        gate_text = raw_cmd if cmd == "stop" else ""
+        if not await inbound_permitted("feishu", text=gate_text):
             return
         logger.info("Feishu inbound from %s: %d chars", open_id, len(text or ""))
 
@@ -192,9 +217,16 @@ class FeishuDispatcher:
         # @-mention the bot, so `text` reads "@BotName /new" and a whole-string
         # match would never fire -- the command would be dispatched to the model
         # as a prompt instead. Falls back to `text` for a frame with no mentions.
-        raw_cmd = (inbound.command_text or text).strip()
-        cmd = raw_cmd.lower()
-        if cmd in ("/new", "/reset"):
+        # (`raw_cmd` / `cmd` were read above, ahead of the governance gate.)
+        if cmd == "stop":
+            # Before the busy check below: /stop is the one message that must
+            # not be folded into the running reply it exists to abort.
+            await self._handle_stop(inbound)
+            return
+        if cmd == "help":
+            await self.client.send_reply(inbound.message_id, build_help())
+            return
+        if cmd == "new":
             self._conv.bump_gen(route)
             saved = await reserve_new_generation(
                 self.sessions,
@@ -206,7 +238,7 @@ class FeishuDispatcher:
                 message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
             await self.client.send_reply(inbound.message_id, message)
             return
-        if cmd == "/compact":
+        if cmd == "compact":
             # Releasing the latch here is what keeps the soft notice a
             # per-growth-cycle nudge rather than a once-ever one: the user
             # just complied, so the next time context climbs back into the
@@ -214,7 +246,7 @@ class FeishuDispatcher:
             self._conv.clear_awaiting(route)
             await self._handle_compact(inbound)
             return
-        if cmd.split(maxsplit=1)[:1] == ["/agent"]:
+        if raw_cmd.lower().split(maxsplit=1)[:1] == ["/agent"]:
             # The name keeps its case: agent names are case-sensitive.
             parts = raw_cmd.split(maxsplit=1)
             reply = await handle_channel_agent_command(
@@ -348,6 +380,83 @@ class FeishuDispatcher:
             await self.client.send_reply(inbound.message_id, "⏳ 已合并到当前回复")
         else:
             await self.client.send_reply(inbound.message_id, "⏳ 正在处理上一条，请稍后重发")
+
+    async def _handle_stop(self, inbound: "LarkInbound") -> None:
+        """Hard cancel: abort the reply that is running on this route's session.
+
+        Mirrors the Weixin ``/stop``. The cancel is COOPERATIVE -- an ACP
+        ``session/cancel`` with no ack wait -- so the reply goes out at once and
+        the turn stops at its next safe point; on a shared runtime that is the
+        only path that cannot take a co-tenant process down with it. Feishu
+        holds no queue of its own (a mid-turn message is steered or refused), so
+        the running turn is the whole of what ``/stop`` owns here.
+
+        The presser is the sender's ``open_id``, not the route: a group shares
+        one session, and one member's declined Stop must not arm another's.
+        """
+        assert self.client is not None
+        client = self.client
+        presser = inbound.open_id
+        session_key = self._session_key(self._route(inbound))
+        # Before the Stop record: a Stop the session's own automatic compaction
+        # declines ends nothing and must record nothing.
+        if compaction_in_flight(self.sessions, session_key):
+            # A repeat within the window is the second press and forces.
+            if not consume_stop_declined(session_key, presser):
+                # Sent before the marker is armed: an undelivered warning plus an
+                # armed escalation is a retry that hard-resets the session with
+                # this user never told that it would.
+                await decline_stop(
+                    session_key,
+                    presser,
+                    lambda: client.send_reply(inbound.message_id, STOP_DECLINED_COMPACTING_TEXT),
+                )
+                return
+            note_user_stop(self.sessions, session_key)
+            try:
+                # Through the queue-keeping helper: Feishu queues nothing, but
+                # under a unified ``dm_scope`` the key is shared with channels
+                # that do, and the hard reset would pop their queued messages.
+                # The presser's own token matches none of those entries.
+                forced = await force_stop_keeping_others(
+                    self.sessions,
+                    session_key,
+                    entries_queued_by(owner_token("feishu", (presser,))),
+                )
+            except Exception:
+                logger.warning("feishu /stop: force stop failed for %s", session_key, exc_info=True)
+                forced = False
+            await client.send_reply(inbound.message_id, _STOPPING if forced else _STOP_FAILED)
+            return
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
+        ack = _NOTHING_RUNNING
+        if self.sessions.is_busy(session_key):
+            # Branch on the RETURNED outcome: ``cancel`` reports its own failures
+            # as ``"error"`` rather than raising, so a try/except alone would say
+            # "stopping" for a cancel that never happened.
+            ack = _STOP_FAILED
+            provider = self.sessions.get_provider(session_key)
+            cancel = getattr(provider, "cancel", None)
+            if cancel is not None:
+                try:
+                    outcome = await cancel(wait_ack_timeout=0)
+                except Exception:
+                    logger.warning("feishu /stop: cancel failed for %s", session_key, exc_info=True)
+                else:
+                    if outcome in ("acked", "timeout"):
+                        # timeout: the cancel WAS written, its ack has not landed.
+                        ack = _STOPPING
+                    elif outcome == "no_turn":
+                        # The turn finished between is_busy and the cancel.
+                        ack = _NOTHING_RUNNING
+                    else:
+                        logger.warning(
+                            "feishu /stop: cancel returned %r for %s", outcome, session_key
+                        )
+        await client.send_reply(inbound.message_id, ack)
 
     async def _handle_compact(self, inbound: "LarkInbound") -> None:
         """In-place ACP ``/compact`` on the user's current session."""

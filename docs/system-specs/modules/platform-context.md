@@ -740,6 +740,25 @@ Wired sites:
   `test_gateway_first_run_setup_routes_through_the_seam`). Best-effort: the
   gateway's surrounding `except` keeps a failure non-fatal to startup, and
   `PlatformCompositionError` still propagates fail-closed.
+- Agent-spec rebuild callers — a `PlatformCompositionError` out of
+  `rebuild_agent_config` stops the rebuild before any spec is composed from the
+  open-source defaults, which is the fail-closed outcome; every caller runs after
+  its own config write has landed, so none re-raises it. The
+  dashboard save paths handle it apart from an ordinary rebuild failure: an ERROR
+  gateway-log line naming governance (`COMPOSITION_REFUSED_LOG`), and where the
+  response carries a reason, that reason names it too — `rebuild.error` on MCP apply
+  is `AGENT_SPEC_COMPOSITION_REFUSED`, and an OAuth client change's stale-projection
+  error says the enterprise setup could not be built. Those paths are MCP apply
+  (`dashboard/handlers/mcp.py`), an OAuth client change
+  (`dashboard/handlers/connections.py`), disconnect (`connections/ownership.py`),
+  endpoint migration (`connections/endpoint_migration.py`), a template MCP addition
+  (`dashboard/handlers/template_server_request.py`) and the shared
+  `rebuild_agent_spec` behind MCP custom writes and MCP import. A response whose
+  only field is the `agent_spec_rewritten` boolean keeps that shape and reports
+  `false`. The boot, config-watch, MCP-broker, session-consent, launch-resolve and
+  readiness-gate rebuilds, and the worker and heartbeat re-derives, keep their
+  broad degrade: boot is where composition is enforced, and the heartbeat spawn
+  gate refuses the start.
 - `sandbox_argv.py` — `_live_plan_host`, the plan host `_build_launcher_script` /
   `_build_seatbelt_profile` both plan with, sources the sensitive-dir lists from
   `current_context().sandbox` through `sandbox._sandbox_policy` (Seatbelt's

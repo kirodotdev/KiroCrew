@@ -345,6 +345,32 @@ export function fmtCompact(value: number, options?: NumberOptions): string {
 }
 
 /**
+ * The quantity `fmtCompact(value)` SHOWS, for choosing a plural form.
+ *
+ * A plural form has to agree with the number on screen, not the exact one:
+ * 1001 shown as `1 тыс.` takes Russian's `many` form (`1 тыс. токенов`), while
+ * 1001 itself selects `one`. The shown mantissa is read back from the formatted
+ * parts and scaled by the power of ten it abbreviates, so `1.2K` is 1200 and
+ * zh's `1.5万` is 15000. A value that does not abbreviate is returned as is.
+ */
+export function compactPluralCount(value: number, options?: NumberOptions): number {
+  if (!Number.isFinite(value) || value === 0) return value
+  const locale = activeLocale()
+  // Latin digits so the mantissa parses in every language (bn writes ১২).
+  const read = { notation: 'compact', maximumFractionDigits: 1, ...options, numberingSystem: 'latn' } as const
+  const parts = memo('compactPlural', locale, read, () =>
+    new Intl.NumberFormat(locale, { localeMatcher: 'lookup', ...read }),
+  ).formatToParts(value)
+  if (!parts.some(p => p.type === 'compact')) return value
+  const integer = parts.filter(p => p.type === 'integer').map(p => p.value).join('')
+  const fraction = parts.find(p => p.type === 'fraction')?.value ?? ''
+  const mantissa = Number(fraction ? `${integer}.${fraction}` : integer)
+  if (!Number.isFinite(mantissa) || mantissa === 0) return value
+  const exponent = Math.round(Math.log10(Math.abs(value) / mantissa))
+  return Math.sign(value) * Number((mantissa * 10 ** exponent).toPrecision(15))
+}
+
+/**
  * A byte size — `512kB`, `1.5MB`, `2.3GB`.
  *
  * One implementation replacing four that disagreed with each other: the same

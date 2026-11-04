@@ -1,38 +1,15 @@
 """A cron mutation whose SAVE fails must not survive in the in-memory job list.
 
-``CronService`` mutators edit ``self._jobs`` in place and only then call
-``_save()``. The unreadable-store LATCH (``_load_failed`` ->
-``CronStoreUnreadable``) is refused up front by ``_sync_for_write`` and covered
-by ``test_cron_store_unreadable_boundaries.py``. A DIFFERENT failure is not: a
-save that gets PAST that latch and then raises a bare ``OSError`` from the
-atomic write itself -- ``ENOSPC`` (disk full), ``EROFS`` (read-only remount),
-``EIO``, or a fault in the ``mkdir`` / ``encode_store`` / ``atomic_write``
-chain. On that path the in-memory mutation has already landed, the caller is
-told the write failed, yet the change stays in ``self._jobs`` -- visible to
-``list_jobs``, firable by the timer, and persisted by the next save that
-succeeds.
+Mutators edit ``self._jobs`` before ``_save()``. A bare ``OSError`` from the atomic
+write (``ENOSPC``, ``EROFS``, ``EIO``) would otherwise leave the change live, firable
+by the timer and persisted by the next save. The unreadable-store latch is covered
+in ``test_cron_store_unreadable_boundaries.py``.
 
-The contract: a mutator rolls its in-memory change back on ANY save failure, the
-way the remove and update cores already do, extended to the add (×2), ack,
-unack and adopt cores plus the loop-stall breaker. ``update_job`` restores only
-the fields the edit changed, and each only while it still holds the edit's
-value: a run in flight writes its own fields (the failure count, the
-auto-pause, the one-shot park, the last status) onto the same object, and a
-whole-record restore would undo them. ``enable_job`` (pause/resume)
-cannot restore the values it saw: its ``enabled``/``user_paused``/
-``auto_paused``/``consecutive_failures`` are also written by a run in flight on
-the loop thread, so a field restore would undo the run's write. It reloads the
-store instead, which re-applies every held run record, so the live list is the
-store plus the runs not yet saved. These tests inject the
-failure at the ``atomic_write`` boundary (a real ``OSError``, NOT
-``CronStoreUnreadable``), so the real ``_save`` -> raise chain runs and the
-``_load_failed`` latch is deliberately NOT what is being exercised.
+``update_job`` restores only fields that still hold the edit's value, and
+``enable_job`` reloads the store, because a run in flight writes the same fields.
 
-The vacuous-pass trap: asserting only that the mutator RAISES passes whether or
-not the rollback exists, because ``_save`` already raised. Every assertion below
-is about ``self._jobs`` (and the live object's fields) AFTER the failed save,
-and a reload from the untouched file -- the state a timer or a later save would
-see.
+Checking only that the mutator raises would pass without any rollback, so every
+assertion reads ``self._jobs`` and a reload after the failed save.
 """
 
 from __future__ import annotations
@@ -59,12 +36,8 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_cron_save_failure_roll
 def _disk_full_on_save(during: Callable[[], None] | None = None) -> Iterator[None]:
     """Make the next ``atomic_write`` raise ENOSPC, like a full disk would.
 
-    Injected at ``kiro_crew.atomic_write.atomic_write`` -- the exact call
-    ``_save`` makes AFTER its ``_load_failed`` guard and its ``mkdir`` -- so the
-    real ``_save`` runs, the in-memory mutation has already landed, and a bare
-    ``OSError`` (NOT ``CronStoreUnreadable``) comes back out. That distinction is
-    the whole point: the latch path is already guarded and tested elsewhere;
-    this is the write-fault path the issue names.
+    Injected at ``kiro_crew.atomic_write.atomic_write``, after the ``_load_failed``
+    guard, so the real ``_save`` raises a bare ``OSError``, not ``CronStoreUnreadable``.
 
     ``during`` runs inside the failing write, standing in for a run on the loop
     thread that writes the same job while the save is in flight.

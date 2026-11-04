@@ -47,7 +47,7 @@ def _tracker(clock: _Clock | None = None, **kw) -> TurnTracker:
     return TurnTracker(clock=clock or _Clock(), **kw)
 
 
-# --- defaults --------------------------------------------------------------
+# defaults
 
 
 def test_the_defaults_are_the_documented_bounds():
@@ -57,7 +57,7 @@ def test_the_defaults_are_the_documented_bounds():
     assert MAX_SESSIONS == 128
 
 
-# --- the live record and its ordinals --------------------------------------
+# the live record and its ordinals
 
 
 def test_a_turn_numbers_its_model_calls_and_its_tool_calls_independently():
@@ -131,7 +131,7 @@ def test_a_fresh_claim_releases_only_turns_no_terminal_is_coming_for():
     assert tracker.live_turn(SID) == 2
 
 
-# --- the leak alarm --------------------------------------------------------
+# the leak alarm
 
 
 def test_a_live_turn_is_never_evicted_even_past_the_ceiling():
@@ -190,7 +190,7 @@ def test_the_tracker_reports_through_the_logger_it_is_given(caplog):
     assert [r.name for r in caplog.records] == ["kiro_crew.crew_log.emit"]
 
 
-# --- tool calls ------------------------------------------------------------
+# tool calls
 
 
 def test_a_call_settles_once_with_its_openers_identity_and_elapsed(clock):
@@ -276,7 +276,7 @@ def test_a_closed_session_keeps_only_what_a_live_turn_still_needs():
     assert not tracker.knows_attempts(SID)
 
 
-# --- attempts --------------------------------------------------------------
+# attempts
 
 
 def test_reruns_of_one_ordinal_count_from_one():
@@ -308,7 +308,7 @@ def test_the_attempt_map_is_bounded_without_evicting_a_live_session():
     assert not tracker.knows_attempts(f"{OTHER}-0"), "the map was not bounded"
 
 
-# --- the supersede repair's debt -------------------------------------------
+# the supersede repair's debt
 
 
 def test_a_stand_down_records_the_debt_only_while_a_turn_runs():
@@ -378,7 +378,7 @@ def test_the_stand_down_reads_liveness_and_records_the_debt_in_one_lock_hold():
     assert tracker.repair_debt(SID) == "chat-7"
 
 
-# --- trimming a caller's cache ---------------------------------------------
+# trimming a caller's cache
 
 
 def test_a_trim_never_drops_a_live_sessions_entry_and_may_overshoot():

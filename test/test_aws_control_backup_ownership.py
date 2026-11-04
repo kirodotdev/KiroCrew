@@ -1,14 +1,8 @@
 """AWS Control backup ownership: archive descent, install identity, restore gate.
 
-Covers ``_add_tree`` skipping hard-linked files, the refusal to archive when
-descriptor-pinned traversal is unavailable, ``_install_folders`` reading
-install prefixes, ``list_remote_backups`` and ``classify_key`` deciding archive
-origin, and the install id, kept apart from its display label.
-
-It also pins that ``restore_download`` refuses an archive this install cannot
-prove it uploaded, by local upload record and body fingerprint, unless the
-caller passes ``foreign_ok``, and refuses a staging directory that resolves
-outside app storage. Shared constants come from ``aws_control_backup_helpers.py``.
+Covers ``_add_tree`` skipping hard links, refusal without pinned traversal, archive
+origin via ``classify_key``, and ``restore_download`` refusing an archive this install
+cannot prove it uploaded (record and fingerprint) unless ``foreign_ok`` is passed.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ from aws_control_backup_helpers import (
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
-# ---------------------------------------------------------------------------
 # Hard links — a regular file pointing at someone else's inode
-# ---------------------------------------------------------------------------
 
 
 class TestHardLinkedFilesAreNotArchived:
@@ -98,19 +90,14 @@ class TestHardLinkedFilesAreNotArchived:
         assert count == 2
 
 
-# ---------------------------------------------------------------------------
 # Refusal when the traversal cannot be pinned to descriptors
-# ---------------------------------------------------------------------------
 
 
 class TestRefusalWithoutPinnedTraversal:
     """There is no name-based fallback, and that is the security property.
 
-    A platform without ``openat`` cannot make the link check and the open one
-    operation, so a walk of these agent-writable directories leaves a window in
-    which a directory swapped for a junction to ``~/.aws`` is archived -- and this
-    archive is uploaded unattended. These pin that the code refuses instead of
-    degrading, on every platform, by forcing the capability flag off.
+    Without ``openat`` a directory swapped for a junction to ``~/.aws`` could be
+    archived and uploaded. The capability flag is forced off on every platform.
     """
 
     def test_add_tree_refuses_rather_than_walking_by_name(self, tmp_path):
@@ -170,9 +157,7 @@ class TestRefusalWithoutPinnedTraversal:
         assert calls == []
 
 
-# ---------------------------------------------------------------------------
 # list_remote_backups
-# ---------------------------------------------------------------------------
 
 
 class TestInstallFoldersReasonAboutAbsence:
@@ -477,9 +462,7 @@ class TestListRemoteBackups:
             assert name == candidate
 
 
-# ---------------------------------------------------------------------------
 # install identity — the id that decides, and the label that only displays
-# ---------------------------------------------------------------------------
 
 
 class TestInstallIdentity:
@@ -647,11 +630,8 @@ class TestLabelIsDisplayOnly:
 class TestObjectAuthentication:
     """A recorded key names a PATH; the fingerprint names the BYTES.
 
-    On a drive other installs can write to, a key can be overwritten after this
-    install recorded uploading it. Matching keys alone would then hand that
-    overwrite back as ours with no confirmation, so the verdict is decided on the
-    bytes that actually arrive -- which also leaves no window for an overwrite to
-    land between a check and the transfer.
+    A shared key can be overwritten, so the verdict is decided on the bytes that
+    arrive, leaving no window between check and transfer.
     """
 
     @pytest.fixture(autouse=True)
@@ -772,12 +752,8 @@ class TestClassifyKey:
 class TestSelfOwnershipIsProvenNotInferred:
     """An install id is a folder name, so a bucket writer can create one.
 
-    The drive is shared by design, which puts a co-writer inside the operating
-    envelope rather than outside it. If the prefix alone decided ownership, that
-    co-writer could upload beneath this install's own prefix and the archive would
-    come back classified as ours and restore with no confirmation -- the exact
-    unwarned wrong-machine restore this whole change exists to stop, reintroduced
-    through the mechanism meant to stop it.
+    The drive is shared by design, so a co-writer could upload under this install's
+    prefix and get an unwarned wrong-machine restore.
     """
 
     @pytest.fixture(autouse=True)
@@ -936,9 +912,7 @@ class TestRestoreOwnershipGate:
             assert self._download(key, foreign_ok=True)["path"]
 
 
-# ---------------------------------------------------------------------------
 # restore_download — the resolve-outside-storage guard
-# ---------------------------------------------------------------------------
 
 
 class TestRestoreDownloadResolveGuard:

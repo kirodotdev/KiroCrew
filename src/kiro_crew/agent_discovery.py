@@ -17,7 +17,7 @@ import sys as _sys
 from typing import TYPE_CHECKING
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import agent_state, hooks  # noqa: F401
+from kiro_crew import agent_state, hooks, platform_compat  # noqa: F401
 from kiro_crew.agent_files import (  # noqa: F401
     AGENT_FILENAME,
     GUEST_AGENT_FILENAME,
@@ -35,6 +35,7 @@ from kiro_crew.agent_spec_format import (  # noqa: F401
     shadowed_markdown_specs,
     spec_stem,
 )
+from kiro_crew.atomic_write import retry_read_sharing_window  # noqa: F401
 from kiro_crew.config.paths import (  # noqa: F401
     kiro_agents_dir,
     project_agents_dir,
@@ -63,12 +64,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         list_agents,
     )
     from kiro_crew.agent_discovery_parts.dir_revision import (  # noqa: F401
+        _AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES,
         _AGENTS_DIR_MEMO_MAX_KEYS,
         _AGENTS_DIR_RACY_MAX_DIGEST_BYTES,
         _AGENTS_DIR_RACY_MAX_DIGESTS,
         _AGENTS_DIR_RACY_WINDOW_NS,
         _DIGEST_CHUNK_BYTES,
         _NO_DIGEST,
+        _PIN_EVERY_ENTRY_ON_BYTES,
         AGENTS_DIR_MEMO_ENABLED,
         AgentsDirMemo,
         AgentsDirRevision,
@@ -142,6 +145,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agent_spec_stems,
         apple_double_sidecar,
         declared_spec_entry,
+        iter_declared_specs,
         plain_markdown_document,
         read_agent_spec_strict,
         spec_by_declared_name,
@@ -177,6 +181,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
     from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar  # noqa: F401
+
+    from kiro_crew.agent_files import (  # noqa: F401
+        KIROCREW_DEFAULT_AGENT_NAMES,
+        WORKER_AGENT_FILENAME,
+    )
 # This module is the facade of the agent-discovery owners in
 # ``kiro_crew.agent_discovery_parts``, and every name is reached through it as
 # ``kiro_crew.agent_discovery.<name>``: a read is served by the owner that binds the name,

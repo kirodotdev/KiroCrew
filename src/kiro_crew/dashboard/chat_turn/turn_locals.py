@@ -21,6 +21,9 @@ from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING
 
+# The one join of a reply segment's chunks; a module name so a test can count its input.
+_join_segments = "".join
+
 if TYPE_CHECKING:
     from asyncio import Task
     from asyncio.locks import Lock
@@ -80,6 +83,7 @@ class _ChatTurn:
     _responsive_protected: "bool"
     _directive_user_origin: "bool"
     _turn_provenance_restored: "bool"
+    _turn_start_background: "bool"
     _directive_self_wake: "bool"
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
@@ -110,6 +114,7 @@ class _ChatTurn:
     _builtin_identity_trusted: "bool"
     _child_lf_warning: "str"
     _compact_after_turn_noticed: "bool"
+    _code_channel_turn: "bool"
     _compaction_completed: "bool"
     _compaction_dropped_leak: "bool"
     _compaction_notice_chunks: "list[str]"
@@ -157,6 +162,7 @@ class _ChatTurn:
     _mirror_active_task: "str"
     _mirror_active_task_title: "str"
     _mirror_chan: "str | None"
+    _mirror_post_ts: "str | None"
     _mirror_stream_ts: "str"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
@@ -273,7 +279,10 @@ class _ChatTurn:
     _wt_pending_coding: "set[str]"
     _wt_pending_dropped: "int"
     agent_model: "str"
-    assistant_text: "str"
+    # The open reply segment as the chunks that built it; read and written as
+    # ``assistant_text`` (the property below), extended by ``append_assistant_text``.
+    # Never holds an empty string, so an empty list is the empty segment.
+    _assistant_parts: "list[str]"
     chunk_seq: "int"
     client: "Any"
     execution_context: "ExecutionContext | None"
@@ -284,7 +293,6 @@ class _ChatTurn:
     is_slash: "bool"
     kiro_agent: "str | None"
     label: "str"
-    last_heartbeat: "float"
     memory_store: "str | None"
     needs_conversation_discard: "bool"
     needs_session_reset: "bool"
@@ -325,6 +333,7 @@ class _ChatTurn:
         _responsive_protected: "bool",
         _directive_user_origin: "bool",
         _turn_provenance_restored: "bool",
+        _turn_start_background: "bool",
         _directive_self_wake: "bool",
         _directive_loop_id: "str",
         _directive_loop_gen: "int",
@@ -357,6 +366,7 @@ class _ChatTurn:
         self._responsive_protected = _responsive_protected
         self._directive_user_origin = _directive_user_origin
         self._turn_provenance_restored = _turn_provenance_restored
+        self._turn_start_background = _turn_start_background
         self._directive_self_wake = _directive_self_wake
         self._directive_loop_id = _directive_loop_id
         self._directive_loop_gen = _directive_loop_gen
@@ -374,6 +384,39 @@ class _ChatTurn:
         self._current_message = _current_message
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
+
+    @property
+    def assistant_text(self) -> str:
+        """The open reply segment's text.
+
+        A long reply arrives as tens of thousands of chunks, and ``str +=`` on an
+        attribute copies the whole prefix on every chunk (CPython's in-place append
+        applies only to a local). The chunks are kept as a list instead and joined
+        on the first read after an append, which replaces the list with the joined
+        text, so each byte is copied once per read rather than once per chunk.
+        """
+        parts = self.__dict__.get("_assistant_parts")
+        if parts is None:
+            raise UnboundLocalError(
+                "cannot access local variable 'assistant_text' where it is not associated with a value"
+            )
+        if len(parts) > 1:
+            parts[:] = [_join_segments(parts)]
+        return parts[0] if parts else ""
+
+    @assistant_text.setter
+    def assistant_text(self, value: str) -> None:
+        self._assistant_parts = [value] if value else []
+
+    def append_assistant_text(self, chunk: str) -> None:
+        """Extend the open segment by *chunk* without copying what it already holds."""
+        if chunk:
+            self._assistant_parts.append(chunk)
+
+    @property
+    def has_assistant_text(self) -> bool:
+        """Whether the open segment holds any text, without joining its chunks."""
+        return bool(self._assistant_parts)
 
     if not TYPE_CHECKING:
 

@@ -15,6 +15,7 @@ checkout the gateway executes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -736,7 +737,7 @@ class TestMaybeReexec:
         path_entries = exec_env["PATH"].split(os.pathsep)
         assert path_entries[0] == str(kcbin.parent)
 
-    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch):
+    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch, caplog):
         """Fail-safe: OSError from execve does not propagate."""
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
@@ -748,8 +749,14 @@ class TestMaybeReexec:
 
         monkeypatch.setattr(os, "execve", raise_oserror)
         monkeypatch.setattr(os, "chdir", MagicMock())
-        # Must NOT raise — the caller keeps booting
-        maybe_reexec(["gateway"])
+        log = logging.getLogger("test_live_target.reexec")
+        # Must NOT raise — the caller keeps booting, and says why.
+        with caplog.at_level(logging.WARNING, logger=log.name):
+            maybe_reexec(["gateway"], log=log)
+        messages = [r.getMessage() for r in caplog.records if r.name == log.name]
+        failed = [m for m in messages if m.startswith("live-target: could not execute ")]
+        assert len(failed) == 1, messages
+        assert failed[0].endswith(": exec failed")
 
     def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""

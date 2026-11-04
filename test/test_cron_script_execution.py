@@ -27,6 +27,8 @@ from kiro_crew.cron_script import (
     run_script_sandboxed,
 )
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 class TestResolveScriptPath:
     """Tests for resolve_script_path validation."""
@@ -100,11 +102,8 @@ class TestRunCommandSandboxed:
     def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """Run commands directly, bypassing the OS-sandbox wrap.
 
-        These tests exercise the run_command_sandboxed output/exit-code plumbing,
-        not the sandbox itself. wrap_argv fails closed when no sandbox backend is
-        available (e.g. the test env's restricted namespaces), which would make
-        every command raise instead of run; patch it to a passthrough so the
-        plumbing is what is under test.
+        wrap_argv fails closed with no sandbox backend, so every command would raise;
+        these tests pin the output and exit-code plumbing, not the sandbox.
         """
         monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None))
         # Bypass the runtime shell probe (which itself spawns a child): these
@@ -387,12 +386,9 @@ class TestCommandCronShellResolution:
     def test_a_concurrent_failing_probe_cannot_erase_a_proven_form(self, monkeypatch):
         """Two command crons resolving the shell on a cold cache stay coherent.
 
-        Thread A proves the ``+B`` form. Thread B starts on the same cold cache
-        and its probe fails transiently. Unserialized, B finishes after A,
-        clears the brace-off record A just wrote and caches the shell as
-        unusable, so A's executor reads the plain form and runs with brace
-        expansion ON. The probe must own the check-probe-record sequence, so B
-        sees A's answer instead of probing.
+        A proves the ``+B`` form while B's probe fails transiently. Unserialized, B
+        clears A's record and A runs with brace expansion ON; serialized, B sees A's
+        answer instead of probing.
         """
         import threading
 
@@ -454,17 +450,11 @@ class TestCommandCronShellResolution:
     ):
         """The shape of macOS /bin/sh, measured on a real shell rather than a stub.
 
-        bash started under the name ``sh`` enters POSIX mode, which is what
-        macOS /bin/sh is, and POSIX mode still brace-expands: the plain probe
-        form prints ``x.a x.a``. The resolver must accept it through the ``+B``
-        form and the executor must reuse that form, so the command the cron
-        actually runs keeps a brace group literal.
+        bash run as ``sh`` is in POSIX mode and still brace-expands (``x.a x.a``). The
+        resolver accepts it through ``+B`` and the executor reuses that form.
 
-        ``host-bin-sh`` runs the same assertions on this host's own /bin/sh when
-        it is such a shell -- on a macOS runner that is the bash 3.2 the report
-        came from, on AL2023 / RHEL / Fedora it is the ``/bin/sh -> bash`` link.
-        ``bash-linked-as-sh`` builds the shape from whatever bash is installed,
-        so a host whose /bin/sh is dash still exercises the ``+B`` path.
+        ``host-bin-sh`` uses this host's /bin/sh when it is bash (macOS bash 3.2,
+        AL2023 / RHEL / Fedora); ``bash-linked-as-sh`` covers hosts whose /bin/sh is dash.
         """
         import shutil
         import subprocess
@@ -507,12 +497,8 @@ class TestRunScriptSandboxed:
     def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """Bypass OS-sandbox wrap and ensure subprocess can import kiro_crew.
 
-        wrap_argv fails closed when no sandbox backend is available (e.g. macOS 26
-        where sandbox-exec is unsupported). run_script_sandboxed also spawns a fresh
-        sys.executable subprocess; on local dev runs outside a packaged install,
-        PYTHONPATH is not set so the subprocess can't import kiro_crew. Inject the
-        src/ dir so the subprocess finds the package. See
-        TestRunCommandSandboxed._passthrough_sandbox.
+        wrap_argv fails closed with no sandbox backend, and outside a packaged install
+        the fresh sys.executable child cannot import kiro_crew, so src/ is injected.
         """
         import os as _os
 
@@ -545,15 +531,9 @@ class TestRunScriptSandboxed:
     def test_a_terminal_failure_survives_leading_stderr_noise(self, tmp_path):
         """The reported error must name why the script died, not what it warned about.
 
-        A process that dies hard leaves its diagnosis at the END of stderr — the
-        traceback is the last thing written. Anything a startup path logged
-        first (a migration warning, a deprecation notice, an import-time banner)
-        sits in front of it, so reporting the HEAD of stderr reports the noise
-        and truncates the cause. The operator then reads a cron failure whose
-        message describes something that did not kill the job.
-
-        900 characters of leading noise is deliberately past the 500-byte bound,
-        so a head-anchored report cannot contain the sentinel by accident.
+        The traceback is the END of stderr; startup warnings sit in front of it.
+        900 characters of leading noise is past the 500-byte bound, so a head-anchored
+        report cannot contain the sentinel by accident.
         """
         script_path = self._write_script(
             tmp_path,
@@ -574,13 +554,8 @@ class TestRunScriptSandboxed:
     def test_a_short_stderr_is_reported_whole(self, tmp_path):
         """Bounding must not start cutting output that already fits.
 
-        The bound exists to cap a runaway stderr, not to reshape the ordinary
-        case, so a diagnosis shorter than the cap keeps both ends. This one is a
-        CONTROL: it must pass identically before and after the change, which is
-        why the child exits WITHOUT a traceback -- an interpreter traceback
-        carries two absolute temp paths, and on Windows those alone push even a
-        one-line diagnosis past the bound, which would quietly turn this control
-        into a second copy of the case above.
+        The child exits WITHOUT a traceback: its two absolute temp paths alone push a
+        one-line diagnosis past the bound on Windows.
         """
         script_path = self._write_script(
             tmp_path,
@@ -635,10 +610,8 @@ class TestRunScriptSandboxed:
     def test_a_credential_straddling_the_bound_does_not_leak_a_fragment(self, tmp_path):
         """Redaction must see the WHOLE stream before the 500-char bound cuts it.
 
-        If the suffix is sliced first, a credential that straddles the cut
-        point loses its leading characters before ``redact`` runs — and the
-        surviving fragment does not match any credential pattern, so it
-        reaches logs and the persisted ``last_error`` unmasked.
+        A key the slice cuts keeps a fragment that matches no credential pattern,
+        so it would reach logs and ``last_error`` unmasked.
 
         Byte layout (written verbatim, ``os._exit`` so no traceback shifts
         it): 300 noise + a 20-char AWS key + 481 trailing chars = 801 total.
@@ -779,7 +752,7 @@ class TestResolveScriptPathSensitive:
         script.write_text("def run(ctx): pass")
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.cron_script.sensitive_path_refusal", return_value="Blocked: x"),
+            patch("kiro_crew.cron_script.canonical_path_refusal", return_value="Blocked: x"),
         ):
             with pytest.raises(PermissionError, match="security policy"):
                 resolve_script_path(str(script) + ":run")

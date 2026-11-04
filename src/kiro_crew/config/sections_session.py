@@ -12,6 +12,7 @@ from typing import Any
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
     DEFAULT_AUTOCOMPACT_PCT,
+    DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
     DEFAULT_SESSION_TIMEOUT,
@@ -207,6 +208,19 @@ class SessionConfig:
             "flight) are never recycled.",
         ),
     )
+    harness_background_hold_secs: int = field(
+        default=DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
+        metadata=_meta(
+            "Background Work Hold (seconds)",
+            "On the Claude backend, how long after the agent starts background work "
+            "(a Workflow or a backgrounded command) the idle timeout and the Watchdog "
+            "RSS Limit still leave its session running (default 3600, 300-86400). "
+            "Claude Code does not report when that work ends, so after this time the "
+            "work is treated as finished and the session can be ended; the chat then "
+            "says the work may have been stopped. Raise it for work that runs longer. "
+            "Twice the Watchdog RSS Limit still ends a session inside the hold.",
+        ),
+    )
     reconcile_max_kills: int = field(
         default=DEFAULT_RECONCILE_MAX_KILLS,
         metadata=_meta(
@@ -267,12 +281,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Model",
-            "Model for the sessions this mate dispatches through "
+            "Model for the sessions this Bot dispatches through "
             "session_create when the call names none. Empty copies the "
-            "mate's model pin when set; with both fields empty, no session "
+            "Bot's model pin when set; with both fields empty, no session "
             "model is pinned and the worker's own agent or the global default "
             "decides. Unlike 'model', 'auto' is a real pin here: workers run "
-            "on the backend's own default, which is how a mate on a costly "
+            "on the backend's own default, which is how a Bot on a costly "
             "model keeps its workers cheap. An explicit model on the call wins.",
         ),
     )
@@ -280,12 +294,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Reasoning Effort",
-            "Reasoning effort for the sessions this mate dispatches through "
+            "Reasoning effort for the sessions this Bot dispatches through "
             "session_create when the call names none. Empty means: while the "
-            "workers run the mate's own model (worker_model empty and no model "
-            "on the call) they take the mate's own effort (the field above); "
+            "workers run the Bot's own model (worker_model empty and no model "
+            "on the call) they take the Bot's own effort (the field above); "
             "under any other model no level is pinned and the worker's agent "
-            "decides as usual (its own crew pin if it runs as a mate, else "
+            "decides as usual (its own crew pin if it runs as a Bot, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
         ),
@@ -294,7 +308,7 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Harness",
-            "Agent harness for this crewmate's own chat and the worker sessions it "
+            "Agent harness for this Bot's own chat and the worker sessions it "
             "opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty "
             "inherits agent.member_acp_backend. A harness this gateway cannot start "
             "refuses the session with the reason instead of running another one. "
@@ -305,18 +319,18 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Dynamic capabilities",
-            "Preview, per crewmate: this crewmate can find "
+            "Preview, per Bot: this Bot can find "
             "new skills or tools for its worker and ask for them on a card in its "
-            "chat. Off (the default): only you add them, in this crewmate's "
+            "chat. Off (the default): only you add them, in this Bot's "
             "advanced settings, and it tells you when its worker lacks one. "
-            "Read per request, so a change reaches the crewmate's next session.",
+            "Read per request, so a change reaches the Bot's next session.",
         ),
     )
     approval_mode: str = field(
         default="",
         metadata=_meta(
             "Approval Mode",
-            "Tool approval for this mate's own Mates-page thread: normal, "
+            "Tool approval for this Bot's own Bots-page thread: normal, "
             "trust_reads or trust. Empty means the user never chose one, and the "
             "thread opens in trust.",
         ),
@@ -353,7 +367,7 @@ class KiroCrewAgentConfig:
         default=False,
         metadata=_meta(
             "Starred",
-            "Marks this crew as a favourite on the Crew Members page. Purely a "
+            "Marks this crew as a favourite on the Bots page. Purely a "
             "roster preference: the page's star filter shows only starred "
             "crews, so the dozens of package-installed crews the agent sync "
             "writes here can be collapsed behind the few you actually drive. "
@@ -450,9 +464,9 @@ class KiroCrewAgentConfig:
         default_factory=dict,
         metadata=_meta(
             "Imported",
-            "Provenance stamp of a mate imported from a .crewmate file: "
+            "Provenance stamp of a Bot imported from a .crewmate file: "
             "{'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty "
-            "for a mate made here. The sender label is self-declared; nothing "
+            "for a Bot made here. The sender label is self-declared; nothing "
             "reads the stamp to reach the sender.",
         ),
     )

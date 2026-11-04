@@ -20,12 +20,10 @@ from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 
 from conftest import host_abs
 
-# ---------------------------------------------------------------------------
 # MCP merge: CC-global vs Kiro-global priority + resolution-aware fallback
 # (regression coverage for the builder-mcp shadowing bug — a bare/unresolvable
 # command in the higher-priority source must not shadow a resolvable command
 # in a lower-priority source, and Kiro-global outranks CC-global.)
-# ---------------------------------------------------------------------------
 
 
 def _make_exec(tmp_path: Path, name: str) -> str:
@@ -45,11 +43,8 @@ def _abs(*parts: str) -> str:
 class TestSpecEnvPathIsExpandedOnEmit:
     """A spec's ``env.PATH`` is written out as the full effective PATH.
 
-    The spec's ``env`` is applied per key, so a declared ``PATH`` REPLACES the
-    child's inherited one. Emitting the fragment verbatim hands the server a
-    PATH holding only the directories the user happened to name, which breaks
-    any launcher that resolves a sibling binary at runtime while the dashboard
-    probe — which merges instead of replacing — still reports it healthy.
+    A declared ``PATH`` replaces the child's inherited one, so the bare fragment would
+    break launchers while the dashboard probe, which merges, reports healthy.
     """
 
     def test_declared_path_is_expanded(self, tmp_path: Path, monkeypatch) -> None:
@@ -140,11 +135,8 @@ class TestSpecEnvPathIsExpandedOnEmit:
     def test_command_resolves_via_the_inherited_half(self, tmp_path: Path, monkeypatch) -> None:
         """Resolution must search more than the spec's own fragment.
 
-        The other tests in this class stub ``shutil.which`` to resolve anything,
-        so they only pin the emitted bytes. This one honours the ``path=``
-        kwarg, so it catches an expansion narrowed to the declared fragment —
-        which would leave a bare command resolvable only through the inherited
-        half silently dropped from the config.
+        Unlike its siblings, this stub of ``shutil.which`` honours ``path=``, so it
+        catches an expansion narrowed to the declared fragment.
         """
         monkeypatch.setenv("PATH", "/usr/bin")
         cfg_dir = _bundled_defaults(tmp_path)
@@ -400,17 +392,11 @@ class TestSpecEnvPathIsExpandedOnEmit:
 
 
 class TestRebuildReconcileRetainsEnabledAppServers:
-    """The final kirocrew.json reconcile must not delete an ENABLED app's
-    manifest-derived MCP server just because it is absent from on-disk — a clean
-    rebuild (or a missing/empty config) starts with an empty on_disk, and the
-    app's tools would vanish. It must drop a server only when its app is
-    confirmed not enabled (a concurrent deregister).
+    """The kirocrew.json reconcile drops an app's server only when the app is not enabled.
 
-    Pinned by source inspection: the reconcile is an inline block in the
-    rebuild's commit phase (``default_spec_commit.write_default_spec``, which
-    ``install_agent`` calls) gated on ``is_kirocrew_json`` (the written path
-    equalling ``bridges._mcp_json_path()``), which the merge-priority harness does
-    not reproduce — so the guarantee is asserted structurally.
+    A clean rebuild starts with an empty on_disk. Asserted from source because the
+    block in ``default_spec_commit.write_default_spec`` is gated on ``is_kirocrew_json``,
+    which the merge-priority harness does not reproduce.
     """
 
     def test_reconcile_drops_by_enabled_state_not_ondisk_absence(self) -> None:
@@ -435,11 +421,8 @@ class TestMcpMergePriority:
     def test_the_authorship_marker_never_reaches_the_rendered_spec(self, tmp_path: Path):
         """A shared-file marker is provenance, not configuration.
 
-        The marker records that Kiro Crew wrote an entry into a file it does NOT
-        own. The rendered spec is ours, so carrying the key through would put a
-        field in front of the runtime that says nothing to it -- and would change
-        the emitted spec for every managed remote, which nothing about recording
-        authorship needs to do.
+        It records that Kiro Crew wrote into a file it does not own; the rendered spec is
+        ours, so the key is not carried into it.
         """
         from kiro_crew.mcp_provenance import MARKER_KEY, stamp
 

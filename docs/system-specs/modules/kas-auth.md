@@ -104,7 +104,7 @@ header. Getting it wrong misroutes governance and can fail-closed. Mapping:
 
 | Kiro Crew login | `provider` value | governance-enterprise? | notes |
 |---|---|---|---|
-| AWS Builder ID | `BuilderId` | no | MUST be set; empty → misclassified |
+| AWS Builder ID | `BuilderId` | no | MUST be set; empty → misclassified. `profileArn` is the fixed Builder ID ARN (below) |
 | Social — Google | `Google` | no | |
 | Social — GitHub | `Github` | no | |
 | IAM Identity Center | `Enterprise` | **yes** | `profileArn` mandatory (region routing) |
@@ -112,8 +112,18 @@ header. Getting it wrong misroutes governance and can fail-closed. Mapping:
 | Amazon internal | `Internal` | no (but admin-billing) | |
 
 `profileArn`: mandatory for enterprise/IdC (feeds `X-Kiro-Profile-Arn`, and its 4th ARN
-segment is the region source). Optional for Builder ID / social (falls back to
-us-east-1). Social device-flow uses a shared default profile ARN.
+segment is the region source). Social device-flow uses a shared default profile ARN,
+returned by the poll. The engine accepting a reply without one does NOT make it
+optional: the Kiro runtime refuses every request that names no profile with HTTP 400
+`ValidationException` "profileArn is required for this request" (model list, chat,
+remote tools; #26109). Builder ID has no profile of its own (`ListAvailableProfiles`
+answers it `AccessDeniedException`), so the vault stores none for it, and
+`auth/provider.kas_profile_arn` gives the engine kiro-cli's fixed Builder ID ARN
+(`BUILDER_ID_PROFILE_ARN`, the value kiro-cli's `builder_id_callback_token` sends) on
+every engine-facing read: `getAccessToken`, `getProfileArn` and
+`resolveRequestCredential`. It is applied when the reply is built, not stored at
+sign-in, so a Builder ID sign-in made before the change works without signing in
+again. Every other identity sends the ARN its sign-in stored.
 
 ## Login flows (four identities × two transports)
 

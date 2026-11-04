@@ -87,17 +87,9 @@ class TestStaleMappingGuard:
     def test_a_cached_identity_cannot_authorize_a_read(self):
         """The probe must not answer an authorization question from memory.
 
-        The test above mocks ``probe_identity`` outright, so it proves the refusal
-        and says nothing about WHERE the identity came from. The real function
-        memoises per ``(profile, region)`` for 30 seconds, which is why this one
-        drives the actual cache: it primes an answer of ACCOUNT, repoints the
-        underlying credentials at another account, and then asks for ACCOUNT.
-
-        Against a cached probe the route reads ACCOUNT's inventory out of the
-        OTHER account, and nothing anywhere reports a problem: the caller asked
-        for an account they own, the check passed, and the rows came back. That is
-        disclosure, and it is silent, which is why the assertion below is that no
-        AWS read was attempted at all.
+        ``probe_identity`` memoises per ``(profile, region)`` for 30 seconds, so this
+        drives the real cache: prime ACCOUNT, repoint the credentials elsewhere, ask
+        again. A cached answer would silently read the OTHER account's inventory.
         """
         handlers = _registered()
         other = "444455556666"

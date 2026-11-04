@@ -375,6 +375,29 @@ async def test_a_frame_that_does_not_end_the_turn_carries_no_identity(tmp_path):
     assert payload["continuing"] is True
 
 
+@pytest.mark.asyncio
+async def test_restored_cards_the_user_has_not_sent_are_not_continuing_work(tmp_path):
+    """No drain runs a restored card on its own, so a queue holding only those
+    ends the turn: the done frame must not suppress the turn-done chime."""
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_SEND_CHOSEN_KEY,
+        sanitize_restored_queue,
+    )
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-done-restored")
+    slot._queue = sanitize_restored_queue([{"id": "old", "content": "restored request"}])
+
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is False
+
+    slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is True
+
+    slot._queue[0].pop(RESTORED_SEND_CHOSEN_KEY)
+    slot.queue_append("fresh user request", directive_user_origin=True)
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is True
+
+
 class _DeferredCompactProvider(ScriptedProvider):
     """A statusless kiro turn whose compaction finishes during the wait."""
 

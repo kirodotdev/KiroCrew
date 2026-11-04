@@ -129,4 +129,15 @@ describe('ErrorNotice messagePlacement', () => {
     rerender(<ErrorNotice {...props} variant="inline" scrollMessage />)
     expect(screen.getByRole('alert').outerHTML).toBe(before)
   })
+
+  it.each(['block', 'inline'] as const)('messageRef hands the %s variant\'s message span to the host', variant => {
+    // The host that bounds and scrolls the message measures this node for its
+    // edge cue, so the ref must land on the span that holds the text alone.
+    const ref = { current: null as HTMLSpanElement | null }
+    render(<ErrorNotice variant={variant} title="Save failed" message={RAW} messageRef={ref} testId="n" />)
+    expect(ref.current).not.toBeNull()
+    expect(ref.current!.tagName).toBe('SPAN')
+    expect(ref.current!.textContent).toBe(RAW)
+    expect(screen.getByTestId('n').contains(ref.current)).toBe(true)
+  })
 })

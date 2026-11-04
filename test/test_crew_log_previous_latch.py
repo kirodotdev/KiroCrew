@@ -86,11 +86,9 @@ def _header_of(sid: str) -> dict:
 def _drop_announce(sid: str, *, later_than: str) -> None:
     """Leave *sid* with its header alone, stamped after *later_than*'s.
 
-    The state a create passes through: :meth:`CrewLog.create` publishes the header and
-    the announce is appended second, so a reader between the two sees a unit that
-    proves its slot and cites nothing yet. The stamp is pushed past *later_than*
-    because the edges cannot order two logs that both cite nothing, and a fixture
-    leaving them inside one millisecond would be exercising the sid tie-break instead.
+    This is the state between :meth:`CrewLog.create` publishing the header and appending
+    the announce. The stamp is pushed a second later so the test does not hit the sid
+    tie-break for two logs inside one millisecond.
     """
     header = _header_of(sid)
     header["createdAt"] = _header_of(later_than)["createdAt"] + 1_000
@@ -259,12 +257,9 @@ class TestTheSlotLatch:
     def test_an_earlier_refusal_does_not_ride_on_a_later_named_latch(self):
         """The flag describes the latch that WON, not one that lost.
 
-        Two latches before a single entry is owed is ordinary: the eager prefetch runs
-        its own resolver, and the turn runs one too. If the prefetch's store read
-        refused and the turn's then named an id, the pair handed over must be that
-        name alone. Carrying the earlier reason forward writes a named edge reported
-        undetermined -- the one pairing the sibling above promises a reader never to
-        see, and here it arrives from two calls rather than from one caller's mistake.
+        Two latches per entry is ordinary: the eager prefetch and the turn each run a
+        resolver. Carrying the prefetch's refusal forward would write a named edge
+        reported undetermined, the pairing a reader must never see.
         """
         slot = _slot()
         slot.latch_crew_log_previous("", undecided=True)
@@ -277,12 +272,9 @@ class TestTheSlotLatch:
     def test_a_later_determination_supersedes_an_earlier_refusal(self):
         """Same two latches, and this time the second one names nothing either.
 
-        A refusal carries no information about the store's CONTENT -- it says the read
-        could not be made. A later read that succeeded and found no earlier store is
-        strictly better information about the same slot, so it must win. Left standing,
-        the earlier refusal has the entry record a chain BREAK -- "a predecessor exists
-        and could not be determined" -- for a slot the gateway determined has none, and
-        every later fold then refuses on that log instead of passing over it.
+        A refusal only says the read could not be made, so a later successful read that
+        found no earlier store wins. Otherwise the entry records a chain break and every
+        later fold refuses on that log.
         """
         slot = _slot()
         slot.latch_crew_log_previous("", undecided=True)
@@ -390,11 +382,9 @@ class TestTheTurnCitesThePredecessorNotThePrewarm:
 class TestAReplayPendingAllocationLeavesTheMappingBehind:
     """The mapping can be a generation behind the store the slot is writing.
 
-    An allocation whose history replay is pending keeps the prior resumable id in
-    the mapping on purpose, so the id a restart can resume stays durable. The store
-    the slot is actually writing is newer than that. What the slot last handed to a
-    `session/opened` is the one source that states it, so the latch prefers it and
-    the window cannot make an edge point at an older generation.
+    A replay-pending allocation keeps the prior resumable id in the mapping on purpose.
+    The latch prefers what the slot last handed to `session/opened`, which names the
+    store actually being written.
     """
 
     def test_the_latch_names_the_store_the_slot_is_on_not_the_mapped_one(self):
@@ -577,18 +567,12 @@ class TestTheStoreDecidesNotTheMapping:
 
     @pytest.mark.asyncio
     async def test_a_store_with_nothing_to_order_by_does_not_cite_a_pending_mapping(self, _store):
-        """The shape every upgraded slot is in, plus the one window the mapping lies in.
+        """Two unordered stores plus a replay-pending mapping record a break.
 
-        Two stores written before this edge existed: both state they have no
-        predecessor, so the store has nothing to order them by and answers "no
-        succession". The mapping is normally the right fallback there -- but while
-        allocation is holding the prior resumable id back it names a generation
-        behind, and citing it orphans the store between the two. Neither source can
-        say, so the log records a break instead.
-
-        Driven through the LATCH and the TAKE rather than the resolver alone, because
-        that is where the window is asked about: the resolver runs before this turn's
-        session exists, so it hands the id back provisional and the take decides.
+        The mapping is the usual fallback, but while replay is pending it names a
+        generation behind, and citing it orphans the store between. Driven through the
+        latch and the take, because the resolver runs before the session exists and
+        hands the id back provisional; the take decides.
         """
         _store(PREDECESSOR)
         _store(NEWEST)
@@ -611,12 +595,9 @@ class TestTheStoreDecidesNotTheMapping:
     async def test_a_window_invisible_to_the_resolver_still_stops_the_citation(self, _store):
         """The window the resolver CANNOT see, which is the restart case.
 
-        The marker is an attribute of a live session, and the latch runs before this
-        turn's session is allocated -- so on a cold start the resolver is told "no
-        replay owed" by the mere absence of anybody to ask, which is exactly when the
-        mapping is most likely to be holding the older generation. The resolver here
-        sees a clean window and the take sees the real one, and the edge must still be
-        a break: a decision made where the answer is unavailable is not a decision.
+        The replay marker lives on a live session, so on a cold start the resolver sees
+        "no replay owed" just because no session exists yet. The take sees the real
+        window, and the edge must still be a break.
         """
         _store(PREDECESSOR)
         _store(NEWEST)
@@ -659,17 +640,11 @@ class TestTheStoreDecidesNotTheMapping:
 
     @pytest.mark.asyncio
     async def test_a_handover_with_an_empty_mapping_states_nothing(self, _store):
-        """The two DECIDED empties are different facts, and only one may be stated.
+        """A store hand-over plus an empty mapping determines nothing.
 
-        Units written before these keys existed sit on disk, so the store hands the
-        question on rather than ranking them. The mapping entry is then gone -- the
-        state the emitter's own note names, where the map is deleted while the units
-        remain -- so neither source names a predecessor.
-
-        That is NOT a finding that the slot has none. Reported as one, the entry records
-        `previous_none` for a slot with earlier logs sitting beside it, a later fold
-        passes over it because a stated chain start may be passed over, and the log is
-        orphaned in an append-only record. The honest answer determines nothing.
+        Pre-key units sit on disk and the mapping entry is gone, so neither source names
+        a predecessor. Recording `previous_none` here would let a later fold pass over
+        the log and orphan it.
         """
         _store(PREDECESSOR)
         _store(NEWEST, previous=PREDECESSOR)
@@ -711,17 +686,9 @@ class TestTheStoreDecidesNotTheMapping:
     async def test_a_record_of_this_process_is_not_downgraded_by_the_window(self, _store):
         """The window bears on the MAPPING, not on what this process itself recorded.
 
-        Reachable through the two allocation sites: the prefetch's resolver runs while
-        the slot has no record, so it answers from the mapping and flags the id
-        provisional -- and by the time that latch lands the turn may already have taken
-        an entry, which records the store this process opened. The record wins over the
-        mapped id, so what gets latched is the record rather than the mapping's answer,
-        and the flag must not survive the substitution.
-
-        The slot's own record is this gateway's statement about which store the slot is
-        on, taken as that store became current. A pending replay says nothing about it,
-        and downgrading it would lose the one citation no other source can supply: a
-        store whose create is still queued to the writer thread.
+        The prefetch may latch a provisional mapped id after the turn already recorded
+        its store; the record wins and the provisional flag must not survive. Downgrading
+        the record would lose the only citation of a create still queued to the writer.
         """
         slot = _ChatSlot(SLOT)
         slot.take_crew_log_previous(now_writing=PREDECESSOR, replay_pending=False)
@@ -783,12 +750,8 @@ class TestTheStoreDecidesNotTheMapping:
     async def test_a_slot_that_already_holds_the_answer_reads_no_store(self, _store):
         """The warm turn, which is nearly every turn, must not pay for the store.
 
-        The latch prefers the slot's own record over anything this resolver returns, so
-        a read taken while that record is set is spent on a value the caller discards.
-        It is not a cheap discard: the read lists the session root and reads a line pair
-        per unit of the slot, so its cost grows with the store rather than with the
-        turn. Counted here rather than asserted structurally, because what matters is
-        that the work did not happen.
+        The latch discards the read when the slot's record is set, and the read lists the
+        session root and reads each unit's head, so it grows with the store.
         """
         _store(PREDECESSOR)
         _store(NEWEST, previous=PREDECESSOR)
@@ -913,19 +876,11 @@ class TestTheHeadFold:
         assert fold_slot_head(records, SLOT) == UNDECIDED
 
     def test_logs_that_all_state_no_predecessor_hand_over_rather_than_refuse(self):
-        """The state a store written before the edge existed is in, and the answer
-        has to be the one that can still change.
+        """Logs that each state no predecessor answer HAND_OVER, not UNDECIDED.
 
-        Every log here READ its announce and none names a predecessor, so the store
-        holds no succession for this slot to read -- nothing undecidable, just nothing
-        recorded. UNDECIDED would suppress the caller's next source, so no edge would
-        ever be written, and every later create would add one more unrankable log:
-        permanent, on every store that predates the edge, which is all of them.
-
-        HAND_OVER and not NO_LOG, because units of this slot EXIST. The distinction is
-        what the caller may SAY: it may consult its next source either way, and only
-        on a complete absence may it record that the slot has no earlier store. Several
-        logs each claiming to start the chain is this fold failing to rank them.
+        UNDECIDED would suppress the caller's next source, so no edge would ever be
+        written. Not NO_LOG either: units exist, so the caller may not record that the
+        slot has no earlier store.
         """
         records = [
             self._record(PREDECESSOR, at=1_000, edge=EDGE_NONE),
@@ -972,19 +927,11 @@ class TestTheHeadFold:
         assert fold_slot_head(records, SLOT) == UNDECIDED
 
     def test_a_legacy_silence_beside_a_linked_head_goes_to_the_mapping(self):
-        """The shape a pre-upgrade store reaches when the old gateway missed one edge.
+        """A legacy log with no `previous` key beside a linked head hands over.
 
-        The old emitter wrote `previous` only when it had a predecessor to name, so a
-        log it failed to resolve carries no key at all -- byte-identical to one that
-        starts the slot's chain. Passing it over elects the linked older log and
-        orphans it permanently. Refusing would be permanent too, because that silence
-        never becomes anything else, so the answer hands the question to the mapping,
-        which still knows which store the slot is on.
-
-        It hands over WITHOUT a determination: units of this slot exist, so an empty
-        answer from the mapping says only that the mapping had nothing to give, and an
-        entry recording that as "this slot has no earlier store" would be the same
-        false claim from the other direction.
+        A missing key is identical to a chain start, so passing it over orphans it, and
+        refusing would be permanent. The mapping decides, and the hand-over is not a
+        determination: units exist, so "no earlier store" may not be recorded.
         """
         records = [
             self._record(PREDECESSOR, at=1_000, edge=EDGE_LEGACY),
@@ -1034,13 +981,10 @@ class TestTheStoreReader:
         assert slot_chain_head(SLOT) == SlotHead(sid=PREDECESSOR, decided=True)
 
     def test_a_unit_whose_announce_has_not_landed_leaves_the_read_undecided(self, _store):
-        """The create writes the header and the announce is a second write.
+        """A read between the header write and the announce answers UNDECIDED.
 
-        A read between the two finds a store the slot has certainly opened and an edge
-        that is merely not written yet, which makes a SECOND uncited unit. Nothing in
-        the record orders the two, so this answers UNDECIDED -- and the caller writes
-        no edge rather than guessing. The slot's own record covers this window, which
-        is why it is consulted ahead of this read: see
+        The unwritten edge makes a second uncited unit that nothing orders. The slot's
+        own record covers this window, see
         `TestTheResolutionOrder::test_a_second_allocation_cites_a_store_still_queued_to_the_writer`.
         """
         _store(PREDECESSOR)
@@ -1057,16 +1001,10 @@ class TestTheStoreReader:
     def test_a_store_whose_units_all_state_no_predecessor_hands_over_and_then_describes_itself(
         self, _store
     ):
-        """A store whose logs each RECORD that they start a chain, with no backfill.
+        """Logs that each state a chain start hand over until a create records an edge.
 
-        Nothing here is undecidable: every log read its announce and each says it has
-        no earlier store, so the read hands the question on, the caller's next source
-        decides, and the store starts answering for itself from the first create that
-        records an edge -- without anything rewriting the units already on disk.
-
-        The hand-over is INCOMPLETE, because units of this slot are on disk. The caller
-        may act on it and may state nothing: an entry claiming the slot has no earlier
-        store would contradict the very units this read just listed.
+        The hand-over is incomplete because units are on disk, so the caller may not
+        state that the slot has no earlier store.
         """
         _store(PREDECESSOR)
         _store(NEWEST)
@@ -1086,15 +1024,10 @@ class TestTheStoreReader:
         assert slot_chain_head(SLOT) == SlotHead(sid=SUCCESSOR, decided=True)
 
     def test_units_from_before_the_keys_hand_over_rather_than_elect_a_cited_log(self, _store):
-        """The store the fix actually meets: units that say NOTHING about an edge.
+        """Units that say NOTHING about an edge hand over to the caller's next source.
 
-        Every store on disk today is made of these, because writing no edge is
-        precisely what the defect did, and their silence is unexplained -- equally "I
-        am first" and "I could not tell". Passing them over elects the log the newer
-        one cites and orphans the silent one on an append-only entry, so the read hands
-        the question to the caller's next source, which is what decided it before this
-        fix existed. That is not a regression against anything; it is the pre-fix
-        answer, kept until the units themselves can say more.
+        Their silence means either "I am first" or "I could not tell". Passing them over
+        would elect the cited log and orphan the silent one on an append-only entry.
         """
         _store(PREDECESSOR)
         _store(NEWEST, previous=PREDECESSOR)
@@ -1142,18 +1075,10 @@ class TestTheStoreReader:
     def test_a_caller_that_never_looked_states_nothing_about_a_predecessor(self, _store):
         """The statement is the LOOKER's, so a caller that did not look writes no key.
 
-        The channel dispatchers hold no slot record and no store read: they hand over
-        one id captured from the mapping, and pass nothing about whether a predecessor
-        exists. That id is empty whenever the mapping entry is gone while the slot's
-        units remain, and an emitter treating the emptiness as a finding would have
-        that log declare itself the slot's first -- a claim no one made, frozen into an
-        append-only entry, which a later fold then passes over.
-
-        So the unit must come out in the LEGACY state: the honest reading of a log
-        whose announce says nothing either way, and the state that sends the question
-        to a source which still knows. Written through the emitter directly rather than
-        the fixture's helper, because the fixture passes a determination and the
-        dispatchers are the callers that do not.
+        Channel dispatchers pass only a mapped id, empty when the mapping entry is gone.
+        Treating that as "no predecessor" would freeze a false chain start, so the unit
+        stays LEGACY. Written through the emitter directly because the fixture helper
+        passes a determination and the dispatchers do not.
         """
         emit.on_session_opened(
             NEWEST,
@@ -1184,11 +1109,8 @@ class TestTheStoreReader:
     ):
         """The write half and the read half of one fact, on units the emitter wrote.
 
-        A read fault at CREATE time leaves the resolver unable to name a predecessor.
-        If that log simply omits the key it is indistinguishable from a log that
-        starts the slot's chain, so a later fold passes over it and elects the log
-        before it -- writing, by another route, the citation this read refused to
-        guess. The announce records the difference and the fold refuses on it.
+        A read fault at create time is recorded in the announce, so a later fold refuses
+        instead of passing over the log as a chain start and electing the one before it.
         """
         _store(PREDECESSOR)
         _store(NEWEST, previous=PREDECESSOR)
@@ -1215,11 +1137,8 @@ class TestTheStoreReader:
     def test_the_slot_keeps_citing_forward_after_an_undetermined_predecessor(self, _store):
         """What recovery there is: the break does not stop the next link.
 
-        The lost edge itself cannot come back -- the announce is append-only and the
-        predecessor was never recorded. What must keep working is everything after
-        it, and that is the slot's own record: the process that opened the store
-        names it for the next allocation, so the chain continues forward from the
-        break instead of the slot going silent.
+        The lost edge cannot come back (the announce is append-only), but the slot's own
+        record names the store for the next allocation, so the chain continues forward.
         """
         _store(PREDECESSOR)
         _store(NEWEST, undecided=True)
@@ -1279,11 +1198,8 @@ class TestTheStoreReader:
     def test_a_newest_unit_the_listing_cannot_prove_does_not_elect_the_one_before_it(self, _store):
         """The listing is taken STRICTLY, so a unit it cannot account for refuses it.
 
-        An ordinary listing is a read and answers the shorter truth: a unit whose
-        header will not prove while it already holds entries is left out without a
-        word, and the unit likeliest to be in that state is the newest one. Left out,
-        it leaves the unit BEFORE it uncited, and that older id is what would be
-        frozen into an append-only ``previous``.
+        An ordinary listing silently drops a unit whose header will not prove, likeliest
+        the newest one, and the older id would then be frozen into ``previous``.
         """
         _store(PREDECESSOR)
         _store(NEWEST, previous=PREDECESSOR)
@@ -1358,12 +1274,9 @@ asyncio.run(main())
 def _after_restart(home: Path, slot: str, mapped: str) -> str:
     """What a NEW gateway process would cite for *slot*, given the store at *home*.
 
-    A real subprocess, because that is the only thing this can be: an in-memory
-    record answers correctly for as long as the interpreter that wrote it lives, so
-    a test that stays inside one process passes whether or not the answer is
-    durable. Modelled on the boot probe in ``test_crew_log_emit_redaction_and_flag``: fixed argv, no
-    shell, an absolutised interpreter so a relative PATH entry cannot break the
-    child, and the repo's own ``src`` on the path.
+    A real subprocess, because an in-memory record would pass whether or not the answer
+    is durable. Fixed argv, no shell, an absolute interpreter, and the repo's ``src``
+    on the path.
     """
     env = {
         "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
@@ -1426,16 +1339,9 @@ class TestTheAnswerSurvivesTheProcess:
 class TestTheResolutionOrder:
     """Three sources, and each one covers a window the next cannot.
 
-    The slot's own record of the store it opened is FIRST, because it is the only
-    source that can name a store whose unit is not on disk yet: the create is queued
-    to the writer thread, so a second allocation inside that window finds nothing to
-    read. The store is next, and it is the only source that survives the process. The
-    mapping is last, and it is a proxy rather than an answer -- a replay-pending
-    allocation holds the prior resumable id there on purpose.
-
-    Dropping any tier reopens a window: without the record, a buffered create is
-    orphaned in-process; without the store, a restart cites a generation back;
-    without the mapping, a slot's first store has no id to re-attach to.
+    The slot's record comes first: only it can name a store whose create is still queued
+    to the writer. The store is next: only it survives a restart. The mapping is last,
+    a proxy that a replay-pending allocation holds one generation back.
     """
 
     def test_the_record_outranks_the_store_and_the_mapping(self, _store):
@@ -1455,14 +1361,9 @@ class TestTheResolutionOrder:
     ):
         """The window no store read can cover, through the real turn path.
 
-        `on_session_opened` queues the create, so while that job is buffered the
-        slot's newest store has NO unit for any reader to find. The store on disk
-        answers the generation before it, and the mapping is held still the way a
-        replay-pending allocation leaves it. Only the slot's own record names the
-        store the second turn must cite.
-
-        Mutation guard: resolving from the store or the mapping alone answers
-        `PREDECESSOR` twice here, which orphans the store the first turn opened.
+        `on_session_opened` queues the create, so the newest store has no unit on disk
+        yet and the mapping is held back as replay-pending leaves it. Only the slot's own
+        record names the store the second turn must cite.
         """
         _store(PREDECESSOR)
         _runner_config(_config(tmp_path))

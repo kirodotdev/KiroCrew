@@ -21,11 +21,15 @@
 // sketchSrcdoc.test.ts. This file only pins the WIRING — that the panel routes
 // `output` through that builder instead of handing it to `srcDoc` raw.
 
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, act, within } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach, onTestFinished } from 'vitest'
+import { render, renderHook, screen, fireEvent, cleanup, act, within, waitFor } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
+import { useState } from 'react'
+import { MotionGlobalConfig } from 'framer-motion'
 
 import AgentPanel from '../apps/meetings/components/AgentPanel'
+import AgentPanelSlot from '../apps/meetings/components/AgentPanelSlot'
+import { useExpandedAgent } from '../apps/meetings/hooks/useExpandedAgent'
 import type { AgentDef } from '../apps/meetings/api'
 import { MERMAID_RUNTIME_PATH } from '../lib/vendorPaths'
 import EN_CATALOG from '../i18n/locales/en.json'
@@ -445,13 +449,18 @@ describe('AgentPanel — editable minutes', () => {
     expect(screen.getByText(EDITABLE.edited)).toBeTruthy()
   })
 
-  it('keeps the header to two actions and labels the separate edit action row', () => {
-    const { container } = mountEditable({ edit: { stale: false } })
+  it('keeps the edit actions out of the header, in their own labelled row', () => {
+    const { container } = mountEditable({ edit: { stale: false }, onToggleExpanded: vi.fn() })
     const card = container.firstElementChild as HTMLElement
     const header = card.children[0] as HTMLElement
     const editActions = card.children[1] as HTMLElement
 
-    expect(within(header).getAllByRole('button')).toHaveLength(2)
+    // The right-hand group stays at two (output/chat, mute); Expand sits apart,
+    // beside the title, so no button row grows past the two-button cap.
+    const [titleGroup, controls] = Array.from(header.children) as HTMLElement[]
+    expect(within(controls).getAllByRole('button')).toHaveLength(2)
+    expect(within(titleGroup).getAllByRole('button').map(b => b.getAttribute('aria-label')))
+      .toEqual(['Expand Note Taker'])
     const actionButtons = within(editActions).getAllByRole('button')
     expect(actionButtons).toHaveLength(2)
     expect(actionButtons.map(button => button.textContent)).toEqual([
@@ -640,5 +649,255 @@ describe('AgentPanel — markdown output pane scrolling (#7664)', () => {
       expect(el.classList.contains('overflow-hidden')).toBe(false)
       expect(el.classList.contains('card-glow')).toBe(false)
     }
+  })
+})
+
+// ── expand (#21179) ─────────────────────────────────────────────────────────
+//
+// A large diagram or table could not be seen whole: the sketch frame was a fixed
+// 340 px and the notes pane capped at 520 px. The header's Expand control lets
+// the panel take the workspace; the compact layout stays the default, and the
+// same control or Escape restores it with focus back on the control.
+
+function ExpandHarness({
+  agent,
+  output,
+  ...rest
+}: { agent: AgentDef; output: string } & Partial<React.ComponentProps<typeof AgentPanel>>) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <AgentPanel
+      agent={agent}
+      output={output}
+      listening
+      chatView={false}
+      onToggleListening={vi.fn()}
+      onToggleChatView={vi.fn()}
+      onSendMessage={vi.fn()}
+      expanded={expanded}
+      onToggleExpanded={() => setExpanded(value => !value)}
+      {...rest}
+    />
+  )
+}
+
+describe('AgentPanel — expand (#21179)', () => {
+  it('is compact by default: the sketch frame keeps its fixed 340px box', () => {
+    const { container } = render(<ExpandHarness agent={HTML} output="<p>diagram</p>" />)
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    expect(frame.style.height).toBe('340px')
+    expect(screen.getByLabelText('Expand Sketch Artist')).toBeTruthy()
+    expect((container.firstElementChild as HTMLElement).className).not.toContain('flex-1')
+  })
+
+  it('lets the sketch frame grow to the card height while expanded, then restores it', () => {
+    const { container } = render(<ExpandHarness agent={HTML} output="<p>diagram</p>" />)
+    fireEvent.click(screen.getByLabelText('Expand Sketch Artist'))
+
+    const card = container.firstElementChild as HTMLElement
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    expect(card.className).toContain('flex-1')
+    // The card may grow past the workspace when its own content minimum needs
+    // more room (a short phone workspace): `min-h-0` let card-glow's clip hide
+    // the frame's bottom and the editor's Save/Cancel, out of every scroller's
+    // reach. Measured in Chromium at 390x360.
+    expect(card.className).toContain('min-h-min')
+    expect(card.className).not.toContain('min-h-0')
+    expect(frame.style.height).toBe('')
+    expect(frame.className).toContain('flex-1')
+    // The floor and the compositing promotion both survive the expansion.
+    expect(frame.style.minHeight).toBe('340px')
+    expect(frame.style.transform).toBe('translateZ(0)')
+
+    const restore = screen.getByLabelText(EDITABLE.collapse.replace('{{name}}', 'Sketch Artist'))
+    fireEvent.click(restore)
+    expect(frame.style.height).toBe('340px')
+    expect(card.className).not.toContain('min-h-min')
+  })
+
+  it('drops the notes pane height cap while expanded', () => {
+    render(<ExpandHarness agent={MARKDOWN} output="# Notes" />)
+    const pane = screen.getByTestId('agent-output-pane')
+    expect(pane.className).toContain('max-h-[min(520px,60vh)]')
+
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    expect(pane.className).not.toContain('max-h-')
+    expect(pane.className).toContain('flex-1')
+  })
+
+  it('keeps every expanded scroller out of the card height floor', () => {
+    // The expanded card is `min-h-min` so real minimums (editor, frame) can grow
+    // it past a short workspace. A scroller whose content length counted toward
+    // that floor would stretch the card instead of scrolling: the notes pane and
+    // the chat thread both carry size containment for that reason.
+    render(<ExpandHarness agent={MARKDOWN} output="# Notes" />)
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    expect(screen.getByTestId('agent-output-pane').className).toContain('contain-size')
+    cleanup()
+    const { container } = render(<ExpandHarness agent={MARKDOWN} output="# Notes" chatView />)
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    const thread = container.querySelector('.overflow-y-auto') as HTMLElement
+    expect(thread.className).toContain('contain-size')
+    expect(thread.className).not.toContain('max-h-')
+  })
+
+  it('restores on Escape and returns focus to the expand control', () => {
+    render(<ExpandHarness agent={MARKDOWN} output="# Notes" />)
+    const button = screen.getByLabelText('Expand Note Taker')
+    fireEvent.click(button)
+    expect(screen.getByTestId('agent-output-pane').className).toContain('flex-1')
+
+    // Focus elsewhere first, so the restore has to move it back.
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(screen.getByTestId('agent-output-pane').className).toContain('max-h-')
+    expect(document.activeElement).toBe(screen.getByLabelText('Expand Note Taker'))
+  })
+
+  it('leaves an Escape inside a dialog to the dialog', () => {
+    render(
+      <>
+        <ExpandHarness agent={MARKDOWN} output="# Notes" />
+        <div role="dialog">
+          <button>inside</button>
+        </div>
+      </>,
+    )
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    fireEvent.keyDown(screen.getByText('inside'), { key: 'Escape' })
+    expect(screen.getByTestId('agent-output-pane').className).toContain('flex-1')
+  })
+
+  it('leaves an Escape meant for a control outside the panel to that control', () => {
+    // The meeting title's rename input cancels on Escape. Taking the press there
+    // collapsed the panel, and the focus return then blurred the input, which
+    // saved the rename the user was cancelling.
+    const outsideEscape = vi.fn()
+    render(
+      <>
+        <input aria-label="Meeting title" onKeyDown={e => e.key === 'Escape' && outsideEscape()} />
+        <ExpandHarness agent={MARKDOWN} output="# Notes" />
+      </>,
+    )
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    const title = screen.getByLabelText('Meeting title')
+    title.focus()
+    fireEvent.keyDown(title, { key: 'Escape' })
+
+    expect(outsideEscape).toHaveBeenCalled()
+    expect(screen.getByTestId('agent-output-pane').className).toContain('flex-1')
+    expect(document.activeElement).toBe(title)
+  })
+
+  it('takes an Escape pressed inside the expanded panel', () => {
+    render(<ExpandHarness agent={MARKDOWN} output="# Notes" />)
+    fireEvent.click(screen.getByLabelText('Expand Note Taker'))
+    fireEvent.keyDown(screen.getByLabelText('Show chat'), { key: 'Escape' })
+    expect(screen.getByTestId('agent-output-pane').className).toContain('max-h-')
+  })
+
+  it('answers no Escape while compact', () => {
+    const onToggleExpanded = vi.fn()
+    mount(MARKDOWN, { output: '# Notes', onToggleExpanded })
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(onToggleExpanded).not.toHaveBeenCalled()
+  })
+
+  it('offers no expand control without the callback, or for a chat agent', () => {
+    mount(MARKDOWN, { output: '# Notes' })
+    expect(screen.queryByLabelText('Expand Note Taker')).toBeNull()
+    cleanup()
+    mount(CHAT, { onToggleExpanded: vi.fn() })
+    expect(screen.queryByLabelText('Expand Helper')).toBeNull()
+  })
+
+  it('a hidden sibling fades out of the layout but stays mounted, so its open draft survives', async () => {
+    // The fade's end state (`display:none`) lands when the animation finishes;
+    // skip the animation time so the test reads the end states, not a frame clock.
+    MotionGlobalConfig.skipAnimations = true
+    onTestFinished(() => {
+      MotionGlobalConfig.skipAnimations = false
+    })
+    const props: React.ComponentProps<typeof AgentPanel> = {
+      agent: MARKDOWN,
+      output: '# Generated\n',
+      listening: true,
+      chatView: false,
+      onToggleListening: vi.fn(),
+      onToggleChatView: vi.fn(),
+      onSendMessage: vi.fn(),
+      onSaveOutput: vi.fn(async () => undefined),
+    }
+    const { rerender } = render(
+      <AgentPanelSlot hidden={false}><AgentPanel {...props} /></AgentPanelSlot>,
+    )
+    fireEvent.click(screen.getByLabelText(EDITABLE.edit))
+    fireEvent.change(screen.getByLabelText('Note Taker output, editable'), {
+      target: { value: 'unsaved line' },
+    })
+
+    rerender(<AgentPanelSlot hidden><AgentPanel {...props} /></AgentPanelSlot>)
+    const slot = screen.getByTestId('agent-panel-slot')
+    // Offstage, not display:none: still laid out (so scroll positions survive),
+    // out of the flow, invisible and unreachable.
+    await waitFor(() => expect(slot.style.visibility).toBe('hidden'))
+    expect(slot.style.position).toBe('absolute')
+    expect(slot.style.display).not.toBe('none')
+    expect(slot.style.pointerEvents).toBe('none')
+    // Clipped to the column, so a hidden panel taller than it adds no scroll room
+    // under the expanded one.
+    expect(slot.style.overflow).toBe('hidden')
+    expect(slot.style.bottom).toBe('0px')
+    // Still in the tree with the draft in it: hidden, not unmounted.
+    expect(slot.contains(screen.getByLabelText('Note Taker output, editable'))).toBe(true)
+
+    rerender(<AgentPanelSlot hidden={false}><AgentPanel {...props} /></AgentPanelSlot>)
+    await waitFor(() => expect(slot.style.visibility).toBe('visible'))
+    expect(slot.style.position).toBe('relative')
+    expect(slot.style.display).toBe('flex')
+    expect(
+      (screen.getByLabelText('Note Taker output, editable') as HTMLTextAreaElement).value,
+    ).toBe('unsaved line')
+  })
+})
+
+describe('expand — wiring', () => {
+  it('the view passes the expand state to the panels and the workspace', () => {
+    expect(ViewSource).toContain('onToggleExpanded={')
+    expect(ViewSource).toContain('useExpandedAgent(')
+    expect(ViewSource).toContain('expanded={expandedId !== null}')
+    // Siblings are hidden by their slot, never filtered out of the map (which would
+    // unmount a draft), and the slot carries the layout animation.
+    expect(ViewSource).toContain('<AgentPanelSlot')
+    expect(ViewSource).toContain('hidden={expandedId !== null && expandedId !== agent.id}')
+  })
+})
+
+describe('useExpandedAgent (#21179)', () => {
+  it('starts compact and toggles one panel at a time', () => {
+    const { result } = renderHook(({ ids }) => useExpandedAgent(ids), {
+      initialProps: { ids: ['note-taker', 'sketch-artist'] },
+    })
+    expect(result.current.expandedId).toBeNull()
+    act(() => result.current.toggle('sketch-artist'))
+    expect(result.current.expandedId).toBe('sketch-artist')
+    act(() => result.current.toggle('note-taker'))
+    expect(result.current.expandedId).toBe('note-taker')
+    act(() => result.current.toggle('note-taker'))
+    expect(result.current.expandedId).toBeNull()
+  })
+
+  it('forgets the choice when that agent is disabled, so re-enabling stays compact', () => {
+    // Without the clear, the hidden choice waited: turning the agent back on
+    // re-expanded the workspace and hid the transcript on its own.
+    const { result, rerender } = renderHook(({ ids }) => useExpandedAgent(ids), {
+      initialProps: { ids: ['note-taker', 'sketch-artist'] },
+    })
+    act(() => result.current.toggle('sketch-artist'))
+    rerender({ ids: ['note-taker'] })
+    expect(result.current.expandedId).toBeNull()
+    rerender({ ids: ['note-taker', 'sketch-artist'] })
+    expect(result.current.expandedId).toBeNull()
   })
 })

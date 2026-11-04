@@ -832,6 +832,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_active_task_title = _mirror_active_task_title
     _mirror_thread: str | None = ""
     turn._mirror_thread = _mirror_thread
+    # Where mirrored posts go: `_mirror_thread`, or None (top-level) for a Slack
+    # code channel's own session. `_mirror_thread` keeps its ownership meaning.
+    _mirror_post_ts: str | None = ""
+    turn._mirror_post_ts = _mirror_post_ts
+    turn._code_channel_turn = False
     _mirror_task_counter = 0
     turn._mirror_task_counter = _mirror_task_counter
     _memory_preparation_admitted = False

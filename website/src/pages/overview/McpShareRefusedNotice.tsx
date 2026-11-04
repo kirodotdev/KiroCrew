@@ -53,9 +53,9 @@ export default function McpShareRefusedNotice({
 }: {
   className?: string
   /**
-   * The host page holds staged edits that leaving it would drop. The chat
+   * The host page holds staged edits that are not applied yet. The chat
    * hand-off is then off, and the MCP Management link opens a new tab so this
-   * page, and its staged edits, stay where they are.
+   * page, and its staged edits, stay in view.
    */
   stagedChanges?: boolean
 }) {
@@ -82,7 +82,7 @@ export default function McpShareRefusedNotice({
   if (names.length === 0) return null
   const review = i18nT('pages.overview.mcpTab.share_refused_review')
   // A refused share is a launch the gateway rejected, so it is an error surface:
-  // the hand-off is on unless the host page holds staged edits it would drop.
+  // the hand-off is on unless the host page holds staged edits not applied yet.
   return (
     <ErrorNotice
       className={className}

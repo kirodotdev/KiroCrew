@@ -1,17 +1,9 @@
-"""Tests for the credit-usage helpers in
-kiro_crew.dashboard.handlers.sessions: _parse_usage, _redact_strings, and the
-_fetch_usage_bg gating/redaction logic.
+"""Tests for the credit-usage helpers in kiro_crew.dashboard.handlers.sessions.
 
-This file pins the usage parsers, the transient-failure cache, string redaction,
-the refresh's text-scrape path with its environment scrub and child reaping, the
-refresh's overall deadline, the API-primary path, the API-key fail-fast, whoami
-parsing, the guard that keeps a scrape from replacing a richer API value, and the
-identity coupling rule. The per-refresh account proof is in
-test_session_usage_account_proof.py; when the scrape runs and parks, the
-unavailable reason, the children's no-window flag and the scrape's engine pin are
-in test_session_usage_scrape.py; the poll interval and the refresh route are in
-test_session_usage_refresh_routes.py. session_usage_helpers.py holds what they
-share.
+Covers the parsers, the failure cache, redaction, the scrape path, the refresh deadline,
+the API path and the identity coupling rule. The account proof, scrape scheduling and
+refresh routes have their own test_session_usage_*.py files; session_usage_helpers.py
+holds what they share.
 """
 
 from __future__ import annotations
@@ -441,11 +433,9 @@ class TestFetchUsageBg:
     async def test_timeout_reaps_the_scrape_before_the_adjacent_whoami(self):
         """The wedged child dies BEFORE the identity re-resolve, not after it.
 
-        The adjacent whoami is itself a kiro-cli subprocess of up to its own
-        timeout; reaping only in ``finally`` let the scrape outlive the deadline
-        by that much, holding the agent lock and its sandbox scope. The order is
-        the assertion, on a recording fake; the top-of-refresh whoami is the
-        first event, the reap must precede the second.
+        The whoami is its own subprocess with its own timeout, so reaping in
+        ``finally`` would let the scrape outlive the deadline holding the agent lock.
+        The first event is the top-of-refresh whoami; the reap must precede the second.
         """
         events: list[str] = []
         proc = _mock_proc(b"")
@@ -538,11 +528,8 @@ class TestFetchUsageBg:
 class TestFetchUsageDeadline:
     """A hung refresh must release the in-flight guard, not park it forever.
 
-    `_usage_fetching` gates every refresh, and it is only cleared in
-    `_fetch_usage_bg`'s `finally`. That `finally` does run on cancellation — but
-    not on a hang, so without an overall deadline one wedged call leaves the
-    guard True for the process lifetime: the cache is never populated and the
-    dashboard's credit pill shows "Checking usage..." indefinitely.
+    `_usage_fetching` is cleared only in `_fetch_usage_bg`'s `finally`, which a hang
+    never reaches; without a deadline the pill shows "Checking usage..." forever.
     """
 
     @pytest.fixture(autouse=True)
@@ -894,13 +881,9 @@ class TestFetchUsageBgApi:
 class TestApiKeyAuthUsesScrape:
     """API-key accounts skip the GetUsageLimits API but DO use the ``/usage`` scrape.
 
-    ``kiro-cli whoami`` reports ``accountType=ApiKey`` for API-key auth. Such
-    accounts hold no SSO/OIDC bearer token, so ``fetch_usage_limits`` can only
-    403 after spending its timeout walking credential stores that cannot contain
-    one. But the ``/usage`` scrape DOES work for them: kiro-cli answers it
-    locally from its own authenticated client, so the credit table prints under
-    API-key auth exactly as it does for SSO. So the refresh skips only the
-    wasted API call and falls through to the scrape, which supplies the number.
+    ``accountType=ApiKey`` accounts hold no bearer token, so ``fetch_usage_limits``
+    could only 403 after its timeout. kiro-cli answers ``/usage`` locally, so the
+    scrape still supplies the number.
     """
 
     @pytest.fixture(autouse=True)
@@ -1168,11 +1151,8 @@ class TestFetchWhoami:
 class TestIdentityAccountCoupling:
     """An identity may only be shown next to credits it provably belongs to.
 
-    fetch_usage_limits picks whichever candidate credential the API accepts
-    (IDE cache first, then the kiro-cli store) while whoami always reports
-    kiro-cli's identity -- so with two accounts signed in they can disagree.
-    Attaching the wrong email to an overage bill is a misattribution, so the
-    merge is refused unless the accounts provably match.
+    fetch_usage_limits may use the IDE cache's credential while whoami reports
+    kiro-cli's identity, so with two accounts signed in they can disagree.
     """
 
     @pytest.mark.parametrize(

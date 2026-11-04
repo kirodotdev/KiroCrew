@@ -319,6 +319,7 @@ def _record_reap_ending_impl(
         info.user_stopped = False
         if not info.error:
             info.error = f"{info._stop_origin or 'the reaper'} — {unfinished}"
+            info._deadline_ending = True
     if not info.result and info.streaming_text:
         info.result = info.streaming_text
     info.done = True
@@ -435,6 +436,7 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # says the run completed rather than naming what cut its tail short.
         if not info.reaped and not info.done:
             info.error = f"Timed out after {info.timeout_secs // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+            info._deadline_ending = True
             info.done = True
             # Armed HERE, synchronously with the flip -- not left to the
             # report task spawned later. Between this flip and that task's

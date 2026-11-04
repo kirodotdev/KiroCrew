@@ -313,9 +313,18 @@ async def test_api_logout_success_revokes_sessions() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration_arg, expected_ttl", [("", 3600), ("2h", 7200), ("30m", 1800)])
-async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
+async def test_dashboard_sel_log(
+    duration_arg: str, expected_ttl: int, tmp_path, monkeypatch
+) -> None:
     """!dashboard logs SEL with operation='slack.dashboard_token', caller, and ttl."""
+    import json
+
+    from kiro_crew.sel import SecurityEventLog
     from kiro_crew.slack.handler import _handle_slash_command
+
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    real_log = SecurityEventLog(base_dir=tmp_path, sync=True)
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -335,12 +344,17 @@ async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
         patch("kiro_crew.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
         patch("kiro_crew.slack.allowlist.sel") as mock_sel,
     ):
-        mock_log = MagicMock()
+        mock_log = MagicMock(wraps=real_log.log_api_access)
         mock_sel.return_value.log_api_access = mock_log
         await _handle_slash_command(
             cmd_text, slack, sessions, "C123", "ts1", "ts2", "sess1", "U_TEST"
         )
 
+    lines = (tmp_path / "security_events.jsonl").read_text("utf-8").splitlines()
+    rows = [json.loads(line) for line in lines]
+    assert [(r["operation"], r["outcome"], r["resources"]) for r in rows] == [
+        ("slack.dashboard_token", "ok", f"ttl={expected_ttl}")
+    ]
     mock_log.assert_called_once_with(
         caller="U_TEST",
         operation="slack.dashboard_token",

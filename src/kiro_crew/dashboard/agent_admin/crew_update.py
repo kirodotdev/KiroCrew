@@ -825,7 +825,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     web.json_response(
                         {
                             "error": (
-                                f"{shown} has more than one chat open. Close the mate's "
+                                f"{shown} has more than one chat open. Close the Bot's "
                                 "other chat, then change the agent harness."
                             ),
                             "code": "crewmate_harness_busy",
@@ -892,7 +892,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     denied=lambda _session_key: None,
                     busy=lambda session_key: _busy(slot, session_key),
                     notice=(
-                        "Session reloaded so this mate runs on its new agent harness. "
+                        "Session reloaded so this Bot runs on its new agent harness. "
                         "The conversation is kept."
                     ),
                     after_reset_in_lock=_after_teardown,

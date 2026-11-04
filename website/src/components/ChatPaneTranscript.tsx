@@ -60,6 +60,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrew
   const baseRenderers = useMemo(
     () => createTranscriptRenderers({
       slot: slotKey,
+      revealSlot: slotKey,
       toolDisclosure,
       onToolDisclosureChange: setToolDisclosureFor,
       // A steer-only surface has no steer/queue concept to explain, so a

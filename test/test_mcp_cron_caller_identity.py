@@ -71,7 +71,7 @@ def _add_job(name: str) -> str:
     return result.split()[2]
 
 
-# --- 1..3: where identity comes from ---------------------------------------
+# 1..3: where identity comes from
 
 
 def test_the_caller_block_beats_the_process_environment(monkeypatch) -> None:
@@ -97,11 +97,8 @@ def test_no_caller_block_falls_back_to_the_process_environment(monkeypatch) -> N
 def test_the_forgeable_pid_walk_is_not_an_authorization_source(monkeypatch) -> None:
     """``session_pid_<pid>.txt`` must not decide who may delete whose job.
 
-    ``mcp_core`` documents that file as "agent-writable and therefore forgeable",
-    and the LENIENT resolver ends its fallback chain by walking ``/proc``
-    ancestors over it. Labelling an audit row from it is tolerable; an
-    authorization decision is not. Proven by making the walk succeed loudly and
-    asserting the answer is still empty.
+    The file is agent-writable and so forgeable: fine for an audit label, not for
+    authorization. The walk is made to succeed and the answer must still be empty.
     """
     monkeypatch.setattr(session_pid_sig, "read_session_pid_txt", lambda *a, **k: "dashboard:forged")
 
@@ -115,11 +112,8 @@ def test_the_forgeable_pid_walk_is_not_an_authorization_source(monkeypatch) -> N
 def test_an_unidentified_caller_cannot_write(tool: str, monkeypatch) -> None:
     """Every mutating tool gives the same refusal.
 
-    An unidentified caller can still be sharing a pooled backend with identified
-    ones: gatewayd forwards with ``caller=None`` when the stub's Register carries
-    no session key and peer resolution fails, so "no identity" does NOT imply a
-    1:1 transport. Granting it authority over stored rows would reach another
-    session's jobs.
+    gatewayd forwards ``caller=None`` on a pooled backend too, so "no identity" does
+    not imply a 1:1 transport; write access would reach another session's jobs.
     """
     _as_session("dashboard:owner")
     job_id = _add_job(f"unident-{uuid.uuid4().hex[:8]}")
@@ -249,12 +243,8 @@ def test_a_forged_cli_flag_does_not_mint_an_ownerless_row(monkeypatch) -> None:
 def test_the_flag_changes_no_answer_this_server_gives(monkeypatch) -> None:
     """The regression that a per-site test cannot see.
 
-    Each assertion above pins one consumer. Someone reintroducing the fast path
-    at a SIXTH decision would leave all of them green, so this pins the property
-    the fix actually establishes: the variable is inert. Stated as behaviour
-    rather than as a grep for the name, it also survives a regression that reads
-    the value under a different spelling -- and it still allows the comments that
-    explain to the next reader why nothing consults it.
+    The tests above each pin one consumer; a fast path at a new site would pass them
+    all. This pins that the variable is inert, as behaviour rather than a name grep.
     """
     _as_session("dashboard:alice")
     job_id = _add_job(f"alice-{uuid.uuid4().hex[:8]}")
@@ -312,7 +302,7 @@ def test_the_channel_default_also_comes_from_the_caller_block() -> None:
     assert job is not None and job.channel == "C0FROMBLOCK"
 
 
-# --- 5: the rows written before the fix -----------------------------------
+# 5: the rows written before the fix
 
 
 def test_a_job_created_now_always_records_an_owner() -> None:
@@ -332,16 +322,9 @@ def test_a_job_created_now_always_records_an_owner() -> None:
 def test_an_ownerless_row_is_outside_every_sessions_scope() -> None:
     """A row with no recorded owner: not readable and not writable by a session.
 
-    Every creation path that has no session to name writes one -- ``kirocrew cron
-    add`` from the CLI, the onboarding importer, and ``cron_add`` on a pooled
-    backend before this change. So this set keeps growing, and it is a permanent
-    scope rule rather than a drainable exemption for legacy rows.
-
-    An earlier revision of this change kept such rows VISIBLE, arguing a row with
-    no owner has no owner's privacy to breach. That is wrong: an identified session
-    is not necessarily the operator, because an allowlisted Slack or Telegram
-    participant gets a session of their own, and a job's ``message`` and
-    ``command``/``script`` are arbitrary payloads.
+    The CLI and the onboarding importer write such rows, so this is a permanent rule.
+    They stay hidden because an identified session is not necessarily the operator (an
+    allowlisted Slack participant gets one), and ``message``/``command`` are payloads.
     """
     svc = CronService(base_dir=mcp_cron.config_dir())
     name = f"unowned-{uuid.uuid4().hex[:8]}"
@@ -380,16 +363,9 @@ def test_the_refusal_for_an_ownerless_row_is_not_an_existence_oracle() -> None:
 def test_every_cron_tool_audit_names_the_calling_session() -> None:
     """A SUCCESSFUL authorization is on the trail, with the identity it authorized.
 
-    ``call_tool_with_logging`` already records every cron tool invocation, but
-    ``mcp_cron`` passed it the hardcoded label "mcp_cron", so the record could not
-    say WHO was authorized -- and a ``cron_list`` where the caller owns everything
-    withholds nothing, so the scoping helper deliberately adds no event either.
-    Together that left the authorized case attributable to nobody. ``mcp_core``
-    already resolved the real caller here for exactly this reason; cron was the
-    outlier.
-
-    Asserted through ``_call_tool_locally``, the validated host dispatcher used by
-    the authenticated gateway, since its audit wrapper is the thing under test.
+    The scoping helper adds no event when nothing is withheld, so the
+    ``call_tool_with_logging`` record must name the caller, not a fixed label.
+    Asserted through ``_call_tool_locally``, whose audit wrapper is under test.
     """
     _as_session("dashboard:alice")
     _add_job(f"mine-{uuid.uuid4().hex[:8]}")
@@ -424,13 +400,8 @@ def test_every_cron_tool_audit_names_the_calling_session() -> None:
 def test_the_list_scoping_decision_lands_on_the_audit_trail() -> None:
     """Withholding rows from a read is an authorization decision, so it is logged.
 
-    Every other one in ``mcp_cron`` already was -- both refusal helpers, and
-    ``cron_remove_all``'s ``scoped`` outcome -- and this was the least visible of
-    them: an unidentifiable caller has EVERYTHING withheld and left no trace.
-
-    ``denied`` when nothing survives the filter, ``scoped`` when some rows do, and
-    NO event when the caller owns everything it could see: ``cron_list`` is called
-    often and a row-for-row event per call would bury the trail.
+    ``denied`` when nothing survives the filter, ``scoped`` when some rows do, and no
+    event when nothing is withheld, since ``cron_list`` is called often.
     """
     svc = CronService(base_dir=mcp_cron.config_dir())
     svc.add_job(
@@ -485,11 +456,8 @@ def test_the_list_scoping_decision_lands_on_the_audit_trail() -> None:
 def test_the_scope_of_an_empty_key_is_empty_not_the_ownerless_rows() -> None:
     """Guards the one comparison that would silently reopen the hole.
 
-    ``_owned_by`` filters on ``j.session_key == session_key``, and an ownerless row
-    stores ``""`` -- so an empty key handed to it would select EVERY ownerless row
-    rather than nothing. ``cron_list`` and ``cron_remove_all`` both reach it, the
-    latter only after refusing an unidentifiable caller, so the guard is defence
-    for a default that fails open rather than dead code.
+    ``_owned_by`` compares ``j.session_key == session_key`` and an ownerless row stores
+    ``""``, so an empty key would select every ownerless row.
     """
     svc = CronService(base_dir=mcp_cron.config_dir())
     unowned = svc.add_job(
@@ -527,11 +495,8 @@ def test_remove_all_never_sweeps_an_ownerless_row() -> None:
 def test_a_scoped_empty_list_does_not_read_as_an_empty_registry() -> None:
     """The distinction this whole file is about.
 
-    Bob owns nothing, Alice owns a job. Bob's answer must not be the string a
-    caller gets when the registry is genuinely empty, because that reads as
-    "nothing is scheduled" and sends the reader looking for a broken store. The
-    inequality below is the actual invariant; the wording can change freely
-    underneath it.
+    Bob owns nothing, Alice owns a job; Bob must not get the empty-registry string,
+    which reads as "nothing is scheduled". The inequality is the invariant, not the wording.
     """
     _as_session("dashboard:alice")
     _add_job(f"alice-{uuid.uuid4().hex[:8]}")
@@ -585,7 +550,7 @@ def test_the_tool_description_warns_that_the_list_is_scoped() -> None:
     assert "not that none are scheduled" in desc
 
 
-# --- 7: channel-agent confinement ------------------------------------------
+# 7: channel-agent confinement
 #
 # A channel agent (session key ``channel:<channel_id>:<agent_id>``) is confined
 # to channel posts. cron_add/cron_update let it schedule a durable job that runs
@@ -627,12 +592,9 @@ def test_channel_agent_cannot_update_cron() -> None:
 def test_channel_agent_cron_denied_needs_no_permission_event() -> None:
     """The denial is at MCP dispatch, not the permission-request event.
 
-    ``_call_tool_inner`` is the dispatch path a call reaches AFTER approval (an
-    auto-approved MCP tool emits no permission event at all), so a refusal here
-    proves the boundary holds even when channel.py's interactive guard never
-    ran. Even with no ``agent`` override -- a plain self-scoped schedule -- the
-    channel agent is contained, matching how ``send_*`` / ``session_*`` are
-    treated (all-or-nothing, not argument-conditional)."""
+    An auto-approved tool emits no permission event, so ``_call_tool_inner`` must refuse
+    on its own. Even a self-scoped schedule with no ``agent`` override is denied, like
+    ``send_*`` / ``session_*``."""
     _as_session("channel:C123:reviewer")
 
     result = _call_tool_inner(
@@ -661,7 +623,7 @@ def test_slack_human_session_may_still_schedule_cron() -> None:
 
 
 def test_dashboard_session_may_schedule_for_another_crew() -> None:
-    """The dashboard flow the issue is careful to preserve: a chat session
+    """A dashboard chat session
     scheduling a job that runs as a DIFFERENT crew is allowed -- the confinement
     keys on the channel-agent namespace, not on the ``agent`` argument."""
     _as_session("dashboard:owner")

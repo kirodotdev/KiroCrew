@@ -943,7 +943,7 @@ export function Lightbox() {
           MermaidBlock). */}
       {downloadFailed && (
         <div
-          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-2rem))]"
+          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-max(2rem,var(--safe-area-x)+var(--safe-area-x))))]"
           style={captionClearanceStyle()}
         >
           <ErrorNotice
@@ -957,7 +957,7 @@ export function Lightbox() {
       )}
       {copyState === 'failed' && (
         <div
-          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-2rem))]"
+          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-max(2rem,var(--safe-area-x)+var(--safe-area-x))))]"
           style={captionClearanceStyle()}
         >
           <ErrorNotice

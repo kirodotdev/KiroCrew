@@ -1043,6 +1043,20 @@ def refresh_cookie_name(port: str | int) -> str:
     return f"{REFRESH_COOKIE_PREFIX}{port}"
 
 
+def bears_session_cookie_for_host(host_header: str, cookies: Mapping[str, str]) -> bool:
+    """True if *cookies* hold an access or refresh cookie for the Host's port.
+
+    The pair is keyed by the browser-facing port in the Host header (see
+    token_auth_tokens' ``_cookie_port_from_host``), so another gateway's pair in
+    the same jar does not count. Only presence is checked: whether the session
+    is valid stays token_auth's call. A Host with no port names no cookie.
+    """
+    port = host_header.rsplit(":", 1)[-1].strip() if ":" in host_header else ""
+    if not port.isdigit():
+        return False
+    return f"{ACCESS_COOKIE_PREFIX}{port}" in cookies or refresh_cookie_name(port) in cookies
+
+
 def foreign_port_cookies(
     cookie_names: Iterable[str], current_port: str | int
 ) -> list[tuple[str, str]]:

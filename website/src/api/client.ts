@@ -253,6 +253,8 @@ export type {
   SlackConfigSave,
   SlackCapability,
   SlackCodeSwitchKey,
+  SlackCodeChannelDefaults,
+  SlackCodeChannelEffective,
   SlackManifestChange,
   SlackManifestStatus,
   DiscordConfigData,

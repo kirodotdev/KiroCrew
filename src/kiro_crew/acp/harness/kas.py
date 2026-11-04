@@ -61,6 +61,7 @@ from kiro_crew.acp.kas_transport import (
     build_kas_argv,
     build_kas_bundle_argv,
 )
+from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
 from kiro_crew.acp.session_mcp import project_agent_spec
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -771,11 +772,14 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 
-        def _build() -> (
-            tuple[
-                list[dict[str, Any]], Any, dict[str, Any], dict[str, dict[str, Any]], frozenset[str]
-            ]
-        ):
+        def _build() -> tuple[
+            list[dict[str, Any]],
+            Any,
+            dict[str, Any],
+            dict[str, dict[str, Any]],
+            frozenset[str],
+            str,
+        ]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -897,6 +901,7 @@ class KasHarness(MembershipHarness):
             # registered and reads nothing -- so the check that proves the consumed spec
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
+            withheld: kas_agents_mod.WithheldOut = {}
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
@@ -906,6 +911,7 @@ class KasHarness(MembershipHarness):
                 crew_panel=crew_panel,
                 session_key=session_key,
                 skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
+                withheld_out=withheld,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
@@ -914,12 +920,18 @@ class KasHarness(MembershipHarness):
             apps = resolve_app_identity_launches(
                 custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
             )
-            return custom_agents, snapshot, managed, apps, withdrawn
+            notice = withheld_credentials_notice(withheld)
+            return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:
-            built, built_from, managed_entries, app_launches, withdrawn_stubs = (
-                await asyncio.to_thread(_build)
-            )
+            (
+                built,
+                built_from,
+                managed_entries,
+                app_launches,
+                withdrawn_stubs,
+                withheld_notice,
+            ) = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,
@@ -927,6 +939,7 @@ class KasHarness(MembershipHarness):
                 managed_entries=managed_entries,
                 app_launches=app_launches,
                 withdrawn_stub_names=withdrawn_stubs,
+                withheld_credentials_notice=withheld_notice,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
@@ -976,9 +989,9 @@ class KasHarness(MembershipHarness):
             origin,
         )
         return (
-            f"Rename this mate's template: “{agent}” is reserved for a built-in "
-            "agent, so the mate's own prompt and tools would not run under it. "
-            "Both fixes are on the mate's Agent Template tab: for the mate's own "
+            f"Rename this Bot's template: “{agent}” is reserved for a built-in "
+            "agent, so the Bot's own prompt and tools would not run under it. "
+            "Both fixes are on the Bot's Agent Template tab: for the Bot's own "
             "copy, 'Save as new template…' under another name (it keeps its "
             "customizations) or 'Reset my changes'; for a shared template, the template "
             "picker at the top of the tab."

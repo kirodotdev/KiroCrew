@@ -42,7 +42,8 @@
  *
  * `hide` lets a host remove parts (`ChatEmbedHideKey`). Each key gates the one
  * place its part mounts, and a hidden part is not mounted at all. Hiding never
- * adds: every grant check still applies to what stays.
+ * adds: every grant check still applies to what stays. `renderers` restyles
+ * transcript rows through the list's registry and removes nothing.
  */
 import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
@@ -87,6 +88,7 @@ import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from '
 import { useSlotPush } from './slotPush'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
+import type { MessageRenderer } from './messageRenderers'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
@@ -184,6 +186,23 @@ export interface ChatEmbedProps {
    * stays off either way. Omitted, every part shows as before.
    */
   hide?: readonly ChatEmbedHideKey[]
+  /**
+   * Transcript row renderers, handed straight to `ChatMessageList` and merged
+   * by `mergeRenderers`: searched after the kind-matched built-ins and before
+   * the role-keyed ones. An entry reusing a built-in id replaces it, and with
+   * it every role that entry drew; a role claim without `match` outranks that
+   * role's built-in refinement rows (an assistant claim takes the compaction
+   * notice too). One claiming an undrawn role adds a row type. To restyle the
+   * reply, claim exactly what the built-in `assistant` entry resolves and wrap
+   * its render (docs/app-kit/api-reference.md, "Restyling rows"). They change
+   * how rows look only;
+   * the composer, Stop, queue, approvals and follow-ups stay, and removing a
+   * part is `hide`'s job. The list memoizes the merged registry on this
+   * array's identity, so pass a stable array (a module constant or a
+   * `useMemo`): a fresh array every render re-merges and redraws every row.
+   * Omitted, the built-in rows render as before.
+   */
+  renderers?: readonly MessageRenderer[]
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -389,6 +408,7 @@ function ChatEmbed({
   onFileOpen,
   onArtifactOpen,
   hide,
+  renderers,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
@@ -1304,6 +1324,7 @@ function ChatEmbed({
         toolDetails={!hidden('toolDetails')}
         onFileOpen={onFileOpen}
         onArtifactOpen={onArtifactOpen}
+        renderers={renderers}
         // No hand-off: the embed's composer draft is unsaved local state that
         // the hand-off's navigation to the main chat would discard.
         handOff={false}

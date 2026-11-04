@@ -109,12 +109,9 @@ class TestResolveWriteDecisions:
     def test_a_present_but_unreadable_entry_is_declined(self, on_disk, caplog):
         """Present-and-malformed is not absent, and cannot be ours.
 
-        A string, ``null`` or a list cannot carry the marker, so by the invariant
-        it reads as unmarked -- the user's. Only true absence is a create: a value
-        we cannot parse is a value we cannot prove we wrote, and overwriting it
-        would destroy whatever the user meant by it. ``None`` is in here on
-        purpose -- a JSON ``null`` under the name is a value the user typed, which
-        is why absence needs its own signal rather than borrowing ``None``.
+        A value we cannot parse is one we cannot prove we wrote, so it is the user's.
+        ``None`` is here on purpose: a JSON ``null`` is a value the user typed, so
+        absence needs its own signal.
         """
         with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_provenance"):
             assert self._resolve(on_disk) is None
@@ -138,12 +135,8 @@ class TestResolveWriteDecisions:
     def test_a_stripped_marker_is_not_re_stamped(self):
         """Reclamation has to survive the next sync.
 
-        Stripping the marker off an entry we wrote leaves EXACTLY our emit, so
-        "unmarked and byte-equal to our candidate" is the same disk state as
-        "written before the marker existed". Stamping on that match would migrate
-        the second and silently take back the first, and no content test
-        separates them -- so neither is written. The trade is documented in the
-        module docstring and the design note.
+        An entry the user unmarked is byte-equal to one written before the marker
+        existed, and no content test separates them, so neither is written.
         """
         resolved = self._resolve(dict(self._CANDIDATE))
         assert resolved is None

@@ -182,6 +182,7 @@ async def _prepare_spec_hooks(
         # Whose hooks apply is unknown, so PreToolUse fails closed.
         logger.warning("no agent is known for this KAS session; tool calls are blocked")
         return [], True, work_dir
+    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
     try:
         # A crewmate's worker fires its session's merged spec: the
         # session this turn holds, set at admission.
@@ -193,7 +194,9 @@ async def _prepare_spec_hooks(
                 agent,
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
-                translates_tools_settings=capabilities_of(client).backend == ACP_BACKEND_KAS,
+                translates_tools_settings=on_kas,
+                # Only KAS drops a remote MCP server's `oauth` block.
+                discards_mcp_oauth=on_kas,
                 **by_session,
             )
         )
@@ -430,8 +433,15 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     """One notice row on a new session whose adapter is too old to take a mid-turn
     message, one whose KAS drops its agent's prompt, and one whose goose or codex is
     outside its tested range: the chat runs, and each row names the installed version, the
-    tested one and the command that installs it."""
-    for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice", "tested_version_notice"):
+    tested one and the command that installs it. One more on a session whose MCP
+    servers start without part of their env or headers, naming each server and the
+    key names it lost, never a value."""
+    for name in (
+        "steer_upgrade_notice",
+        "agent_prompt_upgrade_notice",
+        "tested_version_notice",
+        "withheld_credentials_notice",
+    ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
             append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
@@ -717,6 +727,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     """The Stop hook, the continuations it and a tool refusal queue, the reply's Slack and cross-surface legs."""
     _answer_text = turn._answer_text
     _mirror_chan = turn._mirror_chan
+    _mirror_post_ts = turn._mirror_post_ts
     _mirror_thread = turn._mirror_thread
     _refusal_notices = turn._refusal_notices
     _refusal_notices_settled = turn._refusal_notices_settled
@@ -975,7 +986,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 state.slack_client, _mirror_chan, turn._mirror_thinking_ts
             )
             for _part in render_for_slack(_mirror_body):
-                await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
             if _mirror_options:
                 # Keep the ts this posts: the control has to be spendable
                 # later, and discarding the ts is what leaves a superseded
@@ -1005,7 +1016,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                     _mirror_chan,
                     _mirror_blocks,
                     "Options",
-                    _mirror_thread,
+                    _mirror_post_ts,
                 )
                 if _mirror_ts:
                     _owner = (

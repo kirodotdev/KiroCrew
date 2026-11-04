@@ -23,6 +23,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on request, response and notification writes, and the failure-path stderr settle (`settle_drain`) |
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
 | `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
+| `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
@@ -898,12 +899,32 @@ pass covers it. Without this a subagent fan-out queued one full prune per ended
 projection on the lock set_mode re-preparation waits on, and starts ran out
 their in-process wait and were refused. When the end runs on an event-loop thread the lease release and
 the prune both go to a daemon thread, so no session start is stalled behind a
-file-lock wait. A finalizer the cyclic collector runs does none of that work on
-the collecting thread: the collector fires on whatever thread allocated, possibly
-inside a non-reentrant lock such as a `ThreadPoolExecutor.submit` lock the prune's
-own path checks need, so the end is only queued (`SimpleQueue`, safe inside a
-collection) for one daemon reaper thread started when the finalizer is armed. A
-`gc.callbacks` hook records which thread is collecting. Pruning runs ONE bounded lease scan for the whole
+file-lock wait. A finalizer that fires for a dropped projection -- whether the
+cyclic collector freed it OR its last reference simply went -- does none of that
+work on the thread that triggered it: that thread fires on whatever allocated at
+that point, possibly inside a non-reentrant lock such as a
+`ThreadPoolExecutor.submit` lock the prune's own path checks need, so the end is
+only queued (`SimpleQueue`, safe inside a collection) for one daemon reaper thread
+started when the finalizer is armed. The explicit `release()` is told apart from
+the finalizer by HOW it arrives, not by any process flag: it `detach()`es the
+finalizer and calls the same `_end_projection` DIRECTLY with `from_release=True`,
+so off the loop it may run the end inline (a known-safe call site); the finalizer
+path calls with the default `from_release=False` and is never run inline off the
+loop. The one exception is interpreter shutdown: the `atexit` weakref sweep can
+fire a finalizer for a projection never explicitly released, when the daemon
+reaper is either already gone or still alive (daemon threads run while `atexit`
+handlers do) yet may be stopped by finalization before it reaches a queued end.
+An `atexit` hook, `_release_queued_leases_at_exit`, sets `_EXITING`, releases
+the lease of every end still queued on the exiting thread, and then gives an end
+the reaper already took up to `_EXIT_REAPER_WAIT_SECS` (2 s) to finish. Once
+`_EXITING` is set, or when the reaper is not alive, a finalizer releases the
+lease INLINE instead of queueing it. Whichever order the hook and the weakref
+sweep run in, every lease is released before the process ends (the prune, which
+re-enters the executor, is dropped for the next process's boot drain to cover),
+because a retained lock file would block the next process's view of this home.
+The lease release is not run inline in every finalizer: a refused unlink
+reports through `_UNLINK_WARNING_LOCK` and the logging handlers, the same kind
+of non-reentrant lock a dropping thread can hold. Pruning runs ONE bounded lease scan for the whole
 run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.
@@ -1364,6 +1385,72 @@ raised: the request is still pending, and the caller answers it once. Both
 providers declare the keyword with the class attribute `approval_withdrawable`;
 `tool_permission.AcpWire` passes a sub-agent's stop predicate (`Policy.stopping`)
 only to a provider type that declares it.
+
+### Batch write guard in `approve_tool` (`batch_guard.py`)
+
+Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
+turns it on). After the floor allows a request, both `approve_tool` methods call
+`batch_guard.screen_approval`, which refuses a write-class call that shares its
+parallel tool batch with a read-class call: the model wrote the write's arguments
+before it saw the read's result. Each transport keeps a `BatchWindow` of the
+current batch, fed where it already tracks calls in flight (`AcpClient`:
+`_extract_tool_event`, a terminal `_extract_tool_call_update`,
+`_read_new_tool_results`; `AcpSessionHandle`: `_handle_update`) and reset at each
+prompt turn. A `tool_call` that arrives while no call is open starts a new batch;
+one that arrives while any call is open joins it; a member stays one after it
+settles, until the next batch starts. So membership means overlap in TIME, not
+one model step: on a harness that runs a step's calls one at a time the guard
+never fires. A member stops counting as open at its terminal update, when the
+guard refuses it (a refused call never runs, and its own terminal may never
+arrive), or `OPEN_MEMBER_TTL_SECS` (600 s) after its `tool_call`, whichever comes
+first; the bound keeps a lost terminal from holding every later write of the
+turn in a stale batch, and can only miss a refusal, never add one. A write the
+window never saw is not judged. `batch_guard.classify` reads the harness-stamped identity (never the
+title) against explicit tables: file-write built-ins and Kiro Crew's own
+ledger, report and send tools are writes, file-read built-ins and Kiro Crew's own
+read tools are reads, and EVERY shell command outside the write table is a read
+peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): an
+`fs_write` next to `mkdir -p` is refused and the notice counts the `mkdir` as a
+read. A shell command (its first 8 KiB, with backslash-newline continuations
+folded, split into commands by the shared reader the security floor uses,
+`security.shell_commands.read_commands`, and stepped past wrappers and
+`NAME=value` by `security.argv_rules._program_args`; the guard keeps no shell
+reader of its own; each command judged by its program and subcommand words,
+never by argument text) is a write only for `gh pr|issue
+merge/create/review/comment/...`, `git push|commit`, a non-read `aws`
+operation, and a command starting with one of the operator's own prefixes in
+`hooks.batch_write_guard_commands` (empty by default; matched whole words and
+read at approval time, where it applies to the call being approved and to its
+shell peers, whose bounded commands the window keeps); `gh api` counts as a
+write with a mutating `-X`/`--method`, or with `-f`/`-F`/`--input` and no
+explicit method (a GraphQL call only for a `mutation`). Each approval also
+refreshes the approved call's own member from its permission request, so a
+peer whose frame named only its server is judged by the tool the request
+names. Any other tool is neither, so it is never refused and never
+causes a refusal. A refusal steers its reason into the running turn with cause
+`DENY_CAUSE_BATCH_READ_WRITE` while the request is still unanswered, then
+`batch_guard.reject` answers it: it logs `approve_tool: batch guard refused`,
+writes its own SEL row (`source=batch_guard`, `outcome=rejected_batch_guard`,
+`mechanism=batch_write_guard`, never the floor's row), calls `reject_tool` and
+returns `False`. The reason is kept per request id (`batch_guard.take_refusal`,
+at most 64, bounded keys), so `tool_permission` settles that `False` as a host
+refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
+`floor_refused`, writes no `floor_refused` approval row for it, and a subagent
+turn's refusal recovery carries it. Consumers that write their own row when
+`approve_tool` returns `False` still label it `rejected_transport_floor`; the
+guard's row for the same `request_id` is the one that says why.
+
+Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
+tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
+harness whose tool names are not in those tables most calls are neither class
+and the guard rarely fires. Calls an agent spec pre-approves through
+`allowedTools` raise no permission request, so the guard cannot refuse them;
+they still count as peers. Known limit: the shared reader stops at a live
+`<<`, so a write inside a here-document body, or after its terminator on later
+lines, is not judged and passes (fail-open: the guard misses it, it never
+refuses more). It has been tested only at the transport level; do
+one live run on the target harness before turning it on. Pinned by
+`test_batch_write_guard.py`.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
@@ -2359,7 +2446,7 @@ A sign-in is offered only where a turn is reading the queue, because the consent
 
 `_kiro/openExternalUrl` names neither the session nor the server, so the runtime runs at most one sign-in per process (`AcpRuntime.begin_mcp_sign_in`), gated on `ACP_BACKENDS_OPEN_EXTERNAL_URL` and refused while a credential re-attempt (below) is unanswered. The slot is held until the reset is answered, even after its session unregisters, so a departed session's late link is refused rather than handed to a newer sign-in; the slot's own timeout sits past the engine's 600 s connect ceiling. The URL is put on the owning session's queue as an ordinary `_kiro.dev/mcp/oauth_request` frame and answered `{success: true}`; it therefore takes the same URL checks and the same Authorize banner as the kiro-cli engine's own request. It is refused with a JSON-RPC error when no sign-in is in flight, when the owning session is gone, or when the URL is not http(s); the engine raises on that error, so the attempt ends at once instead of waiting for a callback no user was shown. By default `secretStorage` is not declared, so the engine keeps the resulting grant in its own memory: Crew stores no MCP token, and a new KAS process needs a new sign-in.
 
-`agent.kas_persist_mcp_sign_in` is on by default (owner decision: `docs/decisions/2026-11-02-kas-keeps-remote-mcp-sign-ins-by-default.md`). The loader keeps a present key only as a real `true`, and `kas_secret_storage.persistence_enabled` reads it fail-closed: a load that raised, an unreadable `config.json` or `config.local.json`, or a degraded `agent` section (or whole config) is off, because those builds carry the field default rather than the owner's value. A stored `false` from before the change is auto-adopted once (`superseded_defaults`). The vault is gateway-wide, the same scope as the `kiro` backend's host-wide sign-in cache and Shared Crew's access model; a governance ceiling does not gate it, an accepted scope limit recorded in the decision. With it on, the spawn declares `_meta.kiro.secretStorage` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._with_mcp_sign_in_storage`, only for a harness that `opens_external_urls`) and holds a per-process `kas_secret_storage.SecretStorageServer` on the runtime. The engine then sends `_kiro/secret/get {key}`, `_kiro/secret/store {key, value}` and `_kiro/secret/delete {key}`, which name no session; the reader loop answers them off-loop only on a process whose handshake declared the capability, and `-32601` otherwise. Only keys `kiro.mcp.<sha256 hex>.(client|tokens|verifier|discovery)` and values up to 64 KiB are accepted; anything else gets a JSON-RPC error. `client` and `tokens` persist in a dedicated vault at `<data_home>/kas/mcp-grants/.vault/` (own key; not the Secrets vault, so not listed there and not grantable to a cron; under the `kas` keystone leaf), each written with `set_with_revision`. `verifier` and `discovery` stay in the server's memory and die with the process. These frames are never handed to the raw-frame recorder, and no value is logged or put in an error message. Concurrent sessions share one grant; each write is atomic under the vault's cross-process lock and the last writer wins. A delete removes only the entry revision this process last read or wrote (`delete_if_revision`), so a process whose refresh fails cannot erase a grant another process stored since; a key the process never read or wrote is deleted outright.
+`agent.kas_persist_mcp_sign_in` is on by default (owner decision: `docs/decisions/2026-11-03-kas-sign-ins-stay-stored-when-the-setting-is-off.md`). The loader keeps a present key only as a real `true`, and `kas_secret_storage.persistence_enabled` reads it fail-closed: a load that raised, an unreadable `config.json` or `config.local.json`, or a degraded `agent` section (or whole config) is off, because those builds carry the field default rather than the owner's value. A stored `false` from before the change is auto-adopted once (`superseded_defaults`). The vault is gateway-wide, the same scope as the `kiro` backend's host-wide sign-in cache and Shared Crew's access model; a governance ceiling does not gate it, an accepted scope limit recorded in the decision. With it on, the spawn declares `_meta.kiro.secretStorage` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._with_mcp_sign_in_storage`, only for a harness that `opens_external_urls`) and holds a per-process `kas_secret_storage.SecretStorageServer` on the runtime. The engine then sends `_kiro/secret/get {key}`, `_kiro/secret/store {key, value}` and `_kiro/secret/delete {key}`, which name no session; the reader loop answers them off-loop only on a process whose handshake declared the capability, and `-32601` otherwise. Only keys `kiro.mcp.<sha256 hex>.(client|tokens|verifier|discovery)` and values up to 64 KiB are accepted; anything else gets a JSON-RPC error. `client` and `tokens` persist in a dedicated vault at `<data_home>/kas/mcp-grants/.vault/` (own key; not the Secrets vault, so not listed there and not grantable to a cron; under the `kas` keystone leaf), each written with `set_with_revision`. `verifier` and `discovery` stay in the server's memory and die with the process. These frames are never handed to the raw-frame recorder, and no value is logged or put in an error message. Concurrent sessions share one grant; each write is atomic under the vault's cross-process lock and the last writer wins. A delete removes only the entry revision this process last read or wrote (`delete_if_revision`), so a process whose refresh fails cannot erase a grant another process stored since; a key the process never read or wrote is deleted outright.
 
 KAS sends no `_kiro.dev/mcp/server_initialized` frame when a sign-in completes; the server's next status entry reports `connected`, and status snapshots are classified `skip`. The tracker therefore records a tracked server that connects as a completed sign-in, and the dispatch loop yields one `EVENT_MCP_SERVER_INITIALIZED` (`runtime_global: false`) for each such server right after it reads a status snapshot, clearing the server's banner dedupe as the frame-driven branch does. A completion read by the session-start or pre-turn drain is yielded with the next turn's first frame. Only a server that was being tracked for a sign-in qualifies; an ordinary connected server yields nothing. The dashboard handles the event as it handles the engine's own frame: the Authorize banner is marked completed and its dead consent URL is withdrawn.
 
@@ -3126,7 +3213,7 @@ Subprocess lifecycle:
 - **The exit error credits Crew only for a signal it recorded sending**: when a read reaches end of stream and the child has exited, `AcpClient._read_message` raises `ACP process exited (code=N)`. For a signal death (`N < 0`) `_exit_origin` appends the signal's name and an origin. The origin is `killed by Crew (<reason>)` only when the signal is the one `_kill_process` last sent, which it records in `_kill_sent` (SIGTERM with `stop requested`, SIGKILL with `forced stop` or `SIGTERM timed out`); `_spawn` clears the record for every new child, so one child's kill is never credited to the next. Every other signal reads `not sent by this client`, because a crash the child raises on itself (SIGSEGV, SIGABRT), a signal from another Crew path (for example the `session_pid` orphan sweep) and a kill from outside look the same to the client. `test/test_acp_exit_signal_origin.py` pins each case.
 - **The stderr tail on an exit error is published only when neither spelling carries a secret**: the `ACP process exited` detail and the runtime death summary's `stderr_tail` both go through `acp/stderr_tail.py` `safe_stderr_tail`. The ring holds one entry per line, so a secret a harness wrapped across two lines comes back with the join separator inside it and the bare-secret patterns (one contiguous run) miss it. The helper redacts the joined tail AND the same lines joined with no separator; if either is rewritten, the whole tail becomes `stderr withheld: redacted content`. Both spellings are checked on the whole tail first; only a tail that passes is then cut to its last `STDERR_TAIL_MAX_CHARS` (2000) characters, so a secret straddling the cut is still caught. The cut exists because the ring bounds lines, not their length. `test/test_acp_stderr_tail_redaction.py` pins it (#11671).
 - **Off-loop PID inspection**: the PID-recycling/ownership helpers that shell out on macOS — `_get_start_time` / `_read_basename` (`ps`), `_get_child_pids` → `_direct_children` (`pgrep`), the `_capture_child_records` batch wrapper, and the `_kill_escaped_children` sweep — MUST run via `run_in_executor(subprocess_executor(), ...)`, never directly on the event loop. The PID-file tracking writes — `_track_pid`, `_track_session_pid`, `_track_child_pids` in `AcpClient._spawn()`, and `_track_child_pids` plus the `_untrack_child_pids` prune in `AcpRuntime._snapshot_descendants()` / `_prune_dead_descendants()` (the latter reached through `asyncio.to_thread`) — carry the same obligation: each takes an exclusive file lock and does a read-modify-append under it, and `ensure_ready()` awaits `_spawn()` from the loop on every cold start, so an on-loop tracker serializes concurrent spawns behind one file lock with the waiter holding the loop. The subprocess spawn (fork/exec) can block, and on a wedged child the loop would freeze (the macOS wedge class). `subprocess_executor` is a *dedicated* bounded pool (distinct from the `maintenance_executor` orphan sweep) so a wedged scan/close cannot starve the recovery sweep. The `ps` and `pgrep` calls each carry a 2s timeout so no offloaded scan occupies a pool worker indefinitely.
-- **Pre-teardown tree refresh**: `_snapshot_process_tree()` records the descendants once, after session initialise, and a turn that runs a command which forks its own children adds processes it never saw. A leaderless process group may only be signalled while a RECORDED member vouches for it (`process_identity._group_member_vouches`), so each teardown path that takes a kill handle -- the subagent run's own `_teardown_run_session`, the subagent reaper's `_force_reap`, and the cron reap's `_end_run_processes` -- first awaits `process_identity.refresh_live_process_tree()`, which calls `refresh_process_tree()` on the client of the session live under the key: an `AcpClient` (non-kiro backends) walks its own leader, and a kiro-backend `AcpSessionProvider` -- whose `_child_pids` the handle reads from its `AcpRuntime` -- hands it to `AcpRuntime.refresh_process_tree()`, the same guarded `_snapshot_descendants()` pass spawn, create and resume run. The `AcpClient` refresh walks only a leader verified as this client's (no return code yet, and the pid reads back the recorded start id before the walk and again before the records are kept), only ever adds records, keeps a new child only when a second walk still finds it under the leader and its start id still reads back as the one captured (a pid reused between the walk and the capture is dropped), persists them through `_replace_child_pids` with that captured id and adds them to the in-memory record only once that write succeeds (a failed write leaves the child unrecorded, so the next refresh retries it), and is bounded by `TREE_REFRESH_TIMEOUT` (3 s); a timeout or error is logged and the teardown goes on with the earlier record. In the subagent run's own teardown the refresh runs before the lease is released, so the key is not claimable while the walk runs; a cancel during the walk still releases the lease and is recorded as an undecided kill, like one during the reset. The bound stops the teardown waiting; it cannot stop a walk already running on `subprocess_executor()`, the same residual the kill's own fresh scan carries. Torn-down sessions are not walked: their handles were captured at the pop. A member started after the last refresh is still never recorded and still cannot vouch, and a leader that already exited before teardown gets no walk at all, so its late children stay unrecorded.
+- **Pre-teardown tree refresh**: `_snapshot_process_tree()` records the descendants once, after session initialise, and a turn that runs a command which forks its own children adds processes it never saw. A leaderless process group may only be signalled while a RECORDED member vouches for it (`process_identity._group_member_vouches`), so each teardown path that takes a kill handle -- the subagent run's own `_teardown_run_session`, the subagent reaper's `_force_reap`, and the cron reap's `_end_run_processes` -- first awaits `process_identity.refresh_live_process_tree()`, which calls `refresh_process_tree()` on the client of the session live under the key: an `AcpClient` (non-kiro backends) walks its own leader, and a kiro-backend `AcpSessionProvider` -- whose `_child_pids` the handle reads from its `AcpRuntime` -- hands it to `AcpRuntime.refresh_process_tree()`, the same guarded `_snapshot_descendants()` pass spawn, create and resume run. The `AcpClient` refresh walks only a leader verified as this client's (no return code yet, and the pid reads back the recorded start id before the walk and again before the records are kept), only ever adds records, keeps a new child only when a second walk still finds it under the leader and its start id still reads back as the one captured (a pid reused between the walk and the capture is dropped), persists them through `_replace_child_pids` with that captured id and adds them to the in-memory record only once that write succeeds (a failed write leaves the child unrecorded, so the next refresh retries it), and is bounded by `TREE_REFRESH_TIMEOUT` (3 s); a timeout or error is logged and the teardown goes on with the earlier record. In the subagent run's own teardown the refresh runs before the lease is released, so the key is not claimable while the walk runs; a cancel during the walk still releases the lease and is recorded as an undecided kill, like one during the reset. The bound stops the teardown waiting; it cannot stop a walk already running on `subprocess_executor()`, the same residual the kill's own fresh scan carries. Torn-down sessions are not walked: their handles were captured at the pop. A member started after the last refresh is still never recorded and still cannot vouch. A leader that exits before teardown gets no walk at teardown, so the same guarded walk also runs at the END of every prompt turn, while the leader is still alive: both turn paths (`AcpSessionProvider.stream` / `stream_command` and `AcpProvider.stream` / `stream_command`) call `process_identity.record_live_children_after_turn()` in their `finally`, which runs the turn's own client's or runtime's `refresh_process_tree()` through the one bounded wrapper `_bounded_tree_refresh` the teardown refresh shares. So a child a turn forked is recorded while the leader is verified alive, and is on the handle a later teardown takes even if the leader exits on its own first. The wrapper swallows a timeout or error but PROPAGATES a cancellation, so the teardown caller's own `except CancelledError` handling (lease release, undecided-kill record) is unchanged; the shared turn path releases its tenancy before the record so that release is never on the walk's cancel path. The same turn-end call also retains the leader's verified group id (`process_identity._retain_verified_group`): `isolated_group_of` read while the leader is alive, stored on the client with the `(pid, start_id)` it was read for. A leader reaped before teardown no longer answers `getpgid`, so `process_handle_of` falls back to that retained id for the same `(pid, start_id)` only (`_retained_group_of`; a respawned or recycled leader gets nothing from it); the group is still signalled only while a recorded member verified by start id vouches for it.
 - **Windows exe-casing normalization** (`acp.launch._normalize_exe_casing`, applied to the Node-adapter ladder (`_resolve_node_adapter_argv`), the self-served binary ladder (`_resolve_self_served_bin`) and the claude-code and pi resolvers (`_resolve_claude_code_executable`, `_resolve_pi_bin`); kiro-cli's own discovery in `kiro_cli.py` applies its own Windows `os.path.realpath` instead): `shutil.which` builds the resolved name's extension from `PATHEXT`, which lists `.EXE` upper-case, so it returns e.g. `…\kiro-cli.EXE` even though the on-disk file is `kiro-cli.exe`. A case-sensitive multiplexer shim spawned as `kiro-cli.EXE` fails to dispatch, exits instantly, and the ACP pipe breaks (`AcpProcessDied`) → the dashboard shows **"session stuck"** on the first chat turn. `os.path.realpath()` restores the true directory-entry casing. No-op on POSIX (case-sensitive FS). Runnability is checked via `platform_compat.is_executable_file()` (POSIX execute bit; on Windows the X-bit is meaningless so a known runnable extension is required instead), so a bare `.js` adapter entry is correctly treated as **not** directly runnable on Windows and gets wrapped with `node`.
 - **Sandbox ownership**: the launch tail both drivers call (`acp.launch.launch`) calls `sandbox.wrap_argv()` to wrap the command with platform-native isolation (Linux: two-stage `unshare -rm` → `unshare -U` bind-mounts + UID drop; macOS: `sandbox-exec` Seatbelt profile). On Windows, where Kiro Crew has no native OS wrapper, an explicitly classified official Kiro backend delegates to Kiro CLI's built-in sandbox; every other backend retains the no-backend fail-closed policy. The parent passes a fully scrubbed child environment on every platform, which is the enforcement point for raw Windows delegation. Configurable via `sandbox_mode` constructor param (`"auto"` default, `"off"` to disable). See `docs/system-specs/modules/security.md`.
 - **Parent-level channel-credential scrub**: both spawn paths (`AcpClient._spawn` and `AcpRuntime._spawn`) hand their plan to the one launch tail (`acp.launch.launch`), which builds the child environment from a raw `os.environ` copy (plus `_extra_env`) and, after merging `_extra_env`, runs `sandbox.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=...)` on it before `create_subprocess_exec`. That one scrub composes `scrub_env` (the `_SPAWN_SCRUB_ENV_PREFIXES` credential families: AWS secret and session variables, `SSH_AUTH_SOCK` unless the operator's forward consent is on, `GNUPGHOME`, `GIT_ASKPASS`, and the Slack/WeCom/Telegram tokens and owner id in `_AGENT_DENIED_ENV_KEYS` seeded into `os.environ` by `config.loader.load_credentials`) with the `_PYTHON_ENV_PREFIXES` interpreter variables. This is required because these paths do NOT route through `sandboxed_spawn_argv`, and the OS-sandbox launcher only strips those keys for the `cc`/`strict` tiers — on the default `auto`/`standard` tier the launcher leaves them in place, so without the parent scrub they would be inherited by the agent subprocess. The exact set and the Windows-delegation rationale are owned by `security.md` (Conditional Python-interpreter env strip). One credential is settled per-backend rather than by the deny list: `KIRO_API_KEY` (kiro-cli's own model credential, in `CREDENTIAL_KEYS` but deliberately NOT in `_AGENT_DENIED_ENV_KEYS`) is re-injected from the data home's `.env` via `config.loader.inject_kiro_cli_api_key` for a kiro-cli child (whose environment is where the CLI reads it — required after the Docker entrypoint scrubs it from the gateway's environ) and actively stripped via `strip_kiro_cli_api_key` for a foreign backend (Claude seam), which must never receive it. The KAS relay is a kiro-cli, so its answer follows the spawn plan's auth owner (`apply_spawn_env(..., cli_owned_auth=not plan.host_auth)`): a cli-owned relay (`--auth-method cli`) is handed the key like the kiro backend, because kiro-cli keeps no stored record of an API-key sign-in and the variable is the whole login; a Crew-owned relay has it stripped, because the engine prefers an environment key over the vault callback; both run inside the spawn paths' existing off-loop env hop.
@@ -3284,7 +3371,7 @@ reference is withheld, because the KAS environment also holds credentials such a
 the CLI's `KIRO_API_KEY`.
 
 A server Crew did not author also keeps each literal `env` value that is exactly
-`true` or `false` (case-insensitive, trimmed; `kas_agents._relayable_literal`), so
+`true` or `false` (case-insensitive, trimmed; `kas_env_literals._relayable_literal`), so
 a server that takes boolean feature flags from `env` starts with them on KAS as it
 does on kiro-cli, which reads the spec off disk. No secret is a boolean, so the
 rule needs no guess about which names or shapes carry one. A boolean is still
@@ -3404,7 +3491,15 @@ applies it.
   (`_turn_start_priority`: user-origin provenance and `_crew_log_actor ==
   "user"`, not a restored queue entry — a typed turn, a Resume/Continue press,
   the runner's requeue of a person's failed turn, a typed follow-up in a cron
-  tab). The eager respawn that turn arms takes its priority, and so does the
+  tab). **A bulk Resume does not claim it.** `POST /api/chat/slots/resume-all`
+  answers 202 at once and runs every candidate's Continue in the background, so
+  no person waits on any one of the starts it leads to; a FOREGROUND claim per
+  start would put each of them in the person-only reserve ahead of the owner's
+  next typed message. Each queue entry it inserts keeps the owner's provenance
+  and carries `START_BACKGROUND_META_KEY` (`dashboard/chat_delivery.py`); the
+  drain passes `_turn_start_background` only when every entry it consumes
+  carries it, so a typed message drained in the same batch keeps FOREGROUND, and
+  `_turn_start_priority` then answers BACKGROUND. The eager respawn that turn arms takes its priority, and so does the
   poisoned-conversation canary inside it. An eager spawn from the dashboard
   owner's own slot create, agent switch or project switch; the focus resume
   prefetch, a reload and any app-token request stay BACKGROUND. Every messaging

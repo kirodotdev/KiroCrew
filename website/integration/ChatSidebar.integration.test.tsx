@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { screen, waitFor, fireEvent, act, cleanup } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/react-dropdown-menu'))
 vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/react-context-menu'))
 
 import ChatSidebar from '../src/pages/ChatSidebar'
+import AppConfirmHost from '../src/components/AppConfirmHost'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
@@ -287,7 +288,7 @@ describe('ChatSidebar Folder Grouping', () => {
     // Deleting a folder is a gateway write, so this case must say it is online.
     const store = createTestStore()
     store.dispatch(sseConnected())
-    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithFolder} />, { store })
+    renderWithProviders(<><ChatSidebar {...defaultProps} slots={slotsWithFolder} /><AppConfirmHost /></>, { store })
     await waitFor(() => expect(screen.getByText('Delete Me')).toBeInTheDocument())
     expect(screen.getByText('Pipeline debug')).toBeInTheDocument()
 
@@ -295,6 +296,9 @@ describe('ChatSidebar Folder Grouping', () => {
     fireEvent.click(screen.getByTestId('folder-menu-f1'))
     const deleteBtn = await screen.findByTestId('folder-delete-f1')
     fireEvent.click(deleteBtn)
+    const dialog = await screen.findByRole('dialog', { name: 'Delete folder' })
+    expect(dialog).toHaveTextContent('Delete “Delete Me”? Sessions will be ungrouped.')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete folder' }))
 
     await waitFor(() => expect(screen.queryByText('Delete Me')).not.toBeInTheDocument())
     // Slot previously in the deleted folder is still visible, now ungrouped
@@ -501,34 +505,46 @@ describe('ChatSidebar confirmCloseSession', () => {
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('slot-1'))
   })
 
-  it('does not delete when user cancels the confirm dialog', async () => {
+  // The close asks through the app's own dialog, never the browser-native
+  // confirm(): in the desktop app the native one can leave the window unable to
+  // take input once it closes.
+  it('asks in the in-app dialog and keeps the session on Cancel', async () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
-    mockConfirm.mockReturnValue(false)
     const deleteSpy = vi.fn()
     server.use(
       http.delete('/api/chat/slots/:key', ({ params }) => { deleteSpy(params.key); return HttpResponse.json({ ok: true }) }),
     )
-    renderConnected(<ChatSidebar {...defaultProps} />)
+    renderConnected(<><ChatSidebar {...defaultProps} /><AppConfirmHost /></>)
     await waitFor(() => expect(screen.getByText('Pipeline debug')).toBeInTheDocument())
 
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
+    const dialog = await screen.findByRole('dialog', { name: 'Close this session?' })
+    // Nothing is running, so the prompt names the setting as its trigger.
+    expect(dialog).toHaveTextContent('Confirm Before Closing Session')
+    expect(mockConfirm).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Close this session?' })).toBeNull())
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 
-  it('shows confirm dialog when confirmCloseSession is true', async () => {
+  it('closes the session once the in-app dialog is confirmed', async () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
-    renderConnected(<ChatSidebar {...defaultProps} />)
+    const deleteSpy = vi.fn()
+    server.use(
+      http.delete('/api/chat/slots/:key', ({ params }) => { deleteSpy(params.key); return HttpResponse.json({ ok: true }) }),
+    )
+    renderConnected(<><ChatSidebar {...defaultProps} /><AppConfirmHost /></>)
     await waitFor(() => expect(screen.getByText('Pipeline debug')).toBeInTheDocument())
 
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
-    // Nothing is running, so the prompt names the setting as its trigger.
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Confirm Before Closing Session'))
+    const dialog = await screen.findByRole('dialog', { name: 'Close this session?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close session' }))
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('slot-1'))
+    expect(mockConfirm).not.toHaveBeenCalled()
   })
 })
 

@@ -442,21 +442,11 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
 def _carry_unread_slot_keys(raw_keys: "Sequence[object]", unrestored: set[str]) -> int:
     """Keep every key in *raw_keys* in the reopen seed; return how many were added.
 
-    What a restore owes the keys it never got to. ``open_slots_restored`` tells the
-    persist writers that ``_slots`` is the authoritative open-tab set, which is a
-    true statement only for a restore that RAN TO THE END -- so a pass cancelled at
-    tab 1 of 16 leaves it down, and a flush then merges instead of pruning the file
-    to the one tab that made it.
-
-    The carry is the other half, and the two are independent rather than alternative.
-    An unread key's honest position is the one an unreadable read already gets -- the
-    session was not shown to be gone -- so it joins the same ``unrestored_slot_keys``
-    set that path uses, and ``_persist_open_slots`` folds that set into every
-    snapshot it writes, licensed to prune or not. One rule then covers every key this
-    restore has no answer about, whether it stopped at the key or never reached it;
-    the latch separately denies the licence. Either alone keeps the file whole, which
-    is the point: the exit this guards against is the one where the process is being
-    torn down and the remaining code may not get to run.
+    ``open_slots_restored`` stays down for a restore that did not run to the end,
+    so a flush merges instead of pruning the file. This carry is the independent
+    second half: unread keys join ``unrestored_slot_keys``, which
+    ``_persist_open_slots`` folds into every snapshot. Either alone keeps the file
+    whole, which matters on teardown, when later code may never run.
     """
     carried = 0
     for raw in raw_keys:
@@ -477,27 +467,17 @@ def _record_unrestored_open_tabs(
 ) -> None:
     """Leave a durable account of the listed tabs that should be here and are not.
 
-    *kept* is the DROPPED subset rather than every key in the reopen seed, for the
-    reason :func:`_apply_restored_open_slot` gives: a remote-only seed is expected to
-    sit in that set across boots, and counting it would raise this notice on every
-    restart of a system behaving correctly.
+    *kept* is the DROPPED subset, not the whole reopen seed: a remote-only seed
+    stays in the seed across boots (see :func:`_apply_restored_open_slot`) and
+    would raise this notice on every healthy restart.
 
-    Blocking: one store read per kept key to resolve the log it writes, then one
-    queued append each. Called from a worker thread, and only when a key was
-    actually kept -- the healthy restore pays nothing.
+    Blocking (one store read and one queued append per kept key); called from a
+    worker thread, and only when a key was kept.
 
-    Also publishes the count the dashboard reads for its notice. That is here rather
-    than at each ``unrestored.add`` site so the number the user is shown and the
-    number the log records are one count taken at one moment.
-
-    The published report carries ``unknowable``, read off the same latch half the
-    persist writers read. A count is a measurement of a set that was READ, so a
-    restore whose registry no generation of which could be read has no count to
-    offer -- and the honest report there is not a zero but "the set could not be
-    learned", which the endpoint hands to the dashboard's error notice. It rides on
-    the report rather than on a second attribute because the two answers are one
-    fact taken at one moment, and because a reader that has to consult two fields to
-    know whether the first one means anything eventually consults only the first.
+    Also publishes the dashboard's notice count here, so the number shown and the
+    number logged are one count. ``unknowable`` rides on the same report: a
+    registry that could not be read has no count, and a reader checking two
+    fields eventually checks only the first.
     """
     keys = sorted(kept)
     state.unrestored_slot_notice = {
@@ -530,25 +510,13 @@ def _record_unrestored_open_tabs(
 def _report_restore_with_no_seed(state: DashboardState) -> None:
     """Publish the settled report of a restore that had no keys to enumerate.
 
-    An empty or absent registry restores nothing, and that is an ANSWER rather than
-    the absence of one -- the default answer, in fact: a fresh install, and anyone
-    whose last session closed every tab. Left unpublished, the notice stays ``None``,
-    ``GET /api/chat/slots/unrestored`` answers ``reported: false`` for the life of the
-    process, and ``useUnrestoredTabs`` re-asks every 5s on every dashboard page for
-    the life of the page. A poll that then fails past the retry ladder -- a gateway
-    restart is enough -- shows the red "could not check restored tabs" notice to a
-    user who lost nothing.
-
-    Routed through the one publisher so the shape cannot drift from the reporting
-    path, and safe to call on the event loop: the publisher's per-key store reads
-    only run when a key was kept, and here none was. Which of the two answers it
-    publishes -- a measured zero, or "the set could not be learned" -- the publisher
-    takes from ``open_slots_knowable``, so an unreadable registry reaches the
-    dashboard as the failure it is instead of as a zero.
-
-    For an exit that FINISHED, either way. A pass cancelled before it got through
-    the seed has no answer about the keys it never read, and ``None`` -- "the restore
-    has not reported" -- stays the honest reading for that one.
+    An empty registry is an answer (a fresh install, every tab closed). Left
+    unpublished, ``GET /api/chat/slots/unrestored`` says ``reported: false``
+    forever, ``useUnrestoredTabs`` polls every 5s, and a failed poll after a
+    gateway restart shows a "could not check restored tabs" error to a user who
+    lost nothing. The publisher takes the measured-zero vs. unknowable answer from
+    ``open_slots_knowable``. Only for an exit that FINISHED: a cancelled pass keeps
+    ``None``.
     """
     _record_unrestored_open_tabs(state, listed=0, restored=0, kept=())
 
@@ -592,26 +560,15 @@ def restore_open_slots(state: DashboardState) -> int:
             pass
         enumerated = True
     finally:
-        # The open-tab restore has run this boot (even for a missing/empty
-        # file): an empty ``_slots`` from here on is authoritative, so the
-        # periodic flush may snapshot open_slots.json again — see
-        # DashboardState._persist_open_slots.
+        # The open-tab restore has run this boot (even for a missing/empty file),
+        # so an empty ``_slots`` is authoritative and the flush may snapshot
+        # open_slots.json again (see DashboardState._persist_open_slots).
         #
-        # Unless the set was never KNOWABLE, or this pass never reached the end of
-        # it. Either way this process has no basis for calling ``_slots``
-        # authoritative, and leaving the latch down keeps the persist writers in
-        # merge mode for the rest of its life — which is the correct posture, not a
-        # stuck flag: a process that never learned the set must never prune it.
-        #
-        # The visible cost of that posture, for whoever reads this next: with the
-        # latch down every flush takes the merge branch, which re-reads the live
-        # registry. So a boot whose registry was REFUSED freezes the file -- the
-        # merge read is refused too and skips the write -- and a boot whose registry
-        # was merely damaged can only add to it. Either way a tab the user closes in
-        # this process is back in the sidebar on the next boot, and in the refused
-        # case a tab opened in it is not saved at all, until a restart or a read that
-        # succeeds. The registry keeps the set it had, which is the cheaper error
-        # than deleting a set nobody managed to read: this fails closed deliberately.
+        # Unless the set was never KNOWABLE or this pass never reached its end:
+        # then the latch stays down and the writers merge for the rest of the
+        # process, deliberately failing closed. A process that never learned the
+        # set must never prune it. The cost: a closed tab returns on next boot,
+        # and with a REFUSED registry a newly opened tab is not saved at all.
         state.open_slots_restored = enumerated and bool(getattr(state, "open_slots_knowable", True))
     return restored
 
@@ -619,35 +576,19 @@ def restore_open_slots(state: DashboardState) -> int:
 async def restore_open_slots_async(state: DashboardState) -> int:
     """:func:`restore_open_slots`, with the disk reads off the loop.
 
-    Restoring a tab reads and redacts a transcript, so a user with many large
-    tabs can spend tens of seconds in here. Doing that synchronously monopolizes
-    the event loop — and because ``_loop_heartbeat`` pets the
-    ``LoopStallWatchdog`` *from a coroutine*, a blocked loop cannot pet it. The
-    watchdog's 25s ``exit_after`` timer then fires, dumps thread stacks and
-    ``_exit``s the gateway, which is exactly the observed startup crash-loop: the
-    app never finished booting.
+    A blocked loop cannot pet the ``LoopStallWatchdog`` (``_loop_heartbeat`` is a
+    coroutine), whose 25s ``exit_after`` then kills the gateway at boot. So
+    ``open_slots.json``, the agent->model map and each tab's metadata and chained
+    transcript walk run in ``asyncio.to_thread``, with a ``sleep(0)`` between tabs.
 
-    Yielding between tabs (the ``sleep(0)`` below) was the first fix and is kept:
-    it bounds how long any ONE tab can hold the loop. But it only ever moved the
-    boundary — the whole per-tab read still ran ON the loop, so a single large
-    transcript could stall it for seconds before the next yield arrived. So the
-    reads themselves now move: ``open_slots.json``, the agent→model map, and each
-    tab's metadata + chained transcript walk are hoisted into
-    ``asyncio.to_thread``, and only the slot mutation stays here.
+    The slot mutation stays on the loop: its broadcast uses
+    ``asyncio.Queue.put_nowait`` / ``asyncio.Event.set``, which are not
+    thread-safe, and ``_spawn_ws_send`` off-loop drops every dashboard client
+    without a close frame, so browsers never reconnect. Hence this prefetch-then-
+    apply loop instead of :func:`_restore_open_slots_steps`.
 
-    That mutation cannot follow them. Creating a slot broadcasts via
-    ``asyncio.Queue.put_nowait`` / ``asyncio.Event.set``, neither of which is
-    thread-safe, and ``_spawn_ws_send``'s ``ensure_future`` raises off-loop into
-    a broad ``except`` that marks every connected dashboard client dead and drops
-    it *without a close frame* — browsers then never reconnect. So this driver
-    runs its own prefetch-then-apply loop (the shape
-    ``rehydrate_slot_from_history_async`` established) rather than driving
-    :func:`_restore_open_slots_steps`, whose reads are inline by construction.
-    The generator stays for the synchronous callers.
-
-    Because this yields, the 5s periodic flush (already running by this point)
-    can interleave — so ``restoring_open_slots`` is held for the duration to stop
-    it snapshotting a half-restored slot set over open_slots.json.
+    ``restoring_open_slots`` is held throughout so the 5s periodic flush cannot
+    snapshot a half-restored slot set over open_slots.json.
     """
     restored = 0
     state.restoring_open_slots = True
@@ -804,27 +745,14 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             restored=restored,
             kept=dropped,
         )
-        # Commit the tab-id backfills this restore minted BEFORE returning. Each
-        # is an os.replace of a session file; left in flight (the fire-and-forget
-        # off-loop helper), it would still be mid-replace when a caller reads the
-        # same transcript on the loop right after restore, and on Windows that
-        # open() is a sharing violation the on-loop read cannot wait out, so the
-        # read re-raises PermissionError (the intermittent dropped-tab / read
-        # error on restart). Awaited one at a time off the loop so the
-        # flock/os.close/os.replace stay off the event-loop thread.
+        # Commit the tab-id backfills (each an os.replace) BEFORE returning: on
+        # Windows a caller's on-loop read of a file still mid-replace raises
+        # PermissionError. Awaited one at a time off the loop.
         #
-        # Through ``update_metadata_if(require_existing=True)``, NOT the plain
-        # upserting ``update_metadata``: deferring every backfill to here widens
-        # the gap between a tab restoring and its write landing, and a
-        # ``DELETE /api/sessions/{key}`` can fall inside it. The checked variant
-        # re-reads existence UNDER the write lock, so a session unlinked during
-        # the restore window is left deleted instead of being recreated as a
-        # metadata-only transcript the next restore reopens as an empty tab. The
-        # guard always proceeds; existence is the only gate, and the minted
-        # tab_id has no on-disk siblings so a backfill that is correctly skipped
-        # loses nothing. Best-effort: a backfill is metadata already reflected in
-        # the restored slot, so a lock timeout / I/O error / a skipped (deleted)
-        # write is logged, not raised. Mirrors restore_recent_sessions_async.
+        # ``update_metadata_if(require_existing=True)``, not ``update_metadata``:
+        # a ``DELETE /api/sessions/{key}`` during the restore must not be undone
+        # by recreating a metadata-only transcript that reopens as an empty tab.
+        # Best-effort: the slot already holds this metadata, so failures are logged.
         for _bk_key, _bk_fields in pending_backfills:
             try:
                 await asyncio.to_thread(
@@ -989,29 +917,14 @@ async def restore_recent_sessions_async(
             )
             if meta is None or messages is None:
                 continue
-            # POST-HOP REVALIDATION. Before the reads were offloaded, each item's
-            # check-then-apply ran atomically on the loop — nothing could get
-            # between them. The read window is now seconds wide, so the pre-hop
-            # answers are stale and BOTH must be asked again here, on the loop,
-            # before anything mutates slot state:
+            # POST-HOP REVALIDATION: the off-loop read left the pre-hop answers
+            # seconds stale, so ask both again on the loop before mutating:
             #
-            #   * the slot may now EXIST (a resume, a nudge, or the user opening
-            #     the tab published it while the transcript loaded).
-            #     ``_apply_recent_session`` calls ``get_or_create_slot``, which
-            #     returns that live slot, and the replay below would then append
-            #     500 on-disk messages onto state that already has them and
-            #     persist the duplicates.
-            #   * the tab may have been CLOSED with ✕. The close pops the slot and
-            #     records a tombstone synchronously, but persists the ``closed``
-            #     flag only after its own awaits — so the metadata just read still
-            #     says open, and rebuilding from it would resurrect a dismissed
-            #     tab and then fire a nudge turn into it. The tombstone is the
-            #     authoritative signal in that window.
-            #
-            # ``rehydrate_slot_from_history_async`` guards the same two windows
-            # after its own hop, and the open-tab driver inherits the ``_slots``
-            # half from ``_rehydrate_slot_from_history``'s internal re-check. This
-            # is the one converted surface that has to spell both out.
+            #   * the slot may now EXIST (resume, nudge, user opened it), and
+            #     replaying onto it would duplicate 500 on-disk messages.
+            #   * the tab may have been CLOSED with ✕: the tombstone is recorded at
+            #     once but ``closed`` persists later, so rebuilding from this
+            #     metadata would resurrect the tab and nudge into it.
             if slot_name in state._slots:
                 logger.debug(
                     "Restore skipped: session %s was published while its " "transcript loaded",
@@ -1060,26 +973,14 @@ async def restore_recent_sessions_async(
                 await _recover_mcp_app_claims_async(_recovered_slot)
             await asyncio.sleep(0)
         _sync_dashboard_slots(state)
-        # Commit the tab-id backfills this restore minted BEFORE returning. Each
-        # is an os.replace of a session file; left in flight (the fire-and-forget
-        # off-loop helper), it would still be mid-replace when a caller reads the
-        # same transcript on the loop right after restore, and on Windows that
-        # open() is a sharing violation the on-loop read cannot wait out, so the
-        # read re-raises PermissionError. Awaited one at a time off the loop so
-        # the flock/os.close/os.replace stay off the event-loop thread.
+        # Commit the tab-id backfills (each an os.replace) BEFORE returning: on
+        # Windows a caller's on-loop read of a file still mid-replace raises
+        # PermissionError. Awaited one at a time off the loop.
         #
-        # Through ``update_metadata_if(require_existing=True)``, NOT the plain
-        # upserting ``update_metadata``: deferring every backfill to here widens
-        # the gap between a tab restoring and its write landing, and a
-        # ``DELETE /api/sessions/{key}`` can fall inside it. The checked variant
-        # re-reads existence UNDER the write lock, so a session unlinked during
-        # the restore window is left deleted instead of being recreated as a
-        # metadata-only transcript the next recent-session restore reopens as an
-        # empty tab. The guard always proceeds; existence is the only gate, and
-        # the minted tab_id has no on-disk siblings so a backfill that is
-        # correctly skipped loses nothing. Best-effort: a backfill is metadata
-        # already reflected in the restored slot, so a lock timeout / I/O error /
-        # a skipped (deleted) write is logged, not raised.
+        # ``update_metadata_if(require_existing=True)``, not ``update_metadata``:
+        # a ``DELETE /api/sessions/{key}`` during the restore must not be undone
+        # by recreating a metadata-only transcript that reopens as an empty tab.
+        # Best-effort: the slot already holds this metadata, so failures are logged.
         for _bk_key, _bk_fields in pending_backfills:
             try:
                 await asyncio.to_thread(

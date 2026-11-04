@@ -1,11 +1,7 @@
 """SessionMap's threading contract: the lock, the batch, and the ratchets.
 
-Every mutation rewrites the WHOLE map from ``_data``, so a
-read-modify-write is atomic only while nothing else touches the structure.
-Before ``_MAP_LOCK`` the event loop was the only thing providing that, which is
-why offloading a single write made the map racy instead of non-blocking.
-
-Four properties are pinned here:
+Every mutation rewrites the whole map from ``_data``, so a read-modify-write is atomic
+only under ``_MAP_LOCK``. Four properties are pinned here:
 
 1. more than one thread may call the map, and no entry is lost;
 2. a ``batched_save`` block is ONE critical section, not merely one write;
@@ -77,15 +73,9 @@ class TestConcurrentMutation:
     def test_iterating_reader_survives_concurrent_writer(self, session_map):
         """A scan does not blow up on a dict mutated underneath it.
 
-        ``mapped_sids_by_key`` / ``find_key_by_sid`` iterate ``_data``. An
-        unlocked scan racing a writer raises ``RuntimeError: dictionary changed
-        size during iteration`` — a gateway-visible crash in whatever task
-        happened to be scanning, not a subtle inconsistency.
-
-        The switch interval is shortened for the duration: at the default 5 ms a
-        scan of a few hundred keys usually finishes inside one slice, so the
-        unlocked race is real but rarely observed, and a test that only
-        SOMETIMES catches it reports coverage it does not have.
+        An unlocked scan of ``_data`` racing a writer raises ``RuntimeError: dictionary
+        changed size during iteration``. The switch interval is shortened because at the
+        default 5 ms a scan usually finishes inside one slice and the race is rarely seen.
         """
         for i in range(600):
             session_map.set(f"dashboard:seed-{i}", f"sid-{i}")
@@ -250,11 +240,8 @@ class TestLockFreeReadsSeeWholeStructures:
     def test_thread_index_probe_never_sees_a_missing_owner(self, session_map):
         """``get_session_for_thread`` resolves during a concurrent rebuild.
 
-        The probe is lock-free — it is the hot path of every inbound Slack reply
-        — so a rebuild that CLEARED the index and refilled it would give the
-        probe a window where the thread has no owner. That is not a delay for
-        the caller: an unowned thread forks the user's reply into a brand-new
-        session. So the rebuild must publish a finished dict by rebinding.
+        The probe is lock-free (hot path of every Slack reply), and an unowned thread forks
+        the reply into a new session, so the rebuild must publish a finished dict by rebinding.
         """
         for i in range(400):
             session_map.set_slack_link(f"dashboard:chat-{i}", f"ts-{i}", "C1")
@@ -290,11 +277,8 @@ class TestLockHoldIsBounded:
     def test_worker_thread_construction_does_not_block_the_loop(self, session_map, tmp_path):
         """Building a `SessionMap()` off-loop must not stall a loop-side mutation.
 
-        `handlers/session_storage._build_index` constructs one under
-        `asyncio.to_thread`. If `_load` held the lock across its file read, a
-        loop-side `set_slack_link` would block on a worker's disk I/O — and the
-        stall is shared by every gateway task, including the heartbeat. The read
-        is made slow here so the difference is a decision, not a race.
+        `handlers/session_storage._build_index` builds one under `asyncio.to_thread`; `_load`
+        holding the lock across its read would stall every loop task. The read is made slow.
         """
         for i in range(300):
             session_map.set(f"dashboard:seed-{i}", f"sid-{i}")
@@ -514,13 +498,9 @@ class TestLockRatchet:
 class TestNoLockAcrossFlushAwait:
     """The deferred flush must never hold ``_MAP_LOCK`` across its await.
 
-    Extends property 4b to the flush path: serialization happens inside the
-    guarded sync helpers, and only the already-serialized payload crosses into
-    ``asyncio.to_thread``. Two shapes would break that, and both are ratcheted
-    structurally: an ``async def`` in the module decorated ``@_guarded`` (the
-    wrapper would take the lock only to build the coroutine object — a no-op
-    that reads as protection), and a ``with _MAP_LOCK`` block inside an
-    ``async def`` whose body awaits.
+    Only the serialized payload crosses into ``asyncio.to_thread``. Ratcheted: no ``async
+    def`` decorated ``@_guarded`` (it would lock only while building the coroutine), and no
+    ``with _MAP_LOCK`` inside an ``async def`` that awaits.
     """
 
     @staticmethod

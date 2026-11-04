@@ -518,16 +518,28 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
-            reg = register_app(result.name)
-            if reg.agents:
-                print(f"   Agents: {', '.join(reg.agents)}")
-            if reg.skills:
-                print(f"   Skills: {', '.join(reg.skills)}")
-            if reg.crons:
-                print(f"   Crons:  {', '.join(reg.crons)}")
-            if reg.errors:
-                for e in reg.errors:
-                    print(f"   ⚠️  {e}")
+            # The gateway's install route uses the same rule
+            # (``apps.routes_lifecycle._app_may_run_after_install`` with
+            # ``fresh_install``): a fresh install registers its agents, skills and
+            # MCP servers unless the app waits for session-approval consent, which
+            # only the dashboard gives.
+            info = get_app(result.name)
+            if info and not info.get("sessionApprovalConsentPending"):
+                reg = register_app(result.name)
+                if reg.agents:
+                    print(f"   Agents: {', '.join(reg.agents)}")
+                if reg.skills:
+                    print(f"   Skills: {', '.join(reg.skills)}")
+                if reg.crons:
+                    print(f"   Crons:  {', '.join(reg.crons)}")
+                if reg.errors:
+                    for e in reg.errors:
+                        print(f"   ⚠️  {e}")
+            elif info:
+                print(
+                    "   This app asks for session approval, so it stays off until "
+                    "enabled from the dashboard."
+                )
             print(f"\n   Run: kirocrew app enable {result.name}")
         else:
             print(f"❌ {result.error}", file=sys.stderr)
@@ -766,4 +778,12 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"   kirocrew app install {app_dir}")
 
     else:
-        print("Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}")
+        # No sub-action (the subparser is not `required`, matching every CLI
+        # subparser) or an unknown one: a usage error. Print to stderr and exit
+        # 2, the argparse convention, so `kirocrew app && …` stops instead of
+        # proceeding on a 0 after a typo.
+        print(
+            "Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}",
+            file=sys.stderr,
+        )
+        sys.exit(2)

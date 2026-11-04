@@ -227,12 +227,35 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     }
 
     if role == "mcp_oauth":
+        # Imported here so the chat_utils facade serves no new name.
+        from kiro_crew.dashboard.mcp_oauth_provenance import was_emitted
+
         out: dict = {}
         for k, v in list(meta.items()):
             if k in REDACTION_RECORD_FIELDS:
                 continue
+            if (
+                k == "oauth_url"
+                and v
+                and not (isinstance(v, str) and was_emitted(meta.get("child"), v))
+            ):
+                # Provenance before shape. The gate below exempts the protocol's
+                # own high-entropy parameters at trusted endpoints, and that is
+                # only sound for a URL an ACP child of THIS gateway sent: a
+                # transcript line is agent-writable, so a forged row could carry
+                # a secret in `state` or `client_id` and copy a live child stamp.
+                # A URL the emit site never recorded (see mcp_oauth_provenance),
+                # or a value that is not a string at all, is withheld, and an
+                # open banner is shown as expired, the state the liveness gate
+                # gives a link nobody can redeem.
+                # The key is dropped rather than blanked so the expired branch,
+                # not the vanish branch, renders it on every client.
+                if not (meta.get("completed") or meta.get("failed") or meta.get("superseded")):
+                    out["expired"] = True
+                continue
             if k == "oauth_url" and isinstance(v, str):
-                # Two gates, and deliberately NOT a third:
+                # A recorded URL still passes two shape gates, and deliberately
+                # NOT a third:
                 #   1. http(s)-only — a tampered history line can't smuggle a
                 #      javascript:/data: URL into <a href>.
                 #   2. URL must not embed an actual credential — a legit OAuth
@@ -278,6 +301,20 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
             out["quote"] = bounded["quote"]
         else:
             out.pop("quote", None)
+    if "banner" in out:
+        # A transcript line is attacker-writable, so the send handler's cap is
+        # re-applied here: an over-cap or non-text label is dropped and the row
+        # falls back to its full content.
+        from kiro_crew.constants import MAX_BANNER_CHARS
+
+        shown = out["banner"]
+        if (
+            role != "user"
+            or not isinstance(shown, str)
+            or not shown.strip()
+            or len(shown) > MAX_BANNER_CHARS
+        ):
+            out.pop("banner")
     return out
 
 

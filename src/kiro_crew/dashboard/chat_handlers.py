@@ -36,6 +36,7 @@ from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
 from kiro_crew.apps import seams as _app_seams
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
+from kiro_crew.config.fields import _coerce_bool  # noqa: F401 -- read by chat_api.slot_repair
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -283,6 +284,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
     _drain_file_changes_flush,
+    _emit_archived_rows,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
@@ -348,12 +350,15 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _reject_pending_approvals,
     _resolve_stop_event,
     _settle_discarded_stage_deliveries,
+    _start_chosen_restored_card,
+    _unchoose_restored_card,
     api_chat_slot_interrupt,
     api_chat_slot_stop,
     stop_slot_turn,
 )
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
+    CHAT_BANNER_META_KEY,
     STEER_REQUEUED,
     STEER_STEERED,
     TURN_ACTOR_META_KEY,
@@ -539,7 +544,11 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
+    RESTORED_QUEUE_KEY,
+    RESTORED_SEND_CHOSEN_KEY,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_registry import (  # noqa: F401
     SlotRegistry,
     TakeoverBasis,
@@ -674,7 +683,24 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``slack_sender`` names the Slack person a code channel's row came from
+#: (``slack.code_channels.creation.slack_sender``); only the Slack routing writes
+#: it, so a dashboard send cannot pass a row off as a Slack user's.
+#: ``slack_request`` names the Slack message a code channel's first turn delivered
+#: (``slack.code_channels.routing.REQUEST_META_KEY``); a caller-supplied one would
+#: mark a request delivered that never reached the session.
+#: ``CHAT_BANNER_META_KEY`` is set only from the body's validated ``banner``
+#: field, so ``meta.banner`` cannot skip its length cap and redaction.
+RESERVED_ROW_META_KEYS = frozenset(
+    {
+        "decisions_strip",
+        HUMAN_TURN_META_KEY,
+        TURN_ACTOR_META_KEY,
+        "slack_sender",
+        "slack_request",
+        CHAT_BANNER_META_KEY,
+    }
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the

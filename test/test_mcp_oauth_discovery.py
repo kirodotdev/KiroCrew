@@ -509,6 +509,10 @@ class _FakeAcpClient:
 
 
 class _FakeProviderClient:
+    # A live child's spawn identity: the banner is stamped with it, and a later
+    # read shows the link only for a URL that child is recorded as sending.
+    process_instance = "live-child"
+
     def __init__(self, pending):
         self.client = _FakeAcpClient(pending)
 

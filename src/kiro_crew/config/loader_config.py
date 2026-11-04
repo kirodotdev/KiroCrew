@@ -857,7 +857,10 @@ class KiroCrewConfig:
         # A stored edition STT provider this snapshot degraded to ``off`` (it was
         # loaded before the edition registered it) is written back as stored.
         _restore_stored_stt_provider(d)
-        # Strip overlay-owned values so they don't leak into config.json
+        # Strip overlay-owned values so they don't leak into config.json. The
+        # subtraction itself runs under the write lock below, against the base
+        # read there, so a leaf config.json stores keeps its own value.
+        overlay_owned: dict | None = None
         local_path = config_local_path()
         if local_path.is_file():
             try:
@@ -882,11 +885,9 @@ class KiroCrewConfig:
                                 k: canonical[k] for k in rl_overlay if k in canonical
                             },
                         }
-                    d = _subtract_overlay(d, raw_local)
+                    overlay_owned = raw_local
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
-        # An equal overlay value must not erase a choice the base file owns.
-        _restore_stored_harness_fields(d)
 
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
@@ -913,8 +914,13 @@ class KiroCrewConfig:
                     f"refusing to save over {p}: this snapshot was loaded while the "
                     "file did not parse, so it holds defaults, not the saved settings"
                 )
-            if p.exists():
-                read_config_for_update(p)
+            stored = read_config_for_update(p) if p.exists() else {}
+            if overlay_owned is not None:
+                # What config.json stores keeps its own value under an
+                # overlay-owned leaf, so dropping the overlay later still finds it.
+                d = _subtract_overlay(d, overlay_owned, stored)
+                # An equal overlay value must not erase a choice the base file owns.
+                _restore_stored_harness_fields(d)
             write_config_atomically(p, stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
@@ -1449,6 +1455,7 @@ class KiroCrewConfig:
             # kiro -- the member thread then runs as plain chat and the mount
             # step logs why.
             # circular import: members sits above config in the layering.
+            from kiro_crew.acp_backends import ACP_BACKEND_KAS
             from kiro_crew.crewmate_harness import crewmate_backend_pin
             from kiro_crew.members import select_provider_backend
 
@@ -1465,6 +1472,13 @@ class KiroCrewConfig:
                     crewmate_backend_pin(self, session_key) if backend_override is None else None
                 ),
             )
+            # Enterprise (RFC D6): a session on KAS is refused here, before any process
+            # exists, when boot proved KAS cannot start on this host. KAS sessions only:
+            # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
+            if _backend == ACP_BACKEND_KAS:
+                from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+                refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to
             # key on the backend this session actually gets, not on the

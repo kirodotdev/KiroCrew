@@ -114,6 +114,7 @@ class TestValidateCwd:
     ) -> None:
         """``~`` in allowed_roots expands via ``expanduser``."""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         project = tmp_path / "ws" / "proj"
         project.mkdir(parents=True)
         resolved, err = validate_cwd(str(project), ["~/ws"])
@@ -123,6 +124,7 @@ class TestValidateCwd:
     def test_tilde_expanded_in_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """``~`` in cwd argument expands via ``expanduser``."""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         project = tmp_path / "proj"
         project.mkdir()
         resolved, err = validate_cwd("~/proj", [str(tmp_path)])

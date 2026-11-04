@@ -88,12 +88,8 @@ class TestRuntimeWiring:
     ):
         """A binding-resolution failure must not fabricate workspace='default'.
 
-        The handler logs and proceeds when resolve_agent_bindings raises, and
-        slot.workspace keeps its previous value — so the response must name
-        THAT value. The acting tab writes the response's workspace
-        into its store optimistically; a fabricated 'default' would pin the
-        chip to a workspace the slot does not hold, and with the websocket
-        down (the optimistic write's whole premise) nothing corrects it.
+        The response must name slot.workspace's kept value: the tab writes it into its
+        store optimistically, and with the websocket down nothing corrects it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -124,12 +120,8 @@ class TestRuntimeWiring:
     ):
         """A throwing teardown reports SUCCESS with a warning; the agent stays.
 
-        The reset pops the session before its shutdown can fail, so by the
-        failure point the old binding's session does not exist — every
-        future or replacement session cold-starts on the NEW agent. The
-        switch therefore succeeded: answering 500 would make the acting
-        tab's performSlotSwitch keep the OLD store value for a switch that
-        actually happened.
+        The session is popped before shutdown fails, so the switch took; a 500 would
+        make performSlotSwitch keep the OLD store value.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -210,12 +202,8 @@ class TestRuntimeWiring:
     ):
         """A failed switch never disturbs values written while it was in flight.
 
-        The handler commits before the reset and its failure path touches
-        nothing further, so state
-        written by a concurrent actor during the (failing) reset — e.g. the
-        project endpoint, which does not take the slot lock — survives
-        untouched. Restoring captured priors here (the old rollback shape)
-        would silently erase that concurrent success.
+        The project endpoint does not take the slot lock, so restoring captured
+        priors on failure would erase its concurrent write.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -331,13 +319,8 @@ class TestRuntimeWiring:
     ):
         """A raise with the session STILL REGISTERED propagates as a 500.
 
-        The SAME provider instance registered before and after the raise
-        means the failure came BEFORE the session pop (e.g. in the
-        pending-wait unblock): the old session survives on the old agent, so
-        a 200 + warning would report a switch that did not take. The
-        committed values are rolled back before the raise escapes — the
-        acting tab keeps its old store value on a non-2xx, and the probe has
-        proven the surviving session still runs the old binding.
+        The same provider instance before and after means the raise came before the
+        pop, so the old session still runs the old agent and the commit is rolled back.
         """
         from kiro_crew.providers.base import LLMProvider
 
@@ -374,12 +357,8 @@ class TestRuntimeWiring:
     ):
         """A successor registered post-pop is not the unpopped old session.
 
-        A concurrent send can register a SUCCESSOR session for the same key
-        after the pop and before the old session's shutdown raises: the
-        helper's probe compares instance IDENTITY, so a different registered
-        provider still classifies as post-pop — the switch is committed, the
-        successor cold-started from the committed bindings, and the answer is
-        200 + warning.
+        The probe compares instance identity, so a concurrent send's successor still
+        counts as post-pop and the answer is 200 + warning.
         """
         from kiro_crew.providers.base import LLMProvider
 
@@ -415,13 +394,8 @@ class TestRuntimeWiring:
     ):
         """A pick landing during a SUCCESSFUL reset wins over derived values.
 
-        The project/workspace endpoints do not take the slot lock, so a
-        user's explicit pick can land while the agent switch's reset await is
-        in flight. The commit is compare-and-set against a pre-await
-        baseline: the switch's DERIVED workspace/project must not overwrite
-        the newer explicit pick, and the response names the slot's final
-        reality. `agent` itself still commits — it is owned exclusively by
-        this endpoint.
+        The project/workspace endpoints do not take the slot lock, so the commit is
+        compare-and-set against a pre-await baseline. `agent` still commits.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -503,12 +477,8 @@ class TestRuntimeWiring:
     async def test_api_chat_slot_agent_new_agent_visible_during_reset(self, tmp_path, monkeypatch):
         """The new agent is committed before the reset runs.
 
-        A message send landing while the reset await is in flight creates a
-        fresh session from the slot's CURRENT bindings — if the agent were
-        committed only after the reset, that session would cold-start on the
-        OLD agent and stay stale while the switch reports success.
-        (`agent` has no unlocked writers, so committing before the reset is
-        safe: the failure path's rollback races nobody.)
+        A send during the reset builds a session from the CURRENT bindings, which
+        would otherwise cold-start on the OLD agent.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -541,12 +511,8 @@ class TestRuntimeWiring:
     ):
         """The response snapshots the workspace LAST, before leaving the lock.
 
-        The metadata persist awaits a worker thread, yielding the event loop
-        — a concurrent /workspace pick landing in that window must be what
-        the response names, because the acting tab writes the response's
-        workspace into its store optimistically. A snapshot taken before the
-        persist would hand the tab a stale value that the pick had already
-        superseded.
+        The persist yields the loop, so a /workspace pick in that window must be what
+        the response names; the tab writes it into its store optimistically.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -724,11 +690,8 @@ class TestRuntimeWiring:
     ):
         """Switching agents resets provider-specific state and persists both bindings.
 
-        The pin is KEPT (the read side withholds it from a provider that does
-        not serve it); the fallback walk, which nothing re-scopes at read, is
-        reset. Without the persistence, a session resumed after a gateway
-        restart reverts to whatever agent (if any) was recorded in the initial
-        metadata line.
+        The pin is kept (the read side withholds it); the fallback walk is reset.
+        Without persistence a resumed session reverts to the initial metadata's agent.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

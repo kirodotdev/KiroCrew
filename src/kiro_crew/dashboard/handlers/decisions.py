@@ -419,7 +419,8 @@ def _payload(state: dict, *, denied: bool) -> dict:
         "memory_text": consent.consented_memory_text(state),
         "nudge_evidence": consent.consented_nudge_evidence(state),
         # The two ``browser.step`` scopes. Both read TRUE when absent: they are the
-        # two scopes on by default once consent stands.
+        # two scopes on by default once consent stands. ``browser_images`` reads
+        # FALSE when absent under a ``sagemaker://`` consent, and the card draws that.
         "browser": consent.consented_browser(state),
         "browser_images": consent.consented_browser_images(state),
         # The points this build ships, with the effective status of each. Here

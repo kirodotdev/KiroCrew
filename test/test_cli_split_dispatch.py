@@ -138,7 +138,6 @@ def test_a_command_hands_its_namespace_to_its_handler(
 
 # Commands whose handler the facade binds, and which take the parsed namespace.
 _FACADE_HANDLERS = [
-    (("knowledge", "stats"), "_knowledge"),
     (("consolidate",), "_consolidate_cmd"),
     (("config", "get"), "_config_cmd"),
 ]
@@ -198,6 +197,7 @@ _EXIT_HANDLERS = [
     (("sandbox", "status"), "kiro_crew.cli_server", "_sandbox_cmd"),
     (("kas", "status"), "kiro_crew.cli_kas", "kas_cmd"),
     (("cloud", "list"), None, "handle_cloud"),
+    (("knowledge", "stats"), None, "_knowledge"),
 ]
 
 

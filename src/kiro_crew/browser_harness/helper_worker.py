@@ -57,7 +57,9 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 #: The world :func:`_local_js_isolated` evaluates in: the top frame's own isolated
-#: world, where page script cannot replace the DOM functions the guard counts with.
+#: world, where page script cannot replace the DOM functions the walker reads with.
+#: The walker keeps its refs there, and the gateway's stream session reaches the same
+#: world by this name (``frames.TOP_WALKER_WORLD``, kept equal by a test).
 _GUARD_WORLD = "kirocrew_guard_walker"
 
 #: Longest error text sent back; a Python traceback can be pages.
@@ -143,10 +145,11 @@ def _local_page_clock(helpers: Any, state: str) -> dict[str, str]:
 def _local_js_isolated(helpers: Any, expression: str) -> Any:
     """Evaluate *expression* in an isolated world of the current tab's top frame.
 
-    The screenshot guards count asked and password fields here, not in the page's
-    own world: a page that replaces ``document.querySelectorAll`` there cannot make
-    the count read zero in this one. Any step that does not give a value raises, so
-    the gateway's guard fails closed instead of reading an empty answer as zero.
+    The walker reads the page, and the guards count asked and password fields, here and
+    not in the page's own world: a page that replaces ``document.querySelectorAll`` or
+    ``getAttribute`` there cannot change what the walker sees in this one. Any step
+    that does not give a value raises, so the gateway's guard fails closed instead of
+    reading an empty answer as zero.
     """
     tree = helpers.cdp("Page.getFrameTree")
     frame_id = ((tree.get("frameTree") or {}).get("frame") or {}).get("id")

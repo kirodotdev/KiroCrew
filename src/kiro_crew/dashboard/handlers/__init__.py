@@ -181,6 +181,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_browse_files,
     api_channel_upload_file,
     api_dashboard_config,
+    api_directory_upload,
     api_file_diff,
     api_file_download,
     api_file_grep,
@@ -355,6 +356,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_notifications_ack_all,
     api_notifications_clear,
     api_send_message,
+    api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest,
@@ -1109,6 +1111,12 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_export,
     api_portability_import,
     api_portability_preview,
+)
+
+# Owner reveal of a removed credential -- the ONE reader of the in-memory
+# ``security.reveal_store``; refuses every agent, app and non-owner caller.
+from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
+    api_owner_value_reveal,
 )
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,

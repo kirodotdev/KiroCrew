@@ -175,6 +175,7 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     # only whether the run's ``delivered`` tombstone is written.
     "_report_undelivered": NOT_DELIVERY_STATE,
     # Run bookkeeping these modules also write. None of them says where an outcome is.
+    "_deadline_ending": NOT_DELIVERY_STATE,
     "_finalized": NOT_DELIVERY_STATE,
     "_reap_reason": NOT_DELIVERY_STATE,
     "_reap_started": NOT_DELIVERY_STATE,

@@ -110,7 +110,7 @@ async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     except MemberSlugError:
         return _bad("member_slug_mismatch", "member does not match slug")
     if member not in cfg.agents:
-        return _bad("member_not_found", "no crew member for this slug", status=404)
+        return _bad("member_not_found", "no Bot for this slug", status=404)
     if _member_names_for_slug(cfg, slug) != [member]:
         return _bad(
             "dashboard_slug_ambiguous",
@@ -771,11 +771,15 @@ def _page_safe(value: Any) -> Any:
     return value
 
 
-def page_safe_for(state: Any) -> Callable[[Any], Any]:
-    """:func:`_page_safe` for one gateway: work items get their worker facts first."""
+def page_safe_for(state: Any, slot: str = "") -> Callable[[Any], Any]:
+    """:func:`_page_safe` for one gateway: work items get their worker facts first.
+
+    *slot* is the slot the page's folds are read from, the board's conductor, so each
+    item can say whether that main chat is still open (``orphaned``).
+    """
     from kiro_crew.dashboard.handlers.work_ledger_board import with_worker_facts
 
-    return lambda value: _page_safe(with_worker_facts(value, state))
+    return lambda value: _page_safe(with_worker_facts(value, state, slot))
 
 
 def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
@@ -1088,7 +1092,7 @@ async def api_member_dashboard_lock(request: web.Request) -> web.Response:
     agent = _refuse_agent_caller(
         request,
         "members.dashboard_lock",
-        "only the person can lock or unlock a dashboard, from the crewmate's Profile card",
+        "only the person can lock or unlock a dashboard, from the Bot's Profile card",
     )
     if agent is not None:
         return agent
@@ -1864,7 +1868,7 @@ async def _serve_package(
         # THE SAME masking and redaction pass the template path applies, handed in
         # rather than re-implemented: this is the one place a package's values are
         # produced, so a value that did not cross it cannot reach a browser.
-        redact=page_safe_for(state),
+        redact=page_safe_for(state, slot),
     )
     read = await _run(page.arm)
     # RE-CHECKED AFTER ARMING, because arming awaits: two GETs for one crewmate (two

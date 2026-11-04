@@ -283,11 +283,11 @@ describe('CrewWakeSection — inline schedule creation', () => {
     wrap(
       <CrewWakeSection
         crew="radar" memberId="radar" agentTemplate="shared-template" ownedOnly initialAdding
-        pinnedHint="Created from this mate's profile, so the job runs as this mate."
+        pinnedHint="Created from this Bot's profile, so the job runs as this Bot."
       />,
     )
     await screen.findByTestId('crew-wake-create')
-    expect(screen.getByText("Created from this mate's profile, so the job runs as this mate.")).toBeTruthy()
+    expect(screen.getByText("Created from this Bot's profile, so the job runs as this Bot.")).toBeTruthy()
     expect(screen.queryByText(/this crew's editor/)).toBeNull()
   })
 

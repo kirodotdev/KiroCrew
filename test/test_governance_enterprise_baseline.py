@@ -59,7 +59,7 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "approval_mode": (("interactive",), ()),
     "sandbox.min_level": (("strict",), ()),
     "yolo_duration": ((), ("permanent", "until_shutdown", "1h")),
-    "agent_backend": (("kiro",), ("claude", "kas")),
+    "agent_backend": (("kas",), ("claude", "kiro")),
     "webhooks": ((), ("agent", "ops-mission-control")),
     "capabilities.publish": (
         ("", "destinations:default"),
@@ -333,14 +333,17 @@ def test_enterprise_local_tier_cannot_permit_what_the_baseline_denies(
         local_tier,
         capabilities={"browse": {"enabled": True}},
         network={"egress": {"mode": "deny", "deny": []}},
-        agent_backend={"mode": "allow", "allow": ["kiro", "claude"]},
+        agent_backend={"mode": "allow", "allow": ["kas", "kiro", "claude"]},
     )
     composed = governance.compose_tier_ladder(central, local)
     assert not resolve(composed, None, "capabilities.browse", "").permitted
     assert not resolve(composed, None, "network.egress", "example.com").permitted
     assert not resolve(composed, None, "agent_backend", "claude").permitted
+    # Kiro CLI is outside the enterprise baseline (RFC D6), so a local tier
+    # cannot add it either.
+    assert not resolve(composed, None, "agent_backend", "kiro").permitted
     # In the baseline and in the local allow-set, so both levels permit it.
-    assert resolve(composed, None, "agent_backend", "kiro").permitted
+    assert resolve(composed, None, "agent_backend", "kas").permitted
     # Named by the authority, the scope answers from the remote policy.
     central = _tier(governance.TIER_CENTRAL, capabilities={"browse": {"enabled": True}})
     assert resolve(

@@ -37,6 +37,7 @@ from kiro_crew.hooks import (
     identity_grant_covers_child,
     unattended_turn,
 )
+from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.security.deny_waiver import deny_key_description
@@ -116,11 +117,23 @@ _SPEC_HOOKS_UNREADABLE_BLOCK = "BLOCKED:system:the agent spec's hooks could not 
 
 
 def _spec_keys_notice(agent: str, keys: list[str]) -> str:
-    """The session-start notice for spec keys this backend never receives."""
-    return (
+    """The session-start notice for spec keys this backend never receives.
+
+    A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
+    more sentence, because what it costs is sign-in, not a setting.
+    """
+    notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
     )
+    servers = oauth_servers_in(keys)
+    if servers:
+        noun = "server" if len(servers) == 1 else "servers"
+        notice += (
+            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
+            "backend. The kiro-cli backend supports it."
+        )
+    return notice
 
 
 def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
@@ -1478,7 +1491,9 @@ async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, w
 
     Used when the card is declined, times out or gets any answer but an allow
     (*why* ``deny_override_declined``), and when an allowed call's second
-    judgement still denies on another rule (``deny_override_still_denied``). The
+    judgement still denies on another rule (``deny_override_still_denied``), and
+    when an earlier rejection in the batch cascades over it before any card is
+    shown (``batch_rejection``). The
     agent reads the rule's refusal, as it does for a refusal no card was offered
     for, rather than kiro-cli's "User denied tool execution".
     """

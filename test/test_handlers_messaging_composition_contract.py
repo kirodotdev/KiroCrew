@@ -51,6 +51,11 @@ from kiro_crew.dashboard import messaging_api
 from kiro_crew.secrets import SecretVault
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="handlers_messaging_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
 _FACADE = msg.__name__
 _FACADE_PATH = Path(msg.__file__).resolve()
 _OWNER_PACKAGE = messaging_api.__name__
@@ -405,7 +410,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     assert len({id(h) for h in served}) >= 28
     assert [h.__name__ for h in served if getattr(msg, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 49
+    assert len(reexports) == 50
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
     server_names = _server_handler_names()
     assert {"api_spawn", "api_send_message"} <= server_names
@@ -1846,13 +1851,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_a_facade_also_covers_its_owners() -> None:

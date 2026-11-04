@@ -8,7 +8,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
-``_pending_requests``, ``_routed_requests``.
+``_pending_requests``, ``_routed_requests``, ``_session_activity_at``.
 
 Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
@@ -468,6 +468,7 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 if queue is not None:
                     if msg.is_method(METHOD_AGENT_SWITCHED):
                         self._note_switched_model(session_id, msg.params)
+                    self._session_activity_at[session_id] = time.monotonic()
                     await queue.put(msg)
                 elif (
                     session_id in self._subagent_sessions
@@ -515,6 +516,10 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # would sit unanswered — the original hang with extra
                     # steps. Answer it fail-closed NOW instead.
                     _owner_turn_active = self._subagent_owner in self._turn_active_sessions
+                    # The child is working for its owner whatever happens
+                    # to the frame below -- answered, routed or dropped
+                    # between turns -- so it counts as the owner's activity.
+                    self._session_activity_at[self._subagent_owner] = time.monotonic()
                     if (
                         msg.id is not None
                         and msg.is_method(METHOD_REQUEST_PERMISSION)

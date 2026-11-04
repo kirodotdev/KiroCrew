@@ -59,9 +59,19 @@ function sizeHost(el: HTMLElement, w = 800, h = 600) {
   Object.defineProperty(el, 'offsetHeight', { configurable: true, value: h })
 }
 
+/** A fixed instant for the double-tap window. The viewer times a double-tap
+ *  with the wall clock (`Date.now`); a pause between two dispatches on a loaded runner must
+ *  not turn a double-tap into two single taps. */
+const FIXED_NOW = Date.UTC(2026, 0, 1)
+
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 })
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+  vi.spyOn(Date, 'now').mockReturnValue(FIXED_NOW)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 describe('DiagramLightbox magnification', () => {
@@ -127,6 +137,133 @@ describe('DiagramLightbox magnification', () => {
     const style = h.getAttribute('style') ?? ''
     expect(style).toContain('scale(1)')
     expect(style).toContain('translate(0px, 0px)')
+  })
+
+  // The overlay pads itself for the safe-area insets (p-safe), so with an uneven
+  // inset the content's centre is not the viewport's. The zoom must scale about
+  // where the content actually sits, or a double-tap or a pinch drifts away
+  // from the finger. Here the host's box is centred at x=178 (a 44px inset on
+  // the right of a 400px viewport), not at the viewport's x=200.
+  function offCentreHost(el: HTMLElement) {
+    vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => {
+      const t = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(el.getAttribute('style') ?? '')
+      const px = t ? Number(t[1]) : 0
+      const py = t ? Number(t[2]) : 0
+      // Untransformed box: 0..356 x 0..800; the translate moves it by pan.
+      return { left: px, top: py, right: 356 + px, bottom: 800 + py, width: 356, height: 800, x: px, y: py, toJSON: () => ({}) } as DOMRect
+    })
+  }
+
+  it('anchors a double-tap at the content centre when the overlay is padded off-centre', () => {
+    render(<DiagramLightbox svg={WITH_VIEWBOX} onClose={() => {}} />)
+    const h = host()
+    sizeHost(h, 4000, 4000)
+    offCentreHost(h)
+    // Tap at the content centre: scaling about that point needs no pan at all.
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 2)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 2)) })
+    expect(h.getAttribute('style')).toContain('scale(2.5)')
+    expect(h.getAttribute('style')).toContain('translate(0px, 0px)')
+  })
+
+  it('anchors a pinch at the content centre when the overlay is padded off-centre', () => {
+    render(<DiagramLightbox svg={WITH_VIEWBOX} onClose={() => {}} />)
+    const h = host()
+    sizeHost(h, 4000, 4000)
+    offCentreHost(h)
+    // A pinch spread evenly about the content centre holds that centre still.
+    act(() => { fireEvent.pointerDown(h, touch(128, 400, 1)) })
+    act(() => { fireEvent.pointerDown(h, touch(228, 400, 2)) })
+    act(() => { fireEvent.pointerMove(h, touch(78, 400, 1)) })
+    act(() => { fireEvent.pointerMove(h, touch(278, 400, 2)) })
+    expect(h.getAttribute('style')).toContain('scale(2)')
+    expect(h.getAttribute('style')).toContain('translate(0px, 0px)')
+  })
+
+  it('reads the content centre from the drawn translation while the pan is still easing', () => {
+    render(<DiagramLightbox svg={WITH_VIEWBOX} onClose={() => {}} />)
+    const h = host()
+    sizeHost(h, 4000, 4000)
+    // Mid-transition the element is DRAWN at translate(-30, 0) on its way to a
+    // target pan, and its box carries that in-between translation. The layout
+    // centre is still x=178, so a centre read from the target pan instead of the
+    // drawn one would be off by the gap between them.
+    const drawnX = -30
+    vi.spyOn(h, 'getBoundingClientRect').mockImplementation(() =>
+      ({ left: drawnX, top: 0, right: 356 + drawnX, bottom: 800, width: 356, height: 800, x: drawnX, y: 0, toJSON: () => ({}) }) as DOMRect)
+    const realGcs = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
+      const cs = realGcs(el, pseudo)
+      if (el !== h) return cs
+      return new Proxy(cs, { get: (t, k) => (k === 'transform' ? `matrix(1, 0, 0, 1, ${drawnX}, 0)` : Reflect.get(t, k)) })
+    })
+    // Double-tap at the layout centre: scaling about it needs no pan.
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 2)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 2)) })
+    expect(h.getAttribute('style')).toContain('scale(2.5)')
+    expect(h.getAttribute('style')).toContain('translate(0px, 0px)')
+  })
+
+  it('lets each edge of a zoomed, off-centre image reach its own screen edge', () => {
+    render(<DiagramLightbox svg={WITH_VIEWBOX} onClose={() => {}} />)
+    const h = host()
+    // 400px wide at fit, centred at x=178 by a 44px right inset: at 2.5x it is
+    // 1000px wide, so its left edge can come in to x=0 with a pan of +322 and
+    // its right edge to x=400 with -278. One symmetric limit (300) would stop
+    // 22px short on the left.
+    sizeHost(h, 400, 800)
+    offCentreHost(h)
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 1)) })
+    act(() => { fireEvent.pointerDown(h, touch(178, 400, 2)) })
+    act(() => { fireEvent.pointerUp(h, touch(178, 400, 2)) })
+    expect(h.getAttribute('style')).toContain('scale(2.5)')
+    act(() => { fireEvent.pointerDown(h, touch(10, 400, 3)) })
+    act(() => { fireEvent.pointerMove(h, touch(1500, 400, 3)) })
+    expect(h.getAttribute('style')).toContain('translate(322px, 0px)')
+    act(() => { fireEvent.pointerUp(h, touch(1500, 400, 3)) })
+    act(() => { fireEvent.pointerDown(h, touch(390, 400, 4)) })
+    act(() => { fireEvent.pointerMove(h, touch(-1500, 400, 4)) })
+    expect(h.getAttribute('style')).toContain('translate(-278px, 0px)')
+  })
+
+  it('lets a zoomed diagram reach the edge of a scroller that clips it short of the screen', () => {
+    render(<DiagramLightbox svg={WITH_VIEWBOX} onClose={() => {}} />)
+    const h = host()
+    const scroller = h.parentElement as HTMLElement
+    // A 44px left inset: the scroller clips at x=44..400, and the diagram,
+    // 356px wide at fit, is centred in it at x=222. At 2.5x (offsetWidth 400,
+    // so 1000px) its left edge reaches x=44 with a pan of +322. A limit taken
+    // from the screen edge (x=0) would stop at +278, 44px short.
+    scroller.style.overflowX = 'auto'
+    scroller.style.overflowY = 'auto'
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 356 })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 800 })
+    vi.spyOn(scroller, 'getBoundingClientRect').mockImplementation(() =>
+      ({ left: 44, top: 0, right: 400, bottom: 800, width: 356, height: 800, x: 44, y: 0, toJSON: () => ({}) }) as DOMRect)
+    sizeHost(h, 400, 800)
+    vi.spyOn(h, 'getBoundingClientRect').mockImplementation(() => {
+      const t = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(h.getAttribute('style') ?? '')
+      const px = t ? Number(t[1]) : 0
+      const py = t ? Number(t[2]) : 0
+      return { left: 44 + px, top: py, right: 400 + px, bottom: 800 + py, width: 356, height: 800, x: 44 + px, y: py, toJSON: () => ({}) } as DOMRect
+    })
+    act(() => { fireEvent.pointerDown(h, touch(222, 400, 1)) })
+    act(() => { fireEvent.pointerUp(h, touch(222, 400, 1)) })
+    act(() => { fireEvent.pointerDown(h, touch(222, 400, 2)) })
+    act(() => { fireEvent.pointerUp(h, touch(222, 400, 2)) })
+    expect(h.getAttribute('style')).toContain('scale(2.5)')
+    act(() => { fireEvent.pointerDown(h, touch(60, 400, 3)) })
+    act(() => { fireEvent.pointerMove(h, touch(1500, 400, 3)) })
+    expect(h.getAttribute('style')).toContain('translate(322px, 0px)')
+    act(() => { fireEvent.pointerUp(h, touch(1500, 400, 3)) })
+    act(() => { fireEvent.pointerDown(h, touch(390, 400, 4)) })
+    act(() => { fireEvent.pointerMove(h, touch(-1500, 400, 4)) })
+    expect(h.getAttribute('style')).toContain('translate(-322px, 0px)')
   })
 
   it('does not read two far-apart taps as one double-tap', () => {

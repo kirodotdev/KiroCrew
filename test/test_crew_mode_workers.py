@@ -806,6 +806,8 @@ def test_the_routes_are_registered_under_the_slot():
         "/api/chat/slots/{slot}/crew-workers/{worker}/steer": ["POST"],
         # The conductor's approval card (owner decision B).
         "/api/chat/slots/{slot}/crew-workers/{worker}/approve": ["POST"],
+        # A session's in-place recap on the crewmate Sessions tab.
+        "/api/chat/slots/{slot}/crew-workers/{worker}/recap": ["GET"],
     }
 
 

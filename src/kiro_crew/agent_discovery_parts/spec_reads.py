@@ -15,15 +15,16 @@ import errno
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
-from kiro_crew import hooks
+from kiro_crew import hooks, platform_compat
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
     markdown_head_is_fenceless,
     parse_agent_spec_bytes,
 )
+from kiro_crew.atomic_write import retry_read_sharing_window
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
 from kiro_crew.pinned_fs import open_fenced_for_read
@@ -98,10 +99,19 @@ def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None)
         opened = Path(fd_real)
         return _fence_refuses(opened) or (fence is not None and fence(opened))
 
-    fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
     cap = hooks.MAX_FILE_BYTES
-    with os.fdopen(fd, "rb") as fh:
-        data = fh.read(cap + 1)
+
+    def read_once() -> bytes:
+        fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(cap + 1)
+
+    # On Windows a read that lands while a writer replaces the spec (the
+    # dashboard's MCP enable, disable and remove paths rewrite kirocrew.json)
+    # fails with a sharing violation. That spec is present and valid, so the
+    # pinned open and read are retried with read_bytes_with_retry's budget,
+    # off the event loop only; POSIX keeps the single attempt.
+    data = retry_read_sharing_window(read_once, real)
     if len(data) > cap:
         raise FileTooLargeError(f"File exceeds {cap // (1024 * 1024)} MB safety cap")
     return data
@@ -306,6 +316,15 @@ def _read_agent_spec(
         # quotes the spelling), so they are rendered with ``%r``: a newline in
         # the name is escaped instead of starting a forged log record.
         logger.warning("Skipping agent config %r: %r", path, exc)
+        return None
+    except PermissionError:
+        if platform_compat.IS_WINDOWS:
+            # The spec is present but stayed locked past the retry budget: a
+            # reader of this None would show its MCP servers as never
+            # configured, so the miss is logged where an operator sees it.
+            logger.warning("Skipping agent config %r: still locked by another process", path)
+        else:
+            logger.debug("Skipping unreadable agent config: %r", path)
         return None
     except OSError:
         # Absent or unreadable: "not a readable spec".
@@ -687,6 +706,27 @@ def declared_spec_entry(
             redact_log_via_context(names),
         )
     return None if match is None else (match_paths[0], match)
+
+
+def iter_declared_specs(
+    agents_dir: Path, *, operation: str, source: str
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(declared name, parsed spec)`` for every spec in *agents_dir* that declares one.
+
+    The walk :func:`spec_by_declared_name` makes, through the same reader and
+    under the caller's SEL labels, without choosing a name: a caller that needs
+    the answer for every declared name reads the directory once instead of once
+    per name. A spec that is refused, is not an object, or declares no string
+    ``name`` is skipped, as that scan skips it. Each parse is yielded and then
+    dropped, so the caller decides what to keep. Propagates ``OSError`` from
+    the directory walk itself.
+    """
+    for path in iter_agent_spec_files(agents_dir):
+        spec = _read_agent_spec(path, operation=operation, source=source)
+        if isinstance(spec, dict):
+            name = spec.get("name")
+            if isinstance(name, str):
+                yield name, spec
 
 
 def agent_spec_stems(agents_dir: Path, *, operation: str, source: str) -> list[str]:

@@ -49,6 +49,8 @@ from kiro_crew.apps.bridges import (
     register_app,
     register_app_crons_with_service,
 )
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps

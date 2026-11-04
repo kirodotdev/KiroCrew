@@ -93,16 +93,10 @@ async def test_send_command_redacts_output(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_saw_not_logged_in_detects_auth_failure():
-    """#1: AcpRuntime.saw_not_logged_in reports kiro-cli's auth-failure signal on
-    stderr so a death can be surfaced as AcpAuthRequired.
+    """AcpRuntime.saw_not_logged_in reports kiro-cli's stderr auth-failure signal.
 
-    Drives the real ``_drain_stderr`` rather than assigning ``_stderr_lines``
-    directly. The observation is now latched as each line arrives, because the
-    buffer is a 20-line ring and nothing asks about auth until a request has
-    already timed out -- by which point a chatty startup can have evicted the
-    line. ``_drain_stderr`` is the only production writer of that buffer, so
-    driving it is strictly closer to the real path than the previous assignment
-    was; the two assertions below are unchanged in intent.
+    Drives the real ``_drain_stderr``: the signal is latched per line because the buffer
+    is a 20-line ring a chatty startup can evict before anyone asks.
     """
 
     class _Stderr:
@@ -871,14 +865,10 @@ def test_mark_dead_unregisters_protected_pid():
 
 
 def test_protected_runtime_pid_lands_in_sweep_active_set():
-    """Companion (``_subagent_runtimes``) and background (``_bg_runtime``)
-    AcpRuntimes live only in SessionManager instance attributes, NOT in
-    ``self._sessions``, so ``_collect_active_pids`` cannot see them via a session
-    provider. They stay protected only because ``AcpRuntime.spawn()`` shields
-    their PID via ``register_protected_pid``, and ``_collect_active_pids`` seeds
-    from ``_protected_pids()``. This asserts both a companion and a bg runtime
-    PID land in the sweep's active set (so phase-2 never confirms them orphans) —
-    the Kiro Crew analog of the upstream project's end-to-end guard.
+    """Companion and background runtime PIDs land in the sweep's active set.
+
+    They are not in ``self._sessions``; only ``register_protected_pid`` and
+    ``_protected_pids()`` keep phase-2 from confirming them orphans.
     """
     from kiro_crew.session_pid import (
         _collect_active_pids,

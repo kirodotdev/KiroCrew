@@ -846,7 +846,7 @@ def test_a_rename_says_other_mates_still_reach_it_by_its_short_name(monkeypatch)
         },
     )
     out = mcp_mate._call_tool_inner("update_self", {"display_name": "SDE Buddy"})
-    assert "other mates still reach you by your short name, mate" in out
+    assert "other Bots still reach you by your short name, mate" in out
 
 
 def test_the_shim_says_nothing_changed_when_the_gateway_refused(monkeypatch) -> None:
@@ -1063,10 +1063,10 @@ def test_mates_welcome_fits_a_user_who_already_has_crewmates() -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     alone = welcome_kickoff(entry, has_other_crewmates=False)
     crewed = welcome_kickoff(entry, has_other_crewmates=True)
-    assert "You are the first mate on their crew" in alone
-    assert "first mate" not in crewed
-    assert "They already have other mates" in crewed
-    assert "one more mate" in crewed
+    assert "You are the first Bot on their crew" in alone
+    assert "first Bot" not in crewed
+    assert "They already have other Bots" in crewed
+    assert "one more Bot" in crewed
 
 
 @pytest.mark.parametrize("others", [False, True])

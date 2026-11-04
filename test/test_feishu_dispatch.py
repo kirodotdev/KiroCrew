@@ -904,6 +904,284 @@ class TestCommands:
 
 
 # ------------------------------------------------------------------
+# Tests: /stop and /help
+# ------------------------------------------------------------------
+
+
+class CancellableProvider(FakeProvider):
+    """A provider whose ``cancel`` returns a chosen ``CancelOutcome``."""
+
+    def __init__(self, outcome: str = "acked") -> None:
+        super().__init__([])
+        self.outcome = outcome
+        self.cancels: list[float] = []
+
+    async def cancel(self, wait_ack_timeout: float = 0.0) -> str:
+        self.cancels.append(wait_ack_timeout)
+        return self.outcome
+
+
+class TestStopCommand:
+    @pytest.mark.asyncio
+    async def test_stop_mid_reply_cancels_the_running_turn(self) -> None:
+        """A /stop sent while a reply runs must cancel it, not be steered into it."""
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert provider.cancels == [0]
+        assert provider.steered == []
+        assert client.replies == [("msg1", "⏹ 正在停止当前回复…")]
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelling", ["/cancel", "/STOP", "  /stop  "])
+    async def test_stop_spellings(self, spelling: str) -> None:
+        provider = CancellableProvider("timeout")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound(spelling))
+
+        assert provider.cancels == [0]
+        assert provider.steered == []
+        assert client.replies == [("msg1", "⏹ 正在停止当前回复…")]
+
+    @pytest.mark.asyncio
+    async def test_group_stop_intercepts_despite_the_bot_mention(self) -> None:
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(
+            _inbound(
+                "@FeishuBot /stop",
+                command_text="/stop",
+                chat_type="group",
+                chat_id="oc_grp",
+                message_id="m1",
+            )
+        )
+
+        assert provider.cancels == [0]
+        assert provider.steered == []
+
+    @pytest.mark.asyncio
+    async def test_stop_when_idle_says_nothing_is_running(self) -> None:
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert provider.cancels == []
+        assert client.replies == [("msg1", "ℹ 当前没有正在生成的回复。")]
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("outcome", "reply"),
+        [("error", "⚠ 停止失败，请重试。"), ("no_turn", "ℹ 当前没有正在生成的回复。")],
+    )
+    async def test_stop_reports_the_returned_cancel_outcome(self, outcome, reply) -> None:
+        provider = CancellableProvider(outcome)
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert client.replies == [("msg1", reply)]
+
+    @pytest.mark.asyncio
+    async def test_stop_records_the_stop_before_the_busy_check(self) -> None:
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        noted: list[str] = []
+        sessions.note_stop = noted.append
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert noted == [d._session_key(d._route(_inbound("/stop")))]
+
+    @pytest.mark.asyncio
+    async def test_stop_during_automatic_compaction_is_declined(self) -> None:
+        from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT, consume_stop_declined
+
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        sessions.is_compacting = lambda key: True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        key = d._session_key(d._route(_inbound("/stop")))
+        try:
+            await d.handle_message(_inbound("/stop"))
+        finally:
+            # The delivered warning armed this presser's escalation; spend it in
+            # every outcome so the module-level marker never outlives the test.
+            armed = consume_stop_declined(key, "ou_abc123")
+
+        assert provider.cancels == []
+        assert client.replies == [("msg1", STOP_DECLINED_COMPACTING_TEXT)]
+        assert armed is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "command_text", "chat_type", "chat_id"),
+        [("/stop", "", "p2p", ""), ("@FeishuBot /stop", "/stop", "group", "oc_grp")],
+    )
+    async def test_stop_survives_a_channels_governance_deny(
+        self, monkeypatch, text, command_text, chat_type, chat_id
+    ) -> None:
+        """Feishu has no buttons: a typed /stop is its only off-switch."""
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(channel_type: str) -> bool:
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(
+            _inbound(text, command_text=command_text, chat_type=chat_type, chat_id=chat_id)
+        )
+
+        assert provider.cancels == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("word", ["停止", "!stop", "!cancel"])
+    async def test_another_channels_cancel_word_gets_no_exemption_here(
+        self, monkeypatch, word: str
+    ) -> None:
+        """A cancel word Feishu does not act on must not pass a deny into the steer path."""
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(channel_type: str) -> bool:
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        provider = CancellableProvider("acked")
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound(word))
+
+        assert provider.steered == []
+        assert provider.cancels == []
+        assert client.replies == []
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_message_is_still_dropped_on_a_denied_channel(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(channel_type: str) -> bool:
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/help"))
+        await d.handle_message(_inbound("hello"))
+
+        assert client.replies == []
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    async def test_a_bare_chinese_word_is_still_a_prompt(self) -> None:
+        """Normal messages are unchanged: only slash spellings are commands."""
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider, ctx_pct=10.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("停止"))
+
+        assert len(sessions.successes) == 1
+
+
+class TestHelpCommand:
+    @pytest.mark.asyncio
+    async def test_help_replies_with_the_shared_help_text(self) -> None:
+        from kiro_crew.feishu.commands import COMMANDS, build_help
+
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/help"))
+
+        assert client.replies == [("msg1", build_help())]
+        for spec in COMMANDS:
+            assert f"/{spec.name}" in build_help()
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    async def test_group_help_intercepts_despite_the_bot_mention(self) -> None:
+        from kiro_crew.feishu.commands import build_help
+
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(
+            _inbound(
+                "@FeishuBot /help",
+                command_text="/help",
+                chat_type="group",
+                chat_id="oc_grp",
+                message_id="m1",
+            )
+        )
+
+        assert client.replies == [("m1", build_help())]
+        assert sessions.successes == []
+
+    def test_help_card_is_rendered_by_the_shared_command_table(self) -> None:
+        from kiro_crew.feishu import commands
+        from kiro_crew.messaging import command_table
+
+        assert commands.build_help() == command_table.build_help_text(
+            commands._HELP_HEADER, commands.COMMANDS, commands._HELP_FOOTER
+        )
+
+    def test_every_intercepted_command_is_in_the_table(self) -> None:
+        """Every command the dispatcher acts on is listed in /help, both ways."""
+        from kiro_crew.feishu.commands import COMMANDS, parse_command
+
+        names = {spec.name for spec in COMMANDS}
+        assert names == {"new", "compact", "agent", "stop", "help"}
+        assert {parse_command(f"/{n}") for n in names} == names
+        assert parse_command("/reset") == "new"
+        assert parse_command("/cancel") == "stop"
+        assert parse_command("/agent kirocrew") is None
+
+
+# ------------------------------------------------------------------
 # Tests: mid-turn busy
 # ------------------------------------------------------------------
 

@@ -76,7 +76,7 @@ CREW_TARGET = {"item": "WI-4", "target": {"kind": "crew", "name": "docs"}}
 DONE_REPORT = {"item": "WI-4", "status": "done"}
 
 
-# --- the table is the spec -------------------------------------------------
+# the table is the spec
 
 
 def test_the_crew_kind_declares_exactly_the_two_contract_types():

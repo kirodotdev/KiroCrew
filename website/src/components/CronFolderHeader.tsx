@@ -36,6 +36,19 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
   // browser fires on the unmounting input neither commits again nor commits
   // the abandoned draft.
   const closedRef = useRef(false)
+  // The menu skips Radix's focus restore (see `onCloseAutoFocus`), so the
+  // delete confirmation takes focus when it opens, and Cancel hands it back to
+  // the toggle. Both targets mount in the render that opens or closes the row,
+  // so the move waits a frame, as the rename editor's does.
+  const confirmDeleteRef = useRef<HTMLButtonElement>(null)
+  const openDeleteConfirm = () => {
+    setConfirmingDelete(true)
+    requestAnimationFrame(() => confirmDeleteRef.current?.focus({ preventScroll: true }))
+  }
+  const cancelDelete = () => {
+    setConfirmingDelete(false)
+    requestAnimationFrame(() => toggleRef.current?.focus({ preventScroll: true }))
+  }
 
   const commitRename = () => {
     const trimmed = editName.trim()
@@ -112,7 +125,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                   <Pencil size={13} className="shrink-0" />
                   <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setConfirmingDelete(true)} className="text-danger">
+                <DropdownMenuItem onSelect={openDeleteConfirm} className="text-danger">
                   <Trash2 size={13} className="shrink-0" />
                   <span>{i18nT('pages.schedulePage.cronFolders.delete_folder')}</span>
                 </DropdownMenuItem>
@@ -126,10 +139,19 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
           <TableCell colSpan={colSpan} className="px-4 py-2">
             <div className="flex items-center gap-3 text-sm">
               <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
-              <Btn danger onClick={() => { onDelete(); setConfirmingDelete(false) }}>
+              <Btn
+                ref={confirmDeleteRef}
+                danger
+                onClick={() => { onDelete(); setConfirmingDelete(false) }}
+                // Focus lands here while the Enter or Space that picked the menu
+                // item may still be held (the menu selects on keydown for both),
+                // and a repeated key on a button activates it. Deleting needs its
+                // own press.
+                onKeyDown={e => { if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault() }}
+              >
                 {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
               </Btn>
-              <Btn onClick={() => setConfirmingDelete(false)}>
+              <Btn onClick={cancelDelete}>
                 {i18nT('pages.schedulePage.cancel')}
               </Btn>
             </div>

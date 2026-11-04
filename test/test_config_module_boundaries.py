@@ -353,6 +353,7 @@ _OWNER_CONFIG_IMPORTS = {
     "kiro_crew.config.migration": {
         "kiro_crew.config.sections",
         "kiro_crew.config.superseded_defaults",
+        "kiro_crew.config.windows_exec_adoption",
     },
     "kiro_crew.config.loader_credentials": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
     "kiro_crew.config.loader_locations": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
@@ -417,6 +418,7 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.sections",
         "kiro_crew.config.superseded_defaults",
         "kiro_crew.config.validation",
+        "kiro_crew.config.windows_exec_adoption",
     },
 }
 

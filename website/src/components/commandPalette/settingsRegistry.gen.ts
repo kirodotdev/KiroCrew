@@ -272,6 +272,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.code-channels-slack",
+    "label": "Code channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
+    "labelSuffix": "Slack",
+    "description": "On: lets the agent open a Slack channel for each coding task, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channels"
+  },
+  {
     "id": "channels.connect-new-sessions-to-slack-automatically-slack",
     "label": "Connect new sessions to Slack automatically (Slack)",
     "labelKey": "pages.settings.slackPanel.auto_link_sessions",
@@ -1044,7 +1058,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
-    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Mates, or pick one inside a session to override it there.",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Bots, or pick one inside a session to override it there.",
     "hint": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
     "tab": "chat",
     "type": "select",
@@ -1927,10 +1941,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.agent-harness-per-mate",
-    "label": "Agent harness per mate",
+    "id": "developer.agent-harness-per-bot",
+    "label": "Agent harness per Bot",
     "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
-    "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
+    "description": "Adds an Agent harness setting to each Bot's profile, so one Bot can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -1942,7 +1956,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
     "label": "Also send screenshots of the agent's browser tab",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
-    "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only.",
+    "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. A System One endpoint, hosted or on your own SageMaker endpoint, accepts screenshots; a local model gets the outline only. On a SageMaker endpoint this starts off: turn it on yourself to send screenshots there.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2108,10 +2122,23 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.reply-threads-on-mate-chat-messages",
-    "label": "Reply threads on mate chat messages",
+    "id": "developer.remote-dispatch",
+    "label": "Remote dispatch",
+    "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
+    "description": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    },
+    "configKey": "work_ledger.remote_dispatch"
+  },
+  {
+    "id": "developer.reply-threads-on-bot-chat-messages",
+    "label": "Reply threads on Bot chat messages",
     "labelKey": "pages.settings.crewmatesSection.reply_threads",
-    "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
+    "hint": "Let any message in a Bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

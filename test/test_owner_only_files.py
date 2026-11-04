@@ -840,6 +840,53 @@ def test_the_inbound_spool_directory_and_its_lock_are_owner_only(home: Path) -> 
     assert _readable_by_others(home) == []
 
 
+def test_the_app_backend_lifecycle_lock_and_its_directory_are_owner_only(home: Path) -> None:
+    from kiro_crew.apps.backend_runtime.tracking import app_backend_lifecycle_flock
+
+    with app_backend_lifecycle_flock("demo-app"):
+        pass
+
+    assert _mode(home / "app_backend_locks") == 0o700
+    assert _mode(home / "app_backend_locks" / "demo-app.lock") == 0o600
+    assert _readable_by_others(home) == []
+
+
+def test_the_issue_radar_config_lock_is_owner_only(home: Path) -> None:
+    from kiro_crew.apps.builtins.issue_radar.backend import store_repos
+
+    with store_repos._config_lock():
+        pass
+
+    assert _mode(store_repos.data_dir() / "config.json.lock") == 0o600
+    assert _readable_by_others(home) == []
+
+
+def test_the_dependency_ledger_lock_is_owner_only(home: Path) -> None:
+    from kiro_crew.apps import dependency_ledger
+
+    with dependency_ledger._locked_ledger():
+        pass
+
+    assert _mode(home / "dependency-ledger.lock") == 0o600
+    assert _readable_by_others(home) == []
+
+
+def test_a_remote_work_ledger_record_and_every_parent_it_creates_are_owner_only(
+    home: Path,
+) -> None:
+    """``mkdir(parents=True, mode=0o700)`` left each new parent at ``0755``."""
+    from kiro_crew.work_ledger_remote import RemoteState, remote_state_path, write_remote_state
+
+    write_remote_state("chat-1-board", "it_0123abcd", RemoteState())
+
+    path = remote_state_path("chat-1-board", "it_0123abcd")
+    assert _mode(path) == 0o600
+    created = [p for p in path.parents if home in p.parents]
+    assert len(created) >= 2
+    assert {str(p): _mode(p) for p in created} == {str(p): 0o700 for p in created}
+    assert _readable_by_others(home) == []
+
+
 def test_a_member_crew_log_its_lock_lease_and_fold_marker_are_owner_only(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

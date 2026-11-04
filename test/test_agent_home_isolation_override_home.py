@@ -1,14 +1,8 @@
 """Agent-spec home isolation: the non-default data home arm.
 
-An instance on its own ``KIROCREW_HOME`` writes the shared agents directory only
-when no spec there belongs to another home: the specs it wrote itself, or a
-directory with no spec yet. The tests pin how a spec's writer is read (self and
-foreign pins; UNC, case-differing and resolution-equivalent spellings; symlinked,
-oversized, non-regular, growing and malformed specs; custom server entries; mixed
-pins), that a rebuild keeps its own specs and rechecks ownership under its lock,
-and that the default home, and an override equal to it, still own the shared
-write. The KIRO_HOME seam, the worktree decline guard and the anti-regression guard
-are in ``test_agent_home_isolation.py``.
+An instance on its own ``KIROCREW_HOME`` writes the shared agents directory only when
+no spec there belongs to another home. The KIRO_HOME seam and worktree guard are in
+``test_agent_home_isolation.py``.
 """
 
 from __future__ import annotations
@@ -26,19 +20,14 @@ from agent_home_isolation_helpers import (
 )
 
 
-# --------------------------------------------------------------------------
 # The non-default data home arm
-# --------------------------------------------------------------------------
 def test_override_home_declines_shared_write_even_from_durable_checkout(monkeypatch, tmp_path):
     """A KIROCREW_HOME-override instance must not overwrite existing shared
     specs.
 
-    The reported writer was a DURABLE checkout — not a worktree, not a temp
-    clone, not a pod — booted with a scratch ``KIROCREW_HOME``. Its rebuild
-    pinned that home into every managed server entry of ``~/.kiro/agents``, so
-    every stub spawned afterwards resolved ``config_dir()`` to a home the real
-    gateway never writes and strict identity failed closed in ALL sessions.
-    Ephemerality arms never see this shape; the data-home arm must.
+    A durable checkout on a scratch ``KIROCREW_HOME`` would pin that home into every
+    managed server entry of ``~/.kiro/agents``, and strict identity then fails closed in
+    every session. The ephemerality arms never see this shape.
     """
     from kiro_crew import agent
 
@@ -67,11 +56,8 @@ def test_override_home_declines_shared_write_even_from_durable_checkout(monkeypa
 def test_override_home_with_no_existing_spec_still_writes(monkeypatch, tmp_path):
     """A relocated-home install on a spec-less machine is NOT refused.
 
-    With no shared spec present there is no default-home audience to poison,
-    and refusing would leave the install with no spec at all — no boot error
-    (``missing_required_agent_specs`` is suppressed by the same guard) and
-    every turn dying at "Mode 'kirocrew' not found". Same precondition as the
-    temp arm: decline only when there is something to preserve.
+    Refusing would leave no spec at all and every turn dying at "Mode 'kirocrew' not
+    found", with ``missing_required_agent_specs`` suppressed by the same guard.
     """
     from kiro_crew import agent
 
@@ -87,11 +73,8 @@ def test_override_home_with_no_existing_spec_still_writes(monkeypatch, tmp_path)
 def test_override_home_declines_when_only_a_sibling_spec_exists(monkeypatch, tmp_path):
     """A surviving SIBLING spec is enough audience to refuse for.
 
-    ``kirocrew.json`` and its siblings are written by separate installers, so a
-    deleted main with a surviving ``kirocrew-lite.json`` is a reachable state.
-    A main-only precondition would wave the rebuild through and overwrite the
-    surviving siblings with the foreign home — the same poison, one file over.
-    The precondition therefore covers every ``OWNED_KIRO_AGENT_FILES`` entry.
+    Separate installers write the siblings, so a deleted main beside a surviving
+    ``kirocrew-lite.json`` is reachable; the check covers every ``OWNED_KIRO_AGENT_FILES``.
     """
     from kiro_crew import agent
     from kiro_crew.agent_files import LITE_AGENT_FILENAME
@@ -114,11 +97,8 @@ def test_override_home_declines_when_only_a_sibling_spec_exists(monkeypatch, tmp
 def test_self_pinned_specs_keep_their_writer(monkeypatch, tmp_path):
     """An override-home install keeps refreshing the specs IT wrote.
 
-    The specs carry their writer's home in every managed server's
-    ``env.KIROCREW_HOME``. An ownership-blind existence check would read this
-    instance's own first write as "someone's specs" and refuse every later
-    rebuild — a self-lockout where the install's specs go permanently stale.
-    Provenance matching is what lets it keep writing.
+    Matching the writer's ``env.KIROCREW_HOME`` pin avoids a self-lockout where an
+    existence check refuses every rebuild after the first write.
     """
     from kiro_crew import agent
 
@@ -156,14 +136,9 @@ def test_foreign_pinned_specs_refuse(monkeypatch, tmp_path):
 def test_unc_pin_refuses_without_touching_the_filesystem(monkeypatch, tmp_path):
     """A recorded pin is compared, never interpreted — no OS call sees it.
 
-    On Windows, resolving a UNC-valued pin (``\\\\attacker\\share\\...``) fires
-    outbound SMB authentication to the named host — spec content choosing a
-    network destination. The provenance check must decide ownership by string
-    comparison alone, so the hostile value must never reach ``resolve()``,
-    ``expanduser()``, ``stat()``, ``realpath()`` or any other filesystem
-    interpretation. Every guarded primitive asserts, so a future refactor
-    that routes the value through a different OS call fails here rather than
-    reopening the class.
+    On Windows, resolving a UNC pin (``\\\\attacker\\share\\...``) fires outbound SMB
+    authentication, so the value must never reach ``resolve()``, ``expanduser()``,
+    ``stat()``, ``realpath()`` or any other OS call; each of them is guarded here.
     """
     import os as os_mod
     from pathlib import Path
@@ -207,11 +182,8 @@ def test_unc_pin_refuses_without_touching_the_filesystem(monkeypatch, tmp_path):
 def test_symlinked_spec_is_present_and_unvouchable(monkeypatch, tmp_path):
     """A symlink at a spec path reads as a refusal, not as absence.
 
-    ``exists()`` follows symlinks, so a dangling planted link would read as
-    "no spec here" — an absence verdict an attacker can manufacture in the
-    same-uid agents directory, flipping the guard to a fresh write. The
-    no-follow probe sees it, and the :func:`_spec_path_is_safe` fence every
-    other spec reader in the module applies refuses to read through it.
+    ``exists()`` follows links, so a planted dangling link would fake absence. The
+    no-follow probe and :func:`_spec_path_is_safe` refuse it.
     """
     from kiro_crew import agent
 
@@ -233,11 +205,8 @@ def test_symlinked_spec_is_present_and_unvouchable(monkeypatch, tmp_path):
 def test_case_differing_pin_reads_foreign(monkeypatch, tmp_path):
     """The comparison is case-preserving — a case-folded match is fail-open.
 
-    ``normcase`` would fold two homes that differ only by letter case (legal
-    and distinct on case-sensitive filesystems, including case-sensitive NTFS
-    directories) into one, reading the other home's spec as this instance's
-    own. Distinct spellings must compare foreign; the writer and reader share
-    one resolver, so a self-written pin never differs by case.
+    Homes differing only by case are distinct on case-sensitive filesystems. Writer and
+    reader share one resolver, so a self-written pin never differs by case.
     """
     from kiro_crew import agent
 
@@ -260,12 +229,8 @@ def test_case_differing_pin_reads_foreign(monkeypatch, tmp_path):
 def test_resolution_equivalent_pin_reads_foreign(monkeypatch, tmp_path):
     """Equivalence-by-resolution does not vouch — comparison is lexical.
 
-    The writer pins ``str(_valid_override_home())``, which is already
-    resolved, so a pin that only becomes this home after following a symlink
-    was not written by this instance. Reading it as "mine" would require
-    handing spec content to the filesystem — the interpretation the
-    provenance check forbids — so it reads foreign and refuses, the
-    conservative direction every unparseable shape already takes.
+    The writer pins the already-resolved ``str(_valid_override_home())``, so a pin that
+    matches only through a symlink was written elsewhere and reads foreign.
     """
     from kiro_crew import agent
 
@@ -289,14 +254,9 @@ def test_resolution_equivalent_pin_reads_foreign(monkeypatch, tmp_path):
 def test_oversized_spec_refuses_before_parsing(monkeypatch, tmp_path):
     """The ownership probe is bounded — an over-cap spec refuses, unread.
 
-    The boot-path rebuild can run on the event loop, so the probe must never
-    be the place a pathological "spec" gets slurped into memory. A file over
-    the per-spec cap refuses via lstat before any open — even when its
-    CONTENT would vouch as this instance's own — the same conservative
-    direction every unparseable shape takes. The sentinel proves the
-    ordering: the reader is never invoked for an over-cap spec, so a
-    refactor that reads first and checks later fails here, not in
-    production.
+    The boot-path rebuild can run on the event loop, so an over-cap file refuses via
+    lstat before any open, even when its content would vouch. The sentinel reader proves
+    the read never happens.
     """
     import pytest as _pytest
 
@@ -326,11 +286,8 @@ def test_oversized_spec_refuses_before_parsing(monkeypatch, tmp_path):
 def test_non_regular_spec_refuses_without_opening(monkeypatch, tmp_path):
     """A FIFO at a spec path refuses via lstat — it is never opened.
 
-    Opening a FIFO with no writer blocks indefinitely; on the boot-path
-    rebuild that parks the gateway's event loop before readiness. The probe
-    rejects non-regular files from the no-follow lstat, so the open never
-    happens. The sentinels fail fast (instead of hanging the suite) if a
-    regression routes the FIFO into either reader.
+    Opening a FIFO with no writer blocks the boot-path event loop. The sentinels fail
+    fast instead of hanging the suite if either reader is reached.
     """
     import stat as _stat
 
@@ -378,11 +335,8 @@ def test_non_regular_spec_refuses_without_opening(monkeypatch, tmp_path):
 def test_spec_growing_after_lstat_fails_closed(monkeypatch, tmp_path):
     """A spec that outgrows the bound between lstat and read refuses.
 
-    The descriptor reader raises ``FileTooLargeError`` when the opened file
-    exceeds ``max_bytes`` — a concurrent writer can grow the file after the
-    lstat passed. Memory stays capped either way; the probe must refuse
-    (``False``) rather than let the raise abort the whole boot-path rebuild
-    over a spec that changed underneath it.
+    The probe returns ``False`` on ``FileTooLargeError`` rather than letting the raise
+    abort the boot-path rebuild.
     """
     from kiro_crew import agent
     from kiro_crew.hooks import FileTooLargeError
@@ -409,14 +363,9 @@ def test_dashboard_author_stem_is_always_skipped_in_the_home_probe(monkeypatch, 
     """The dashboard-author stem must never drive the shared-home verdict, regardless of
     sidecar confirmation.
 
-    Its installer pins no ``KIROCREW_HOME`` in the managed server entry on either branch --
-    the installer's own write omits it, and a leftover user file at the stem never had one.
-    So this stem can never contribute a legitimate home-pin signal: letting it into the
-    probe would make a foreign/absent pin read as foreign and decline every rebuild. That
-    strands the governance ceiling both for OUR OWN file (ours, pin-less) AND for an
-    untouched USER leftover at the stem (whose presence must not refuse creating every
-    other required spec). It is therefore excluded from the pin probe unconditionally; its
-    provenance is the digest record enforced at the gated sites, not a home pin.
+    Neither its installer nor a user leftover at the stem pins ``KIROCREW_HOME``, so
+    probing it would decline every rebuild. Its provenance is the digest record at the
+    gated sites.
     """
     from kiro_crew import agent
 
@@ -515,11 +464,8 @@ def test_custom_server_entries_cannot_vouch_ownership(monkeypatch, tmp_path):
 def test_garbage_recorded_home_refuses_without_crashing(monkeypatch, tmp_path):
     """A garbage recorded value reads foreign, never raises.
 
-    Spec content is not trusted input. The comparison is lexical, so a NUL
-    byte never reaches path resolution at all: the value is refused by the
-    explicit NUL guard (some platforms' C ``normpath`` can raise on it) and
-    would compare unequal regardless — either way agent setup is never
-    aborted by garbage in a spec.
+    A NUL byte is refused by an explicit guard, since some platforms' C ``normpath``
+    raises on it.
     """
     import json
 

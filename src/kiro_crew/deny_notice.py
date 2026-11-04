@@ -28,6 +28,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_AUDIT_UNAVAILABLE,
     DENY_CAUSE_BATCH_CASCADE,
+    DENY_CAUSE_BATCH_READ_WRITE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
@@ -86,6 +87,14 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "whole. Address what declined that earlier tool (the reason above), then "
         "re-issue the calls you still need; if you genuinely cannot proceed "
         "without them, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_BATCH_READ_WRITE: (
+        "was declined by the Kiro Crew batch guard, because it is a write sent in "
+        "the same parallel batch as a read whose result it may depend on",
+        "the action itself was not judged and nothing ran. Wait for the reads in "
+        "that batch to return and check their output, then re-issue this call by "
+        "itself in your next step, with values copied from that output. Do not "
+        "send it again in a batch that also holds a read.",
     ),
     DENY_CAUSE_APPROVAL_TIMEOUT: (
         "was auto-declined because its approval prompt expired unanswered",

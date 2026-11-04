@@ -295,3 +295,15 @@ async def reject_if_kiro_unverified(
         return None
     _warn_refused_once(_log_safe_path(request))
     return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+
+
+async def kiro_latched_ready(request: web.Request) -> bool:
+    """The request app's latched readiness: no probe, fails closed.
+
+    For a read that spawns nothing and only has to notice a KNOWN sign-out (a
+    refused refresh probe or a chat turn's auth failure narrows the latch), so
+    it can fall back to :func:`reject_if_kiro_unverified` instead of paying its
+    re-probe on every call.
+    """
+
+    return await kiro_session_ready(_service(request))

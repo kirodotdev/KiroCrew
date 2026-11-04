@@ -49,7 +49,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.hooks import safe_read_file_bytes
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -645,10 +645,10 @@ def _is_binary_file(p: Path) -> bool:
     p = _contain_in_allowed_roots(p, operation="file_read")
     # Sniff first 8KB for NUL bytes
     try:
-        chunk = safe_read_file_bytes(str(p))
+        chunk = safe_read_prefix(str(p), 8192)
         if chunk is None:
             return False
-        if b"\x00" in chunk[:8192]:
+        if b"\x00" in chunk:
             return True
     except OSError:
         return False
@@ -986,7 +986,7 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                         if len(out) >= MAX_SEARCH_RESULTS:
                             return out
                         break  # one match per file is enough for v1 list
-            except OSError:
+            except (OSError, FileTooLargeError):
                 continue
     return out
 
@@ -1180,7 +1180,9 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._json(200, body)
         # Text: utf-8 with replacement, optional truncation
         try:
-            raw_bytes = safe_read_file_bytes(str(p))
+            # Read one byte past the cap: enough to know whether to truncate,
+            # and never the whole file (which the 50 MB read cap refuses).
+            raw_bytes = safe_read_prefix(str(p), max_bytes + 1)
             if raw_bytes is None:
                 raise PathError("access denied", 403)
             truncated = len(raw_bytes) > max_bytes

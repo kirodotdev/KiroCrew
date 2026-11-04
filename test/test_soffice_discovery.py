@@ -66,30 +66,44 @@ def linux_host(monkeypatch):
 @pytest.mark.parametrize(
     ("release", "managers", "expected"),
     [
-        (_AL2023, {"dnf", "yum"}, None),
-        ({"ID": "ubuntu", "ID_LIKE": "debian"}, set(), _APT),
-        ({"ID": "debian"}, set(), _APT),
-        ({"ID": "linuxmint", "ID_LIKE": "ubuntu debian"}, set(), _APT),
-        ({"ID": "fedora"}, {"dnf"}, _DNF),
-        ({"ID": "rocky", "ID_LIKE": "rhel centos fedora"}, {"dnf", "yum"}, _DNF),
+        pytest.param(
+            _AL2023, {"dnf", "yum"}, None, id="hint_matches_the_distribution-al2023-with-dnf"
+        ),
+        pytest.param(
+            {"ID": "ubuntu", "ID_LIKE": "debian"},
+            set(),
+            _APT,
+            id="hint_matches_the_distribution-ubuntu",
+        ),
+        pytest.param({"ID": "debian"}, set(), _APT, id="hint_matches_the_distribution-debian"),
+        pytest.param(
+            {"ID": "linuxmint", "ID_LIKE": "ubuntu debian"},
+            set(),
+            _APT,
+            id="hint_matches_the_distribution-mint",
+        ),
+        pytest.param({"ID": "fedora"}, {"dnf"}, _DNF, id="hint_matches_the_distribution-fedora"),
+        pytest.param(
+            {"ID": "rocky", "ID_LIKE": "rhel centos fedora"},
+            {"dnf", "yum"},
+            _DNF,
+            id="hint_matches_the_distribution-rocky-dnf-and-yum",
+        ),
+        pytest.param(_CENTOS7, {"yum"}, _YUM, id="an_rpm_host_is_told_the_manager_it_has-yum-only"),
+        pytest.param(
+            _UBI, {"microdnf"}, _MICRODNF, id="an_rpm_host_is_told_the_manager_it_has-microdnf-only"
+        ),
+        pytest.param(
+            _CENTOS7,
+            {"yum", "microdnf"},
+            _YUM,
+            id="an_rpm_host_is_told_the_manager_it_has-yum-before-microdnf",
+        ),
     ],
-    ids=["al2023-with-dnf", "ubuntu", "debian", "mint", "fedora", "rocky-dnf-and-yum"],
 )
-def test_hint_matches_the_distribution(linux_host, release, managers, expected) -> None:
-    linux_host(release, managers)
-    assert soffice_discovery.soffice_install_hint() == expected
-
-
-@pytest.mark.parametrize(
-    ("release", "managers", "expected"),
-    [
-        (_CENTOS7, {"yum"}, _YUM),
-        (_UBI, {"microdnf"}, _MICRODNF),
-        (_CENTOS7, {"yum", "microdnf"}, _YUM),
-    ],
-    ids=["yum-only", "microdnf-only", "yum-before-microdnf"],
-)
-def test_an_rpm_host_is_told_the_manager_it_has(linux_host, release, managers, expected) -> None:
+def test_hint_matches_the_distribution_and_its_manager(
+    linux_host, release, managers, expected
+) -> None:
     linux_host(release, managers)
     assert soffice_discovery.soffice_install_hint() == expected
 

@@ -343,11 +343,8 @@ class TestResetRefusesAnAmbiguousName:
 class TestSpecReadsAreSizeCapped:
     """Spec reads go through the hardened, size-capped gate.
 
-    The agents directory is user-writable and shared with other tools, so an
-    oversized file there must be refused rather than slurped into memory. Uses a
-    LOWERED cap instead of a real 50 MB fixture -- writing 50 MB in a test is not
-    acceptable, and the property under test is "the cap is consulted", not its
-    value. Verified against the real 50 MB cap once by hand before landing.
+    The agents directory is user-writable and shared. Uses a lowered cap instead of a
+    50 MB fixture: the property is that the cap is consulted, not its value.
     """
 
     def test_an_oversized_spec_is_refused_by_resolver_and_reset(self, tmp_path: Path, monkeypatch):
@@ -387,17 +384,9 @@ class TestSpecReadsAreSizeCapped:
 class TestResetOutputEscapesUntrustedPaths:
     """A spec FILENAME is untrusted input too.
 
-    The declared-name scan returns whichever file declares the requested name, so
-    its path is attacker-shaped even though the requested name is
-    grammar-validated. Every line that prints one -- success, no-pin, and the
-    ambiguity refusal -- must escape it.
-
-    The hostile path is INJECTED rather than created on disk: control bytes are
-    illegal in a Windows filename, so building the fixture would make these
-    assertions Windows-only-skipped, and the property under test is "the printer
-    escapes what it is handed", not "the filesystem accepts odd names". Keeping
-    the assertion platform-independent follows the conftest rule of probing or
-    injecting rather than blanket-skipping a platform.
+    The declared-name scan returns whichever file declares the name, so success,
+    no-pin and ambiguity lines must escape it. The path is injected, not created:
+    control bytes are illegal in a Windows filename.
     """
 
     HOSTILE = "/tmp/agents/evil\x1b[2J.json"

@@ -81,13 +81,18 @@ class TestTimedQuery:
             ran.append(True)
         assert ran == [True]  # no exception escaped
 
-    def test_a_recorder_that_cannot_be_obtained_is_also_contained(self, monkeypatch):
+    def test_a_recorder_that_cannot_be_obtained_is_also_contained(self, monkeypatch, caplog):
         def _boom():
             raise RuntimeError("no provider")
 
         monkeypatch.setattr(db_metrics, "get_recorder", _boom)
-        with db_metrics.timed_query("memory", "search"):
-            pass  # must not raise
+        with caplog.at_level("DEBUG", logger="kiro_crew.metrics.db_metrics"):
+            with db_metrics.timed_query("memory", "search"):
+                pass  # must not raise
+        logged = [
+            r.getMessage() for r in caplog.records if r.name == "kiro_crew.metrics.db_metrics"
+        ]
+        assert logged == ["db query timing failed"]
 
 
 class TestTimedDecorator:

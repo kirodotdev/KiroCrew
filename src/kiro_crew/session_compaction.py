@@ -247,10 +247,13 @@ def _compaction_unmanaged_backend(provider: LLMProvider) -> str | None:
 def _harness_managed_backend(provider: LLMProvider) -> str | None:
     """Backend id this provider names as compacting on its own initiative.
 
-    The threshold leaves such a harness alone even when Crew could hand it a
-    manual ``/compact``: its own summarization bounds the context, and a
-    Crew compaction at ``session.autocompact_pct`` would only move that
-    point earlier. Same ``str`` contract as its siblings.
+    The global threshold leaves such a harness alone even when Crew could hand
+    it a manual ``/compact``: its own summarization bounds the context. An
+    explicit threshold (a per-session override or the agent's declared
+    ``autocompact_pct``) asks for that point to move earlier, so there Crew
+    compacts a harness that serves ``/compact``
+    (:meth:`CompactionCoordinator.crew_compacts_harness_managed`). Same
+    ``str`` contract as its siblings.
     """
     backend = getattr(provider, "harness_managed_compaction_backend", None)
     return backend if isinstance(backend, str) and backend else None
@@ -544,6 +547,38 @@ class CompactionCoordinator:
             return None
         return self._deps.agent_autocompact_pct(session)
 
+    def autocompact_pct_is_explicit(self, key: str) -> bool:
+        """Whether *key*'s threshold was chosen for it rather than inherited.
+
+        True for a per-session override (the slider) and for a default the
+        session's agent declares; False when the session follows the global
+        ``session.autocompact_pct``.
+        """
+        key = self._owner._fold_key(key)
+        return key in self.state.pct_overrides or self.agent_autocompact_pct(key) is not None
+
+    def crew_compacts_harness_managed(self, key: str, provider: LLMProvider) -> bool:
+        """Whether Crew compacts a harness-managed backend itself at *key*'s threshold.
+
+        A harness-managed backend (KAS) summarizes on its own, and at the global
+        threshold Crew leaves it to do so. An explicit threshold is a request for
+        an earlier compaction than the harness would choose, so when the backend
+        also serves ``/compact`` and its engine advertised the verb that carries
+        it (``harness_compact_verb_advertised``), Crew sends it at that threshold
+        through the ordinary in-place path. A backend that cannot be handed
+        ``/compact`` has no such path and stays declined. So does an engine that
+        did not advertise the verb: the session handle would fail every such
+        ``/compact`` at once, and each failure would repeat an "Auto-compact
+        failed" notice after every cooldown. Only a literal ``True`` counts, so a
+        mocked provider's attribute never reads as advertised.
+        """
+        return (
+            _harness_managed_backend(provider) is not None
+            and _compact_unsupported_backend(provider) is None
+            and self.autocompact_pct_is_explicit(key)
+            and getattr(provider, "harness_compact_verb_advertised", False) is True
+        )
+
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Return the first compaction gate decline, in lifecycle order.
 
@@ -605,7 +640,17 @@ class CompactionCoordinator:
             return "cc_managed"
         if pct < self.effective_autocompact_pct(key):
             return "below_threshold"
-        unsupported = _compact_unsupported_backend(provider) or _harness_managed_backend(provider)
+        harness_managed = _harness_managed_backend(provider)
+        if harness_managed is not None and self.crew_compacts_harness_managed(key, provider):
+            # An explicit threshold on a harness-managed backend that serves
+            # ``/compact``: Crew compacts it here, so this is not a decline and
+            # the reading goes on to ``unconfirmed`` / ``in_progress`` /
+            # ``cooldown`` like any member backend's. While that compaction runs
+            # the session is in ``compacting``, so a reading taken meanwhile,
+            # including one after a summarization the harness ran itself, is
+            # answered ``in_progress`` and cannot start a second compaction.
+            harness_managed = None
+        unsupported = _compact_unsupported_backend(provider) or harness_managed
         if unsupported is not None and _compaction_unmanaged_backend(provider) is None:
             # Declining, not recycling, and ONLY for a harness that positively
             # claims the other side of the bargain. A member of
@@ -710,9 +755,9 @@ class CompactionCoordinator:
             return False
         if self._gate_rung(key, provider, provider.context_usage_pct(), log=False) is not None:
             return False
-        return (
-            _compact_unsupported_backend(provider) is None
-            and _harness_managed_backend(provider) is None
+        return _compact_unsupported_backend(provider) is None and (
+            _harness_managed_backend(provider) is None
+            or self.crew_compacts_harness_managed(key, provider)
         )
 
     def _trigger_compaction(
@@ -1238,6 +1283,35 @@ class CompactionCoordinator:
                     time.monotonic() - started,
                 )
                 return "absent"
+            if (
+                _harness_managed_backend(session.provider) is not None
+                and self._owner._sessions.get(key) is session
+            ):
+                # Only while the held session is still the registered one: a key
+                # that now holds a replacement leaves this process to
+                # ``_restart_held`` below, which reaps it.
+                # Crew sends a harness-managed backend ``/compact`` only for an
+                # explicit threshold. Read the capability, not that threshold: a
+                # slider reset while this ran must not turn the failure into a
+                # recycle. The harness still summarizes on its own, so a refused
+                # or failed compaction leaves the context
+                # bounded and is not worth the conversation: no recycle, the
+                # failure cooldown, and a failed verdict. KAS refuses the verb
+                # while its own summarization runs, and that refusal lands here.
+                # An engine that does not advertise the verb is declined at the
+                # gate (``crew_compacts_harness_managed``) and does not get here.
+                self._deps.logger.warning(
+                    "Session %s in-place /compact failed after %.0fs on a backend that "
+                    "compacts on its own — cooldown, no recycle",
+                    key,
+                    time.monotonic() - started,
+                    exc_info=True,
+                )
+                self.state.cooldown_until[key] = (
+                    time.monotonic() + self._deps.compact_failure_cooldown_secs
+                )
+                await self._owner._fire_compact_callback(key, pct, success=False)
+                return "failed"
             self._deps.logger.warning(
                 "Session %s in-place /compact failed after %.0fs — recycling "
                 "(semaphore held; async status wait %s)",

@@ -1,18 +1,11 @@
 """Tests for the first-run cron tab pre-create (ensure_cron_slot).
 
-Result injection is otherwise the ONLY creator site for a ``cron-{job.id}``
-dashboard slot, and it runs after a turn completes — so without a pre-create a
-brand-new job's FIRST run has no tab. Session-control caller identity walks the
-live slot table (``caller_slot_key``), so every verb a first run calls would
-refuse with ``caller_unidentified``; the dashboard-surface registry has the same
-first-run hole. These tests pin the pre-create path and the invariant: the
-hydration must MOVE with the link, so the injection's unlink guard stays an
-idempotent no-op after a pre-create.
+Result injection runs after a turn completes, so without a pre-create a new job's
+FIRST run has no tab and ``caller_slot_key`` refuses with ``caller_unidentified``. The
+hydration must MOVE with the link, so the injection's unlink guard stays a no-op.
 
-The state/job fakes mirror test_dashboard_cron_to_chat.py's, plus ``get_slot``
-and ``has_slot`` defined as REAL functions over the same dict: on a bare
-MagicMock both auto-return truthy mocks, which would silently satisfy the
-short-circuit under test and make every assertion here unable to fail.
+``get_slot`` and ``has_slot`` are REAL functions over the fake dict: on a bare
+MagicMock they return truthy mocks and the short-circuit under test could not fail.
 """
 
 from __future__ import annotations
@@ -273,21 +266,12 @@ def _inject_shaped(job):
 class TestPreCreateGuard:
     """The pre-create must never cost the run — or the job — its life.
 
-    A review lane convicted the bare ``await ensure_cron_slot(...)`` at the
-    gateway callsite: ``_execute`` (``cron_service/service/run_execution.py``) clears
-    ``run_never_started``
-    BEFORE the callback and its ``except`` arm never re-arms it, so an error
-    propagating out of the pre-dispatch window reached the delete site with
-    the retention marker down and a ``delete_after_run`` one-shot — the
-    default at-scheduled shape — was consumed by a run that never dispatched.
-    These pins hold ``_pre_create_cron_slot`` to the fire-time gate's proven
-    contract: armed for exactly the await, ordinary failure contained,
-    cancellation escaping WITH the marker, linear clear before dispatch.
+    ``_execute`` clears ``run_never_started`` before the callback and never re-arms it,
+    so an escaping error would consume a ``delete_after_run`` one-shot that never ran.
+    ``_pre_create_cron_slot`` arms the marker for exactly the await, contains ordinary
+    failure, and lets cancellation escape WITH the marker.
 
-    The delete-decision assertions mirror the cron service's own expression verbatim
-    (``delete_owed = job.delete_after_run and not (job.fire_time_denied or
-    job.run_never_started)``) so a drift in either side breaks a test, not a
-    user's scheduled job.
+    ``_delete_owed`` mirrors the cron service's expression verbatim, so drift breaks a test.
     """
 
     @staticmethod

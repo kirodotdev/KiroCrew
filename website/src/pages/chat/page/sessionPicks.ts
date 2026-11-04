@@ -5,7 +5,7 @@ import { store, type AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
 import { resolveByApprovalId, setAgentSwitchNotice } from '../../../store/chatSlice'
-import { removeNotificationByTs } from '../../../store/notificationsSlice'
+import { endApprovalRow, liveApprovalRows } from '../../../store/notificationsSlice'
 import { updateSlot } from '../../../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, stagedSlotSwitchTarget, performSlotSwitch } from '../../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
@@ -197,6 +197,7 @@ interface SessionChoicesOptions {
 export function useSessionChoices({
   dispatch, queryClient, activeSlot, codexPairModels, setModelDropdown, modelPickerReturnsFocusRef, setPendingAgent, setPendingModel, setPendingProject,
 }: SessionChoicesOptions) {
+  const [projectSwitches, setProjectSwitches] = useState<Readonly<Record<string, number>>>({})
   const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
   // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
   // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
@@ -205,8 +206,10 @@ export function useSessionChoices({
   // a standing grant the backend never records (#5400, #5434).
   const dismissApproval = useCallback((aid: string, decision?: string) => {
     dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
+    // The id recurs and the feed keeps a refused press's retired row, so only
+    // a live row under the id is this decision's.
+    const n = liveApprovalRows(store.getState().notifications, aid).at(-1)
+    if (n) dispatch(endApprovalRow(n.ts))
   }, [activeSlot, dispatch])
   // Resolves `true` once the switch landed (or was held as the pending pick of a
   // chat not created yet), `false` when it was refused: the refusal is already
@@ -353,6 +356,10 @@ export function useSessionChoices({
   }, [switchModel, setModelDropdown, modelPickerReturnsFocusRef])
   const setProject = useCallback(async (path: string) => {
     if (!activeSlot) { setPendingProject(path); return }
+    // Counted per slot, so overlapping picks clear only when the last one
+    // ends, and a pick still waiting on one chat never shows on another.
+    const slot = activeSlot
+    setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
     try {
       // Same protocol as switchModel above; the server realpath-normalizes
       // the directory, so the response's spelling is what gets written.
@@ -366,10 +373,21 @@ export function useSessionChoices({
       dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
       // eslint-disable-next-line no-console -- surface setProject failures for debugging
       console.error('setProject failed', e)
+    } finally {
+      setProjectSwitches(prev => {
+        const left = (prev[slot] ?? 1) - 1
+        const next = { ...prev }
+        if (left > 0) next[slot] = left
+        else delete next[slot]
+        return next
+      })
     }
     // setPendingProject is a stable ref-backed setter.
   }, [activeSlot, dispatch, setPendingProject])
+  // True while a project pick on the active chat is still waiting: the route
+  // holds the turn-preparation lock, so a cold spawn can take seconds (#20351).
+  const projectSwitching = !!activeSlot && (projectSwitches[activeSlot] ?? 0) > 0
   return {
-    approve, dismissApproval, switchAgent, pickModel, setProject,
+    approve, dismissApproval, switchAgent, pickModel, setProject, projectSwitching,
   }
 }

@@ -118,9 +118,13 @@ def cft_platform(system: str | None = None, machine: str | None = None) -> str |
     arm = machine in ("arm64", "aarch64")
     x64 = machine in ("x86_64", "amd64")
     if system == "darwin":
-        return "mac-arm64" if arm else ("mac-x64" if x64 else None)
+        if arm:
+            return "mac-arm64"
+        return "mac-x64" if x64 else None
     if system.startswith("linux"):
-        return "linux-arm64" if arm else ("linux64" if x64 else None)
+        if arm:
+            return "linux-arm64"
+        return "linux64" if x64 else None
     if system == "win32":
         return "win64" if x64 or arm else None
     return None

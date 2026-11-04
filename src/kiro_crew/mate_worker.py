@@ -52,9 +52,12 @@ MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
 #: The worker's own principles, appended to its source-defined prompt
 #: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named.
-MATE_WORKER_PROMPT = crewmate_prompts.fill(
-    "worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX
+#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
+#: after them are the same text ``kirocrew-worker`` carries.
+MATE_WORKER_PROMPT = (
+    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
+    + "\n\n"
+    + crewmate_prompts.text("worker.coding_rules")
 )
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
@@ -605,7 +608,7 @@ def resolve_worker_spec(
         claimed = _claimed_file(member_id)
         if claimed:
             raise WorkerKitUnreadable(
-                f"crewmate {member_id!r}: its own file {claimed!r} is missing or shadowed "
+                f"Bot {member_id!r}: its own file {claimed!r} is missing or shadowed "
                 f"by a user-level agent, so its worker would run without its limits"
             )
         return revocations.strip(
@@ -629,14 +632,14 @@ def resolve_worker_spec(
             mate_spec["prompt"] = ""
     except agent_specs.AgentSpecUnreadable as exc:
         logger.warning(
-            "crewmate %r: its worker file %r is unreadable; refusing the worker",
+            "Bot %r: its worker file %r is unreadable; refusing the worker",
             member_id,
             name,
             exc_info=True,
         )
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: its worker file {name!r} cannot be read, so its "
-            f"worker would run without the crewmate's own limits; fix or re-save the file"
+            f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
+            f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
     if refuse_tool_limits and tool_limits_of(mate_spec):
         from kiro_crew.session_capabilities import CapabilityStartupError
@@ -647,9 +650,7 @@ def resolve_worker_spec(
 
         carried = policy_of(mate_spec)
         if carried:
-            raise uncarried(
-                sorted(carried), "this backend does not apply them; run the crewmate on kas"
-            )
+            raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
     # An approval the owner took away in Approvals stays away, base-granted or not.
     return revocations.strip(
@@ -700,7 +701,7 @@ def _claimed_crewmate_file(member_id: str, config: Any = None) -> str:
     try:
         return claimed if crewmate_file_on_record(claimed) else ""
     except MateConfigError:
-        logger.warning("crewmate owner record unreadable; %r stays refused", claimed)
+        logger.warning("Bot owner record unreadable; %r stays refused", claimed)
         return claimed
 
 
@@ -711,7 +712,7 @@ def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
         return revocations.revoked(file_id)
     except revocations.RevocationsUnreadable as exc:
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: the approvals its owner revoked cannot be read "
+            f"Bot {member_id!r}: the approvals its owner revoked cannot be read "
             f"(revoked-approvals.json), so its worker would run them again; fix the file"
         ) from exc
 
@@ -848,13 +849,13 @@ def worker_session_spec(
         )
         raise WorkerKitUnreadable(
             f"worker session {session_key}: its execution record cannot be read, so "
-            f"its crewmate (and that crewmate's limits) is unknown"
+            f"its Bot (and that Bot's limits) is unknown"
         ) from exc
     if execution is not None:
         member_id = execution.member_id
     if not member_id:
         raise WorkerKitUnreadable(
-            f"worker session {session_key}: it names no crewmate, so whose limits apply is unknown"
+            f"worker session {session_key}: it names no Bot, so whose limits apply is unknown"
         )
     if refuse_tool_limits or refuse_spec_policy:
         return resolve_worker_spec(
@@ -906,7 +907,7 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         return None
     able = ", ".join(sorted(backend_to_stored(b) for b in ACP_BACKENDS_MATE_WORKER_KIT))
     return (
-        f"a crewmate's worker runs on its crewmate's backend "
+        f"a Bot's worker runs on its Bot's backend "
         f"({backend_to_stored(backend)}), which cannot carry the worker's own tools, "
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"

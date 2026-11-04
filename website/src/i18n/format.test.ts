@@ -39,6 +39,7 @@ import { SUPPORTED_LANGUAGES } from './languages'
 import {
   activeLocale,
   collator,
+  compactPluralCount,
   compareText,
   fmtBytes,
   fmtCompact,
@@ -529,6 +530,29 @@ describe('fmtCompact', () => {
       expect(fmtCompact(15300)).toBe(
         new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(15300),
       )
+    })
+  })
+})
+
+describe('compactPluralCount', () => {
+  it('is the quantity fmtCompact shows, so a plural form agrees with the screen', async () => {
+    expect(compactPluralCount(999)).toBe(999)
+    expect(compactPluralCount(1001)).toBe(1000)
+    expect(compactPluralCount(1234)).toBe(1200)
+    expect(compactPluralCount(2_400_000)).toBe(2_400_000)
+    await withLanguage('ru', () => {
+      // 1001 alone selects `one`; shown as `1 тыс.` it must select `many`.
+      const rules = new Intl.PluralRules('ru')
+      expect(rules.select(1001)).toBe('one')
+      expect(rules.select(compactPluralCount(1001))).toBe('many')
+      expect(rules.select(compactPluralCount(21_001))).toBe('many')
+      expect(rules.select(compactPluralCount(1_000_001))).toBe('many')
+    })
+    await withLanguage('zh-CN', () => {
+      expect(compactPluralCount(15_300)).toBe(15_000)
+    })
+    await withLanguage('bn', () => {
+      expect(compactPluralCount(1_234_567)).toBe(1_230_000)
     })
   })
 })

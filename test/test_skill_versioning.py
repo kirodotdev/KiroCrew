@@ -9,6 +9,7 @@ loadable skill.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from datetime import datetime, timezone
@@ -27,8 +28,7 @@ def loader(tmp_path):
 def _prov(created_at: str = "") -> AutoSkillProvenance:
     return AutoSkillProvenance(
         session_key="s",
-        created_at=created_at
-        or datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        created_at=created_at or datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     )
 
 
@@ -58,7 +58,9 @@ def _write_live(
     return live
 
 
-def _stage_update(loader, slug, *, target, base_version=1, body="## Steps\n\nnew steps", scripts=None):
+def _stage_update(
+    loader, slug, *, target, base_version=1, body="## Steps\n\nnew steps", scripts=None
+):
     return loader.stage_skill_candidate(
         slug,
         description=f"updated {slug}",
@@ -72,7 +74,17 @@ def _stage_update(loader, slug, *, target, base_version=1, body="## Steps\n\nnew
     )
 
 
+def _unprovable(loader, slug):
+    """Drop a queued update's ``staged_sha256``: a later update for the same target
+    then cannot prove it unchanged and queues beside it instead of replacing it."""
+    mf = loader._pending_root() / slug / ".meta.json"
+    meta = json.loads(mf.read_text(encoding="utf-8"))
+    meta.pop("staged_sha256", None)
+    mf.write_text(json.dumps(meta), encoding="utf-8")
+
+
 # ── version reads ──
+
 
 def test_get_auto_skill_version_defaults_to_one(loader):
     loader.create_auto_skill(
@@ -100,6 +112,7 @@ def test_read_auto_skill_body_and_namespace_guard(loader):
 
 # ── staging update candidates ──
 
+
 def test_staged_update_meta_appears_in_pending_list(loader):
     _write_live(loader, "greet")
     assert _stage_update(loader, "greet", target="auto/greet", base_version=1) == "auto/greet"
@@ -115,6 +128,7 @@ def test_staged_update_meta_appears_in_pending_list(loader):
 
 # ── approve_pending_update_checked happy path ──
 
+
 def test_approve_update_carries_the_injection_opt_out_forward(loader):
     """A candidate never sets `inject_on_trigger`, so live must supply it.
 
@@ -124,9 +138,7 @@ def test_approve_update_carries_the_injection_opt_out_forward(loader):
     live_dir = _write_live(loader, "quiet", body="v1 body")
     live = live_dir / "SKILL.md"
     live.write_text(
-        live.read_text(encoding="utf-8").replace(
-            "\n---\n", "\ninject_on_trigger: false\n---\n", 1
-        ),
+        live.read_text(encoding="utf-8").replace("\n---\n", "\ninject_on_trigger: false\n---\n", 1),
         encoding="utf-8",
     )
     loader._invalidate_iter_cache()
@@ -193,6 +205,7 @@ def test_approve_update_moves_scripts_executable(loader):
 
 # ── rejections ──
 
+
 def test_approve_update_rejects_missing_target(loader):
     # target names a skill that is not live → refused, candidate intact.
     _stage_update(loader, "orphan", target="auto/nope")
@@ -254,6 +267,7 @@ def test_failed_update_leaves_candidate_and_live_intact(loader, monkeypatch):
 
 # ── version pruning ──
 
+
 def test_approve_update_prunes_versions_at_cap(loader):
     over = MAX_SKILL_VERSIONS + 5  # current live version
     _write_live(loader, "capped", version=over, body="current")
@@ -274,6 +288,7 @@ def test_approve_update_prunes_versions_at_cap(loader):
 
 
 # ── .versions never surfaces as a live skill ──
+
 
 def test_versions_dir_absent_from_list_skills(loader):
     _write_live(loader, "shown", body="v1")
@@ -505,13 +520,16 @@ def test_refine_preserves_version_and_pinned(loader):
     live_skill = loader._dir / "auto" / "refine-keep" / "SKILL.md"
     assert loader.set_pinned("auto/refine-keep", True) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-keep",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-keep",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "version: 3" in body
@@ -531,13 +549,16 @@ def test_refine_preserves_the_injection_opt_out(loader):
     live_skill = loader._dir / "auto" / "refine-quiet" / "SKILL.md"
     assert loader.set_inject_on_trigger("auto/refine-quiet", False) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-quiet",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-quiet",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "refined" in body
@@ -573,13 +594,16 @@ def test_refine_refuses_a_live_file_that_does_not_vet(loader, monkeypatch):
 
 def test_refine_does_not_invent_an_opt_out(loader):
     _write_live(loader, "refine-loud", body="OLD")
-    assert loader.update_auto_skill(
-        "auto/refine-loud",
-        description="d",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-loud",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
     body = (loader._dir / "auto" / "refine-loud" / "SKILL.md").read_text(encoding="utf-8")
     assert "inject_on_trigger" not in body
 
@@ -688,6 +712,7 @@ def test_approve_update_rejects_a_stale_base(loader):
     approved — it must be refused, not merely warned about."""
     _write_live(loader, "race", version=1, body="ORIGINAL")
     _stage_update(loader, "race-a", target="auto/race", base_version=1, body="## Steps\n\nFROM-A")
+    _unprovable(loader, "race-a")
     _stage_update(loader, "race-b", target="auto/race", base_version=1, body="## Steps\n\nFROM-B")
 
     assert loader.approve_pending_update_checked("race-a") == "auto/race"
@@ -799,6 +824,7 @@ def test_stale_rejection_leaves_the_candidate_unredacted(loader):
         base_version=1,
         body="## Steps\n\nFROM-A",
     )
+    _unprovable(loader, "redact-a")
     _stage_update(
         loader,
         "redact-b",

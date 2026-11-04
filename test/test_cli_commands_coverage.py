@@ -321,6 +321,7 @@ class TestAppCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")),
+            patch("kiro_crew.cli_commands.get_app", return_value={"name": "demo"}),
             patch(
                 "kiro_crew.cli_commands.register_app",
                 return_value=_registration(
@@ -823,6 +824,7 @@ class TestAppCli:
             patch(
                 "kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")
             ) as local_install,
+            patch("kiro_crew.cli_commands.get_app", return_value={"name": "demo"}),
             patch(
                 "kiro_crew.cli_commands.register_app", return_value=_registration(agents=["a"])
             ) as local_register,
@@ -1335,9 +1337,16 @@ class TestAppCli:
         # stdout is the MCP stdio channel: the dispatcher must add nothing to it.
         assert capsys.readouterr().out == ""
 
-    def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cc._handle_app(_ns(app_action=None))
-        assert "Usage: kirocrew app" in capsys.readouterr().out
+    def test_unknown_action_prints_usage_and_exits_two(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A missing or unknown sub-action is a usage error: the usage line goes
+        # to stderr and the command exits 2 (argparse convention), not a 0 on
+        # stdout a script would read as success.
+        with pytest.raises(SystemExit) as exited:
+            cc._handle_app(_ns(app_action=None))
+        assert exited.value.code == 2
+        assert "Usage: kirocrew app" in capsys.readouterr().err
 
 
 class TestRunAppMcpServer:

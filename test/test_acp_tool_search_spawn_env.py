@@ -226,13 +226,10 @@ def test_deferral_requires_the_pinned_install(case, tmp_path, monkeypatch) -> No
 
 class TestTheServerSet:
     def test_it_names_the_opt_in_servers_the_eligible_set_drops(self) -> None:
-        """The whole reason this set exists rather than reusing
-        ``emission_eligible_mcp_servers``.
+        """Why this set exists beside ``emission_eligible_mcp_servers``.
 
-        An ``opt_in`` server the user granted is in their spec serving tools, so it
-        churns the ``tools`` array exactly like an always-on one. The eligible set
-        answers a different question ("would a rebuild re-add it") and drops every
-        one of them, which would leave the granted ones deferring.
+        A granted ``opt_in`` server churns the ``tools`` array like an always-on one, but
+        the eligible set ("would a rebuild re-add it") drops it.
         """
         owned = agent_mod.crew_owned_mcp_servers()
         for opt_in in ("kirocrew-dashboard", "kirocrew-work", "kirocrew-crew-log"):
@@ -248,13 +245,10 @@ class TestTheServerSet:
         assert agent_mod.emission_eligible_mcp_servers() <= agent_mod.crew_owned_mcp_servers()
 
     def test_it_carries_the_edition_seam_and_claims_no_prefix(self) -> None:
-        """The composition IS the contract, and asserting a ``kirocrew-`` prefix
-        instead would be vacuous.
+        """The set is the managed map plus the edition adapter's extras.
 
-        The set is the managed map plus the edition adapter's extras. The public
-        build's adapter returns nothing, so a prefix assertion would pass without
-        ever seeing an extra — and the seam does not constrain its keys, so a caller
-        may not assume one. Pin what is actually promised.
+        A ``kirocrew-`` prefix check would be vacuous: the public adapter returns nothing,
+        and the seam does not constrain its keys.
         """
         from kiro_crew.agent import _MANAGED_MCP_SERVERS, _extra_mcp_servers
 
@@ -292,7 +286,16 @@ def test_operator_kiro_bin_override_refuses_deferral_without_probing(tmp_path, m
     assert kiro_cli.mandatory_mcps_drop_allowed(str(pinned)) is False
 
 
-def test_posix_launcher_without_chat_sibling_refuses_deferral(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("version", "allowed"),
+    [
+        ((2, 37, 1), False),  # a 2.x launcher alone execs a PATH kiro-cli-chat
+        (None, False),  # unknown version: could be that launcher
+        ((3, 0, 0), True),  # 3.x standalone: kiro-cli is the chat binary
+    ],
+    ids=["old-launcher", "unknown", "standalone"],
+)
+def test_posix_kiro_cli_without_chat_sibling(version, allowed, tmp_path, monkeypatch) -> None:
     if sys.platform == "win32":
         pytest.skip("Windows ships one self-contained kiro-cli.exe")
     monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
@@ -300,12 +303,17 @@ def test_posix_launcher_without_chat_sibling_refuses_deferral(tmp_path, monkeypa
     pinned.write_text("executable")
     pinned.chmod(0o755)
     monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(pinned), False))
+    probed = []
 
-    def probe(_binary):
-        pytest.fail("A launcher without its chat sibling must not be probed")
+    def probe(binary):
+        if binary != str(pinned):
+            pytest.fail(f"Untrusted version probe: {binary}")
+        probed.append(binary)
+        return version
 
     monkeypatch.setattr(kiro_cli, "kiro_cli_version_at", probe)
-    assert kiro_cli.mandatory_mcps_drop_allowed(str(pinned)) is False
+    assert kiro_cli.mandatory_mcps_drop_allowed(str(pinned)) is allowed
+    assert set(probed) == {str(pinned)}
 
 
 class _ShimResolver:
@@ -367,6 +375,14 @@ def test_a_managed_launcher_is_judged_by_the_install_it_resolves_to(managed_laun
     """argv[0] is the shim; the resolver names the install that actually runs."""
     assert kiro_cli.mandatory_mcps_drop_allowed(managed_launcher["shim"]) is True
     assert managed_launcher["probed"] == [managed_launcher["real"], managed_launcher["chat"]]
+
+
+def test_a_managed_shim_over_a_standalone_install_defers(managed_launcher) -> None:
+    """Toolbox's 3.x layout: a shim over one kiro-cli, no kiro-cli-chat anywhere."""
+    os.remove(managed_launcher["chat"])
+    managed_launcher["versions"][managed_launcher["real"]] = (3, 0, 0)
+    assert kiro_cli.mandatory_mcps_drop_allowed(managed_launcher["shim"]) is True
+    assert set(managed_launcher["probed"]) == {managed_launcher["real"]}
 
 
 @pytest.mark.parametrize("case", ["no-chat-sibling", "old-install", "old-chat", "other-install"])

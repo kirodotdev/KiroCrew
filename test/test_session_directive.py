@@ -1,13 +1,8 @@
 """Tests for the session-directive protocol and forgery gate.
 
-``session_directive`` is the stateless wire format the session-bound MCP
-tools use in the gateway-off topology: the tool validates its arguments and
-returns a human confirmation plus a machine marker carrying the validated
-payload (never a session key). The session-aware consumer decodes the marker
-and applies the effect against its OWN ``slot.key``. These tests pin the
-encode/decode round-trip, the marker-stripping shown in the transcript, the
-``match_tool`` name normalization, and — most importantly — the forgery gate
-that makes subagent isolation structural rather than cryptographic.
+The marker carries the validated payload, never a session key: the consumer applies
+it against its OWN ``slot.key``, so the forgery gate makes subagent isolation
+structural rather than cryptographic.
 """
 
 import pytest
@@ -136,11 +131,8 @@ def test_forgery_gate_malformed_json():
     [
         ("monitor_start", "monitor_start"),
         ("kirocrew-core___monitor_start", "monitor_start"),
-        # The separator is a RUN of underscores and its length is transport-
-        # specific, so the canonical MCP prefix form must resolve too. Before
-        # this, ``mcp__<server>__<tool>`` fell through and the directive was
-        # dropped on any transport using that spelling — the same both-forms
-        # problem ``channel._blocked_tool_named`` already solved.
+        # The separator is a run of underscores whose length is transport-specific,
+        # so the ``mcp__<server>__<tool>`` form must resolve too.
         ("mcp__kirocrew-core__monitor_start", "monitor_start"),
         ("mcp__kirocrew-core__set_project", "set_project"),
         # Still bounded to a >= 2 underscore run: single-underscore joins do
@@ -149,9 +141,8 @@ def test_forgery_gate_malformed_json():
         ("mcp_kirocrew_core_monitor_start", ""),
         ("do_monitor_start", ""),
         ("evilmonitor_start", ""),
-        # Tightened surface (#755 security fix): a non-underscore separator
-        # never tail-matches, so a crafted title/path cannot smuggle a
-        # directive name in as a namespace tail.
+        # A non-underscore separator never tail-matches, so a crafted title/path
+        # cannot smuggle a directive name in as a namespace tail.
         ("kirocrew-core::set_project", ""),
         ("bash /tmp/set_project", ""),
         ("a.autonudge_stop", ""),
@@ -200,14 +191,8 @@ def test_subagent_isolation_intent():
     """The forgery gate is what structurally prevents a subagent's UNRELATED
     tool result from ever being honored as a directive.
 
-    decode() honors a directive only when expected_tool — the name KiroCrew
-    itself recorded for the tool CALL — is in DIRECTIVE_TOOLS AND equals the
-    encoded kind. A subagent's tool result flows through the subagent's own
-    runner and arrives under whatever tool it actually called; if that tool is
-    not a directive tool (or is a different directive tool), the gate returns
-    None. There is no /proc walk or session key to spoof — isolation follows
-    from the call->name mapping, which is KiroCrew's own record. This test
-    asserts that no non-directive expected_tool can decode a genuine directive.
+    decode() needs expected_tool, the name Kiro Crew recorded for the CALL, to be a
+    directive tool equal to the encoded kind; there is no session key to spoof.
     """
     genuine = sd.encode("monitor_start", {"message": "x"}, "armed")
     non_directive_tools = [
@@ -432,13 +417,10 @@ class TestNothingReadableMeansNothingReattached:
 
 
 class TestRepeatedSentinelBytesStayLinear:
-    """The locate walk must pay a BOUNDED cost per occurrence, never a suffix of
-    the frame. ``full`` is an unbounded, model-authored tool-result join (the
-    per-part cut is deliberately gone at the dispatch seam), and the sentinel is
-    a public constant -- one command whose output repeats it puts tens of
-    thousands of occurrences in a multi-megabyte frame. A per-occurrence
-    ``full[probe:]`` slice makes that O(N*L): an event-loop stall and a watchdog
-    restart, reachable without a single valid marker.
+    """The locate walk pays a bounded cost per occurrence, never a suffix of the frame.
+
+    ``full`` is an unbounded model-authored join and the sentinel is public, so a
+    per-occurrence ``full[probe:]`` slice is O(N*L): an event-loop stall.
     """
 
     def test_a_frame_dense_with_sentinel_bytes_parses_in_bounded_time(self):

@@ -45,12 +45,13 @@ def _update_args(**fields) -> argparse.Namespace:
 def test_update_with_only_a_blank_schedule_warns_and_updates_nothing(fields, warning, capsys):
     with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
         mock_svc_cls.return_value.get_job.return_value = MagicMock()
-        _cron(_update_args(**fields))
+        with pytest.raises(SystemExit) as exc:
+            _cron(_update_args(**fields))
         mock_svc_cls.return_value.update_job.assert_not_called()
+    assert exc.value.code == 1
     out = capsys.readouterr()
-    assert out.err == f"{warning}\n"
-    assert out.out == "Provide at least one field to update\n"
-    assert "Updated job" not in out.out
+    assert out.err == f"{warning}\nProvide at least one field to update\n"
+    assert out.out == ""
 
 
 def test_a_blank_schedule_on_a_missing_job_still_fails_not_found(capsys):

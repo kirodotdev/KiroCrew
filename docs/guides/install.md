@@ -312,7 +312,15 @@ reset would discard the local commits; `kirocrew update --force` discards them
 deliberately. A clone that is only ahead is reported up to date. A detached
 checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
-when `origin` has none of them. To follow a release lane on a laptop or server,
+when `origin` has none of them. After the reset the update rebuilds the
+dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
+`logs/frontend-build.log` in the data home. If the build fails, the update still
+installs the new revision's dependencies, then stops before restarting, names
+that file, and the gateway keeps running its current version: a restart would
+pair the new backend with the previous dashboard bundle. The checkout already
+holds the new revision, so a second update reports it up to date: fix the cause
+the log names, then run the frontend and stage steps below before restarting. A clone with no `website/` or no `npm` skips the build and keeps its
+shipped bundle, as before. To follow a release lane on a laptop or server,
 use the one-line install: it updates from the channel's signed release feed and
 has no git history to diverge.
 

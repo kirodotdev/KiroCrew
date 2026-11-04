@@ -136,7 +136,7 @@ export function useAppUpdates({
       // not an error — hand it to the surface's trust modal when one is
       // wired, mirroring how the enable path branches on the same code.
       if (onTrustDenied && isTrustDeniedError(e)) onTrustDenied(name, retryUpdate)
-      else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action: 'update', name }))
+      else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_update', { names: name }))
     } finally {
       setUpdatePending(null)
     }

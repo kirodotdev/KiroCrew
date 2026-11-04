@@ -4,7 +4,7 @@ import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../
 import { MessageByline } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, type LucideIcon } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -28,6 +28,7 @@ import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
+import { useRowDisclosure } from './rowDisclosure'
 import { revealComposer } from './composerFocus'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/useSteerRetract'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
@@ -188,6 +189,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // instead, read off the DOM when the menu opens (fork Opus review).
   const [standIn, setStandIn] = useState(false)
   const readStandIn = (open: boolean) => setStandIn(open && !!userRef.current?.closest('[data-pinned-standin]'))
+  // A scripted send's short label (`meta.banner`): the bubble shows it, and the
+  // full message the agent received opens behind a disclosure. Copy and Quote
+  // still act on the full text.
+  const rowBanner = typeof meta?.banner === 'string' && meta.banner.trim() ? meta.banner : ''
+  const [bannerExpanded, setBannerExpanded] = useRowDisclosure(
+    rowBanner && messageTs ? `user-banner:${messageTs}` : undefined,
+    false,
+  )
   const copyOutcomeIcon = (state: CopyOutcome, idle: ReactNode) =>
     state === 'ok' ? <Check size={14} className="text-ok" />
       : state === 'failed' ? <X size={14} className="text-danger" />
@@ -363,9 +372,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
 
+  // Search matches the full message, so a banner row opens its body for the
+  // active match; the label and toggle are skipped when counting occurrences.
   useEffect(() => {
-    if (!userRef.current) return
+    if (rowBanner && currentOcc >= 0 && !bannerExpanded) setBannerExpanded(true)
+  }, [rowBanner, currentOcc, bannerExpanded, setBannerExpanded])
+
+  useEffect(() => {
     const el = userRef.current
+    if (!el) return
     applySearchHighlights(el, term, caseSensitive, currentOcc)
     // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
@@ -374,7 +389,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // withdraw this bubble's on unmount so a virtualized row that scrolls away
     // is not kept alive through them.
     return () => { cancelScroll?.(); clearSearchHighlights(el) }
-  }, [term, caseSensitive, currentOcc, content])
+  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded])
 
   /** Native select+copy from a sent bubble gives the literal chip label
    *  ("Paste #1 · 5 lines") — worthless on the other end. Intercept the
@@ -646,7 +661,27 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           has no server ts yet. */}
       {seed && <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70" data-testid="session-seed-from">{seedFrom}</p>}
       {carriedQuote && <QuoteCard quote={carriedQuote} variant="sent" onJump={carriedQuote.ts ? onJumpToQuote : undefined} />}
-      {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+      {rowBanner ? (
+        <>
+          <p className="whitespace-pre-wrap" data-testid="user-message-banner" data-message-search-skip>{rowBanner}</p>
+          <button
+            type="button"
+            onClick={() => setBannerExpanded(v => !v)}
+            aria-expanded={bannerExpanded}
+            className="mt-1 inline-flex items-center gap-0.5 text-[12px] leading-5 opacity-70 hover:opacity-100 hover:underline underline-offset-2"
+            data-testid="user-message-banner-toggle"
+            data-message-search-skip
+          >
+            {bannerExpanded ? i18nT('pages.chat.userMessage.hide_full_message') : i18nT('pages.chat.userMessage.show_full_message')}
+            <ChevronRight size={11} className={`lucide-inline shrink-0 transition-transform ${bannerExpanded ? 'rotate-90' : ''}`} aria-hidden="true" />
+          </button>
+          {bannerExpanded && (
+            <div className="mt-1" data-testid="user-message-banner-full">
+              {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+            </div>
+          )}
+        </>
+      ) : renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
   // The right-click menu wraps the bubble only when Quote is offered (the

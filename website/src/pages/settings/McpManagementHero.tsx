@@ -27,7 +27,7 @@ import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { detailsWhyKey, DOCS_URL, gibNumber, type LaunchRefusal } from './mcpManagementModel'
 import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
-import { useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
@@ -114,6 +114,7 @@ export function SharingHero({
   onReload: () => void
 }) {
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const now = footprint?.using_now_bytes
   const withSharing = footprint?.with_sharing_bytes
   const showNumbers = typeof now === 'number' && typeof withSharing === 'number'
@@ -174,6 +175,7 @@ export function SharingHero({
               : null
         }
         askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
       />
 
       {showNumbers && (
@@ -212,7 +214,7 @@ export function SharingHero({
               </p>
             )}
             {reloadNote && <p className="m-0 text-[12.5px] text-[var(--muted)]">{reloadNote}</p>}
-            <ErrorNotice variant="inline" message={reloadError ?? null} askAgent={!handoffWouldLoseEdits} />
+            <ErrorNotice variant="inline" message={reloadError ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
           </div>
           {staleCount > 0 && (
             <Btn
@@ -317,6 +319,7 @@ export function ReviewApprovalsDialog({
   onClose: () => void
 }) {
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const narrow = useIsNarrowViewport()
   const [states, setStates] = useState<Record<string, ReviewState>>({})
   // A fresh list each time the dialog opens.
@@ -429,7 +432,7 @@ export function ReviewApprovalsDialog({
                     <p id={`mcp-review-means-${server.name}`} className="m-0 text-[12.5px] text-[var(--text)]">
                       {i18nT('pages.mcpManagement.review_what_approve_does')}
                     </p>
-                    <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} />
+                    <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <div className={['flex gap-2', narrow ? 'flex-col' : 'flex-wrap justify-end'].join(' ')}>
                       <Btn
                         type="button"

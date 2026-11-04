@@ -123,6 +123,12 @@ SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 #: on both engines at the lower release.
 MANDATORY_MCPS_DROP_MIN_VERSION: tuple[int, int, int] = (2, 27, 0)
 
+#: First kiro-cli release with no launcher. From 3.0.0 the POSIX install is the
+#: standalone archive: ``bin/kiro-cli`` IS the chat binary, with no
+#: ``kiro-cli-chat`` beside it, and no newer launcher bundle ships (kiro-cli
+#: ``scripts/build.py`` ``build_user_archives``; ``cutover.rs`` ``release_answer``).
+STANDALONE_KIRO_CLI_MIN_VERSION: tuple[int, int, int] = (3, 0, 0)
+
 #: ``--version`` is a local read of an already-resolved binary, so it gets the
 #: same short leash the readiness probe puts on its own first execution.
 _VERSION_PROBE_TIMEOUT_SECS = 5
@@ -136,6 +142,11 @@ _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
+
+
+def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
+    """Whether a ``kiro-cli`` at *version* is the standalone chat binary, not a launcher."""
+    return version is not None and version >= STANDALONE_KIRO_CLI_MIN_VERSION
 
 
 def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
@@ -170,14 +181,6 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
         if not pinned or not spawned_binary:
             return False
         sibling = chat_sibling(pinned)
-        # A POSIX launcher with no sibling in its own directory execs whatever
-        # kiro-cli-chat it finds on PATH, whose version is unknown.
-        if (
-            sibling is None
-            and sys.platform != "win32"
-            and os.path.basename(pinned) == KIRO_CLI_NAME
-        ):
-            return False
         candidates = [pinned, sibling]
         if os.path.normcase(os.path.realpath(spawned_binary)) not in {
             os.path.normcase(os.path.realpath(binary))
@@ -187,6 +190,16 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
             os.path.realpath(os.path.dirname(spawned_binary))
         ) != os.path.normcase(
             os.path.realpath(os.path.dirname(pinned))
+        ):
+            return False
+        # A POSIX launcher with no sibling in its own directory execs whatever
+        # kiro-cli-chat it finds on PATH, whose version is unknown. From 3.0.0
+        # no launcher ships: kiro-cli is the chat binary itself, alone.
+        if (
+            sibling is None
+            and sys.platform != "win32"
+            and os.path.basename(pinned) == KIRO_CLI_NAME
+            and not standalone_kiro_cli(kiro_cli_version_at(pinned))
         ):
             return False
         return all(
@@ -488,7 +501,26 @@ def registry_governance_known_unreachable() -> bool:
     counts. Any doubt answers ``False``: a caller that drops the registry marker
     on this answer must never drop it on a governed account, where kiro-cli keeps
     only marked entries.
+
+    The spec writers that ask this are reached from many synchronous paths, and
+    a coroutine can sit above any of them. ``whoami`` can take seconds and runs
+    under a process-wide lock, so on a thread running an event loop the probe
+    never runs it and never waits for that lock: it answers from
+    :func:`_governance_unreachable_on_loop`. The rule turns on the calling
+    thread, not on a claim about the call graph, so a caller added later is
+    covered too.
     """
+    # Function-local: this module is imported by lightweight path-resolution
+    # callers that must not pay for the atomic-write module's imports.
+    from kiro_crew.atomic_write import on_event_loop
+
+    if on_event_loop():
+        return _governance_unreachable_on_loop()
+    return _governance_unreachable_blocking()
+
+
+def _governance_unreachable_blocking() -> bool:
+    """The full probe, ``whoami`` included. Never called on an event loop thread."""
     global _governance_unreachable_cache
     with _governance_unreachable_lock:
         now = time.monotonic()
@@ -516,6 +548,65 @@ def registry_governance_known_unreachable() -> bool:
             verdict = False
         _governance_unreachable_cache = (now, fingerprint, verdict)
         return verdict
+
+
+# Single-flight flag for the off-loop warm-up. Its lock only guards the flag and
+# is never held across I/O, so taking it on the loop thread cannot stall.
+_governance_warm_running = False
+_governance_warm_flag_lock = threading.Lock()
+
+
+def _governance_unreachable_on_loop() -> bool:
+    """The probe's answer on an event loop thread: cached, or doubt. Never blocks.
+
+    Reads the cache without taking :data:`_governance_unreachable_lock`, which an
+    off-loop probe may hold for the whole ``whoami``. A cached answer is reused
+    while the sign-in fingerprint still matches it, past the reuse window too:
+    switching between a personal and a governed sign-in writes kiro-cli's store
+    or changes the API key, and either changes the fingerprint. Past the window
+    a warm-up re-asks off the loop for the next call.
+
+    With no answer for this sign-in the probe answers ``False``, the doubt
+    answer, which keeps the registry marker, and starts a warm-up so the next
+    spec write knows. A governed account therefore never loses the marker here.
+    """
+    try:
+        fingerprint: object = _sign_in_fingerprint()
+    except Exception:  # noqa: BLE001 - no fingerprint means no reuse
+        fingerprint = object()
+    cached = _governance_unreachable_cache
+    if cached is not None and cached[1] == fingerprint:
+        if time.monotonic() - cached[0] >= _GOVERNANCE_UNREACHABLE_TTL_SECS:
+            _start_governance_warm()
+        return cached[2]
+    _start_governance_warm()
+    return False
+
+
+def _start_governance_warm() -> None:
+    """Run the full probe once on a daemon thread, unless one is already running."""
+    global _governance_warm_running
+    with _governance_warm_flag_lock:
+        if _governance_warm_running:
+            return
+        _governance_warm_running = True
+
+    def _warm() -> None:
+        global _governance_warm_running
+        try:
+            # Catches every probe failure itself and caches it as doubt.
+            _governance_unreachable_blocking()
+        finally:
+            with _governance_warm_flag_lock:
+                _governance_warm_running = False
+
+    try:
+        threading.Thread(target=_warm, name="kirocrew-registry-probe", daemon=True).start()
+    except RuntimeError:
+        # No thread could start (interpreter shutting down): leave the flag clear
+        # so a later call can try again.
+        with _governance_warm_flag_lock:
+            _governance_warm_running = False
 
 
 def signed_in_via_idc(

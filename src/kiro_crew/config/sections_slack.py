@@ -13,6 +13,67 @@ from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Longest stored value for any ``slack.code_channel_defaults`` string. A folder
+#: path, agent name or model id is far shorter; the cap keeps a hand-edited
+#: config.json from carrying an unbounded string into every code-channel session.
+CODE_CHANNEL_DEFAULT_MAX = 256
+
+
+@dataclass
+class CodeChannelDefaultsConfig:
+    """What a new Slack code-channel session starts with.
+
+    Every field is optional: ``None`` means "no default here, fall through to the
+    next source". Resolution for a new code-channel session (implemented once, in
+    :func:`kiro_crew.slack.features.resolve_code_channel_session`):
+
+    * agent / model / effort: the explicit value here, else the folder's own
+      ``default_agent``, else the agent Slack already uses;
+    * project: the folder's ``project_dir``, else the project bound to the thread
+      the channel was opened from, else none.
+    """
+
+    folder: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Folder",
+            "Sidebar folder (id, or a 'Parent/Child' path) new code-channel "
+            "sessions are filed in. The session inherits that folder's project "
+            "directory, default agent and steering. A folder deleted after it was "
+            "chosen is ignored: sessions are then unfiled and the other defaults "
+            "still apply.",
+            tags=["slack"],
+        ),
+    )
+    agent: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Agent",
+            "Agent new code-channel sessions run. Wins over the folder's default "
+            "agent. Empty uses the folder's agent, else the agent Slack already uses.",
+            tags=["slack"],
+        ),
+    )
+    model: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Model",
+            "Model id new code-channel sessions start on (as listed by the model "
+            "picker). Empty keeps the agent's own model.",
+            tags=["slack"],
+        ),
+    )
+    reasoning_effort: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Reasoning Effort",
+            "Reasoning effort new code-channel sessions start with: low, medium, "
+            "high, xhigh or max. Empty keeps the agent's own effort. Ignored on "
+            "models that do not support effort.",
+            tags=["slack"],
+        ),
+    )
+
 
 @dataclass
 class SlackConfig:
@@ -207,6 +268,29 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    code_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channels",
+            "Let the agent open a Slack code channel for coding work: a channel "
+            "that is one session. Adds features.code_channels and the code-channel scopes "
+            "(code_channels:manage, chat:write.customize, canvases:write, "
+            "channels:write.invites, groups:write.invites) to the generated app "
+            "manifest; an installed app needs that update and a reinstall, and the "
+            "workspace must have Slack code channels enabled. Until both hold, "
+            "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channel_defaults: CodeChannelDefaultsConfig = field(
+        default_factory=CodeChannelDefaultsConfig,
+        metadata=_meta(
+            "Code Channel Defaults",
+            "Folder, agent, model and reasoning effort a new code-channel session "
+            "starts with. Takes effect on the next new code channel; no restart.",
+            tags=["slack"],
+        ),
+    )
 
 
 ACTIVATION_ALWAYS = "always"  # Process every message
@@ -300,5 +384,62 @@ def _validate_tracking_channels(raw: list) -> list[dict]:
             '"channel_id" field or bare channel ID strings starting with C/D/G). '
             "These entries were ignored.",
             rejected,
+        )
+    return result
+
+
+def _validate_allowed_users(raw: list) -> list[dict]:
+    """Validate and coerce ``slack.allowed_users`` entries to the canonical shape.
+
+    The canonical entry is ``{"slack_id": "U...", "name": "..."}`` — the key the
+    allowlist writer persists and every reader looks up.
+    ``slack/gateway_runtime/orchestrator_init.py`` builds a ``set`` of these ids, so a non-string ``slack_id`` (a list or dict from a
+    hand-edited config) would raise ``TypeError: unhashable type`` at gateway
+    startup; the id must therefore be a non-empty string to be kept.
+
+    A ``user_id`` key with no usable ``slack_id`` is the common near-miss spelling.
+    Its value moves under ``slack_id`` rather than being dropped: a dropped entry
+    makes ``config get slack.allowed_users`` read back ``[]`` while the write
+    succeeded, which reads as a failed save. Coercion emits one warning.
+
+    Accepted:
+    - ``{"slack_id": "U...", ...}`` with a non-empty string ``slack_id`` — passed
+      through (``name`` and any extra keys kept)
+    - ``{"user_id": "U...", ...}`` whose ``slack_id`` is absent or unusable and whose
+      ``user_id`` is a non-empty string — the ``user_id`` value becomes ``slack_id``,
+      with a warning; other keys except ``slack_id``/``user_id`` are kept
+
+    Any other entry is ignored.
+    """
+    if not raw:
+        return []
+
+    def _usable_id(value: object) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    result: list[dict] = []
+    coerced = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        if _usable_id(entry.get("slack_id")) is not None:
+            result.append(entry)
+            continue
+        user_id = _usable_id(entry.get("user_id"))
+        if user_id is not None:
+            # Move the near-miss ``user_id`` value under ``slack_id``. Build a new
+            # dict so the original is untouched and the key order reads ``slack_id``
+            # first; drop the source ``user_id`` and any unusable ``slack_id`` so
+            # neither clobbers the resolved id.
+            renamed = {"slack_id": user_id}
+            renamed.update({k: v for k, v in entry.items() if k not in ("user_id", "slack_id")})
+            result.append(renamed)
+            coerced += 1
+    if coerced:
+        logger.warning(
+            'Config: slack.allowed_users has %d entry(ies) with a "user_id" key — '
+            'auto-coerced to {"slack_id": "..."} format. '
+            'Prefer: [{"slack_id": "U...", "name": "..."}]',
+            coerced,
         )
     return result

@@ -102,6 +102,7 @@ from kiro_crew.config.loader import (
     scratch_root_writer_refusal,
     valid_scratch_root_override,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +472,7 @@ def allocate_scratch(label: str) -> Path:
     # directory through a link is ordinary, and refusing it would break every
     # spawn on such a host rather than protect it.
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(root)
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
     # When the root is a relocated override (``KIROCREW_SCRATCH_ROOT``), lock it to the
     # owner. The default root inherits the owner-only ACL ``ensure_data_home`` sets on the
@@ -507,7 +508,7 @@ def allocate_scratch(label: str) -> Path:
             demote_scratch_root_override(refusal)
             fallback = config_dir() / _SUBDIR
             _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
-            fallback.mkdir(mode=0o700, parents=True, exist_ok=True)
+            mkdirs_owner_only(fallback)
             _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
             return fallback
 

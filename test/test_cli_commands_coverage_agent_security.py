@@ -367,10 +367,18 @@ class TestAgentCli:
         ):
             cc._handle_agent(_ns(agent_action="delete", name="ghost"))
 
-    def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with patch.object(KiroCrewConfig, "load", return_value=_cfg_with()):
+    def test_unknown_action_prints_usage_and_exits_two(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A missing or unknown sub-action is a usage error: usage to stderr,
+        # exit 2 (argparse convention), not a 0 on stdout.
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=_cfg_with()),
+            pytest.raises(SystemExit) as exited,
+        ):
             cc._handle_agent(_ns(agent_action=None))
-        assert "Usage: kirocrew agent" in capsys.readouterr().out
+        assert exited.value.code == 2
+        assert "Usage: kirocrew agent" in capsys.readouterr().err
 
 
 # ── workspace create --copy-from ──

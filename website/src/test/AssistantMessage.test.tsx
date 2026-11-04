@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import AssistantMessage, { fmtTurnElapsed, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { fmtCredits } from '../i18n/format'
+import { i18next } from '../i18n/all'
 import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
 // does not re-export a g-flagged regex. Only `.source` is read below — a string
@@ -1283,6 +1284,24 @@ describe('turn stats footer (elapsed time + credits)', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, cost_usd: 0.0231 }} />)
     const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
     expect(text).toMatch(/^\$0\.02 ·\s*8\.4s$/)
+  })
+
+  it('formats a sub-cent dollar cost with the shared cost floor', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, cost_usd: 0.003 }} />)
+    const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
+    expect(text).toMatch(/^<\$0\.01 ·\s*8\.4s$/)
+  })
+
+  it('renders the credits word from the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('fr')
+    try {
+      render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+      expect(screen.getByTestId('turn-stats')).toHaveTextContent('crédits')
+      expect(screen.getByTestId('turn-stats')).not.toHaveTextContent(/\bcredits\b/)
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
   })
 
   it('renders cost_usd when the provider bills in dollars (no credits)', () => {

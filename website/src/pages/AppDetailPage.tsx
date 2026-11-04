@@ -313,6 +313,8 @@ export default function AppDetailPage() {
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry.updateAvailable || false,
             // Built-ins never carry a star count (they have no repository of
             // their own) — enforce the invariant here rather than trusting the
@@ -444,6 +446,8 @@ export default function AppDetailPage() {
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry?.updateAvailable || false,
             manifest: m,
           })
@@ -975,6 +979,18 @@ export default function AppDetailPage() {
           />
         )}
 
+        {/* A built-in app the gateway skipped at boot: its page cannot open, so say
+            why here instead of leaving the user with a page that fails silently.
+            It is a caught import error, so it renders through ErrorNotice; the
+            hand-off is safe because this page holds no unsaved state. */}
+        {app.installed && app.unavailable && (
+          <ErrorNotice
+            message={i18nT('pages.appDetailPage.unavailable_notice', { reason: app.unavailable.reason })}
+            askAgent
+            className="mb-4 animate-rise"
+          />
+        )}
+
         {/* Re-consent after an update that widened the session-approval grant.
             Warn-styled like the PR's other session-approval surfaces -- the text
             says "it is now disabled", so a green box would contradict it. Cleared
@@ -1214,7 +1230,7 @@ export default function AppDetailPage() {
             inside the dialog (AppStoreDialog). */}
         {showUninstallConfirm && app && (
           <AppStoreDialog
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
             onClose={() => { setShowUninstallConfirm(false); uninstallOpenerRef.current = null }}
             returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}

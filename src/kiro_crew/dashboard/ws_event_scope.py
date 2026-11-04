@@ -320,6 +320,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # floor, and a later literal broadcast of this name must not silently start
     # reaching an app token.
     "dashboard_fields",
+    # The outcome of one bulk Resume run (``chat_resume_all.RESUME_ALL_DONE_FRAME``,
+    # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
+    # the install, for the owner who pressed the button and no one else.
+    "resume_all_done",
 })
 
 

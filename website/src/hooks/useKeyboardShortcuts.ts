@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { askAppConfirm } from '../lib/appConfirm'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { focusComposerElement, queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
@@ -1044,13 +1045,15 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'close-chat': () => {
           if (!activeSlot) return
           const modChord = e.metaKey || e.ctrlKey
-          const prompt = closeConfirmPrompt(appStore.getState(), activeSlot, {
+          const ask = closeConfirmPrompt(appStore.getState(), activeSlot, {
             settingOn: loadChatConfig().confirmCloseSession,
             checkBusy: modChord,
           })
-          if (prompt === null || confirm(prompt)) {
-            dispatch(deleteSlot(activeSlot))
-          }
+          // The slot captured here is the one the chord closed, even if the
+          // user switches sessions while the dialog is open.
+          const slot = activeSlot
+          if (ask === null) { dispatch(deleteSlot(slot)); return }
+          void askAppConfirm(ask).then(ok => { if (ok) dispatch(deleteSlot(slot)) })
         },
       }
       // Every `registry` entry has an action here (shortcutRegistry.test pins the

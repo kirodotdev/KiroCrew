@@ -184,9 +184,12 @@ async def _fetch_app_manifest(
             except json.JSONDecodeError:
                 pass
             else:
-                if provenance is not None:
-                    provenance["source"] = "installed"
-                return local_manifest_data
+                # A local manifest that is not a JSON object is read like an
+                # unparseable one: fall through to the fresh clone below.
+                if isinstance(local_manifest_data, dict):
+                    if provenance is not None:
+                        provenance["source"] = "installed"
+                    return local_manifest_data
 
     if not allow_remote:
         return None
@@ -338,7 +341,9 @@ async def _fetch_app_manifest(
         content = await asyncio.to_thread(_read_manifest_text, manifest_dir / "app.json")
         if content is None:
             return None
-        return json.loads(content)
+        data = json.loads(content)
+        # A manifest that is not a JSON object (``["x"]``, ``"str"``) is no manifest.
+        return data if isinstance(data, dict) else None
     except (asyncio.TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.debug(
             "Failed to fetch app.json from %s: %s",

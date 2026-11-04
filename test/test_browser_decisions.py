@@ -563,6 +563,16 @@ def test_a_box_with_no_image_is_refused(seam):
     assert seam.provider.calls == []
 
 
+def test_a_hosted_consent_with_no_screenshot_choice_still_sends_the_image(seam):
+    # The hosted endpoint keeps the default-on reading; only a sagemaker:// consent
+    # needs a recorded yes (test_decisions_impl_sagemaker.py).
+    seam.write()
+    assert "browser_images" not in json.loads(seam.keystone.read_text(encoding="utf-8"))
+    answers = _image_request(images={"a": ImageAsset(_png())}, scopes=("browser_images",))
+    assert answers is not None
+    assert set(seam.provider.calls[0]["assets"]) == {"a"}
+
+
 def test_a_granted_image_request_reaches_the_provider_with_its_assets(seam):
     seam.write(browser_images=True)
     answers = _image_request(images={"a": ImageAsset(_png())}, scopes=("browser_images",))

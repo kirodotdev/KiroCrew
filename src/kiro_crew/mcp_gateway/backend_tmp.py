@@ -43,6 +43,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +68,8 @@ def allocate_backend_tmp(pool_digest: str) -> Path:
     :func:`record_owner` later replaces the provisional pid with the child's.
     """
     root = backend_tmp_root()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # ``mode=0o700`` is a POSIX-bits no-op on Windows: under a permissive
+    mkdirs_owner_only(root)
+    # The ``0o700`` creation mode is POSIX-only: on Windows, under a permissive
     # custom data home the dir would inherit a readable DACL, exposing any
     # token-bearing temp file a backend writes. The shim applies an
     # owner-only DACL with (OI)(CI) inheritance there (0o700 on POSIX), so

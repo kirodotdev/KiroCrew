@@ -23,7 +23,7 @@ from kiro_crew.crew_log import CrewLog, store
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- damage tolerance -----------------------------------------------------
+# damage tolerance
 
 
 def test_a_torn_last_line_is_truncated_on_open():
@@ -442,7 +442,7 @@ def test_a_log_of_one_kind_cannot_be_opened_as_the_other():
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-# --- large files: the bounded tail read -----------------------------------
+# large files: the bounded tail read
 
 
 def test_seq_comes_off_a_bounded_window_on_a_file_past_that_window():
@@ -471,7 +471,7 @@ def test_seq_falls_back_to_a_full_scan_when_the_window_holds_nothing_valid():
     assert [entry.seq for entry in reopened.iter_from()] == [1, 2]
 
 
-# --- interrupted-tail closers ---------------------------------------------
+# interrupted-tail closers
 
 
 def _interrupted_session() -> CrewLog:

@@ -70,9 +70,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
-    patching vet_job_at_fire_time also stands in for the script-path
-    resolution it performs, which the removed gateway-level
-    resolve_script_path call also covered.
+    patching vet_job_at_fire_time also stands in for its script-path resolution.
 
     Pass ``side_effect`` to make the mocked call raise instead of returning.
     """

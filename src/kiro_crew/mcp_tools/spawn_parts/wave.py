@@ -25,9 +25,9 @@ from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why
-from kiro_crew.platform import redact_log_via_context as redact_log
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.subagent_persistence import agent_dir_for_display
+from kiro_crew.subagent_read_collected import post_mark_collected
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_RESPONSE_LEN,
@@ -42,11 +42,6 @@ from kiro_crew.validation import (
 # carrying its full bounded roster (``_MAX_AVAILABLE_IN_ERROR`` names) and the
 # ``(+N more, call spawn_list)`` pointer, which the model needs to correct itself.
 _SA_ERROR_MAX_CHARS = 800
-
-# Per-attempt timeouts, in seconds, for the mark-collected POST. A second attempt
-# with a longer timeout covers a gateway too loaded to answer in 5 s, and bounds
-# the worst case to 15 s on the dispatch thread, which commits the settled reply.
-_MARK_COLLECTED_TIMEOUTS: tuple[float, ...] = (5, 10)
 
 # The facade's logger, by name: every module of the spawn family must bind
 # ``logger`` to the same object (kiro_crew._facade_mirror checks it).
@@ -716,21 +711,5 @@ class _SubAgentsStep(DeferredTool):
         carrying the reply was written: a mark for a reply that never reached
         the parent would drop the result.
         """
-        # ``written``: sent only after the frame carrying these ids was written,
-        # the one mark the gateway flags a record on.
-        body = {"ids": ids, "parent_session": self.parent_session, "written": True}
-        data: dict[str, Any] = {}
-        for timeout in _MARK_COLLECTED_TIMEOUTS:
-            try:
-                data = mcp_core._post("/api/spawn/mark-collected", body, timeout=timeout)
-            except Exception as exc:  # noqa: BLE001 - a failed mark must not lose the reply
-                data = {"error": str(exc), "transport_error": True}
-            if not data.get("error") or not data.get("transport_error"):
-                break
-        if data.get("error"):
-            logger.warning(
-                "spawn_sub_agents: could not mark %d sub-agent(s) collected, so their "
-                "completion events will also arrive: %s",
-                len(ids),
-                redact_log(str(data["error"]))[:200],
-            )
+        # One sender for both the blocking tool and a full ``spawn_status`` read.
+        post_mark_collected(ids, self.parent_session, tool="spawn_sub_agents")

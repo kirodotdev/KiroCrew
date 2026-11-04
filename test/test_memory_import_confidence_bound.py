@@ -34,41 +34,32 @@ def _imported_confidence(
     return counts, None if row is None else float(row["confidence"])
 
 
-@pytest.mark.parametrize(
-    ("raw", "stored"),
-    [
-        (99, 1.0),
-        (1.5, 1.0),
-        pytest.param(10**400, 1.0, id="400-digit-int"),
-        (math.inf, 1.0),
-        ("99", 1.0),
-        (float("nan"), _DEFAULT),
-        ("nan", _DEFAULT),
-        ("high", _DEFAULT),
-        (None, _DEFAULT),
-        ([0.9], _DEFAULT),
-        ({"v": 0.9}, _DEFAULT),
-    ],
-)
-def test_bad_confidence_is_bounded_and_the_row_still_imports(
-    tmp_path: Path, raw: object, stored: float
-) -> None:
-    counts, confidence = _imported_confidence(tmp_path, {"confidence": raw})
-    assert counts == {"semantic": 1, "episodic": 0, "skipped": 0}
-    assert confidence == stored
+_BAD = "bad_confidence_is_bounded_and_the_row_still_imports"
+_KEPT = "a_value_main_imported_keeps_its_confidence"
 
 
 @pytest.mark.parametrize(
     ("raw", "stored"),
     [
-        (0.9, 0.9),
-        (1, 1.0),
-        (True, 1.0),
-        ("0.95", 0.95),
-        (" 1 ", 1.0),
+        pytest.param(99, 1.0, id=f"{_BAD}-99"),
+        pytest.param(1.5, 1.0, id=f"{_BAD}-1.5"),
+        pytest.param(10**400, 1.0, id=f"{_BAD}-400-digit-int"),
+        pytest.param(math.inf, 1.0, id=f"{_BAD}-inf"),
+        pytest.param("99", 1.0, id=f"{_BAD}-str-99"),
+        pytest.param(float("nan"), _DEFAULT, id=f"{_BAD}-nan"),
+        pytest.param("nan", _DEFAULT, id=f"{_BAD}-str-nan"),
+        pytest.param("high", _DEFAULT, id=f"{_BAD}-str-high"),
+        pytest.param(None, _DEFAULT, id=f"{_BAD}-None"),
+        pytest.param([0.9], _DEFAULT, id=f"{_BAD}-list"),
+        pytest.param({"v": 0.9}, _DEFAULT, id=f"{_BAD}-dict"),
+        pytest.param(0.9, 0.9, id=f"{_KEPT}-0.9"),
+        pytest.param(1, 1.0, id=f"{_KEPT}-1"),
+        pytest.param(True, 1.0, id=f"{_KEPT}-True"),
+        pytest.param("0.95", 0.95, id=f"{_KEPT}-str-0.95"),
+        pytest.param(" 1 ", 1.0, id=f"{_KEPT}-str-padded-1"),
     ],
 )
-def test_a_value_main_imported_keeps_its_confidence(
+def test_any_confidence_imports_the_row_at_a_bounded_value(
     tmp_path: Path, raw: object, stored: float
 ) -> None:
     counts, confidence = _imported_confidence(tmp_path, {"confidence": raw})

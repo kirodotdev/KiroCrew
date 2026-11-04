@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -147,12 +146,12 @@ class TestEachLayerCarriesTheField:
 
     def test_registration_passes_it_to_the_sdk(self, home):
         _register_crons(APP, _manifest(_daily_cron(strict_schedule=True)))
-        sdk = MagicMock()
-        sdk.list_jobs.return_value = []
-        sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="job-1"))
-        with patch("kiro_crew.apps.bridges.CronSDK", return_value=sdk):
-            asyncio.run(register_app_crons_with_service(APP, MagicMock()))
-        assert sdk.add_job_if_absent_async.call_args.kwargs["strict_schedule"] is True
+
+        async def scenario(svc):
+            await register_app_crons_with_service(APP, svc)
+            return _job(svc)
+
+        assert _run_scenario(home, scenario).strict_schedule is True
 
     def test_a_def_written_before_the_key_existed_registers_the_default(self, home):
         """An ``app-crons.json`` from an older install has no such key."""
@@ -160,12 +159,12 @@ class TestEachLayerCarriesTheField:
             json.dumps([{"name": NAME, "every": 600, "message": "go", "app": APP}]),
             encoding="utf-8",
         )
-        sdk = MagicMock()
-        sdk.list_jobs.return_value = []
-        sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="job-1"))
-        with patch("kiro_crew.apps.bridges.CronSDK", return_value=sdk):
-            asyncio.run(register_app_crons_with_service(APP, MagicMock()))
-        assert sdk.add_job_if_absent_async.call_args.kwargs["strict_schedule"] is False
+
+        async def scenario(svc):
+            await register_app_crons_with_service(APP, svc)
+            return _job(svc)
+
+        assert _run_scenario(home, scenario).strict_schedule is False
 
 
 class TestWrongTypeIsReported:

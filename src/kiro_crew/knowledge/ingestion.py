@@ -32,7 +32,7 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .extractor import EntityExtractor, extraction_source
+from .extractor import EntityExtractor, _is_harness_refusal, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
 from .store import AUTO_ADDED_PROP, KnowledgeStore
@@ -552,6 +552,31 @@ class IngestionPipeline:
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
+    def _record_harness_refusal(self, job_id: str, source_id: str,
+                                content_hash: str, exc: BaseException) -> None:
+        """Fail *job_id* on the enterprise pool's harness refusal (RFC D6).
+
+        The job ends ``failed`` with the refusal's remedy in ``error``, and the source
+        reads ``error``. The source forgets *content_hash* when it holds it (a source
+        this ingest created stores it up front), so the unchanged document is
+        ingested again once the harness is fixed. Nothing else is written: the
+        refusal arrives before any item, so the source's old items stay.
+        """
+        db = self.store.db
+        db.execute(
+            "UPDATE ingestion_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+            (str(exc)[:2000], datetime.now().isoformat(), job_id))
+        db.commit()
+
+        # A delta under the store's write lock, never a snapshot rewrite: a
+        # concurrent pause or scan stamp on the same row must survive.
+        def _forget_hash(props: dict) -> str:
+            if props.get('content_hash') == content_hash:
+                props.pop('content_hash')
+            return 'error'
+
+        self.store.revise_source_properties(source_id, _forget_hash)
+
     @asynccontextmanager
     async def _ingestion_in_flight(self) -> AsyncIterator[None]:
         """Hold the store's ingestion gate for one whole ingest, entered off-loop.
@@ -910,7 +935,14 @@ class IngestionPipeline:
                 budget_token=budget_token,
                 on_committed_in_txn=on_committed_in_txn,
             )
-        except Exception:
+        except Exception as exc:
+            if _is_harness_refusal(exc):
+                try:
+                    await run_to_completion(functools.partial(
+                        self._record_harness_refusal, job_id, source_id, content_hash, exc))
+                except Exception:  # noqa: BLE001 - never mask the original error
+                    logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
+                raise
             try:
                 # Also a run_to_completion hop: this is the write that stops the
                 # folder watcher retrying the file every scan, so a cancellation
@@ -1252,8 +1284,16 @@ class IngestionPipeline:
         total = len(chunks)
 
         chunk_contents = [chunk['content'] for chunk in chunks]
-        with extraction_source(source_id):
-            extractions = await self.extractor.extract_batch(chunk_contents)
+        try:
+            with extraction_source(source_id):
+                extractions = await self.extractor.extract_batch(chunk_contents)
+        except Exception as exc:
+            # The enterprise harness refusal fails the job (see ingest_file); any
+            # other extraction error keeps its existing path.
+            if _is_harness_refusal(exc):
+                await run_to_completion(functools.partial(
+                    self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            raise
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source -- a snapshot

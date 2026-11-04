@@ -293,10 +293,13 @@ async def _remove_browser_recordings(
     from kiro_crew.browser_harness.recording import get_recorder
     from kiro_crew.dashboard.state import _normalize_slot_key
 
-    live = set(getattr(state, "_slots", {}) or {})
     keys = {(_normalize_slot_key(s) or s) for s in spellings if isinstance(s, str) and s}
     recorder = get_recorder()
-    for slot_key in sorted(keys - live):
+    for slot_key in sorted(keys):
+        # Read again for each key: an earlier removal awaited, and a chat may have
+        # taken the key since.
+        if slot_key in set(getattr(state, "_slots", {}) or {}):
+            continue
         try:
             if await recorder.delete_session(slot_key):
                 logger.info("History delete: removed browser replays of %s", slot_key)

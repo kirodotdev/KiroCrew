@@ -1,13 +1,10 @@
 """Per-agent default model: storage, precedence, and normalization.
 
-The default model is stored per KiroCrew agent (``agents.<name>.model`` in
-config.json), NOT on the kiro agent spec files under ``~/.kiro/agents`` — several
-KiroCrew agents can bind the same spec, and KiroCrew regenerates most of those
-files on every install. The global ``agent.model`` remains a fallback for agents
-that pin nothing.
+Stored per Kiro Crew agent (``agents.<name>.model``), not on the spec files under
+``~/.kiro/agents``: several agents can bind one spec, and installs regenerate them.
 
 Precedence under test, highest first:
-  1. the KiroCrew agent's own ``model``
+  1. the Kiro Crew agent's own ``model``
   2. the bound kiro agent's pinned ``model`` (not for the built-in "kirocrew")
   3. the global ``agent.model``
   4. the installed agent file / bundled defaults
@@ -73,9 +70,8 @@ class TestNormalizeAgentModel:
     def test_non_string_is_treated_as_no_pin(self, bad: object) -> None:
         """config.json is hand-editable, so a non-string must not reach .strip().
 
-        Regression: ``agents.<name>.model: 123`` loaded as an int, and the first
-        resolver to normalize it raised AttributeError — surfacing as HTTP 500
-        from /api/agents/resolved-model instead of simply being ignored.
+        Otherwise ``model: 123`` raises AttributeError, an HTTP 500 from
+        /api/agents/resolved-model.
         """
         assert normalize_agent_model(bad) == ""
 
@@ -94,7 +90,7 @@ class TestNonStringModelInConfig:
         assert cfg.agents["oncall"].model == ""
 
     def test_resolution_survives_a_non_string_model(self) -> None:
-        """The end-to-end path GPT flagged: load -> resolve, with no exception."""
+        """The end-to-end path load -> resolve raises no exception."""
         cfg = _load_from_dict(
             {
                 "agents": {"oncall": {"kiro_agent": "kirocrew", "model": 123}},
@@ -110,12 +106,8 @@ class TestNonStringModelInConfig:
 class TestApiDoesNotStringifyModels:
     """The CRUD handlers must not coerce a non-string body value into an id.
 
-    Regression: the handlers wrapped the value in ``str()`` before normalizing.
-    Once ``normalize_agent_model`` became total, that wrapper actively defeated
-    it — ``{"model": 123}`` became the literal ``"123"``, which IS a string, so
-    it survived normalization and was persisted as a model id the backend then
-    rejects (silently running its own default). Passing the raw value through
-    lets the normalizer map it to "" (inherit).
+    A ``str()`` wrapper would turn ``{"model": 123}`` into the id ``"123"``; the raw
+    value lets ``normalize_agent_model`` map it to "" (inherit).
     """
 
     @staticmethod
@@ -327,16 +319,9 @@ class TestEffectiveModelPrecedence:
 class TestSessionModelCoversEverySurface:
     """The crew tier must apply to Slack / cron / spawn, not just dashboard chat.
 
-    Those surfaces reach ``SessionManager.get_or_create`` directly. If it resolved
-    only the kiro pin and the global, a crew pinned in the Crews table would run
-    the template/global model there, and the same crew would run different models
-    per surface.
-
-    ``_session_model`` is the shared resolver ``get_or_create`` uses. Callers are
-    inconsistent about what they pass as ``agent`` (the dashboard passes a resolved
-    kiro template name; Slack threads and cron jobs pass a Kiro Crew agent name),
-    so
-    both namespaces must work.
+    They reach ``SessionManager.get_or_create`` directly, whose ``_session_model`` gets a
+    kiro template name from the dashboard and a Kiro Crew agent name from Slack and
+    cron, so both namespaces must work.
     """
 
     @pytest.mark.parametrize(

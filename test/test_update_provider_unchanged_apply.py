@@ -12,19 +12,21 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import notes, real_dashboard_state
 from slack_gateway_helpers import _make_orchestrator, _mock_dashboard_state
 
 _SNAPSHOT = "kiro_crew.platform.wheel_apply.snapshot_memory_before_update"
 
 
-async def _run(monkeypatch, *, mandatory: bool, recheck):
+async def _run(monkeypatch, *, mandatory: bool, recheck, state=None):
     import kiro_crew.dashboard.handlers as handlers
     import kiro_crew.platform.update_governance as gov
     from kiro_crew.platform.update_capability import AUTO_ROUTE_PROVIDER, AutoUpdateEffect
     from kiro_crew.platform.update_provider import CommandProvider, UpdateCheckResult
 
     orch = _make_orchestrator()
-    orch.dashboard_state = _mock_dashboard_state()
+    orch.dashboard_state = _mock_dashboard_state() if state is None else state
     effect = "mandatory" if mandatory else "install"
     orch._auto_update_effect = AsyncMock(return_value=AutoUpdateEffect(effect, AUTO_ROUTE_PROVIDER))
     orch._prepare_auto_update_apply = AsyncMock(return_value=True)
@@ -87,13 +89,17 @@ async def test_an_apply_the_check_still_offers_again_does_not_restart(monkeypatc
     ],
 )
 @pytest.mark.asyncio
-async def test_an_apply_that_changed_the_install_restarts(monkeypatch, mandatory, recheck):
+async def test_an_apply_that_changed_the_install_restarts(
+    monkeypatch, mandatory, recheck, tmp_path
+):
     from kiro_crew.platform.update_provider import UpdateCheckResult
 
+    ds = real_dashboard_state(tmp_path)
     orch, provider = await _run(
-        monkeypatch, mandatory=mandatory, recheck=UpdateCheckResult(**recheck)
+        monkeypatch, mandatory=mandatory, recheck=UpdateCheckResult(**recheck), state=ds
     )
 
     provider.apply.assert_awaited_once()
     orch._restart_after_update.assert_awaited_once()
-    orch.dashboard_state.notify.assert_not_called()
+    assert notes(ds) == []
+    assert (ds._update_progress or {}).get("step") != "failed"

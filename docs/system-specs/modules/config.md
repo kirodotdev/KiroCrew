@@ -725,6 +725,7 @@ names that test; every other report-only row gives its plain reason:
 | `agent.chat_turn_timeout_secs` | 7200 -> 14400, #8949 | adopts | -- |
 | `agent.spawn_min_memory_gb` | 4.0 -> 2.0, #15890 | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
 | `agent.kas_persist_mcp_sign_in` | false -> true, #28630 | adopts | -- (false was the default until this change, so the only value an owner had reason to write was true; a false set back after the one-shot adoption is kept as the opt-out) |
+| `agent.sandbox_allow_unsandboxed_exec` | false -> true on Windows, #9758 | adopts | -- (Windows outside pods only, owner decision 2026-11-03: with KAS the default a stored false leaves no agent session able to start, whether written unasked by a pre-0.6.0 save or on purpose, and kiro-cli confines no KAS process on Windows (#25154); elsewhere false is still the default and the row does not apply. `kirocrew setup`, `config set` and Settings saves ack a false they write, and a false set after the one-shot is kept. A Windows load (outside pods) that finds the key absent or `true` has nothing stale to drop, so `windows_exec_adoption.close_when_nothing_stale` acks `false` once; a false written after that, a hand edit included, is never adopted. The drop first writes the setup grant's critical SEL event (`config/windows_exec_adoption.py`) and keeps the false when that write fails; the row's `note` is appended to the adoption log line and doctor's adopted line) |
 | `session.autocompact_pct` | 90.0 -> 70.0, #4388 | reports | `test_a_persisted_ceiling_value_is_left_alone` |
 | `dashboard.loop_stall_exit_after_secs` | 25 -> unset, #6651 | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
 | `stt.streaming` | false -> true, 0.5.0 | reports | `test_put_persists_streaming` |
@@ -1045,7 +1046,9 @@ load and is left untouched.
 
 `--adopt` also drops the ack for a key it removed, since the acked value is no
 longer stored and keeping it would silence a genuinely deliberate choice made
-later. When `config.local.json` also carries an adopted key the report says the
+later. On an `auto_adopt` row, `--adopt` also records the key in the adoption
+record before removing it, so a value written back by hand later is kept. When
+`config.local.json` also carries an adopted key the report says the
 overlay still overrides it, because the EFFECTIVE value did not change. Every
 filesystem refusal on these paths surfaces as a controlled non-zero CLI error,
 never a traceback.
@@ -1100,7 +1103,9 @@ does not have.
 User overrides can be placed in `~/.kiro/crew/config.local.json`. This file is
 deep-merged on top of `config.json` at load time and is never touched by
 `kirocrew setup` or package upgrades. Because `save()` keeps an overlay-owned
-leaf OUT of `config.json`, such a value exists only here, so the overlay rides
+leaf OUT of `config.json` -- unless `config.json` already stores that leaf, which
+then keeps its own stored value, so dropping the overlay later still finds it --
+such a value exists only here, so the overlay rides
 the dashboard export and the snapshot `config` component next to `config.json`
 (see [Settings import](#settings-import-dashboard-merge)).
 
@@ -1703,6 +1708,9 @@ degraded set. `data` is the read stage's output, not raw file content: the
 overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
 agent off-switch reads as `false`; an unreadable source leaves
 `skills.project_skills_enabled` off), and the document is validated and clamped.
+Any other boolean field holding a quoted boolean (`"false"`, `"on"`, `"1"`) is
+still refused and reads as its default; its type-mismatch warning adds that a
+quoted boolean is ignored and should be written without quotes.
 When nothing loaded it is `{}` or carries only that project-skills marker. A cache
 hit carries no adoption and no stamp, because a load that did not read the base
 must not decide one. A document is single-use: building normalizes `data` in
@@ -2187,7 +2195,21 @@ The snapshot is only ever rebuilt off-loop:
   files are still on disk, and drops everything else the scan no longer sees. A
   failed directory listing keeps the whole previous user-level snapshot. An
   incomplete scan never heals the default agent. `materialized_snapshot_complete()`
-  reads the flag, in memory.
+  reads the flag, in memory, and `materialized_skipped_stems()` the user-level
+  stems the installed scan skipped (`None` while unknown: no snapshot yet, a failed
+  listing, an incomplete crewmate scan). It returns `True` when its snapshot was
+  installed, `False` when the scan raised or a later refresh had already landed.
+- The agent-catalog fetch (`dashboard/handlers/agent_catalog.py`) gates its
+  rescan. It stamps both agents directories with `agents_dir_revision` plus the
+  publish count (`materialized_agents_generation()`), records the stamp with the
+  installed scan's skipped stems and refresh ticket (`materialized_refresh_ticket()`)
+  only after a refresh that landed with the stamp unchanged across it, and skips
+  the rescan while all three still match, so one unparseable spec stays skipped
+  under its own key and a snapshot another caller's refresh installed is never
+  served as the recorded one. A stamp `agents_dir_revision`
+  cannot prove (Windows, a symlinked spec, more than 64 entries younger than 2 s)
+  scans on every fetch, outside the gate's lock. `catalog_scan_hit` and
+  `catalog_scan_miss` count the two outcomes.
 - `schedule_materialized_agents_refresh()` — safe from anywhere: offloads to the
   default executor when a loop is running, refreshes inline when not.
 - `publish_materialized_agents(names)` — pure set union, no I/O, so it is safe on
@@ -2211,9 +2233,11 @@ back for that turn rather than block.
 `reset_dangling_default_agent` points `default_agent` back at the shipped
 `default` crew when the template the current default binds has been REMOVED — an
 earlier landed snapshot in this process let it dispatch and the current one does
-not. It runs only through `refresh_materialized_agents(heal_default=True)`, which
-only the owner's agent-catalog fetch passes (`dashboard/handlers/agent_catalog.py`),
-and only after a complete scan; the removal evidence is bounded
+not. It runs through `refresh_materialized_agents(heal_default=True)` after a
+complete scan, and on every owner agent-catalog fetch over a complete snapshot
+(`dashboard/handlers/agent_catalog.py`), whether or not that fetch rescanned,
+because it reads inputs the catalog's stamp does not cover (`config.local.json`,
+the edition's agents, the alias workspace's `.kiro/agents`); the removal evidence is bounded
 (`_MATERIALIZED_SEEN_MAX`, 4096 names). It declines on any uncertainty: an unreadable
 or degraded config, a missing `default` alias, a default already `default`, a
 template the edition still supplies, or a template the row's workspace
@@ -3308,6 +3332,7 @@ class SessionConfig:
     pool_size: int = 0             # pre-warmed kiro-cli processes kept ready for instant session start; 0 (the default) disables. Single source of truth: DEFAULT_POOL_SIZE, read by both the field default and load()'s file-parse fallback. Load-time clamped to [0, 10]
     kas_delete_delay_secs: int = 0  # on kas, seconds a task-runner session's record and a reused workflow worker's previous conversation stay on disk after the session ends, before the released_sessions sweep deletes them; 0 (the default) deletes at once, as does a process the sandbox launched (sandbox_launch_mark). Load-time clamped to [KAS_DELETE_DELAY_SECS_MIN, KAS_DELETE_DELAY_SECS_MAX] = [0, 86400]. Point-of-use reads: open_task_session reads SessionManager._cfg (kept current by the session applier) as each task session opens; the workflow worker reads KiroCrewConfig.load() before each reuse. Needs an engine that advertises sessionCapabilities.close. A record that comes due while another backend is selected waits until kas is selected again. See session.md "Released KAS session records".
     watchdog_rss_max_mb: int = 4096   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 4096 sits above a healthy tree with many MCP servers (1.4-2.6 GB measured) and still bounds a runaway one; 0 disables; the internal background runtime recycles at BACKGROUND_RSS_FALLBACK_MB (1536), or at this value when it is lower. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime.
+    harness_background_hold_secs: int = 3600  # DEFAULT_HARNESS_BACKGROUND_HOLD_SECS: how long after a harness (Claude Code) launches background work (a Workflow or backgrounded Bash) the idle sweep and the RSS recycle still keep its session (session_background_hold.background_hold_secs, read every sweep). Load-time clamped to [HARNESS_BACKGROUND_HOLD_SECS_MIN, HARNESS_BACKGROUND_HOLD_SECS_MAX] = [300, 86400] with a warning; non-int loads as the default. Config-file-only (no dashboard write path). An idle-sweep reset past the hold posts the recycle notice naming the launched work. See session.md "Harness background work".
 
 @dataclass
 class TaskRunnerConfig:

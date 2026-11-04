@@ -106,11 +106,12 @@ type during a takeover is kept only as a character count. Deleting a chat
 deletes its recordings. `browser.recording.enabled`, `max_session_mb` and
 `max_total_mb` turn recording off or cap its size.
 
-**Fast mode.** When browser help is on (Settings → Decisions), the agent can run a
-quick loop of many small moves (a game, a long form). The live view then shows
-"Fast mode: N moves · rate", a bar for how much of its step or time budget it has
-used, and, when it stops, why. Take over stops it at the next move. Its many
-steps fold to the last few in the step list.
+**Fast mode.** When browser help is on (the **Browser steps: pick and check** row
+on the Decisions card, under Settings → Developer → Feature Previews), the agent
+can run a quick loop of many small moves (a game, a long form). The live view
+then shows "Fast mode: N moves · rate", a bar for how much of its step or time
+budget it has used, and, when it stops, why. Take over stops it at the next
+move. Its many steps fold to the last few in the step list.
 
 **Settings → Browser → Live view in chat** turns the view off, caps the frame
 rate, picks a quality, and controls the password mask (on by default).
