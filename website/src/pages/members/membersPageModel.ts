@@ -128,7 +128,7 @@ export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEW
  *  about this" needs the tab as its landing (`openMemberSideChat`); it stays
  *  dynamic, never standing. Exported so the test pins the set. */
 export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [
-  ...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'workflows', 'git', 'logs', 'context', 'crewlog',
+  ...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'sessions', 'workflows', 'git', 'logs', 'context', 'crewlog',
 ]
 /** Everything the panel withholds while the thread is UNCONFIRMED: every
  *  classified view, plus Terminal and app tabs. Derived from

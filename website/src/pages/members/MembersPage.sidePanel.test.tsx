@@ -1158,7 +1158,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
     expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
-      [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'workflows', 'git', 'logs', 'context', 'crewlog'].sort(),
+      [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts', 'subagents', 'sessions', 'workflows', 'git', 'logs', 'context', 'crewlog'].sort(),
     )
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('terminal')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('app')
@@ -1192,7 +1192,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     }
     for (const name of [
       'Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center',
-      'Subagents', 'Workflows', 'Git', 'Logs', 'Context breakdown', 'Crew log',
+      'Subagents', 'Sessions', 'Workflows', 'Git', 'Logs', 'Context breakdown', 'Crew log',
     ]) {
       expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
     }
