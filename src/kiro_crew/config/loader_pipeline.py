@@ -22,6 +22,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.aws_project_profiles import coerce_project_profiles
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
+from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.fields import _coerce_bool, _safe_str
 from kiro_crew.config.integration_sections import AppSettingsConfig, AwsConfig
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
@@ -431,8 +432,12 @@ def read_config_document() -> ConfigDocument:
     # Skipped when no base file loaded -- nothing is stored to adopt or
     # report on.
     adoptable = []
+    # False while the Windows one-shot close is deferred: the document is then
+    # not cached, so the next load retries the close instead of hitting the cache.
+    close_settled = True
     if loaded_base:
         adoptable = auto_adoptable(data)
+        close_settled = windows_exec_adoption.close_when_nothing_stale(data)
         # Decided here, on the base as the previous build left it: once this
         # load writes, or the gateway's meta refresh runs, the stamp names
         # the running build and the proof is gone.
@@ -599,7 +604,7 @@ def read_config_document() -> ConfigDocument:
     # defaults on every later load until a file happened to change. A file
     # whose bytes read fine but would not parse is a stable fact about
     # those bytes and still caches.
-    if digestible:
+    if digestible and close_settled:
         _store_validated_data(
             data,
             pre_read_fp,
@@ -1329,6 +1334,8 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
                         key,
                         entry.old_default,
                     )
+                    if entry.note:
+                        logger.warning("config: %s: %s", key, entry.note)
                 if entry is not None and not _overlay_supplies(local_data, key):
                     _adopt_in_memory(cfg, key, entry.old_default)
             if _migration.LAZY_LOAD_KEY in confirmed_adoptions:
