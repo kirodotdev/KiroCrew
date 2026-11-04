@@ -20,6 +20,7 @@ import pytest
 from chat_runner_coverage_helpers import _slot, _state
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from slack_wire_helpers import slack_wire
 
 from kiro_crew import widget_artifacts
 from kiro_crew.artifacts import ArtifactStore
@@ -588,16 +589,19 @@ class TestDeliverLinkedSlackMessage:
         state.slack_client.post_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_link_from_the_session_store_is_used(self, tmp_path):
+    async def test_link_from_the_session_store_is_used(self, tmp_path, monkeypatch):
         state = _state(tmp_path)
-        state.slack_client = AsyncMock()
         state.sessions.get_slack_link = MagicMock(return_value=("111.222", "C123"))
 
-        await chat_runner._deliver_linked_slack_message(
-            state, _slot(), state.sessions, "dashboard:x", "signed out"
-        )
+        async with slack_wire(monkeypatch) as wire:
+            state.slack_client = wire.client
+            await chat_runner._deliver_linked_slack_message(
+                state, _slot(), state.sessions, "dashboard:x", "signed out"
+            )
 
-        state.slack_client.post_message.assert_awaited_once_with("C123", "signed out", "111.222")
+        assert [(c.get("channel"), c.get("text"), c.get("thread_ts")) for c in wire.posts()] == [
+            ("C123", "signed out", "111.222")
+        ]
 
     @pytest.mark.asyncio
     async def test_post_failure_is_swallowed(self, tmp_path, caplog):

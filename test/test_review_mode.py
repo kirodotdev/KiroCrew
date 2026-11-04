@@ -6,7 +6,9 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack.blocks import (
     review_draft_blocks,
@@ -108,6 +110,16 @@ def _mock_aiohttp():
 
 REQUESTER = "UREQ"
 
+# The real class, read before ``_mock_aiohttp`` replaces it: the SDK needs it to reach the wire.
+_REAL_CLIENT_SESSION = aiohttp.ClientSession
+
+
+@pytest.fixture
+def wire_session(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Give the Slack SDK the real aiohttp session that ``_mock_aiohttp`` swaps out."""
+    monkeypatch.setattr(aiohttp, "ClientSession", _REAL_CLIENT_SESSION)
+    return monkeypatch
+
 
 class TestReviewDraftStorage:
     def test_set_and_get_returns_draft_and_requester(self) -> None:
@@ -147,37 +159,33 @@ class TestReviewDraftStorage:
 # ---------------------------------------------------------------------------
 class TestPostEphemeral:
     @pytest.mark.asyncio
-    async def test_post_ephemeral_with_blocks_and_thread(self) -> None:
-        from kiro_crew.slack.client import RealSlackClient
-
-        mock_web = MagicMock()
-        mock_web.chat_postEphemeral = AsyncMock()
-        client = RealSlackClient.__new__(RealSlackClient)
-        client._web = mock_web
+    async def test_post_ephemeral_with_blocks_and_thread(
+        self, wire_session: pytest.MonkeyPatch
+    ) -> None:
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}]
-        await client.post_ephemeral("C1", "U1", "fallback", blocks=blocks, thread_ts="ts1")
-        mock_web.chat_postEphemeral.assert_awaited_once_with(
-            channel="C1",
-            user="U1",
-            text="fallback",
-            blocks=blocks,
-            thread_ts="ts1",
-        )
+        async with slack_wire(wire_session) as wire:
+            await wire.client.post_ephemeral(
+                "C1", "U1", "fallback", blocks=blocks, thread_ts="ts1"
+            )
+        assert [call.args for call in wire.sent("chat.postEphemeral")] == [
+            {
+                "channel": "C1",
+                "user": "U1",
+                "text": "fallback",
+                "blocks": blocks,
+                "thread_ts": "ts1",
+            }
+        ]
 
     @pytest.mark.asyncio
-    async def test_post_ephemeral_without_optional_params(self) -> None:
-        from kiro_crew.slack.client import RealSlackClient
-
-        mock_web = MagicMock()
-        mock_web.chat_postEphemeral = AsyncMock()
-        client = RealSlackClient.__new__(RealSlackClient)
-        client._web = mock_web
-        await client.post_ephemeral("C1", "U1", "text")
-        mock_web.chat_postEphemeral.assert_awaited_once_with(
-            channel="C1",
-            user="U1",
-            text="text",
-        )
+    async def test_post_ephemeral_without_optional_params(
+        self, wire_session: pytest.MonkeyPatch
+    ) -> None:
+        async with slack_wire(wire_session) as wire:
+            await wire.client.post_ephemeral("C1", "U1", "text")
+        assert [call.args for call in wire.sent("chat.postEphemeral")] == [
+            {"channel": "C1", "user": "U1", "text": "text"}
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -278,15 +286,15 @@ class TestTeamIdInjection:
         assert kwargs["team_id"] == "TWORK"
 
     @pytest.mark.asyncio
-    async def test_update_delete_inject_cached_team(self) -> None:
-        c = self._client()
-        c._web.chat_update = AsyncMock()
-        c._web.chat_delete = AsyncMock()
-        c.record_channel_team("C1", "TWORK")
-        await c.update_message("C1", "ts1", text="x")
-        await c.delete_message("C1", "ts1")
-        assert c._web.chat_update.await_args.kwargs["team_id"] == "TWORK"
-        assert c._web.chat_delete.await_args.kwargs["team_id"] == "TWORK"
+    async def test_update_delete_inject_cached_team(self, wire_session: pytest.MonkeyPatch) -> None:
+        async with slack_wire(wire_session) as wire:
+            wire.client.record_channel_team("C1", "TWORK")
+            await wire.client.update_message("C1", "ts1", text="x")
+            await wire.client.delete_message("C1", "ts1")
+        assert [(c.method, c.get("channel"), c.get("ts"), c.get("team_id")) for c in wire.calls] == [
+            ("chat.update", "C1", "ts1", "TWORK"),
+            ("chat.delete", "C1", "ts1", "TWORK"),
+        ]
 
     @pytest.mark.asyncio
     async def test_reactions_inject_cached_team(self) -> None:
@@ -300,12 +308,12 @@ class TestTeamIdInjection:
         assert c._web.reactions_remove.await_args.kwargs["team_id"] == "TWORK"
 
     @pytest.mark.asyncio
-    async def test_post_ephemeral_injects_cached_team(self) -> None:
-        c = self._client()
-        c._web.chat_postEphemeral = AsyncMock()
-        c.record_channel_team("C1", "TWORK")
-        await c.post_ephemeral("C1", "U1", "hi")
-        assert c._web.chat_postEphemeral.await_args.kwargs["team_id"] == "TWORK"
+    async def test_post_ephemeral_injects_cached_team(self, wire_session: pytest.MonkeyPatch) -> None:
+        async with slack_wire(wire_session) as wire:
+            wire.client.record_channel_team("C1", "TWORK")
+            await wire.client.post_ephemeral("C1", "U1", "hi")
+        [post] = wire.sent("chat.postEphemeral")
+        assert (post.get("channel"), post.get("user"), post.get("team_id")) == ("C1", "U1", "TWORK")
 
     @pytest.mark.asyncio
     async def test_is_dm_injects_cached_team_on_conversations_info(self) -> None:
