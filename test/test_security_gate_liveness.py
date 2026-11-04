@@ -19,12 +19,15 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from kiro_crew import security
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
     is_sensitive_bash_command,
 )
+from kiro_crew.security import shell_normalizer_walk as walk
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shapes
@@ -674,7 +677,11 @@ def _url_payload_command(n: int) -> str:
 #: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
 #: the hash in its query renders. Data and one narrowing helper in their own owner
 #: module beside ``exfil.py``, with its header; no pattern moved.
-_PACKAGE_LINE_BUDGET = 34_352
+#: Raised by 16, from 34,352 for ``shell_normalizer_walk``: each backtick body is
+#: un-escaped one level as bash reads it, so nested levels are judged on what runs;
+#: an escaped or single-quoted opener keeps its body as written. One pattern, a
+#: quote-state check, their call and comment. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 34_368
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -821,3 +828,32 @@ def test_url_payload_12kb_is_fast() -> None:
     assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
     assert is_sensitive_bash_command(cmd) is None
     assert _gate_seconds(cmd) < 2.0
+
+
+def _quote_steps(command: str, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Steps of the shell quote state machine one ``is_denied`` call takes."""
+    real, steps = walk._iter_shell_chars, [0]
+
+    def counting(*args, **kwargs):
+        for step in real(*args, **kwargs):
+            steps[0] += 1
+            yield step
+
+    monkeypatch.setattr(walk, "_iter_shell_chars", counting)
+    assert security.is_denied(command) is None, command[:80]
+    return steps[0]
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git commit -m '" + " ".join(f"use `x{k}` here" for k in range(800)) + "'",
+        "echo " + "`:`" * 1500 + " kirocrew status",
+    ],
+    ids=["backtick-dense-12kb", "1500-substitutions"],
+)
+def test_backtick_quote_state_is_read_in_one_pass(cmd, monkeypatch) -> None:
+    """Measured at about 15 steps a character; rescanning each backtick's prefix took
+    thousands (and 22 s on the 12 KB message)."""
+    assert len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
+    assert _quote_steps(cmd, monkeypatch) <= 50 * len(cmd)

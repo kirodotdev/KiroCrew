@@ -246,9 +246,9 @@ def _substitution_bodies(text: str) -> "list[str]":
     """The body of each command substitution in *text*.
 
     ``$(...)`` is scanned with paren nesting so a nested substitution closing
-    first does not truncate the outer body; backticks are taken pairwise.  Only
-    the BODY is returned -- a bare ``kill`` must not be attributed a name that
-    merely appears in a LATER, unrelated command of the same line.
+    first does not truncate the outer body; backticks are taken pairwise, each body un-escaped
+    one level as bash reads it.  Only the BODY is returned -- a bare ``kill`` must not be
+    attributed a name that merely appears in a LATER, unrelated command of the same line.
 
     The nesting walk is QUOTE-AWARE, through the same
     :func:`_matching_close_paren` span the git-publish boundary walk uses. A
@@ -270,6 +270,7 @@ def _substitution_bodies(text: str) -> "list[str]":
     cannot disagree.
     """
     bodies: list[str] = []
+    live = _live_backticks(text) if "`" in text else frozenset()
     i = 0
     while i < len(text):
         # PROCESS substitutions run their body as a command just as a command
@@ -282,11 +283,26 @@ def _substitution_bodies(text: str) -> "list[str]":
             continue
         if text[i] == "`":
             end, proven = _matching_close_backtick(text, i + 1)
-            bodies.append(text[i + 1 : end - 1] if proven else text[i + 1 :])
+            raw = text[i + 1 : end - 1] if proven else text[i + 1 :]
+            # Bash drops ONE ``\`` before each ``\``, `` ` `` and ``$`` of a backtick
+            # body; each nesting level spends one pass, so each depth is judged on
+            # what runs there. An escaped or single-quoted opener runs nothing at
+            # this level, so its body is kept as written.
+            if i in live:
+                raw = _BACKTICK_BODY_ESCAPE_RE.sub(r"\1", raw)
+            bodies.append(raw)
             i = end
         else:
             i += 1
     return bodies
+
+
+_BACKTICK_BODY_ESCAPE_RE = re.compile(r"\\([\\`$])")
+
+
+def _live_backticks(text: str) -> "frozenset[int]":
+    """Offsets of backticks in *text* neither escaped nor single-quoted, in ONE pass."""
+    return frozenset(s.offset for s in _iter_shell_chars(text) if s.text == "`" and s.state != 1)
 
 
 # A shell removes ``backslash + newline`` while lexing (line continuation), so
