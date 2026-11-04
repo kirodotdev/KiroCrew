@@ -19,6 +19,7 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [ci/](ci/README.md) | Everything that gates a pull request. |
 | [app-kit/](app-kit/README.md) | Building apps that run inside Kiro Crew (third-party developer docs). |
 | [system-specs/](system-specs/README.md) | Change-control contracts. The doc a code change MUST update in the same commit. |
+| [agents/](agents/README.md) | Repository-facing guidance for coding agents and Archon's issue-label map. |
 | [request-for-change/](request-for-change/README.md) | Proposals and decision records for large or contested changes, plus the dated implementation plans that execute them under [plans/](request-for-change/plans/README.md). |
 | [decisions/](decisions/README.md) | The append-only record of product and design decisions a person on the team made. One immutable file per decision; grep it before changing a user-facing label, placement or behaviour. |
 | [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
