@@ -457,6 +457,11 @@ def _resolve_prompt_templates(
         available = _live_browser_gate() if browser is None else browser
         prompt = _sections.browser_section(prompt, available)
 
+    # The per-agent choice is made in ``_resolve_agent_prompt``, which knows the
+    # agent. A caller that reaches here without it keeps the section.
+    if _sections.SUBAGENTS_BEGIN in prompt or _sections.SUBAGENTS_END in prompt:
+        prompt = _sections.subagent_section(prompt, conductor=False)
+
     cfg = ctx.KiroCrewConfig.load()
 
     # A copied agent spec may still carry the retired
@@ -641,6 +646,15 @@ def _resolve_agent_prompt(
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
     agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
+    # A crewmate's conductor dispatches to worker sessions and mounts no spawn
+    # tools, so it gets its own delegation rule where the sub-agent span was.
+    # Resolved before the capacity token below, which sits inside that span.
+    if _sections.SUBAGENTS_BEGIN in agent_prompt or _sections.SUBAGENTS_END in agent_prompt:
+        from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+        agent_prompt = _sections.subagent_section(
+            agent_prompt, conductor=agent == MATE_CONDUCTOR_AGENT
+        )
     # A built-in spec whose own prompt asks for widgets gets the widget pointer
     # here rather than as a token in its spec: kiro-cli loads that spec prompt
     # natively and a crewmate's essentials deliver it verbatim, and neither path

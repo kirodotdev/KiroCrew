@@ -631,3 +631,46 @@ def browser_section(prompt: str, available: bool) -> str:
         return section if available else _BROWSER_UNAVAILABLE
 
     return _BROWSER_SPAN.sub(_resolve, prompt)
+
+
+# The marked sub-agent span: the ``spawn_*`` capability lines and the Subagent
+# Orchestration rules, whose default is "do the task yourself, spawn only when".
+# A crewmate's conductor has none of those tools (``MATE_CONDUCTOR_EXCLUDED_TOOLS``)
+# and its own instructions say the opposite: dispatch longer work to a worker
+# session. Left in, the two defaults disagree on every conductor turn.
+SUBAGENTS_BEGIN = "{{SUBAGENTS_BEGIN}}"
+SUBAGENTS_END = "{{SUBAGENTS_END}}"
+_SUBAGENTS_SPAN = re.compile(
+    r"\{\{SUBAGENTS_BEGIN\}\}\r?\n?(?P<section>.*?)\r?\n?\{\{SUBAGENTS_END\}\}"
+    r"|\{\{SUBAGENTS_(?:BEGIN|END)\}\}",
+    re.DOTALL,
+)
+
+# What the conductor gets in the span's place. It names the tools it lacks so a
+# leftover mention elsewhere does not read as an invitation, and points at the
+# crewmate blocks that carry its real delegation rule.
+_CONDUCTOR_DELEGATION = (
+    "\n### Delegation\n"
+    "\n"
+    "You have no `spawn_run`, `task_run` or `workflow_run`: they are not in your tool\n"
+    "list, and a spawn from this session is refused. Your hand-off is a worker session,\n"
+    "as [HOW YOU WORK] and [CREW MEMBER OPERATING MODE] describe: a quick read or a\n"
+    "small edit you may do here, and longer work goes to a worker.\n"
+)
+
+
+def subagent_section(prompt: str, *, conductor: bool) -> str:
+    """*prompt* with its marked sub-agent span resolved for one agent.
+
+    Every agent but a crewmate's conductor keeps the span word for word and loses
+    only the markers. The conductor gets :data:`_CONDUCTOR_DELEGATION` instead. An
+    unpaired marker is dropped and the text around it kept, as for the Browser span.
+    """
+
+    def _resolve(match: re.Match[str]) -> str:
+        section = match.group("section")
+        if section is None:
+            return ""
+        return _CONDUCTOR_DELEGATION if conductor else section
+
+    return _SUBAGENTS_SPAN.sub(_resolve, prompt)
