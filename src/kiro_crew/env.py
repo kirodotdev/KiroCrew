@@ -1437,24 +1437,12 @@ def denied_spec_env_keys(env: "Mapping[str, object]") -> list[str]:
 def spec_path_key(env: "Mapping[str, object]") -> str | None:
     """The key under which *env* declares a PATH, or ``None``.
 
-    Windows environment variables are case-insensitive, so a spec written on a
-    Windows host legitimately says ``"Path"`` (the spelling ``os.environ`` and
-    the Windows shells themselves use) and the child's loader treats it as
-    PATH. An exact ``"PATH"`` lookup therefore misses it: the fragment would be
-    emitted verbatim and REPLACE the child's inherited PATH — the exact
-    "declared a fragment, lost everything else" failure this module exists to
-    prevent, just spelled differently.
-
-    Matched case-insensitively on every platform rather than only on Windows: a
-    config file is portable, and one authored on Windows must not behave
-    differently after being copied to a POSIX host. The key the caller wrote is
-    returned so a reader can fetch the value; :func:`emit_env` then writes the
-    expanded result under the canonical ``PATH``, because that is the only
-    spelling a POSIX child honours and the probe applies it under that name.
-
-    A spec carrying BOTH spellings is ambiguous — the OS would pick one and this
-    code cannot know which — so the exact ``PATH`` wins, which is what a POSIX
-    child would do.
+    A spec written on Windows legitimately says ``"Path"``; an exact lookup
+    would miss it and the fragment would REPLACE the child's inherited PATH.
+    Matched case-insensitively on every platform, since a config authored on
+    Windows may be copied to a POSIX host. The caller's key is returned to read
+    the value; :func:`emit_env` writes the result under canonical ``PATH``.
+    With BOTH spellings present, exact ``PATH`` wins, as a POSIX child would.
     """
     if "PATH" in env:
         return "PATH"
@@ -1467,38 +1455,22 @@ def spec_path_key(env: "Mapping[str, object]") -> str | None:
 def emit_env(env: dict) -> dict:
     """Normalize an MCP spec's ``env`` for emission into a consumed config file.
 
-    The single normalization point for every surface some OTHER process
-    launches MCP servers from: the agent config (kiro-cli sessions), the
-    kiro-global ``mcp.json`` (ACP runtime), and the Claude Code ``~/.mcp.json``
-    sidecar. Each of those spawners applies a declared ``env`` per key, so a
-    declared ``PATH`` replaces the child's inherited one — the same premise
-    :func:`spec_env_path` documents. Routing every writer through one function
-    is what keeps the surfaces from diverging: a writer that forgets to expand
-    is a server that starts under the probe and dies in a session.
+    The one normalization point for every surface another process launches MCP
+    servers from: the agent config (kiro-cli), the kiro-global ``mcp.json``
+    (ACP runtime) and the Claude Code ``~/.mcp.json`` sidecar. Each applies a
+    declared ``env`` per key (see :func:`spec_env_path`), so a writer that skips
+    expansion starts a server that works under the probe and dies in a session.
 
-    Returns a NEW dict; the caller's env (typically a source config's own
-    object reached through a shallow copy) is never mutated through. The
-    ``PATH`` branches, exhaustively: a STRING — empty included — is expanded
-    via :func:`spec_env_path`, because that is exactly what the probe and the
-    command resolver do with it (``spec_env_path("")`` yields the augmented
-    inherited PATH), and emitting the raw empty string instead hands the
-    session a child with NO path at all while the probe shows green — the
-    divergence this function exists to close. A NON-string passes through
-    verbatim: rewriting a malformed value would hide the config error behind
-    a working-looking PATH, and the consumer's own rejection is the honest
-    surface for it. Every other key passes through untouched.
+    Returns a NEW dict; the caller's env is never mutated. A STRING ``PATH``,
+    empty included, is expanded via :func:`spec_env_path` as the probe does (raw
+    ``""`` would give the child NO path). A NON-string passes through verbatim
+    so the consumer's own rejection surfaces the config error. Other keys pass
+    through untouched.
 
-    The PATH key is found case-insensitively (see :func:`spec_path_key`) and the
-    expanded value is emitted under the CANONICAL ``PATH``, with any
-    alternate-case spelling dropped. Canonicalizing rather than preserving the
-    author's spelling is what keeps the probe and the session in agreement: the
-    probe applies a declared search path as ``PATH`` (the only spelling a POSIX
-    child honours), so emitting ``Path`` would hand the session a junk variable
-    while the probe pinned the real one — the divergence this whole path
-    exists to close, reintroduced by spelling. On Windows the two names are the
-    same variable, so nothing changes there; on POSIX the child gains the pin
-    ON TOP of its inherited PATH (``spec_env_path`` always appends the
-    augmented inherited value), so nothing is lost either.
+    The key is found case-insensitively (:func:`spec_path_key`) and emitted as
+    canonical ``PATH``, alternate spellings dropped: the probe applies it as
+    ``PATH``, the only spelling a POSIX child honours. Nothing is lost on POSIX,
+    since the expansion appends the inherited PATH.
     """
     key = spec_path_key(env)
     if key is None:
@@ -1583,27 +1555,17 @@ def _mise_bin() -> str | None:
 def activate_mise(env: MutableMapping[str, str] | None = None) -> list[str]:
     """Merge mise's resolved environment into *env* (defaults to ``os.environ``).
 
-    Run once at gateway start so every subprocess the gateway later spawns —
-    MCP servers, script crons, kiro-cli — inherits the user's mise-managed
-    toolchain (Node, Python, kubectl, …) exactly as an interactive shell
-    would.  This prevents the most common MCP failure mode: a Node-based MCP
-    server spawned against the system ``/usr/bin/node`` (v18 on AL2) instead of
-    the user's mise ``node@20+``, which exits during ``initialize`` with a
-    stderr-only "Node version 18 detected, but version 20 or higher is
-    required" error and surfaces only as "MCP server disconnected during
-    'initialize' call".
+    Run once at gateway start so every spawned subprocess (MCP servers, script
+    crons, kiro-cli) inherits the user's mise toolchain as a shell would. Without
+    it a Node MCP server runs on system ``/usr/bin/node`` (v18 on AL2), fails
+    "version 20 or higher is required" on stderr, and shows only as "MCP server
+    disconnected during 'initialize' call".
 
-    Best-effort and non-fatal: a no-op (returns ``[]``) when mise is not
-    installed, when disabled via ``KIROCREW_NO_MISE``, or when invoking /
-    parsing mise fails — the gateway always starts regardless.  Returns the
-    sorted list of env var names that were added or changed, for logging.
-
-    ``mise env --json`` returns only the variables mise manages (PATH plus any
-    ``[env]`` / tool-provided vars), not the whole environment, so the merge is
-    bounded.  We pass the current env in and resolve from ``$HOME`` so the
-    user's *global* mise config is used (not whatever ``.mise.toml`` happens to
-    sit in the daemon's cwd), and ``--json`` avoids fragile ``export NAME=VALUE``
-    shell-quoting parsing.
+    Best-effort: returns ``[]`` when mise is absent, ``KIROCREW_NO_MISE`` is set,
+    or invoking/parsing fails; the gateway always starts. Returns the sorted
+    names of vars added or changed, for logging. ``mise env --json`` emits only
+    mise-managed vars, so the merge is bounded; it runs from ``$HOME`` so the
+    user's GLOBAL config applies, not a ``.mise.toml`` in the daemon's cwd.
     """
     target = os.environ if env is None else env
     if target.get("KIROCREW_NO_MISE"):
