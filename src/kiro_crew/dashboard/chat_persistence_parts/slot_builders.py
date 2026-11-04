@@ -324,38 +324,18 @@ def _load_rehydrated_window(
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
         content = m.get("content", "")
-        # Neither content nor meta is redacted here. Redaction happens where the
-        # data is EMITTED (chat_utils._prepare_messages for the slot detail
-        # endpoint, _ChatSlot.to_dict for the sidebar payload,
-        # _build_history_prefix for the ACP prompt) — every path a client or model
-        # can observe.
+        # ``meta`` is redacted where it is EMITTED (chat_utils._prepare_messages,
+        # _ChatSlot.to_dict, _build_history_prefix): it holds ~79% of the load
+        # cost (``meta.tool_input``) and its few other readers read only control
+        # fields (``done``, ``tool_call_id``).
         #
-        # CONTENT, however, is redacted right here, on load. That split is
-        # deliberate and measured, and it is the crux of this change:
-        #
-        #   field    | read sites | share of the ~7s load cost
-        #   ---------|------------|---------------------------
-        #   content  |    ~204    | ~0.4s  (6%)
-        #   meta     |     31     | ~5.5s  (79%)
-        #
-        # `meta.tool_input` carries the large tool payloads, so meta is where the
-        # boot cost actually lives — and its 31 readers are tractable: outside the
-        # emit sites (which redact and are covered by
-        # test_display_time_redaction.py) every one reads only CONTROL fields
-        # (`done`, `tool_call_id`), never payload text. Deferring meta to display
-        # time is therefore both where the win is and safely enumerable.
-        #
-        # `content` is the opposite on both axes: it is cheap (0.4s) and it has
-        # ~204 readers across the dashboard, so "every reader must remember to
-        # redact" is not an invariant anyone can hold. Three separate egress paths
-        # (the side-chat prompt, the orchestrator stage-result file, and the
-        # title-model prompt) can each leak restored content if a reader forgets.
-        # Paying 0.4s here restores the single chokepoint — any present or FUTURE
-        # reader of `m["content"]` gets clean bytes — instead of relying on an
-        # enumeration of every reader.
-        # `role != "user"`, never `not in ("user", "system")`: user-authored text
-        # stays raw because its author is its only reader, but `system` MUST be
-        # redacted — the write path excludes it, so system bytes reach disk raw.
+        # ``content`` is redacted right here, on load: it is cheap and has ~200
+        # readers, three of them egress paths (side-chat prompt, orchestrator
+        # stage-result file, title-model prompt), so one chokepoint is the only
+        # invariant that holds for future readers too.
+        # ``role != "user"``, never ``not in ("user", "system")``: user text stays
+        # raw for its only reader, but ``system`` reaches disk raw and MUST be
+        # redacted.
         if role != "user":
             content = redact_display_content(content)
         slot.append(
@@ -542,33 +522,16 @@ def _rehydrate_slot_from_history(
         else:
             messages = state.conversation_log.read_messages_chained(history_key)
         if applied.minted_tab_id is not None:
-            # Persist the freshly-minted tab_id AFTER reading the transcript above,
-            # never before. update_metadata_off_loop dispatches an os.replace() of
-            # THIS session file to a worker thread; scheduling it before the read
-            # let that replace race the loop-thread transcript read of the very
-            # same file. On Windows a concurrent replace makes the reader's open()
-            # fail with a sharing violation (PermissionError, an OSError subclass),
-            # and the on-loop read retry cannot pause (a loop sleep would starve the
-            # LoopStallWatchdog heartbeat), so the immediate retries expire while the
-            # replace is still in flight, _read_messages re-raises, and the
-            # except-BaseException arm below rolls the whole tab back — the
-            # intermittent `restored == N-1` open-tabs drop on restart
-            # (test_restore_open_slots_async_yields_between_tabs, Windows shard).
-            # Reading first removes the self-inflicted race: the file is quiescent
-            # for the read, and the backfill lands once nothing is reading it. The
-            # id is freshly minted with no on-disk siblings, so read_messages_chained
-            # returns the identical window whether it is written before or after.
-            # Kept off the loop because update_metadata enters _locked (flock +
-            # os.close), a blocking-on-loop-prohibited op.
+            # Persist the freshly-minted tab_id AFTER the transcript read, never
+            # before: on Windows the backfill's os.replace makes a concurrent open()
+            # of the same file fail (PermissionError), the on-loop read cannot wait
+            # it out, and the tab is rolled back. The new id has no on-disk
+            # siblings, so the read returns the same window either way. Off the
+            # loop because update_metadata takes a flock.
             #
-            # Reading first makes THIS slot's own read quiescent, but firing the
-            # backfill off the loop here still leaves its os.replace in flight
-            # when the restore driver returns. A caller that reads this transcript
-            # on the loop right after restore (a sidebar read, a resume) can then
-            # land inside the replace window — the same Windows sharing violation.
-            # When the driver supplies a drain list we hand the backfill to it so
-            # the replace is committed before the driver returns; otherwise it
-            # fires off the loop. Mirrors _apply_recent_session's pending_backfills.
+            # With a driver drain list the backfill is committed before the driver
+            # returns, so a caller's read right after restore cannot hit the
+            # replace window; otherwise it fires off the loop.
             if pending_backfills is not None:
                 pending_backfills.append((history_key, {"tab_id": applied.minted_tab_id}))
             else:
@@ -594,18 +557,10 @@ def _rehydrate_slot_from_history(
         logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
         return slot
     except BaseException:
-        # Undo what THIS call added.
-        #
-        # Owned here rather than in each caller: get_or_create_slot runs before
-        # the fallible work (the transcript read, redaction, slot.append), so a
-        # failure leaves an empty slot registered in state._slots. A caller that
-        # forgets to compensate leaves restore_recent_sessions to hit its
-        # `if slot_name in state._slots: continue` dedup guard and skip the
-        # proper restore -- the user then sees a tab with the right title and
-        # agent but empty or wrong history.
-        #
-        # Unconditional pop: the function returns early when the slot already
-        # exists, so reaching here means this call created it.
+        # Undo what THIS call added: get_or_create_slot ran before the fallible
+        # work, and an empty slot left in state._slots would make
+        # restore_recent_sessions' dedup guard skip the real restore. The pop is
+        # unconditional because an existing slot returns early above.
         state._slots.pop(slot_name, None)
         if not preexisting_restricted:
             # Otherwise a later get_or_create_slot (default memory_mode
@@ -811,36 +766,22 @@ async def _rehydrate_slot_from_history_noted(
     if messages is None:
         return None
     meta = _meta
-    # Read the spool HERE, in the awaiting phase, not after the build. The two
-    # race re-checks below are placed synchronously and immediately before the
-    # build precisely so no await can reopen the windows they close, and an await
-    # AFTER the build reopens the deletion one a step later: the slot is published
-    # by then, so a deletion landing during that await leaves the caller holding a
-    # slot for a session that has been deleted, and the delete-won save discards
-    # what it accepts. The remedy is the split this module uses everywhere else --
-    # filesystem work in the prefetch phase, the apply synchronous.
+    # Read the spool HERE, before the build: an await after it would let a
+    # deletion land while the published slot is held. Filesystem work stays in
+    # the prefetch phase, the apply stays synchronous.
     #
-    # The key has to be derived rather than asked of a slot, because there is no
-    # slot yet: ``session_key_for`` is the same rule ``effective_session_key``
-    # applies, and the builder below sets ``linked_session_key`` from this very
-    # metadata field, so the two answer alike. ``history_key`` is NOT the fallback
-    # -- it resolves the transcript FILE and its own docstring says the session key
-    # cannot be recovered that way, so a channel-born slot would be addressed as a
+    # The key is derived with ``session_key_for`` (no slot exists yet), the rule
+    # ``effective_session_key`` applies. Not ``history_key``: that names the
+    # transcript FILE, and a channel-born slot would be addressed as a
     # ``dashboard:`` session that does not exist.
     _claims = await asyncio.to_thread(
         _read_mcp_app_claims,
         session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
     )
-    # Tab-close race. The user can click ✕ while the read above is in flight.
-    # The close pops the slot and records a tombstone synchronously on the loop,
-    # but persists the ``closed`` flag only after its own awaits — so the
-    # metadata just read still says open, and rebuilding from it would re-create
-    # a tab the user dismissed and then fire a nudge turn into it. The tombstone
-    # is the authoritative signal in that window; the surface reconciler
-    # consults it after its own awaits for the same reason.
-    # Skipped for ``adopt_closed`` callers: those are app-owned worker slots
-    # whose lifecycle belongs to the app rather than the user, and they have
-    # already opted into restoring a session carrying the closed flag.
+    # Tab-close race: the close records its tombstone at once but persists
+    # ``closed`` after its own awaits, so this metadata may still say open and a
+    # rebuild would resurrect the tab and nudge into it. ``adopt_closed`` callers
+    # (app-owned worker slots) opted into restoring a closed session.
     if not adopt_closed and slot_closed_since(state, slot_name, started):
         logger.info(
             "Rehydration abandoned: session %s was closed while its transcript loaded",
