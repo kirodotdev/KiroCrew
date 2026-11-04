@@ -469,13 +469,15 @@ class SessionCatalogProjection:
     def warm_search(self) -> None:
         """Do the query-independent part of a first search ahead of it.
 
-        Reads every window session's metadata into the log's cache and opens
-        the index with one shortlist read, which together are most of what a
-        first query costs beyond any later new query. Blocking; run off the loop.
+        Takes the window from the log's listing index, building the index when no
+        build ran yet. The build fills the log's per-file metadata caches as a
+        scan does, and a built index answers with no transcript read. Then opens
+        the search index with one shortlist read. Together these are most of what
+        a first query costs beyond any later new query. Blocking; run off the loop.
         """
         if not self._log._dir.exists():
             return
-        window = self._log.list_sessions()[: _facade_search_scan_window()]
+        window = self._log.list_sessions_indexed()[: _facade_search_scan_window()]
         self._index_shortlist(window, [])
 
     def _search_sessions(
