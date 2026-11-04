@@ -253,6 +253,7 @@ from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP  
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP  # noqa: F401
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text  # noqa: F401
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable  # noqa: F401
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks  # noqa: F401
 from kiro_crew.acp.runtime_models import (  # noqa: F401
     DEFAULT_MODEL,
@@ -593,6 +594,7 @@ def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> di
     if kiro_api_key:
         inject_kiro_cli_api_key(env)
         apply_child_env_defaults(env)
+        apply_node_compile_cache(env)
     else:
         strip_kiro_cli_api_key(env)
     return env
