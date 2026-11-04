@@ -6640,6 +6640,7 @@
       "project_switch_applies_next_turn": "तुम्हारा अगला मैसेज तुम्हारे चुने हुए प्रोजेक्ट में चलेगा। यह जवाब {{project}} में पूरा होगा।",
       "project_switch_links_follow_pick": "इस जवाब के लिंक तुम्हारे चुने हुए प्रोजेक्ट में खुलेंगे।",
       "project_locked_while_subagents_run": "सब-एजेंट चलते समय प्रोजेक्ट नहीं बदला जा सकता।",
+      "switching_project": "प्रोजेक्ट बदला जा रहा है…",
       "steer_act_on_this_right_away_desc": "इस पर तुरंत काम करें",
       "steer_act_on_this_as_soon_as_possible_enter": "स्टीयर करें — इस पर जल्द से जल्द काम करें (Enter)",
       "stop_generation": "जेनरेशन रोकें",
