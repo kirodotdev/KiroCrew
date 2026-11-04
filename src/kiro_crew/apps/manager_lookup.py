@@ -328,8 +328,8 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
     :func:`owning_app_for_agent`; call it off the event loop.
     """
     owner = owning_app_for_agent(agent)
-    subject = f'Crew member "{member}"' if member else f'The agent "{agent}"'
-    target = "this crew member" if member else "it"
+    subject = f'Bot "{member}"' if member else f'The agent "{agent}"'
+    target = "this Bot" if member else "it"
     if owner is None:
         if member:
             return (

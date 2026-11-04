@@ -57,7 +57,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str e43c6788708a4969",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str 57da599d7183054c",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",

@@ -397,14 +397,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "would repeat a refusal the user already meets where it applies"
     ),
     "ACP_BACKENDS_MATE_WORKER_KIT": (
-        "whether a crewmate's worker may run here with its kit. A worker always runs "
-        "on its crewmate's backend, so the choice it depends on is the member "
+        "whether a Bot's worker may run here with its kit. A worker always runs "
+        "on its Bot's backend, so the choice it depends on is the member "
         "backend, and a non-member refuses the hand-off with an error that names "
         "the backends that can carry it. Nothing runs without its kit, so a card "
         "line would describe a refusal the user meets with its own remedy"
     ),
     "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT": (
-        "which channel carries a crewmate worker's prompt: the context block or the "
+        "which channel carries a Bot worker's prompt: the context block or the "
         "wire spec. The worker gets the same prompt either way, so there is nothing "
         "for a user choosing a harness to weigh"
     ),
@@ -512,9 +512,9 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "says whether the spec loads at all"
     ),
     "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": (
-        "whether a crewmate worker's single-tool switch-offs are honoured. A worker "
+        "whether a Bot worker's single-tool switch-offs are honoured. A worker "
         "with such limits on a non-member is refused before spawn with an error naming "
-        "the fix, so it never runs wider than its crewmate saved; a worker without "
+        "the fix, so it never runs wider than its Bot saved; a worker without "
         "them runs, and the card's saved-agent line already says whether it loads"
     ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (

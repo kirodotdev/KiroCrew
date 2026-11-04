@@ -184,7 +184,7 @@ class TestShippedScenarios:
         checked = 0
         for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
             sc = scenarios.load_scenario(path)
-            if not sc.members or not any("Open the Mates page" in step for step in sc.steps):
+            if not sc.members or not any("Open the Bots page" in step for step in sc.steps):
                 continue
             labels = list(sc.members) + [
                 " ".join(part.capitalize() for part in m.split("-")) for m in sc.members
@@ -195,7 +195,7 @@ class TestShippedScenarios:
                     for i, step in enumerate(sc.steps)
                     if any(label in step for label in labels)
                     and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
-                    and "Search mates" not in step
+                    and "Search Bots" not in step
                 ),
                 None,
             )
@@ -203,7 +203,7 @@ class TestShippedScenarios:
                 continue
             checked += 1
             searched = any(
-                "Search mates" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                "Search Bots" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
                 for step in sc.steps[:click_at]
             )
             assert (
@@ -412,7 +412,7 @@ class TestShippedScenarios:
         assert (
             "Crew Members and Crew Mode" in preview_step
         )  # the older titles are still valid readings on older builds
-        assert any('"Mates" item is in the left rail' in s for s in sc.steps)
+        assert any('"Bots" item is in the left rail' in s for s in sc.steps)
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
@@ -446,7 +446,7 @@ class TestShippedScenarios:
             assert not any("item appears in the left rail" in s for s in sc.steps), path.name
             rail_steps = [s for s in sc.steps if "item is in the left rail" in s]
             for step in rail_steps:
-                assert '"Mates" item is in the left rail' in step, (path.name, step)
+                assert '"Bots" item is in the left rail' in step, (path.name, step)
         assert checked >= 5
 
     def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:

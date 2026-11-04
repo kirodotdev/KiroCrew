@@ -120,9 +120,7 @@ def _dispatcher_of(row: Mapping[str, Any]) -> str:
 
 
 def _not_root() -> web.Response:
-    return _bad(
-        "not_crew_mode_root", "this session is not a Crew Mode root or a crewmate", status=404
-    )
+    return _bad("not_crew_mode_root", "this session is not a Crew Mode root or a Bot", status=404)
 
 
 def _status(row: Mapping[str, Any]) -> str:

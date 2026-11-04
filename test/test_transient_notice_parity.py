@@ -195,7 +195,7 @@ def test_token_tables_have_the_pinned_size() -> None:
     # 3 transient-5xx tokens and 61 gateway tokens; a new row family moves both.
     assert len(_backend_tokens()) == 64
     assert len(_frontend_families()) == 64
-    assert len(_legacy_entries()) == 66
+    assert len(_legacy_entries()) == 67
 
 
 def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:

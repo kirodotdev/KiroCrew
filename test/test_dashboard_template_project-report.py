@@ -449,7 +449,7 @@ class TestTheNeedsYouCardNamesItsAction:
         it marks the row and has no say in which group the row lands in or whether the
         headline counts it.
         """
-        assert "'mate wrote this'" in script, (
+        assert "'Bot wrote this'" in script, (
             "the crewmate's rows are no longer attributed, so a reader cannot tell "
             "which items came from the crewmate rather than the task record"
         )

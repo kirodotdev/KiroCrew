@@ -535,7 +535,7 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
         _resolved_agent, member_name = split_cron_agent_member(agent_id, "")
         if member_name:
             raise ValueError(
-                "re-pointing an existing schedule to a crew member isn't "
+                "re-pointing an existing schedule to a Bot isn't "
                 f"supported; create a new schedule to run as {agent_id}"
             )
     if agent_id:

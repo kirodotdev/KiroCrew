@@ -218,20 +218,20 @@ per-harness capability matrix.
 Set a registered value with, for example,
 `kirocrew config set agent.acp_backend kiro`. `agent.member_acp_backend`, the
 harness for crew-member DM sessions, reads the same values, except that `kiro`
-there selects KAS: crewmates run on KAS as their Kiro backend, because their
+there selects KAS: Bots run on KAS as their Kiro backend, because their
 work-dispatch tools need a backend that takes them per session.
 
-One crewmate can run on its own harness: `agents.<name>.acp_backend` takes the
+One Bot can run on its own harness: `agents.<name>.acp_backend` takes the
 same values as `agent.acp_backend` (`kiro` here means kiro-cli, and runs through
 KAS once Kiro Crew confirms your kiro-cli offers v3, as it does there) and applies to
-that crewmate's chat and the worker sessions it opens. Empty inherits
+that Bot's chat and the worker sessions it opens. Empty inherits
 `agent.member_acp_backend`. A harness this gateway cannot start refuses the
-crewmate's session with `crewmate_harness_unavailable` rather than running it on
-another harness, and the crewmate's `model` and `worker_model` are judged against
+Bot's session with `crewmate_harness_unavailable` rather than running it on
+another harness, and the Bot's `model` and `worker_model` are judged against
 the pinned harness when they change or the harness does, so an edit to another
 field still saves while the pinned harness cannot start. The dashboard shows the
-setting as **Agent harness** on a crewmate's profile Settings page once Settings >
-Developer > Feature Previews > Agent harness per mate is on; a saved pin applies
+setting as **Agent harness** on a Bot's profile Settings page once Settings >
+Developer > Feature Previews > Agent harness per Bot is on; a saved pin applies
 whether or not that preview is on.
 
 ## Key Settings
@@ -394,7 +394,7 @@ whether or not that preview is on.
 | `dashboard.feature_videos_enabled` | Download and play short intro clips for features this install has not used yet, in the video card at the top of the Explore panel. Off, nothing is downloaded and the card shows no clip. See [Feature Videos](feature-videos.md) | `false` |
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
-| `dashboard.crewmates_in_agent_picker` | List mates in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
+| `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
 | `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crewmate_harness`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 

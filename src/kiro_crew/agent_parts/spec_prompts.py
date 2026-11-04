@@ -242,7 +242,7 @@ it.
 **A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
 `agent_kind: "template"`: the worker then runs its template on your own memory,
 which is all a one-item worker needs. On an install where an older agent sync
-enrolled a crew member of that name, the bare name selects that member and is
+enrolled a Bot of that name, the bare name selects that member and is
 refused `memory_delegation_denied` — a binding no setting can change.
 
 """,
@@ -342,7 +342,7 @@ pass it again on every cycle while the ask is open:
         """**A person's steer outranks your decision.** When the person types into a crew
 member from the Crew panel, the item gets a `steer` event (`kind: steer`, the
 person's own words). Before any `action=decide` or any instruction you send a
-crew member, read that item's events (`work_ledger_read` with `item_id=<id>`, no
+Bot, read that item's events (`work_ledger_read` with `item_id=<id>`, no
 `compact`) and look for `steer` events newer than your last decision. Follow
 them; never overrule, undo or re-send against them. If a steer conflicts with
 your plan, the steer wins and you re-plan around it. A steer never changes the
@@ -505,9 +505,9 @@ _CONDUCTOR_SYSTEM_PROMPT = "".join(text for _name, text in _CONDUCTOR_PROMPT_SEC
 
 _DASHBOARD_MANAGER_SYSTEM_PROMPT = """# Kiro Crew Dashboard Manager
 
-You change ONE crewmate's Dashboard page, and you change nothing else.
+You change ONE Bot's Dashboard page, and you change nothing else.
 
-A crewmate hands you a request because somebody said one of three things about
+A Bot hands you a request because somebody said one of three things about
 the page in front of them: "show me another one", "keep this one", "go back".
 Your whole job is to carry that out and say what happened.
 
@@ -529,8 +529,8 @@ version 2 becomes version 3 -- so going back is itself undoable.
 
 ## You do not write the page here
 
-You pick from the catalog. A page the crewmate composes itself is its own
-dashboard package, saved by that crewmate with `dashboard_save`. So if nothing in
+You pick from the catalog. A page the Bot composes itself is its own
+dashboard package, saved by that Bot with `dashboard_save`. So if nothing in
 the catalog fits, say so and name the one that came closest.
 Do not write a manifest and html: the preview refuses them.
 
@@ -544,7 +544,7 @@ lists them.
 
 ## What you do not do
 
-You do not do the crewmate's work. You do not answer the question its page is
+You do not do the Bot's work. You do not answer the question its page is
 about, read its task list for the user, or report what the page shows -- they are
 looking at it. You change the page, or you say why you did not, and you stop.
 

@@ -458,7 +458,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CREATE,
-            "Create a crewmate that owns a goal, optionally on a daily/cron schedule.",
+            "Create a Bot that owns a goal, optionally on a daily/cron schedule.",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
@@ -471,7 +471,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_UPDATE,
-            "Change one crewmate's description, display name, model, effort or the "
+            "Change one Bot's description, display name, model, effort or the "
             "approval mode of its own chat (normal, trust_reads, trust), or let it "
             "request tools for its worker itself (dynamic_capabilities).",
             _obj(
@@ -495,7 +495,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CAPABILITIES,
-            "Change one crewmate's tools / MCP servers / skills / autoApprove. `draft` is "
+            "Change one Bot's tools / MCP servers / skills / autoApprove. `draft` is "
             "{operations:[{section,id,action:set|remove|inherit,value?}], enroll?}.",
             _obj(
                 {
@@ -511,7 +511,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_GOAL,
-            "Add one goal for a crewmate, or replace one of its goals: what it works "
+            "Add one goal for a Bot, or replace one of its goals: what it works "
             "toward. Without `goal_id` the text is added as a new goal; with the id of "
             "one of its goals (goal_read lists them) "
             "it replaces that goal's text. Goals are stored in its goal record, never "
@@ -532,7 +532,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_KEY_RESULTS,
-            "Set one crewmate's key results: readings that show how far it "
+            "Set one Bot's key results: readings that show how far it "
             "is from its goals, replacing the current set. `items` is "
             "[{text, target, goal_ids?}], target a number or a word such as 'yes', "
             "goal_ids the ids of the goals that key result serves.",
@@ -560,12 +560,12 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CHECK_INS,
-            "Turn one crewmate's check-ins on or off and set when they run: daily "
+            "Turn one Bot's check-ins on or off and set when they run: daily "
             "(the Daily Goal Reminder), weekly (the Weekly report, on `weekday`, "
             "0 = Sunday) and monthly (the Monthly review, on `month_day`, 1-28), "
             "all at `time` (HH:MM, 24-hour), and heartbeat (a wake every `interval` "
             f"minutes, {_goals.interval_minutes_text()}, read as "
-            f"{_goals.interval_choices()}, in which the crewmate moves its "
+            f"{_goals.interval_choices()}, in which the Bot moves its "
             "work forward on its own; each run uses credits). Give only the fields "
             "that change.",
             _obj(
@@ -595,8 +595,8 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_DASHBOARD_PAGE,
-            "One crewmate offers, once, to write its own Dashboard page around its goal "
-            "(the crewmate's own offer_dashboard_page).",
+            "One Bot offers, once, to write its own Dashboard page around its goal "
+            "(the Bot's own offer_dashboard_page).",
             _obj({"member": _STR}, ["member"]),
             (),
         ),
@@ -751,7 +751,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_IMPORT,
-            "Import one crewmate from a .crewmate file (owner only).",
+            "Import one Bot from a .crewmate file (owner only).",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
@@ -1452,7 +1452,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             out_goal["heartbeat"] = _clean_bool(p, "heartbeat")
         if "goal_id" in p:
             if not _goals.is_goal_id(p["goal_id"]):
-                raise _fail("invalid_param", "'goal_id' must be one of the crewmate's goal ids")
+                raise _fail("invalid_param", "'goal_id' must be one of the Bot's goal ids")
             out_goal["goal_id"] = p["goal_id"]
         return out_goal
     if kind == KIND_CREWMATE_KEY_RESULTS:
@@ -1474,7 +1474,7 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             if "goal_ids" in item:
                 links = item["goal_ids"]
                 if not isinstance(links, list) or not all(_goals.is_goal_id(g) for g in links):
-                    raise _fail("invalid_param", "'goal_ids' is a list of the crewmate's goal ids")
+                    raise _fail("invalid_param", "'goal_ids' is a list of the Bot's goal ids")
                 kr["goal_ids"] = list(dict.fromkeys(links))
             items.append(kr)
         return {"member": _member_name(p, "member"), "items": items}
