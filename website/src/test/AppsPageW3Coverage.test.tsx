@@ -392,6 +392,15 @@ describe('AppsPage — query failures and empty states', () => {
   })
 })
 
+// The tile list's name is only announced when the element carries a role:
+// assistive tech ignores aria-label on a plain div.
+describe('AppsPage — Library list name', () => {
+  it('names the installed-app list as a group', async () => {
+    renderLibrary()
+    expect(await screen.findByRole('group', { name: 'Installed apps' })).toBeInTheDocument()
+  })
+})
+
 describe('AppsPage — Library actions', () => {
   it('opens the app at its AppHost route from the card, and the detail page from its name', async () => {
     renderLibrary()
