@@ -377,10 +377,12 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     """The names in *stub_names* whose server *spec* does not mount unmuted.
 
     *spec* is the governed worker spec the KAS payload is built from. A stub
-    whose server it drops, or mutes (``mcp_cleanup.mcp_entry_is_muted``), is
-    withdrawn, so a mute saved after the stubs were selected still takes effect.
+    whose server it drops, mutes (``mcp_cleanup.mcp_entry_is_muted``) or marks
+    registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``) is
+    withdrawn, so a mute or a ``type: registry`` saved after the stubs were
+    selected still takes effect.
     """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
@@ -388,7 +390,9 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     return frozenset(
         name
         for name in stub_names
-        if not isinstance(servers.get(name), dict) or mcp_entry_is_muted(servers[name])
+        if not isinstance(servers.get(name), dict)
+        or mcp_entry_is_muted(servers[name])
+        or mcp_entry_is_registry_governed(servers[name])
     )
 
 

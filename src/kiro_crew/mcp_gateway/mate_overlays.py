@@ -443,7 +443,9 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     (``mate_file_for_member``), and that file's overlay must carry its identity.
     Only a wrapped server the crewmate ADDS is returned (a base server always wins
     the merge), and only one the governed merged worker spec still mounts
-    unmuted. Each takes that spec's ``disabledTools`` in place of the file's and
+    unmuted and not registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``),
+    so a stub from an earlier pass is not injected for an entry since retyped
+    ``type: registry``. Each takes that spec's ``disabledTools`` in place of the file's and
     drops ``autoApprove``, which the KAS projection strips too, since a
     host-approved call skips the PreToolUse gate; KAS discards ``disabledTools`` on a projected entry, so what actually
     restricts the worker's tools there is the merged spec's ``excludedTools`` on
@@ -457,7 +459,7 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
     from kiro_crew.execution_context import read_session_execution
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 
     try:
         execution = read_session_execution(session_key)
@@ -494,7 +496,12 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
         ):
             continue
         mounted = governed.get(server)
-        if server in base_servers or not isinstance(mounted, dict) or mcp_entry_is_muted(mounted):
+        if (
+            server in base_servers
+            or not isinstance(mounted, dict)
+            or mcp_entry_is_muted(mounted)
+            or mcp_entry_is_registry_governed(mounted)
+        ):
             continue
         shaped = dict(entry)
         # ``autoApprove`` is never sent: a host-approved call skips the PreToolUse

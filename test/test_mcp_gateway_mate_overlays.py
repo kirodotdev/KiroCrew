@@ -286,6 +286,20 @@ class TestTheWorkerLookup:
         )
         assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1")["mcpServers"] == {}
 
+    def test_a_stub_whose_entry_became_registry_governed_is_not_injected(self, home, monkeypatch):
+        """The overlay holds the last pass's stub; the entry was retyped since."""
+        _rewrite(home)
+        _worker_session(
+            monkeypatch, home, merged_servers={SERVER: {"command": "x", "type": "registry"}}
+        )
+        assert mate_overlays.worker_overlay_spec(home.overlay, "chat-1")["mcpServers"] == {}
+        assert (
+            session_servers.pooled_session_servers(
+                home.overlay, WORKER, kas_worker_session_key="chat-1"
+            )
+            == []
+        )
+
     def test_a_base_server_of_the_same_name_wins_over_the_crewmate_stub(self, home, monkeypatch):
         _rewrite(home)
         _worker_session(
@@ -437,6 +451,7 @@ class TestTheKasWorkerStubSetIsOneLookup:
         [
             ({SERVER: {"command": "x"}}, frozenset()),
             ({SERVER: {"command": "x", "disabled": True}}, frozenset({SERVER})),
+            ({SERVER: {"command": "x", "type": "registry"}}, frozenset({SERVER})),
             ({}, frozenset({SERVER})),
         ],
     )
@@ -474,6 +489,7 @@ class TestTheKasWorkerStubSetIsOneLookup:
         [
             ({"command": sys.executable}, frozenset()),
             ({"command": sys.executable, "disabled": True}, frozenset({SERVER})),
+            ({"command": sys.executable, "type": "registry"}, frozenset({SERVER})),
             (None, frozenset({SERVER})),
         ],
     )

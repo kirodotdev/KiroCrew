@@ -1745,7 +1745,10 @@ passes no key and keeps the by-name lookup it had. The record must be a
 crewmate's worker, its crewmate must own its file (`mate_file_for_member`), and
 the overlay must carry that crewmate's identity. Only a wrapped server the
 crewmate ADDS is returned (a base server wins the merge), and only one the
-governed merged worker spec still mounts unmuted. Each carries that spec's
+governed merged worker spec still mounts unmuted and not registry-governed
+(`mcp_cleanup.mcp_entry_is_registry_governed`): the overlay is the last pass's,
+so an entry retyped `type: registry` since must not keep its old local stub.
+Each carries that spec's
 `disabledTools` in place of the file's and never an `autoApprove`, which the KAS
 projection strips for the same reason: a host-approved call skips the PreToolUse
 gate. KAS discards `disabledTools` on a projected entry,
@@ -1755,10 +1758,10 @@ KAS subtracts from its projection the names of exactly the entries it returned
 (`runtime_session_setup._kas_worker_stub_names`, handed to
 `acp/harness/kas.py` as `worker_stub_names`), so the subtraction and the
 `session/new` injection cannot disagree. The KAS payload reads the worker spec
-after those stubs were picked, so a stub whose server that later read drops or
-mutes is withdrawn (`SessionExtras.withdrawn_stub_names`) and both session start
-paths remove it from the session-level array before the hoist: a mute saved while
-a worker starts still takes effect. claude's mirrored worker path is
+after those stubs were picked, so a stub whose server that later read drops,
+mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_names`)
+and both session start paths remove it from the session-level array before the
+hoist: a mute or a `type: registry` saved while a worker starts still takes effect. claude's mirrored worker path is
 unchanged.
 
 An app callback from a crewmate's stub is governed as that worker's tool calls
