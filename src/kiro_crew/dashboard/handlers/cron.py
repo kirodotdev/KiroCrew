@@ -235,6 +235,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         FileTooLargeError,
         safe_read_file_bytes_nolink,
     )
+    from kiro_crew.lesson_events import (  # noqa: F401
+        LESSON_REMOVED,
+        LESSON_SOURCE_USER,
+        emit_lessons_changed,
+        lesson_write_action,
+    )
     from kiro_crew.lesson_validation import (  # noqa: F401
         LESSON_APPLIES_ON_TOPIC,
         LESSON_APPLIES_UNSTATED,

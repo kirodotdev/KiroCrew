@@ -27,7 +27,13 @@ from kiro_crew import lesson_events
 from kiro_crew.history import ConversationLog
 from kiro_crew.history_consolidation import HistoryConsolidator
 from kiro_crew.learn import LessonStore
-from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
+from kiro_crew.lesson_validation import LESSON_APPLIES_ON_TOPIC
+from kiro_crew.vector_memory import (
+    LessonWriteOutcome,
+    LessonWriteResult,
+    VectorMemoryStore,
+    _lesson_key,
+)
 
 
 @pytest.fixture
@@ -104,7 +110,9 @@ class TestRoutes:
         vs.write_lesson.return_value = result
         memory = MagicMock(vector_store=vs)
         with (
-            patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(silo, None))),
+            patch.object(
+                cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(silo, None))
+            ),
             patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
             patch.object(cron, "_get_memory", return_value=memory),
             patch.object(cron.ContextBuilder, "get_memory_for", return_value=memory),
@@ -155,11 +163,15 @@ class TestRoutes:
         from kiro_crew.learn import Lesson
 
         store = LessonStore(base_dir=tmp_path)
-        store.save(Lesson(ts="2026-01-01T00:00:00+00:00", rule="pin every dependency", category="tool"))
+        store.save(
+            Lesson(ts="2026-01-01T00:00:00+00:00", rule="pin every dependency", category="tool")
+        )
         request, state = self._request({"rule": rule})
         state.lessons = store
         with (
-            patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(silo, None))),
+            patch.object(
+                cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(silo, None))
+            ),
             patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
             patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
             patch.object(
@@ -232,6 +244,40 @@ class TestConsolidation:
         silo = LessonStore(base_dir=tmp_path / "silo")
         self._consolidator(lesson_store=own)._save_lessons([{"rule": "a rule"}], None, silo)
         assert len(silo.load_all()) == 1
+        assert frames == []
+
+    @staticmethod
+    def _store_with_finding(path) -> tuple[VectorMemoryStore, str]:
+        store = VectorMemoryStore(db_path=path, embedding_dim=4)
+        store.init()
+        rule = "in repo foo the flaky timing test needs a wider bound"
+        assert store.write_lesson(
+            rule, "knowledge", source="consolidation", applies=LESSON_APPLIES_ON_TOPIC
+        )
+        return store, _lesson_key(rule)
+
+    def test_a_global_lesson_retired_by_a_semantic_delete_is_announced(self, frames, tmp_path):
+        store, key = self._store_with_finding(tmp_path / "m.db")
+        try:
+            c = self._consolidator(vector_store=store)
+            c._write_structured_memory(
+                {"semantic": [{"key": key, "delete": True}, {"key": "user.gone", "delete": True}]},
+                key="s1",
+            )
+            assert store.get_semantic(key) is None
+        finally:
+            store.close()
+        assert frames == [{"action": "removed", "source": "consolidation", "count": 1}]
+
+    def test_a_named_stores_lesson_retired_by_a_semantic_delete_is_silent(self, frames, tmp_path):
+        silo, key = self._store_with_finding(tmp_path / "silo.db")
+        try:
+            self._consolidator(vector_store=MagicMock())._write_structured_memory(
+                {"semantic": [{"key": key, "delete": True}]}, key="s1", vector_store=silo
+            )
+            assert silo.get_semantic(key) is None
+        finally:
+            silo.close()
         assert frames == []
 
 
