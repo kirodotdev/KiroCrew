@@ -781,7 +781,7 @@ class TestResolveScriptPathSensitive:
         script.write_text("def run(ctx): pass")
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
-            patch("kiro_crew.cron_script.sensitive_path_refusal", return_value="Blocked: x"),
+            patch("kiro_crew.cron_script.canonical_path_refusal", return_value="Blocked: x"),
         ):
             with pytest.raises(PermissionError, match="security policy"):
                 resolve_script_path(str(script) + ":run")

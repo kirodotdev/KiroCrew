@@ -949,7 +949,7 @@ class TestPathAndSecretResolution:
         script = crons / "job.py"
         script.write_text("def run(ctx): pass\n", newline="\n")
         monkeypatch.setattr(cron_script, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(cron_script, "sensitive_path_refusal", lambda p: "Blocked: x")
+        monkeypatch.setattr(cron_script, "canonical_path_refusal", lambda p: "Blocked: x")
 
         with pytest.raises(PermissionError, match="blocked by security policy"):
             resolve_script_path(f"{script}:run")
@@ -960,7 +960,7 @@ class TestPathAndSecretResolution:
         script = crons / "job.py"
         script.write_text("def run(ctx): pass\n", newline="\n")
         monkeypatch.setattr(cron_script, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(cron_script, "sensitive_path_refusal", lambda p: None)
+        monkeypatch.setattr(cron_script, "canonical_path_refusal", lambda p: None)
 
         resolved, func = resolve_script_path(f"{script}:run")
 

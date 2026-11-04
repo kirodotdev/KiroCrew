@@ -1594,12 +1594,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _fold_line_continuations,
         _iter_shell_chars,
         audit_bash_exfiltration,
+        canonical_path_refusal,
         enabled_rule_ids,
         is_sensitive_bash_command,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         is_unverifiable_path_refusal,
         scan_exfiltration_urls,
-        sensitive_path_refusal,
     )
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         _EXTGLOB_RE,
