@@ -1,14 +1,7 @@
 """Coverage for ``dashboard/handlers/core.py``: the STT runtime endpoints.
 
-STT status, prepare, prewarm, the ffmpeg download and the transcribe endpoint, with
-their error branches and cold paths.
-
-Style and isolation follow ``test_dashboard_handlers_core_coverage.py``: direct
-handler calls against a ``MagicMock(spec=web.Request)``, a real aiohttp ``TestClient``
-where the handler needs a genuine request body or streaming response, and every write
-under the autouse-isolated ``KIROCREW_HOME`` from ``conftest.py``; nothing here touches
-the network, downloads a model, or spawns a process. Shared stubs and fixtures come
-from ``dashboard_handlers_core_coverage_helpers.py``.
+STT status, prepare, prewarm, ffmpeg download and transcribe, with their error branches
+and cold paths. Shared stubs come from ``dashboard_handlers_core_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -37,11 +30,7 @@ from kiro_crew.stt import models as stt_models
 async def _drain_stt_background() -> list:
     """Await the handler's detached tasks and return their outcomes.
 
-    The prepare/prewarm endpoints answer before their work finishes, so the task
-    is still pending when the handler returns. Draining it here is both the
-    assertion (it really was scheduled) and the hygiene: an un-awaited task
-    outlives the test's event loop, and an unretrieved exception surfaces later
-    as a warning attributed to whichever test happened to run next.
+    An un-awaited task would outlive the loop and blame its exception on the next test.
     """
     tasks = list(core_mod._stt_background_tasks)
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -107,15 +96,10 @@ class TestSttStatus:
     async def test_voice_off_reports_no_backend_and_does_not_load_the_library(
         self, seeded_config, monkeypatch, model_store
     ) -> None:
-        """Opening Settings must not dlopen the speech library to answer a question
-        about a feature that is switched off.
+        """Opening Settings with voice off does not dlopen the speech library.
 
-        Reading the acceleration calls ``whisper_print_system_info()``, which on macOS
-        runs ``ggml_metal_device_init`` -- measured at +31.8 MB resident held for the
-        process lifetime, and a one-off 6.4 s library build on a cold cache. The
-        provider is already excluded; ``enabled`` has to be too, or every operator who
-        turned voice off still pays that for one visit to the panel. The field is
-        ABSENT rather than null, so the panel renders nothing instead of an unknown.
+        On macOS ``whisper_print_system_info()`` costs +31.8 MB resident for the process
+        lifetime. The field is absent rather than null, so the panel renders nothing.
         """
         probed = []
         monkeypatch.setattr(
@@ -159,16 +143,9 @@ class TestSttStatus:
     ) -> None:
         """A materialised package attribute must not shadow the real function.
 
-        ``kiro_crew.stt`` re-exports its surface through a lazy ``__getattr__``, and
-        that indirection stops working for any name the package itself comes to
-        hold: a ``monkeypatch.setattr(stt, "is_present", ...)`` anywhere in the
-        suite writes the original back as a real attribute on teardown, after which
-        every reader of ``stt.is_present`` is pinned to the value captured then.
-
-        This handler therefore reads ``stt.models.is_present``. The test recreates
-        the materialised attribute deliberately, because the bug it guards against
-        was order-dependent and silent: the endpoint reported every model absent on
-        a host where the files were present, and only in a full-suite run.
+        A ``monkeypatch.setattr(stt, "is_present", ...)`` teardown writes a real attribute
+        past the lazy ``__getattr__``, so the handler reads ``stt.models.is_present``. The
+        test recreates that attribute because the failure shows only in full-suite order.
         """
         monkeypatch.setattr(core_mod.stt, "is_present", lambda _m: False, raising=False)
         monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: True)
@@ -437,17 +414,8 @@ class TestSttPrepare:
 class TestSttResolveStaysOffTheLoop:
     """Neither STT handler may resolve a model name on the gateway's event loop.
 
-    ``resolve`` has two behaviours. For a catalog name it is a pure in-memory
-    lookup, so calling it inline from an ``async def`` costs nothing. For
-    :data:`~kiro_crew.stt.models.CUSTOM_MODEL` it reads and
-    validates ``config.json`` to find the pinned URL and digest. Called inline
-    that stat-and-parse runs on the single loop these two polled endpoints share
-    with every other session and with the heartbeat, which the repository's
-    ``no-blocking-call-on-event-loop`` rule forbids.
-
-    Asserted on the THREAD, not on a duration: a resolve that lands on the loop's
-    own thread is the defect whatever it cost on this host, and a timing bound for
-    something this fast is a flake.
+    For :data:`~kiro_crew.stt.models.CUSTOM_MODEL` ``resolve`` reads ``config.json``.
+    Asserted on the thread, not a duration, because a timing bound this small flakes.
     """
 
     @pytest.fixture(autouse=True)
@@ -637,13 +605,10 @@ class TestSttPrewarm:
     async def test_prewarm_answers_202_without_waiting_for_the_load(
         self, seeded_config, monkeypatch
     ) -> None:
-        """A first-ever load compiles a GPU pipeline, so awaiting it here would
-        stall the request that exists precisely to get ahead of that cost. The
-        fake stays blocked until after the response is asserted, so a handler that
-        awaited it would never reach the assertion at all.
+        """Prewarm answers before the first load, which compiles a GPU pipeline.
 
-        Both configured values are non-default, so this also proves the warm-up
-        targets the operator's selection rather than the catalog default.
+        The fake stays blocked until after the response is asserted. Non-default config
+        values prove the warm-up targets the operator's selection.
         """
         _seed_stt(seeded_config, model="small", language_code="fr-FR", threads=32)
         seen: dict = {}
