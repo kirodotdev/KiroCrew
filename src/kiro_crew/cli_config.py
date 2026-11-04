@@ -223,7 +223,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except PermissionError as e:
                 print(f"❌ {e}", file=sys.stderr)
                 sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):

@@ -133,7 +133,7 @@ def _read_dev_sentinel() -> set[str]:
     """Read the raw dev-app-name set from the sentinel file (empty on any error)."""
     try:
         data = json.loads(_sentinel_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return set()
     if isinstance(data, list):
         return {str(x) for x in data}
@@ -186,7 +186,7 @@ def _read_dev_grants() -> dict[str, str]:
     """
     try:
         data = json.loads(_grants_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     if isinstance(data, dict):
         return {

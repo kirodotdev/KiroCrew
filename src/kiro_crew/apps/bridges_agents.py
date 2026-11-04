@@ -648,7 +648,7 @@ def _read_agent_config(path: Path) -> dict[str, Any] | None:
     """The agent JSON currently on disk, or None when there is nothing usable."""
     try:
         data = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None
 

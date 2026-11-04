@@ -360,6 +360,20 @@ class TestAppConfig:
             assert "failed to read config" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
+    async def test_get_config_that_is_not_utf8_is_the_same_500(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        cfg = home / "apps" / APP / "data" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_bytes(b'\xff\xfe{"a": 1}')
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/apps/{APP}/config")
+            assert resp.status == 500
+            assert "failed to read config" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
     async def test_put_invalid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)

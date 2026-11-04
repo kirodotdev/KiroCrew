@@ -424,7 +424,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
             raw_name = manifest_data.get("name")
             if isinstance(raw_name, str) and raw_name:
                 lock_name = raw_name
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             pass
 
     # A path is not an app identity: install_app may observe a manifest created
