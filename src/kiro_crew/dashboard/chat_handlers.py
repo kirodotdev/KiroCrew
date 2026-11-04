@@ -1443,7 +1443,7 @@ async def switch_slot_backend(
     from kiro_crew.dashboard.session_control import arm_model_switch_reset
     from kiro_crew.members import is_crewmate_worker_session, is_member_session_key
 
-    _, refused = await _requested_backend(pick)
+    _, _, refused = await _requested_backend(pick)
     if refused is not None:
         raise _switch_refusal(refused)
     refusal = relay_archive_refusal(slot)
