@@ -63,6 +63,9 @@ class _CronCapture(NamedTuple):
     # The previous run's result framed as untrusted data, for build_message's
     # request_prefix_context (``cron_prior_result_context``); "" when none.
     prior_result: str = ""
+    # The agent name the governance gate is handed: the alias a chat turn on
+    # this agent hands it, read before a crewmate's worker swap. "" when unset.
+    gate_agent: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -462,6 +465,32 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
             )
 
         cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+    # The governance gate's agent is the name a chat turn on this agent hands
+    # it. A capture that selected a member runs as that member whatever the job
+    # names in agent_id (the dashboard saves a template there beside member_id;
+    # cron_update may set another member's name), so the gate gets the member's
+    # live alias, the one _resolve_cron_agent dispatches through
+    # member_config_for_id, else its captured selection_name. Only a capture
+    # that selected no member uses the job's own alias. Read here, before the
+    # worker swap below rewrites a crewmate's selection to the worker template,
+    # and kept apart from the dispatched template. A capture that selected
+    # nothing falls back to the dispatched agent at the return, so a
+    # substituted default is named as a chat turn on the default is.
+    if cron_execution.member_id or cron_execution.selection_kind == "member":
+        _gate_alias = ""
+        if cron_execution.member_id:
+            try:
+                from kiro_crew.execution_context import member_config_for_id
+
+                _gate_cfg = live.snapshot() or getattr(self, "_cfg", None)
+                if _gate_cfg is not None:
+                    _gate_alias, _ = member_config_for_id(_gate_cfg, cron_execution.member_id)
+            except Exception:
+                _gate_alias = ""
+        if not _gate_alias and cron_execution.selection_kind == "member":
+            _gate_alias = cron_execution.selection_name.strip()
+    else:
+        _gate_alias = (job.agent_id or "").strip()
     if not agent_sequence_dispatches(cron_agents):
         # A crewmate's scheduled turn is work, so it runs on that crewmate's
         # worker (its kit, servers and permissions), never on the conductor its
@@ -619,6 +648,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_agent,
         _default_substituted,
         prior_result,
+        _gate_alias or cron_agent,
     )
 
 

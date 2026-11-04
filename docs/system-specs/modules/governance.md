@@ -1874,8 +1874,17 @@ resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
 
 **Unattended turns at the PreToolUse gate.** A cron turn hands
-`stream_and_collect` its own `cron:<job>` session key, so the gate resolves that
-session's profile the same way it does for a chat turn. Cron, heartbeat and
+`stream_and_collect` its own `cron:<job>` session key and the agent's alias or
+crew record name (each step's alias on an `agent_sequence`), the name a chat turn
+on that agent hands the gate, so the gate resolves that session's profile the
+same way it does for a chat turn, including a `task` bind on that name. A
+schedule whose capture selected a member runs as that member, so its gate name
+is the member's own live alias (the record `member_config_for_id` finds for the
+captured `member_id`, the one dispatch resolves through, else the captured
+`selection_name`), even when the job's `agent` names a template or another
+member; the job's `agent` is the gate name only for a capture that selected no
+member. The template the alias collapses to is used only to acquire the session
+and build the message. Cron, heartbeat and
 Slack-thread nudge turns pass `stream_and_collect(unattended=True)`. A
 structured monitor wake runs its gate call under the same marker on every
 surface: `build_tool_gate(unattended=True)` for a Slack thread and for a
