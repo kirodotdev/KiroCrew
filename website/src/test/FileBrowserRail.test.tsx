@@ -634,7 +634,7 @@ describe('FileBrowserRail refresh', () => {
 })
 
 describe('FileBrowserRail resize grip', () => {
-  it('grows leftward, clamps to both bounds, and persists the release width', () => {
+  it('grows rightward (rail sits left of the editor), clamps to both bounds, and persists the release width', () => {
     mount()
     const grip = screen.getByRole('separator')
     expect(grip).toHaveAttribute('aria-orientation', 'vertical')
@@ -647,16 +647,16 @@ describe('FileBrowserRail resize grip', () => {
     expect(document.body.style.userSelect).toBe('none')
 
     // The grip sits on the rail's LEFT edge, so a leftward drag grows it.
-    fireEvent.pointerMove(grip, { clientX: 400, clientY: 0, pointerId: 1 })
+    fireEvent.pointerMove(grip, { clientX: 600, clientY: 0, pointerId: 1 })
     expect(rail().style.width).toBe('400px')
 
-    fireEvent.pointerMove(grip, { clientX: 900, clientY: 0, pointerId: 1 })
+    fireEvent.pointerMove(grip, { clientX: 100, clientY: 0, pointerId: 1 })
     expect(rail().style.width).toBe('300px')
 
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 0, pointerId: 1 })
+    fireEvent.pointerMove(grip, { clientX: 900, clientY: 0, pointerId: 1 })
     expect(rail().style.width).toBe('520px')
 
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 0, pointerId: 1 })
+    fireEvent.pointerUp(grip, { clientX: 900, clientY: 0, pointerId: 1 })
     expect(document.body.style.cursor).toBe('')
     expect(document.body.style.userSelect).toBe('')
     expect(localStorage.getItem(RAIL_W_KEY)).toBe('520')

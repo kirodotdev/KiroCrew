@@ -5458,6 +5458,7 @@
       },
       "sidePanel": {
         "dock_bottom": "Dock panel below chat",
+        "dock_left": "Dock panel to the left",
         "dock_right": "Dock panel to the right",
         "hide_line_numbers": "Hide line numbers",
         "menu_artifacts": "Artifacts",

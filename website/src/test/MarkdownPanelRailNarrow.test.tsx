@@ -78,7 +78,7 @@ describe('MarkdownPanel browser rail placement', () => {
     await waitFor(() => {
       const cls = railWrapper().className
       expect(cls).toMatch(/absolute/)
-      expect(cls).toMatch(/right-0/)
+      expect(cls).toMatch(/left-0/)
     })
   })
 })

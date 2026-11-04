@@ -98,16 +98,16 @@ describe('file tab project tree rail', () => {
     vi.restoreAllMocks()
   })
 
-  it('starts hidden and remains available through the file toolbar toggle', async () => {
+  it('starts open (split view) and the file toolbar toggle hides it', async () => {
     renderPanel()
     // Scoped to the file tab: the pinned Files tab stays mounted (hidden) with a tree of its own.
     const panel = await screen.findByTestId('markdown-panel')
-    expect(panel).toHaveAttribute('data-rail-open', 'false')
-    expect(within(panel).queryByTestId('file-browser-tree')).toBeNull()
+    expect(panel).toHaveAttribute('data-rail-open', 'true')
+    expect(await within(panel).findByTestId('file-browser-tree')).toBeInTheDocument()
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Toggle file browser' }))
-    expect(panel).toHaveAttribute('data-rail-open', 'true')
-    expect(within(panel).getByTestId('file-browser-tree')).toBeInTheDocument()
+    expect(panel).toHaveAttribute('data-rail-open', 'false')
+    expect(within(panel).queryByTestId('file-browser-tree')).toBeNull()
   })
 
   it('honours an explicit saved preference to show the rail', async () => {
