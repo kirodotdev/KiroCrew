@@ -22,12 +22,38 @@ def test_the_builtin_boards_were_found() -> None:
     assert len(_TEMPLATES) >= 13, _TEMPLATES
 
 
+#: Boards that listen for ONE typed reply from the host, which the frame's change event
+#: cannot carry: the host answers a click on the page (the org-chart's "open worker chat"
+#: button) with its own message, and the page can only hear that through ``message``.
+#: Allowed only while the listener ignores every other message before it does anything:
+#: the sender check and the type guard come first, and nothing in front of the guard redraws.
+_TYPED_REPLY_LISTENERS = {"org-chart": "kirocrew-dashboard:open-session-result"}
+_LISTENER = "addEventListener('message'"
+
+
 @pytest.mark.parametrize("name", _TEMPLATES)
 def test_a_board_does_not_redraw_on_every_message(name: str) -> None:
     html = (_BUILTIN / name / "template.html").read_text(encoding="utf-8").replace('"', "'")
+    if name in _TYPED_REPLY_LISTENERS:
+        return
     assert (
-        "addEventListener('message'" not in html
+        _LISTENER not in html
     ), f"{name} redraws on every message, so a read that changed nothing rebuilds it"
+
+
+@pytest.mark.parametrize("name", sorted(_TYPED_REPLY_LISTENERS))
+def test_a_typed_reply_listener_ignores_every_other_message(name: str) -> None:
+    html = (_BUILTIN / name / "template.html").read_text(encoding="utf-8").replace('"', "'")
+    assert html.count(_LISTENER) == 1, f"{name} may hold exactly one message listener"
+    body = html[html.index(_LISTENER) :]
+    guard = f"d.type !== '{_TYPED_REPLY_LISTENERS[name]}') return;"
+    assert (
+        guard in body
+    ), f"{name}'s message listener must return unless the message is its typed reply"
+    before_guard = body[: body.index(guard)]
+    assert (
+        "render(" not in before_guard
+    ), f"{name}'s message listener redraws before checking the message type"
 
 
 @pytest.mark.parametrize("name", _TEMPLATES)

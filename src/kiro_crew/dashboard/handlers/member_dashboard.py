@@ -35,14 +35,13 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import conditional_get
 from kiro_crew.dashboard.handlers import member_dashboard_fields
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.member_dashboard_names import NameRefusal, resolve_names
 from kiro_crew.dashboard.handlers.member_dashboard_render import _render
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
-    _member_names_for_slug,
     _member_thread_slot,
 )
 from kiro_crew.dashboard_templates import catalog, instance
-from kiro_crew.members import MemberSlugError
 from kiro_crew.platform.context import redact_code_via_context, redact_via_context
 
 logger = logging.getLogger(__name__)
@@ -79,45 +78,16 @@ def _name_unsafe(name: str) -> bool:
 
 
 async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
-    """``(slug, member)`` for this request, or the refusal to return instead.
-
-    The four questions the sibling member routes ask, in their order: is the slug a
-    slug, is the member name one that can reach a model, does that name derive THIS
-    slug and exist, and is it the only name that does.
-    """
+    """``(slug, member)`` for this request, or the refusal: the app gate, then :func:`resolve_names`."""
     denied = await _deny_app_caller(request, "members.dashboard")
     if denied is not None:
         return denied
-    slug = request.match_info.get("slug", "")
-    try:
-        members_mod.validate_slug(slug)
-    except MemberSlugError:
-        return _bad("invalid_member_slug", "invalid member slug")
-    member = request.query.get("member", "")
-    if not members_mod.is_dispatchable_member_name(member):
-        return _bad("missing_member", "member query parameter required")
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    # The ROSTER's own spelling, before either check. The roster is keyed by the
-    # display name somebody typed, so `Atlas` is the key and a tab opened on `atlas`
-    # is the same crewmate asking for its own page -- answered, before this, with
-    # "no crew member for this slug" while its data sat under the canonical key.
-    # Resolved ONCE and carried, because the slug check and the roster check have to
-    # agree about which name they are asking about.
-    member = members_mod.canonical_member_key(member, cfg)
-    try:
-        if members_mod.member_slug(member, cfg) != slug:
-            return _bad("member_slug_mismatch", "member does not match slug")
-    except MemberSlugError:
-        return _bad("member_slug_mismatch", "member does not match slug")
-    if member not in cfg.agents:
-        return _bad("member_not_found", "no crew member for this slug", status=404)
-    if _member_names_for_slug(cfg, slug) != [member]:
-        return _bad(
-            "dashboard_slug_ambiguous",
-            "multiple crews share this slug; their dashboards would be ambiguous",
-            status=409,
-        )
-    return slug, member
+    resolved = await resolve_names(
+        request.match_info.get("slug", ""), request.query.get("member", "")
+    )
+    if isinstance(resolved, NameRefusal):
+        return _bad(resolved.code, resolved.message, status=resolved.status)
+    return resolved
 
 
 def _dashboard_slot(member: str, slug: str) -> str:
@@ -140,6 +110,9 @@ def _dashboard_slot(member: str, slug: str) -> str:
         logger.debug("dashboard: falling back to the V1 slot for %r", slug, exc_info=True)
         return members_mod.member_slot_key(slug)
     return slot
+
+
+dashboard_slot = _dashboard_slot  # public name, shared with the board's `open`
 
 
 def _write_session(slug: str, member: str) -> str:
@@ -441,18 +414,13 @@ async def api_session_dashboard(request: web.Request) -> web.Response:
     owner_denied = await _owner_only(request, "sessions.dashboard")
     if owner_denied is not None:
         return owner_denied
-    from kiro_crew.dashboard.card_lifecycle import is_root_session
+    from kiro_crew.dashboard.card_lifecycle import root_session_refusal
 
     state = request.app["state"]
     slot = state.get_slot(request.match_info.get("slot", ""))
-    if slot is None:
-        return _bad("slot_not_found", "no session for this slot", status=404)
-    if not is_root_session(slot):
-        return _bad(
-            "not_root_session",
-            "only a root session has a dashboard; this one was dispatched or adopted",
-            status=404,
-        )
+    refusal = root_session_refusal(slot)
+    if refusal is not None:
+        return _bad(refusal[0], refusal[1], status=404)
     slot_key = str(slot.key)
     return await _serve(request, instance.session_instance_key(slot_key), "", slot_key)
 

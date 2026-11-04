@@ -202,6 +202,23 @@ def is_root_session(slot: Any) -> bool:
     return node is None or node.parent_slot is None
 
 
+def root_session_refusal(slot: Any) -> tuple[str, str] | None:
+    """``(code, message)`` when *slot* has no dashboard of its own, else ``None``; a 404 either way.
+
+    The one gate the session dashboard read and the work ledger board's ``open`` share: the slot
+    must exist and be a root session (:func:`is_root_session`), since a dispatched or adopted
+    session's records belong to the board of whoever dispatched it.
+    """
+    if slot is None:
+        return "slot_not_found", "no session for this slot"
+    if not is_root_session(slot):
+        return (
+            "not_root_session",
+            "only a root session has a dashboard; this one was dispatched or adopted",
+        )
+    return None
+
+
 def _ask_for_lineage_seed() -> None:
     """Ask the dashboard's one seeder for the session tree. Never raises, never blocks.
 
