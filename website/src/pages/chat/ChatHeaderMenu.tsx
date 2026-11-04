@@ -38,7 +38,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   /** Phone only: a first item that opens a sibling session in the on-screen
    *  session's folder. It lives in this menu, not beside it, because the phone
    *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
-  newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
+  /** `localInstead` is offered only while the folder's default crew is
+   *  offline: it starts this one chat on this machine, the phone's counterpart
+   *  of the sidebar notice's "Start this chat on Local instead". */
+  newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void; localInstead?: { label: string; onSelect: () => void } }
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -109,6 +112,11 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
             <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>
               <MessageSquarePlus size={13} className="shrink-0 text-muted" /> {newSessionHere.label}
             </DropdownMenuItem>
+            {newSessionHere.localInstead && (
+              <DropdownMenuItem data-testid="mobile-new-session-here-local" disabled={newSessionHere.disabled} onSelect={newSessionHere.localInstead.onSelect}>
+                <MessageSquarePlus size={13} className="shrink-0 text-muted" /> {newSessionHere.localInstead.label}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
           </>
         )}

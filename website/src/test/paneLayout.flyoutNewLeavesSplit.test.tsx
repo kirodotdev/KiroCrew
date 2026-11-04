@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode } from 'react'
 import { createTestStore } from './helpers'
 import { usePanelLayout } from '../pages/chat/page/paneLayout'
@@ -48,7 +49,12 @@ function setup() {
   })
   const flyoutClose = vi.fn()
   const showActionError = vi.fn()
-  const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+  // The hook routes a folder's New chat through its Default crew, which reads
+  // the crew names from the query cache.
+  const queryClient = new QueryClient()
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}><Provider store={store}>{children}</Provider></QueryClientProvider>
+  )
   const { result } = renderHook(() => usePanelLayout({
     mode: '',
     dispatch: store.dispatch,

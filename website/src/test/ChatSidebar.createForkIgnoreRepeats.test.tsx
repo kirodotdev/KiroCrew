@@ -226,6 +226,8 @@ describe('folder "+" ignores repeat clicks while its create is in flight', () =>
       folders: FOLDERS, mode: undefined, dispatch: store.dispatch, connected: true, setFolderOfflineNotice: vi.fn(),
       dropSlotMutation: { mutate: vi.fn() } as never, updateFolderMutation: { mutate: vi.fn() } as never,
       onOpenSlotInNewTab: undefined, onSelectSlot: vi.fn(), clearBoardCollapse: vi.fn(),
+      // A folder with no default crew: every create here is a Local one.
+      routeFolderCrew: () => ({ kind: 'local' }), startCrewChat: vi.fn(),
     }), { wrapper })
     act(() => { result.current.createChatInFolder(FOLDER_ID) })
     act(() => { result.current.createChatInFolder(FOLDER_ID, { memoryMode: 'incognito' }) })

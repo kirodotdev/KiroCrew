@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import type { HoverIntent } from '../../../hooks/useHoverIntent'
-import type { AppDispatch } from '../../../store'
+import type { useSteerDelivery } from './turnActions'
+import { useAppSelector, type AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
 import { openActivityPanel, createSlot, deleteSlot, requestSlotFolderOpen, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
 import { safeSetItem } from '../../../utils/safeStorage'
@@ -21,6 +22,7 @@ import { memorySwitchTimeoutMs } from '../../../utils/memorySwitchTimeout'
 import { forgetSlotSuccession } from '../../../utils/slotSuccession'
 import type { MemorySwitchContext } from '../memoryModeSwitch'
 import { crewWindowShown } from '../crew-window/crewWindowStore'
+import { useFolderCrewRouter, useStartCrewChat } from '../../../hooks/folderCrew'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 
@@ -209,7 +211,12 @@ interface PanelLayoutOptions {
   slotsLoaded: boolean
   activeSlot: string | null
   isWelcomeState: boolean
-  showActionError: (message: string, title?: string) => void
+  /** `status` marks a state, not a failure: drawn as a warn-tone status, no ask-agent. */
+  showActionError: (message: string, title?: string, report?: undefined, status?: boolean, action?: { label: string; onClick: () => void }) => void
+  /** Clears a status notice once its state is over (a crew chat that did start). */
+  setActionError: ReturnType<typeof useSteerDelivery>['setActionError']
+  /** Opens a crew session on an embedded page; unset elsewhere (the global crew window). */
+  openPeerSession?: (instanceId: string, key: string) => void
   currentSlot: ChatSlot | undefined
   chatFolders: ChatFolder[]
   chatFoldersError: Error | null
@@ -243,7 +250,7 @@ interface PanelLayoutOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function usePanelLayout({
-  mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
+  mode, dispatch, isMobile, filteredSlots, slotsLoaded, activeSlot, isWelcomeState, showActionError, setActionError, openPeerSession, currentSlot, chatFolders, chatFoldersError, chatFoldersLoaded, mobileNewSessionBusy,
   mobileNewSessionInFlightRef, setMobileNewSessionBusy, setSidebarPinned, sidebarPinned, railWidth, winW, effectiveSidebarWidth, mobileSessions, openSidebar, closeSidebar, previewExpanded,
   sidebarOpen, flyout, memorySwitch,
 }: PanelLayoutOptions) {
@@ -365,7 +372,14 @@ export function usePanelLayout({
   // folder id that no longer names a folder is treated as unfiled, the way the
   // drawer files such a session.
   const mobileNewSessionReady = !mobileNewFolderId || chatFoldersLoaded || !!chatFoldersError
-  const mobileNewSessionHere = async () => {
+  // A folder that pins a default crew starts its new chats there (the sidebar's
+  // folder `+` does the same). An offline crew is reported, never replaced by a
+  // silent Local chat.
+  const routeFolderCrew = useFolderCrewRouter()
+  // An embedded page never shows the global crew window (activeSlotState), so
+  // the host's own opener shows the new crew chat there, as the sidebar does.
+  const startCrewChat = useStartCrewChat(openPeerSession)
+  const mobileNewSessionHere = async (opts?: { local?: boolean }) => {
     if (!mobileNewSessionReady || mobileNewSessionInFlightRef.current) return
     // One notice for both failures below. The body stays the raw error text,
     // which is the key the error journal matches for the notice's ask-agent
@@ -374,6 +388,35 @@ export function usePanelLayout({
       showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'), title)
     if (mobileNewFolderId && !chatFoldersLoaded) return fail(chatFoldersError)
     const folderId = mobileNewFolder ? mobileNewFolderId : ''
+    const crewRoute = opts?.local ? ({ kind: 'local' } as const) : routeFolderCrew(mobileNewFolder)
+    if (crewRoute.kind === 'offline') {
+      // A state, not a failure. Its remedy sits inside the notice, as in the
+      // sidebar: this one chat on Local. The menu's Local item stays too, for a
+      // person who opens the menu again; the folder keeps its crew.
+      return showActionError(crewRoute.registered
+        ? i18nT('pages.chatSidebar.folder_crew_offline', { name: crewRoute.name })
+        : i18nT('pages.chatSidebar.folder_crew_not_registered', { name: crewRoute.name }), undefined, undefined, true, {
+        label: i18nT('pages.chatSidebar.folder_crew_new_on_local', { name: mobileNewFolder?.name ?? '' }),
+        onClick: () => { void mobileNewSessionHere({ local: true }) },
+      })
+    }
+    if (crewRoute.kind === 'crew') {
+      mobileNewSessionInFlightRef.current = true
+      setMobileNewSessionBusy(true)
+      try {
+        await startCrewChat(crewRoute.id)
+        // The crew window opens without switching slots, so the slot-switch
+        // clear never runs: drop an earlier "crew is offline" notice (and its
+        // Local button) here. A failure notice stays.
+        setActionError(prev => (prev?.status ? null : prev))
+      } catch (error) {
+        return fail(error)
+      } finally {
+        mobileNewSessionInFlightRef.current = false
+        setMobileNewSessionBusy(false)
+      }
+      return
+    }
     // Only a folder's own pin names an agent; otherwise the server stamps the
     // default custom agent (a template), never the default crewmate alias.
     const agent = folderId ? resolveFolderAgent(chatFolders, folderId, '') : undefined
@@ -414,10 +457,28 @@ export function usePanelLayout({
   // The item leads the session (chevron) menu on the phone. It is not a third
   // control beside the sessions toggle: the bar's centre cell holds two
   // (AUTOSDE `max-two-buttons-per-row`, narrow-viewport.md).
+  // While the folder's crew is offline the menu also offers this one chat on
+  // Local, as the sidebar's offline notice does; the folder keeps its crew.
+  // Subscribed so the menu follows a crew that drops or comes back while the
+  // session is open; the router itself reads the store without subscribing.
+  const warmCrews = useAppSelector(s => s.instances?.warm)
+  const mobileCrewOffline = useMemo(
+    () => routeFolderCrew(mobileNewFolder).kind === 'offline',
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- warmCrews is the re-run trigger the router cannot declare
+    [routeFolderCrew, mobileNewFolder, warmCrews],
+  )
   const mobileNewSessionItem = {
     label: mobileNewSessionLabel,
     disabled: !mobileNewSessionReady || mobileNewSessionBusy,
     onSelect: () => { void mobileNewSessionHere() },
+    ...(mobileCrewOffline ? {
+      localInstead: {
+        // "New chat in <folder> on Local", not "Start this chat…": this menu
+        // belongs to an open session, and the item must not read as moving it.
+        label: i18nT('pages.chatSidebar.folder_crew_new_on_local', { name: mobileNewFolder?.name ?? '' }),
+        onSelect: () => { void mobileNewSessionHere({ local: true }) },
+      },
+    } : {}),
   }
 
   // A memory-mode switch in flight. The composer is disabled meanwhile so the

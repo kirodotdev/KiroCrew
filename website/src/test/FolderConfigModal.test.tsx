@@ -1314,4 +1314,136 @@ describe('FolderConfigModal', () => {
       expect(err.textContent).toContain('Could not save the folder.')
     })
   })
+
+  describe('default crew picker', () => {
+    // Offered only while the Remote crew sessions preview is on: the host passes
+    // `crewChoices` then, and withholds it otherwise. Same SearchableSelect and
+    // aria-label-as-heading contract as the agent picker.
+    const CREWS = [
+      { id: 'i-nobita', name: 'nobita', online: true },
+      { id: 'i-gian', name: 'gian', online: false },
+    ]
+    const crewTrigger = () => screen.getByRole('button', { name: 'Default crew' })
+    async function openCrews(): Promise<string[]> {
+      // The modal moves focus to the name field one frame after opening, and that
+      // move dismisses a popup already open: wait for the focus, not for a frame.
+      await waitFor(() => expect(screen.getByTestId('folder-config-name')).toHaveFocus())
+      fireEvent.click(crewTrigger())
+      await screen.findByPlaceholderText('Type to filter…')
+      return (await screen.findAllByRole('option')).map(o => o.textContent ?? '')
+    }
+    async function pickCrew(label: string | RegExp) {
+      await openCrews()
+      fireEvent.click(await screen.findByRole('option', { name: label }))
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+    }
+
+    it('is absent while the preview is off (no crew choices passed)', () => {
+      open()
+      expect(screen.queryByRole('button', { name: 'Default crew' })).toBeNull()
+      expect(screen.queryByTestId('folder-config-crew-hint')).toBeNull()
+      // The agent picker next to it is unaffected.
+      expect(agentTrigger()).toBeTruthy()
+    })
+
+    it('lists Local first, then each crew with its online state', async () => {
+      open({ crewChoices: CREWS })
+      expect(crewTrigger()).toHaveTextContent('Local')
+      expect(await openCrews()).toEqual(['Local', 'nobita (online)', 'gian (offline)'])
+    })
+
+    it('create: picking a crew submits it and marks the field edited', async () => {
+      const { onSubmit } = open({ crewChoices: CREWS })
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Billing' } })
+      await pickCrew('nobita (online)')
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultCrew: 'i-nobita', touched: expect.arrayContaining(['defaultCrew']) }))
+    })
+
+    it('create: leaves the crew empty (Local) when nothing is picked', async () => {
+      const { onSubmit } = open({ crewChoices: CREWS })
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Billing' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0]).toMatchObject({ defaultCrew: '', touched: expect.not.arrayContaining(['defaultCrew']) })
+    })
+
+    it('edit: shows the pinned crew and clearing it back to Local reports the edit', async () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-nobita' })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], crewChoices: CREWS })
+      expect(crewTrigger()).toHaveTextContent('nobita (online)')
+      expect(screen.getByTestId('folder-config-crew-hint').textContent).toContain('Moving an existing chat here keeps it where it runs')
+      await pickCrew('Local')
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0]).toMatchObject({ defaultCrew: '', touched: ['defaultCrew'] })
+    })
+
+    it('warns when the pinned crew is offline, and still lets Save through', () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-gian' })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], crewChoices: CREWS })
+      expect(crewTrigger()).toHaveTextContent('gian (offline)')
+      const hint = screen.getByTestId('folder-config-crew-hint')
+      expect(hint.textContent).toContain('This crew is offline')
+      expect(hint.className).toContain('text-warn')
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultCrew: 'i-gian', touched: [] }))
+    })
+
+    it('keeps a crew that is no longer registered selectable so Save cannot wipe it', async () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-gone' })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], crewChoices: CREWS })
+      expect(crewTrigger()).toHaveTextContent('i-gone (not registered)')
+      // A removed crew is not "offline": the hint says it is gone.
+      const hint = screen.getByTestId('folder-config-crew-hint')
+      expect(hint.textContent).toContain('This crew is no longer registered')
+      expect(hint.textContent).not.toContain('offline')
+      expect(await openCrews()).toEqual(['Local', 'i-gone (not registered)', 'nobita (online)', 'gian (offline)'])
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultCrew: 'i-gone', touched: [] }))
+    })
+
+    it('never calls a pin "not registered" while the crew list is pending or failed', async () => {
+      // The host passes an empty list as a stand-in until ['instances'] answers;
+      // that says nothing about the pin, so no warn notice and no orphan label.
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-nobita' })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], crewChoices: [], crewChoicesLoaded: false })
+      expect(crewTrigger()).toHaveTextContent('i-nobita')
+      expect(crewTrigger()).not.toHaveTextContent('not registered')
+      const hint = screen.getByTestId('folder-config-crew-hint')
+      expect(hint.textContent).not.toContain('no longer registered')
+      expect(hint.className).not.toContain('text-warn')
+      expect(await openCrews()).toEqual(['Local', 'i-nobita'])
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      // The pin rides the save untouched.
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultCrew: 'i-nobita', touched: [] })))
+    })
+
+    it('says a folder agent applies to Local chats only once a crew is set', () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-nobita' })
+      open({ mode: 'edit', folder: f, folders: [f], crewChoices: CREWS })
+      expect(screen.getByTestId('folder-config-agent-hint').textContent).toContain("uses that crew's own default agent")
+    })
+
+    it('keeps the plain agent hint with no crew, or while the preview is off', () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-nobita' })
+      open({ mode: 'edit', folder: f, folders: [f] })
+      expect(screen.getByTestId('folder-config-agent-hint').textContent).toBe('Pre-selected for new chats created here.')
+    })
+
+    it('preview off: a stored crew rides an unrelated edit untouched', async () => {
+      const f = folder('f1', { name: 'Billing', default_crew: 'i-nobita' })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Billing v2' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      // Not in `touched`, so the caller's PATCH omits default_crew and the pin survives.
+      expect(onSubmit.mock.calls[0][0]).toMatchObject({ defaultCrew: 'i-nobita', touched: ['name'] })
+    })
+  })
 })

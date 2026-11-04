@@ -173,24 +173,45 @@ def _refuse_principal_steering_dirs(
     """
     if not (request_app or agent) or not steering_dirs:
         return None
+    return refuse_person_only_field(
+        request_app,
+        operation=operation,
+        resources=f"folder={folder_id or '-'} steering_dirs={len(steering_dirs)}",
+        audit_error="steering_dirs may be declared only by the person",
+        message=(
+            "steering_dirs may be declared only from the person's own session: "
+            "folder permission does not grant host-file reads"
+        ),
+        code="steering_dirs_forbidden",
+    )
+
+
+def refuse_person_only_field(
+    request_app: str,
+    *,
+    operation: str,
+    resources: str,
+    audit_error: str,
+    message: str,
+    code: str,
+) -> web.Response:
+    """Audit a non-person write of a person-only folder field as denied; 403 it.
+
+    The one refusal behind every folder field only the PERSON may set
+    (``steering_dirs``, ``default_crew``). Each caller decides first whether the
+    write is refused at all (a non-empty value from an app, a crew member or the
+    internal MCP credential); this records that decision and shapes the answer
+    the same way for each, so the fields cannot drift into different audits.
+    """
     sel().log_api_access(
         caller=request_app or "internal",
         operation=operation,
         outcome="denied",
         source="app_isolation",
-        resources=f"folder={folder_id or '-'} steering_dirs={len(steering_dirs)}",
-        error="steering_dirs may be declared only by the person",
+        resources=resources,
+        error=audit_error,
     )
-    return web.json_response(
-        {
-            "error": (
-                "steering_dirs may be declared only from the person's own session: "
-                "folder permission does not grant host-file reads"
-            ),
-            "code": "steering_dirs_forbidden",
-        },
-        status=403,
-    )
+    return web.json_response({"error": message, "code": code}, status=403)
 
 
 def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
