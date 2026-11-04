@@ -371,10 +371,8 @@ def _member_session_element(
     if session_token:
         env.append({"name": STUB_SESSION_TOKEN_ENV, "value": session_token})
     env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
-    # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
-    # through the client order, so one call covers both "the gateway exported the
-    # port it bound" and "derive it" — and a malformed export is ignored rather
-    # than forwarded.
+    # resolve_serving_port() prefers an exported KIROCREW_BOUND_PORT and ignores
+    # a malformed one, so the child never gets a bad port forwarded.
     env.append({"name": "KIROCREW_BOUND_PORT", "value": str(resolve_serving_port())})
     return {
         "name": server_name,

@@ -75,19 +75,13 @@ def record_activity(
         return False
     if memory_mode.strip().lower() not in _TRACEABLE_MEMORY_MODES:
         return False
-    # The exact member name travels IN the record rather than being implied by
-    # the directory. Slugification is lossy, so two distinct member names can
-    # map to one slug ("Review_Agent" and "review-agent") and share a log;
-    # carrying the name keeps per-member attribution recoverable in that case,
-    # which the frequency signal downstream depends on.
+    # The record carries the exact member name: slugification is lossy, so two
+    # names ("Review_Agent", "review-agent") can share one log.
     #
-    # The session pointer is named for what it MEANS, not just what it holds.
-    # A routing decision is recorded in the session that made it — the parent —
-    # while the member itself runs in a different (sub-agent) session that does
-    # not exist yet at bind time. Filing both under one `session` key would let
-    # a consumer counting "sessions this member took part in" count a session
-    # the member never ran in. Distinct keys make that misread impossible
-    # instead of leaving it to the consumer to notice `via`.
+    # A routing decision is recorded in the parent session that made it, not in
+    # the sub-agent session the member later runs in, so it goes under
+    # `decided_in`; only participation goes under `session`. One key would let a
+    # consumer count a session the member never ran in.
     entry = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "member": member,
@@ -106,38 +100,25 @@ def record_activity(
     from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED
 
     try:
-        # main's resolver, not the bare fold: a member may carry an explicit
-        # `member_id` in config, and member_slug honours it before falling back to
-        # slug_for_name. The log has to be keyed by the same id the rest of the
-        # roster uses, or a member with an explicit id reads an empty projection.
+        # member_slug, not the bare fold: it honours an explicit `member_id` in
+        # config, so the log is keyed by the same id the rest of the roster uses.
         slug = member_slug(member)
         from kiro_crew.eventlog.service import get_service
         from kiro_crew.eventlog.types import ACTIVITY_RECORD
 
         svc = get_service()
-        # ENSURE FIRST, then dedupe. ``ensure`` is what folds a pre-upgrade
-        # ``activity.jsonl`` into the log, so a scan running before it reads a
-        # log the legacy rows have not reached yet -- and the first
-        # post-upgrade call for a session already recorded in that file would
-        # dedupe against nothing and append a permanent duplicate. Both steps
-        # are idempotent, so paying ensure before a scan that may return early
-        # costs a caller nothing.
+        # ENSURE FIRST, then dedupe: ``ensure`` folds a pre-upgrade
+        # ``activity.jsonl`` into the log, and a scan before it would miss those
+        # rows and append a permanent duplicate. Both steps are idempotent.
         svc.ensure(slug, member)
         if dedupe_session:
-            # Check the member's own ACTIVITY_RECORD events for this session
-            # pair instead of scanning a file. Matched on BOTH fields: a
-            # colliding slug means one log can hold two members, so session
-            # alone would suppress the wrong entry. Only participation entries
-            # carry `session`, which is also the only kind deduped — routing
-            # decisions are distinct events.
+            # Matched on BOTH session and member: a colliding slug means one log
+            # can hold two members. Only participation entries carry `session`;
+            # routing decisions are distinct events and are not deduped.
             #
-            # The scan is UNBOUNDED, and a bound is not an optimisation here: the
-            # log is already materialised in memory by the read below, so a limit
-            # only truncates a filter over a list that was loaded either way. A
-            # 200-event cap therefore bought no I/O and did buy a miss — a
-            # session resumed after 200 later events deduped against nothing and
-            # wrote a second participation record, inflating the activity
-            # projection it feeds.
+            # The scan is UNBOUNDED on purpose: the whole log is loaded either
+            # way, so a limit saves no I/O and only misses a session resumed
+            # after many later events, writing a duplicate record.
             recent = svc.history(slug, before=None, limit=None)
             for ev in recent:
                 if ev.get("type") != ACTIVITY_RECORD:
@@ -148,18 +129,12 @@ def record_activity(
         svc.append(slug, ACTIVITY_RECORD, entry)
         return True
     except Exception as exc:
-        # An ``already_owned`` refusal is a LOSS, and it is reported rather than
-        # hidden. The store's write lease is taken non-blocking, so a second
-        # process appending at the same instant is refused outright instead of
-        # being serialized behind the per-append lock -- and this entry is then
-        # never written. The two writers are ordinary rather than pathological:
-        # ``kirocrew-core`` runs as its own subprocess and records activity
-        # through this function, which :meth:`MemberLog.refresh_if_changed`
-        # already names as a second writer on the read side. ``crew_log.lease``
-        # states the caller's duty for this code -- it reports the loss rather
-        # than retrying it -- and a debug line does not discharge that: it leaves
-        # a dropped routing decision indistinguishable from a member that was
-        # never routed, which is the one thing this record exists to tell apart.
+        # An ``already_owned`` refusal is a LOSS and is logged as a warning. The
+        # write lease is taken non-blocking, so a second process appending at the
+        # same instant (``kirocrew-core`` runs as its own subprocess) is refused
+        # and the entry is never written. ``crew_log.lease`` says the caller
+        # reports the loss rather than retrying; a debug line would make a dropped
+        # routing decision look like a member that was never routed.
         if getattr(exc, "code", "") == CODE_ALREADY_OWNED:
             logger.warning(
                 "member activity entry DROPPED for %r (session %r, via %r): another "
