@@ -1,10 +1,8 @@
 """Cron timeouts must count toward auto-pause.
 
-The ``asyncio.TimeoutError`` handler in ``_execute_with_timeout`` reset
-``consecutive_failures`` to 0 on every timeout, so a job that timed out on
-every run never accumulated toward ``_AUTO_PAUSE_THRESHOLD`` — it ran forever
-with zero user signal. Timeouts must now increment the counter and eventually
-auto-pause.
+The ``asyncio.TimeoutError`` handler in ``_execute_with_timeout`` increments
+``consecutive_failures``, so a job that times out on every run reaches
+``_AUTO_PAUSE_THRESHOLD`` instead of running forever with no signal.
 """
 
 from __future__ import annotations
@@ -89,18 +87,12 @@ async def test_a_never_started_run_does_not_consume_the_failure_budget(
 ):
     """A run that dispatched nothing must not count toward auto-pause.
 
-    A stall that pushes wall clock past the wake deadline while the fire-time
-    gate is still awaited cancels the coroutine AT that await, so no handler
-    inside the gate runs and the marker set before it survives -- and the
-    TimeoutError lands here on a run that executed no payload. Counting it
-    auto-pauses at _AUTO_PAUSE_THRESHOLD, and a paused job never fires again,
-    so repeated event-loop saturation durably disables a job that has not run a
-    line. The starvation, gate-deny and vet-overrun paths already decline for
-    this reason; this handler was the one that did not.
+    A stall past the wake deadline while the fire-time gate is awaited lands the
+    TimeoutError on a run that executed no payload. Counting it would let event-loop
+    saturation auto-pause a job that never ran a line.
 
-    Parametrised over BOTH directions on purpose: asserting only the exemption
-    would also pass if the count were deleted outright, so the never_started
-    =False case is what pins the count still firing for a genuine overrun.
+    Both directions: the never_started=False case pins the count for a real overrun,
+    which an exemption-only check would miss if the count were deleted.
     """
     svc = CronService(base_dir=tmp_path)
     job = CronJob(id="j4", name="slow", message="hi", timeout_secs=1)
