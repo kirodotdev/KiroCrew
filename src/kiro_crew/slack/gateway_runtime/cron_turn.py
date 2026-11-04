@@ -262,7 +262,11 @@ async def _cron_run_sequence(
                     job_name=job.name,
                     # The gate resolves this session's governance profile, as it
                     # does for a chat turn, and refuses when it cannot evaluate.
+                    # The agent is the step's alias or record name, the id a chat
+                    # turn on it hands the gate, so a task profile bound to that
+                    # name applies here; the template is for dispatch only.
                     session_key=agent_session_key,
+                    agent=step.alias,
                     unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
@@ -663,8 +667,12 @@ async def _cron_run_single(
             full_message,
             job_name=job.name,
             # The gate resolves this session's governance profile, as it does
-            # for a chat turn, and refuses when it cannot evaluate.
+            # for a chat turn, and refuses when it cannot evaluate. The agent is
+            # the job's alias or the member it selected (captured before a
+            # crewmate's worker swap), as on the sequence site; cron_agent is
+            # the template it dispatches.
             session_key=session_key,
+            agent=cap.gate_agent or "",
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
