@@ -19176,6 +19176,7 @@
         "theme_mode_dark": "Тёмная",
         "color_mode_solid_tint": "Сплошной оттенок",
         "color_mode_gradient": "Градиент",
+        "color_mode_row_fill": "Заливка строки",
         "intensity_soft": "Мягкая",
         "intensity_clear": "Чёткая",
         "intensity_vivid": "Яркая",

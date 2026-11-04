@@ -10308,6 +10308,7 @@
         "theme_mode_dark": "Dark",
         "color_mode_solid_tint": "Solid Tint",
         "color_mode_gradient": "Gradient",
+        "color_mode_row_fill": "Row Fill",
         "intensity_soft": "Soft",
         "intensity_clear": "Clear",
         "intensity_vivid": "Vivid",

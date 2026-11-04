@@ -18738,6 +18738,7 @@
         "theme_mode_dark": "Escuro",
         "color_mode_solid_tint": "Cor sólida",
         "color_mode_gradient": "Gradiente",
+        "color_mode_row_fill": "Preenchimento da linha",
         "intensity_soft": "Suave",
         "intensity_clear": "Nítida",
         "intensity_vivid": "Viva",

@@ -84,7 +84,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 
-function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<string, unknown> = {}, folders: Array<Record<string, unknown>> = []) {
+function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<string, unknown> = {}, folders: Array<Record<string, unknown>> = [], colorMode = 'tint') {
   const legacyFixtures = chat.goalLoops as Record<string, { cycle_count: number; max_cycles: number }> | undefined
   const { goalLoops: _legacyFixtures, ...chatState } = chat
   const automations = Object.fromEntries(Object.entries(legacyFixtures ?? {}).map(([slotKey, loop]) => [
@@ -101,7 +101,7 @@ function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<st
       channelTrusted: false, refreshTrigger: 0, unreadSlots: unread, updateProgress: null,
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
-      sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
+      sessionDefaultColor: null, sessionColorsMode: colorMode, sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     } as unknown as RootState['dashboard'],
     chat: { activeSlot: null, slotStatusDetail: {}, ...chatState, automations } as unknown as RootState['chat'],
   })
@@ -425,5 +425,31 @@ describe('chat sidebar — status marker leads the secondary line', () => {
     const line = lineOf(container)!
     expect(line.textContent).toContain('done')
     expect(line.querySelectorAll('svg, .rounded-full')).toHaveLength(0)
+  })
+})
+
+describe('chat sidebar — session colour display mode', () => {
+  const rowOf = (container: HTMLElement) => container.querySelector('.session-row') as HTMLElement
+
+  it('Row Fill mode marks a coloured row and hands it the fill strengths', () => {
+    const { container } = renderSidebar([slot({ color_hex: '#3b82f6' })], [], {}, [], 'row-fill')
+    const row = rowOf(container)
+    expect(row.classList.contains('session-row-fill')).toBe(true)
+    expect(row.classList.contains('session-gradient')).toBe(false)
+    for (const v of ['--session-fill-pct', '--session-fill-hover-pct', '--session-fill-active-pct']) {
+      expect(row.style.getPropertyValue(v)).toMatch(/^\d+%$/)
+    }
+  })
+
+  it('leaves an uncoloured row alone in Row Fill mode', () => {
+    const { container } = renderSidebar([slot()], [], {}, [], 'row-fill')
+    expect(rowOf(container).classList.contains('session-row-fill')).toBe(false)
+  })
+
+  it('keeps the bar modes free of the fill', () => {
+    const { container } = renderSidebar([slot({ color_hex: '#3b82f6' })], [], {}, [], 'gradient')
+    const row = rowOf(container)
+    expect(row.classList.contains('session-row-fill')).toBe(false)
+    expect(row.style.getPropertyValue('--session-fill-pct')).toBe('')
   })
 })

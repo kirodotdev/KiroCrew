@@ -17,7 +17,7 @@ import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from
 import { slotIsRemoteBound } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
-import { resolveSessionColor } from '../../utils/sessionColors'
+import { resolveSessionColor, rowFillStyle } from '../../utils/sessionColors'
 import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
 import { IconButton, IconButtonGroup } from '../../components/ui'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -1246,6 +1246,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       boostStyle['--session-color'] = resolvedColor.hex
       const muted = resolvedColor.index != null ? boost.mutedColors[resolvedColor.index] : boostFor(resolvedColor.hex).mutedColors[0]
       if (muted) boostStyle['--session-muted'] = muted
+      if (colorMode === 'row-fill') Object.assign(boostStyle, rowFillStyle(resolvedColor, boost, boostFor))
     }
     if (recent) boostStyle.boxShadow = recencyTintShadow(recent, recentTintCount)
     // A session that's open in its own window is dimmed here so the main
@@ -1402,7 +1403,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         <ContextMenuStableTrigger content={rowContextMenuContent}>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
-          className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${rowColor && colorMode === 'row-fill' ? 'session-row-fill' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           data-crew-root={crewRoot ? 'true' : undefined}
           data-crew-parent={isCrewParent ? 'true' : undefined}
           style={boostStyle as React.CSSProperties}

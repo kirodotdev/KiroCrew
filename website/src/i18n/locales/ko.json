@@ -17862,6 +17862,7 @@
         "theme_mode_dark": "다크",
         "color_mode_solid_tint": "단색",
         "color_mode_gradient": "그라데이션",
+        "color_mode_row_fill": "행 채우기",
         "intensity_soft": "부드러움",
         "intensity_clear": "선명함",
         "intensity_vivid": "생생함",

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   generatePalette, generateContrastRamp, generateHarmony,
   parseColor, computePaletteBoost, resolveDefaultColor, colorName,
-  resolveSessionColor, headerBandStyle, CATEGORICAL_HUES, paletteSize,
+  resolveSessionColor, headerBandStyle, rowFillStyle, CATEGORICAL_HUES, paletteSize,
   PALETTE_NAMES, PALETTE_SIZE, INTENSITY_NAMES, INTENSITY_THRESHOLDS,
 } from '../utils/sessionColors'
 
@@ -329,5 +329,33 @@ describe('headerBandStyle', () => {
   it('leaves the band to the CSS default when no boost is available', () => {
     expect(headerBandStyle({ hex: '#abcdef', index: null }, boost, () => ({ idlePct: [], activePct: [], hoverPct: [], mutedColors: [] })))
       .toEqual({ '--session-color': '#abcdef' })
+  })
+})
+
+describe('rowFillStyle', () => {
+  const boost = { idlePct: [5, 6], activePct: [25, 26], hoverPct: [12, 13], mutedColors: ['#999', '#888'] }
+  const boostFor = () => ({ idlePct: [9], activePct: [29], hoverPct: [16], mutedColors: ['#777'] })
+
+  it('takes the resting, hover and selected strengths of an indexed colour', () => {
+    expect(rowFillStyle({ hex: '#222222', index: 1 }, boost, boostFor)).toEqual({
+      '--session-fill-pct': '6%', '--session-fill-hover-pct': '13%', '--session-fill-active-pct': '26%',
+    })
+  })
+
+  it('measures a frozen hex on its own', () => {
+    expect(rowFillStyle({ hex: '#abcdef', index: null }, boost, boostFor)).toEqual({
+      '--session-fill-pct': '9%', '--session-fill-hover-pct': '16%', '--session-fill-active-pct': '29%',
+    })
+  })
+
+  it('caps a strong intensity so the wash never buries the row text', () => {
+    const strong = () => ({ idlePct: [60], activePct: [80], hoverPct: [67], mutedColors: ['#777'] })
+    expect(rowFillStyle({ hex: '#abcdef', index: null }, boost, strong)).toEqual({
+      '--session-fill-pct': '16%', '--session-fill-hover-pct': '22%', '--session-fill-active-pct': '30%',
+    })
+  })
+
+  it('returns nothing when the boost has no entry for the colour', () => {
+    expect(rowFillStyle({ hex: '#222222', index: 5 }, boost, boostFor)).toEqual({})
   })
 })
