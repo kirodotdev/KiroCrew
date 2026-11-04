@@ -245,7 +245,10 @@ URL in the pending ask's text and choices and in those items' text. A bare
 `#N` or a written `owner/repo#N` is never resolved to a repository, so it is
 not read. PR links in the card and buttons for the pending choices come in
 follow-up changes. Each answer
-is cached in process for 15 minutes. Every entry carries `read_at`, or
+is cached in process for 15 minutes. One welcome spends at most 10 seconds in
+total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
+limit the welcome goes out with the cached reads, and every PR still being read
+is `checked: false`. Every entry carries `read_at`, or
 `checked: false` with `not_checked_since` (the last good read, or `never`).
 The prompt allows merged, green, approved or conflict states only from
 `live_prs` or a change newer than the away time; anything else is written as

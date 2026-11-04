@@ -1804,8 +1804,13 @@ async def _run_warm_task_brief(
     # What the owner sees must still be true when it posts: an ask answered or
     # a ledger write during the model call makes the result stale. Regenerate
     # once from the new state; a second change posts nothing this visit.
+    # One time limit covers the live reads of every attempt; only the time
+    # spent reading counts, never the model call or the wait between.
+    read_left = inputs.LIVE_READ_TOTAL_SECS
     for _attempt in range(WARM_TASK_BRIEF_ATTEMPTS):
-        live = tuple(await inputs.read_live_prs(_live_refs(fresh)))
+        read_started = time.monotonic()
+        live = tuple(await inputs.read_live_prs(_live_refs(fresh), budget=read_left))
+        read_left -= time.monotonic() - read_started
         asked_at = time.time()
         text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
         # Once the indicator shows, the result lands as ordinary history even
