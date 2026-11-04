@@ -47,6 +47,7 @@ it passes the same ceiling the derived rules do, or it does not travel.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from collections.abc import Callable, Iterable
@@ -255,10 +256,100 @@ def shell_denies_by_default(tools_settings: Any) -> bool:
     return False
 
 
-def spec_shell_allowlist(tools_settings: Any) -> list[str] | None:
+#: The names kiro-cli's ``allowedTools`` matcher tests a shell call against: the
+#: tool's own name and its short spelling (:data:`KIRO_TOOL_ALIASES`).
+_SHELL_TOOL_NAMES = ("execute_bash", "shell")
+
+#: Prefix kiro-cli reads as "every built-in" (``@builtin``, ``@builtin/``,
+#: ``@builtin/*``) or as one built-in pattern (``@builtin/execute_bash``).
+_BUILTIN_PREFIX = "@builtin"
+
+
+def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
+    """Whether *allowed_tools* names the shell the way kiro-cli's matcher reads it.
+
+    kiro-cli (``is_tool_in_allowlist`` for a native tool) matches the shell when an
+    entry is ``@builtin`` / ``@builtin/`` / ``@builtin/*``, or when an entry without
+    ``@`` (or the part after ``@builtin/``) matches ``execute_bash`` as a glob.
+    Only the glob syntax both matchers document (``*``, ``?``) is read; an entry
+    with ``[ ] { } !`` grants nothing here, so an unclear entry keeps the
+    restriction (fail closed).
+    """
+    if not isinstance(allowed_tools, list):
+        return False
+    for raw in allowed_tools:
+        if not isinstance(raw, str):
+            continue
+        entry = raw.strip()
+        if entry in (_BUILTIN_PREFIX, f"{_BUILTIN_PREFIX}/", f"{_BUILTIN_PREFIX}/*"):
+            return True
+        if entry.startswith(f"{_BUILTIN_PREFIX}/"):
+            entry = entry[len(_BUILTIN_PREFIX) + 1 :]
+        elif entry.startswith("@"):
+            continue
+        if not entry or _UNSHARED_GLOB_SYNTAX.intersection(entry):
+            continue
+        if any(fnmatch.fnmatchcase(name, entry) for name in _SHELL_TOOL_NAMES):
+            return True
+    return False
+
+
+def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
+    """Whether every ``deniedCommands`` entry of both shell keys reaches *policy*
+    as a KAS shell ``deny`` rule.
+
+    False when an entry has no glob spelling (:func:`_regex_to_glob`), holds a
+    redirect character KAS never sees (:data:`_REDIRECT_CHARACTERS`), is not a
+    string, when the value is not a list, or when the translated glob is not among
+    *policy*'s shell deny matches (a merge dropped it). Then the deny lives only in
+    the spec, and lifting ``denyByDefault`` would let the command it names run.
+    """
+    if not isinstance(tools_settings, dict):
+        return tools_settings is None
+    carried: set[str] = set()
+    rules = policy.get("rules") if isinstance(policy, dict) else None
+    for rule in rules if isinstance(rules, list) else ():
+        # Only a plain whole deny counts: a rule with any other key (an
+        # `exclude` carving commands out of it) does not prove the deny holds.
+        if (
+            isinstance(rule, dict)
+            and set(rule) == {"capability", "match", "effect"}
+            and rule["capability"] == "shell"
+            and rule["effect"] == "deny"
+            and isinstance(rule["match"], list)
+        ):
+            carried.update(m for m in rule["match"] if isinstance(m, str))
+    for key in _SHELL_SETTINGS_KEYS:
+        settings = tools_settings.get(key)
+        denied = settings.get("deniedCommands") if isinstance(settings, dict) else None
+        if denied is None or (isinstance(denied, list) and not denied):
+            continue
+        if not isinstance(denied, list):
+            return False
+        for raw in denied:
+            if not isinstance(raw, str):
+                return False
+            if not raw.strip():
+                continue
+            glob = _regex_to_glob(raw.strip())
+            if glob is None or set(glob) & _REDIRECT_CHARACTERS or glob not in carried:
+                return False
+    return True
+
+
+def spec_shell_allowlist(
+    tools_settings: Any, allowed_tools: Any = None, policy: Any = None
+) -> list[str] | None:
     """The only shell commands a ``denyByDefault`` spec lets run, or ``None``.
 
-    ``None`` when neither shell key sets ``denyByDefault``. Otherwise the usable
+    ``None`` when neither shell key sets ``denyByDefault``, and when the spec's
+    *allowed_tools* names the shell (:func:`allowed_tools_grant_shell`) and every
+    ``deniedCommands`` entry rides the projected *policy* as a KAS deny rule
+    (:func:`shell_denies_carried`). kiro-cli allows
+    every command of an agent that lists the shell unless ``deniedCommands``
+    denies it, and applies ``denyByDefault`` only to an agent that does not list
+    the shell. Its commands then go through the gate's usual path and prompt or
+    are answered there. Otherwise the usable
     ``allowedCommands`` patterns of both keys (:func:`crew_answered_commands`'s
     subset and bound), possibly empty. The gate's ``spec-shell-allowlist`` tier
     REFUSES a shell call of the session's own agent that no pattern here matches,
@@ -270,6 +361,8 @@ def spec_shell_allowlist(tools_settings: Any) -> list[str] | None:
     A command it keeps still prompts unless :func:`crew_answered_commands` answers it.
     """
     if not shell_denies_by_default(tools_settings):
+        return None
+    if allowed_tools_grant_shell(allowed_tools) and shell_denies_carried(tools_settings, policy):
         return None
     return crew_answered_commands(tools_settings)
 

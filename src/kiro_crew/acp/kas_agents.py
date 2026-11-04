@@ -1223,8 +1223,11 @@ def to_client_custom_agent(
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
     # A restriction, so recorded whatever the ceiling says; the gate refuses every
-    # other shell call of this agent (`spec-shell-allowlist` tier).
-    shell_allowlist = spec_shell_allowlist(spec.get("toolsSettings"))
+    # other shell call of this agent (`spec-shell-allowlist` tier), unless
+    # `allowedTools` names the shell and every deny rides *permissions*.
+    shell_allowlist = spec_shell_allowlist(
+        spec.get("toolsSettings"), spec.get("allowedTools"), permissions
+    )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
     # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
