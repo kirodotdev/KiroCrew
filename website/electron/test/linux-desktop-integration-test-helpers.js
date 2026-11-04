@@ -3,6 +3,7 @@
 // linux-desktop-integration.*.test.js parts. (Not a *.test.js file, so
 // `node --test test/*.test.js` does not run it.)
 
+const assert = require("node:assert");
 const realFs = require("node:fs");
 const realOs = require("node:os");
 const realPath = require("node:path");
@@ -12,6 +13,98 @@ const { EventEmitter } = require("node:events");
 const LINUX_FILESYSTEM_ONLY = {
   skip: process.platform !== "linux" ? "requires Linux filesystem APIs" : false,
 };
+
+// The packaged helper publishes a managed update, and deletes a recovery
+// path, only while it holds a kernel write lease (F_SETLEASE, F_WRLCK) on the
+// inode. A managed launcher's inode always has two names: the module writes
+// the anchor temp file, then hard-links it to the public path. Some hosts
+// refuse the lease on such an inode with EAGAIN even when no process has it
+// open; the CodeBuild Linux runner (kernel 4.14, overlayfs root) does, for
+// every reopen of a managed launcher. The helper then reports "busy" and the
+// module keeps the old file, which is its designed answer to a refused lease.
+// On such a host a publish test asserts that fail-safe instead of a publish.
+//
+// This probe repeats the module's own sequence on a scratch file in `dir`:
+// Node writes and closes the file, hard-links it to a second name, and a
+// separate interpreter reopens each name O_RDWR and asks for the lease. It
+// returns a reason naming the errno, or null when both names are granted.
+// A probe that cannot run returns null, so the test expects a real publish
+// and fails loudly if the host then refuses it.
+const WRITE_LEASE_PROBE = [
+  "import errno, fcntl, os, sys",
+  "for path in sys.argv[1:]:",
+  "    fd = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)",
+  "    try:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+  "    except OSError as exc:",
+  "        print(errno.errorcode.get(exc.errno, str(exc.errno)))",
+  "        raise SystemExit(0)",
+  "    else:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)",
+  "    finally:",
+  "        os.close(fd)",
+  "print('granted')",
+].join("\n");
+
+function writeLeaseUnavailable(dir) {
+  const probeDir = realFs.mkdtempSync(realPath.join(dir, "lease-probe-"));
+  try {
+    const anchor = realPath.join(probeDir, "launcher.desktop.tmp");
+    const published = realPath.join(probeDir, "launcher.desktop");
+    realFs.writeFileSync(anchor, "probe", { flag: "wx", mode: 0o644 });
+    realFs.linkSync(anchor, published);
+    const result = realChildProcess.spawnSync(
+      "/usr/bin/python3", ["-I", "-c", WRITE_LEASE_PROBE, published, anchor],
+      { encoding: "utf8", timeout: 5000 }
+    );
+    const answer = result.status === 0 ? String(result.stdout || "").trim() : "";
+    return /^E[A-Z0-9]+$/.test(answer)
+      ? `this host refuses a write lease on a hard-linked file with no other open descriptor (${answer})`
+      : null;
+  } finally {
+    realFs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+// Bytes and inode identity of a managed launcher and of the anchor hard link
+// its manifest record names, so a deferred publish can be shown to have left
+// both exactly as they were.
+function managedLauncherSnapshot(launcher, statePath) {
+  const record = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher];
+  assert.equal(typeof record.anchorPath, "string", JSON.stringify(record));
+  const read = (p) => {
+    const st = realFs.lstatSync(p, { bigint: true });
+    return {
+      path: p, dev: String(st.dev), ino: String(st.ino), nlink: String(st.nlink),
+      mode: String(st.mode), mtimeNs: String(st.mtimeNs), body: realFs.readFileSync(p, "utf8"),
+    };
+  };
+  return { launcher: read(launcher), anchor: read(record.anchorPath) };
+}
+
+// The fail-safe on a host that refuses the write lease: every publish attempt
+// answered "busy", the module reported the launcher as preserved, the launcher
+// and its anchor are byte- and inode-identical to `before`, and no displaced
+// name was created beside them.
+function assertPublishDeferred({ result, launcher, statePath, before, runs, logs }) {
+  const seen = JSON.stringify({ result, logs, runs: runs.map((r) => [r.mode, r.stdout]) });
+  assert.deepEqual(result, { skipped: true, reason: "launcher customized" }, seen);
+  assert.ok(
+    logs.includes(`launcher at ${launcher} changed during reconciliation; preserving it`), seen
+  );
+  const publishes = runs.filter((r) => r.mode === "publish");
+  assert.ok(publishes.length > 0, `the update attempted a lease-held publish: ${seen}`);
+  for (const r of publishes) {
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "busy", seen);
+  }
+  const after = managedLauncherSnapshot(launcher, statePath);
+  assert.deepEqual(after, before);
+  assert.equal(after.launcher.ino, after.anchor.ino);
+  const displaced = realFs.readdirSync(realPath.dirname(launcher))
+    .filter((name) => name.includes("kirocrew-displaced"));
+  assert.deepEqual(displaced, []);
+}
 
 const BUNDLED_DESKTOP = [
   "[Desktop Entry]",
@@ -424,4 +517,7 @@ module.exports = {
   EMPTY_XATTR_DIGEST,
   fakeWorkerFactory,
   WORKER_DEPS,
+  writeLeaseUnavailable,
+  managedLauncherSnapshot,
+  assertPublishDeferred,
 };
