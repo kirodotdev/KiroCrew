@@ -655,7 +655,10 @@ def _url_payload_command(n: int) -> str:
 #: use in ``_DenyWaiver``: it keeps every self-protection floor, the unverifiable
 #: push key and every self-protection or credential-exfil rule out of the override
 #: entirely, so the change only narrows what can be waived.
-_PACKAGE_LINE_BUDGET = 33_959
+#: Raised by 8 more, to 33,967, for the ``kirocrew-bin`` entry in
+#: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
+#: link that decides which ``kirocrew`` an agent shell runs. Deny-only.
+_PACKAGE_LINE_BUDGET = 33_967
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
