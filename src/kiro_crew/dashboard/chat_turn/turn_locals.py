@@ -290,7 +290,6 @@ class _ChatTurn:
     is_slash: "bool"
     kiro_agent: "str | None"
     label: "str"
-    last_heartbeat: "float"
     memory_store: "str | None"
     needs_conversation_discard: "bool"
     needs_session_reset: "bool"

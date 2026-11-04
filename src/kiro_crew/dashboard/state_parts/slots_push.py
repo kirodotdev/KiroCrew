@@ -1113,6 +1113,14 @@ def broadcast_ws_owners(self: DashboardState, msg_type: str, data: WsPayload) ->
     _websocket_for(self).broadcast_ws_owners(msg_type, data)
 
 
+def hold_turn_heartbeat(self: DashboardState, holder: object, slot_key: str) -> None:
+    _websocket_for(self).turn_heartbeat.hold(holder, slot_key)
+
+
+def release_turn_heartbeat(self: DashboardState, holder: object) -> None:
+    _websocket_for(self).turn_heartbeat.release(holder)
+
+
 def ws_client_count(self: DashboardState) -> int:
     return _websocket_for(self).ws_client_count()
 

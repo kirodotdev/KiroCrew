@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Any, Protocol
 
 from aiohttp import web
 
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG
+from kiro_crew.dashboard.turn_heartbeat import TurnHeartbeat
 from kiro_crew.write_buffer_level import level_is_progress_signal
 
 #: Capability a dashboard tab declares in the ``caps`` query parameter of
@@ -231,6 +232,8 @@ class WebSocketHub:
         # they watch, may have changed. The crew-log exporter re-derives its bus
         # subscriptions from :meth:`fold_watch_routing` there.
         self._fold_watch_listeners: list[Callable[[], None]] = []
+        #: The one ``heartbeat`` tick for every socket while any turn runs.
+        self.turn_heartbeat = TurnHeartbeat(self.broadcast_heartbeat)
 
     @property
     def _log(self) -> logging.Logger:
@@ -655,6 +658,41 @@ class WebSocketHub:
         msg = json.dumps({"type": msg_type, "data": data})
         send_all = self._owner_method("_send_ws_all", self._send_ws_all)
         send_all(msg_type, data, msg)
+
+    def broadcast_heartbeat(self, slot_keys: Collection[str]) -> int:
+        """Send one ``heartbeat`` frame to each socket that may see a running turn.
+
+        *slot_keys* are the slots whose turns hold the tick. The frame carries only
+        ``ts``: no client reads which slot is running from it. The scope gate still
+        runs per socket with a slot key, so an app-token socket gets the frame only
+        while a turn runs on a slot it may see, as when each turn sent its own.
+        Returns how many sockets the frame was handed to.
+        """
+        if not self._owner._ws_clients or not slot_keys:
+            return 0
+        ts = time.time()
+        msg = json.dumps({"type": "heartbeat", "data": {"ts": ts}})
+        dead: list[web.WebSocketResponse] = []
+        sent = 0
+        client_allowed = self._owner_method("_ws_client_allowed", self._ws_client_allowed)
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if not any(
+                client_allowed(ws, "heartbeat", {"slot": key, "ts": ts}) for key in slot_keys
+            ):
+                continue
+            try:
+                spawn(ws, msg)
+                sent += 1
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+        return sent
 
     async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str | bytes) -> None:
         """Send ``msg`` to one owner tab and wait for as long as the tab reads.
@@ -1167,7 +1205,8 @@ class WebSocketHub:
             remove(ws)
 
     async def close_all_ws(self) -> None:
-        """Cancel the flush loop, close sockets in order, then clear registries."""
+        """Cancel the flush loop and heartbeat tick, close sockets, clear registries."""
+        await self.turn_heartbeat.stop()
         if self._owner._flush_task:
             self._owner._flush_task.cancel()
             self._owner._flush_task = None

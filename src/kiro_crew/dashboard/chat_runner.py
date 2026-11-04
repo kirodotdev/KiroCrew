@@ -943,7 +943,6 @@ async def _run_chat(
     _tcid_collapsed = turn._tcid_collapsed
     _tcid_first_source = turn._tcid_first_source
     _ttft_t0 = turn._ttft_t0
-    last_heartbeat = turn.last_heartbeat
     session_key = turn.session_key
     _flow = await _turn_slash_gate(turn)
     if _flow is _Flow.END:
@@ -995,6 +994,9 @@ async def _run_chat(
             note = getattr(client, "note_user_message", None)
             if note is not None:
                 note(turn.user_typed_message)
+        # The gateway-wide heartbeat ticks while any turn holds it; released first
+        # in ``finally`` below.
+        state.hold_turn_heartbeat(turn, slot.key)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
         event_stream = (
@@ -1035,12 +1037,6 @@ async def _run_chat(
                 turn._replay_pending = _replay_pending
                 _replay_accepted_this_turn = True
                 turn._replay_accepted_this_turn = _replay_accepted_this_turn
-            # Heartbeat every 5s during long operations
-            if time.time() - last_heartbeat > 5:
-                state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
-                last_heartbeat = time.time()
-                turn.last_heartbeat = last_heartbeat
-
             # First visible model output for this user prompt — emit TTFT once.
             if _ttft_t0 is not None and event.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK):
                 _emit_ttft_metric(_ttft_t0, session_key, is_new=is_new, resumed=resumed)
@@ -1281,6 +1277,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        state.release_turn_heartbeat(turn)
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
         _local_turn_marker_generation = turn._local_turn_marker_generation

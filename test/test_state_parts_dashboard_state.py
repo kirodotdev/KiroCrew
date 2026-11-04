@@ -385,6 +385,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "get_slot": ("function", False, False, "(self, name: 'str') -> '_ChatSlot | None'"),
     "has_slot": ("function", False, False, "(self, name: 'str') -> 'bool'"),
+    "hold_turn_heartbeat": (
+        "function",
+        False,
+        False,
+        "(self, holder: 'object', slot_key: 'str') -> 'None'",
+    ),
     "hold_folders": (
         "function",
         True,
@@ -542,6 +548,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, ws: 'web.WebSocketResponse', *, owner: 'bool' = False) -> 'None'",
     ),
+    "release_turn_heartbeat": ("function", False, False, "(self, holder: 'object') -> 'None'"),
     "release_deleted_slot_keys": (
         "function",
         False,
