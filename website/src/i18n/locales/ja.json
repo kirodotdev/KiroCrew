@@ -21424,6 +21424,7 @@
     "getting_started_brief": "朝のブリーフを設定",
     "notice_count_other": "探索に新着 {{count}} 件",
     "pill_count": "探索 {{done}}/{{total}}",
+    "header_progress": "{{total}} 機能中 {{done}} 試した",
     "streak_short_other": "{{count}} 日連続",
     "badges": "バッジ",
     "notice_one": "達成：{{title}}",

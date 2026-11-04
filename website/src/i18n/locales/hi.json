@@ -21841,6 +21841,7 @@
     "indicator_label_streak_other": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
     "indicator_label_streak_one": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
     "pill_count": "एक्सप्लोर {{done}}/{{total}}",
+    "header_progress": "{{total}} में से {{done}} सुविधाएँ आज़माईं",
     "getting_started_brief": "सुबह की ब्रीफ़ सेट करो",
     "mark_as_done": "पूरा मार्क करो",
     "notice_count_one": "एक्सप्लोर में {{count}} नई बात",
