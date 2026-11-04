@@ -679,6 +679,12 @@ _host_unservable: dict[str, str] = {}
 # :data:`KIRO_SELECTION_BACKEND`; an unknown verdict leaves it unset.
 _kiro_cli_offers_kas: bool = False
 
+# Whether THIS process has positive evidence that the host's kiro-cli lacks its
+# v2 engine (``acp --help`` ran and lists engines without v2). Read only
+# for an ``agent.kiro_cli_engine`` of ``"v2"``: with v2 gone, that choice follows
+# the automatic rule instead of staying on a launch kiro-cli cannot serve.
+_kiro_cli_retired_v2: bool = False
+
 # Whether :func:`ensure_kiro_cli_kas_verdict` has already run its one bounded probe
 # in THIS process. The probe spawns ``kiro-cli acp --help`` once; a process that
 # never got the gateway floor's verdict (the CLI, an eval run, a peer server) uses
@@ -825,6 +831,31 @@ def confirm_kiro_cli_offers_kas() -> None:
     _kiro_cli_offers_kas = True
 
 
+def confirm_kiro_cli_retired_v2() -> None:
+    """Record that this host's kiro-cli lists engines without v2 (positive evidence only)."""
+    global _kiro_cli_retired_v2
+    _kiro_cli_retired_v2 = True
+
+
+def record_kiro_cli_v2_evidence() -> None:
+    """Record whether the pinned kiro-cli retired v2, for a stored ``"v2"`` engine only.
+
+    Called beside the KAS verdict (the gateway floor, :func:`ensure_kiro_cli_kas_verdict`).
+    Spawns nothing unless ``agent.kiro_cli_engine`` is ``"v2"``, and sets the flag only
+    on positive evidence (:func:`kiro_crew.kiro_cli_engine.kiro_cli_retired_v2`): an
+    unknown keeps the choice on the Kiro CLI harness. Blocking; never raises.
+    """
+    try:
+        from kiro_crew import kiro_cli_engine
+
+        if kiro_cli_engine.process_kiro_cli_engine() != kiro_cli_engine.KIRO_CLI_ENGINE_V2:
+            return
+        if kiro_cli_engine.kiro_cli_retired_v2(kiro_cli_engine.pinned_kiro_cli_engines()):
+            confirm_kiro_cli_retired_v2()
+    except Exception:  # noqa: BLE001 - no evidence keeps the choice where it is
+        return
+
+
 def kiro_cli_offers_kas() -> bool:
     """Whether :func:`confirm_kiro_cli_offers_kas` ran in this process."""
     return _kiro_cli_offers_kas
@@ -898,6 +929,7 @@ def ensure_kiro_cli_kas_verdict() -> None:
             return
         if offers_kas:
             confirm_kiro_cli_offers_kas()
+        record_kiro_cli_v2_evidence()
 
 
 def host_unservable_reason(backend: str) -> str | None:
@@ -1024,7 +1056,7 @@ def resolve_selected_backend(value: object) -> str:
     return floor
 
 
-def kiro_cli_pick_backend() -> str:
+def kiro_cli_pick_backend(engine: str | None = None) -> str:
     """The runtime id a STORED Kiro CLI pick in ``agent.acp_backend`` loads as.
 
     A Kiro CLI pick launches a bare ``kiro-cli acp``, which kiro-cli now serves on
@@ -1036,7 +1068,18 @@ def kiro_cli_pick_backend() -> str:
     Called only where the stored value is read (``_read_backend_choice``), never
     from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
     a degraded value's floor (harness-parity H3), not a pick.
+
+    *engine* is ``agent.kiro_cli_engine`` as this process runs it
+    (:func:`kiro_crew.kiro_cli_engine.process_kiro_cli_engine` when ``None``). ``"v2"`` keeps the pick on the Kiro CLI harness, which then pins
+    ``--agent-engine v2``, unless this process holds positive evidence that kiro-cli
+    retired v2 (:func:`record_kiro_cli_v2_evidence`); ``"auto"`` changes nothing.
     """
+    from kiro_crew import kiro_cli_engine
+
+    if engine is None:
+        engine = kiro_cli_engine.process_kiro_cli_engine()
+    if engine == kiro_cli_engine.KIRO_CLI_ENGINE_V2 and not _kiro_cli_retired_v2:
+        return ACP_BACKEND_KIRO
     if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
         return KIRO_SELECTION_BACKEND
     return ACP_BACKEND_KIRO

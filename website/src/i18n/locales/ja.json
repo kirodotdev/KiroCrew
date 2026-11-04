@@ -14608,6 +14608,14 @@
         "save_failed": "この値を保存できませんでした。もう一度お試しください。",
         "title": "モデルプロバイダー",
         "value_missing": "参照先の値がシークレットにないため、新しい Strands セッションは拒否されます。新しい値を保存するか、削除してください。"
+      },
+      "kiroCliEngine": {
+        "label": "エンジン",
+        "description": "Kiro CLI が使う kiro-cli のエンジン。自動: kiro-cli が Kiro Agent を提供した時点でそれで実行します。V2: kiro-cli が削除するまで従来のエンジンを使います。{{productName}} の再起動後に反映されます。",
+        "option_auto": "自動",
+        "option_v2": "V2（kiro-cli で削除されるまで）",
+        "saved_restart_pending": "保存しました。{{productName}} の再起動後、新しいセッションはこのエンジンを使います。",
+        "save_failed": "エンジンを保存できませんでした。"
       }
     },
     "developerPage": {

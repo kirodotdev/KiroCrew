@@ -8178,6 +8178,14 @@
         "save_failed": "Could not save this value. Try again.",
         "title": "Model provider",
         "value_missing": "The value this names is no longer in Secrets, so new Strands sessions are refused. Save a new value, or remove it."
+      },
+      "kiroCliEngine": {
+        "label": "Engine",
+        "description": "Which kiro-cli engine Kiro CLI runs on. Automatic runs it on Kiro Agent once kiro-cli offers it. V2 keeps the classic engine until kiro-cli removes it. Takes effect when {{productName}} restarts.",
+        "option_auto": "Automatic",
+        "option_v2": "V2 (until kiro-cli removes it)",
+        "saved_restart_pending": "Saved. New sessions use this engine after {{productName}} restarts.",
+        "save_failed": "Could not save the engine."
       }
     },
     "embedSettingsPage": {

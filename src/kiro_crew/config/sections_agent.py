@@ -42,6 +42,7 @@ from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.kiro_cli_engine import KIRO_CLI_ENGINE_AUTO, KIRO_CLI_ENGINE_CHOICES
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -289,6 +290,23 @@ class AgentConfig:
             "run on the host (no kiro-cli, or one that is not signed in).",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
+            restart=True,
+        ),
+    )
+    kiro_cli_engine: str = field(
+        default=KIRO_CLI_ENGINE_AUTO,
+        metadata=_meta(
+            "Kiro CLI: agent engine",
+            "Which kiro-cli engine a Kiro CLI harness choice runs. 'auto' (the "
+            "default) runs it on the KAS path once this host's kiro-cli offers its "
+            "v3 engine, and on the v2 launch otherwise. 'v2' keeps it on the Kiro "
+            "CLI harness and starts kiro-cli with --agent-engine v2, while the "
+            "installed kiro-cli still offers v2; once it does not, 'v2' behaves as "
+            "'auto'. Temporary: it goes when kiro-cli removes its v2 engine. "
+            "Ignored by every other harness.",
+            enum=list(KIRO_CLI_ENGINE_CHOICES),
+            # The pick is resolved at config load and the running process keeps its
+            # engine, so a change reaches sessions once that process is replaced.
             restart=True,
         ),
     )

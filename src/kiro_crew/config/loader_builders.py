@@ -81,6 +81,7 @@ from kiro_crew.config.sections import (
     coerce_role_models,
 )
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX, SUBAGENT_TIMEOUT_MIN
+from kiro_crew.kiro_cli_engine import coerce_kiro_cli_engine
 from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
 from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
 
@@ -514,6 +515,8 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
         # degraded value's floor) is never moved by a later resolution. Not on the
         # bundle route: the confirmation is about kiro-cli's own engine, and KAS
         # there spawns Kiro Crew's bundled engine instead.
+        # ``agent.kiro_cli_engine`` "v2" keeps the pick on Kiro CLI (pinned to v2).
+        # The process's own engine, not this document's: the field applies at restart.
         value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
 
@@ -677,6 +680,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         kas_bundle=section.read("kas_bundle", _safe_bool),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
+        kiro_cli_engine=coerce_kiro_cli_engine(section.get("kiro_cli_engine")),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),

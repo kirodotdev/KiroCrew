@@ -318,7 +318,15 @@ def kas_relay_help(binary: str) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return f"{proc.stdout}\n{proc.stderr}"
+    text = f"{proc.stdout}\n{proc.stderr}"
+    if getattr(proc, "returncode", None) == 0:
+        # The same help text answers :func:`acp_agent_engines_at`; caching it here
+        # spares the engine reader a second bounded spawn on the same binary.
+        try:
+            _acp_engines_cache[(binary, os.stat(binary).st_mtime_ns)] = chat_agent_engines(text)
+        except OSError:
+            pass
+    return text
 
 
 #: Ceiling on the ``chat --help`` spawn, for the same reason as the ``acp --help`` one.
@@ -380,6 +388,46 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
     if proc is not None and proc.returncode == 0:
         engines = chat_agent_engines(f"{proc.stdout}\n{proc.stderr}")
     _chat_engines_cache[key] = engines
+    return engines
+
+
+#: ``acp --help`` engine answers, keyed by (path, mtime) like the ``chat`` cache.
+_acp_engines_cache: dict[tuple[str, int], tuple[str, ...] | None] = {}
+
+
+def acp_agent_engines_at(binary: str) -> tuple[str, ...] | None:
+    """The engines this kiro-cli's ``acp --agent-engine`` accepts, or ``None`` if unknown.
+
+    :func:`chat_agent_engines_at` for the ``acp`` subcommand, which is the one the
+    Kiro CLI harness spawns: ``()`` means the probe ran and lists no selector,
+    ``None`` that it could not run. The two subcommands' help blocks share the
+    clap ``[possible values: ...]`` shape, so the same parser reads both.
+
+    Call only on a path derived from :func:`pin_kiro_cli`: the probe runs outside
+    the sandbox. Blocking: one bounded spawn on the first call per binary
+    identity, cached by path and mtime. Never raises.
+    """
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return None
+    if key in _acp_engines_cache:
+        return _acp_engines_cache[key]
+    engines: tuple[str, ...] | None = None
+    try:
+        proc = subprocess.run(
+            [binary, "acp", "--help"],
+            capture_output=True,
+            timeout=_KAS_HELP_PROBE_TIMEOUT_SECS,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        engines = chat_agent_engines(f"{proc.stdout}\n{proc.stderr}")
+    _acp_engines_cache[key] = engines
     return engines
 
 

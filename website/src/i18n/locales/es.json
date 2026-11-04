@@ -15326,6 +15326,14 @@
         "save_failed": "No se pudo guardar este valor. Inténtalo de nuevo.",
         "title": "Proveedor de modelos",
         "value_missing": "El valor al que apunta ya no está en Secretos, así que las nuevas sesiones de Strands se rechazan. Guarda un valor nuevo o quítalo."
+      },
+      "kiroCliEngine": {
+        "label": "Motor",
+        "description": "Qué motor de kiro-cli usa Kiro CLI. Automático lo ejecuta en Kiro Agent cuando kiro-cli lo ofrece. V2 mantiene el motor clásico hasta que kiro-cli lo retire. Se aplica cuando {{productName}} se reinicia.",
+        "option_auto": "Automático",
+        "option_v2": "V2 (hasta que kiro-cli lo retire)",
+        "saved_restart_pending": "Guardado. Las sesiones nuevas usarán este motor cuando {{productName}} se reinicie.",
+        "save_failed": "No se pudo guardar el motor."
       }
     },
     "developerPage": {

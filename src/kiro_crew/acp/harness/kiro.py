@@ -20,6 +20,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import kiro_cli_engine as kiro_cli_engine_mod
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -62,7 +63,7 @@ class KiroHarness(MembershipHarness):
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """``kiro-cli acp --agent <agent> [--model <model>]``, after three gates.
+        """``kiro-cli acp --agent <agent> [--agent-engine v2] [--model <model>]``, after three gates.
 
         Two of the three gates REFUSE the spawn. Fork governance is not
         best-effort: a fork's on-disk ``allowedTools`` / ``autoApprove`` bypass
@@ -132,6 +133,9 @@ class KiroHarness(MembershipHarness):
             raise AcpRuntimeError(overlap)
 
         argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", ctx.agent]
+        # ``agent.kiro_cli_engine`` "v2": a bare ``acp`` starts v3 on kiro-cli 3.0, so
+        # the engine is named. Off the loop: the first call per binary probes its help.
+        argv += await asyncio.to_thread(kiro_cli_engine_mod.kiro_cli_engine_argv, kiro_bin)
         if ctx.model:
             # Pinning at process start is the ONLY reliable way to run a
             # non-default provider model: a later set_model cannot cross provider

@@ -60,6 +60,11 @@ vi.mock('../pages/developer/StrandsSetupCard', () => ({
   StrandsSetupCard: () => <div data-testid="strands-setup-card" />,
 }))
 
+// And for the Kiro CLI engine picker: its behaviour is pinned in KiroCliEngineCard.test.tsx.
+vi.mock('../pages/developer/KiroCliEngineCard', () => ({
+  KiroCliEngineCard: () => <div data-testid="kiro-cli-engine-card" />,
+}))
+
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 import {
   schemaWith,
@@ -1031,5 +1036,18 @@ describe('AgentBackendTab Strands setup', () => {
     expect(detail().contains(screen.getByTestId('strands-setup-card'))).toBe(true)
     highlight('Claude Code')
     expect(screen.queryByTestId('strands-setup-card')).toBeNull()
+  })
+})
+
+describe('AgentBackendTab Kiro CLI engine', () => {
+  it('renders the engine picker inside the Kiro CLI detail only', async () => {
+    wrap()
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    highlight('Kiro CLI')
+    expect(detail().contains(screen.getByTestId('kiro-cli-engine-card'))).toBe(true)
+    highlight('Kiro Agent')
+    expect(screen.queryByTestId('kiro-cli-engine-card')).toBeNull()
+    highlight('Claude Code')
+    expect(screen.queryByTestId('kiro-cli-engine-card')).toBeNull()
   })
 })

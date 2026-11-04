@@ -30,6 +30,7 @@
         "member_acp_backend": "kas",
         "acp_failover": {},
         "kas_bundle": false,
+        "kiro_cli_engine": "auto",
         "kas_persist_mcp_sign_in": true,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
@@ -402,6 +403,24 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "agent.kiro_cli_engine",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro CLI: agent engine",
+      "help": "Which kiro-cli engine a Kiro CLI harness choice runs. 'auto' (the default) runs it on the KAS path once this host's kiro-cli offers its v3 engine, and on the v2 launch otherwise. 'v2' keeps it on the Kiro CLI harness and starts kiro-cli with --agent-engine v2, while the installed kiro-cli still offers v2; once it does not, 'v2' behaves as 'auto'. Temporary: it goes when kiro-cli removes its v2 engine. Ignored by every other harness.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "v2"
+      ],
+      "defaultValue": "auto",
       "requiresRestart": true
     },
     {

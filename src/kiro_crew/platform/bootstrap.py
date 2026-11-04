@@ -496,7 +496,11 @@ def apply_kas_cli_floor(
         resolve_selected_backend,
         selectable_backends,
     )
-    from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
+    from kiro_crew.agent_sdk.backends import (
+        confirm_kiro_cli_offers_kas,
+        kiro_cli_pick_backend,
+        record_kiro_cli_v2_evidence,
+    )
 
     agent = cfg.agent
     kas_roles = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
@@ -519,6 +523,9 @@ def apply_kas_cli_floor(
         # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
         # process, so the verdict is recorded whatever the boot backend was.
         confirm_kiro_cli_offers_kas()
+        # An ``agent.kiro_cli_engine`` of ``"v2"`` keeps the pick on Kiro CLI unless
+        # kiro-cli has retired v2; that evidence is read here, before the pick moves.
+        record_kiro_cli_v2_evidence()
         if kiro_pick:
             agent.acp_backend = kiro_cli_pick_backend()
         return None

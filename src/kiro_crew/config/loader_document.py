@@ -128,6 +128,21 @@ def acp_backend_bundle_route() -> bool:
     return bool(_stored_agent_value("kas_bundle") is True)
 
 
+def kiro_cli_engine_stored() -> str:
+    """The stored ``agent.kiro_cli_engine``: ``"v2"`` only for that exact value, else ``"auto"``.
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`,
+    because the readers that need it (the pick's move onto KAS, the per-process
+    probe, the Kiro CLI spawn argv) run where no loaded config is at hand. Any
+    other stored value, or a document that cannot be read, is ``"auto"``.
+    """
+    from kiro_crew.kiro_cli_engine import KIRO_CLI_ENGINE_AUTO, KIRO_CLI_ENGINE_V2
+
+    if _stored_agent_value("kiro_cli_engine") == KIRO_CLI_ENGINE_V2:
+        return KIRO_CLI_ENGINE_V2
+    return KIRO_CLI_ENGINE_AUTO
+
+
 def acp_backend_overlay_owned() -> bool:
     """Whether the ``config.local.json`` overlay names ``agent.acp_backend``.
 

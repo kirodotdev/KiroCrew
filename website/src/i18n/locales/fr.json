@@ -15326,6 +15326,14 @@
         "save_failed": "Impossible d'enregistrer cette valeur. Réessaie.",
         "title": "Fournisseur de modèles",
         "value_missing": "La valeur qu'il désigne n'est plus dans les Secrets, donc les nouvelles sessions Strands sont refusées. Enregistre une nouvelle valeur ou retire-la."
+      },
+      "kiroCliEngine": {
+        "label": "Moteur",
+        "description": "Le moteur kiro-cli utilisé par Kiro CLI. Automatique l'exécute sur Kiro Agent dès que kiro-cli le propose. V2 conserve le moteur classique jusqu'à ce que kiro-cli le retire. Prend effet au redémarrage de {{productName}}.",
+        "option_auto": "Automatique",
+        "option_v2": "V2 (jusqu'à son retrait par kiro-cli)",
+        "saved_restart_pending": "Enregistré. Les nouvelles sessions utiliseront ce moteur après le redémarrage de {{productName}}.",
+        "save_failed": "Impossible d'enregistrer le moteur."
       }
     },
     "developerPage": {

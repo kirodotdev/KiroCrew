@@ -145,7 +145,8 @@ class CrewBackendPin:
         does in ``config.loader_builders._read_backend_choice``: off the KAS bundle
         route, ``kiro_cli_pick_backend()`` decides, which answers KAS once the
         host's kiro-cli is confirmed to offer v3 and while KAS is selectable
-        (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``).
+        (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``),
+        unless ``agent.kiro_cli_engine`` is ``"v2"``, which keeps it on Kiro CLI.
         This is a stored-value read, so the selection gate never moves a Kiro CLI id itself.
         """
         runtime = _backends.backend_from_stored(self.stored)

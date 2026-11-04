@@ -20,6 +20,7 @@ import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
+import { KiroCliEngineCard } from './KiroCliEngineCard'
 import { KiroSignInCard } from './KiroSignInCard'
 import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
@@ -1612,6 +1613,13 @@ export function AgentBackendTab() {
                     {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
                       <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
                         <KiroSignInCard compact />
+                      </ErrorBoundary>
+                    )}
+                    {/* The Kiro CLI engine (`agent.kiro_cli_engine`), inside the one row it
+                        changes; isolated like the cards around it. */}
+                    {value === KIRO && (
+                      <ErrorBoundary scope="developer-kiro-cli-engine" fallback={null}>
+                        <KiroCliEngineCard />
                       </ErrorBoundary>
                     )}
                     {value === STRANDS && (

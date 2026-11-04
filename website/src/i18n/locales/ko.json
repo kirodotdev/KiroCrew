@@ -14608,6 +14608,14 @@
         "save_failed": "이 값을 저장하지 못했습니다. 다시 시도하세요.",
         "title": "모델 제공자",
         "value_missing": "가리키는 값이 시크릿에 더 이상 없어 새 Strands 세션이 거부됩니다. 새 값을 저장하거나 제거하세요."
+      },
+      "kiroCliEngine": {
+        "label": "엔진",
+        "description": "Kiro CLI가 사용하는 kiro-cli 엔진입니다. 자동: kiro-cli가 Kiro Agent를 제공하면 그 위에서 실행합니다. V2: kiro-cli가 제거할 때까지 기존 엔진을 유지합니다. {{productName}}을(를) 다시 시작하면 적용됩니다.",
+        "option_auto": "자동",
+        "option_v2": "V2 (kiro-cli에서 제거될 때까지)",
+        "saved_restart_pending": "저장했습니다. {{productName}}을(를) 다시 시작하면 새 세션에서 이 엔진을 사용합니다.",
+        "save_failed": "엔진을 저장하지 못했습니다."
       }
     },
     "developerPage": {

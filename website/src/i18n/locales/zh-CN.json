@@ -14608,6 +14608,14 @@
         "save_failed": "无法保存此值，请重试。",
         "title": "模型提供商",
         "value_missing": "此处引用的值已不在密钥中，因此新的 Strands 会话会被拒绝。请保存新值，或将其移除。"
+      },
+      "kiroCliEngine": {
+        "label": "引擎",
+        "description": "Kiro CLI 使用哪个 kiro-cli 引擎。自动：kiro-cli 提供 Kiro Agent 后即在其上运行。V2：保留经典引擎，直到 kiro-cli 移除它。{{productName}} 重启后生效。",
+        "option_auto": "自动",
+        "option_v2": "V2（直到 kiro-cli 移除）",
+        "saved_restart_pending": "已保存。{{productName}} 重启后，新会话将使用此引擎。",
+        "save_failed": "无法保存引擎设置。"
       }
     },
     "developerPage": {

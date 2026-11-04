@@ -14967,6 +14967,14 @@
         "save_failed": "Der Wert konnte nicht gespeichert werden. Versuche es erneut.",
         "title": "Modellanbieter",
         "value_missing": "Der Wert, auf den das verweist, ist nicht mehr in den Secrets, daher werden neue Strands-Sitzungen abgelehnt. Speichere einen neuen Wert oder entferne ihn."
+      },
+      "kiroCliEngine": {
+        "label": "Engine",
+        "description": "Welche kiro-cli-Engine Kiro CLI verwendet. Automatisch führt es auf Kiro Agent aus, sobald kiro-cli diese anbietet. V2 behält die klassische Engine, bis kiro-cli sie entfernt. Wirkt nach einem Neustart von {{productName}}.",
+        "option_auto": "Automatisch",
+        "option_v2": "V2 (bis kiro-cli sie entfernt)",
+        "saved_restart_pending": "Gespeichert. Neue Sitzungen verwenden diese Engine nach dem Neustart von {{productName}}.",
+        "save_failed": "Die Engine konnte nicht gespeichert werden."
       }
     },
     "developerPage": {

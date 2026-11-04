@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.cli_doctor import (
         ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
         KAS_RELAY_ENGINE,
         KIRO_CLI_BIN,
         PATH_ONLY_INSTALL_NOTE,
@@ -69,8 +70,46 @@ def _doctor_kas(issues: list[str]) -> None:
     # relay and engine rows answer whether it does here. Not on the bundle route,
     # where the pick stays on kiro-cli.
     agent = KiroCrewConfig.load().agent
+    if (
+        _kiro_cli_selected()
+        and agent.acp_backend == ACP_BACKEND_KIRO
+        and _report_kiro_cli_engine_v2()
+    ):
+        # ``agent.kiro_cli_engine`` "v2" keeps the pick on the Kiro CLI harness, so
+        # the KAS rows describe a harness this pick does not run.
+        return
     if agent.acp_backend == ACP_BACKEND_KAS or (_kiro_cli_selected() and not agent.kas_bundle):
         _report_kas_backend(issues)
+
+
+def _report_kiro_cli_engine_v2() -> bool:
+    """Print the engine row for ``agent.kiro_cli_engine`` "v2"; ``True`` when v2 applies.
+
+    The row reads the pinned kiro-cli's ``acp --help`` through the same helper the
+    spawn uses, so it names the argv sessions get. ``False`` (no row) for "auto";
+    for "v2" on a kiro-cli that retired v2 the row says so and the KAS rows follow.
+    """
+    from kiro_crew import kiro_cli_engine
+
+    if kiro_cli_engine.process_kiro_cli_engine() != kiro_cli_engine.KIRO_CLI_ENGINE_V2:
+        return False
+    engines = kiro_cli_engine.pinned_kiro_cli_engines()
+    if kiro_cli_engine.kiro_cli_retired_v2(engines):
+        print(
+            "  engine:      ⚠  agent.kiro_cli_engine is v2, but this kiro-cli no longer "
+            f"offers v2 ({', '.join(engines or ())}); the automatic choice applies"
+        )
+        return False
+    if engines:
+        print("  engine:      v2 (agent.kiro_cli_engine; spawned with --agent-engine v2)")
+    elif engines is None:
+        print(
+            "  engine:      v2 requested (agent.kiro_cli_engine), but the pinned kiro-cli's "
+            "engines could not be read; sessions start without --agent-engine"
+        )
+    else:
+        print("  engine:      v2 (this kiro-cli has no engine selector)")
+    return True
 
 
 def _kiro_cli_selected() -> bool:

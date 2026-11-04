@@ -68,6 +68,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
+from kiro_crew.kiro_cli_engine import KIRO_CLI_ENGINE_CHOICES
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -145,6 +146,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # The Kiro CLI harness's engine (Settings → Agent Harness → Kiro CLI). "auto"
+    # follows the a-kiro-cli-choice-runs-on-kas decision; "v2" pins kiro-cli's v2
+    # engine while kiro-cli offers it.
+    "agent.kiro_cli_engine": {"type": "enum", "values": list(KIRO_CLI_ENGINE_CHOICES)},
     # The remote-dispatch preview switch (Settings → Developer → Feature previews,
     # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
     "work_ledger.remote_dispatch": {"type": "bool"},

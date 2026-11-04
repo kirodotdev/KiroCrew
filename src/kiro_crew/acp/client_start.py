@@ -106,6 +106,7 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.kiro_cli_engine import kiro_cli_engine_argv
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.sandbox import (
     assert_voice_runtime_outside_agent_workspace,
@@ -368,6 +369,8 @@ async def _spawn(self: AcpClient) -> None:
         except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc
         argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
+        # The same engine pin as ``KiroHarness.resolve_spawn``: this arm builds its own argv.
+        argv += await asyncio.to_thread(kiro_cli_engine_argv, kiro_bin)
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
