@@ -1550,6 +1550,10 @@ refused: `_opt_str` reads a `name` on `/run` and `/run_intent` as absent unless
 it is a string, so an object or list never becomes a run's name, and
 `_rerun_from_index` reads a rerun's `from_index` as 0 unless it is a whole
 number, clamping a negative one to 0 (a `bool` would otherwise replay call 0).
+`_opt_title` reads the fallback `title` on all three launch routes the same way:
+an object, list or boolean is absent, so it never titles the chat with its repr,
+while a string passes unchanged and a non-zero number keeps its text (zero stays
+absent).
 
 When the originating chat slot is gone at delivery (the common case for a
 webhook-driven run, whose ephemeral session is destroyed when its turn ends),
