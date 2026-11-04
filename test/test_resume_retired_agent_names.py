@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
+import native_skill_projection_helpers
 import pytest
 
 from kiro_crew import execution_context, session_agent_selection
@@ -202,6 +203,11 @@ def published_view(tmp_path, monkeypatch):
     monkeypatch.setattr(projection.platform_compat, "path_volume_is_remote", lambda path: False)
     monkeypatch.setattr(projection.platform_compat, "first_linked_ancestor", lambda path: None)
     monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    # Freeze the projection clock so the drain budget never expires; the production
+    # budget is left at its real value and only the deadline comparison is held.
+    # The facade mirror propagates the setattr to every owner module including
+    # alias_reclaim, so one call covers both projection.time and alias_reclaim.time.
+    native_skill_projection_helpers._hold_the_prune_clock(monkeypatch)
     # The pair must still be on disk after the projection is dropped: the drain
     # under test retires it, not the eager prune a dropped projection runs.
     monkeypatch.setattr(
