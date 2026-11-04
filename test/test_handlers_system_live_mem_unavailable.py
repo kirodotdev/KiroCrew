@@ -41,9 +41,18 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard import handlers_system
+from kiro_crew.dashboard import handlers_system, session_transfer
 
 _GIB_KB = 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _no_container_ceiling(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fabricated /proc/meminfo is the whole reading: the runner's own cgroup
+    must not bound it."""
+    _floor_monkeypatch.setattr(session_transfer, "_cgroup_memory_bounds", lambda **_: (None, None))
+
+
 _MEM_KEYS = ("mem_total_gb", "mem_used_gb", "mem_free_gb")
 
 _HEALTHY = (

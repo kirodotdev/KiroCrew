@@ -2471,7 +2471,8 @@ text). It is admitted
 only once the available memory, less what other admitted imports have reserved
 and a fixed headroom, covers it. Both memory readings are the host's clamped to
 the gateway's own cgroup (`_gateway_memory`): the tightest `memory.max` on its
-ancestry and the headroom under it, the walk subagent sizing uses, so a gateway in
+ancestry and the headroom under it (`_cgroup_memory_bounds`, over the walk subagent
+sizing uses, `subagent._container_cgroup_reading`), so a gateway in
 a memory-limited unit or container is budgeted against that limit, not the host. Short of that it WAITS, re-reading every
 `_MEMORY_POLL_SECS`, so a large session imports late rather than not at all, and
 two large imports run one after the other. It refuses only when waiting cannot
