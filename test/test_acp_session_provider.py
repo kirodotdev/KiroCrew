@@ -734,13 +734,10 @@ class TestAcpSessionProviderOwnsRuntime:
 
 
 class TestAcpSessionProviderRound4Parity:
-    """Round-4 AcpClient call-surface parity fixes.
+    """AcpSessionProvider matches the AcpClient call surface.
 
-    Every member below is invoked on ``AcpProvider._client`` / ``provider.client``
-    which, on the kiro shared-runtime path, IS an ``AcpSessionProvider``. A
-    missing member or mismatched call-convention/return-type surfaces as a
-    runtime TypeError/AttributeError only on that path (the recurring bug class:
-    cancel_session, has_active_turn, wait_turn_done).
+    On the kiro shared-runtime path ``provider.client`` is an ``AcpSessionProvider``,
+    so a missing member fails with TypeError/AttributeError only there.
     """
 
     def test_rekey_stores_keys_and_refreshes_activity(self):
@@ -1210,17 +1207,11 @@ class TestNewConversation:
 
     @pytest.mark.asyncio
     async def test_refuses_a_backend_that_does_not_evict_before_creating_anything(self):
-        """The whole primitive rests on ``old.destroy()`` actually reclaiming the
-        previous session. A backend outside ``ACP_BACKENDS_SESSION_EVICTION`` has
-        not demonstrated a teardown that does, so warm reuse would add one resident
-        session per reset with nothing but an age ceiling to reap it. It must
-        refuse, and refuse BEFORE ``session/new``: creating first would leak the very
-        session the refusal exists to prevent.
+        """A backend outside ``ACP_BACKENDS_SESSION_EVICTION`` must refuse warm reuse.
 
-        The stand-in is the claude backend: a registered backend that is not a
-        member. (codex WAS the motivating case, until its teardown became the
-        evicting ``session/close`` and it joined the set -- which is exactly why the
-        gate reads the set and not a name.)"""
+        Its ``old.destroy()`` is not shown to reclaim the session, so refuse before
+        ``session/new``. claude stands in as a registered non-member; the gate reads
+        the set, not a name."""
         from kiro_crew.acp.client import AcpError
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKENDS_SESSION_EVICTION
 

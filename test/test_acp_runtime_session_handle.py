@@ -235,12 +235,8 @@ async def test_is_stale_rss_when_tree_over_threshold(monkeypatch):
 async def test_the_declared_reclaim_scope_reaches_the_probe(monkeypatch):
     """A harness that bounds its RSS scope must have that bound actually applied.
 
-    The ceiling and the scope are one decision: applied without its scope, a
-    core-only ceiling is judged against a whole-subtree measurement, which for a
-    host whose subtree is dominated by a per-session fleet reads as a leak on the
-    first session and recycles a healthy process. Pinned on the ARGUMENT the probe
-    receives, because a policy field that is stored and never passed is exactly the
-    failure that looks correct in the policy object.
+    A core-only ceiling judged against the whole subtree recycles a healthy host.
+    Pinned on the probe's argument: a stored but unpassed field looks right.
     """
     rt, _, _ = _make_runtime()
     rt._max_age_secs = 6 * 3600
@@ -326,11 +322,8 @@ def test_the_spawn_path_does_not_branch_on_rss_depth():
 async def test_a_bounded_scope_is_offset_by_the_launcher_generation(monkeypatch):
     """The bug this pins: a launcher counted as the adapter hides the growing child.
 
-    Under a forking backend the tree is launcher -> adapter -> app-server, so a
-    harness declaring "the adapter and its direct children" needs depth 2 measured
-    from ``self._pid``. Applied unoffset, the sum stops at the adapter -- which is
-    the FLAT process -- and the ceiling never sees the child that actually grows, so
-    the leak detector reads healthy forever.
+    The tree is launcher -> adapter -> app-server, so "the adapter and its direct
+    children" is depth 2 from ``self._pid``; unoffset, the growing child is missed.
     """
     rt, _, _ = _make_runtime()
     rt._max_age_secs = 6 * 3600
@@ -422,13 +415,10 @@ def test_get_rss_mb_real_process():
 
 
 def test_get_rss_tree_mb_real_process():
-    """The real tree probe returns a positive sample for this process and None
-    for a nonexistent PID.
+    """The real tree probe returns a positive sample here and None for a missing PID.
 
-    Do not compare this sample with a separate single-process RSS read: resident
-    sets are live values and Windows may trim the working set between the two
-    calls.  The deterministic root-plus-descendants arithmetic is covered with
-    fixed values in ``test_platform_compat_coverage_metrics.py``.
+    Not compared with a single-process read: Windows may trim the working set between
+    calls. The arithmetic is in ``test_platform_compat_coverage_metrics.py``.
     """
     from kiro_crew.acp.runtime import _get_rss_tree_mb
 
@@ -468,18 +458,9 @@ async def test_handle_cancel_uses_notification():
 async def test_concurrent_prompt_on_same_handle_rejected():
     """A second ``prompt()`` on a handle whose turn is in flight must refuse.
 
-    The first turn is only "in flight" once ``_run_turn`` has passed its
-    ``_turn_done`` guard, and that happens AFTER two awaits the driver task has
-    to get through first (``_effective_prompt_timeout_async`` and the
-    ``to_thread`` prompt build). A fixed ``sleep(0.05)`` was a guess at how long
-    those take; on a loaded Windows runner the guess lost, the second prompt
-    passed the guard too, and then waited on a completion this test never feeds
-    -- with ``timeout=None`` resolving to the multi-hour dashboard ceiling. That
-    is not a failure, it is a hang: pytest-timeout kills the xdist worker, and
-    with ``--max-worker-restart=0`` the whole run aborts (observed in 2 of 5
-    full runs). ``_await_routed`` waits on the observable fact instead -- the
-    request exists in ``_routed_requests`` -- and the second prompt carries a
-    bounded timeout so a missed rejection fails at this line, loudly.
+    The first turn passes its ``_turn_done`` guard only after two awaits, so
+    ``_await_routed`` waits for the request instead of a sleep. The second prompt has
+    a bounded timeout: ``timeout=None`` would hang for hours and abort the xdist run.
     """
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -621,11 +602,8 @@ async def test_prompt_resets_turn_done_when_send_request_fails():
 async def test_prompt_resets_turn_done_when_cancelled():
     """Same guard, but for cancellation — which is NOT an ``Exception``.
 
-    ``asyncio.CancelledError`` derives from ``BaseException``, so an
-    ``except Exception`` guard lets it through and leaves ``_turn_done`` cleared
-    forever: ``is_turn_active`` reports True permanently and every later
-    ``prompt()`` on the handle is rejected as already active. A turn timing out
-    or being cancelled is routine, so this must recover.
+    ``asyncio.CancelledError`` skips an ``except Exception`` guard and would leave
+    ``_turn_done`` cleared, rejecting every later ``prompt()``.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")

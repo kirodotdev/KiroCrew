@@ -1,13 +1,8 @@
 """The opt-in ACP frame recorder that produces a replay-corpus fixture.
 
-``kiro_crew.acp._frame_record.record_frame`` sits on the hot path of every frame
-of every session, so the properties worth pinning are the ones whose absence
-would be a production incident rather than a wrong fixture: silent when off, off
-the event loop when on, silent when broken, scrubbed when it writes, and
-owner-only on disk.
-
-The replay corpus itself (``test/fixtures/acp_frames/``) and its snapshot test
-are ``test/test_acp_frame_replay.py``; this module covers only the recorder.
+``record_frame`` is on every frame's hot path, so it must be silent when off, off the
+event loop when on, silent when broken, scrubbed, and owner-only on disk. The corpus
+itself is tested in ``test/test_acp_frame_replay.py``.
 """
 
 from __future__ import annotations
@@ -61,16 +56,9 @@ def _isolated_recorder(monkeypatch):
 def _pin_acl_gate_open(monkeypatch) -> None:
     """Run the recorder's LOGIC on any POSIX host; only the gate tests flip it back.
 
-    Production refuses to record anywhere but Linux (``_require_acl_inspectable``:
-    only Linux exposes ACLs through ``os.listxattr``). Left unpinned, that gate made
-    75 tests in this module and its provider-safety sibling FAIL on every macOS dev
-    box while CI (Linux) was green, a platform-dependent failure rather than a skip. The
-    redaction, the owner-only modes, the symlink and hardlink refusals and the drain
-    are POSIX-generic and are exactly what a developer on a Mac wants checked before
-    pushing, so the gate is pinned to the platform the feature targets and, where the
-    host has no ``os.listxattr`` at all, an inspector that reports no ACLs (a Linux
-    filesystem without xattrs). The two tests OF the gate set ``IS_LINUX`` False
-    themselves and are unaffected.
+    Production records only on Linux (``_require_acl_inspectable``), which would fail
+    these POSIX-generic tests on macOS. Without ``os.listxattr`` the inspector reports
+    no ACLs. The gate's own tests set ``IS_LINUX`` False.
     """
     monkeypatch.setattr(_frame_record.platform_compat, "IS_LINUX", True)
     if not hasattr(os, "listxattr"):
@@ -81,11 +69,8 @@ def _pin_acl_gate_open(monkeypatch) -> None:
 async def _live_writer():
     """Await the drain task's cancellation on the way out, even when the body fails.
 
-    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this
-    repo's convention. The teardown has to await: a task still pending when the
-    test's loop closes is reported by pytest as destroyed, and its executor write
-    can still be touching the test's directory. ``try/finally`` so an assertion
-    failure in the body does not skip it.
+    A pending task at loop close is reported destroyed and may still write to the
+    test's directory.
     """
     try:
         yield
@@ -685,11 +670,8 @@ def test_every_known_backend_maps_to_a_usable_file_stem():
 def test_a_fresh_recording_is_created_owner_only(monkeypatch, tmp_path):
     """A recording holds redacted-but-not-guaranteed-clean transcripts.
 
-    The first version of this recorder used a bare ``mkdir()`` and ``open("a")``,
-    so a recording took the umask default -- 0o755 / 0o644 on most hosts -- and
-    any other local user could read a developer's transcripts. Passing the mode
-    to ``mkdir`` and ``os.open`` closes that on a fresh path; the pre-existing
-    path is the next test.
+    Under a 0o022 umask a bare ``mkdir``/``open`` is world-readable, so the mode is
+    passed explicitly. The pre-existing path is the next test.
     """
     _clean(monkeypatch)
     old = os.umask(0o022)
@@ -944,12 +926,9 @@ async def test_a_full_queue_drops_and_stands_down_instead_of_waiting(monkeypatch
 
 @pytest.mark.asyncio
 async def test_a_burst_of_large_frames_is_bounded_by_bytes_not_count(monkeypatch, tmp_path):
-    """The transports admit frames of up to 10 MiB, so a count-only bound would
-    let a burst hold gigabytes of parsed JSON behind one wedged writer.
+    """Frames can be 10 MiB, so the backlog is bounded by wire bytes, not count.
 
-    The byte bound counts the WIRE length the reader loop already has, not a
-    re-serialization on the loop. Three 1 KiB "frames" under a 2.5 KiB cap:
-    the third must be dropped and stand recording down, well under
+    Three 1 KiB frames under a 2.5 KiB cap: the third is dropped, well under
     ``QUEUE_LIMIT``.
     """
     _clean(monkeypatch)
@@ -1081,11 +1060,8 @@ async def test_queued_bytes_are_released_as_frames_are_written(monkeypatch, tmp_
 def test_the_lockdown_is_applied_to_the_opened_descriptor_not_the_path(monkeypatch, tmp_path):
     """A path-based chmod after the open protects whatever the path names NOW.
 
-    If another local user swaps the parent between the directory check and the
-    open, the descriptor holds their file while the path has been restored, so
-    ``chmod(path)`` tightens the wrong inode and the frame lands attacker-
-    readable. ``fchmod`` on the descriptor cannot be redirected. This pins the
-    mechanism: a chmod by path must not be what tightens the file.
+    A parent swapped between check and open makes ``chmod(path)`` hit the wrong inode;
+    ``fchmod`` on the descriptor cannot be redirected.
     """
     _clean(monkeypatch)
     by_path: list = []
@@ -1445,11 +1421,8 @@ def test_a_hard_link_planted_inside_the_directory_is_refused(monkeypatch, tmp_pa
 def _vanishing_mkdir(leaf: str, *, once: bool, counter: list[int], plant: Path | None = None):
     """A ``mkdir`` that makes *leaf* and then removes it again, as a remover would.
 
-    The removal lands exactly where a concurrent one would: after the directory
-    exists and before anything has opened it. Deterministic, so the window is a
-    test fixture rather than something to reproduce under load. With *plant*, a
-    link to that path is left at the name instead of nothing, which is the other
-    thing an actor who won the race can do.
+    Removed after it exists and before anything opens it. With *plant*, a link is left
+    at the name instead.
     """
     real_mkdir = os.mkdir
 
@@ -1767,16 +1740,10 @@ def test_two_keys_that_scrub_to_one_spelling_both_survive(monkeypatch, tmp_path)
 
 
 def test_two_event_loops_share_one_writer_and_one_byte_budget(monkeypatch, tmp_path):
-    """The two transports read on different threads and loops. A writer bound
-    to whichever loop recorded first would be replaced each time the other
-    loop recorded, so two writers would append to the same file at once and
-    each would count the byte budget from zero. One process-wide queue means
-    frames from both loops land in one file in arrival order, and the second
-    loop is held to the same backlog bound as the first.
+    """The two transports' loops share one process-wide writer and byte budget.
 
-    Both loops here are wedged behind one gate so nothing is written while
-    the second loop enqueues; the byte cap is sized so that only the SUM of
-    the two loops' frames exceeds it."""
+    Both loops are wedged behind one gate; the cap is sized so only the sum of their
+    frames exceeds it."""
     _clean(monkeypatch)
     monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
     _frame_record.start_recorder()

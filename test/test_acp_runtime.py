@@ -68,11 +68,8 @@ from kiro_crew.testing.wait import await_until, default_timeout
 def kas_readiness_wire(monkeypatch, tmp_path):
     """Real demux and session startup; only the subprocess and clock are fake.
 
-    The fake stdout is a ``_RunningLoopStreamReader`` (see ``_make_runtime``): a
-    StreamReader that binds its loop lazily, the first time a read suspends, so it
-    picks up the loop pytest-asyncio runs the test on rather than the synchronous
-    fixture-setup loop. Any consumer of ``rt._process.stdout`` gets a correctly-
-    bound reader, not only tests that start it through ``_start_reader``.
+    The fake stdout (``_RunningLoopStreamReader``) binds its loop on the first suspending
+    read, so it uses the test's loop, not the fixture-setup loop.
     """
     from types import SimpleNamespace
 
@@ -325,18 +322,10 @@ async def test_a_withdrawn_worker_stub_never_reaches_the_wire(
 
 @pytest.mark.asyncio
 async def test_kas_readiness_wire_stdout_reads_on_the_running_loop(kas_readiness_wire):
-    """A consumer that reads ``rt._process.stdout`` directly must not hit the
-    cross-loop error the fixture once needed ``_start_reader`` to paper over.
+    """Reading ``rt._process.stdout`` directly must not raise a cross-loop error.
 
-    A plain ``StreamReader`` pins its loop at construction, so one built on a
-    synchronous fixture-setup loop would create its ``readuntil`` waiter on that
-    loop and, from a test running on a different loop, raise ``RuntimeError: got
-    Future attached to a different loop``. The fixture's reader binds its loop
-    lazily on the first suspending read, so it picks up the running loop for any
-    consumer -- including this one, which drives stdout directly without going
-    through ``_start_reader``. The read must suspend (partial data, no delimiter
-    yet) to create that waiter; a line already complete in the buffer returns
-    without one and would not exercise the bug.
+    A plain ``StreamReader`` pins its loop at construction. The read must suspend
+    (partial data, no delimiter) to create the waiter; a complete line would not.
     """
     wire = kas_readiness_wire
     stdout = wire.runtime._process.stdout
@@ -453,21 +442,9 @@ async def test_session_cwd_is_bound_through_real_create_and_load(
 ):
     """The directory a session opens against must survive to the PUBLIC provider cwd.
 
-    This drives the REAL ``create_session``/``load_session`` wire path (not a
-    hand-set ``handle._bound_cwd``), so it pins the wiring the unit tests cannot:
-    ``runtime.py`` records ``bound_cwd=str(session_work_dir)`` on create and
-    ``bound_cwd=str(load_params["cwd"])`` on load. Reverting either line makes
-    the handle's ``_bound_cwd`` fall back to ``""`` and both assertions below
-    fail. The runtime's ``_work_dir`` is repointed at a sibling directory while
-    the session opens against ``tmp_path`` (a different directory), which is the
-    shared-runtime case bolichen97's review is about: on a shared runtime,
-    answering reuse validation with the runtime's own directory would evict a
-    live session that bound elsewhere.
-
-    It also pins the SessionMap/resume-caller flow end to end: the inner
-    ``AcpSessionProvider.cwd`` must report the bound dir, AND the ``AcpProvider``
-    wrapper that every caller actually holds must forward it rather than
-    returning ``self._client._work_dir``.
+    Drives the real ``create_session``/``load_session`` path. The runtime's ``_work_dir``
+    is a sibling dir: on a shared runtime, answering reuse validation with it would evict
+    a live session. ``AcpProvider`` must forward the bound dir, not ``_client._work_dir``.
     """
     from kiro_crew.acp.session_provider import AcpSessionProvider
     from kiro_crew.providers.acp import AcpProvider
@@ -805,13 +782,10 @@ async def test_kas_readiness_accepts_provenance_less_wire_for_injected_servers(
 async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_wire(
     kas_readiness_wire, monkeypatch, resume, catalog
 ):
-    """The ordinary install: ``kirocrew-core`` declared only by the agent spec,
-    nothing stubbed. The runtime carries the projected declaration in the
-    session-level array (``2.18.0-payload-probe.json``: that payload connects
-    Crew's own server past colliding global and workspace entries on new and
-    load), so the provenance-less wire reads it as injected and startup completes.
-    Exposure comes from the connected entry's own catalog when it carries one
-    (2.18.0 through 2.22.0 all do), and only otherwise from a tag frame.
+    """The default install: ``kirocrew-core`` comes only from the agent spec.
+
+    The session-level array carries it (``2.18.0-payload-probe.json``), so the wire reads
+    it as injected; exposure comes from the entry's own catalog, else a tag frame.
     """
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
@@ -1091,15 +1065,8 @@ async def test_managed_readiness_keeps_external_wire_roster(kas_readiness_wire, 
 async def test_await_routed_tolerates_a_driver_that_has_not_run_yet():
     """The helper must not depend on the driver having been scheduled.
 
-    This is the exact condition that made the old
-    ``await asyncio.sleep(0.05); req_id = rt._next_id - 1`` idiom flake on loaded
-    Windows runners: the sleep expires, but the driver task has not yet reached
-    ``send_request``, so ``_next_id`` has not advanced and the computed id
-    belongs to no request. The test then feeds a response nothing is waiting for
-    and fails later as an opaque ``TimeoutError``.
-
-    Here the driver is deliberately never given a chance to run before the read,
-    which is the worst case of that race.
+    A sleep-then-read of ``rt._next_id`` flakes when the driver has not reached
+    ``send_request``. Here the driver never runs before the read, the worst case.
     """
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -1368,16 +1335,8 @@ async def test_awaited_response_resolves_pending_future():
 async def test_missing_agent_spec_error_reaches_caller_actionable(tmp_path):
     """A missing agent spec must not reach the caller as a raw -32603 dict.
 
-    kiro-cli answers ``session/set_mode`` for an agent it cannot resolve with a
-    bare "Internal error" whose data is ``Mode '<name>' not found``. Routed raw,
-    the caller — and the dashboard chat bubble behind it — got the JSON-RPC dict
-    verbatim: an internal ACP concept, no mention of the missing file, and no
-    remedy, on a condition that fails every subsequent turn too.
-
-    This pins the formatting AT THE CALL SITE rather than only unit-testing the
-    helper: the awaited-request branch of the reader is the single path every
-    handshake error (initialize / session/new / session/set_mode) takes, so a
-    regression that unwires the helper is invisible to a helper-only test.
+    kiro-cli answers with ``Mode '<name>' not found``. Pinned at the call site: every
+    handshake error takes the reader's awaited-request branch.
     """
     rt, reader, _ = _make_runtime()
     fut: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -1548,10 +1507,8 @@ async def test_line_json_loads_rejects_without_decode_error_does_not_crash_reade
     """A line that ``json.loads`` rejects with something other than
     ``json.JSONDecodeError`` is skipped like a non-JSON line.
 
-    Nesting past the decoder's ceiling raises ``RecursionError``, an integer
-    past the int-string digit limit a plain ``ValueError``, and undecodable
-    bytes ``UnicodeDecodeError``. None of them may reach the loop's crash arm,
-    which marks the runtime dead and ends every multiplexed session on it.
+    ``RecursionError``, ``ValueError`` and ``UnicodeDecodeError`` must not reach the crash
+    arm, which ends every session on the runtime.
     """
     rt, reader, _ = _make_runtime()
     q = _register(rt, "sA")
