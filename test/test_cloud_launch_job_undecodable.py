@@ -1,9 +1,10 @@
-"""A launch job file whose bytes are not UTF-8 is skipped like one that does not parse.
+"""A launch job file the store cannot read is skipped, and reported as unreadable.
 
-``LaunchJobStore.get`` answers ``None`` for a job file that is not valid JSON, so
-``list`` drops that one job and still returns the others. A file whose bytes do
-not decode as UTF-8 is the same unusable record, so it is skipped the same way
-instead of raising ``UnicodeDecodeError`` out of ``list`` and hiding every job.
+``LaunchJobStore.get`` answers ``None`` for a job file that holds no readable job,
+so ``list`` drops that one job and still returns the others. Bytes that are not
+UTF-8, bad JSON (a file cut short) and JSON that is not an object are all such a
+record. ``snapshot`` reports each one's id, because its status is unknown and it
+may be a launch still running: launch admission refuses while one exists.
 """
 
 from __future__ import annotations
@@ -17,6 +18,13 @@ from kiro_crew.cloud import launch_job as lj
 
 # Not UTF-8: 0xff never starts a UTF-8 sequence.
 _UNDECODABLE = b'\xff\xfe{"id": "x"}'
+
+# One entry per way an existing job file can hold no readable job.
+_UNREADABLE = {
+    "not_utf8": _UNDECODABLE,
+    "bad_json": b'{"status": "running", "tag": "kc-',
+    "not_an_object": b'["running"]',
+}
 
 T = TypeVar("T")
 
@@ -46,6 +54,52 @@ def test_list_skips_a_job_file_that_is_not_utf8_and_keeps_the_rest(tmp_path) -> 
     assert [job.id for job in _call(store.list)] == [good.id]
 
 
+@pytest.mark.parametrize("kind", sorted(_UNREADABLE))
+def test_a_job_file_that_cannot_be_read_is_skipped_and_reported(tmp_path, kind) -> None:
+    store = lj.LaunchJobStore(root=tmp_path / "launch-jobs")
+    good = store.create(profile="dev", region="us-east-1", size_key="balanced")
+    bad = store.create(profile="dev", region="us-east-1", size_key="balanced")
+    store._path(bad.id).write_bytes(_UNREADABLE[kind])
+
+    jobs, unreadable = _call(store.snapshot)
+
+    assert _call(lambda: store.get(bad.id)) is None
+    assert [job.id for job in jobs] == [good.id]
+    assert unreadable == [bad.id]
+    assert store.unreadable_ids() == [bad.id]
+
+
+def test_a_job_file_whose_read_keeps_failing_is_reported(tmp_path, monkeypatch) -> None:
+    """A file that exists but every read attempt fails has an unknown status too."""
+    store = lj.LaunchJobStore(root=tmp_path / "launch-jobs")
+    good = store.create(profile="dev", region="us-east-1", size_key="balanced")
+    bad = store.create(profile="dev", region="us-east-1", size_key="balanced")
+    bad_path = store._path(bad.id)
+    real_read_text = type(bad_path).read_text
+
+    def read_text(self, *a, **k):
+        if self == bad_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(type(bad_path), "read_text", read_text)
+
+    jobs, unreadable = store.snapshot()
+
+    assert [job.id for job in jobs] == [good.id]
+    assert unreadable == [bad.id]
+
+
+def test_a_job_file_that_is_gone_is_absent_not_unreadable(tmp_path) -> None:
+    store = lj.LaunchJobStore(root=tmp_path / "launch-jobs")
+    gone = store.create(profile="dev", region="us-east-1", size_key="balanced")
+    path = store._path(gone.id)
+    path.unlink()
+
+    assert store._read(path) == (None, False)
+    assert store.snapshot() == ([], [])
+
+
 def test_snapshot_reads_each_file_once_for_both_answers(tmp_path, monkeypatch) -> None:
     """The jobs and the unreadable ids come from one read of each file.
 
@@ -56,9 +110,8 @@ def test_snapshot_reads_each_file_once_for_both_answers(tmp_path, monkeypatch) -
     good = store.create(profile="dev", region="us-east-1", size_key="balanced")
     bad = store.create(profile="dev", region="us-east-1", size_key="balanced")
     store._path(bad.id).write_bytes(_UNDECODABLE)
-    store._path(store.create(profile="d", region="us-east-1", size_key="balanced").id).write_text(
-        "{not json", encoding="utf-8"
-    )
+    cut_short = store.create(profile="d", region="us-east-1", size_key="balanced")
+    store._path(cut_short.id).write_text("{not json", encoding="utf-8")
     reads: list[str] = []
     real_read = store._read
 
@@ -68,8 +121,8 @@ def test_snapshot_reads_each_file_once_for_both_answers(tmp_path, monkeypatch) -
 
     monkeypatch.setattr(store, "_read", counting_read)
 
-    jobs, undecodable = _call(store.snapshot)
+    jobs, unreadable = _call(store.snapshot)
 
     assert [job.id for job in jobs] == [good.id]
-    assert undecodable == [bad.id]  # bad JSON is skipped but not reported, as before
+    assert unreadable == sorted([bad.id, cut_short.id])
     assert sorted(reads) == sorted(set(reads)) and len(reads) == 3
