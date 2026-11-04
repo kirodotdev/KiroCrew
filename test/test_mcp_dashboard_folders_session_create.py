@@ -50,10 +50,8 @@ class TestSessionCreateAgentKind:
     """`session_create.agent_kind` — the selection namespace rides the payload, and a
     `memory_delegation_denied` refusal tells the caller what it can actually do.
 
-    The refusal is terse on the wire by design (it names neither store nor
-    member), and that terseness left callers inventing a remedy that does not
-    exist — a memory-store setting under Settings > Crew. The tool reply names
-    the two real ones: re-send as a template dispatch, or the owner's own tab.
+    The wire refusal names neither store nor member, so the tool reply names the two
+    real remedies: re-send as a template dispatch, or use the owner's own tab.
     """
 
     _DENIED = {
@@ -232,11 +230,8 @@ class TestSessionCreateAutocompact:
 class TestSessionCreateFolder:
     """`session_create.folder` — filing atomic with creation.
 
-    The reference resolves with `chat_folder_create`'s `parent` semantics
-    (missing segments created), which is tree shaping — so the SAME gate
-    applies, not a second authorization path. The endpoint receives the
-    resolved id and re-confirms it in the create's own synchronous window;
-    these cases cover the MCP half: gate, resolution, payload shape, refusal.
+    The folder resolves like `chat_folder_create`'s `parent` (missing segments are
+    created), so the same tree-shaping gate applies. These cases cover the MCP half.
     """
 
     CREATED = {"target": "chat-9-900", "title": "worker", "folder_id": "bbbbbbbbbbbb"}
@@ -316,11 +311,8 @@ class TestSessionCreateFolder:
     def test_folder_resolution_rides_the_tree_shaping_gate(self) -> None:
         """A caller the tree-shaping gate refuses cannot file-by-naming at create time.
 
-        Resolution can CREATE folders, so it is tree shaping: reusing the gate —
-        rather than a second authorization path — is what keeps 'could not
-        reshape the tree by creating a folder' and 'cannot reach the same write
-        through session_create' the same statement. A cron caller passes the
-        session-control gate (its key is verified) and is refused at this one.
+        Resolution can create folders, so it reuses the tree-shaping gate. A cron
+        caller passes the session-control gate (its key is verified) and is refused here.
         """
         out, dash = _call(
             "session_create",
@@ -348,11 +340,8 @@ class TestSessionCreateFolder:
     def test_an_app_scoped_caller_cannot_leave_folder_segments_behind(self) -> None:
         """The endpoint refuses `app_scoped_caller`, so resolution must not run.
 
-        An app may create folders in its own subtree, but it can never complete
-        session_create — resolving (and mkdir -p creating) the folder for it
-        would leave path segments behind for a call that cannot succeed. The
-        refusal here is a side-effect guard; the endpoint's own refusal stays
-        authoritative.
+        An app can never complete session_create, so creating its folder would leave
+        segments behind. The endpoint's own refusal stays authoritative.
         """
         out, dash = _call(
             "session_create",

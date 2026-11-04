@@ -65,9 +65,7 @@ _clean_gateway_state = mcp_gateway_stub_session_token_helpers._clean_gateway_sta
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
 
-# ---------------------------------------------------------------------------
 # Minting and the injected entry
-# ---------------------------------------------------------------------------
 
 
 def test_token_is_unguessable_and_unique() -> None:
@@ -198,14 +196,11 @@ def test_register_generation_attestation_requires_managed_server_name(
 
 
 def test_the_stubs_owned_subcommand_set_is_the_managed_server_table() -> None:
-    """``_KIROCREW_MCP_SUBCOMMANDS`` is spelled out in ``stub_register.py`` so the stub's
-    timed cold-start path never imports ``mcp_discovery``; this is the ratchet
-    that keeps the copy honest.
+    """``_KIROCREW_MCP_SUBCOMMANDS`` must match the managed server table.
 
-    The set decides which stubs fold the code fingerprint into their pool key AND
-    which run the daemon-generation check, so a managed server missing from it
-    keeps attaching to a pre-fingerprint daemon after an upgrade. ``mcp-debug``
-    and ``mcp-panel`` were missing when the check landed.
+    It is copied into ``stub_register.py`` so the cold-start path never imports
+    ``mcp_discovery``. A server missing from it skips the fingerprint and generation
+    check, and keeps attaching to a pre-fingerprint daemon after an upgrade.
     """
     from kiro_crew import mcp_discovery
 
@@ -266,11 +261,9 @@ async def test_an_owned_control_plane_falls_back_from_a_stale_daemon(
 ) -> None:
     """A package upgrade must not strand every session behind an old broker.
 
-    Before this gate, the new stub accepted the old daemon's ``registered`` frame.
-    That daemon forwarded a caller key but not the new per-session token, so the
-    current MCP server's policy read answered ``identity_unattested`` and refused
-    every tool call. Requesting fallback execs this session's direct server, whose
-    own element carries the signed token and preserves the fail-closed policy gate.
+    An old daemon forwards no per-session token, so the policy read answers
+    ``identity_unattested`` for every call. Fallback execs the session's direct server,
+    whose element carries the signed token and keeps the fail-closed gate.
     """
     reader = _QueueReader()
     writer = _RecordingWriter()
@@ -333,9 +326,7 @@ async def test_registered_reply_names_the_daemons_code_generation(
     assert registered["fingerprint"] == "daemon-generation"
 
 
-# ---------------------------------------------------------------------------
 # The Crew side: who mints the token, and when the claim is pushed
-# ---------------------------------------------------------------------------
 
 
 def _bare_runtime(
@@ -436,15 +427,9 @@ async def test_no_stub_entries_still_names_the_session_but_pushes_no_claim(
 ) -> None:
     """Gateway off: nothing to CLAIM, but the session still gets a name.
 
-    A token without a reachable gatewayd is not inert, because gatewayd is not its
-    only reader: it also resolves through a MAC-signed mapping file
-    (:mod:`kiro_crew.session_token_sig`) that the strict identity resolver reads
-    with no daemon, no broker stub and no config switch. So a session on a
-    gateway-less install — the default install — needs a name of its own, and
-    withholding one is the identity gap this asserts against.
-
-    The claim half is independent and is asserted too: with no stub entries there
-    is no stub connection for a claim to inform, so no claim is pushed.
+    The strict identity resolver also reads the token through a MAC-signed mapping file
+    (:mod:`kiro_crew.session_token_sig`) with no daemon, so a session on the default
+    gateway-less install needs a name. With no stub entries, no claim is pushed.
     """
     import kiro_crew.acp.runtime as rt_mod
 
@@ -638,13 +623,9 @@ async def test_a_cold_started_session_can_re_bind_after_a_respawn(
 ) -> None:
     """The cold-start topology: a top-level kiro session that never rekeys.
 
-    ``rekey()`` is a warm-pool event, so a pool miss, pooling switched off, or a
-    subagent's own session reaches it never — and a provider that learned its key
-    only there would re-claim with an EMPTY session key. gatewayd rejects that
-    frame as malformed BEFORE recording the binding, so the token could never be
-    re-bound: one daemon respawn and the session is identity-less for life. The
-    key therefore arrives at construction, and this asserts the whole chain —
-    empty key binds nothing, seeded key re-binds and re-targets the live stub.
+    ``rekey()`` only runs on a warm-pool hit, so a key learned only there re-claims with
+    an empty key, which gatewayd rejects before binding: one daemon respawn leaves the
+    session identity-less. The key arrives at construction; an empty key binds nothing.
     """
     import kiro_crew.acp.session_provider as sp_mod
 
@@ -776,9 +757,7 @@ def test_the_client_reclaim_names_its_own_token(monkeypatch: pytest.MonkeyPatch)
     assert pushed == []
 
 
-# ---------------------------------------------------------------------------
 # The shipped binary: env on the injected element does not cost precedence
-# ---------------------------------------------------------------------------
 
 # flake-ok: the driver's poll and 1 s settle run in the kiro-cli child, bounded by
 # communicate(timeout=180); moved verbatim; tracked for a de-flake pass
@@ -848,11 +827,8 @@ _TOKEN_PROBE = _PROBE_SCRIPT.replace(
 def test_real_kiro_cli_delivers_the_token_and_still_overrides_the_spec() -> None:
     """ANTI-DRIFT GUARD, the token half.
 
-    ``test_real_kiro_cli_prefers_session_injected_server`` pins that a
-    session-injected element outranks the agent spec's same-named entry — with
-    an EMPTY ``env``. The token rides that element's ``env``, so this pins the
-    two things that shape now depends on: the child receives the pair, and
-    carrying it does not cost the precedence pooling relies on.
+    ``test_real_kiro_cli_prefers_session_injected_server`` pins precedence with an empty
+    ``env``. With the token in ``env``, the child must receive it and keep precedence.
     """
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)

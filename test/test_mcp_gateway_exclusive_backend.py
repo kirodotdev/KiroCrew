@@ -342,17 +342,12 @@ async def test_cancel_between_spawn_and_registration_reaps_the_child() -> None:
 
 @pytest.mark.asyncio
 async def test_private_acquire_takes_no_reservation_to_release() -> None:
-    """The reservation refcount is per DIGEST, and ``poolable`` is deliberately
-    not a PoolKey dimension — so a pooled and a private connection can share one
-    digest (reachable when the allowlist changes under a daemon that outlives the
-    gateway: the old overlay's stub still registers poolable, the new one does
-    not).
+    """A private acquire leaves the digest's reservation count as it found it.
 
-    A private acquire must therefore not reserve, or the pooled connection's
-    protection would be inflated; and the connection handler must not release on
-    its behalf, or the pooled backend becomes evictable before its stub attaches.
-    This pins the pool half: private acquisition leaves the digest's reservation
-    exactly as it found it.
+    The refcount is per digest and ``poolable`` is not a PoolKey dimension, so a
+    pooled and a private connection can share one digest (an allowlist change under
+    a daemon that outlives the gateway). A reserve here would inflate the pooled
+    connection's eviction protection.
     """
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
@@ -372,14 +367,10 @@ async def test_private_acquire_takes_no_reservation_to_release() -> None:
 
 @pytest.mark.asyncio
 async def test_private_backends_appear_in_lifecycle_enumerators() -> None:
-    """Out of the reuse index and the capacity budget, but NOT out of the process
-    lifecycle.
+    """Private backends stay out of reuse and budget, but not out of the lifecycle.
 
-    ``all_backends()`` feeds the shutdown drain predicate and the abort handler;
-    ``live_backend_identities()`` feeds the pidfile that stops a SIGKILLed gatewayd
-    orphaning children. A private backend missing from either gets its pending
-    reply discarded, its in-flight calls left uncancellable, or its process
-    leaked.
+    ``all_backends()`` feeds the shutdown drain and abort handler, and
+    ``live_backend_identities()`` the pidfile; missing from either leaks the process.
     """
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
@@ -628,12 +619,8 @@ async def test_a_retreated_connection_releases_no_reservation(
 ) -> None:
     """A retreat must not decrement a reservation it never took.
 
-    ``pool.get_or_create`` is what reserves; ``pool.acquire_exclusive`` does not.
-    A retreated connection asked to pool but resolved down the exclusive path, so
-    it reserved nothing -- and because the refcount is per DIGEST while
-    ``poolable`` is not a PoolKey dimension, releasing here would decrement a
-    CONCURRENT pooled connection's reservation on the same key and drop its
-    eviction protection before its stub attaches.
+    Only ``pool.get_or_create`` reserves. The refcount is per digest, so a release
+    here would drop a concurrent pooled connection's eviction protection.
     """
     _install_hazard_sink(monkeypatch, tmp_path)
     pool = await _drive_handler(monkeypatch, poolable=True)
@@ -661,16 +648,10 @@ async def test_clearing_the_record_lets_the_server_pool_again(
 ) -> None:
     """The retreat is undoable, which is what makes it safe to switch on.
 
-    One cause of a record is a defect on OUR side -- a frame the gateway
-    misattributed -- and the identity check cannot clear that, because fixing our
-    own bug does not change the server's launch identity. Without an undo the
-    evidence would stand for ever against a server that never misbehaved. This
-    pins the whole round trip: retreat, clear, pool again.
-
-    The clear itself is ``hazards.clear_observed`` plus a flush, which is what an
-    operator reaches through offline (stop the daemon, delete the record from
-    ``observed-hazards.json``, start). An online socket verb for it was descoped
-    from this change -- see the PR discussion.
+    A record can come from a gateway misattribution, which no launch-identity change
+    clears. Pins the round trip: retreat, clear, pool again. The clear is
+    ``hazards.clear_observed`` plus a flush, as an operator does offline by
+    deleting the record from ``observed-hazards.json``.
     """
     from kiro_crew.mcp_gateway import hazards
 
