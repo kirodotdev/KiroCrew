@@ -1618,7 +1618,8 @@
         "ask_about_this": "এটি সম্পর্কে জিজ্ঞাসা করুন",
         "close": "বন্ধ করুন",
         "remove_this_annotation": "এই অ্যানোটেশন সরান",
-        "thinking": "ভাবছে…"
+        "thinking": "ভাবছে…",
+        "question_label": "এই সমালোচনা নিয়ে তোমার প্রশ্ন"
       },
       "composer": {
         "add_screens": "স্ক্রিন যোগ করুন",
@@ -1814,7 +1815,8 @@
         "looking": "খোঁজা হচ্ছে…",
         "preview_from_disk_instead": "পরিবর্তে ডিস্ক থেকে প্রিভিউ করুন",
         "url_placeholder": "http://localhost:5173",
-        "use": "ব্যবহার করুন"
+        "use": "ব্যবহার করুন",
+        "url_label": "ডেভ সার্ভার URL"
       },
       "layout": {
         "drag_to_resize": "আকার বদলাতে টেনে আনুন"
@@ -1868,7 +1870,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "{{url}} থেকে প্রিভিউ করা হচ্ছে",
         "remove_from_list": "তালিকা থেকে সরান",
-        "select_app": "একটি ওয়েব অ্যাপ বেছে নিন…"
+        "select_app": "একটি ওয়েব অ্যাপ বেছে নিন…",
+        "path_label": "প্রজেক্ট ফোল্ডারের পাথ"
       },
       "requests": {
         "archive_to_history": "হিস্ট্রিতে আর্কাইভ করুন",

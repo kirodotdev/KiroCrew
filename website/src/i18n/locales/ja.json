@@ -1641,7 +1641,8 @@
         "ask_about_this": "この件について質問する",
         "close": "閉じる",
         "remove_this_annotation": "このアノテーションを削除",
-        "thinking": "考え中…"
+        "thinking": "考え中…",
+        "question_label": "この批評についての質問"
       },
       "composer": {
         "add_screens": "スクリーンを追加",
@@ -1819,7 +1820,8 @@
         "looking": "検索中…",
         "preview_from_disk_instead": "代わりにディスクからプレビュー",
         "url_placeholder": "http://localhost:5173",
-        "use": "使用"
+        "use": "使用",
+        "url_label": "開発サーバーの URL"
       },
       "layout": {
         "drag_to_resize": "ドラッグしてサイズ変更"
@@ -1873,7 +1875,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "{{url}} からプレビュー中",
         "remove_from_list": "リストから削除",
-        "select_app": "Webアプリを選択…"
+        "select_app": "Webアプリを選択…",
+        "path_label": "プロジェクトフォルダーのパス"
       },
       "requests": {
         "archive_to_history": "履歴にアーカイブ",

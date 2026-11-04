@@ -1683,7 +1683,8 @@
         "ask_about_this": "Fai una domanda",
         "close": "Chiudi",
         "remove_this_annotation": "Rimuovi questa annotazione",
-        "thinking": "Sto pensando…"
+        "thinking": "Sto pensando…",
+        "question_label": "La tua domanda su questa critica"
       },
       "composer": {
         "add_screens": "Aggiungi schermate",
@@ -1881,7 +1882,8 @@
         "looking": "Ricerca in corso…",
         "preview_from_disk_instead": "Vedi invece l'anteprima da disco",
         "url_placeholder": "http://localhost:5173",
-        "use": "Usa"
+        "use": "Usa",
+        "url_label": "URL del server di sviluppo"
       },
       "layout": {
         "drag_to_resize": "Trascina per ridimensionare"
@@ -1935,7 +1937,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "Anteprima da {{url}}",
         "remove_from_list": "Rimuovi dall'elenco",
-        "select_app": "Seleziona un'app web…"
+        "select_app": "Seleziona un'app web…",
+        "path_label": "Percorso della cartella del progetto"
       },
       "requests": {
         "archive_to_history": "Archivia nella cronologia",

@@ -246,6 +246,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
               {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
+              aria-label={i18nT('apps.mochi.color.prompt_name')}
               placeholder={i18nT('apps.mochi.color.prompt_name')}
               autoFocus
               style={{

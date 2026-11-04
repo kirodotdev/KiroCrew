@@ -1553,7 +1553,8 @@
         "ask_about_this": "就此提问",
         "close": "关闭",
         "remove_this_annotation": "移除此标注",
-        "thinking": "思考中…"
+        "thinking": "思考中…",
+        "question_label": "关于此评审的问题"
       },
       "composer": {
         "add_screens": "添加界面",
@@ -1747,7 +1748,8 @@
         "looking": "正在查找…",
         "preview_from_disk_instead": "改为从磁盘预览",
         "url_placeholder": "http://localhost:5173",
-        "use": "使用"
+        "use": "使用",
+        "url_label": "开发服务器 URL"
       },
       "layout": {
         "drag_to_resize": "拖动以调整大小"
@@ -1801,7 +1803,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "正在从 {{url}} 预览",
         "remove_from_list": "从列表中移除",
-        "select_app": "选择 Web 应用…"
+        "select_app": "选择 Web 应用…",
+        "path_label": "项目文件夹路径"
       },
       "requests": {
         "archive_to_history": "归档到历史",
