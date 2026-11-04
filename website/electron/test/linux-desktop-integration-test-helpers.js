@@ -385,6 +385,29 @@ function xattrFailingFixture(t, errnoName) {
 
 const EMPTY_XATTR_DIGEST = require("crypto").createHash("sha256").digest("hex");
 
+// The packaged helper publishes only while it holds a kernel write lease
+// (F_SETLEASE F_WRLCK) on the managed launcher. Linux before 5.3 decides a
+// write lease from inode and dentry reference counts rather than from real
+// opens, and refuses it (EAGAIN) on a launcher that carries its anchor hard
+// link even when nothing has it open. The helper then answers "busy" and the
+// update defers, as designed. Ask the kernel the same question about the same
+// inode, the way the helper asks it, right before the call under test.
+function writeLeaseRefused(target) {
+  const result = realChildProcess.spawnSync("/usr/bin/python3", ["-c", [
+    "import errno, fcntl, os, sys",
+    "fd = os.open(sys.argv[1], os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0))",
+    "try:",
+    "    fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+    "except OSError as e:",
+    "    sys.exit(3 if e.errno == errno.EAGAIN else 1)",
+    "fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)",
+  ].join("\n"), target]);
+  if (result.status !== 0 && result.status !== 3) {
+    throw new Error(`write-lease probe failed: status ${result.status} ${String(result.stderr || "")}`);
+  }
+  return result.status === 3;
+}
+
 // ---- worker-thread orchestration (startLinuxDesktopIntegration) ----
 
 function fakeWorkerFactory(script) {
@@ -422,6 +445,7 @@ module.exports = {
   baseDeps,
   xattrFailingFixture,
   EMPTY_XATTR_DIGEST,
+  writeLeaseRefused,
   fakeWorkerFactory,
   WORKER_DEPS,
 };

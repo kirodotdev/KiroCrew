@@ -17,6 +17,7 @@ const {
   HOME,
   xattrFailingFixture,
   EMPTY_XATTR_DIGEST,
+  writeLeaseRefused,
   fakeWorkerFactory,
   WORKER_DEPS,
 } = require("./linux-desktop-integration-test-helpers");
@@ -155,15 +156,27 @@ test("real helper treats a filesystem without xattr support as an empty selected
 
   // A later managed update runs the lease-held publish path, whose fd-based
   // xattr comparison must also read the unsupported filesystem as empty.
+  const leaseRefused = writeLeaseRefused(launcher);
   const moved = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
     version: "0.6.0",
   });
-  assert.equal(moved.installed, true);
-  assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
   const publishes = helperRuns.filter((r) => r.mode === "publish");
   assert.ok(publishes.length > 0);
+  if (leaseRefused) {
+    // A kernel that refuses a write lease on a multi-link inode: the helper
+    // must answer "busy" and the launcher must stay as it was.
+    assert.deepEqual(moved, { skipped: true, reason: "launcher customized" });
+    assert.doesNotMatch(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
+    for (const r of publishes) {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, "busy");
+    }
+    return;
+  }
+  assert.equal(moved.installed, true);
+  assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
   for (const r of publishes) {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(JSON.parse(r.stdout).status, "published");
@@ -232,11 +245,21 @@ test("real publication and cleanup defer while their inode has an open descripto
   } finally {
     realFs.closeSync(currentFd);
   }
-  assert.equal(integrateLinuxDesktop({
+  const leaseRefused = writeLeaseRefused(launcher);
+  const published = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
     version: "0.6.0",
-  }).installed, true);
+  });
+  if (leaseRefused) {
+    // A kernel that refuses a write lease on a multi-link inode never grants
+    // the publish lease, so the update keeps deferring with the descriptor
+    // closed and the launcher stays as it was.
+    assert.deepEqual(published, { skipped: true, reason: "launcher customized" });
+    assert.equal(realFs.readFileSync(launcher, "utf8"), originalBody);
+    return;
+  }
+  assert.equal(published.installed, true);
   assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
   const statePath = realPath.join(stateDir, "linux-desktop-integration", "state.json");
   const recovery = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;
