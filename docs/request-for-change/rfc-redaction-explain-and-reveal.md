@@ -183,8 +183,9 @@ for a link that cannot open.
 Replace `[REDACTED: credential]` with a small, neutral lock tag that users can
 select. The tag opens one shared type of card, which leads with three facts:
 
-- **Not saved** — the system removed the value before saving, so this page
-  cannot show it and no setting can change that.
+- **Not saved** — the system removed the value before saving, so no saved
+  copy holds it and no setting can change that; only the owner can show it,
+  from gateway memory, while the gateway runs (*Owner reveal*, §7).
 - **Source** — the card names the file and section, or the recorded command,
   where the value came from.
 - **Recommended action** — *Open in Terminal* adds the exact command without
@@ -226,8 +227,8 @@ execution and a prompt-injected agent could pre-fill an attack disguised as a
 
 Show this guidance once, after the first answer that contains a removed value.
 It explains that the values were replaced before saving, so no saved
-conversation copy contains them, the conversation cannot show them, and no
-setting changes this for the conversation. It also explains that each lock tag names the likely
+conversation copy contains them, the conversation cannot show them except through the owner's reveal from
+gateway memory (§7), and no setting changes this for the conversation. It also explains that each lock tag names the likely
 source and tells the user how to view it. End with: "Keep secrets at their
 source. Your messages are saved exactly as typed." Keep extra details under
 *Learn more*; after the user selects *Got it*, show only the small lock tag.
