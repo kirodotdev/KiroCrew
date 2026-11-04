@@ -161,6 +161,14 @@ export interface AgentResolvedModel {
   acp_backend?: string
   /** What clearing the pin would run on (the install's member harness), same spelling. */
   inherited_harness?: string
+  /** Where `inherited_harness` comes from: `legacy` (`agent.member_acp_backend`), `settings` (`agent.acp_backend`), `fallback` (KAS, because crewmates cannot run on `settings_harness`), or `worker_spec` (KAS, because `settings_harness` cannot carry this crewmate's worker tool limits, hooks, permissions or toolsSettings). */
+  inherited_source?: 'legacy' | 'settings' | 'fallback' | 'worker_spec'
+  /** Harnesses a pin to which runs the Bot on KAS (config spelling); its models are KAS's. */
+  kas_pin_harnesses?: string[]
+  /** Where a pin in `kas_pin_harnesses` runs (config spelling): `kas`, or the floor when policy denies KAS. */
+  kas_pin_landing?: string
+  /** `agent.acp_backend` in the config spelling, which a fallback names. */
+  settings_harness?: string
   /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
   harness?: string
   /** The model a crew with a `member_id` starts its DM on (`''` when the harness picks); absent otherwise. */

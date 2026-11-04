@@ -14798,7 +14798,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bot はここで選んだハーネス {{harness}} で動きます。Bot ごとに設定で固定できます。",
+        "crewmate_harness_legacy": "Bot は config.json の agent.member_acp_backend で指定された {{harness}} で動きます。この設定はここでの選択より優先されます。",
+        "crewmate_harness_fallback": "Bot は {{settings}} で動けないため、代わりに {{harness}} で動きます。Bot ごとに設定でハーネスを固定できます。"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",
@@ -21030,7 +21033,11 @@
       "recap_reason_needs_human": "人の対応が必要",
       "recap_state_accepted": "承認済み",
       "recap_state_rejected": "却下",
-      "recap_state_abandoned": "中止"
+      "recap_state_abandoned": "中止",
+      "profile_harness_source_settings": "設定 → Agent Harness で指定。",
+      "profile_harness_source_legacy": "config.json の agent.member_acp_backend で指定。",
+      "profile_harness_source_fallback": "設定 → Agent Harness は {{settings}} ですが、Bot はそこで動けないため、ここは {{harness}} です。",
+      "profile_harness_source_worker_spec": "この Bot のワーカーは {{settings}} では扱えない設定を使うため、ここは {{harness}} です。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

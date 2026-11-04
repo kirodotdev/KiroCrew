@@ -525,6 +525,7 @@ class TestServerAppliers:
             "dashboard.feature_previews",
             "apps",
             "dashboard.terminal.enabled",
+            "crewmate.harness_fallback",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

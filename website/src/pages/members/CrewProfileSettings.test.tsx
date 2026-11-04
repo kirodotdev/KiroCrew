@@ -780,6 +780,35 @@ describe('CrewProfileSettings harness', () => {
     expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Follows the crew default (now Kiro Agent).')
   })
 
+  it.each([
+    ['settings', 'Set in Settings → Agent Harness.'],
+    ['legacy', 'Set by agent.member_acp_backend in config.json.'],
+    ['fallback', "Settings → Agent Harness is Claude Code, which Bots can't run on, so this is Kiro Agent."],
+    ['worker_spec', "This Bot's workers use settings Claude Code can't carry, so this is Kiro Agent."],
+  ])('says where Inherited comes from (%s)', async (source, text) => {
+    readout({ inherited_source: source, settings_harness: 'claude' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Inherited \(Kiro Agent\)$/))
+    const options = open('acp_backend')
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent(
+      `Follows the crew default (now Kiro Agent). ${text}`,
+    )
+  })
+
+  it('lists KAS models for a pin that runs on KAS', async () => {
+    readout({ acp_backend: 'pi', harness: 'kas', kas_pin_harnesses: ['pi', 'goose'] })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kas'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('pi')
+  })
+
+  it('lists the floor models when policy sends the pin to the floor', async () => {
+    readout({ acp_backend: 'pi', harness: 'kiro', kas_pin_harnesses: ['pi'], kas_pin_landing: 'kiro' })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kiro'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('kas')
+  })
+
   it('lists the pinned harness models, not the install list', async () => {
     readout({ acp_backend: 'claude', harness: 'claude' })
     setup(member())

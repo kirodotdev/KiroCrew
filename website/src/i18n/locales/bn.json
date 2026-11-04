@@ -15188,7 +15188,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bots এখানে বাছাই করা harness {{harness}}-এ চলে। প্রতিটি Bot তার সেটিংসে নিজেরটা ঠিক করতে পারে।",
+        "crewmate_harness_legacy": "Bots config.json-এর agent.member_acp_backend দিয়ে ঠিক করা {{harness}}-এ চলে। এই সেটিং এখানের বাছাইয়ের চেয়ে এগিয়ে।",
+        "crewmate_harness_fallback": "Bots {{settings}}-এ চলতে পারে না, তাই তারা {{harness}}-এ চলে। প্রতিটি Bot তার সেটিংসে নিজের harness ঠিক করতে পারে।"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "চ্যাটের উপরে লাইভ স্ক্রল ও অ্যাঙ্কর ডায়াগনস্টিকস দেখায়",
@@ -21556,7 +21559,11 @@
       "recap_reason_needs_human": "একজন মানুষের দরকার",
       "recap_state_accepted": "গৃহীত",
       "recap_state_rejected": "প্রত্যাখ্যাত",
-      "recap_state_abandoned": "বাদ দেওয়া"
+      "recap_state_abandoned": "বাদ দেওয়া",
+      "profile_harness_source_settings": "সেটিংস → Agent Harness-এ ঠিক করা।",
+      "profile_harness_source_legacy": "config.json-এর agent.member_acp_backend দিয়ে ঠিক করা।",
+      "profile_harness_source_fallback": "সেটিংস → Agent Harness হলো {{settings}}, যেখানে Bots চলতে পারে না, তাই এটি {{harness}}।",
+      "profile_harness_source_worker_spec": "এই Bot-এর কর্মীরা এমন সেটিংস ব্যবহার করে যা {{settings}} বহন করতে পারে না, তাই এটি {{harness}}।"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

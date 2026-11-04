@@ -717,6 +717,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _JSON_TYPE_LABELS,
         _MEMBER_HARNESS_KEY,
         _SECURITY_BOUNDED_FIELDS,
+        MEMBER_BACKEND_INHERITED_ATTR,
+        _agent_section_fields,
         _build_agent_config,
         _build_dashboard_config,
         _build_session_config,
@@ -734,7 +736,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _load_background_hold_secs,
         _load_idle_exempt_keys,
         _log_config_clamp_event,
+        _member_fallback_logged,
         _member_remap_logged,
+        _note_member_fallback,
         _note_member_remap,
         _otlp_endpoint_rows,
         _read_backend_choice,
@@ -751,6 +755,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _translucent_panels_from,
         consume_managed_service_launch_environment,
         launched_as_managed_service,
+        mark_member_backend_inherited,
+        member_backend_inherited,
         resolve_loop_stall_exit_after,
     )
     from kiro_crew.config.loader_credentials import (  # noqa: F401

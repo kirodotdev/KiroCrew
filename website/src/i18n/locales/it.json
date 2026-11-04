@@ -15578,7 +15578,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "I Bot girano su {{harness}}, l’harness scelto qui. Ogni Bot può fissarne uno proprio nelle sue impostazioni.",
+        "crewmate_harness_legacy": "I Bot girano su {{harness}}, impostato da agent.member_acp_backend in config.json. Questa impostazione prevale sull’harness scelto qui.",
+        "crewmate_harness_fallback": "I Bot non possono girare su {{settings}}, quindi girano su {{harness}}. Ogni Bot può fissare il proprio harness nelle sue impostazioni."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sovrappone alla chat una diagnostica live di scorrimento e ancoraggi",
@@ -22082,7 +22085,11 @@
       "recap_reason_needs_human": "serve una persona",
       "recap_state_accepted": "accettata",
       "recap_state_rejected": "rifiutata",
-      "recap_state_abandoned": "abbandonata"
+      "recap_state_abandoned": "abbandonata",
+      "profile_harness_source_settings": "Impostato in Impostazioni → Agent Harness.",
+      "profile_harness_source_legacy": "Impostato da agent.member_acp_backend in config.json.",
+      "profile_harness_source_fallback": "Impostazioni → Agent Harness è {{settings}}, su cui i Bot non possono girare, quindi qui è {{harness}}.",
+      "profile_harness_source_worker_spec": "I worker di questo Bot usano impostazioni che {{settings}} non sa gestire, quindi qui è {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

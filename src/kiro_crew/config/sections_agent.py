@@ -257,9 +257,11 @@ class AgentConfig:
         default="kas",
         metadata=_meta(
             "Bot ACP backend",
-            "Backend for crew-member DM sessions: 'kas' (default when omitted or '') "
-            "or another dispatch-capable backend (claude, codex, opencode, goose). "
-            "Bots run on KAS as their Kiro backend, so 'kiro' here also "
+            "Legacy backend for Bot DM sessions and their workers. Omitted or '': "
+            "Bots follow agent.acp_backend, or run on 'kas' when that is a harness "
+            "Bots cannot run on. A stored value (claude, codex, kas, ...) still wins "
+            "over agent.acp_backend; a Bot's own agents.<name>.acp_backend wins over "
+            "both. Bots run on KAS as their Kiro backend, so 'kiro' here also "
             "selects KAS. Members dispatch work into worker sessions through "
             "session-control tools mounted per session over the wire.",
             # Same no-enum reasoning as acp_backend above: the live selectable

@@ -1766,14 +1766,13 @@ def _pin_entitlement_backend(
 
     if (pinned := pin_backend(cfg, crew, acp_backend, for_workers=for_workers)) is not None:
         return pinned
-    default_backend = getattr(cfg.agent, "acp_backend", "")
-    member_backend = getattr(cfg.agent, "member_acp_backend", "")
-    if (
-        capabilities_for(member_backend).model_id_namespace
-        != capabilities_for(default_backend).model_id_namespace
-    ):
-        return member_backend
-    return default_backend
+    # The Bot's own route, the harness the editor's Inherited shows
+    # (``crewmate_harness.crewmate_inherited_source``): never the install's
+    # ``agent.acp_backend``, which a Bot does not run on (a Kiro CLI install runs
+    # its Bots on KAS).
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    return resolve_selected_backend(getattr(cfg.agent, "member_acp_backend", ""))
 
 
 async def _revalidate_crew_pin(
@@ -1821,7 +1820,6 @@ def _model_pin_rejected(
     provider: str,
     *,
     backend: str | None = None,
-    harness_pinned: bool = False,
 ) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
@@ -1860,8 +1858,9 @@ def _model_pin_rejected(
     # absent from that set and would otherwise produce a less actionable error.
     from kiro_crew.crewmate_harness import kiro_spelling_applies
 
-    # A crew *harness_pinned* to a harness with its own ids has no kiro-cli spelling to fix.
-    spelled = kiro_spelling_applies(backend, harness_pinned)
+    # *backend* is the harness the pin runs on; one with its own ids has no
+    # kiro-cli spelling to fix.
+    spelled = kiro_spelling_applies(backend)
     correction = model_registry.acp_id_correction(model) if spelled else None
     if correction:
         # Deliberately NOT prescriptive. Upstream naming does not line up across

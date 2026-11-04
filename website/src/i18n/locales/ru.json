@@ -15968,7 +15968,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Bots работают на {{harness}}, выбранном здесь. Каждый Bot может закрепить свой в своих настройках.",
+        "crewmate_harness_legacy": "Bots работают на {{harness}}, заданном agent.member_acp_backend в config.json. Эта настройка важнее выбора здесь.",
+        "crewmate_harness_fallback": "Bots не могут работать на {{settings}}, поэтому работают на {{harness}}. Каждый Bot может закрепить свой harness в настройках."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Показывает поверх чата диагностику прокрутки и якорей в реальном времени",
@@ -22608,7 +22611,11 @@
       "recap_reason_needs_human": "нужен человек",
       "recap_state_accepted": "принят",
       "recap_state_rejected": "отклонён",
-      "recap_state_abandoned": "брошен"
+      "recap_state_abandoned": "брошен",
+      "profile_harness_source_settings": "Задано в Настройки → Agent Harness.",
+      "profile_harness_source_legacy": "Задано agent.member_acp_backend в config.json.",
+      "profile_harness_source_fallback": "В Настройки → Agent Harness выбрано {{settings}}, где Bots работать не могут, поэтому здесь {{harness}}.",
+      "profile_harness_source_worker_spec": "Воркеры этого Bot используют настройки, которые {{settings}} не поддерживает, поэтому здесь {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

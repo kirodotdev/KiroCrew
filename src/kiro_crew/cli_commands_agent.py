@@ -138,15 +138,11 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     except CrewmateHarnessUnavailable as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    from kiro_crew.crewmate_harness import crewmate_pin_for, kiro_spelling_applies
+    from kiro_crew.crewmate_harness import kiro_spelling_applies
 
-    # A crewmate pinned to a harness with its own model ids takes those ids as
-    # written; every other agent keeps the kiro-cli spelling check.
-    correction = (
-        model_registry.acp_id_correction(model)
-        if kiro_spelling_applies(backend, crewmate_pin_for(cfg, crew) is not None)
-        else None
-    )
+    # Judged on the harness the pin runs on: one with its own model ids takes
+    # those ids as written.
+    correction = model_registry.acp_id_correction(model) if kiro_spelling_applies(backend) else None
     if correction:
         print(
             f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "

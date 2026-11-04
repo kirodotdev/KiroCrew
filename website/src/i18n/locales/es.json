@@ -15578,7 +15578,10 @@
         "goose": "goose",
         "opencode": "OpenCode",
         "pi": "Pi",
-        "strands": "Strands"
+        "strands": "Strands",
+        "crewmate_harness_settings": "Los Bots se ejecutan en {{harness}}, el harness elegido aquí. Cada Bot puede fijar el suyo en su configuración.",
+        "crewmate_harness_legacy": "Los Bots se ejecutan en {{harness}}, definido por agent.member_acp_backend en config.json. Ese ajuste tiene prioridad sobre el harness elegido aquí.",
+        "crewmate_harness_fallback": "Los Bots no pueden ejecutarse en {{settings}}, así que se ejecutan en {{harness}}. Cada Bot puede fijar su propio harness en su configuración."
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Superpone al chat un diagnóstico en vivo del desplazamiento y los anclajes",
@@ -22082,7 +22085,11 @@
       "recap_reason_needs_human": "necesita a una persona",
       "recap_state_accepted": "aceptada",
       "recap_state_rejected": "rechazada",
-      "recap_state_abandoned": "abandonada"
+      "recap_state_abandoned": "abandonada",
+      "profile_harness_source_settings": "Definido en Configuración → Agent Harness.",
+      "profile_harness_source_legacy": "Definido por agent.member_acp_backend en config.json.",
+      "profile_harness_source_fallback": "Configuración → Agent Harness es {{settings}}, donde los Bots no pueden ejecutarse, así que aquí es {{harness}}.",
+      "profile_harness_source_worker_spec": "Los workers de este Bot usan ajustes que {{settings}} no puede llevar, así que aquí es {{harness}}."
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",
