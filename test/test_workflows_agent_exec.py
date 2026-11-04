@@ -96,10 +96,12 @@ async def test_named_session_is_reused_and_lease_released() -> None:
     fn = build_agent_fn(sessions, run_id="wf_x")
 
     out = await fn("step1", {"session": "chain-A"})
-    assert out == "reply[chain-A]:step1"
-    assert sessions.created[0][0] == "chain-A"
+    key = agent_exec.named_session_key("wf_x", "chain-A")
+    assert key.startswith("wf:wf_x:named:")
+    assert out == f"reply[{key}]:step1"
+    assert sessions.created[0][0] == key
     # Returning the lease does not destroy the named provider or its history.
-    assert sessions.released == ["chain-A"]
+    assert sessions.released == [key]
 
 
 async def test_two_default_calls_get_distinct_sessions() -> None:
@@ -253,7 +255,7 @@ async def test_step_backend_reaches_get_or_create_as_override() -> None:
     res = await runner.run(script, run_id="wf_be", now="2026-11-06T00:00:00Z")
     assert res.ok, res.error
     assert sessions.extra_kwargs == [{"backend_override": "claude"}, {"backend_override": ""}]
-    assert sessions.created[1][0] == "chain@kiro"
+    assert sessions.created[1][0] == agent_exec.named_session_key("wf_be", "chain@kiro")
 
 
 async def test_unknown_backend_fails_the_step_before_allocating() -> None:

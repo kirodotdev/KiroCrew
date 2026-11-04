@@ -62,6 +62,11 @@ def adapter(sessions, pooled):
     return agent_exec.build_agent_fn(sessions, run_id="audit-d"), None
 
 
+def _chain() -> str:
+    """The session key of the ``session="chain"`` steps of run ``audit-d``."""
+    return agent_exec.named_session_key("audit-d", "chain")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pooled", [False, True], ids=["unpooled", "pooled"])
 @pytest.mark.parametrize("exit_kind", ["success", "exception", "cancel"])
@@ -96,21 +101,21 @@ async def test_named_lease_is_returned_and_second_call_keeps_history(
                 await await_until(first)
         else:
             assert await await_until(first) == "reply"
-        provider = sessions.providers["chain"]
-        assert not sessions.leases["chain"].locked()
-        assert sessions.released == [("chain", False)]
+        provider = sessions.providers[_chain()]
+        assert not sessions.leases[_chain()].locked()
+        assert sessions.released == [(_chain(), False)]
         assert (
             await await_until(asyncio.ensure_future(fn("second", {"session": "chain"}))) == "reply"
         )
-        assert sessions.providers["chain"] is provider
+        assert sessions.providers[_chain()] is provider
         assert provider.history == ["first", "second"]
-        assert sessions.released == [("chain", False), ("chain", False)]
+        assert sessions.released == [(_chain(), False), (_chain(), False)]
     finally:
         first.cancel()
         await asyncio.gather(first, return_exceptions=True)
         if pool is not None:
             await pool.shutdown()
-        await sessions.destroy("chain")
+        await sessions.destroy(_chain())
 
 
 @pytest.mark.asyncio
@@ -136,11 +141,11 @@ async def test_cancelled_waiter_cannot_release_another_calls_lease(monkeypatch, 
         second.cancel()
         with pytest.raises(asyncio.CancelledError):
             await await_until(second)
-        assert sessions.leases["chain"].locked()
+        assert sessions.leases[_chain()].locked()
         assert sessions.released == []
         finish.set()
         assert await await_until(first) == "done"
-        assert sessions.released == [("chain", False)]
+        assert sessions.released == [(_chain(), False)]
     finally:
         finish.set()
         tasks = [first] + ([second] if second is not None else [])
@@ -149,7 +154,7 @@ async def test_cancelled_waiter_cannot_release_another_calls_lease(monkeypatch, 
         await asyncio.gather(*tasks, return_exceptions=True)
         if pool is not None:
             await pool.shutdown()
-        await sessions.destroy("chain")
+        await sessions.destroy(_chain())
 
 
 @pytest.fixture

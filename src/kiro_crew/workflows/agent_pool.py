@@ -60,6 +60,7 @@ from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
+    named_session_key,
     persist_step_usage_row,
     step_backend_kwargs,
     step_effort_kwargs,
@@ -450,7 +451,11 @@ def build_pooled_agent_fn(
 
     async def _run_unpooled(prompt: str, opts: dict, backend_kwargs: dict) -> Any:
         named = step_session_name(opts)
-        key = named if named is not None else f"wf-unpooled:{run_id}:{next(_unpooled)}"
+        key = (
+            named_session_key(run_id, named)
+            if named is not None
+            else f"wf-unpooled:{run_id}:{next(_unpooled)}"
+        )
         if memory_scope is not None:
             if named is not None:
                 key = memory_scope.worker_key(f"named:{named}")

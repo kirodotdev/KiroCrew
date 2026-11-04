@@ -16,6 +16,7 @@ import pytest
 from overload_fakes import settle_dependency_park, settle_store_writes
 
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
+from kiro_crew.workflows import agent_exec
 from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker, build_pooled_agent_fn
 
 
@@ -206,19 +207,20 @@ async def test_stateful_session_bypasses_pool():
     """A session=<key> call uses a dedicated named session, NOT the pool."""
     sessions = _FakeSessions()
     agent_fn, pool = build_pooled_agent_fn(sessions, run_id="r5")
+    key = agent_exec.named_session_key("r5", "chain-A")
     try:
         out = await agent_fn("hi", {"session": "chain-A"})
-        assert "[chain-A]" in out
-        assert "chain-A" in sessions.live  # named session created directly
-        provider = sessions.live["chain-A"]
+        assert f"[{key}]" in out
+        assert key in sessions.live  # named session created directly
+        provider = sessions.live[key]
         assert sessions.releases == 1  # lease returned, conversation retained
-        assert "[chain-A]" in await agent_fn("again", {"session": "chain-A"})
-        assert sessions.live["chain-A"] is provider
+        assert f"[{key}]" in await agent_fn("again", {"session": "chain-A"})
+        assert sessions.live[key] is provider
         assert sessions.cold_starts == 1
         assert sessions.releases == 2
     finally:
         await pool.shutdown()
-        await sessions.destroy("chain-A")
+        await sessions.destroy(key)
 
 
 @pytest.mark.asyncio
@@ -477,13 +479,14 @@ async def test_backend_step_skips_the_warm_pool():
 
     sessions = _BackendSessions()
     agent_fn, pool = build_pooled_agent_fn(sessions, run_id="be1")
+    key = agent_exec.named_session_key("be1", "chain@kas")
     try:
         await agent_fn("x", {"backend": "claude"})
         await agent_fn("y", {"session": "chain", "backend": "kas"})
     finally:
         await pool.shutdown()
-        await sessions.destroy("chain@kas")
-    assert created == [("wf-unpooled:be1:0", "claude"), ("chain@kas", "kas")]
+        await sessions.destroy(key)
+    assert created == [("wf-unpooled:be1:0", "claude"), (key, "kas")]
     assert sessions.live == {}
 
 

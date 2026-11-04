@@ -268,7 +268,10 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
     Only the final filesystem writer is captured, at its defining module."""
     import asyncio
 
+    from kiro_crew.workflows.agent_exec import named_session_key
     from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
+
+    CHAIN_A = named_session_key("run", "chain-A")
 
     events: list[tuple] = []
 
@@ -291,7 +294,7 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
             return None
 
     class Sessions:
-        pids = {"chain-A": 4101, "wf-pool:run:0": 4102, "wf-unpooled:run:0": 4103}
+        pids = {CHAIN_A: 4101, "wf-pool:run:0": 4102, "wf-unpooled:run:0": 4103}
 
         async def get_or_create(self, session_key, **kwargs):
             return Provider(session_key), True, False
@@ -323,8 +326,8 @@ def test_unpooled_paths_publish_identity_before_prompt(monkeypatch):
     # reuse turn publishes AGAIN: publication is per send, not once at start, so
     # a pid mapping overwritten or rebuilt between turns is never stale.
     assert events == [
-        ("publish", 4101, "chain-A"),
-        ("stream", "chain-A"),
+        ("publish", 4101, CHAIN_A),
+        ("stream", CHAIN_A),
         ("publish", 4102, "wf-pool:run:0"),
         ("stream", "wf-pool:run:0"),
         ("publish", 4102, "wf-pool:run:0"),

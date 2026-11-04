@@ -12,7 +12,9 @@ Execution model (matches the frozen contract in workflows/__init__.py):
   isolated session — keyed ``wf:{run_id}:{call_index}`` — so parallel calls don't
   share conversational state. The session is released (and reset) after the call.
 * **``session=<key>`` (stateful):** the call reuses a caller-named session so a
-  chain of steps shares context.
+  chain of steps shares context. The session key is derived from the run and
+  the name (``named_session_key``, or the memory scope's worker key), never the
+  name itself.
 
 Structured output (``schema=``) is handled upstream by the runner via
 ``schema.run_with_schema`` — which calls this ``agent_fn`` as its text producer —
@@ -28,6 +30,7 @@ as ``agent_fn``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import logging
 import time
@@ -259,6 +262,19 @@ async def persist_step_usage_row(
         logger.debug("workflow usage row persist failed", exc_info=True)
 
 
+def named_session_key(run_id: str, name: str) -> str:
+    """The session key of the ``session=<name>`` chain of run *run_id* with no memory scope.
+
+    The run id in the key keeps a script-supplied name from addressing a
+    session outside the run. The ``wf:`` prefix marks the chain as a workflow
+    step, which may not start a workflow of its own
+    (``constants.is_workflow_step_key``). The name is hashed so that a ``:`` in
+    it cannot add a field to the key.
+    """
+    digest = hashlib.sha256(f"named:{name}".encode()).hexdigest()
+    return f"wf:{run_id}:named:{digest}"
+
+
 def build_agent_fn(
     sessions: Any,
     *,
@@ -302,7 +318,7 @@ def build_agent_fn(
         # Per-call isolated session by default; caller-named session when session=.
         session = step_session_name(opts)
         ephemeral = session is None
-        key = session or f"wf:{run_id}:{next(counter)}"
+        key = named_session_key(run_id, session) if session else f"wf:{run_id}:{next(counter)}"
         if memory_scope is not None:
             if session is not None:
                 key = memory_scope.worker_key(f"named:{session}")

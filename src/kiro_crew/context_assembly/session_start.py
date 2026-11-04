@@ -424,9 +424,16 @@ def build_session_context(
     # envelope built above.
     _mark("steering")
 
+    # A pool worker serves several steps of its run in turn, so its transcript
+    # holds the earlier steps and the results of the runs they started. None of
+    # it belongs to the step this session now serves, so nothing below reads it.
+    from kiro_crew.constants import is_workflow_pool_key
+
+    transcript = None if is_workflow_pool_key(session_key or "") else self.conversation_log
+
     # Thread history, highest priority: LLM-compressed when available, else
     # truncated. CC needs it too, since a new CC subprocess has no history.
-    if session_key and self.conversation_log and not resumed:
+    if session_key and transcript and not resumed:
         _history_header = (
             "[THREAD CONVERSATION HISTORY — this is the PRIMARY context.\n"
             "When the user says 'just now', 'earlier', 'the task', 'try again', "
@@ -447,7 +454,7 @@ def build_session_context(
             parts.append(_history_header + compressed_history + "\n[End of thread history]\n\n")
         elif compressed_history is None:
             recent = ctx._recall_rows(
-                self.conversation_log,
+                transcript,
                 session_key,
                 conv_max=ctx._RECALL_FALLBACK_MAX_ROWS,
                 exclude_last_n=exclude_last_n,
@@ -474,8 +481,8 @@ def build_session_context(
     _mark("thread_history")
 
     # Tell the model which recent turns the user cancelled.
-    if session_key and self.conversation_log:
-        _stop_notes = ctx._build_stop_event_notes(self.conversation_log, session_key)
+    if session_key and transcript:
+        _stop_notes = ctx._build_stop_event_notes(transcript, session_key)
         if _stop_notes:
             append_required(_stop_notes)
     _mark("stop_notes")
@@ -557,14 +564,12 @@ def build_session_context(
     # them hands the fresh conversation exactly what the user asked it to forget.
     if (
         session_key
-        and self.conversation_log
+        and transcript
         and not blocks_reads
         and not conversation_reset
         and ctx._group_included(effective_groups, ctx.CONTEXT_GROUP_MEMORY)
     ):
-        provenance = self.conversation_log.recent_with_provenance(
-            session_key, exclude_last_n=exclude_last_n
-        )
+        provenance = transcript.recent_with_provenance(session_key, exclude_last_n=exclude_last_n)
         if provenance:
             append_required(
                 "## Recent Session Context\n"

@@ -264,6 +264,29 @@ def _error(message: str, code: str, status: int) -> web.Response:
     raise ValueError(f"unsupported workflow error status: {status}")
 
 
+def _workflow_step_refusal(request: web.Request) -> web.Response | None:
+    """The refusal for a run started from inside a workflow step, else ``None``.
+
+    A step is an agent a workflow run started for one part of its script, and
+    the run expects that part's result back from the step. A run the step starts
+    instead reports to the step's own session, which no agent reads once the
+    step returns, so the part is never done. The step is named by its session
+    key, which the workflow service mints; a key that does not match any step
+    prefix is not refused here.
+    """
+    from kiro_crew.constants import is_workflow_step_key
+
+    if not is_workflow_step_key(request.headers.get("X-Session-Key", "")):
+        return None
+    return _error(
+        "A workflow step cannot start another workflow. Do this part of the work "
+        "directly in this step with your own tools, and return its result as this "
+        "step's answer.",
+        "workflow_step_cannot_start_workflow",
+        403,
+    )
+
+
 async def _private_memory_refusal(request: web.Request, operation: str) -> web.Response | None:
     """Authenticate the caller before a workflow can lose its private binding."""
     _store, refusal = await internal_memory_scope(
@@ -483,6 +506,9 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
     denied = _reject_app_caller(request, _OP_DEFINITION_RUN)
     if denied is not None:
         return denied
+    step_refused = _workflow_step_refusal(request)
+    if step_refused is not None:
+        return step_refused
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. The other two
     # caller classes keep the control that already governs them -- an
@@ -694,6 +720,9 @@ async def _start_admitted(
 
 async def api_workflow_run(request: web.Request) -> web.Response:
     """POST /api/workflows/run — launch a background run, return its run_id."""
+    step_refused = _workflow_step_refusal(request)
+    if step_refused is not None:
+        return step_refused
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. The other two
     # caller classes keep the control that already governs them -- an
@@ -780,6 +809,9 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     background run (a visible "Authoring" phase) so the slow model call never
     blocks this request (no 30s synchronous-author timeout).
     """
+    step_refused = _workflow_step_refusal(request)
+    if step_refused is not None:
+        return step_refused
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. The other two
     # caller classes keep the control that already governs them -- an
@@ -991,6 +1023,9 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     """POST /api/workflows/runs/{id}/rerun — restart, replaying the prefix."""
     # A rerun launches a new run under the prior run's origin session, optionally
     # with an edited script, so it is gated like the other launch routes above.
+    step_refused = _workflow_step_refusal(request)
+    if step_refused is not None:
+        return step_refused
     if request.get("internal_auth") is not True and request.get("app") == "":
         from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
