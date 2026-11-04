@@ -104,7 +104,8 @@ declare global {
   }
 
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    /** `nativeLogOff`: pathless reason, present only when Chromium's file log is off this launch. */
+    get: () => Promise<{ newCount: number; nativeLogOff?: string }>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 

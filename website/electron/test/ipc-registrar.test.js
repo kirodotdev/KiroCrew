@@ -187,6 +187,7 @@ function harness({
   canSwitchToRemoteCrew = true,
   switchOutcome = "switching",
   crashScan,
+  nativeLoggingStatus = undefined,
   revealThrows = false,
   openPathResult = "",
   openPathThrows = false,
@@ -415,6 +416,7 @@ function harness({
       crashScans.push(true);
       return typeof crashScan === "function" ? crashScan() : crashScan;
     },
+    ...(nativeLoggingStatus === undefined ? {} : { nativeLoggingStatus: () => nativeLoggingStatus }),
     glog: (line) => logs.push(line),
     ...(externalTerminal ? { externalTerminal } : {}),
     ...(getRequiredChannel ? { getRequiredChannel } : {}),
@@ -888,6 +890,20 @@ test("crash-reports:get narrows the scan to a single count", async () => {
   // precisely so it need not.
   assert.deepEqual(Object.keys(summary).sort(), ["newCount"]);
   assert.equal(h.crashScans.length, 1, "the summary must come from the injected scan");
+});
+
+test("crash-reports:get says when native file logging is off, and nothing else of it", async () => {
+  const reason = "chromium.log could not be rotated (rotate failed (ENOSPC)), so the file sink is skipped this launch";
+  const h = harness({
+    crashScan: crashScanResult,
+    nativeLoggingStatus: { blocked: true, logPath: "/logs/chromium.log", fileLogOffReason: reason },
+  });
+  h.registrar.registerShell();
+
+  const summary = await h.handlers.get("crash-reports:get")(wslEvent());
+
+  assert.deepEqual(summary, { newCount: 2, nativeLogOff: reason });
+  assert.equal(JSON.stringify(summary).includes("/logs"), false, "the log path stays in main");
 });
 
 test("crash-reports:get reports nothing when no collector was injected", async () => {

@@ -6241,6 +6241,7 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nuovi record di arresto anomalo salvati su questo computer: {{n}}. Allegali quando segnali il problema.",
       "dismiss": "Ignora",
+      "native_log_off": "La registrazione nativa su file (chromium.log) è disattivata in questo avvio, quindi quel file potrebbe non essere aggiornato. Motivo: {{reason}}",
       "report_issue": "Segnala un problema",
       "report_note": "L'app si è chiusa inaspettatamente. Nuovi registri di arresto anomalo salvati su questo computer: {{n}}.",
       "reveal_failed": "Impossibile aprire la cartella: cerca crashes.log nella directory dei log dell’app.",

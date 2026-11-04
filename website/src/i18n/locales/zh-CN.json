@@ -5919,6 +5919,7 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "已在本机保存 {{n}} 条新的崩溃记录。反馈问题时请一并附上。",
       "dismiss": "忽略",
+      "native_log_off": "本次启动未开启原生文件日志（chromium.log），因此该文件可能不是最新的。原因：{{reason}}",
       "report_issue": "反馈问题",
       "report_note": "应用意外退出。本机新保存的崩溃记录：{{n}} 条。",
       "reveal_failed": "无法打开文件夹——请在应用的日志目录中查找 crashes.log。",

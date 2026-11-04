@@ -20,7 +20,10 @@
  * in-memory: main.js scans once per app session, so a new launch with no new
  * crash produces `newCount: 0` and nothing renders anyway.
  *
- * The renderer is told a COUNT and nothing else — not even a timestamp. Paths,
+ * The renderer is told a COUNT and nothing else — not even a timestamp — except,
+ * on a launch whose Chromium file log is off, the pathless one-line reason (see
+ * `initNativeLogging` in electron/native-logging.js). The banner shows it so the
+ * chromium.log the user attaches is not taken for a current one. Paths,
  * filenames and exception codes stay in the main process (see `crashNoticeSummary` in
  * electron/crash-collector.js) — the reveal action is a main-process gesture
  * that names no path, so this component never holds one.
@@ -42,6 +45,7 @@ const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAP
 
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
+  const [nativeLogOff, setNativeLogOff] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -76,7 +80,11 @@ export default function CrashReportNotice() {
     // gateway shares this preload), and that is a correct outcome, not an error
     // worth putting on screen.
     void api.get()
-      .then(summary => { if (alive) setCount(summary.newCount) })
+      .then(summary => {
+        if (!alive) return
+        setCount(summary.newCount)
+        setNativeLogOff(typeof summary.nativeLogOff === 'string' ? summary.nativeLogOff : null)
+      })
       .catch(() => {})
     return () => { alive = false }
   }, [])
@@ -109,6 +117,11 @@ export default function CrashReportNotice() {
                 which only exist for keys registered in i18n/pluralKeys.json. */}
             {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
           </div>
+          {nativeLogOff && (
+            <div className="text-[13px] text-muted mt-1" data-testid="crash-notice-native-log-off">
+              {i18nT('components.crashNotice.native_log_off', { reason: nativeLogOff })}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -156,7 +169,11 @@ export default function CrashReportNotice() {
       <ReportProblemModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        initialNote={i18nT('components.crashNotice.report_note', { n: count })}
+        initialNote={
+          nativeLogOff
+            ? `${i18nT('components.crashNotice.report_note', { n: count })} ${i18nT('components.crashNotice.native_log_off', { reason: nativeLogOff })}`
+            : i18nT('components.crashNotice.report_note', { n: count })
+        }
       />
     </div>
   )

@@ -1270,6 +1270,27 @@ describe("crashNoticeSummary", () => {
   it("is safe on a scan that never ran", () => {
     assert.deepEqual(crashNoticeSummary(null), { newCount: 0 });
   });
+
+  it("adds the native-log-off reason only when the file sink is off this launch", () => {
+    const reason = "chromium.log could not be rotated (rotate failed (ENOSPC)), so the file sink is skipped this launch";
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, { fileLogOffReason: reason }), {
+      newCount: 1,
+      nativeLogOff: reason,
+    });
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, { fileLogOffReason: null }), { newCount: 1 });
+    assert.deepEqual(crashNoticeSummary({ newCrashes: [{}] }, null), { newCount: 1 });
+  });
+
+  it("carries nothing else from the native-logging result", () => {
+    const status = { fileLogOffReason: "off", logPath: "/Users/someone/Library/Logs/chromium.log", blocked: true };
+    assert.deepEqual(Object.keys(crashNoticeSummary(null, status)).sort(), ["nativeLogOff", "newCount"]);
+    assert.equal(JSON.stringify(crashNoticeSummary(null, status)).includes("/Users"), false);
+  });
+
+  it("drops a reason that is not the short sentence initNativeLogging builds", () => {
+    assert.deepEqual(crashNoticeSummary(null, { fileLogOffReason: "x".repeat(201) }), { newCount: 0 });
+    assert.deepEqual(crashNoticeSummary(null, { fileLogOffReason: { path: "/x" } }), { newCount: 0 });
+  });
 });
 
 // ---------------------------------------------------------------------------

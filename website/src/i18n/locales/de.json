@@ -6080,6 +6080,7 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}. Fügen Sie sie Ihrer Fehlermeldung bei.",
       "dismiss": "Schließen",
+      "native_log_off": "Die native Dateiprotokollierung (chromium.log) ist bei diesem Start aus, daher ist diese Datei möglicherweise nicht aktuell. Grund: {{reason}}",
       "report_issue": "Problem melden",
       "report_note": "Die App wurde unerwartet beendet. Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}.",
       "reveal_failed": "Ordner konnte nicht geöffnet werden – suchen Sie im Log-Verzeichnis der App nach crashes.log.",

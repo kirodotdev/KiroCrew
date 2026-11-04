@@ -35,6 +35,9 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   crashScan = null,
+  // This launch's `initNativeLogging` result, read per call. Only its pathless
+  // `fileLogOffReason` reaches the renderer, through `crashNoticeSummary`.
+  nativeLoggingStatus = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does
   // not float orphaned over the vanished dashboard during the quit handoff.
@@ -339,7 +342,10 @@ function createIpcRegistrar({
       await assertLocalDashboard(event, "crash-reports:get");
       // Absent injection means the shell was assembled without a collector —
       // report "nothing to see" rather than failing the renderer's first call.
-      return crashNoticeSummary(typeof crashScan === "function" ? crashScan() : null);
+      return crashNoticeSummary(
+        typeof crashScan === "function" ? crashScan() : null,
+        typeof nativeLoggingStatus === "function" ? nativeLoggingStatus() : null,
+      );
     });
 
     // Reveal, never read. The renderer names no path and receives no path: this

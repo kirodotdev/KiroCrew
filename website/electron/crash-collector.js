@@ -116,8 +116,9 @@ const {
 /**
  * The renderer-facing view of a scan.
  *
- * Deliberately narrow: ONE number. No paths, filenames, module names, exception
- * codes, timestamps, or logs directory — all of which describe the machine (down
+ * Deliberately narrow: ONE number, plus `nativeLogOff` on a launch whose
+ * Chromium file log is off (a fixed, pathless sentence, read by the banner). No
+ * paths, filenames, module names, exception codes, timestamps, or logs directory — all of which describe the machine (down
  * to the account name in a home directory) and none of which the notice needs.
  * A connection window pointed at a remote gateway shares this preload, so the
  * smaller this payload is, the less the sender gate has to carry. The detail
@@ -131,10 +132,24 @@ const {
  * UI does not read are not free here: every one is another thing crossing the
  * boundary this channel's three gates exist to protect.
  */
-function crashNoticeSummary(scan) {
+function crashNoticeSummary(scan, nativeLogging = null) {
   const newCrashes = (scan && scan.newCrashes) || [];
-  return { newCount: newCrashes.length };
+  const summary = { newCount: newCrashes.length };
+  // Present only when Chromium's file log is off this launch (see
+  // `initNativeLogging`'s `fileLogOffReason`): then the chromium.log the banner
+  // asks the user to attach is not this session's, and the notice says so. The
+  // reason is pathless by construction there; the type and length checks here
+  // keep anything else from riding this channel.
+  const reason = nativeLogging && nativeLogging.fileLogOffReason;
+  if (typeof reason === "string" && reason && reason.length <= MAX_NATIVE_LOG_OFF_REASON) {
+    summary.nativeLogOff = reason;
+  }
+  return summary;
 }
+
+// Generous for the fixed sentence `initNativeLogging` builds; anything longer is
+// not that sentence and is dropped rather than truncated.
+const MAX_NATIVE_LOG_OFF_REASON = 200;
 
 module.exports = {
   armCrashCollector,

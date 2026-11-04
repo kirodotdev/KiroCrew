@@ -2,7 +2,7 @@ import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import CrashReportNotice from './CrashReportNotice'
 
-type Summary = { newCount: number }
+type Summary = { newCount: number; nativeLogOff?: string }
 
 const get = vi.fn<[], Promise<Summary>>()
 const reveal = vi.fn<[], Promise<{ ok: boolean; error?: string }>>()
@@ -122,6 +122,29 @@ describe('CrashReportNotice', () => {
     expect((note as HTMLTextAreaElement).value).toMatch(/closed unexpectedly/i)
     expect((note as HTMLTextAreaElement).value).toMatch(/2/)
     expect(reveal).not.toHaveBeenCalled()
+  })
+
+  // When Chromium's file log is off this launch, the chromium.log the user is
+  // asked to attach is not current; the banner and the report note say so.
+  it('says native file logging is off this launch, with the reason', async () => {
+    const reason = 'chromium.log could not be rotated (rotate failed (ENOSPC)), so the file sink is skipped this launch'
+    get.mockResolvedValue(summary({ nativeLogOff: reason }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    const line = screen.getByTestId('crash-notice-native-log-off')
+    expect(line).toHaveTextContent(/native file logging \(chromium\.log\) is off this launch/i)
+    expect(line).toHaveTextContent(reason)
+    fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
+    const dialog = await screen.findByRole('dialog')
+    const note = within(dialog).getByRole('textbox', { name: /what happened/i }) as HTMLTextAreaElement
+    expect(note.value).toMatch(/closed unexpectedly/i)
+    expect(note.value).toContain(reason)
+  })
+
+  it('says nothing about native logging when the sink is armed', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
   })
 
   it('keeps the crash banner when the report dialog is cancelled', async () => {
