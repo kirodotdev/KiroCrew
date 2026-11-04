@@ -871,7 +871,11 @@ async def _deliver_send_message_fallback(
 
     Each leg records what it reached on *outcome* as it goes.
     """
+    # Function-local like ``redact`` below: the facade rebinds this function
+    # onto ``handlers.messaging``'s globals, where a module-level import here
+    # would not exist.
     from kiro_crew.security import redact
+    from kiro_crew.slack.mrkdwn_markdown import mrkdwn_to_markdown
 
     # Snapshot before the suffix below: that sentence describes the BELL's
     # delivery, and a channel post is a real delivery, not the
@@ -891,10 +895,21 @@ async def _deliver_send_message_fallback(
     publisher = None if options else attribution_session or None
     # The link back to the sender stays even then: a question is where it is needed most.
     session_meta = _publishing_session_meta(state, attribution_session)
+    # Two grammars, one call: a Slack-bound ``text`` is written in Slack mrkdwn,
+    # while the bell renders Markdown, so Slack links (``<url|label>``) and
+    # emphasis arrive broken in the bell. Convert the BELL's copy only — the
+    # legs below must deliver exactly what the caller wrote. ``send_to_slack``
+    # is the gate: false whenever a ``channel_target``/``channel_type`` send
+    # carries another channel's format, true when the send is Slack-routed.
+    # The cron owner-DM default keeps it true even on an install with no Slack
+    # client, where the body may already be Markdown — accepted, because the
+    # converter leaves Markdown constructs and URL-shaped spans untouched and
+    # only single-delimiter emphasis (``*x*``, mrkdwn bold) changes weight.
+    bell_text = mrkdwn_to_markdown(text) if send_to_slack else text
     state.notify(
         "agent",
         title,
-        text,
+        bell_text,
         meta=session_meta,
         member=member,
         publisher_session=publisher,
