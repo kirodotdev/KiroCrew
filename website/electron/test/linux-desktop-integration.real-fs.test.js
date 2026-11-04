@@ -16,10 +16,11 @@ const {
   APPDIR,
   HOME,
   xattrFailingFixture,
+  writeLeaseRefusingFixture,
   EMPTY_XATTR_DIGEST,
   fakeWorkerFactory,
   WORKER_DEPS,
-  writeLeaseUnavailable,
+  managedLeaseUnavailable,
   managedLauncherSnapshot,
   assertPublishDeferred,
 } = require("./linux-desktop-integration-test-helpers");
@@ -159,7 +160,7 @@ test("real helper treats a filesystem without xattr support as an empty selected
   // A later managed update runs the lease-held publish path, whose fd-based
   // xattr comparison must also read the unsupported filesystem as empty. A
   // host that refuses the write lease must instead defer it untouched.
-  const noLease = writeLeaseUnavailable(root);
+  const noLease = managedLeaseUnavailable(root);
   const before = managedLauncherSnapshot(launcher, statePath);
   const logs = [];
   const moved = integrateLinuxDesktop({
@@ -205,7 +206,7 @@ test("real helper reports an unexpected xattr failure as a structured error and 
 test("real publication and cleanup defer while their inode has an open descriptor", LINUX_FILESYSTEM_ONLY, (t) => {
   const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "kirocrew-ldi-lease-"));
   t.after(() => realFs.rmSync(root, { recursive: true, force: true }));
-  const noLease = writeLeaseUnavailable(root);
+  const noLease = managedLeaseUnavailable(root);
   const home = realPath.join(root, "home");
   const appDir = realPath.join(root, "appdir");
   const dataDir = realPath.join(root, "data");
@@ -305,6 +306,78 @@ test("real publication and cleanup defer while their inode has an open descripto
   const cleaned = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher];
   assert.equal(cleaned.recovery, undefined);
   for (const p of recovery.paths) assert.ok(!realFs.existsSync(p));
+});
+
+// #29467: kernels before 5.3 refuse a write lease with EAGAIN on any inode
+// with a second hard-link name, and a managed launcher always keeps its
+// anchor link, so every later update used to defer forever there. The helper
+// now holds a read lease on such a host.
+test("real helper publishes and cleans up where the kernel refuses the write lease", LINUX_FILESYSTEM_ONLY, (t) => {
+  const { root, deps, helperRuns, launcher, statePath } = writeLeaseRefusingFixture(t);
+  assert.equal(integrateLinuxDesktop(deps).installed, true);
+  const update = {
+    ...deps,
+    env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
+    version: "0.6.0",
+  };
+
+  helperRuns.length = 0;
+  const published = integrateLinuxDesktop(update);
+  assert.equal(published.installed, true, JSON.stringify({ published, helperRuns }));
+  assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
+  const publishes = helperRuns.filter((r) => r.mode === "publish");
+  assert.ok(publishes.length > 0);
+  for (const r of publishes) {
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).status, "published");
+  }
+  const recovery = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;
+  assert.ok(recovery && recovery.paths.length > 0, JSON.stringify(recovery));
+
+  helperRuns.length = 0;
+  integrateLinuxDesktop(update);
+  const deletes = helperRuns.filter((r) => r.mode === "delete");
+  assert.ok(deletes.length > 0);
+  for (const r of deletes) assert.equal(r.stdout, "deleted", r.stderr);
+  assert.equal(JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery, undefined);
+  for (const p of recovery.paths) assert.ok(!realFs.existsSync(p));
+});
+
+test("real helper still defers for a writable descriptor where the kernel refuses the write lease", LINUX_FILESYSTEM_ONLY, (t) => {
+  const { root, deps, helperRuns, launcher, statePath } = writeLeaseRefusingFixture(t);
+  assert.equal(integrateLinuxDesktop(deps).installed, true);
+  const update = {
+    ...deps,
+    env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
+    version: "0.6.0",
+  };
+
+  const before = managedLauncherSnapshot(launcher, statePath);
+  const launcherFd = realFs.openSync(launcher, "r+");
+  try {
+    helperRuns.length = 0;
+    const logs = [];
+    const result = integrateLinuxDesktop({ ...update, log: (m) => logs.push(m) });
+    assertPublishDeferred({ result, launcher, statePath, before, runs: helperRuns, logs });
+  } finally {
+    realFs.closeSync(launcherFd);
+  }
+
+  assert.equal(integrateLinuxDesktop(update).installed, true);
+  const recovery = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;
+  const recoveryFd = realFs.openSync(recovery.paths[0], "r+");
+  try {
+    helperRuns.length = 0;
+    integrateLinuxDesktop(update);
+    const deletes = helperRuns.filter((r) => r.mode === "delete");
+    assert.ok(deletes.length > 0);
+    assert.ok(deletes.some((r) => r.stdout === "busy"), JSON.stringify(deletes));
+    const retained = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;
+    assert.deepEqual(retained, recovery);
+    for (const p of recovery.paths) assert.ok(realFs.existsSync(p));
+  } finally {
+    realFs.closeSync(recoveryFd);
+  }
 });
 
 test("startLinuxDesktopIntegration settles the plan on the main thread without a worker", async () => {

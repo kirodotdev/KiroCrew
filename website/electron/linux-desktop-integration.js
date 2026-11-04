@@ -23,12 +23,17 @@
  * intent, and atomic no-replace hard links. Managed replacement runs inside
  * the packaged helper while it holds kernel write leases on both the old and
  * generated inodes from verification through displacement, publication, and
- * interrupted-publication recovery. An existing descriptor therefore defers
- * generated publication instead of losing a concurrent edit. One live hard-link
+ * interrupted-publication recovery. Where the kernel refuses a write lease
+ * with EAGAIN although no descriptor is open (kernels before 5.3 count the
+ * anchor hard link as one), the helper holds a read lease through a read-only
+ * descriptor instead, which is refused while any descriptor is open for
+ * writing and broken by any later open for writing. An existing writable
+ * descriptor therefore defers generated publication instead of losing a
+ * concurrent edit. One live hard-link
  * anchor proves current ownership. Extended-metadata fingerprints are captured
  * before publication and retained as provenance. Cleanup prevalidates each
  * superseded inode, then the packaged helper opens its unpredictable recovery
- * path, acquires a kernel write lease, re-verifies bytes, inode, POSIX metadata,
+ * path, acquires that same kernel lease, re-verifies bytes, inode, POSIX metadata,
  * xattrs, and ACLs through that descriptor, and unlinks the same path. Changed
  * or uninspectable data is never deleted, and incomplete cleanup keeps its
  * manifest record for a later run. The preservation contract covers edits to
@@ -365,6 +370,34 @@ const METADATA_HELPER_SCRIPT = [
   "def outcome(value):",
   "    print(value)",
   "    raise SystemExit(0)",
+  "# Open `path` and take a kernel lease on it, or return None when the kernel",
+  "# refuses one. A write lease is refused (EAGAIN) while any other descriptor",
+  "# is open. Kernels before 5.3 also count each cached hard-link name of the",
+  "# inode as an open, and a managed artifact always keeps its anchor link, so",
+  "# there the write lease is refused on every launch. A read lease is refused",
+  "# the same way while any descriptor is open for writing, and any later open",
+  "# for writing breaks it, which is the concurrent edit the lease guards",
+  "# against. So when the write lease answers EAGAIN, take a read lease through",
+  "# a read-only descriptor instead. Any other refusal still answers None.",
+  "def lease(path):",
+  "    flags = getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)",
+  "    fd = os.open(path, os.O_RDWR | flags)",
+  "    try:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+  "        return fd",
+  "    except OSError as exc:",
+  "        os.close(fd)",
+  "        if exc.errno != errno.EAGAIN: return None",
+  "    try:",
+  "        fd = os.open(path, os.O_RDONLY | flags)",
+  "    except OSError:",
+  "        return None",
+  "    try:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_RDLCK)",
+  "        return fd",
+  "    except OSError:",
+  "        os.close(fd)",
+  "        return None",
   "if mode == 'fingerprint':",
   "    # Standalone fingerprints share the structured contract: an unexpected",
   "    # failure is the token 'error' on a clean exit, never a traceback.",
@@ -382,16 +415,13 @@ const METADATA_HELPER_SCRIPT = [
   "new_leased = False",
   "moved = False",
   "try:",
-  "    flags = os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)",
   "    try:",
-  "        fd = os.open(lease_target, flags)",
+  "        fd = lease(lease_target)",
   "    except FileNotFoundError:",
   "        outcome('absent')",
-  "    try:",
-  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
-  "        leased = True",
-  "    except OSError:",
+  "    if fd is None:",
   "        outcome('busy')",
+  "    leased = True",
   "    st = os.fstat(fd)",
   "    path_st = os.lstat(lease_target)",
   "    matches = (stat.S_ISREG(st.st_mode) and st.st_dev == expected['dev'] and",
@@ -406,12 +436,10 @@ const METADATA_HELPER_SCRIPT = [
   "    if mode in ('publish', 'recover'):",
   "        displaced, temp = sys.argv[4], sys.argv[5]",
   "        desired = json.loads(sys.argv[6])",
-  "        new_fd = os.open(temp, flags)",
-  "        try:",
-  "            fcntl.fcntl(new_fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
-  "            new_leased = True",
-  "        except OSError:",
+  "        new_fd = lease(temp)",
+  "        if new_fd is None:",
   "            outcome('busy')",
+  "        new_leased = True",
   "        new_st = os.fstat(new_fd)",
   "        new_path_st = os.lstat(temp)",
   "        new_matches = (stat.S_ISREG(new_st.st_mode) and",

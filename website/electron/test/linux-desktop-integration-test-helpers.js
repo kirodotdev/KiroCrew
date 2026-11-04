@@ -15,38 +15,47 @@ const LINUX_FILESYSTEM_ONLY = {
 };
 
 // The packaged helper publishes a managed update, and deletes a recovery
-// path, only while it holds a kernel write lease (F_SETLEASE, F_WRLCK) on the
-// inode. A managed launcher's inode always has two names: the module writes
-// the anchor temp file, then hard-links it to the public path. Some hosts
-// refuse the lease on such an inode with EAGAIN even when no process has it
-// open; the CodeBuild Linux runner (kernel 4.14, overlayfs root) does, for
-// every reopen of a managed launcher. The helper then reports "busy" and the
-// module keeps the old file, which is its designed answer to a refused lease.
-// On such a host a publish test asserts that fail-safe instead of a publish.
+// path, only while it holds a kernel lease (F_SETLEASE) on the inode. A
+// managed launcher's inode always has two names: the module writes the anchor
+// temp file, then hard-links it to the public path. Kernels before 5.3 refuse
+// a write lease (F_WRLCK) on such an inode with EAGAIN even when no process
+// has it open; the CodeBuild Linux runner (kernel 4.14) does, for every reopen
+// of a managed launcher. The helper then takes a read lease (F_RDLCK) through
+// a read-only descriptor instead (#29467). Only when that is refused too does
+// it report "busy", and the module keeps the old file, which is its designed
+// answer to a refused lease. On such a host a publish test asserts that
+// fail-safe instead of a publish.
 //
 // This probe repeats the module's own sequence on a scratch file in `dir`:
 // Node writes and closes the file, hard-links it to a second name, and a
-// separate interpreter reopens each name O_RDWR and asks for the lease. It
-// returns a reason naming the errno, or null when both names are granted.
-// A probe that cannot run returns null, so the test expects a real publish
-// and fails loudly if the host then refuses it.
-const WRITE_LEASE_PROBE = [
+// separate interpreter reopens each name and asks for the lease the helper
+// would take. It returns a reason naming the errno, or null when both names
+// are granted. A probe that cannot run returns null, so the test expects a
+// real publish and fails loudly if the host then refuses it.
+const LEASE_PROBE = [
   "import errno, fcntl, os, sys",
-  "for path in sys.argv[1:]:",
-  "    fd = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)",
+  "flags = os.O_CLOEXEC | os.O_NOFOLLOW",
+  "def take(path, access, kind):",
+  "    fd = os.open(path, access | flags)",
   "    try:",
-  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
-  "    except OSError as exc:",
-  "        print(errno.errorcode.get(exc.errno, str(exc.errno)))",
-  "        raise SystemExit(0)",
-  "    else:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, kind)",
   "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)",
   "    finally:",
   "        os.close(fd)",
+  "for path in sys.argv[1:]:",
+  "    try:",
+  "        try:",
+  "            take(path, os.O_RDWR, fcntl.F_WRLCK)",
+  "        except OSError as exc:",
+  "            if exc.errno != errno.EAGAIN: raise",
+  "            take(path, os.O_RDONLY, fcntl.F_RDLCK)",
+  "    except OSError as exc:",
+  "        print(errno.errorcode.get(exc.errno, str(exc.errno)))",
+  "        raise SystemExit(0)",
   "print('granted')",
 ].join("\n");
 
-function writeLeaseUnavailable(dir) {
+function managedLeaseUnavailable(dir) {
   const probeDir = realFs.mkdtempSync(realPath.join(dir, "lease-probe-"));
   try {
     const anchor = realPath.join(probeDir, "launcher.desktop.tmp");
@@ -54,12 +63,12 @@ function writeLeaseUnavailable(dir) {
     realFs.writeFileSync(anchor, "probe", { flag: "wx", mode: 0o644 });
     realFs.linkSync(anchor, published);
     const result = realChildProcess.spawnSync(
-      "/usr/bin/python3", ["-I", "-c", WRITE_LEASE_PROBE, published, anchor],
+      "/usr/bin/python3", ["-I", "-c", LEASE_PROBE, published, anchor],
       { encoding: "utf8", timeout: 5000 }
     );
     const answer = result.status === 0 ? String(result.stdout || "").trim() : "";
     return /^E[A-Z0-9]+$/.test(answer)
-      ? `this host refuses a write lease on a hard-linked file with no other open descriptor (${answer})`
+      ? `this host refuses both a write and a read lease on a hard-linked file with no other open descriptor (${answer})`
       : null;
   } finally {
     realFs.rmSync(probeDir, { recursive: true, force: true });
@@ -416,12 +425,12 @@ function baseDeps(fs, overrides = {}) {
 }
 
 // Real-filesystem fixture whose packaged "python3.12" is a wrapper around the
-// system interpreter that makes every xattr syscall fail with one errno before
-// running the real helper script. This drives the actual helper path on a
-// filesystem class the test host cannot provide (no extended attributes), and
-// records each helper invocation so its structured outcome can be asserted.
-function xattrFailingFixture(t, errnoName) {
-  const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), `kirocrew-ldi-${errnoName}-`));
+// system interpreter that runs `patchLines` before the real helper script.
+// This drives the actual helper path on a host class the test host cannot
+// provide, and records each helper invocation so its structured outcome can
+// be asserted.
+function wrappedHelperFixture(t, label, patchLines) {
+  const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), `kirocrew-ldi-${label}-`));
   t.after(() => realFs.rmSync(root, { recursive: true, force: true }));
   const home = realPath.join(root, "home");
   const appDir = realPath.join(root, "appdir");
@@ -436,12 +445,8 @@ function xattrFailingFixture(t, errnoName) {
   realFs.mkdirSync(binDir, { recursive: true });
   realFs.writeFileSync(realPath.join(binDir, "python3.12"), [
     "#!/usr/bin/python3",
-    "import errno, os, sys",
-    `code = errno.${errnoName}`,
-    "def failing(*args, **kwargs):",
-    "    raise OSError(code, os.strerror(code))",
-    "os.listxattr = failing",
-    "os.getxattr = failing",
+    "import sys",
+    ...patchLines,
     "# argv: wrapper, -I, -c, SCRIPT, mode, target, ... -> hand the helper",
     "# the argv shape `python -I -c SCRIPT` would have produced.",
     "script = sys.argv[3]",
@@ -474,6 +479,34 @@ function xattrFailingFixture(t, errnoName) {
     launcher: realPath.join(dataDir, "applications", "kirocrew-desktop-appimage.desktop"),
     statePath: realPath.join(stateDir, "linux-desktop-integration", "state.json"),
   };
+}
+
+// The helper's interpreter makes every xattr syscall fail with one errno: a
+// filesystem class without extended attributes.
+function xattrFailingFixture(t, errnoName) {
+  return wrappedHelperFixture(t, errnoName, [
+    "import errno, os",
+    `code = errno.${errnoName}`,
+    "def failing(*args, **kwargs):",
+    "    raise OSError(code, os.strerror(code))",
+    "os.listxattr = failing",
+    "os.getxattr = failing",
+  ]);
+}
+
+// The helper's interpreter refuses every write lease (F_SETLEASE, F_WRLCK)
+// with EAGAIN, as kernels before 5.3 do for an inode with a second hard-link
+// name; every other fcntl call, read leases included, reaches the kernel.
+function writeLeaseRefusingFixture(t) {
+  return wrappedHelperFixture(t, "wrlck-eagain", [
+    "import errno, fcntl, os",
+    "kernel_fcntl = fcntl.fcntl",
+    "def refusing(fd, cmd, arg=0, *rest):",
+    "    if cmd == fcntl.F_SETLEASE and arg == fcntl.F_WRLCK:",
+    "        raise OSError(errno.EAGAIN, os.strerror(errno.EAGAIN))",
+    "    return kernel_fcntl(fd, cmd, arg, *rest)",
+    "fcntl.fcntl = refusing",
+  ]);
 }
 
 const EMPTY_XATTR_DIGEST = require("crypto").createHash("sha256").digest("hex");
@@ -514,10 +547,11 @@ module.exports = {
   bundleWithIcons,
   baseDeps,
   xattrFailingFixture,
+  writeLeaseRefusingFixture,
   EMPTY_XATTR_DIGEST,
   fakeWorkerFactory,
   WORKER_DEPS,
-  writeLeaseUnavailable,
+  managedLeaseUnavailable,
   managedLauncherSnapshot,
   assertPublishDeferred,
 };
