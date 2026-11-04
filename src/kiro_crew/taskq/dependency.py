@@ -420,32 +420,19 @@ class DependencyCoordinator:
     never bypasses admission.
     ``clock`` and ``rng`` are injectable for deterministic tests.
 
-    ``wake_through`` is the run loop's seam: asked ``(task_id, generation)``
-    BEFORE the coordinator writes a wake. A ``True`` answer means the waiter is
-    a LIVE run that yielded its lane slot and will re-enter through admission
-    (which writes ``wake_wait`` under the run's own generation when the slot
-    is granted); the coordinator then records the ``dependency_wake`` event
-    only, so one wake is one store write. ``False`` (or no seam) keeps the
-    parked-row path: the coordinator wakes the row itself. ``on_fail`` is told
-    ``(task_id, reason)`` for every waiter a scope deadline or attempts cap
-    fails from :meth:`tick` or :meth:`report`, so a run blocked on its wake can
-    end instead of waiting for a grant that will never come.
+    ``wake_through(task_id, generation)`` is asked before a wake is written.
+    ``True`` means a live run that yielded its lane slot will re-enter through
+    admission (which writes ``wake_wait``), so only the ``dependency_wake`` event
+    is recorded; ``False`` or no seam wakes the parked row here. ``on_fail`` gets
+    ``(task_id, reason)`` for each waiter a deadline or attempts cap fails, so a
+    run blocked on its wake can end.
 
-    **Two threads, one schedule.** :meth:`report` and :meth:`tick` are called on
-    the task store's writer thread (``store.run``), while the gateway loop edits
-    and reads the same schedule (:meth:`forget`, :meth:`recovered`,
-    :meth:`waiters`, :meth:`next_deadline`, :func:`shared_retry_at`). So
-    ``_lock`` covers the in-memory schedule ONLY and is never held across a store
-    write: one ``BEGIN IMMEDIATE`` waits up to ``taskq.store.BUSY_TIMEOUT_SECS`` for
-    a competing writer, and a batch of them under the lock would stall the loop
-    for that many timeouts with nothing in ``store.loop_thread_calls`` to show it
-    (the loop thread never reaches the store here). Each write therefore takes a
-    :class:`ScopeInstant` snapshot under the lock and runs outside it, the same
-    separation ``TaskStore._executor_lock`` keeps between the executor slot and
-    the connection lock, and the same order :meth:`_terminal` and :meth:`rebuild`
-    already use. The wake / give-up hooks set loop-affine
-    ``asyncio.Event``s, so they are handed to the loop they belong to
-    (:meth:`_on_hook_loop`).
+    :meth:`report` and :meth:`tick` run on the store's writer thread while the
+    loop reads and edits the same schedule, so ``_lock`` covers the in-memory
+    schedule only and is never held across a store write (each ``BEGIN
+    IMMEDIATE`` can wait ``taskq.store.BUSY_TIMEOUT_SECS`` and would stall the
+    loop). Writes use a :class:`ScopeInstant` snapshot taken under the lock. Hooks
+    set loop-affine ``asyncio.Event``s and go through :meth:`_on_hook_loop`.
     """
 
     def __init__(
@@ -718,21 +705,14 @@ class DependencyCoordinator:
         Terminal signals (auth, permanent parameter error, quota with no reset)
         end the task immediately -- ``auth_failed`` goes to the sign-in wait
         state when the machine has one, else ``failed``. Retryable signals join
-        the scope's ONE schedule: the first report creates it, later reports
-        join it without a second timer, and a report from a waiter the scope
-        WOKE counts as that wake failing (attempts += 1, new backoff -- never
-        earlier than an unexpired server ``retry_at``), once for the wave
-        however many of its members report. A newcomer that arrives mid-wave
-        joins the wait and spends none of the scope's probe budget.
-        A server-supplied ``retry_at`` is honoured exactly and only ever
-        extends the schedule. The attempts cap and the wall-clock deadline
-        both end every waiter in the scope as ``failed``.
+        the scope's one schedule. A report from a woken waiter counts once per
+        wave as a failed wake (attempts += 1, new backoff); a newcomer spends no
+        attempt. A server ``retry_at`` is honoured and only extends the schedule.
+        The attempts cap and the deadline end every waiter as ``failed``.
 
-        Answers ``unpersisted`` when no row records the wait (the store could not
-        take it): the schedule has a retry instant but nothing durable holds the
-        waiter, so the caller must NOT park on it -- see :meth:`_persist_wait`.
-        The schedule is decided under ``_lock``; every store write and every hook
-        runs after it is released.
+        Answers ``unpersisted`` when no row records the wait, so the caller must
+        not park on it (:meth:`_persist_wait`). Store writes and hooks run after
+        ``_lock`` is released.
         """
         now = self.now()
         scope = signal.dependency_scope
@@ -755,16 +735,10 @@ class DependencyCoordinator:
                 sched.last_kind = signal.kind
                 sched.last_source = signal.source
                 if task_id in sched.in_flight and sched.phase != PHASE_WAITING:
-                    # A waiter this scope WOKE hit the wall again: the scope is
-                    # still down, and the wake wave costs it ONE attempt --
-                    # ``max_attempts`` bounds probe cycles, not arrivals. Both
-                    # halves say that. ``in_flight`` is who was woken, so a task
-                    # the scope never woke is a newcomer reporting its OWN first
-                    # failure, not this scope's probe answering; and ``phase``
-                    # is the wave's uncounted bit, since only :meth:`tick` moves
-                    # it off ``waiting`` and the count below moves it back. The
-                    # rest of the batch therefore joins the schedule like any
-                    # other waiter rather than each spending a probe of its own.
+                    # A woken waiter failed again: the wave costs ONE attempt
+                    # (``max_attempts`` bounds probe cycles, not arrivals).
+                    # ``in_flight`` excludes newcomers; ``phase`` off ``waiting``
+                    # marks the wave as not yet counted, so later reports join.
                     sched.in_flight.discard(task_id)
                     sched.attempts += 1
                     sched.phase = PHASE_WAITING
@@ -900,21 +874,14 @@ class DependencyCoordinator:
         """Write the wait; answers WHERE it landed, ``None`` when nowhere, or
         :data:`_NO_ROW` when the store holds no row for the task.
 
-        Four distinct outcomes, because two of them are a wait and two are not:
-        ``WAIT_STATE`` (a live run entered ``waiting_dependency`` with the
-        record), ``PARK_STATE`` (the row was not live -- ``starting``, or already
-        parked -- so it is re-dispatched later), ``None`` -- NOTHING durable
-        holds the wait (the row is another owner's or has ended, or the store
-        could not be read) -- and :data:`_NO_ROW`: both writes were refused and
-        there is no row at all, so nothing else owns the work either. The last
-        two call for opposite handling,
-        which is why the row is re-read (:meth:`_row_after_refusal`) instead of
-        folding them into one answer. An outage is never answered with a park:
-        ``retry_wait`` has an edge to neither ``running`` nor ``done``, so parking
-        a live run there would have its own terminal write refused too. ``None``
-        and :data:`_NO_ROW` also append no ``dependency_wait`` event: an event
-        claiming a wait no row is in would be the one thing :meth:`rebuild`
-        trusts.
+        ``WAIT_STATE``: a live run entered ``waiting_dependency``. ``PARK_STATE``:
+        the row was not live and is re-dispatched later. ``None``: nothing durable
+        holds the wait (another owner's or ended row, or an unreadable store).
+        :data:`_NO_ROW`: no row exists at all. The last two need opposite handling,
+        hence the re-read in :meth:`_row_after_refusal`. An outage is never a park,
+        since ``retry_wait`` has no edge to ``running`` or ``done``. Neither ``None``
+        nor :data:`_NO_ROW` appends a ``dependency_wait`` event, which
+        :meth:`rebuild` would trust.
         """
         if self._store is None:
             return WAIT_STATE  # store-less by construction: the schedule is the record

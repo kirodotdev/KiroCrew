@@ -123,38 +123,19 @@ STRICT_ON_LOOP_ENV = "KIROCREW_STRICT_ON_LOOP_TASK_STORE"
 # and CPython never collects one a ``Context`` has seen, so a per-store guard
 # would leak (``on_loop_db``'s adoption note).
 #
-# ``dev_mode_arms_strict=False`` for the reason ``knowledge/store.py`` gives:
-# two classes of on-loop take are tracked here, and an un-offloaded READ is not
-# one of them -- a read reached from a coroutine is a DEFECT, and the way to find
-# one is :attr:`TaskStore.loop_thread_calls` under an armed pin, never this
-# comment. Both tracked classes are ORDERING problems; a write whose RETURN VALUE
-# is load-bearing is NOT one, because the value can be awaited (the drained
-# spawn's defer is: ``admission.gate``'s ``_deferred`` parks a ``DeferPoint``
-# with both answers and ``finish_parked_defer`` awaits ``store.run(store.defer)``
-# for the boolean that picks between them):
+# ``dev_mode_arms_strict=False`` because two on-loop write classes are known and
+# cannot be offloaded (an on-loop READ is a defect; find it with
+# :attr:`TaskStore.loop_thread_calls`):
 #
-# 1. The terminal write on an unwinding arm is synchronous BY DESIGN --
-#    ``taskq.adapters.runner``'s ``waiting_dependency`` cancel and its
-#    ``_end_row_on_cancel`` (``admit``'s ``CancelledError`` arm, for a row the
-#    caller never received a handle for), ``taskrunner``'s and
-#    ``workflows.agent_pool``'s ``CancelledError`` / ``BaseException`` arms --
-#    because an ``await`` there can be interrupted before the write is submitted
-#    and a dropped terminal write leaves the row active for the next boot's
-#    reconciler (see ``Admitted.settle_async``).
-# 2. ``subagent_manager.admission.taskq_cancel_queued``, reached from
-#    a single ``cancel`` (``cancel_impl``): the row has to be cancelled before a
-#    drain can claim it AND out of the in-memory window before a stagger timer
-#    can start it, and an await between those two is a race in either order.
-#    Stop all is restructured out of this class: it queues one writer-thread job
-#    for every row's cancel and only then drops the window entries, both before
-#    its first await (``taskq_post_cancel_queued``).
+# 1. Terminal writes on an unwinding arm (``taskq.adapters.runner``'s
+#    ``waiting_dependency`` cancel and ``_end_row_on_cancel``, ``taskrunner``'s and
+#    ``workflows.agent_pool``'s ``CancelledError`` / ``BaseException`` arms): an
+#    ``await`` there can be interrupted before the write is submitted.
+# 2. ``subagent_manager.admission.taskq_cancel_queued`` from ``cancel_impl``: the
+#    row must be cancelled and leave the in-memory window with no await between.
 #
-# Those takes are on-loop and cannot simply be offloaded, so arming this from
-# ``KIROCREW_DEV_MODE`` would raise on a cancel -- an unqueue that raises leaves
-# that row waiting and fails the request -- and the developer's rational
-# response, unsetting that variable, silences every OTHER surface's guard too.
-# Flip it back to True once both classes are either restructured or inside a
-# vetted ``allow_on_loop()`` block.
+# Arming from ``KIROCREW_DEV_MODE`` would make those cancels raise. Flip to True
+# once both classes are restructured or inside a vetted ``allow_on_loop()`` block.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="task store",
     remedy=(
@@ -474,18 +455,13 @@ class TaskStore:
         the schema cannot be written; the caller decides whether to run
         without a store (legacy in-memory queue) or to refuse work.
 
-        A CORRUPT file is not a refusal that waits for a human. Corruption --
-        ``file is not a database``, ``database disk image is malformed``, a
-        failed ``PRAGMA integrity_check`` -- is what a crash mid-write can
-        leave behind, and with the durable queue enabled every spawn would be
-        refused until someone flipped the flag. So the file is QUARANTINED
-        (renamed to ``tasks.db.corrupt-<utc>`` beside its ``-wal``/``-shm``),
-        the schema is recreated in a fresh file, the fact is logged once at
-        warning level and recorded on :attr:`quarantined_to` and
-        :attr:`warnings` (``kirocrew doctor`` reads both). A locked / busy /
-        disk-full / read-only error is NOT corruption: another writer, or a
-        host condition, and the refusal stands. In ``diagnostic`` mode nothing
-        is moved: doctor reports the corruption instead.
+        A corrupt file (``file is not a database``, ``database disk image is
+        malformed``, a failed ``PRAGMA integrity_check``) is quarantined to
+        ``tasks.db.corrupt-<utc>`` with its ``-wal``/``-shm`` and recreated, so
+        spawns are not refused until a human acts; it is logged and recorded on
+        :attr:`quarantined_to` and :attr:`warnings` for ``kirocrew doctor``.
+        Locked / busy / disk-full / read-only is not corruption and still raises.
+        ``diagnostic`` mode moves nothing.
         """
         with self._lock:
             if self._conn is not None:
@@ -741,19 +717,10 @@ class TaskStore:
     def _apply_journal_mode(self, conn: sqlite3.Connection) -> None:
         """Pick the journal mode; WAL needs POSITIVE evidence of a local disk.
 
-        The three answers are not two. ``detect_network_filesystem`` returns True,
-        False or None, and None is what every failure answers -- an unreadable
-        ``/proc/mounts``, a ``statfs`` that raised, a Windows volume root that
-        would not report its drive type. Reading None as "local" is a fail-OPEN on
-        a durability control: WAL's shared-memory assumption does not hold on
-        SMB/NFS, so the one environment the special case exists for is also the
-        one where a detector is most likely to answer None, and the cost of being
-        wrong there is a corrupt store -- accepted work quarantined and lost.
-        DELETE is slower and correct everywhere, so unknown takes it and says so.
-
-        An operator whose disk IS local and whose mount table is unreadable is not
-        stuck with the slow mode: ``agent.task_store_journal_mode=wal`` forces WAL
-        and skips detection entirely, and the warning names that key.
+        ``detect_network_filesystem`` answers None on any detection failure, and
+        None takes DELETE: WAL's shared memory breaks on SMB/NFS and a wrong guess
+        corrupts the store. ``agent.task_store_journal_mode=wal`` forces WAL and
+        skips detection; the warning names that key.
         """
         on_network = self._network_fs_override
         detected: bool | None = None
@@ -828,18 +795,11 @@ class TaskStore:
         in the future: a row whose deferral has lapsed is eligible again and waits
         for whatever picks it, which is not a deferral.
 
-        The time counted is the time the row was actually PARKED in its current
-        wait: each ``deferred`` event after the row's last ``claimed`` or
-        ``transition`` event (the closers the queued listing applies too,
-        ``_defer_details`` in the admission bridge) parks it from its ``ts`` to
-        its ``until``, cut short by the next deferral or by now. A gap between a
-        lapsed deferral and the next one is NOT counted: the row was eligible
-        then and waited for a slot to be re-checked in, not for memory. So a row
-        that was held back once and then queued behind a full cap is measured by
-        its parked time alone, while a row the host keeps short (re-checked every
-        admit wait) accrues almost all of its wall-clock time. Every re-check
-        appends one more event, so the clock is never restarted by one; a claim
-        or a re-queue ends the wait and the next deferral starts a new one.
+        Only parked time counts: each ``deferred`` event after the last ``claimed``
+        or ``transition`` event (the same closers as ``_defer_details`` in the
+        admission bridge) counts from its ``ts`` to its ``until``, cut short by the
+        next deferral or by now. Gaps between a lapsed deferral and the next are
+        not counted, since the row was eligible then.
         """
         excl_sql, excl_args = self._exclusion(exclude_ids)
         now = self.now()
@@ -1203,23 +1163,14 @@ class TaskStore:
         """:meth:`transition` for a caller whose PREDECESSOR write may have been
         lost: the ROW's own state picks the path.
 
-        ``transition`` refuses ``admitted -> running`` for good, so one locked
-        database between the claim and the ``starting`` write would keep a LIVE
-        row in ``admitted`` -- the one state a boot reconciler requeues without
-        asking the side-effect class -- for the whole run, because every LATER
-        write asks for an edge the table forbids from there and is refused too.
-        ``model.steps_to`` supplies the table's OWN path from where the row
-        actually is, so nothing is widened: each step is an edge
-        ``check_transition`` accepts, and each carries *generation*, so a row
-        another owner ended stays ended.
+        ``transition`` refuses ``admitted -> running``, so one lost ``starting``
+        write would strand a live row in ``admitted``, which a boot reconciler
+        requeues blind. ``model.steps_to`` replays the table's own path, each step
+        a ``check_transition`` edge carrying *generation*.
 
-        False when the row is gone or the table joins the two states by no path
-        this helper will replay; True when the row is already *new_state*.
-
-        The read and the writes share ``_lock``, so no writer on this
-        connection lands between the state the path was computed from and the
-        first step of it. Never called ON the event loop, like every other
-        synchronous method here: post it through :meth:`run`.
+        False when the row is gone or no path is replayable; True when already
+        *new_state*. Read and writes share ``_lock``. Not for the event loop: post
+        it through :meth:`run`.
         """
         with self._lock:
             current = self.state_of(task_id)
@@ -1313,21 +1264,13 @@ class TaskStore:
         out of every later write, and clears the lease. A terminal row -- a
         completed run, an earlier cancel -- is untouched and answers None.
 
-        ``only_from`` and ``generation`` make that cancel CONDITIONAL, for a
-        caller whose decision to cancel came from a row it read in an earlier
-        call: the test and the write share this transaction, so a row that moved
-        in between answers None instead of being cancelled under a live executor
-        -- whose own settlement the generation bump then fences out, leaving work
-        running that nothing will ever settle. The refusals are the ones
-        :meth:`transition` already records for the same two reasons
-        (``rejected_transition`` for the state, ``stale_result`` for the
-        generation), and the predicate rides in the ``UPDATE`` exactly as
-        :meth:`claim`'s and :meth:`update_wait`'s do, so a caller reading
-        ``task_events`` sees one refusal vocabulary and not a second one.
+        ``only_from`` and ``generation`` make the cancel conditional in the same
+        ``UPDATE``, so a row that moved since the caller's read answers None
+        instead of being cancelled under a live executor. Refusals are recorded as
+        in :meth:`transition` (``rejected_transition``, ``stale_result``).
 
-        Cancel-from-anywhere stays the default because the Stop-all cascade
-        (``WaitLedger.cancel_tree``) and the boot sweeps mean it: their subject
-        is a row whose live owner is gone or is being reaped by the same caller.
+        Cancel-from-anywhere is the default for the Stop-all cascade
+        (``WaitLedger.cancel_tree``) and boot sweeps, whose rows have no live owner.
         """
         ts = self.now()
         with self._lock:
