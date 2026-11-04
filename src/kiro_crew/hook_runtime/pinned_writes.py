@@ -39,11 +39,12 @@ def _pinned_replace(
 
     The engine behind :func:`safe_write_file_nolink` (no verification) and
     :func:`verified_replace_file_nolink` (compare-and-swap). Returns an
-    outcome string: ``"ok"``, ``"refused"``, and — only when *base_hash* is
-    given — ``"conflict"`` (the file's bytes or identity differ from the
-    edit base) or ``"too_large"`` (the file outgrew *max_bytes* since the
-    base was read, which by definition is not the state the edit was made
-    against).
+    outcome string: ``"ok"``, ``"refused"``, ``"busy"`` (every check passed but
+    the final by-name rename hit another handle on the file, which on Windows
+    blocks a replace), and — only when *base_hash* is given — ``"conflict"``
+    (the file's bytes or identity differ from the edit base) or ``"too_large"``
+    (the file outgrew *max_bytes* since the base was read, which by definition
+    is not the state the edit was made against).
 
     When *base_hash* is given, the sha256 of the CURRENT bytes is computed by
     reading the SAME descriptor every other check runs against — one
@@ -452,7 +453,21 @@ def _pinned_replace(
             # os.replace, not os.rename: on Windows rename REFUSES an existing
             # destination, while replace overwrites it -- and does so atomically,
             # which is the property that matters here.
-            os.replace(os.path.join(parent, tmp_name), path)
+            try:
+                os.replace(os.path.join(parent, tmp_name), path)
+            except PermissionError as exc:
+                # A Windows sharing or lock violation (ERROR_SHARING_VIOLATION 32,
+                # ERROR_LOCK_VIOLATION 33) is another handle on the file (an
+                # editor, an indexer, an AV scan), not a check that failed: every
+                # check above already passed. It answers "busy" so a caller can
+                # say "try again" instead of naming a security refusal. Any other
+                # denial, and every PermissionError on POSIX, is genuine and stays
+                # "refused". The codes are literals because this body runs on the
+                # composed ``kiro_crew.hooks`` namespace.
+                if platform_compat.IS_WINDOWS and getattr(exc, "winerror", None) in (32, 33):
+                    logger.warning("could not replace %r: another process has the file open", path)
+                    return "busy"
+                raise
         created = False  # renamed away; nothing left to clean up
         return "ok"
     except OSError:
@@ -481,8 +496,9 @@ def safe_write_file_nolink(
     """Overwrite an EXISTING regular file, pinned to the descriptor opened.
 
     The no-verification entry point of :func:`_pinned_replace`; see there for
-    the full contract. Returns True when the bytes were written, False on any
-    rejection.
+    the full contract. Returns True when the bytes were written, False when
+    nothing was: a rejection, or a file another process held open at the
+    rename.
     """
     return _pinned_replace(raw, content, within_root=within_root) == "ok"
 
@@ -505,7 +521,9 @@ def verified_replace_file_nolink(
     (identity swap, or an in-place rewrite visible through mtime/size) answer
     ``"conflict"`` rather than overwriting: the newer file wins, never the
     stale edit. Returns ``"ok"``, ``"conflict"``, ``"too_large"`` (the file
-    outgrew *max_bytes* since the base was read), or ``"refused"``.
+    outgrew *max_bytes* since the base was read), ``"busy"`` (another process
+    held the file open at the final rename; nothing was written), or
+    ``"refused"``.
     """
     # Deny-by-default (AUTOSDE backend-security-controls): a verifying
     # primitive that accepts an unverifiable base and proceeds anyway has the
