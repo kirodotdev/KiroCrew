@@ -16,11 +16,8 @@ raised (the app-sdk ``ChatEmbed`` uses it). Pinned here:
   unknown card_id and an already-retired card all read as the same 404;
 * the dashboard owner's ``/api/ask-question/*`` path is untouched.
 
-These tests drive the REAL ``steer_into_running_turn`` through a fake ACP client
-rather than patching it: patching ``chat_delivery.steer_into_running_turn`` as a
-module attribute, repeated across a file, corrupts an unrelated steer test's RPC
-when the two files land in one pytest process (a shared-shard flake). A fake
-client that the real path injects into has no such cross-file effect.
+The real ``steer_into_running_turn`` runs through a fake ACP client: patching the
+module attribute corrupts another file's steer RPC in a shared pytest process.
 """
 
 from __future__ import annotations
@@ -453,16 +450,10 @@ async def test_the_dashboard_owner_steer_row_is_not_app_attributed(state, sel_sp
 
 @pytest.mark.asyncio
 async def test_two_concurrent_steers_deliver_the_card_exactly_once(state, sel_spy) -> None:
-    """F1: a steer already in flight for a card_id -> a second is refused 409.
+    """A steer already in flight for a card_id makes a second one answer 409.
 
-    ``steer_into_running_turn`` deduplicates only by message TEXT, so two owner-app
-    requests with DIFFERENT answers for the same card would otherwise both reach
-    the running turn. The handler reserves the card synchronously (on the card's
-    own record) before the delivery await; a concurrent second request sees the
-    reservation and is refused. Deterministic: the first steer's reservation is
-    pinned (a real in-flight steer holds exactly this), then a second request is
-    issued and must be refused BEFORE touching the turn; releasing the pin lets a
-    steer deliver, and it lands exactly once.
+    ``steer_into_running_turn`` dedupes only by text, so the handler reserves the card
+    before the await. The reservation is pinned to make the race deterministic.
     """
     _seed(state)
     _native_card(state, "mine", "c1")
@@ -497,14 +488,10 @@ async def test_two_concurrent_steers_deliver_the_card_exactly_once(state, sel_sp
 
 @pytest.mark.asyncio
 async def test_a_requeued_app_steer_drains_as_an_app_turn_not_a_user_turn(state, sel_spy) -> None:
-    """F4: the requeued entry's carried meta makes the drain read actor 'app', not 'user'.
+    """The requeued entry's carried meta makes the drain read actor 'app', not 'user'.
 
-    A turn teardown during the RPC requeues the app steer. The requeue
-    (`_requeue_unconsumed_steers`) rebuilds the entry by unioning the steer's
-    carried `_steer_attachment_meta` onto it; the drain's `_actor_for_queue_items`
-    then reads the turn actor from that meta. Without the app actor stamp it would
-    read `user` and admit the answer to the user-only routing gate. Asserted on the
-    carried meta the requeue consumes.
+    `_requeue_unconsumed_steers` unions `_steer_attachment_meta`, which
+    `_actor_for_queue_items` reads; a `user` actor would pass the user-only gate.
     """
     # Imported THROUGH chat_runner: chat_turn's `_bind`/`_facade_compose` rebinds
     # the owner functions' globals (logger, crew_log_emit) when chat_runner loads,
