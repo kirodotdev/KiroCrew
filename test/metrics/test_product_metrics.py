@@ -40,6 +40,8 @@ _DECLARING_MODULES = (
     "kiro_crew.metrics.tool_calls",
     "kiro_crew.metrics.inventory_gauges",
     "kiro_crew.metrics.process_gauges",
+    # The Explore panel's counters are declared beside the state they count.
+    "kiro_crew.milestones",
 )
 
 #: Up/down counter instrument names. EMPTY, and that is a fact about the tree

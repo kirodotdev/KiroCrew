@@ -427,6 +427,22 @@ Three things to take from this if you operate a collector:
   the consent gate, or bypass the attribute sanitiser; a destination that sets
   none of them behaves exactly as this guide describes.
 
+`PRODUCT_METRICS` groups its names by the question they answer. One group covers
+in-product recommendations (feature tips, the Explore panel, feature videos):
+
+| Metric | Attributes |
+|---|---|
+| `kirocrew.tips.feedback` | `action`, `source` (`curated` / `catalog` / `generated` / `other`), `feature` (a shipped feature doc name or `other`) |
+| `kirocrew.feature_video.status` | `status` (`seen` / `dismissed` / `other`), `feature` (a shipped feature key or `other`) |
+| `kirocrew.milestone.panel_opened`, `.starter_clicked`, `.skipped`, `.mark_all_done`, `.notice_shown`, `.features_completed` | catalog milestone ids and closed enums only |
+| `kirocrew.milestone.reached` | `group`, `milestone`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
+
+None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
+computed on the machine from a 14-day local record and only the label is sent;
+the record itself stays in the owner-only milestones state file. The rules are
+in [`../system-specs/modules/metrics.md`](../system-specs/modules/metrics.md),
+"Recommendation attribution".
+
 ### Before you build a per-host dashboard
 
 Kiro Crew sets `service.instance.id` explicitly to a random, persisted install

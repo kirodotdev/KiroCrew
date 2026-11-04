@@ -2492,6 +2492,37 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
+| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
+| `kirocrew.feature_video.status` | counter | `status`: `seen` / `dismissed` / `other`; `feature`: the video's feature key when it is an Explore feature id, an allowlisted doc or the stem of one, else `other` | `feature_videos.record_status`, after the status is saved |
+| `kirocrew.milestone.*` | counter | `group`, `milestone` (catalog keys, tier keys, `all`), `surface`, `send`, `via`; `reached` adds `recommended_by` | the Explore panel and the milestone hooks (`milestones.py`); every value is checked by `milestones.closed_attrs` at the emit site |
 
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
+
+### Recommendation attribution
+
+`kirocrew.milestone.reached` carries `recommended_by`: which in-product
+recommendation last pointed at a feature before its first use. Values: `tip`,
+`explore`, `video`, `several` (more than one channel inside the window), `none`.
+
+A tip `shown` or `ack`, an Explore `starter_clicked` and a feature video `seen`
+each stamp the feature's milestone in the `recommended` field of
+`milestones.json` (owner-only): a milestone id, a channel name and a timestamp,
+nothing else. `RECOMMENDATION_TARGETS` in `milestones.py` maps a tip doc or a
+video feature key to milestone ids; a key it does not list cannot be attributed.
+A stamp counts for `RECOMMENDATION_WINDOW_S` (14 days) and is pruned after. When
+a feature row is first reached the stamps are read and the row's record is
+cleared. Only a reach by use (`via` `starter` or `organic`) or by following the
+starter (`arrived`) is attributed; `backfill` and `manual` reaches, and every
+usage tier, read `none`. The record never leaves the machine; only the label on
+the reached point does. A stamp is written only while telemetry collection is on
+(the recorder's `enabled`, failing closed), so a label never carries activity
+from before consent.
+
+Limits a reader of this attribute should know: it is last-touch within a window,
+so it shows that a recommendation came before first use, not that it caused it.
+A feature used before this record existed, or only through a path no hook counts,
+reads `none`. A temporary session shows no tip and no feature video, and an
+incognito session shows no feature video, so neither records those counters or
+stamps for them. Tips in an incognito session are counted like any other
+session's: incognito stops memory writes, and a counter is not memory.

@@ -775,6 +775,40 @@ def record_status(video_id: str, status: str) -> None:
         st = _load_state_for_update()
         st.videos[video_id] = {"status": status, "ts": time.time()}
         save_state(st)
+    _record_status_metric(video_id, status)
+
+
+def _feature_of(video_id: str) -> str:
+    """The ``feature`` key of *video_id* in the catalog or the current manifest, else ``""``."""
+    for entry in CATALOG:
+        if entry.id == video_id:
+            return entry.feature
+    current = cache_mod.feature_video_cache().current_manifest()
+    if current is not None:
+        for m_entry in current.entries:
+            if m_entry.id == video_id:
+                return m_entry.feature
+    return ""
+
+
+def _record_status_metric(video_id: str, status: str) -> None:
+    """Count one saved status and note a "seen" as a recommendation. Never raises.
+
+    Runs after the status is on disk, so it cannot change what was recorded. The
+    video id is never an attribute; the feature key is, when it names a shipped
+    feature (``video_feature_label``). Both callers return before reaching
+    :func:`record_status` for a temporary or incognito session.
+    """
+    try:
+        from kiro_crew import milestones
+        from kiro_crew.metrics.feature_usage import record_feature_video_status
+
+        feature = _feature_of(video_id)
+        record_feature_video_status(status, feature)
+        if status == "seen" and feature:
+            milestones.record_recommended("video", feature)
+    except Exception:
+        logger.debug("feature video status metric failed", exc_info=True)
 
 
 # ── Selection ──

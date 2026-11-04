@@ -25,6 +25,8 @@ def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> Path:
     # No platform context is installed in a unit test; the policy itself is
     # covered by the tests that restore the real check.
     _floor_monkeypatch.setattr(m, "_policy_permits", lambda: True)
+    # Telemetry collection on, so an Explore click stamps a recommendation.
+    _floor_monkeypatch.setattr(m, "_recommendation_consent", lambda: True)
     return tmp_path
 
 
@@ -82,7 +84,14 @@ class TestCounting:
         m.apply_now(m.op_starter_clicked("widgets", "empty_state"))
         m.record("widgets")
         reached = [a for n, a in metrics if n == m.M_REACHED]
-        assert reached == [{"group": "features", "milestone": "widgets", "via": "starter"}]
+        assert reached == [
+            {
+                "group": "features",
+                "milestone": "widgets",
+                "via": "starter",
+                "recommended_by": "explore",
+            }
+        ]
         assert (
             m.M_STARTER_CLICKED,
             {"surface": "empty_state", "milestone": "widgets", "send": "send"},
@@ -179,6 +188,7 @@ class TestCounting:
             "noticed",
             "backfilled",
             "starter_clicked",
+            "recommended",
         }
         # Only ids, numbers, dates and source labels.
         for value in json.dumps(data).split('"')[1::2]:
@@ -506,7 +516,7 @@ class TestManual:
         assert st["counters"]["slack"]["count"] == 1
         assert (
             m.M_REACHED,
-            {"group": "features", "milestone": "slack", "via": "manual"},
+            {"group": "features", "milestone": "slack", "via": "manual", "recommended_by": "none"},
         ) in metrics
 
     def test_mark_all_done_marks_open_and_skipped_feature_rows_only(self, metrics: list) -> None:
@@ -567,7 +577,12 @@ class TestArrival:
         assert snap["streak"] == {"current": 1, "best": 1}
         assert (
             m.M_REACHED,
-            {"group": "features", "milestone": "slack", "via": "arrived"},
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            },
         ) in metrics
 
     def test_arrival_without_a_click_does_nothing(self) -> None:
@@ -604,7 +619,12 @@ class TestArrival:
         assert st["reached"] == first["reached"]
         assert st["streak"] == first["streak"]
         assert [a for n, a in metrics if n == m.M_REACHED] == [
-            {"group": "features", "milestone": "slack", "via": "arrived"}
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            }
         ]
 
     def test_arrival_on_the_next_day_extends_the_streak(self) -> None:
