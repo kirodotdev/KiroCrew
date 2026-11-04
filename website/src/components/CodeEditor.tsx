@@ -4,10 +4,12 @@ import { PierreEditor, type PierreEditorHandle } from '../pierre'
 
 /** Pierre-based code editor for editable text content. */
 export function CodeEditor({
-  content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged,
+  content, lang, fileLang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged,
 }: {
   content: string
   lang: string
+  /** Explicit highlighter language for Pierre (e.g. `sail-xml`), overriding the file-name guess. */
+  fileLang?: string
   lineNums: boolean
   wordWrap: boolean
   onChange: (v: string) => void
@@ -27,16 +29,17 @@ export function CodeEditor({
 }) {
   // Pierre owns the buffer during an edit session. Keep its file identity
   // stable for changes it emitted, but reseed on an external source change.
-  const initialRef = useRef<{ key: string; file: { name: string; contents: string; cacheKey: string } }>()
+  const initialRef = useRef<{ key: string; file: { name: string; contents: string; lang?: string; cacheKey: string } }>()
   const lastEmittedRef = useRef<string | null>(null)
   const lastContentRef = useRef<string | null>(null)
   const seedRef = useRef(0)
-  const key = `${filePath ?? ''}:${lang}:${diffBase === undefined ? 'plain' : 'diff'}`
+  const key = `${filePath ?? ''}:${fileLang ?? lang}:${diffBase === undefined ? 'plain' : 'diff'}`
   const seedFile = () => ({
     key,
     file: {
       name: filePath?.split('/').pop() || `file.${lang}`,
       contents: content,
+      ...(fileLang ? { lang: fileLang } : {}),
       cacheKey: `edit:${key}:${seedRef.current}`,
     },
   })

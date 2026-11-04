@@ -653,7 +653,9 @@ function editionLanguagesPlugin(): Plugin {
         // Forward slashes: a Windows path would carry backslash escapes.
         return `export { default } from ${JSON.stringify(entry.split(path.sep).join('/'))}\n`
       }
-      return 'export default []\n'
+      // Stock build: the built-in SAIL languages (src/languages/sail.ts).
+      const builtin = path.resolve(__dirname, 'src/languages/sail.ts').split(path.sep).join('/')
+      return `import { SAIL_LANGUAGES } from ${JSON.stringify(builtin)}\nexport default SAIL_LANGUAGES\n`
     },
   }
 }

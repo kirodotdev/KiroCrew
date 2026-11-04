@@ -13,7 +13,7 @@
  *   - `extOf`, `langFor`, `wrapCode`, `MD_EXTS` — shared helpers used by
  *     both consumers to compute `displayContent` / `isMarkdown` etc.
  */
-import { memo, useMemo } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
 import { PierreCode, type PierreEditorHandle } from '../pierre'
@@ -24,6 +24,11 @@ export { CodeEditor } from './CodeEditor'
 import { i18nT } from '../i18n/t'
 import { highlightLanguageForExtension } from '../utils/highlightLanguages'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { isSailXmlFile } from '../languages/sail'
+import { findSailUsages, openSailRef, sailRefAtEvent, sailRuleIndex, type SailUsage } from '../languages/sailNavigation'
+import SailUsagesPopover from '../languages/SailUsagesPopover'
+import { useAppSelector } from '../store'
+import { selectActiveSlotProject } from '../store/chatSlice'
 
 export const MD_EXTS = new Set(['.md', '.markdown', '.mdx', '.txt', ''])
 
@@ -103,10 +108,58 @@ export const ContentRenderer = memo(function ContentRenderer({
   diffSplit?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Appian rule XML highlights as SAIL-in-XML (see languages/sail.ts); `.xml`
+  // alone is a core extension, so the language is forced by file name/content.
+  const sailXml = isSailXmlFile(filePath, content)
+  // .java too: SAIL in Java strings (expression tests) navigates, and a
+  // Java-backed function's declaration (FN_NAME / register("x")) finds usages.
+  const sailish = sailXml || lang === 'sail' || /\.(sail|java)$/i.test(filePath ?? '')
   const codeFile = useMemo(
-    () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content }),
-    [filePath, lang, content],
+    () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content, ...(sailXml ? { lang: 'sail-xml' } : {}) }),
+    [filePath, lang, content, sailXml],
   )
+  // Cmd/Ctrl+click go-to-definition for SAIL references (languages/sailNavigation.ts).
+  const project = useAppSelector(selectActiveSlotProject)
+  // Pierre's editor reads Cmd/Ctrl+pointerdown as "add a cursor", and that
+  // fires before `click`. So the gesture is claimed at POINTERDOWN, in React's
+  // root capture phase (which runs before Pierre's listener on its content
+  // element): stopping it there keeps Pierre from ever seeing it. The matching
+  // mousedown (native caret move/selection) and click are swallowed too.
+  // Warm the repo's rule index as soon as a SAIL file opens, so the first
+  // Cmd+click is already instant.
+  useEffect(() => { if (sailish && filePath) void sailRuleIndex(filePath) }, [sailish, filePath])
+  const sailGestureRef = useRef(false)
+  const onSailPointerDown = useCallback((e: React.PointerEvent) => {
+    sailGestureRef.current = false
+    if (!sailish || e.button !== 0 || !(e.metaKey || e.ctrlKey) || !filePath || !onFileOpen) return
+    const ref = sailRefAtEvent(e.nativeEvent)
+    if (!ref) return
+    sailGestureRef.current = true
+    e.preventDefault()
+    e.stopPropagation()
+    // IntelliJ model: Cmd+click a REFERENCE -> go to its declaration; Cmd+click
+    // a DECLARATION (the rule's <name>, a rule input <name>, a `local!x:`
+    // binding) -> the usages popup.
+    if (ref.domain === 'decl' || ref.domain === 'localdecl' || ref.domain === 'jdecl') {
+      const local = ref.domain === 'localdecl'
+      const java = ref.domain === 'jdecl'
+      const isRule = java || (!local && ref.name.toLowerCase() === filePath.split('/').pop()!.replace(/\.xml$/i, '').replace(/^SYSTEM_SYSRULES_/i, '').toLowerCase())
+      const base = { name: ref.name, x: e.clientX, y: e.clientY, scope: (isRule ? 'repo' : 'file') as 'repo' | 'file', local, java }
+      setUsages({ ...base, loading: true, usages: [], truncated: false })
+      void findSailUsages(ref.name, { filePath, content, local, repo: java }).then(r => setUsages(u => (u && u.name === ref.name ? { ...base, loading: false, ...r } : u)))
+      return
+    }
+    void openSailRef(ref, { filePath, content, project, onFileOpen })
+  }, [sailish, filePath, onFileOpen, content, project])
+  const [usages, setUsages] = useState<{ name: string; x: number; y: number; loading: boolean; usages: SailUsage[]; truncated: boolean; scope: 'repo' | 'file'; local: boolean; java?: boolean } | null>(null)
+  const closeUsages = useCallback(() => setUsages(null), [])
+  const swallowSailGesture = useCallback((e: React.MouseEvent) => {
+    if (!sailGestureRef.current) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === 'click') sailGestureRef.current = false
+  }, [])
+  const sailHandlers = { onPointerDownCapture: onSailPointerDown, onMouseDownCapture: swallowSailGesture, onMouseUpCapture: swallowSailGesture, onClickCapture: swallowSailGesture }
   const codeOptions = useMemo(
     () => ({
       disableLineNumbers: !lineNums,
@@ -181,9 +234,11 @@ export const ContentRenderer = memo(function ContentRenderer({
       {isRichType && fileType === 'audio' && filePath && <MediaPlayer filePath={filePath} kind="audio" />}
       {isRichType && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
       {!isRichType && editing && (
+        <div className="contents" {...sailHandlers}>
         <CodeEditor
           content={content}
           lang={lang}
+          fileLang={sailXml ? 'sail-xml' : undefined}
           lineNums={lineNums}
           wordWrap={wordWrap}
           onChange={onChange}
@@ -195,6 +250,7 @@ export const ContentRenderer = memo(function ContentRenderer({
           diffSplit={diffSplit}
           diffExpandUnchanged={diffExpandUnchanged}
         />
+        </div>
       )}
       {!isRichType && !editing && isMarkdown && (
         <div ref={previewRef as React.RefObject<HTMLDivElement>} className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
@@ -207,6 +263,7 @@ export const ContentRenderer = memo(function ContentRenderer({
         <div
           ref={previewRef as React.RefObject<HTMLDivElement>}
           className={`relative w-full h-full overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}
+          {...sailHandlers}
         >
           {/* previewRef is a QUERY root only (TreeWalker / selection
               containment for find and the comment flow), never scrolled, so it
@@ -222,5 +279,13 @@ export const ContentRenderer = memo(function ContentRenderer({
       )}
     </>
   )
-  return previewStyle ? <div className="h-full" style={previewStyle}>{inner}</div> : inner
+  const usagesPopover = usages && (
+    <SailUsagesPopover
+      name={usages.name} x={usages.x} y={usages.y} loading={usages.loading} usages={usages.usages} truncated={usages.truncated}
+      scope={usages.scope} prefix={usages.local ? 'local' : usages.java ? '' : usages.scope === 'repo' ? 'a' : 'ri'} root={project}
+      onOpen={(u) => { setUsages(null); onFileOpen?.(u.path, { line: u.line }) }}
+      onClose={closeUsages}
+    />
+  )
+  return previewStyle ? <div className="h-full" style={previewStyle}>{inner}{usagesPopover}</div> : <>{inner}{usagesPopover}</>
 })

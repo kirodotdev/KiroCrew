@@ -56,6 +56,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/file-write", _local_files(handlers.api_file_write))
     app.router.add_get("/api/file-diff", _local_files(handlers.api_file_diff))
     app.router.add_get("/api/file-search", handlers.api_file_search)
+    # SAIL go-to-definition rule index (git ls-files); see file_api/sail_index.py.
+    from kiro_crew.dashboard.file_api.sail_index import api_sail_rule_index, api_sail_usages
+    app.router.add_get("/api/sail/rule-index", _local_files(api_sail_rule_index))
+    app.router.add_get("/api/sail/usages", _local_files(api_sail_usages))
     app.router.add_get("/api/path-complete", handlers.api_path_complete)
     app.router.add_post("/api/file-grep", handlers.api_file_grep)
     app.router.add_get("/api/file-sheet", handlers.api_file_sheet)
