@@ -12,8 +12,10 @@ Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
 CLI, or a messaging channel like Slack and Discord; run multi-step tasks
 unattended; schedule cron jobs; keep memory across sessions.
 
-Kiro Crew's sole LLM provider speaks ACP. Its default backend runs `kiro-cli`
-over ACP JSON-RPC; other verified ACP harnesses are selected with
+Kiro Crew's sole LLM provider speaks ACP. With no `agent.acp_backend` choice it
+runs KAS, Kiro's agent engine, through `kiro-cli acp --agent-engine v3` or Kiro
+Crew's own bundled copy of that engine (`acp/kas_route.py`), over ACP JSON-RPC;
+Kiro CLI and the other verified ACP harnesses are selected with
 `agent.acp_backend`. MCP tools supply the agent's host capabilities.
 
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`. **Frontend:** React
