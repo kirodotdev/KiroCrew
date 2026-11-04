@@ -49,13 +49,16 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.members_parts.dm_bindings import (  # noqa: F401
+        DmBindingOutcome,
         _read_canonical_binding,
+        _resolve_canonical_binding,
         attributable_session_key,
         dm_binding_depends_on_config,
         dm_binding_path,
         member_identity_for_session,
         read_dm_binding,
         read_dm_binding_for_slot,
+        resolve_dm_binding_outcome,
         slug_from_dm_slot_key,
         write_dm_binding,
     )

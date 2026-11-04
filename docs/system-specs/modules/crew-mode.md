@@ -2819,10 +2819,16 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   tries it once more `MEMBER_RESTORE_RETRY_DELAY_S` after the restore. The key
   leaves the seed when the retry builds it, when another path built or closed
   it first (a check-in's load ends the deferral at once,
-  `member_slot_retry.end_deferral`), and when its binding still names no
-  crewmate, so a crewmate deleted for good is pruned by the next flush. A read
-  error or a transcript that does not build keeps the seed for the next boot's
-  restore to decide. The retry works only on the keys the restore deferred
+  `member_slot_retry.end_deferral`), and when a single canonical id-binding
+  resolution finds no crewmate with that id in a trustworthy agents roster. A
+  unique match is built whatever the health markers say (they stay sticky until
+  restart, so a boot read that failed mid-write would otherwise block the retry);
+  two or more matches keep the seed, and with no match an unreadable base or
+  overlay, or an agents/whole-config degradation marker, keeps the seed instead
+  of treating defaults as a deletion. Confirmed absence is pruned by the
+  next flush. A binding the retry cannot read (or no longer finds intact), a
+  read error or a transcript that does not build keeps the seed for the next
+  boot's restore to decide. The retry works only on the keys the restore deferred
   (`state.deferred_member_slot_keys`); a seed kept for another reason (an
   unreadable read, a remote-only transcript) is left alone. A thread built after the boot restore, by that retry or by a
   check-in's load, gets the boot's parked-send pass
