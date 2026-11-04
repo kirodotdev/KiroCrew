@@ -11265,7 +11265,6 @@
       "retry": "फिर कोशिश करो"
     },
     "appsPage": {
-      "action_failed": "{{name}} को {{action}} करने में विफल",
       "add_an_app_source_gear_icon_above_or_install_fro": "ऐप सोर्स जोड़ो (ऊपर दाईं ओर सोर्सेज़) या लोकल पाथ से इंस्टॉल करो।",
       "agent_one": "{{count}} एजेंट",
       "agent_other": "{{count}} एजेंट",
@@ -11282,6 +11281,8 @@
       "cron_job_other": "{{count}} cron जॉब",
       "dependencies": "निर्भरताएँ:",
       "dismiss_message": "संदेश बंद करें",
+      "failed_to_disable": "{{name}} बंद नहीं हो सका",
+      "failed_to_open": "{{name}} खुल नहीं सका",
       "failed_to_enable": "{{name}} चालू नहीं हो सका",
       "failed_to_load_apps": "ऐप्स लोड नहीं हो सके",
       "failed_to_load_registry": "रजिस्ट्री लोड नहीं हो सकी",
@@ -11291,7 +11292,7 @@
       "keep_app_data": "ऐप डेटा रखें",
       "keep_dependency": "डिपेंडेंसी {{name}} रखें",
       "keep_this_dependency": "इस निर्भरता को रखें",
-      "kept": "रखा गया —",
+      "kept_reason": "रखा गया — {{reason}}",
       "kept_installed_by_you": "रखा गया — आपके द्वारा इंस्टॉल किया गया",
       "kirocrew_registry": "{{productName}} रजिस्ट्री",
       "library": "लाइब्रेरी",
@@ -11318,6 +11319,7 @@
       "this_will_remove_all_resources_provided_by_this": "इससे इस ऐप द्वारा प्रदान किए गए सभी संसाधन हट जाएँगे:",
       "try_a_different_search_or_category": "कोई दूसरी खोज या श्रेणी आज़माएँ।",
       "try_a_different_search_term": "कोई दूसरा खोज शब्द आज़माएँ",
+      "uninstall_app_title": "“{{name}}” अनइंस्टॉल करना है?",
       "uninstall": "अनइंस्टॉल",
       "uninstall_removes_metadata_and_source": "ऐप्स से इंस्टॉल किया गया — {{productName}} मेटाडेटा और डाउनलोड किया गया सोर्स कोड हटा दिए जाएँगे।",
       "uninstall_removes_metadata_secret_and_source": "ऐप्स से इंस्टॉल किया गया — {{productName}} मेटाडेटा, ऐप सीक्रेट और डाउनलोड किया गया सोर्स कोड हटा दिए जाएँगे।",

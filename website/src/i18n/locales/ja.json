@@ -11034,7 +11034,6 @@
       "retry": "再試行"
     },
     "appsPage": {
-      "action_failed": "{{name}} の{{action}}に失敗しました",
       "add_an_app_source_gear_icon_above_or_install_fro": "アプリソースを追加（右上の「ソース」）するか、ローカルパスからインストールしてください。",
       "agent_other": "{{count}} エージェント",
       "all_apps": "すべてのアプリ",
@@ -11048,6 +11047,8 @@
       "cron_job_other": "{{count}} cron ジョブ",
       "dependencies": "依存関係：",
       "dismiss_message": "メッセージを非表示",
+      "failed_to_disable": "{{name}} の無効化に失敗しました",
+      "failed_to_open": "{{name}} を開けませんでした",
       "failed_to_enable": "{{name}} の有効化に失敗しました",
       "failed_to_load_apps": "アプリの読み込みに失敗",
       "failed_to_load_registry": "レジストリの読み込みに失敗",
@@ -11057,7 +11058,7 @@
       "keep_app_data": "アプリデータを保持",
       "keep_dependency": "依存関係 {{name}} を保持",
       "keep_this_dependency": "この依存関係を保持",
-      "kept": "保持 —",
+      "kept_reason": "保持 — {{reason}}",
       "kept_installed_by_you": "保持 — インストール済み（ユーザー）",
       "kirocrew_registry": "{{productName}} レジストリ",
       "library": "ライブラリ",
@@ -11083,6 +11084,7 @@
       "this_will_remove_all_resources_provided_by_this": "このアプリによって提供されるすべてのリソースが削除されます：",
       "try_a_different_search_or_category": "別の検索またはカテゴリーを試してください。",
       "try_a_different_search_term": "別の検索用語を試してください",
+      "uninstall_app_title": "「{{name}}」をアンインストールしますか？",
       "uninstall": "アンインストール",
       "uninstall_removes_metadata_and_source": "アプリからインストール — {{productName}} メタデータとダウンロードされたソースコードが削除されます。",
       "uninstall_removes_metadata_secret_and_source": "アプリからインストール — {{productName}} メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。",

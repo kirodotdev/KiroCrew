@@ -11265,7 +11265,6 @@
       "retry": "আবার চেষ্টা করো"
     },
     "appsPage": {
-      "action_failed": "{{name}}-কে {{action}} করা যায়নি",
       "add_an_app_source_gear_icon_above_or_install_fro": "অ্যাপ সোর্স যোগ করুন (উপরে ডানদিকে সোর্স) অথবা লোকাল পাথ থেকে ইনস্টল করুন।",
       "agent_one": "{{count}}টি এজেন্ট",
       "agent_other": "{{count}}টি এজেন্ট",
@@ -11282,6 +11281,8 @@
       "cron_job_other": "{{count}}টি cron জব",
       "dependencies": "ডিপেনডেন্সি:",
       "dismiss_message": "বার্তা বন্ধ করুন",
+      "failed_to_disable": "{{name}} বন্ধ করা যায়নি",
+      "failed_to_open": "{{name}} খোলা যায়নি",
       "failed_to_enable": "{{name}} চালু করা যায়নি",
       "failed_to_load_apps": "অ্যাপগুলো লোড করা যায়নি",
       "failed_to_load_registry": "রেজিস্ট্রি লোড করা যায়নি",
@@ -11291,7 +11292,7 @@
       "keep_app_data": "অ্যাপের ডেটা রেখে দিন",
       "keep_dependency": "{{name}} ডিপেনডেন্সি রেখে দাও",
       "keep_this_dependency": "এই ডিপেনডেন্সিটি রেখে দিন",
-      "kept": "রাখা হয়েছে —",
+      "kept_reason": "রাখা হয়েছে — {{reason}}",
       "kept_installed_by_you": "রাখা হয়েছে — আপনি নিজে ইনস্টল করেছেন",
       "kirocrew_registry": "{{productName}} রেজিস্ট্রি",
       "library": "লাইব্রেরি",
@@ -11318,6 +11319,7 @@
       "this_will_remove_all_resources_provided_by_this": "এটি এই অ্যাপের দেওয়া সব রিসোর্স সরিয়ে দেবে:",
       "try_a_different_search_or_category": "অন্য কোনো সার্চ বা বিভাগ চেষ্টা করুন।",
       "try_a_different_search_term": "অন্য কোনো শব্দ দিয়ে খুঁজে দেখো",
+      "uninstall_app_title": "“{{name}}” আনইনস্টল করবে?",
       "uninstall": "আনইনস্টল",
       "uninstall_removes_metadata_and_source": "অ্যাপ থেকে ইনস্টল করা — {{productName}} মেটাডেটা এবং ডাউনলোড করা সোর্স কোড সরিয়ে দেওয়া হবে।",
       "uninstall_removes_metadata_secret_and_source": "অ্যাপ থেকে ইনস্টল করা — {{productName}} মেটাডেটা, অ্যাপের সিক্রেট এবং ডাউনলোড করা সোর্স কোড সরিয়ে দেওয়া হবে।",

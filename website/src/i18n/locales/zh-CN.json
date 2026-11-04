@@ -11034,7 +11034,6 @@
       "retry": "重试"
     },
     "appsPage": {
-      "action_failed": "{{action}} {{name}} 失败",
       "add_an_app_source_gear_icon_above_or_install_fro": "添加应用来源（右上角“来源”），或从本地路径安装。",
       "agent_other": "{{count}} 个代理",
       "all_apps": "全部应用",
@@ -11048,6 +11047,8 @@
       "cron_job_other": "{{count}} 个定时任务",
       "dependencies": "依赖：",
       "dismiss_message": "忽略消息",
+      "failed_to_disable": "停用 {{name}} 失败",
+      "failed_to_open": "打开 {{name}} 失败",
       "failed_to_enable": "启用 {{name}} 失败",
       "failed_to_load_apps": "加载应用失败",
       "failed_to_load_registry": "加载注册表失败",
@@ -11057,7 +11058,7 @@
       "keep_app_data": "保留应用数据",
       "keep_dependency": "保留依赖 {{name}}",
       "keep_this_dependency": "保留此依赖",
-      "kept": "已保留 —",
+      "kept_reason": "已保留 — {{reason}}",
       "kept_installed_by_you": "已保留 — 由你安装",
       "kirocrew_registry": "{{productName}} 注册表",
       "library": "库",
@@ -11083,6 +11084,7 @@
       "this_will_remove_all_resources_provided_by_this": "会移除此应用提供的所有资源：",
       "try_a_different_search_or_category": "换个搜索词或分类试试。",
       "try_a_different_search_term": "换个搜索词试试",
+      "uninstall_app_title": "要卸载“{{name}}”吗？",
       "uninstall": "卸载",
       "uninstall_removes_metadata_and_source": "通过“应用”安装 — 会移除 {{productName}} 元数据和已下载的源代码。",
       "uninstall_removes_metadata_secret_and_source": "通过“应用”安装 — 会移除 {{productName}} 元数据、应用密钥和已下载的源代码。",

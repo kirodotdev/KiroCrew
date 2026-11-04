@@ -11496,7 +11496,6 @@
       "retry": "Réessayer"
     },
     "appsPage": {
-      "action_failed": "Échec de l’action « {{action}} » sur {{name}}",
       "add_an_app_source_gear_icon_above_or_install_fro": "Ajoutez une source d'apps (Sources, en haut à droite) ou installez depuis un chemin local.",
       "agent_many": "{{count}} agents",
       "agent_one": "{{count}} agent",
@@ -11516,6 +11515,8 @@
       "cron_job_other": "{{count}} tâches cron",
       "dependencies": "Dépendances :",
       "dismiss_message": "Ignorer le message",
+      "failed_to_disable": "Échec de la désactivation de {{name}}",
+      "failed_to_open": "Échec de l’ouverture de {{name}}",
       "failed_to_enable": "Échec de l’activation de {{name}}",
       "failed_to_load_apps": "Échec du chargement des applications",
       "failed_to_load_registry": "Échec du chargement du registre",
@@ -11525,7 +11526,7 @@
       "keep_app_data": "Conserver les données de l'application",
       "keep_dependency": "Conserver la dépendance {{name}}",
       "keep_this_dependency": "Conserver cette dépendance",
-      "kept": "Conservée —",
+      "kept_reason": "Conservée — {{reason}}",
       "kept_installed_by_you": "Conservée — installée par vous",
       "kirocrew_registry": "Registre {{productName}}",
       "library": "Bibliothèque",
@@ -11553,6 +11554,7 @@
       "this_will_remove_all_resources_provided_by_this": "Cela supprimera toutes les ressources fournies par cette application :",
       "try_a_different_search_or_category": "Essayez une autre recherche ou catégorie.",
       "try_a_different_search_term": "Essaie un autre terme de recherche",
+      "uninstall_app_title": "Désinstaller « {{name}} » ?",
       "uninstall": "Désinstaller",
       "uninstall_removes_metadata_and_source": "Installée depuis Applications — les métadonnées {{productName}} et le code source téléchargé seront supprimés.",
       "uninstall_removes_metadata_secret_and_source": "Installée depuis Applications — les métadonnées {{productName}}, le secret de l’application et le code source téléchargé seront supprimés.",

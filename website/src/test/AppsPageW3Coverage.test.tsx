@@ -107,6 +107,7 @@ vi.mock('../components/SimpleSelect', () => ({
 
 import DiscoverPage from '../pages/apps/DiscoverPage'
 import LibraryPage from '../pages/apps/LibraryPage'
+import { i18next } from '../i18n/all'
 import { pickFeatured } from '../pages/apps/useAppsData'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -504,7 +505,7 @@ describe('AppsPage — uninstall dialog', () => {
 
   it('lists the resources the removal takes with it', async () => {
     const dialog = await openDialog()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
     expect(within(dialog).getByText('1 agent')).toBeInTheDocument()
     expect(within(dialog).getByText('1 skill')).toBeInTheDocument()
     expect(within(dialog).getByText('1 cron job')).toBeInTheDocument()
@@ -580,7 +581,7 @@ describe('AppsPage — uninstall dialog', () => {
     uninstallPreview.mockRejectedValue(new Error('preview unavailable'))
     const dialog = await openDialog()
     expect(within(dialog).queryByText('Dependencies:')).toBeNull()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
   })
 
   it('reports a failed uninstall and closes the dialog', async () => {
@@ -892,5 +893,32 @@ describe('pickFeatured', () => {
       app({ name: 'a', displayName: 'Alpha', featured: true }),
     ])
     expect(picked.map(a => a.name)).toEqual(['a', 'b'])
+  })
+})
+
+// Library sentences built by gluing a translated word to a name or an English
+// verb. Each is one catalog sentence with the name inside, so a language can
+// order it itself: German puts the verb after the name, and Russian needs its
+// own verb rather than the English "disable" dropped into its frame.
+describe('AppsPage — Library sentences in other languages', () => {
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('words the uninstall title with the name where German puts it', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Weitere Aktionen für Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Deinstallieren' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('„Secretary“ deinstallieren?')).toBeInTheDocument()
+  })
+
+  it('reports a failed disable with a Russian verb, not the English one', async () => {
+    disableApp.mockRejectedValue({})
+    await act(async () => { await i18next.changeLanguage('ru') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Другие действия для Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Отключить' }))
+    expect(await screen.findByText('Не удалось отключить secretary')).toBeInTheDocument()
+    expect(screen.queryByText(/disable/)).toBeNull()
   })
 })
