@@ -17511,6 +17511,7 @@
         "terminal_shell_save_failed": "无法保存 Shell 设置",
         "terminal_completion": "命令补全",
         "terminal_completion_desc": "在终端中输入时显示补全弹窗。回车执行你输入的那一行；要采用建议，按 ↑/↓ 再回车，或按 Tab。关闭后不显示弹窗；Shell 自带的 Tab 补全仍然可用。",
+        "terminal_completion_unavailable_windows": "在 Windows 网关上不可用：终端无法在那里列出命令或路径。你的 shell 自带的 Tab 补全仍然可用。",
         "terminal_completion_save_failed": "无法保存命令补全设置",
         "terminal_reuse_current": "复用当前终端",
         "terminal_reuse_current_desc": "复制命令而不是运行它：在终端中运行会聚焦你已选中的终端标签页并复制命令，你可以手动粘贴到该 Shell，同时保留其工作目录、环境变量和已登录会话。 没有打开终端时，命令仍会被复制以供你粘贴，绝不会替你运行。",

@@ -37,6 +37,7 @@ import { useFontOptions } from '../../hooks/useFontOptions'
 import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../../utils/fontDetect'
 
 import { i18nT } from '../../i18n/t'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -383,6 +384,13 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
   }))
+  // A Windows gateway answers every completion request with an empty list:
+  // the command tier's PATH filter refuses every directory there and the path
+  // tier has no shell cwd. That reply is the same one the off setting gets, so
+  // the switch would look on while nothing ever pops up. It shows as off and
+  // unavailable instead, with the stored value left untouched. A non-owner
+  // reads the platform as unknown and keeps the plain switch.
+  const completionUnavailable = useGatewayPlatform() === 'windows'
 
   // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
   // and off by default — the run-in-terminal handler reads it on each click, so
@@ -866,9 +874,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_completion')}
             hint={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
-            checked={shownCompletion}
+            description={completionUnavailable ? i18nT('pages.settings.displayPanel.terminal_completion_unavailable_windows') : undefined}
+            checked={!completionUnavailable && shownCompletion}
             onChange={v => completionMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || completionUnavailable}
             configKey="dashboard.terminal.completion.enabled"
           />
           {/* No hand-off: the toggle itself has no draft (it saves on click),
