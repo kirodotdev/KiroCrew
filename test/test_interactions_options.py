@@ -348,6 +348,31 @@ class TestSingleClickOptions:
         assert hm["asker_key"] == "dashboard:chat-1"
         forget.assert_called_once_with(state, "t1", "m1", keys=("slack:t1",), channel="C1")
 
+    @pytest.mark.asyncio
+    async def test_a_channel_born_asker_is_not_routed_into_its_dashboard_tab(
+        self,
+        orch: MagicMock,
+        turns: AsyncMock,
+        forget: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The thread's own dashboard tab (``slack_t1``) is found for bookkeeping,
+        # but the answer stays on the channel path: pinned to no slot, exactly as
+        # when no tab is open.
+        state = SimpleNamespace(conversation_log=_Log(MINTED_TS))
+        orch.dashboard_state = state
+        slot_lookup = MagicMock(return_value=SimpleNamespace(key="slack_t1"))
+        monkeypatch.setattr(ix, "slack_options_slot", slot_lookup)
+        token = encode_options_token("slack:t1", MINTED_TS)
+        payload, action = _click(["A", "B"], 1, block_id=token)
+        await ix._handle_options(payload, action, "C1", "m1")
+        await _join(orch)
+
+        hm = turns.await_args.kwargs
+        assert hm["target_slot_name"] is None
+        assert hm["route_pinned"] is True
+        assert hm["asker_key"] == "slack:t1"
+
     @pytest.mark.parametrize(
         "action,channel,bound",
         [

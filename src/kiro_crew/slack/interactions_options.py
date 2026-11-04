@@ -29,6 +29,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_slot,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal
@@ -560,6 +561,14 @@ async def _answer_options(
             if (_asker_key and _orch and _orch.dashboard_state)
             else None
         )
+        # A channel-born asker holds no slot for ROUTING, even when it has a
+        # dashboard tab: ``slack_options_slot`` reaches that tab so the control's
+        # bookkeeping can find it, but the conversation runs on the channel path.
+        # Pinning the answer to the tab would run it on the dashboard runner, which
+        # leaves the thread's status indicator up and splits the timing footer off
+        # as an empty message; a typed reply in the same thread does neither.
+        if _asker_key and is_channel_session_key(_asker_key):
+            _pinned_slot = None
         _pinned_slot_name = getattr(_pinned_slot, "key", None)
         _route_pinned = _asker_key is not None
         # Whose record this control is, captured BEFORE the edit. A relink landing
