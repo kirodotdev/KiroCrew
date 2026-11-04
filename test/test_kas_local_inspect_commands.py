@@ -442,7 +442,16 @@ class TestMcp:
 
 class TestKiroUnchanged:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/model", "/tools", "/mcp"])
+    @pytest.mark.parametrize(
+        "command",
+        [
+            *(pytest.param(c, id=f"KiroUnchanged-{c}") for c in ["/model", "/tools", "/mcp"]),
+            *(
+                pytest.param(c, id=f"KiroStillNative-{c}")
+                for c in ["/context", "/usage", "/help", "/agent list"]
+            ),
+        ],
+    )
     async def test_kiro_still_runs_them_natively(self, tmp_path, command) -> None:
         state, slot, _client, calls = _live(tmp_path, ACP_BACKEND_KIRO)
 
@@ -676,15 +685,3 @@ class TestAgent:
         text = _reply(slot)
         assert "Agent: the default agent" in text, text
         assert "No other agents are installed" in text
-
-
-class TestKiroStillNative:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/context", "/usage", "/help", "/agent list"])
-    async def test_kiro_still_runs_them_natively(self, tmp_path, command) -> None:
-        state, slot, _client, calls = _live(tmp_path, ACP_BACKEND_KIRO)
-
-        await _run_chat(state, slot, command)
-
-        assert [(m["role"], m["content"]) for m in slot.messages] == [("inject", command)]
-        calls.assert_called_once_with(command)

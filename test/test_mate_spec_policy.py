@@ -419,9 +419,8 @@ def test_a_subagent_worker_turn_fires_the_hooks_of_its_own_session(monkeypatch):
 # --- a restriction KAS cannot enforce ---------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("settings", "named"),
-    [
+_UNCARRIED_SETTINGS = {
+    "a_tool_restriction_kas_cannot_enforce_is_refused_by_name": [
         (
             {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}},
             "toolsSettings.execute_bash.deniedCommands",
@@ -431,8 +430,33 @@ def test_a_subagent_worker_turn_fires_the_hooks_of_its_own_session(monkeypatch):
             "toolsSettings.web_fetch.blocked",
         ),
     ],
+    "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
+        ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
+        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
+        ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
+        ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
+        ({"subagent": {"availableAgents": []}}, "toolsSettings.subagent.availableAgents"),
+        (
+            {"use_subagent": {"availableAgents": ["reviewer"]}},
+            "toolsSettings.use_subagent.availableAgents",
+        ),
+        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
+        ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
+        ({"use_aws": {}}, "toolsSettings.use_aws"),
+        ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("settings", "named"),
+    [
+        pytest.param(settings, named, id=f"{name}-{named}")
+        for name, cases in _UNCARRIED_SETTINGS.items()
+        for settings, named in cases
+    ],
 )
-def test_a_tool_restriction_kas_cannot_enforce_is_refused_by_name(settings, named):
+def test_a_tools_setting_crew_cannot_carry_is_refused_by_name(settings, named):
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert named in caught.value.fields
@@ -521,30 +545,6 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
     spec: dict = {}
     mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
     assert crew_answered_commands(spec["toolsSettings"]) == ["git status"]
-
-
-@pytest.mark.parametrize(
-    ("settings", "named"),
-    [
-        ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
-        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
-        ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
-        ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
-        ({"subagent": {"availableAgents": []}}, "toolsSettings.subagent.availableAgents"),
-        (
-            {"use_subagent": {"availableAgents": ["reviewer"]}},
-            "toolsSettings.use_subagent.availableAgents",
-        ),
-        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
-        ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
-        ({"use_aws": {}}, "toolsSettings.use_aws"),
-        ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
-    ],
-)
-def test_a_tools_setting_outside_the_allowlist_is_refused_by_name(settings, named):
-    with pytest.raises(SpecPolicyUncarried) as caught:
-        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
-    assert named in caught.value.fields
 
 
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():

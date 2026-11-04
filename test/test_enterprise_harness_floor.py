@@ -433,12 +433,6 @@ class TestBackgroundFloorInEnterprise:
 class TestBackgroundRuntimeFloor:
     """The background runtime's backend for an unreadable config is the build floor."""
 
-    def test_enterprise_takes_kas(self, enterprise):
-        assert acp_backends.governance_floor_backend() == KAS
-
-    def test_oss_takes_kiro_cli(self):
-        assert acp_backends.governance_floor_backend() == KIRO
-
     @pytest.mark.parametrize("edition_name, expected", [("enterprise", KAS), ("oss", KIRO)])
     def test_the_unreadable_backend_fallback(self, monkeypatch, edition_name, expected):
         from types import SimpleNamespace

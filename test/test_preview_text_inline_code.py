@@ -13,17 +13,32 @@ import pytest
 from kiro_crew.preview_text import speech_preview, strip_markdown_preview
 
 
+def _named(prefix, rows):
+    return [pytest.param(src, out, id=f"{prefix}-{src}") for src, out in rows]
+
+
 @pytest.mark.parametrize(
     ("src", "expected"),
-    [
-        ("call `__init__` now", "call __init__ now"),
-        ("pass `**kwargs` and `*args`", "pass **kwargs and *args"),
-        ("use `~~x~~` here", "use ~~x~~ here"),
-        ("see `[a](b)` there", "see [a](b) there"),
-        ("type `# not a header`", "type # not a header"),
-    ],
+    _named(
+        "inline_code_keeps_markdown_markers",
+        [
+            ("call `__init__` now", "call __init__ now"),
+            ("pass `**kwargs` and `*args`", "pass **kwargs and *args"),
+            ("use `~~x~~` here", "use ~~x~~ here"),
+            ("see `[a](b)` there", "see [a](b) there"),
+            ("type `# not a header`", "type # not a header"),
+        ],
+    )
+    + _named(
+        "multi_backtick_spans_keep_code_intact",
+        [
+            ("show ``a`__b__`` now", "show a`__b__ now"),
+            ("show `` `**x**` `` now", "show `**x**` now"),
+            ("lone `` run and `__y__`", "lone `` run and __y__"),
+        ],
+    ),
 )
-def test_inline_code_keeps_markdown_markers(src, expected):
+def test_inline_code_keeps_its_literal_text(src, expected):
     assert strip_markdown_preview(src) == expected
 
 
@@ -61,18 +76,6 @@ def test_backticks_inside_tilde_fence_stay_in_the_block():
 
 def test_short_tilde_run_does_not_close_a_longer_fence():
     assert strip_markdown_preview("~~~~py\na\n~~~\nb\n~~~~\nafter") == "(code) after"
-
-
-@pytest.mark.parametrize(
-    ("src", "expected"),
-    [
-        ("show ``a`__b__`` now", "show a`__b__ now"),
-        ("show `` `**x**` `` now", "show `**x**` now"),
-        ("lone `` run and `__y__`", "lone `` run and __y__"),
-    ],
-)
-def test_multi_backtick_spans_keep_code_intact(src, expected):
-    assert strip_markdown_preview(src) == expected
 
 
 @pytest.mark.parametrize("marker", ["`[OPTIONS: Yes | No]`", "[OPTIONS: Yes | No]"])

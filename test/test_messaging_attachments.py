@@ -59,21 +59,39 @@ async def _boom(url: str, dest: str) -> None:
     raise RuntimeError("network error")
 
 
+def _named(prefix, rows):
+    return [pytest.param(mime, kind, id=f"{prefix}-{mime}") for mime, kind in rows]
+
+
 class TestClassify:
     @pytest.mark.parametrize(
         "mime,expected",
-        [
-            ("image/png", IMAGE),
-            ("image/jpeg", IMAGE),
-            ("text/plain", TEXT),
-            ("application/json", TEXT),
-            ("audio/webm", AUDIO),
-            ("video/mp4", VIDEO),
-            ("application/octet-stream", OTHER),
-            ("", OTHER),
-        ],
+        _named(
+            "mimetype_mapping",
+            [
+                ("image/png", IMAGE),
+                ("image/jpeg", IMAGE),
+                ("text/plain", TEXT),
+                ("application/json", TEXT),
+                ("audio/webm", AUDIO),
+                ("video/mp4", VIDEO),
+                ("application/octet-stream", OTHER),
+                ("", OTHER),
+            ],
+        )
+        + _named(
+            "parameters_after_the_type_are_ignored",
+            [
+                # Discord's content_type for a JSON or XML file carries a charset.
+                ("application/json; charset=utf-8", TEXT),
+                ("application/xml; charset=utf-8", TEXT),
+                ("text/plain;charset=UTF-8", TEXT),
+                ("IMAGE/PNG ; foo=bar", IMAGE),
+                ("application/octet-stream; charset=utf-8", OTHER),
+            ],
+        ),
     )
-    def test_mimetype_mapping(self, mime, expected):
+    def test_mimetype_maps_to_its_kind(self, mime, expected):
         assert classify(mime) == expected
 
     def test_documents_detected_by_filename(self):
@@ -82,20 +100,6 @@ class TestClassify:
     def test_svg_is_not_an_image(self):
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER
-
-    @pytest.mark.parametrize(
-        "mime,expected",
-        [
-            # Discord's content_type for a JSON or XML file carries a charset.
-            ("application/json; charset=utf-8", TEXT),
-            ("application/xml; charset=utf-8", TEXT),
-            ("text/plain;charset=UTF-8", TEXT),
-            ("IMAGE/PNG ; foo=bar", IMAGE),
-            ("application/octet-stream; charset=utf-8", OTHER),
-        ],
-    )
-    def test_parameters_after_the_type_are_ignored(self, mime, expected):
-        assert classify(mime) == expected
 
     def test_a_parameter_cannot_make_svg_an_image(self):
         assert classify("image/svg+xml; charset=utf-8") == OTHER
