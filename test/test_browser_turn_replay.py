@@ -1082,6 +1082,61 @@ async def test_a_key_a_live_slot_still_holds_keeps_its_recordings(recorded) -> N
     assert len(recorded.list_turns(KEY)) == 1
 
 
+async def test_a_chat_that_takes_the_key_while_an_earlier_one_is_removed_keeps_its_replay(
+    recorded,
+) -> None:
+    # Two spellings of one deleted row fold to two keys. Removing the first awaits;
+    # a new chat takes the second key meanwhile, so its recordings are not touched.
+    other = "chat-2"
+    recorded.start_turn(other, TURN, 1000)
+    state = SimpleNamespace(_slots={})
+    real = rc.get_recorder().delete_session
+
+    async def delete_then_a_chat_takes_the_next_key(key: str) -> bool:
+        removed = await real(key)
+        state._slots[other] = object()
+        return removed
+
+    rec = rc.get_recorder()
+    rec.delete_session = delete_then_a_chat_takes_the_next_key  # type: ignore[method-assign]
+    await slot_teardown._remove_browser_recordings(state, KEY, {KEY, other})
+    assert recorded.list_turns(KEY) == []
+    assert len(recorded.list_turns(other)) == 1
+
+
+async def test_a_delete_removes_only_the_turns_that_started_by_the_request(
+    tmp_path: Path,
+) -> None:
+    store = rc.RecordingStore(lambda: tmp_path, rc.RecordingConfig())
+    old, new = "a" * 32, "b" * 32
+    store.start_turn(KEY, old, 1000)
+    store.end_turn(KEY, old, 1100)
+    store.start_turn(KEY, new, 5000)  # a chat that reopened the key afterwards
+    assert store.delete_session(KEY, started_by=2000) is True
+    assert [t["turn_id"] for t in store.list_turns(KEY)] == [new]
+    assert not turn_dir(tmp_path, KEY, old).exists()
+    assert turn_dir(tmp_path, KEY, new).is_dir()
+    # With nothing newer, the session goes whole, as before.
+    assert store.delete_session(KEY, started_by=9000) is True
+    assert not (tmp_path / rc.RECORDINGS_DIRNAME / rc.session_dirname(KEY)).exists()
+
+
+async def test_a_successor_that_starts_during_the_delete_keeps_its_turn(tmp_path: Path) -> None:
+    rec, store, clock = make_recorder(tmp_path)
+    rec.turn_started(KEY, TURN)
+    await rec.flush()
+    real = store.delete_session
+    successor = "c" * 32
+
+    def delete_after_the_successor_starts(key: str, started_by: int | None = None) -> bool:
+        store.start_turn(key, successor, clock.now + 5000)
+        return real(key, started_by)
+
+    store.delete_session = delete_after_the_successor_starts  # type: ignore[method-assign]
+    await rec.delete_session(KEY)
+    assert [t["turn_id"] for t in store.list_turns(KEY)] == [successor]
+
+
 async def test_a_delete_during_a_running_turn_leaves_nothing_behind(tmp_path: Path) -> None:
     rec = rc.get_recorder()
     rec.turn_started(KEY, TURN)

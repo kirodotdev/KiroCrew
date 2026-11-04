@@ -15,6 +15,7 @@ from kiro_crew.browser_harness import install as harness_install
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import browser_harness_status as routes
+from kiro_crew.testing.wait import async_wait_until
 
 _OWNER = "the-owner"
 
@@ -317,3 +318,39 @@ async def test_redownload_keeps_kiros_own_chromium_down_while_it_runs(
     assert bool(stops) is stopped
     assert during == [held]
     assert sup.replacing_chromium is False, "the gate opens again when the job ends"
+
+
+@pytest.mark.asyncio
+async def test_redownload_installs_only_after_kiros_chromium_has_stopped(
+    sel, sup, monkeypatch
+) -> None:
+    """The swap moves the files a running copy runs from, so it must not begin while
+    the stop is still pending; the job is reserved at once, so a second Redownload
+    meanwhile is refused."""
+    order: list[str] = []
+    stopping = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_install(home, progress, *, components, refresh=False):
+        order.append("install")
+        return harness_install.install_state(home)
+
+    async def slow_stop() -> None:
+        order.append("stop begins")
+        stopping.set()
+        await release.wait()
+        order.append("stop ends")
+
+    monkeypatch.setattr(harness_install, "install", fake_install)
+    monkeypatch.setattr(HarnessSupervisor, "runs_kiro_chromium", property(lambda self: True))
+    monkeypatch.setattr(sup, "stop", slow_stop)
+    body = {"components": ["chromium"], "refresh": True}
+    req = _owner("/api/browser/install", sup, body=body)
+    assert (await routes.api_browser_harness_install(req)).status == 202
+    await async_wait_until(stopping.is_set, timeout=30)
+    assert sup.replacing_chromium is True and order == ["stop begins"]
+    assert (await routes.api_browser_harness_install(req)).status == 409
+    release.set()
+    await req.app["state"]._browser_harness_install_task
+    assert order == ["stop begins", "stop ends", "install"]
+    assert sup.replacing_chromium is False

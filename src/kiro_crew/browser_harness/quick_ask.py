@@ -617,20 +617,46 @@ class PageProbe:
             todo.extend(node.get("childFrames") or [])
         return ("", "", "")
 
+    async def walker_world(self, name: str) -> int:
+        """The isolated world *name* on the root frame of this session's page.
+
+        The snapshot walker keeps its refs in that world (not in the page's own, where
+        a page script could rewrite them), and Chrome hands every session the same
+        world for the same name, so the refs the helper made are readable here.
+        """
+        frame_id, _loader, _origin = await self.top_frame()
+        made = await self._send(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": name, "grantUniveralAccess": False},
+        )
+        ctx = made.get("executionContextId")
+        if not isinstance(ctx, int) or isinstance(ctx, bool):
+            raise AskError("cdp_failed")
+        return ctx
+
     async def ref_frame(self, ref: str) -> str:
         """The frame id of the document a top-map ref lives in, ``""`` for this one.
 
-        A main-world read (which frame to look in), never trusted on its own: the
-        node is then resolved INTO that frame's isolated world and must be found
+        Read in the walker's world (which frame to look in), never trusted on its own:
+        the node is then resolved INTO that frame's isolated world and must be found
         in that frame's own document there, or the ask is refused.
         """
+        from kiro_crew.browser_harness.frames import TOP_WALKER_WORLD
+
         expr = (
             "(() => { var m = window.__kcRefDocObj === document && window.__kcRefs instanceof Map"
             f" ? window.__kcRefs.get({ref!r}) : null; if (!m || m.ownerDocument === document)"
             " return null; try { return m.ownerDocument.defaultView.frameElement; }"
             " catch (e) { return null; } })()"
         )
-        found = await self._send("Runtime.evaluate", {"expression": expr, "returnByValue": False})
+        found = await self._send(
+            "Runtime.evaluate",
+            {
+                "expression": expr,
+                "returnByValue": False,
+                "contextId": await self.walker_world(TOP_WALKER_WORLD),
+            },
+        )
         obj = (found.get("result") or {}).get("objectId")
         if not obj:
             return ""
@@ -703,16 +729,19 @@ class PageProbe:
     async def ref_node(self, ref: str, ctx: int | None = None) -> int:
         """The ``backendNodeId`` a snapshot ref names, or :class:`AskError` ``ref_stale``.
 
-        *ctx*: the walker's world of a same-process frame (``frames.WALKER_WORLD``),
-        else this session's page world."""
+        *ctx*: the walker's world of a cross-origin frame (``frames.WALKER_WORLD``),
+        else the top document's (``frames.TOP_WALKER_WORLD``)."""
+        from kiro_crew.browser_harness.frames import TOP_WALKER_WORLD
+
+        if ctx is None:
+            ctx = await self.walker_world(TOP_WALKER_WORLD)
         expr = (
             "(window.__kcRefDocObj === document && window.__kcRefs instanceof Map)"
             f" ? (window.__kcRefs.get({ref!r}) || null) : null"
         )
-        params: dict[str, Any] = {"expression": expr, "returnByValue": False}
-        if ctx is not None:
-            params["contextId"] = ctx
-        found = await self._send("Runtime.evaluate", params)
+        found = await self._send(
+            "Runtime.evaluate", {"expression": expr, "returnByValue": False, "contextId": ctx}
+        )
         obj = (found.get("result") or {}).get("objectId")
         if not obj:
             raise AskError("ref_stale")
@@ -881,7 +910,11 @@ async def _locate(top: PageProbe, frames: Any, ref: str) -> tuple[PageProbe, int
         sid = frames.session_of(frame_id) if frame_id else ""
         if sid:
             probe = PageProbe(top.relay, sid)
-            return probe, await probe.ref_node(local), frame_id
+            return (
+                probe,
+                await probe.ref_node(local, await probe.walker_world(WALKER_WORLD)),
+                frame_id,
+            )
         if not frame_id or frame_id not in getattr(frames, "local", ()):
             raise AskError("ref_stale")
         made = await top._send(

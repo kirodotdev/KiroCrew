@@ -26,9 +26,10 @@ op until the hand-back and runs it then, so this check is the backstop under the
 route's fence, not the agent's wait. Each op that runs reports itself to the
 live card through ``ctx.step(label)``.
 
-Statelessness: nothing here holds per-caller data. The ref map lives in the page
-(``window.__kcRefs``), the tab ledger in the relay, the input lock in the stream
-lane. This module is a pure function of ``(op, args, ctx)``.
+Statelessness: nothing here holds per-caller data. The ref map lives in the
+walker's isolated world (``window.__kcRefs`` there, out of a page script's reach),
+the tab ledger in the relay, the input lock in the stream lane. This module is a
+pure function of ``(op, args, ctx)``.
 """
 
 from __future__ import annotations
@@ -418,9 +419,18 @@ async def _isolated_count(ctx: OpContext, method: str) -> int | None:
     return value
 
 
+#: The walker methods that run in the page's own world: the console hook wraps the
+#: page's ``console``, and the navigation stamp is read back from the same world.
+#: Every other method (the outline, the refs, every read of a field, every guard)
+#: runs in the walker's isolated world, where a page script that replaces
+#: ``getAttribute`` or a property getter cannot change what the walker sees.
+PAGE_WORLD_METHODS = frozenset({"stamp", "state", "consoleMessages"})
+
+
 async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
     """Call one method of the walker in the page: the ONLY use of the ``js`` and
-    ``js_isolated`` helpers (the guard counts run in the isolated one).
+    ``js_isolated`` helpers (:data:`PAGE_WORLD_METHODS` run in the first, the rest,
+    guard counts included, in the walker's isolated world).
 
     A ``f<tag>eN`` ref runs the method in that cross-origin frame instead, through
     the gateway's session (``resolve`` then answers page pixels). The guards'
@@ -462,7 +472,8 @@ async def _page(ctx: OpContext, method: str, *args: Any) -> Any:
         counted = await _guard_count(ctx, method)
         return 1 if counted is None else counted
     rendered = ", ".join(json.dumps(a) for a in args)
-    value = await ctx.helper("js", expression=f"{WALKER_SOURCE}.{method}({rendered})")
+    helper = "js" if method in PAGE_WORLD_METHODS else "js_isolated"
+    value = await ctx.helper(helper, expression=f"{WALKER_SOURCE}.{method}({rendered})")
     if method == "activeField" and isinstance(value, dict) and value.get("frame"):
         frames = ctx.frames()
         inner = await frames.focused() if frames is not None else None
@@ -706,6 +717,7 @@ async def _with_frames(ctx: OpContext, nodes: list[Any]) -> list[Any]:
 
 async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     await _step(ctx, "Read the page")
+    await _arm_console(ctx)
     data = await _page(ctx, "snapshot")
     if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
         return refusal("snapshot_error", "snapshot walker returned no data")

@@ -788,6 +788,51 @@ describe('WebPreviewPanel — native browser transport (desktop app)', () => {
     await waitFor(() => expect(api.navigate).toHaveBeenCalledWith('sess-1', 'http://127.0.0.1:3000/app'))
   })
 
+  it('closes the native view when its origin is removed from the list while it shows', async () => {
+    setSessionPreviewUrl('sess-1', 'http://localhost:5173/')
+    const api = installNativeBridge(true, 'http://localhost:5173/')
+    const { queryClient } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    await waitFor(() => expect(api.getState).toHaveBeenCalled())
+    expect(api.close).not.toHaveBeenCalled()
+    // Another window removes the origin; the config watcher refreshes the list.
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ORIGINS.filter(o => o !== 'localhost:5173') } })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
+  })
+
+  it('checks the page the native view moved to, not the one it opened on', async () => {
+    setSessionPreviewUrl('sess-1', 'http://localhost:5173/')
+    const api = installNativeBridge(true, 'http://localhost:5173/')
+    const { queryClient } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const bar = await waitFor(() => {
+      const bars = screen.getAllByLabelText('Preview URL')
+      expect(bars.length).toBe(2)
+      return bars[1]
+    })
+    fireEvent.change(bar, { target: { value: 'http://127.0.0.1:3000/app' } })
+    fireEvent.submit(bar.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(api.navigate).toHaveBeenCalledWith('sess-1', 'http://127.0.0.1:3000/app'))
+    // Removing the ORIGINAL origin leaves the page the user is on untouched.
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ORIGINS.filter(o => o !== 'localhost:5173') } })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(api.getState).toHaveBeenCalled())
+    expect(api.close).not.toHaveBeenCalled()
+    // Removing the origin it is on closes it.
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ORIGINS.filter(o => o !== 'localhost:5173' && o !== '127.0.0.1:3000') } })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
+  })
+
+  it('keeps the native view while its origin is still listed', async () => {
+    setSessionPreviewUrl('sess-1', 'http://localhost:5173/')
+    const api = installNativeBridge(true, 'http://localhost:5173/')
+    const { queryClient } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    kirocrewConfig.mockResolvedValue({ dashboard: { browser_local_origins: ORIGINS.filter(o => o !== 'localhost:4000') } })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(api.getState).toHaveBeenCalled())
+    expect(api.close).not.toHaveBeenCalled()
+  })
+
   it('hides (never destroys) the native view when the panel goes inactive, and closes it on unmount', async () => {
     const api = installNativeBridge(true)
     const { rerender, unmount } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)

@@ -14,6 +14,19 @@
 const ORIGIN_RE = /^(localhost|127\.0\.0\.1|\[::1\]):([0-9]{1,5})$/
 
 /**
+ * The `host:port` of a web URL, with the scheme's default port filled in: `URL.host`
+ * leaves it out (`http://localhost:80/` has host `localhost`), and the list keeps
+ * only entries that name a port. The URL API already brackets an IPv6 hostname
+ * (`[::1]`); only a bare form (an older engine) needs the brackets added, never a
+ * second pair.
+ */
+export function urlHostPort(u: URL): string {
+  const host = u.hostname.toLowerCase()
+  const hostText = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `${hostText}:${u.port || (u.protocol === 'https:' ? '443' : '80')}`
+}
+
+/**
  * Canonicalize a typed origin, or null when it is not one the gateway keeps.
  *
  * Trims, lower-cases, and accepts a pasted `http://localhost:5173/` by stripping
@@ -28,7 +41,7 @@ export function normalizeLocalOrigin(raw: string): string | null {
     try {
       const u = new URL(text)
       if ((u.pathname && u.pathname !== '/') || u.search || u.hash || u.username || u.password) return null
-      text = u.host
+      text = urlHostPort(u)
     } catch {
       return null
     }
@@ -49,10 +62,5 @@ export function previewAllowsUrl(url: string, origins: readonly string[]): boole
     return false
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
-  const host = u.hostname.toLowerCase()
-  // The URL API already brackets an IPv6 hostname (`[::1]`); only a bare form
-  // (an older engine) needs the brackets added, never a second pair.
-  const hostText = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
-  const port = u.port || (u.protocol === 'https:' ? '443' : '80')
-  return origins.includes(`${hostText}:${port}`)
+  return origins.includes(urlHostPort(u))
 }

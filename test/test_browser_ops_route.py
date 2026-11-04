@@ -59,7 +59,7 @@ class _Supervisor:
 
     async def call(self, helper: str, **kwargs: Any) -> Any:
         self.calls.append((helper, kwargs))
-        if helper == "js":
+        if helper in ("js", "js_isolated"):
             return {"url": "u", "title": "t", "nodes": []}
         if helper == "current_tab":
             return self.tab
@@ -421,7 +421,7 @@ class _TabbedSupervisor(_Supervisor):
             self.current = f"T-new{self.created}"
             self.ledger.append(self.current)
             return self.current
-        if helper == "js":
+        if helper in ("js", "js_isolated"):
             return {"url": f"https://{self.current}", "title": "t", "nodes": []}
         return {}
 
@@ -514,7 +514,7 @@ async def test_ops_from_different_chats_run_one_at_a_time(monkeypatch: pytest.Mo
     inner = sup.call
 
     async def slow_call(helper: str, **kwargs: Any) -> Any:
-        if helper == "js":
+        if helper in ("js", "js_isolated"):
             parked.set()
             await await_until(gate, what="release serialized browser op")
         return await inner(helper, **kwargs)
@@ -544,7 +544,7 @@ class _ParkingSupervisor(_Supervisor):
 
     async def call(self, helper: str, **kwargs: Any) -> Any:
         self.calls.append((helper, kwargs))
-        if helper == "js" and "activeField" in str(kwargs.get("expression")):
+        if helper in ("js", "js_isolated") and "activeField" in str(kwargs.get("expression")):
             self.parked.set()
             await self.gate.wait()
             return {"focused": True, "password": False, "tag": "input"}

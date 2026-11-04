@@ -700,13 +700,30 @@ class RecordingStore:
                 info.truncated = True
                 self._write_meta(sdir, info)
 
-    def delete_session(self, session_key: str) -> bool:
-        """Remove every recording of *session_key*. Returns whether any existed."""
+    def delete_session(self, session_key: str, started_by: int | None = None) -> bool:
+        """Remove the recordings of *session_key*. Returns whether any existed.
+
+        *started_by*: remove only the turns that started at or before it, so a chat
+        that reopens this key while the deletion runs keeps its own replay. ``None``
+        removes them all.
+        """
         if not session_key:
             return False
         sdir = session_dirname(session_key)
         with self._lock:
             index = self._loaded()
+            newer = {
+                turn_id
+                for turn_id, info in index.get(sdir, {}).items()
+                if started_by is not None and info.started_ts > started_by
+            }
+            if newer:
+                old = [t for t in index[sdir] if t not in newer]
+                for turn_id in old:
+                    index[sdir].pop(turn_id)
+                    self._live.discard((sdir, turn_id))
+                    shutil.rmtree(self._turn_dir(sdir, turn_id), ignore_errors=True)
+                return bool(old)
             existed = sdir in index
             index.pop(sdir, None)
             self._live = {(s, t) for s, t in self._live if s != sdir}
@@ -1152,7 +1169,12 @@ class LiveRecorder:
     # ── deletion ───────────────────────────────────────────────────────────
 
     async def delete_session(self, session_key: str) -> bool:
-        """Forget the session and remove its recordings, after its queued writes."""
+        """Forget the session and remove its recordings, after its queued writes.
+
+        Only the turns that started by now go: a chat that reopens the key while the
+        queued writes finish is a successor, and its replay stays.
+        """
+        deleted_at = self._clock_ms()
         rec = self._recs.pop(session_key, None)
         if rec is not None:
             rec.turn_id = ""
@@ -1160,7 +1182,7 @@ class LiveRecorder:
             rec.jobs.clear()
             if rec.worker is not None and not rec.worker.done():
                 await asyncio.wait({rec.worker})
-        return await asyncio.to_thread(self.store.delete_session, session_key)
+        return await asyncio.to_thread(self.store.delete_session, session_key, deleted_at)
 
 
 #: Where a URL starts inside free text: a scheme and a colon with no space after it.

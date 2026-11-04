@@ -616,7 +616,6 @@
     // document and hands each the rest). Same-origin frames are walked in place;
     // each cross-origin one is a `slot` node the gateway fills in.
     snapshot: function (cap) {
-      installConsoleHook();
       var limit = (typeof cap === "number" && cap >= 0) ? Math.min(cap, NODE_CAP) : NODE_CAP;
       var slots = [];
       window.__kcFrameSlots = slots;
