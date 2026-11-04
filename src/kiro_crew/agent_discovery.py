@@ -17,7 +17,7 @@ import sys as _sys
 from typing import TYPE_CHECKING
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import agent_state, hooks  # noqa: F401
+from kiro_crew import agent_state, hooks, platform_compat  # noqa: F401
 from kiro_crew.agent_files import (  # noqa: F401
     AGENT_FILENAME,
     GUEST_AGENT_FILENAME,
@@ -35,6 +35,7 @@ from kiro_crew.agent_spec_format import (  # noqa: F401
     shadowed_markdown_specs,
     spec_stem,
 )
+from kiro_crew.atomic_write import retry_read_sharing_window  # noqa: F401
 from kiro_crew.config.paths import (  # noqa: F401
     kiro_agents_dir,
     project_agents_dir,

@@ -21,7 +21,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.owner_only_files import (
@@ -213,6 +213,8 @@ def _is_access_control_xattr(attr: str) -> bool:
 #: from being persisted. Losing reuse-detection state is a worse outcome there
 #: than a file whose permissions could not be tightened.
 RestrictErrorPolicy = Literal["raise", "warn"]
+
+_T = TypeVar("_T")
 
 _umask_lock = threading.Lock()
 _default_mode: int | None = None
@@ -765,9 +767,22 @@ def read_bytes_with_retry(path: Path | str, *, max_bytes: int | None = None) -> 
     ``None`` (the default) reads the whole file.
     """
     target = Path(path)
+    return retry_read_sharing_window(lambda: _read_bytes(target, max_bytes), target)
+
+
+def retry_read_sharing_window(read: Callable[[], _T], target: Path | str) -> _T:
+    """Call *read*, retrying the Windows sharing-violation window it can lose to.
+
+    The loop behind :func:`read_bytes_with_retry`, for a reader that must open
+    the file its own way (a descriptor-pinned, no-reparse open, say) and so
+    cannot hand over a bare path. *read* is called again only on
+    ``PermissionError``, only on Windows, and only off the event loop, with the
+    same budget and the same final attempt outside the loop. *target* names the
+    file in the debug lines.
+    """
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
-            return _read_bytes(target, max_bytes)
+            return read()
         except PermissionError:
             if not platform_compat.IS_WINDOWS:
                 raise
@@ -785,7 +800,7 @@ def read_bytes_with_retry(path: Path | str, *, max_bytes: int | None = None) -> 
                 _REPLACE_MAX_ATTEMPTS,
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
-    return _read_bytes(target, max_bytes)
+    return read()
 
 
 def _read_bytes(target: Path, max_bytes: int | None) -> bytes:
