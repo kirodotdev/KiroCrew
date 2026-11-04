@@ -618,6 +618,7 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _MANIFEST_RESOLVE_CONCURRENCY,
         FIRST_PARTY_AUTHORS,
         NATIVE_WINDOWS_SHELL_REFUSAL,
         SOURCE_REGISTRY_PREFIX,
@@ -631,6 +632,7 @@ if _typing.TYPE_CHECKING:
         _external_registry_repos,
         _external_registry_row,
         _fold_author,
+        _gather_bounded,
         _identity,
         _is_catalog_row,
         _is_external_row,
