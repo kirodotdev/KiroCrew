@@ -86,17 +86,10 @@ class TestKiroIgnoreSyntax:
         assert m.is_ignored("pkg/a/b/snap.md", is_dir=False) is True
 
     def test_non_segment_double_star_does_not_cross_a_separator(self):
-        """``**`` crosses separators ONLY as a complete path segment. A ``**``
-        with a non-``/`` neighbour (``a**b``) is not segment-bounded, so git
-        treats it as a single ``*`` that stays within one path segment.
+        """A ``**`` with a non-``/`` neighbour acts as one ``*`` within a segment.
 
-        The discriminator is a pattern whose match depends on the ``**`` NOT
-        crossing ``/``: ``a**b`` matches ``axxb`` but must not match ``ax/xb``.
-        (``a**`` alone cannot show this through ``is_ignored`` -- its match
-        ``ax`` is an ancestor directory of ``ax/xb``, and ignoring a directory
-        ignores its whole subtree, so ``ax/xb`` is ignored regardless of how
-        ``**`` translates. ``a**b`` avoids that: no ancestor of ``ax/xb``
-        matches it, so the separator-crossing behaviour is what is tested.)"""
+        ``a**b`` is the probe because no ancestor of ``ax/xb`` matches it; with
+        ``a**`` the ancestor ``ax`` matches and hides the subtree either way."""
         m = _rules("a**")
         assert m.is_ignored("abc", is_dir=False) is True
         m2 = _rules("a**b")
@@ -104,16 +97,10 @@ class TestKiroIgnoreSyntax:
         assert m2.is_ignored("ax/xb", is_dir=False) is False
 
     def test_double_star_that_starts_a_segment_without_ending_one(self):
-        """A ``**`` that is LEFT-bounded (starts a segment) but not RIGHT-bounded
-        (``logs/**txt``, ``x/**y``) is not a complete segment, so it must stay
-        within one path segment rather than degrade to the cross-separator
-        ``.*``. Regression pin for the right-bound gap: without ``i + 2 == n`` on
-        the segment-``**`` branch, ``logs/**txt`` compiled to ``^logs/.*txt$``
-        and wrongly matched ``logs/a/btxt``.
-
-        Discriminator: a match that depends on ``**`` NOT crossing ``/`` where no
-        ANCESTOR of the deep path independently matches (an ancestor match would
-        ignore the whole subtree and mask the separator-crossing behaviour)."""
+        """A ``**`` that starts a segment but does not end one (``logs/**txt``)
+        stays within one segment: without the ``i + 2 == n`` check it would
+        compile to ``^logs/.*txt$`` and match ``logs/a/btxt``. No ancestor of the
+        deep paths matches, so an ignored subtree cannot mask the result."""
         m = _rules("logs/**txt")
         assert m.is_ignored("logs/atxt", is_dir=False) is True
         assert m.is_ignored("logs/a/btxt", is_dir=False) is False
@@ -127,14 +114,9 @@ class TestKiroIgnoreSyntax:
         assert m3.is_ignored("a/x/b", is_dir=False) is False
 
     def test_double_star_slash_that_is_not_left_bounded(self):
-        """The ``**/`` branch must ALSO be left-bounded: ``a**/b`` is not a
-        complete leading segment, so it must not emit the cross-separator
-        ``(?:[^/]+/)*``. Regression pin for the ``**/`` left-bound gap.
-
-        ``a**/b`` should behave as ``a`` + two within-segment ``*`` + ``/b``:
-        it matches ``axx/b`` but not ``ax/x/b`` (the middle ``**`` cannot span a
-        separator). No ancestor of ``ax/x/b`` matches ``a**/b``, so the
-        separator-crossing behaviour is what is under test."""
+        """The ``**/`` branch must be left-bounded too: ``a**/b`` must not emit
+        the cross-separator ``(?:[^/]+/)*``, so it matches ``axx/b`` but not
+        ``ax/x/b`` (no ancestor of which matches ``a**/b``)."""
         m = _rules("a**/b")
         assert m.is_ignored("axx/b", is_dir=False) is True
         assert m.is_ignored("ax/x/b", is_dir=False) is False
@@ -310,12 +292,9 @@ class TestWalkHonoursKiroIgnore:
         (root / "docs").mkdir(parents=True)
         (root / "docs" / "design.md").write_text("# Design")
         (root / "README.md").write_text("# Readme")
-        # DELIBERATELY not ``cdk.out``: that directory joined HARD_SKIP_DIRS
-        # (never walked, regardless of .kiroignore) in the same-day change
-        # that skips CDK output by default — a canary inside it is invisible
-        # even with no rule file, which inverts what these tests assert.
-        # ``synth.out`` is generated-output-shaped but NOT default-skipped,
-        # so discovery vs .kiroignore-driven exclusion stays observable.
+        # Not ``cdk.out``: it is in HARD_SKIP_DIRS (never walked), so a canary
+        # there is invisible even with no rule file. ``synth.out`` is not
+        # default-skipped, so .kiroignore-driven exclusion stays observable.
         (root / "synth.out" / "asset.abc123").mkdir(parents=True)
         (root / "synth.out" / "manifest.json").write_text("{}")
         (root / "synth.out" / "asset.abc123" / "bundle.md").write_text("generated")

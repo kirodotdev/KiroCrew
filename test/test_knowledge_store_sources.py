@@ -25,9 +25,7 @@ from kiro_crew.testing.wait import async_wait_until, await_until, finished
 # depend on the host's clock or its time zone.
 _ROW_STAMP = "2026-10-01T12:00:00"
 
-# ---------------------------------------------------------------------------
 # 7. KnowledgeStore -- additional coverage
-# ---------------------------------------------------------------------------
 
 
 class TestKnowledgeStoreExtended:
@@ -65,14 +63,11 @@ class TestKnowledgeStoreExtended:
         assert store.get_source_by_uri("/tmp/nope") is None
 
     def test_add_source_persists_sync_status_column(self, store):
-        """Insert seeds the COLUMN and stores no second copy in the blob.
+        """Insert lifts the initial status onto the COLUMN and out of the blob.
 
-        The dashboard reads the COLUMN to pick the row's control (the Confirm
-        button renders only for 'pending_confirmation'), so a column stuck at
-        the 'pending' default while properties carries 'pending_confirmation'
-        makes a folder source unstartable. Callers still STATE the initial
-        status in properties; it is lifted onto the column and dropped from the
-        blob so the row cannot hold two answers.
+        The dashboard reads the column (Confirm renders only for
+        'pending_confirmation'), so a column stuck at 'pending' makes a folder
+        source unstartable; dropping the blob copy keeps one answer per row.
         """
         sid = store.add_source(
             "vault",
@@ -101,11 +96,8 @@ class TestKnowledgeStoreExtended:
     def test_add_source_rejects_non_initial_sync_status(self, store):
         """A transient or outcome state in properties never seeds the column.
 
-        The create endpoint passes request-body properties through, so a
-        caller-supplied 'syncing' would otherwise persist and make the sync
-        endpoint report a conflict forever for a source whose sync never
-        started. Only durable states pass; a claim about work that never ran
-        falls back to 'pending', and the forged value survives in neither store.
+        The create endpoint passes request-body properties through, so a forged
+        'syncing' would make the sync endpoint report a conflict forever.
         """
         for forged in ("syncing", "synced", "error", "missing", "garbage"):
             sid = store.add_source(
@@ -118,11 +110,8 @@ class TestKnowledgeStoreExtended:
             assert "sync_status" not in json.loads(row["properties"]), forged
 
     def test_add_source_accepts_paused_as_an_initial_state(self, store):
-        """A source may START paused: it is a durable decision, not a claim.
-
-        A bundle import restores a source the user had paused, and the column is
-        now the only place that state can live -- dropping it would silently
-        resume scanning a folder the user stopped.
+        """A source may START paused: a bundle import restores a user's pause,
+        and dropping it would resume scanning a folder the user stopped.
         """
         sid = store.add_source(
             "vault", "local_folder", "/tmp/vault-paused", properties={"sync_status": "paused"}
@@ -131,12 +120,8 @@ class TestKnowledgeStoreExtended:
         assert row["sync_status"] == "paused"
 
     def test_auto_added_source_persists_sync_status_column(self, store):
-        """An auto-added source keeps the same single-store invariant.
-
-        The aggregate source the agent's add-document tool creates seeds
-        sync_status='active' in properties; the column must carry it or the
-        dashboard renders the stale 'pending' control for a source that is
-        already active.
+        """The add-document tool's aggregate source seeds 'active' in properties;
+        the column must carry it or the dashboard shows a stale 'pending' control.
         """
         sid = store.add_source(
             "agent-added",
@@ -153,12 +138,10 @@ class TestKnowledgeStoreExtended:
         assert json.loads(row["properties"])["auto_added"] is True
 
     def test_migration_repairs_divergent_sync_status_rows(self, store, tmp_path):
-        """Reopening a store repairs rows whose column diverged from the JSON.
+        """Reopening copies the JSON state onto a column stuck at 'pending'.
 
-        Rows inserted while the INSERT paths wrote only the properties JSON
-        have a column stuck at 'pending'; the migration copies the JSON state
-        over so those sources become startable. Rows a handler already
-        transitioned (non-'pending' column) are never touched.
+        A row whose column is not 'pending' was already transitioned by a
+        handler and is never touched.
         """
         divergent = str(uuid4())
         live = str(uuid4())
@@ -203,14 +186,10 @@ class TestKnowledgeStoreExtended:
     def test_migration_skips_a_row_whose_properties_moved_mid_repair(self, store, tmp_path):
         """A properties-only write landing mid-pass wins over the snapshot.
 
-        The pass reads both copies, then writes. A pre-column
-        ``SyncScheduler._record_failure`` moved the properties copy WITHOUT the
-        column, so comparing only the column would let the repair stamp
-        'pending_confirmation' onto a row whose blob now reads 'error' -- the
-        dashboard would offer Confirm for a source the scheduler has given up on.
-        Binding the blob as read refuses every write for that row, including the
-        retire, so nothing is lost; the next open sees the settled state and
-        converges it.
+        A properties-only ``SyncScheduler._record_failure`` can move the blob to
+        'error' between read and write; checking only the column would stamp
+        'pending_confirmation' over it. Binding the blob as read refuses every
+        write for that row, and the next open converges it.
         """
         import sqlite3
 
@@ -273,10 +252,8 @@ class TestKnowledgeStoreExtended:
         finally:
             reopened.close()
 
-        # The next open sees a row nobody is racing and retires the copy. The
-        # blob's 'error' is a lifecycle value, so it is dropped rather than
-        # promoted: it cannot be ordered against the column, and the scheduler's
-        # own failure count re-marks the source on its next failed attempt.
+        # The next open retires the copy. The blob's lifecycle 'error' is dropped,
+        # not promoted; the failure count re-marks the source on its next failure.
         settled = KnowledgeStore(db_path)
         try:
             row = settled.db.execute(
@@ -291,10 +268,8 @@ class TestKnowledgeStoreExtended:
     def test_migration_lifts_a_legacy_json_only_error_onto_the_column(self, store, tmp_path):
         """The copy is retired, and a LIFECYCLE value in it is never promoted.
 
-        Only an INITIAL state is repaired, and only onto a column still at its
-        un-written default. A blob 'error' is left where it is: it cannot be
-        ordered against the column, so promoting it would mark a recovered source
-        errored with no copy left to correct it.
+        Only an INITIAL state is repaired onto an un-written column; promoting a
+        blob 'error' could mark a recovered source errored.
         """
         divergent = str(uuid4())
         legacy_error = str(uuid4())
@@ -360,11 +335,9 @@ class TestKnowledgeStoreExtended:
     def test_migration_does_not_re_error_a_source_that_has_since_synced(self, store, tmp_path):
         """A recovered source survives the upgrade, whenever it recovered.
 
-        Ingestion's success writers are column-only -- they never touch
-        properties -- so a legacy blob-'error' row that syncs keeps its blob copy.
-        Both orderings must leave the healthy column alone: a recovery that landed
-        BEFORE the first open under this change (the copy is still present when
-        the migration first runs) and one that lands after it.
+        Ingestion's success writers are column-only, so a legacy blob-'error' row
+        keeps its blob copy. A recovery before or after the first migrated open
+        must both leave the healthy column alone.
         """
         before = str(uuid4())
         after = str(uuid4())
@@ -418,11 +391,8 @@ class TestKnowledgeStoreExtended:
             second.close()
 
     def test_update_source_drops_a_properties_borne_status(self, store):
-        """A status written through properties is dropped, not stored.
-
-        This is the seam that makes the column the only store: a legacy row's
-        second copy disappears the first time anything writes its properties,
-        and no caller can create a new one.
+        """A status written through properties is dropped, so the column stays
+        the only store and a legacy second copy goes on the next write.
         """
         sid = store.add_source("f", "local_file", "/tmp/lift.md")
         store.update_source(sid, properties={"sync_status": "missing", "mtime": 7})
@@ -438,10 +408,8 @@ class TestKnowledgeStoreExtended:
     def test_update_source_does_not_let_a_stale_blob_move_the_column(self, store):
         """An unrelated properties write must not resurrect a legacy status.
 
-        A row written by the pre-column watcher carries 'missing' in its blob.
-        The watcher re-reads that blob to persist mtime/content_hash after
-        re-ingesting the file, so a seam that APPLIED the blob's status would
-        stamp 'missing' back onto a source that had just been re-ingested.
+        The watcher re-reads a legacy blob carrying 'missing' to persist mtime
+        after a re-ingest; applying that status would undo the re-ingest.
         """
         sid = store.add_source("f", "local_file", "/tmp/stale.md")
         store.db.execute(
@@ -641,10 +609,8 @@ class TestKnowledgeStoreExtended:
         assert bundle["relations"] == []
 
     def test_export_item_with_a_cross_referencing_relation_roundtrips_cleanly(self, store_factory):
-        """End-to-end reproduction of the FK bug: exporting an item whose
-        mentioned entity has a relation to an unexported entity must still
-        re-import cleanly (the offending relation is simply dropped, not
-        carried along to break the import)."""
+        """A relation to an unexported entity is dropped, so the bundle still
+        re-imports without an FK failure."""
         s1 = store_factory("cross_ref_src.db")
         item_id = s1.add_item("Doc", "content", "doc")
         mentioned = s1.add_entity("Svc", "service")
@@ -711,20 +677,15 @@ class TestKnowledgeStoreExtended:
         s2.close()
 
 
-# ---------------------------------------------------------------------------
 # 7b. Retirement of folders Kiro Crew registered itself
-# ---------------------------------------------------------------------------
 
 
 class TestRetireAutoRegisteredFolders:
-    """A folder row left behind by the removed auto-registration paths.
+    """A folder row Kiro Crew registered itself is not walked until the user adopts it.
 
-    Those paths registered a directory nobody named, and the sweep re-validated its
-    containment before every scan. Both are gone, so such a row must not be walked at
-    all until the user adopts it. The refusal lives in ``FolderWatcher.scan_source``
-    because that is the single funnel every scan goes through -- the watcher's sweep
-    and both dashboard endpoints -- and deliberately NOT in the store constructor,
-    where taking the write lock would stall the event loop at startup.
+    The refusal lives in ``FolderWatcher.scan_source``, the one funnel every scan
+    goes through, and NOT in the store constructor, where taking the write lock
+    would stall the event loop at startup.
     """
 
     @staticmethod
@@ -745,17 +706,14 @@ class TestRetireAutoRegisteredFolders:
 
         return KnowledgeWatcher(store=store, pipeline=object(), interval=1)
 
-    # -- the funnel ---------------------------------------------------------
+    # -- the funnel
 
     @pytest.mark.asyncio
     async def test_a_scan_of_an_auto_registered_source_is_refused_and_retires_it(
         self, store, tmp_path
     ):
-        """The gate is in scan_source, so every caller is covered by construction.
-
-        A database written before the removal holds such a row, and ``import_bundle``
-        restores one verbatim into a running gateway, so the row can appear at any
-        time -- not only at startup.
+        """The gate is in scan_source because ``import_bundle`` can restore such
+        a row into a running gateway at any time, not only at startup.
         """
         folder = tmp_path / "legacy"
         folder.mkdir()
@@ -782,12 +740,7 @@ class TestRetireAutoRegisteredFolders:
 
     @pytest.mark.asyncio
     async def test_the_refusal_is_audited(self, store, tmp_path):
-        """A refusal to walk a tree is a permission decision, so it is auditable.
-
-        The paths this replaced logged both their auto-add and their scan-denied
-        decisions, and this file's two TOCTOU refusals log theirs, so a silent refusal
-        would be the one permission outcome with no record.
-        """
+        """A refusal to walk a tree is a permission decision, so it is audited."""
         folder = tmp_path / "audited"
         folder.mkdir()
         sid = self._add(store, {"auto_added": True}, uri=str(folder))
@@ -870,7 +823,7 @@ class TestRetireAutoRegisteredFolders:
         watcher._folder_watcher._do_scan.assert_not_awaited()
         assert self._row(store, sid)[0] == "pending_confirmation"
 
-    # -- the marker contract ------------------------------------------------
+    # -- the marker contract
 
     @pytest.mark.parametrize(
         "props",
@@ -900,7 +853,7 @@ class TestRetireAutoRegisteredFolders:
         assert is_auto_registered({"auto_added": True}) is True
         assert is_auto_registered({"auto_added": True, "auto_registration_retired": True}) is False
 
-    # -- the store primitive ------------------------------------------------
+    # -- the store primitive
 
     def test_a_paused_row_keeps_its_pause_and_is_still_marked(self, store):
         """Pausing already stops the scan; overwriting it would lose user state."""
@@ -938,16 +891,12 @@ class TestRetireAutoRegisteredFolders:
     def test_an_ingestion_write_cannot_land_inside_the_retirement(self, store, tmp_path):
         """The retirement holds the write lock across its read and its write.
 
-        Ingestion writes ``sync_status = 'synced'`` straight onto the row, so without
-        the lock that write lands in between and the paused branch stamps the retired
-        marker onto a row that has just become scannable again -- permanently, since
-        the marker is what stops a later retirement.
+        Otherwise an ingestion write of 'synced' lands in between and the retired
+        marker is stamped, permanently, onto a row that is scannable again.
 
-        The racer opens through ``store.sqlite3`` -- the module the store itself bound
-        -- because that is the library the real writer uses. A stdlib ``sqlite3``
-        connection does not contend with a ``pysqlite3`` one on this database
-        (measured: both sides took BEGIN IMMEDIATE at once), so a racer opened that way
-        would land whether or not a lock is held, and the test would prove nothing.
+        The racer opens through ``store.sqlite3``: a stdlib ``sqlite3`` connection
+        does not contend with a ``pysqlite3`` one here (both took BEGIN IMMEDIATE
+        at once), so it would land with or without the lock.
         """
         from kiro_crew.knowledge import store as store_mod
 
@@ -983,9 +932,8 @@ class TestRetireAutoRegisteredFolders:
     def test_a_lock_it_cannot_take_defers_instead_of_raising(self, store, tmp_path):
         """A busy database must not turn a refusal into an exception.
 
-        The scan is refused either way -- the funnel's ``continue`` does not depend on
-        this returning True -- so deferring costs nothing and raising would surface as
-        a failed scan the user cannot act on.
+        The scan is refused either way, so deferring costs nothing and raising
+        would surface as a failed scan the user cannot act on.
         """
         from kiro_crew.knowledge import store as store_mod
 
@@ -1010,10 +958,8 @@ class TestRetireAutoRegisteredFolders:
 class TestImportedFolderSourcesWaitForConfirmation:
     """``import_bundle`` may not hand the Library a directory that scans on arrival.
 
-    The status allowlist admits ``active``, and a bundle is untrusted input that names
-    its own ``uri``, so trusting the claimed status would let an imported row point at
-    any readable directory and have the next sweep walk it and spend extraction calls
-    on it. Importing a bundle is one decision; each directory inside it is not.
+    A bundle is untrusted and names its own ``uri``, so a trusted 'active' status
+    would let it point the next sweep at any readable directory.
     """
 
     @staticmethod
@@ -1045,11 +991,8 @@ class TestImportedFolderSourcesWaitForConfirmation:
 
     @pytest.mark.parametrize("stype", ["local_folder", "obsidian_vault"])
     def test_a_restored_paused_source_keeps_its_pause(self, store, tmp_path, stype):
-        """Pausing already stops the scan, and it is the user's own decision.
-
-        Overwriting it with a confirmation prompt would lose that state to protect
-        against nothing -- the same reasoning the retirement path uses for a paused
-        row.
+        """Pausing already stops the scan and is the user's own decision, so a
+        confirmation prompt would lose that state to protect against nothing.
         """
         sid = str(uuid4())
         store.import_bundle(
@@ -1069,7 +1012,6 @@ class TestImportedFolderSourcesWaitForConfirmation:
     def test_the_markers_do_not_change_that(self, store, tmp_path):
         """Not even a bundle claiming the source was already adopted.
 
-        This is the shape the review raised: both markers true and an active status.
         The status is refused on the source TYPE, so the markers never get a say.
         """
         sid = str(uuid4())
@@ -1091,11 +1033,8 @@ class TestImportedFolderSourcesWaitForConfirmation:
 
     @pytest.mark.parametrize("stype", ["local_file", "agent", "artifact", "wiki"])
     def test_a_source_that_walks_nothing_keeps_its_restored_status(self, store, stype):
-        """The narrowing is scoped to walking sources, not to imports in general.
-
-        An aggregate or single-file source has no tree to descend, so restoring it as
-        active costs nothing and forcing confirmation on it would strand content the
-        bundle legitimately carries.
+        """Only walking sources are narrowed: an aggregate or single-file source has
+        no tree to descend, and forcing confirmation would strand its content.
         """
         sid = str(uuid4())
         store.import_bundle(
@@ -1124,11 +1063,8 @@ class TestWatcherRunLoop:
 
     @pytest.mark.asyncio
     async def test_a_failing_sweep_does_not_kill_the_loop(self, store):
-        """One bad sweep must cost one interval, not the whole watcher.
-
-        The loop is the only thing that ever scans, so an exception escaping it leaves
-        every source unscanned until the gateway restarts -- with nothing reporting
-        that it stopped.
+        """One bad sweep must cost one interval: the loop is the only scanner, so
+        an escaping exception leaves every source unscanned until a restart.
         """
         w = self._watcher(store)
         calls = []
@@ -1218,10 +1154,8 @@ class TestScheduledDedupCadence:
     async def test_the_first_pass_previews_and_the_next_one_applies(self, store):
         """apply=False first, then apply=True -- and only exact matches either way.
 
-        ``certain_only`` is not a tuning knob here: an unattended fuzzy collapse
-        deletes the loser's copy, so a wrong match (same filename, cosine over the
-        threshold, different facts) would cost a document its only text with nobody
-        watching.
+        ``certain_only`` matters: an unattended wrong fuzzy match would delete a
+        document's only text with nobody watching.
         """
         w = self._watcher(store)
         w._sweep_count = 4
@@ -1277,20 +1211,15 @@ class TestScheduledDedupCadence:
         assert w._dedup_applied_once is False
 
 
-# ---------------------------------------------------------------------------
 # SyncScheduler.sync_all -- errored sources must be quiesced
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 class TestSyncAllSkipsErroredSources:
     """sync_all must skip an errored source, whichever writer marked it.
 
-    KnowledgeIngestion and SyncScheduler both mark failure in the sync_status
-    COLUMN, which is the only store sync_all reads. A row that carries its
-    errored state only in its properties JSON cannot be ordered against the
-    column and so is never promoted onto it; such a row is polled until an
-    attempt of its own fails, and that failure writes the column.
+    Both KnowledgeIngestion and SyncScheduler mark failure in the sync_status
+    COLUMN, the only store sync_all reads.
     """
 
     def _scheduler(self, store):
@@ -1305,10 +1234,8 @@ class TestSyncAllSkipsErroredSources:
         return scheduler, attempted
 
     async def test_column_only_error_is_skipped(self, store):
-        # A healthy source that should still be attempted.
         ok_id = store.add_source("Healthy", "local_file", "/tmp/ok")
-        # A source errored the way ingestion.py does it: COLUMN only, no
-        # sync_status entry in the properties JSON.
+        # Errored the way ingestion.py does it: COLUMN only, nothing in the JSON.
         err_id = store.add_source("Dead", "local_file", "/tmp/dead")
         store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (err_id,))
         store.db.commit()
@@ -1325,13 +1252,9 @@ class TestSyncAllSkipsErroredSources:
     async def test_legacy_json_only_error_is_quiesced_by_its_first_failure(self, store, tmp_path):
         """A pre-column errored row is polled until an attempt of its own fails.
 
-        Its state lives in the properties blob only, which cannot be ordered
-        against the column, so the store does not promote it -- promoting would
-        mark a source errored that had in fact recovered. It is therefore polled
-        like any healthy source, and the first attempt that FAILS is what quiesces
-        it: ``_record_failure`` reads ``consecutive_failures`` from the blob, which
-        such a row already carries at or above MAX_FAILURES, so that one failure
-        writes the column and the source is skipped from then on.
+        Its blob-only state is not promoted, since that could mark a recovered
+        source errored. ``_record_failure`` reads ``consecutive_failures`` from
+        the blob, already at MAX_FAILURES, so its first failure writes the column.
         """
         err_id = str(uuid4())
         ok_id = str(uuid4())
