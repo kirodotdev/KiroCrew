@@ -23,12 +23,9 @@ if TYPE_CHECKING:
 
 
 #: How recent a loop-stall dump stays a CURRENT issue whatever restarted after it.
-#: File ordering alone cannot answer that question on the shipped `Restart=always`
-#: unit (docs/guides/assets/kirocrew.service): the supervisor restarts a wedged
-#: gateway within seconds, and the replacement's pre-created dump file supersedes
-#: the stall almost immediately -- so a gateway wedging hourly would report every
-#: stall as a past incident. Within a day a stall is still the operator's news,
-#: restarts notwithstanding.
+#: File ordering cannot decide it under the shipped `Restart=always` unit
+#: (docs/guides/assets/kirocrew.service): the replacement's dump file supersedes the
+#: stall within seconds, so an hourly wedge would always read as a past incident.
 _STALL_CURRENT_SECS = 24 * 3600
 
 #: Ceiling on the loopback read of the running gateway's controller snapshot,
@@ -42,27 +39,13 @@ _LOOPBACK_HOST = "127.0.0.1"
 
 
 # ── cron job health ───────────────────────────────────────────────────────────
-# The dashboard already surfaces a failing job per-row (an `err` badge on
-# `last_status === 'error'`, with `last_error` on hover), and the gateway
-# re-alerts on a still-failing job hourly. Both of those run INSIDE the
-# gateway, so neither can speak when the gateway is the thing that is wedged.
-# Doctor is a separate process the user runs by hand, which is why the scan
-# reads `crons.json` off disk rather than asking the gateway's HTTP API: a check
-# whose purpose is to survive a down gateway must not depend on one.
-#
-# It also covers a gap the dashboard has by construction: the status badge is
-# rendered under an `enabled` guard, so a job that auto-paused shows only
-# "paused" and its error state is not displayed at all.
-#
-# The scan itself lives in `cron.unhealthy_jobs_from_disk` so the pause-state
-# predicates keep their single owner (`_record_user_paused` / `_record_is_enabled`
-# in `cron_service/store.py`); this module owns only the presentation.
-#
-# Read-only, like the rest of doctor: an auto-paused job has failed
-# `_AUTO_PAUSE_THRESHOLD` times in a row and is usually paused for a good
-# reason, so silently resuming it during a diagnostic would hide the very
-# problem the user ran doctor to find. The remediation is a `Fix:` hint naming
-# a cron verb that already exists.
+# The dashboard badge and the hourly re-alert both run inside the gateway, so the
+# scan reads `crons.json` off disk to survive a wedged gateway. It also shows the
+# error of an auto-paused job, which the dashboard hides behind its `enabled` guard.
+# The scan lives in `cron.unhealthy_jobs_from_disk` so the pause-state predicates
+# keep one owner (`cron_service/store.py`). Read-only: an auto-paused job failed
+# `_AUTO_PAUSE_THRESHOLD` times in a row, so resuming it here would hide the problem;
+# the remedy is a `Fix:` hint naming an existing cron verb.
 _CRON_REPORT_CAP = 5
 
 #: How long past its ``next_run_at`` an unleased, non-terminal task row must be
@@ -225,14 +208,10 @@ def _report_stranded_rows(rows: list[Any], now: float, issues: list[str]) -> Non
 def _doctor_ledger_backlog() -> None:
     """Count the ledgers ``kirocrew ledger-sweep`` would list, and name that command.
 
-    Advisory and read-only, so it takes no ``issues`` list: an old finished ledger
-    is housekeeping, not a broken install, and an entry there would fail the
-    doctor run. It runs the sweep's own :func:`ledger_sweep.scan` at the module's
-    default window, so the count includes every entry the dry run lists: finished
-    stores plus unreadable, linked or unaddressable stores listed for a human.
-    It never purges. Per-ledger detail stays in the dry run. A ledger root that
-    exists but cannot be read makes ``scan`` raise ``OSError``; that becomes one
-    "could not check" row so the rest of the report still runs.
+    Advisory, so it takes no ``issues`` list: an old finished ledger is
+    housekeeping, not a broken install. It runs :func:`ledger_sweep.scan` at the
+    default window, so the count matches the dry run, and never purges. An
+    unreadable ledger root (``OSError``) becomes one "could not check" row.
     """
     from kiro_crew import ledger_sweep
     from kiro_crew.terminal_safe import safe_terminal_line
