@@ -77,6 +77,10 @@ export interface HostModel {
    *  embedded header must inset its RIGHT side clear of the native caption
    *  buttons (the transparent titleBarOverlay's min/max/close cluster). */
   winInset: boolean
+  /** True when the parent is a frameless Linux Electron window, so the
+   *  embedded header must inset its RIGHT side clear of the caption buttons
+   *  the shell injects there (#electron-linux-controls). */
+  linuxInset: boolean
   /** The host window's live, zoom-aware caption reserve (e.g. `178px`), read
    *  from the `--mc-win-caption-reserve` the main process sets on the HOST
    *  <html>. The pane is a separate document, so it never inherits that value,

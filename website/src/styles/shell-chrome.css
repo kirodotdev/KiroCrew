@@ -475,6 +475,13 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
    body's parent. Keep 142px in sync as above. */
 .embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
+/* Frameless Linux counterpart: the parent relays `linuxInset` and the bridge
+   toggles `.embedded-linux-inset`, so the pane's header clears the caption
+   buttons the Linux shell injects at the top-right. Keep 112px in sync with
+   the `.linux-electron` rules above and LINUX_CAPTION_RESERVE_PX in
+   src/lib/electron.ts. */
+.embedded-linux-inset header.topbar-glass{padding-right:112px}
+.embedded-linux-inset .mc-focus-mode .focus-caption-reserve{padding-right:112px}
 /* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone

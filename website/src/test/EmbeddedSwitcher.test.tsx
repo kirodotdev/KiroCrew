@@ -26,6 +26,7 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   winInset: false,
+  linuxInset: false,
   electron: true,
   pinnedCrews: [],
   stableOrder: false,
@@ -349,6 +350,51 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
     expect(store.getState().instances.host?.winInset).toBe(true)
     expect(document.documentElement.classList.contains('embedded-win-inset')).toBe(true)
+  })
+
+  it('applies the Linux caption inset when the host relays linuxInset, and drops it when not', async () => {
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    const { unmount } = renderWithProviders(<EmbeddedHostBridge />, { store })
+    const send = (over: Partial<HostModel>) => act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', { source: window.parent, data: { type: 'mc-host-model', ...model(over) } }),
+      )
+    })
+
+    send({ linuxInset: true })
+    await waitFor(() => expect(store.getState().instances.host?.linuxInset).toBe(true))
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(true)
+    expect(document.documentElement.classList.contains('embedded-win-inset')).toBe(false)
+
+    send({ linuxInset: false })
+    await waitFor(() => expect(store.getState().instances.host?.linuxInset).toBe(false))
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+
+    send({ linuxInset: true })
+    await waitFor(() => expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(true))
+    unmount()
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+  })
+
+  it('treats a host model without linuxInset as no Linux inset (older host)', async () => {
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    renderWithProviders(<EmbeddedHostBridge />, { store })
+    const { linuxInset: _omit, ...older } = model()
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { source: window.parent, data: { type: 'mc-host-model', ...older } }))
+    })
+    await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
+    expect(store.getState().instances.host?.linuxInset).toBe(false)
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+  })
+
+  it('keeps the embedded Linux reserves in lock-step with the local .linux-electron rule (CSS pin)', () => {
+    const css = readIndexCss()
+    expect(css).toMatch(/\.linux-electron header\.topbar-glass\{padding-right:112px\}/)
+    expect(css).toMatch(/\.embedded-linux-inset header\.topbar-glass\{padding-right:112px\}/)
+    expect(css).toMatch(/\.embedded-linux-inset \.mc-focus-mode \.focus-caption-reserve\{padding-right:112px\}/)
   })
 
   it('keeps the embedded Windows reserves in lock-step with the local .win-electron rule (CSS pin)', () => {
