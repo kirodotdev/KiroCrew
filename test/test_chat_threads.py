@@ -229,14 +229,10 @@ def test_the_flag_is_off_by_default_and_editable_from_the_dashboard():
 
 
 def _stub_turn(monkeypatch, *, hold: asyncio.Event | None = None):
-    """Replace the background turn with a no-op that only clears the in-flight
-    mark, as the real turn's ``finally`` does.
+    """Replace the background turn with a no-op that only clears the in-flight mark.
 
-    Pass *hold* when a test needs the reservation to still be held while it makes
-    its next request: the fake turn then waits on that event before clearing the
-    mark, so the test decides when the turn ends instead of the event loop. The
-    call is recorded before the wait, so a caller counting turns sees it either
-    way.
+    With *hold*, the fake waits on that event before clearing, so the test decides when
+    the turn ends. The call is recorded before the wait.
     """
     calls: list[dict[str, Any]] = []
 
@@ -741,12 +737,8 @@ def test_a_leftover_staged_sidecar_is_never_written_over(tmp_path, monkeypatch):
 def _descriptors_pointing_at(directory: pathlib.Path) -> int | None:
     """How many open descriptors of THIS process refer to *directory*.
 
-    Each descriptor's target is resolved through the kernel (``/proc/self/fd``
-    on Linux, ``F_GETPATH`` on macOS, both behind ``pinned_fs.fd_real_path``),
-    so unrelated handles a shared xdist worker opens and closes on its own
-    schedule are never counted. ``None`` when this host cannot enumerate or
-    resolve descriptors at all -- a whole-process count is not a substitute,
-    it drifts by a few on a loaded macOS runner.
+    Targets resolve through ``pinned_fs.fd_real_path`` so other xdist handles are not
+    counted. ``None`` when the host cannot resolve them; a whole-process count drifts.
     """
     want = os.path.realpath(directory)
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
@@ -1111,16 +1103,10 @@ async def test_second_reply_while_the_crewmate_is_replying_is_refused(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_two_replies_racing_through_the_store_write_run_one_turn(tmp_path, monkeypatch):
-    """The reservation is taken before the store write suspends, so a
-    double-click cannot start two turns on one thread.
+    """The reservation precedes the store write, so a double-click runs one turn.
 
-    The winner's turn is held open for the whole gather. Without that, the loser's
-    409 is a scheduling accident: the winner's turn can clear the mark before the
-    loser reaches the check, and two replies that never overlapped both answer 202
-    -- which is correct behaviour, not the defect this test names. Holding the turn
-    is how the file's other in-flight test pins the same thing, and it also makes
-    the losing status a statement about the reservation rather than about how the
-    loop happened to interleave two sockets on the machine that ran it.
+    The winner's turn is held open for the whole gather; otherwise it could finish before
+    the loser checks, and both would rightly answer 202.
     """
     state = _make_state(tmp_path)
     slot, mid = _member_slot(state)

@@ -1,10 +1,7 @@
 """Tests for POST /api/chat/slots/{slot}/end-wait.
 
-The route parks a cooperative request on the slot for the sleeping `wait` tool
-to collect on its next keepalive poll. It is deliberately NOT a cancel, and it
-is deliberately wait_id-scoped: a slot-scoped flag would have accepted a click
-landing after the wait already elapsed, and a click from a stale tab still
-showing a previous wait's countdown.
+The route parks a request for the sleeping `wait` tool's next keepalive poll; it is NOT a
+cancel. It is wait_id-scoped so a late click or a stale tab cannot end a newer wait.
 """
 
 from __future__ import annotations
@@ -18,37 +15,14 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.chat import api_chat_slot_end_wait
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SOURCE BUG (not fixed here — this file is tests only)
-#
-#   src/kiro_crew/dashboard/chat.py:56
-#     53      api_chat_slot_delete,
-#     54      api_chat_slot_detail,
-#     55      api_chat_slot_followup,
-#     56      api_chat_slot_end_wait,   <-- belongs on line 55, before followup
-#     57      api_chat_slot_interrupt,
-#
-#   The re-export was appended after `api_chat_slot_followup`, but `end_wait`
-#   sorts before `followup`. CI's BLOCKING import gate
-#   (`isort --check-only src/kiro_crew test`, ci.yml:228) therefore fails on
-#   this branch. Verified: the same file at HEAD passes
-#   (`isort --check-only --settings-path <repo> ` on `git show HEAD:...` -> exit 0),
-#   the working tree fails -> exit 1, and the only delta is this one added line.
-#   Fix is to move line 56 above line 55. Nothing about the runtime behaviour
-#   covered below changes either way.
-# ─────────────────────────────────────────────────────────────────────────────
-
 
 def _make_app(
     state: DashboardState, *, seen_lengths: list[int | None] | None = None
 ) -> web.Application:
     """Mount the real handler.
 
-    ``seen_lengths`` collects each request's ``Content-Length`` as the server saw
-    it. The body-shape tests below need that: the handler skips the parse
-    entirely when ``content_length`` is falsy, so a body that never made it onto
-    the wire would produce the same 400 as one that parsed to a non-object, and
-    the test would pass without exercising ``request.json()`` at all.
+    ``seen_lengths`` records each ``Content-Length``: the handler skips the parse when it
+    is falsy, so a body-shape test could pass without reaching ``request.json()``.
     """
     app = web.Application()
     app["state"] = state

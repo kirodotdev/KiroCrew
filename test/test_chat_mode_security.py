@@ -1,22 +1,11 @@
 """Security contract of ``api_chat_mode``.
 
-``api_chat_mode`` (``src/kiro_crew/dashboard/chat_handlers.py``) carried three
-defects, all in the ordering between slot validation and global mutation:
+Slot validation runs before any global mutation: an unknown slot is ``400`` for every
+mode, ``trust_reads`` included, and a refused request leaves the safety override and
+every slot untouched. ``deactivate()`` writes a SEL event, so it runs off-loop.
 
-1. ``trust_reads`` silently widened to EVERY slot when the named slot did not
-   resolve — its ``trust``/``normal`` siblings answer ``400 unknown slot``.
-2. A request rejected for an unknown slot had already revoked the
-   process-global safety override (``safety_override().deactivate()`` ran
-   before the ``400``). A refused request must leave the global grant and
-   every slot untouched.
-3. ``deactivate()`` — which writes a SEL event — ran inline on the gateway
-   loop, unlike the sibling ``activate()`` which is offloaded with
-   ``asyncio.to_thread``.
-
-Every test drives the real handler through an aiohttp ``TestClient``; the auth
-middleware is stood in by ``_dashboard_owner_request``, and ``safety_override``
-is either the real singleton (happy paths) or a recording fake (the rejection
-paths, where the contract is "never even called").
+``safety_override`` is the real singleton on happy paths and a recording fake on
+rejection paths, where it must never be called.
 
 An app's sends onto a user slot are tested in ``test_chat_mode_security_send.py``; the
 app-token middleware and its app, the fixtures, ``_app_client`` and the app-control target
@@ -781,11 +770,8 @@ async def test_trust_reads_non_string_slot_key_is_rejected(state) -> None:
 async def test_falsy_non_string_slot_key_is_rejected_for_trust(state) -> None:
     """Falsy non-strings (``[]``/``{}``/``0``/``False``) must not erase into the all-slots scope.
 
-    ``body.get("slot") or None`` collapses an empty list -- and every other
-    falsy non-string -- into ``None``, which is the documented "all slots"
-    request; before this fix ``{"mode": "trust", "slot": []}`` trusted EVERY
-    slot. The raw value must be refused before that normalization, and the
-    live global grant must survive the refusal.
+    ``body.get("slot") or None`` turns ``[]`` into ``None``, the "all slots" request, so the
+    raw value is refused first. The live global grant survives the refusal.
     """
     state.get_or_create_slot("s1")
     state.get_or_create_slot("s2")

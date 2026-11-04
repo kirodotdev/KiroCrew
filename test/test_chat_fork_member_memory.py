@@ -306,12 +306,9 @@ async def test_existing_v1_forks_keep_their_unprotected_memory_contract(tmp_path
 async def test_legacy_fork_keeps_the_identity_the_parent_ran_as(tmp_path):
     """A parent with no carrier must fork to the identity its own turns resolved to.
 
-    A ``config.agents`` alias on a slot not stamped ``template`` runs as that
-    crewmate: its template, model pin and store. Stamping the alias as a
-    template id made the forked chat ask kiro-cli for an agent called
-    ``default`` and fail on its first turn. A template-stamped slot, and a name
-    that is no alias (possibly a template only the parent's project declares),
-    stay template sessions under the name as written.
+    A ``config.agents`` alias runs as that crewmate; stamping it as a template id would
+    make kiro-cli look for ``default`` and fail. A template-stamped slot or a non-alias
+    name stays a template session under the name as written.
     """
     from kiro_crew.config.loader import resolve_agent_bindings
     from kiro_crew.session_agent_selection import resolve_session_agent_bindings

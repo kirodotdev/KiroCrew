@@ -323,11 +323,8 @@ async def test_switch_variant_rejected_while_a_turn_is_in_flight(state) -> None:
 async def test_switch_variant_restores_the_row_when_the_save_is_refused(state) -> None:
     """A refused switch puts the pre-switch row back before answering 409.
 
-    The switch mutates the live row before its durable write, and a refusal
-    leaves that window unpersisted but not inert: a popped slot's teardown
-    drain re-serializes it onto the transcript a takeover holds, and a live
-    slot's periodic flush persists it unguarded — either would land a variant
-    the 409 reported withdrawn.
+    The switch mutates the live row first; a teardown drain or periodic flush would
+    otherwise persist the variant the 409 reported withdrawn.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("assistant", "the original answer")
@@ -356,12 +353,8 @@ async def test_switch_variant_restores_the_row_when_the_save_is_refused(state) -
 async def test_switch_variant_restores_the_row_before_an_app_is_answered_not_found(state) -> None:
     """An app told its switch failed must not have the switched variant persisted anyway.
 
-    The takeover that pops the slot during the switch's save is the case the
-    restore exists for, and it is also the case in which an app caller is
-    answered the anti-enumeration 404. The pre-switch row must be back BEFORE
-    that answer: the popped slot's teardown drain re-serializes its window onto
-    the transcript the takeover holds, so a row left switched lands the variant
-    the app was told was withdrawn.
+    A takeover popping the slot mid-save gets an app the anti-enumeration 404; the row
+    must be restored BEFORE that answer, or the teardown drain persists the variant.
     """
     slot = state.get_or_create_slot("s1")
     slot._app = "some-app"
@@ -578,11 +571,8 @@ async def test_edit_resend_pins_the_truncating_write_to_its_transcript(state) ->
 async def test_edit_resend_skips_the_write_when_the_slot_is_recreated(state) -> None:
     """A same-name recreate landing inside the locked write suppresses the rewrite.
 
-    The replacement is bound to the SAME transcript key, which is what a recreate
-    resuming the same session produces, so the routing pin waves it through and
-    only the object-identity recheck at the commit boundary refuses. The
-    truncated window must not reach the transcript the replacement now holds, and
-    the edited prompt must not be dispatched onto the slot being torn down.
+    The replacement has the SAME transcript key, so only the object-identity recheck at
+    commit refuses: no truncated write, no dispatch onto the torn-down slot.
     """
     slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
     slot.append("user", "keep-me-1", ts="t1")
@@ -1150,13 +1140,9 @@ async def test_edit_resend_cancelled_mid_save_keeps_live_and_disk_in_sync(state)
 async def test_edit_resend_excludes_the_periodic_flush_during_the_rewrite(state) -> None:
     """The periodic dirty-slot flush must not race the rewrite.
 
-    The live slot keeps the FULL window until the commit, so a flush tick can
-    snapshot that stale window, block behind this rewrite on the per-session
-    history lock, and then write the snapshot back on top -- restoring every
-    message the rewrite just discarded. Routing the save through
-    ``save_slot_off_loop`` with an ``expected_history_key`` raises
-    ``_metadata_persist_inflight``, which is the flag ``flush_slot_now`` already
-    honours to skip a slot with a guarded write pending.
+    A flush could snapshot the stale FULL window and write it back after the rewrite.
+    ``save_slot_off_loop`` with ``expected_history_key`` raises
+    ``_metadata_persist_inflight``, which ``flush_slot_now`` honours.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -1202,12 +1188,8 @@ async def test_edit_resend_excludes_the_periodic_flush_during_the_rewrite(state)
 async def test_edit_resend_repeated_cancellation_still_commits_the_landed_rewrite(state) -> None:
     """A SECOND cancellation must not abandon the rewrite.
 
-    A gateway shutdown can cancel a handler already unwinding from a client
-    disconnect, and ``CancelledError`` is a ``BaseException`` -- so an
-    ``except Exception`` around the drain cannot absorb it and a bare
-    ``await save_task`` walks away from a rewrite the worker thread finishes
-    anyway: disk truncated, live slot still holding the discarded suffix, and the
-    next flush pushing that stale window back over the truncated file.
+    ``CancelledError`` is a ``BaseException``; walking away leaves disk truncated while
+    the live slot keeps the old suffix, which the next flush writes back.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")

@@ -1,29 +1,13 @@
 """What a whole dashboard turn does, in order, for each canonical script.
 
-Each test drives ``chat_runner._run_chat`` end to end through
-``turn_harness.run_turn`` and reads only the :class:`~turn_harness.TurnRecord` and
-what the turn's collaborators saw while it ran, never the runner's source, so a
-change that keeps the turn's behaviour keeps them green and a reordering a reader
-of the turn could notice turns them red.
+Each test drives ``chat_runner._run_chat`` through ``turn_harness.run_turn`` and reads only
+the :class:`~turn_harness.TurnRecord` and what collaborators saw, never the runner's source.
+Frames, crew-log entries and session calls are compared as ordered subsequences, so an
+added frame in between changes nothing a client orders by. The cycle ends with one idle
+``slots`` push, then exactly one ``chat_done``.
 
-What is pinned per canonical turn (landed text; a tool call approved; a prompt
-nobody answers; an empty reply that requeues; a chunk then an error; a refused
-session; a local slash command; a warm second turn):
-
-* the order of the frames a client renders the turn from, as an ordered
-  subsequence (a frame added between two of them changes nothing a client
-  orders by);
-* the persisted rows, the provider calls, the hand-offs and the stop reason;
-* the crew-log entries and the session-manager calls as ordered subsequences,
-  with exactly one turn closer and it last, and ``release`` last of the
-  session calls;
-* the end of the cycle: one ``slots`` push reporting the slot idle, then exactly
-  one ``chat_done``, with no content frame after it, by which point the turn has
-  handed back its lock, its identity and its in-flight marker.
-
-Status frames (``activity_event``, ``chat_status``, ``context_usage``,
-``refresh``) and the wall-clock ``heartbeat`` are never recorded: they carry no
-order contract, and ids, timestamps and durations are never compared.
+Status frames (``activity_event``, ``chat_status``, ``context_usage``, ``refresh``) and
+``heartbeat`` carry no order contract and are not recorded.
 """
 
 from __future__ import annotations
@@ -103,12 +87,8 @@ class _SecondSessionProvider(ScriptedProvider):
 class _Journal:
     """One ordered log across the collaborators a turn talks to while it runs.
 
-    The record keeps each collaborator's calls in its own list; this keeps them
-    in ONE list, so an order between a session call, a content frame and a
-    ``slots`` push can be asserted. Each entry also notes the slot's dispatch
-    lock, its active session key and its in-flight marker at that moment. Only
-    content frames are logged: status frames and the wall-clock heartbeat carry
-    no order.
+    ONE list lets an order across session calls, content frames and ``slots`` pushes be
+    asserted. Each entry notes the slot's lock, session key and in-flight marker.
     """
 
     def __init__(self) -> None:

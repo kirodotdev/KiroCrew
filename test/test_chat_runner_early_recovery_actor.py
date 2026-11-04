@@ -113,13 +113,10 @@ class TestSetupFailureReachesRecoveryWithoutCrashing:
     async def test_a_self_wake_whose_cold_start_dies_is_not_retried_as_a_user_turn(
         self, tmp_path, caplog
     ) -> None:
-        """The narrow case a late refinement gets wrong.
+        """A self-wake that dies in cold start is recovered as itself, not as ``user``.
 
-        A self-wake turn names no ``_turn_actor`` -- the flag is what identifies it
-        -- and the ACP cold start it can die in sits between the binding and the
-        dispatch block far below. So the actor has to be complete AT the binding, or
-        this recovery is stamped ``user`` and an autonudge's retry is recorded as a
-        person's message.
+        A self-wake names no ``_turn_actor``, and cold start sits before the dispatch
+        block, so the actor must be complete AT the binding.
         """
         state, slot, _client = _state_and_slot(tmp_path)
         state.sessions.get_or_create = AsyncMock(side_effect=AcpProcessDied("cold start died"))
