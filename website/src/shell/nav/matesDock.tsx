@@ -122,7 +122,7 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
       navId={`mate-${m.slug}`}
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
-      icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={16} working={running ? 'subtle' : undefined} />}
+      icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
       badge={running
         ? <span role="status" aria-label={i18nT('pages.membersPage.drawer_working')} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} />
         : undefined}
