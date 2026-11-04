@@ -17485,6 +17485,16 @@
       "confirm_delete_job": "মুছবেন?",
       "go_to_chat": "চ্যাটে যান",
       "create_your_first_job": "আপনার প্রথম জব তৈরি করুন",
+      "batchActions": {
+        "actions_for_selected": "চিহ্নিত কাজগুলোর জন্য অ্যাকশন",
+        "batch_failed_one": "{{count}} টির মধ্যে {{failed}} টি কাজ আপডেট করা যায়নি",
+        "batch_failed_other": "{{count}} টির মধ্যে {{failed}} টি কাজ আপডেট করা যায়নি",
+        "run_confirm_body": "প্রতিটি কাজ এখন একটি নতুন রান শুরু করবে। বিরতি দেওয়া ও চলমান কাজগুলো বাদ দেওয়া হয়।",
+        "run_confirm_title_one": "{{count}} টি কাজ এখন চালাবেন?",
+        "run_confirm_title_other": "{{count}} টি কাজ এখন চালাবেন?",
+        "strict_off": "কঠোর সময়সূচি বন্ধ",
+        "strict_on": "কঠোর সময়সূচি চালু"
+      },
       "cronFolders": {
         "batch_move_failed_one": "{{total}} টির মধ্যে {{count}} টি কাজ সরানো যায়নি",
         "batch_move_failed_other": "{{total}} টির মধ্যে {{count}} টি কাজ সরানো যায়নি",
