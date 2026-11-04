@@ -16618,6 +16618,7 @@
         "dismiss_confirm": "Ignorer « {{name}} » ?",
         "dismiss_failed_generic": "Impossible d'ignorer ({{reason}}).",
         "dismiss_failed_named": "Impossible d'ignorer « {{name}} » ({{reason}}).",
+        "dismiss_failed_reason_changed": "il a changé après que tu l’as lu ; il a été relu, vérifie-le, puis ignore-le",
         "dismiss_failed_reason_uncoded": "erreur du serveur — réessayez dans un instant",
         "edit": "Modifier",
         "empty_subtitle": "Les compétences enseignent à l'agent des procédures réutilisables. Parcourez le registre pour en ajouter.",

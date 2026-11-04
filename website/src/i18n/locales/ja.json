@@ -15842,6 +15842,7 @@
         "dismiss_confirm": "「{{name}}」を非表示にしますか？",
         "dismiss_failed_generic": "非表示に失敗しました（{{reason}}）。",
         "dismiss_failed_named": "「{{name}}」 の非表示に失敗しました（{{reason}}）。",
+        "dismiss_failed_reason_changed": "読んだ後に変更されました。再読み込みしたので、内容を確認してから破棄してください",
         "dismiss_failed_reason_uncoded": "サーバーエラー — しばらくしてから再試行してください",
         "edit": "編集",
         "empty_subtitle": "スキルはエージェントに再利用可能な手順を教えます。レジストリを参照して追加してください。",

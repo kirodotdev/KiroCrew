@@ -923,7 +923,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
   onApprove: (slug: string, contentSha256: string) => void
-  onDismiss: (slug: string) => void
+  onDismiss: (slug: string, contentSha256?: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -1020,7 +1020,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
         })()}
-        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug, detail?.content_sha256) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {p.script_validation?.ok === false && approveRefusal?.code !== 'script_validation_failed' && (
         /* Visible everywhere the flagged badge is, collapsed AND expanded:
@@ -1466,14 +1466,15 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
     },
   })
   const dismiss = useMutation({
-    mutationFn: (slug: string) => api.dismissPendingSkill(slug),
-    onMutate: (slug: string) => {
+    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256?: string }) =>
+      api.dismissPendingSkill(slug, contentSha256),
+    onMutate: ({ slug }) => {
       // A retry starts clean; a stale failure notice must not outlive the
       // click that supersedes it — but only THIS candidate's notice: a
       // dismiss on row A is not a retry of row B's failure.
       setPanelError(prev => (prev?.about?.slug === slug ? null : prev))
     },
-    onError: (err, slug) => {
+    onError: (err, { slug }) => {
       // Same duck-typed body handling as the approve path: a coded reason maps
       // to catalog text. An UNCODED reason is system vocabulary ("gateway
       // restarting") that means nothing to a dashboard user — the catalog
@@ -1487,9 +1488,15 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       // into a generic server error with no refetch.
       const notFound =
         code === 'pending_skill_not_found' || (err as { status?: unknown }).status === 404
+      const changed = !notFound && code === 'pending_skill_changed'
       const reason = notFound
         ? i18nT('pages.overview.skillsTab.candidate_no_longer_pending')
-        : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')
+        : changed
+          ? i18nT('pages.overview.skillsTab.dismiss_failed_reason_changed')
+          : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')
+      // The file moved after the read the user dismissed: read it again so the
+      // card shows what a retry would dismiss.
+      if (changed) qc.invalidateQueries({ queryKey: ['skills-pending-detail', slug] })
       const row = pending.find(p => p.slug === slug)
       const name = row?.name ?? slug
       // Same rule as the approve path: an update's outcome is not observable
@@ -1529,7 +1536,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, slug) => {
+    onSuccess: (_data, { slug }) => {
       // Same reason as approve: a dismissal the user just performed must not
       // come back as "someone resolved this already".
       if (slug === reviewSlug) setReviewSlug(null)
@@ -1669,7 +1676,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
                 approveRefusal={approveRefusals[p.slug]}
                 mixedQueue={pending.some(c => c.script_validation?.ok === false)}
                 onApprove={(slug, contentSha256) => approve.mutate({ slug, contentSha256 })}
-                onDismiss={s => dismiss.mutate(s)}
+                onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
               />
             ))}
           </div>

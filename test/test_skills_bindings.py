@@ -436,7 +436,7 @@ def test_a_moved_exception_keeps_the_facade_module_name() -> None:
         for name, (cls, _home) in classes.items()
         if issubclass(cls, (BaseException, enum.Enum))
     }
-    assert named == {"PendingApprovalRefused"}
+    assert named == {"PendingApprovalRefused", "PendingDismissRefused"}
     for name, (cls, home) in sorted(classes.items()):
         assert cls.__module__ == ("kiro_crew.skills" if name in named else home), name
 

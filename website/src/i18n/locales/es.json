@@ -16618,6 +16618,7 @@
         "dismiss_confirm": "¿Descartar “{{name}}”?",
         "dismiss_failed_generic": "Error al descartar ({{reason}}).",
         "dismiss_failed_named": "Error al descartar “{{name}}” ({{reason}}).",
+        "dismiss_failed_reason_changed": "cambió después de que lo leyeras; se ha vuelto a cargar, revísalo y luego descártalo",
         "dismiss_failed_reason_uncoded": "error del servidor — reintenta en un momento",
         "edit": "Editar",
         "empty_subtitle": "Las habilidades enseñan al agente procedimientos reutilizables. Explora el registro para añadir una.",

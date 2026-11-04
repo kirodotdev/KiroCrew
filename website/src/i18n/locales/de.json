@@ -16230,6 +16230,7 @@
         "dismiss_confirm": "„{{name}}“ verwerfen?",
         "dismiss_failed_generic": "Verwerfen fehlgeschlagen ({{reason}}).",
         "dismiss_failed_named": "Verwerfen von „{{name}}“ fehlgeschlagen ({{reason}}).",
+        "dismiss_failed_reason_changed": "er hat sich geändert, nachdem du ihn gelesen hast; er wurde neu geladen, prüfe ihn und verwirf ihn dann",
         "dismiss_failed_reason_uncoded": "Serverfehler — in einem Moment erneut versuchen",
         "edit": "Bearbeiten",
         "empty_subtitle": "Fähigkeiten lehren den Agenten wiederverwendbare Verfahren. Durchsuchen Sie das Register, um eine hinzuzufügen.",

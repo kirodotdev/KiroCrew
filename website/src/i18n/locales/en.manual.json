@@ -7541,6 +7541,7 @@
         "dismiss_confirm": "Dismiss “{{name}}”?",
         "dismiss_failed_generic": "Dismiss failed ({{reason}}).",
         "dismiss_failed_named": "Dismiss of “{{name}}” failed ({{reason}}).",
+        "dismiss_failed_reason_changed": "it changed after you read it; it has been read again, so review it, then dismiss",
         "dismiss_failed_reason_uncoded": "server error — retry in a moment",
         "fails_validation": "fails validation",
         "hide": "Hide",
