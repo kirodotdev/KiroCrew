@@ -485,6 +485,24 @@ async def test_permission_denial_is_audited_even_if_reject_fails(monkeypatch):
 _USAGE_TARGET = "kiro_crew.dashboard.handlers.usage.persist_token_record_async"
 
 
+@pytest.fixture
+def usage_shards(tmp_path, monkeypatch) -> pathlib.Path:
+    """The real usage store, rooted in tmp_path, so a test reads the rows it wrote."""
+    from kiro_crew.dashboard.handlers import usage as usage_mod
+
+    shard_dir = tmp_path / "tokens"
+    monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+    return shard_dir
+
+
+def _usage_rows(shard_dir: pathlib.Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for shard in sorted(shard_dir.glob("*.jsonl"))
+        for line in shard.read_text(encoding="utf-8").splitlines()
+    ]
+
+
 class _SubstitutingSession(_FakeSession):
     """``set_model`` lands, but the backend serves a DIFFERENT id.
 
@@ -513,13 +531,14 @@ async def test_cancellation_while_accounting_still_destroys_the_session():
 
 
 @pytest.mark.asyncio
-async def test_spend_is_recorded_against_the_served_model_not_the_requested_one():
+async def test_spend_is_recorded_against_the_served_model_not_the_requested_one(usage_shards):
     sess = _SubstitutingSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_credits=1.5)
 
-    with patch(_USAGE_TARGET) as persist:
-        await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-haiku-4.5")
+    await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-haiku-4.5")
 
-    assert persist.await_args.args[1] == "claude-sonnet-4.6"
+    assert [(r["model"], r["credits"]) for r in _usage_rows(usage_shards)] == [
+        ("claude-sonnet-4.6", 1.5)
+    ]
 
 
 @pytest.mark.asyncio
@@ -538,18 +557,17 @@ async def test_a_dispatch_that_never_ran_does_not_rebill_the_previous_turn():
 
 
 @pytest.mark.asyncio
-async def test_an_unbilled_turn_records_nothing():
+async def test_an_unbilled_turn_records_nothing(usage_shards):
     """A turn that ran but cost nothing has no row worth writing."""
     sess = _FakeSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")])
 
-    with patch(_USAGE_TARGET) as persist:
-        await run_bg_oneliner(_FakeSessions(sess), "p")
+    await run_bg_oneliner(_FakeSessions(sess), "p")
 
-    persist.assert_not_awaited()
+    assert _usage_rows(usage_shards) == []
 
 
 @pytest.mark.asyncio
-async def test_the_turn_duration_reaches_the_row():
+async def test_the_turn_duration_reaches_the_row(usage_shards):
     """The acp provider never fills TurnUsage.duration_ms, so this local
     measurement is the only duration a background row can carry. The clock is
     substituted rather than timed, so the assertion pins the arithmetic rather
@@ -560,10 +578,9 @@ async def test_the_turn_duration_reaches_the_row():
     clock = iter([50.0, 50.25])
 
     with patch("kiro_crew.llm_helpers.time", SimpleNamespace(monotonic=lambda: next(clock))):
-        with patch(_USAGE_TARGET) as persist:
-            await run_bg_oneliner(_FakeSessions(sess), "p")
+        await run_bg_oneliner(_FakeSessions(sess), "p")
 
-    assert persist.await_args.kwargs["elapsed_ms"] == 250
+    assert [r["duration_ms"] for r in _usage_rows(usage_shards)] == [250]
 
 
 class _ClaudeSeamStats:
@@ -617,7 +634,7 @@ async def test_a_cost_only_claude_seam_turn_writes_a_row_with_cost_and_cache_int
 
 
 @pytest.mark.asyncio
-async def test_a_cache_only_claude_seam_turn_still_writes_its_row():
+async def test_a_cache_only_claude_seam_turn_still_writes_its_row(usage_shards):
     """A claude-seam turn can report cache tokens with no cost (the adapter
     fills PromptResponse token counts but sends no usage_update.cost) and zero
     fresh input/output. The shared gate predicate must not drop it -- the
@@ -625,25 +642,22 @@ async def test_a_cache_only_claude_seam_turn_still_writes_its_row():
     stats = _ClaudeSeamStats(TurnUsage(cache_read_tokens=30))
     sess = _ClaudeSeamSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_stats=stats)
 
-    with patch(_USAGE_TARGET) as persist:
-        await run_bg_oneliner(_FakeSessions(sess), "p")
+    await run_bg_oneliner(_FakeSessions(sess), "p")
 
-    assert persist.await_count == 1
-    assert persist.await_args.args[2].cache_read_tokens == 30
+    assert [r["cache_read"] for r in _usage_rows(usage_shards)] == [30]
 
 
 @pytest.mark.asyncio
-async def test_a_claude_seam_turn_that_billed_nothing_still_records_nothing():
+async def test_a_claude_seam_turn_that_billed_nothing_still_records_nothing(usage_shards):
     """The all-zero guard survives the wider gate: a claude-seam turn whose
     stats carried no billing at all must not land as zero-value noise."""
     sess = _ClaudeSeamSession(
         [SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_stats=_ClaudeSeamStats(TurnUsage())
     )
 
-    with patch(_USAGE_TARGET) as persist:
-        await run_bg_oneliner(_FakeSessions(sess), "p")
+    await run_bg_oneliner(_FakeSessions(sess), "p")
 
-    persist.assert_not_awaited()
+    assert _usage_rows(usage_shards) == []
 
 
 # ── Text-only turns ──────────────────────────────────────────────────────────

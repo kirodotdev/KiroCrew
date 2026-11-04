@@ -239,7 +239,8 @@ class TestFindCompiler:
                 mock.patch.object(latex.os.path, "isfile", return_value=True), \
                 mock.patch.object(latex.os, "access", return_value=True):
             latex.find_compiler_sync()
-            latex.find_compiler_sync()
+            assert latex._compiler_cache == "/usr/bin/pdflatex"
+            assert latex.find_compiler_sync() == "/usr/bin/pdflatex"
             assert which.call_count == 1
 
     def test_a_negative_result_is_also_cached(self) -> None:
@@ -1250,8 +1251,12 @@ class TestCompileRefusesSymlinkedArtifacts:
         os.symlink(project / "main.tex", project / ".git" / "objects" / "link")
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
-        ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, ""))) as run:
-            await latex.compile_project(project, "main.tex")
+        ), mock.patch.object(
+            latex, "_run", mock.AsyncMock(return_value=(0, "compiled"))
+        ) as run:
+            result = await latex.compile_project(project, "main.tex")
+        # The log is the compiler's own output, not the guard's refusal text.
+        assert result.log == "compiled"
         assert run.called, "a link inside .git blocked the compile"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
@@ -1290,7 +1295,8 @@ class TestCompileRefusesSymlinkedArtifacts:
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
         ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, "ok"))) as run:
-            await latex.compile_project(project, "main.tex")
+            result = await latex.compile_project(project, "main.tex")
+        assert (result.ok, result.log) == (True, "ok")
         assert run.called, "a regular pre-existing PDF must not block the compile"
 
 

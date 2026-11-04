@@ -743,18 +743,15 @@ class TestTheExclusionMustNotCatchASuccessorUnit:
     def test_an_unchanged_generation_still_excludes_the_conversations_units(self, monkeypatch):
         """The control: no reset, so the same listing is excluded as before."""
         state = _make_state({})
-        session_ledger = MagicMock()
-        session_ledger.LedgerExclusionError = _LedgerExclusionError
         monkeypatch.setattr(
             "kiro_crew.crew_log.store.session_units_for_slot",
             lambda slot_key, **_kwargs: ("acp-being-deleted", "acp-earlier"),
         )
 
-        _exclude_slot_units(state, session_ledger, self._claim())
+        recorded = _exclude_slot_units(state, session_ledger, self._claim())
 
-        session_ledger.exclude_units.assert_called_once_with(
-            "chat-1", ("acp-being-deleted", "acp-earlier")
-        )
+        assert recorded.added == ("acp-being-deleted", "acp-earlier")
+        assert session_ledger._excluded_units("chat-1") == {"acp-being-deleted", "acp-earlier"}
 
     def test_an_established_unit_whose_header_will_not_read_refuses_the_delete(self, monkeypatch):
         """Left out of a short listing, the unit would stay foldable on the reused key."""
@@ -782,9 +779,10 @@ class TestTheExclusionMustNotCatchASuccessorUnit:
 
     def test_a_crew_log_store_never_created_excludes_nothing_and_allows_the_delete(self):
         state = _make_state({})
-        session_ledger = MagicMock()
-        session_ledger.LedgerExclusionError = _LedgerExclusionError
 
-        _exclude_slot_units(state, session_ledger, self._claim())
+        recorded = _exclude_slot_units(state, session_ledger, self._claim())
 
-        session_ledger.exclude_units.assert_called_once_with("chat-1", ())
+        # No unit is excluded, but the slot's carry marker is still settled: a delete
+        # with no units must tombstone the legacy document too.
+        assert recorded == session_ledger.SlotExclusion((), True)
+        assert session_ledger._excluded_units("chat-1") == frozenset()
