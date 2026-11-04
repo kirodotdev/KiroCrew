@@ -23,6 +23,9 @@ interface SessionRow {
   title: string
   drive: string
   status: RowStatus
+  /** Whether the row's close/stop action is offered: always for a slot; for a
+   *  run only while it is still going (`STOPPABLE_RUN_STATES`). */
+  stoppable: boolean
   model: string
   template: string
   slotKey: string
@@ -31,12 +34,28 @@ interface SessionRow {
 
 /** `created_by` spellings (`member-<slug>`, `dashboard:member-<slug>`,
  *  `dashboard_member-<slug>`) all name the same member thread. */
-function memberSlugOf(createdBy: string | undefined): string | null {
+export function memberSlugOf(createdBy: string | undefined): string | null {
   if (!createdBy) return null
   const bare = createdBy.replace(/^dashboard:/, '').replace(/^dashboard_/, '')
-  const m = /^member-(.+)$/.exec(bare)
+  // A Memory V2 member's thread key carries a `.memory-<store>` suffix
+  // (`member-<slug>.memory-<id>`); the roster knows the bare slug.
+  const m = /^member-(.+?)(?:\.memory-.*)?$/.exec(bare)
   return m ? m[1] : null
 }
+
+/** The model a session actually runs: the backend's `served_model` when known,
+ *  otherwise the pinned model unless admission withheld it. */
+export function slotModelOf(s: { model?: string | null; served_model?: string; model_withheld?: boolean | null }): string {
+  if (s.served_model) return s.served_model
+  if (s.model_withheld) return ''
+  return s.model || ''
+}
+
+/** Only a run that is still going can be stopped. Finished runs (done, stopped,
+ *  error) offer no Stop: `DELETE /api/spawn/{id}` on them is a permanent
+ *  dismissal, not a stop. Reads the raw command-center state, because an error
+ *  run also folds onto the Blocked chip. */
+const STOPPABLE_RUN_STATES: ReadonlySet<RunState> = new Set<RunState>(['running', 'waiting', 'needs_input'])
 
 const STATUS_LABEL_KEYS = {
   active: 'pages.panelSessions.status_active',
@@ -119,7 +138,8 @@ export default function SessionsBody({ active }: { active: boolean }) {
         title: s.title || s.key,
         drive: driveOf(s.created_by),
         status: STATE_TO_STATUS[node?.state ?? 'idle'],
-        model: s.model || s.served_model || '',
+        stoppable: true,
+        model: slotModelOf(s),
         template: s.effective_agent || s.agent || '',
         slotKey: s.key,
         runId: '',
@@ -132,6 +152,7 @@ export default function SessionsBody({ active }: { active: boolean }) {
           title: a.task || id,
           drive: driveOf(s.created_by),
           status: STATE_TO_STATUS[runNode?.state ?? 'running'],
+          stoppable: STOPPABLE_RUN_STATES.has(runNode?.state ?? 'running'),
           model: a.model || a.requestedModel || '',
           template: a.agent || '',
           slotKey: s.key,
@@ -157,12 +178,21 @@ export default function SessionsBody({ active }: { active: boolean }) {
       if (row.kind === 'slot') {
         const ok = await confirm({
           title: t('pages.panelSessions.close_slot_confirm', { title: row.title }),
+          // The consequence rides the body, not the one-line title, so a long
+          // session title can never truncate it away.
+          body: t('pages.panelSessions.close_slot_confirm_body'),
           confirmLabel: t('pages.panelSessions.action_close'),
         })
         if (!ok) return
         // The sidebar's close: the live slot goes away and the transcript
         // stays in history. Never the history delete, which is permanent.
-        await dispatch(deleteSlot(row.slotKey)).unwrap()
+        try {
+          await dispatch(deleteSlot(row.slotKey)).unwrap()
+        } catch {
+          // The thunk rejects with a fixed English placeholder ("save failed"),
+          // so show the catalogued message rather than its text.
+          setFailure(t('pages.panelSessions.close_failed'))
+        }
       } else {
         const ok = await confirm({
           title: t('pages.panelSessions.close_run_confirm'),
@@ -252,9 +282,11 @@ export default function SessionsBody({ active }: { active: boolean }) {
                     {t('pages.panelSessions.action_jump')}
                   </Btn>
                 )}
-                <Btn type="button" danger onClick={() => void close(row)}>
-                  {row.kind === 'slot' ? t('pages.panelSessions.action_close') : t('pages.panelSessions.action_stop_run')}
-                </Btn>
+                {row.stoppable && (
+                  <Btn type="button" danger onClick={() => void close(row)}>
+                    {row.kind === 'slot' ? t('pages.panelSessions.action_close') : t('pages.panelSessions.action_stop_run')}
+                  </Btn>
+                )}
               </div>
             </li>
           ))}

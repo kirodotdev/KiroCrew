@@ -217,6 +217,76 @@ describe('SessionsBody', () => {
     expect(spawnDeleteMock).toHaveBeenCalledWith('r1')
   })
 
+  it('keeps the close consequence out of the one-line title, in the dialog body', async () => {
+    renderBody({
+      slots: [slot({ title: 'Alpha checkout with a long session title' })],
+    })
+    const row = screen.getByText('Alpha checkout with a long session title').closest('li') as HTMLElement
+    fireEvent.click(within(row).getByText('Close'))
+    // The title (the dialog's accessible name) is the question alone; the
+    // consequence is its own body paragraph, which a long title cannot cut.
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Close session “Alpha checkout with a long session title”?',
+    })
+    expect(within(dialog).getByText('Its transcript stays in history.').tagName).toBe('P')
+  })
+
+  it('offers no Stop on finished runs: deleting one would dismiss it for good', () => {
+    renderBody({
+      slots: [slot({})],
+      active: 'chat-a',
+      subs: {
+        r1: { id: 'r1', task: 'Done job', agent: 'sage', status: 'done' },
+        r2: { id: 'r2', task: 'Stopped job', agent: 'sage', status: 'stopped' },
+        r3: { id: 'r3', task: 'Failed job', agent: 'sage', status: 'error' },
+        r4: { id: 'r4', task: 'Queued job', agent: 'sage', status: 'pending' },
+      },
+    })
+    for (const task of ['Done job', 'Stopped job', 'Failed job']) {
+      const row = screen.getByText(task).closest('li') as HTMLElement
+      expect(within(row).queryByText('Stop run')).toBeNull()
+    }
+    const queued = screen.getByText('Queued job').closest('li') as HTMLElement
+    expect(within(queued).getByText('Stop run')).toBeTruthy()
+  })
+
+  it('shows the catalogued message, not the thunk placeholder, when a slot close is refused', async () => {
+    deleteChatSlotMock.mockRejectedValueOnce(new Error('history write refused'))
+    renderBody({
+      slots: [slot({})],
+    })
+    const row = screen.getByText('Alpha').closest('li') as HTMLElement
+    fireEvent.click(within(row).getByText('Close'))
+    await confirmDialog('Close')
+    expect(await screen.findByText("Couldn't close the session.")).toBeTruthy()
+    expect(screen.queryByText('save failed')).toBeNull()
+  })
+
+  it('names the model the session actually runs, not a withheld or auto pin', () => {
+    renderBody({
+      slots: [
+        slot({ key: 'chat-a', title: 'Withheld', model: 'opus-unavailable', model_withheld: true, served_model: 'sonnet' }),
+        slot({ key: 'chat-b', title: 'Auto', model: 'auto', served_model: 'haiku' }),
+        slot({ key: 'chat-c', title: 'Withheld unknown', model: 'opus-unavailable', model_withheld: true }),
+      ],
+    })
+    const withheld = screen.getByText('Withheld').closest('li') as HTMLElement
+    expect(within(withheld).getByText('sonnet')).toBeTruthy()
+    expect(within(withheld).queryByText('opus-unavailable')).toBeNull()
+    const auto = screen.getByText('Auto').closest('li') as HTMLElement
+    expect(within(auto).getByText('haiku')).toBeTruthy()
+    const unknown = screen.getByText('Withheld unknown').closest('li') as HTMLElement
+    expect(within(unknown).queryByText('opus-unavailable')).toBeNull()
+  })
+
+  it('resolves the driver from a Memory V2 member thread key', async () => {
+    renderBody({
+      slots: [slot({ created_by: 'member-nova.memory-member-nova-0123456789abcdef' })],
+    })
+    expect(await screen.findByText('Nova')).toBeTruthy()
+    expect(screen.queryByText(/memory-member-nova/)).toBeNull()
+  })
+
   it('falls back to a message when a refusal carries no text', async () => {
     spawnDeleteMock.mockRejectedValueOnce({ key: 'chat-a', title: 'Probe', code: 'refused' })
     renderBody({

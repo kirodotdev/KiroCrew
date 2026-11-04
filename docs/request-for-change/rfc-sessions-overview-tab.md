@@ -37,12 +37,18 @@ unit of work:
 | Session | live slot title/key; run task (or id) for subagent runs |
 | Drive | owning crew member: `created_by` joined to `member-<slug>` bindings; blank for the operator's own tabs |
 | Status | the fleet command center's `RunNode.state` folded onto three chips: Active (running, idle, or queued), Blocked (needs input), Complete (done or stopped) |
-| Model | live slot `model`/`served_model`; run entry's model where present |
+| Model | the slot's `served_model` (what it actually runs) when known, else its `model` pin unless admission withheld it (`model_withheld`); run entry's model where present |
 | Template | live slot `agent`/`effective_agent`; run `agent` (template/crew name) |
 
 Row actions: jump-to for slots (`/chat?sid=<key>`); slot close through the
-sidebar's `deleteSlot` (live slot goes away, transcript stays in history);
-run stop through `spawnDelete` with its own confirmation. Data comes from the
+sidebar's `deleteSlot` (live slot goes away, transcript stays in history; the
+confirm's title is the question and that consequence is its body line, and a
+refused close shows the catalogued "Couldn't close the session."); run stop
+through `spawnDelete` with its own confirmation, offered only while the run is
+still going (`running`, `waiting`, `needs_input`): on a finished run the same
+`DELETE` is a permanent dismissal, not a stop. A Memory V2 member's
+`created_by` (`member-<slug>.memory-<id>`) resolves to the bare slug before
+the roster lookup. Data comes from the
 redux live-slots mirror and the subagent SSE mirror plus their existing
 REST reads — the same sources the sidebar and the Subagents tab already use,
 so v1 adds no endpoint, no auth surface, and no migration.
