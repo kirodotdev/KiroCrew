@@ -221,6 +221,24 @@ class TestConfigOverlayLoad:
         assert "yolo" not in saved.get("agent", {})
         assert "model" not in saved.get("agent", {})
 
+    def test_save_keeps_a_base_value_the_overlay_also_sets(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base_config = {"timezone": "Asia/Tokyo", "dashboard": {"theme_mode": "light"}}
+        (config_dir / "config.json").write_text(json.dumps(base_config))
+        local_config = {"timezone": "Asia/Tokyo", "dashboard": {"theme_mode": "dark"}}
+        (config_dir / "config.local.json").write_text(json.dumps(local_config))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.dashboard.theme_mode == "dark"
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        # The base file keeps what it stored, equal to the overlay or not.
+        assert saved["timezone"] == "Asia/Tokyo"
+        assert saved["dashboard"]["theme_mode"] == "light"
+
     def test_load_warns_when_config_json_is_non_dict(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
         config_dir.mkdir()
@@ -285,6 +303,20 @@ class TestSubtractOverlay:
         overlay = {"b": 2, "c": 3}
         result = _subtract_overlay(merged, overlay)
         assert result == {"a": 1}
+
+    def test_a_leaf_the_base_stores_keeps_its_stored_value(self) -> None:
+        merged = {"agent": {"yolo": True, "model": "auto"}, "theme": "dark"}
+        overlay = {"agent": {"yolo": True}, "theme": "dark"}
+        base = {"agent": {"yolo": False}, "theme": "dark"}
+        assert _subtract_overlay(merged, overlay, base) == {
+            "agent": {"yolo": False, "model": "auto"},
+            "theme": "dark",
+        }
+
+    def test_a_leaf_the_base_does_not_store_is_still_removed(self) -> None:
+        merged = {"agent": {"yolo": True}, "other": 1}
+        overlay = {"agent": {"yolo": True}}
+        assert _subtract_overlay(merged, overlay, {"other": 1}) == {"other": 1}
 
 
 class TestConfigLocalPath:
@@ -352,6 +384,38 @@ class TestCliConfigSetLocal:
         assert local_file.exists()
         data = json.loads(local_file.read_text(encoding="utf-8"))
         assert data["agent"]["streaming"] is False
+
+    def test_plain_set_keeps_base_values_the_overlay_also_sets(self, tmp_path: Path) -> None:
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"timezone": "Asia/Tokyo", "dashboard": {"auto_open_browser": False}}
+        (config_dir / "config.json").write_text(json.dumps(base))
+        overlay = {"timezone": "Asia/Tokyo", "dashboard": {"auto_open_browser": False}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        args = argparse.Namespace(
+            config_action="set", key="dashboard.theme_mode", value="light", file=None, local=False
+        )
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            _config_cmd(args)
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        assert saved["dashboard"]["theme_mode"] == "light"
+        # Keys the set did not touch stay as stored, even where they equal the overlay.
+        assert saved["timezone"] == "Asia/Tokyo"
+        assert saved["dashboard"]["auto_open_browser"] is False
 
     @pytest.mark.parametrize(
         "key",
@@ -554,7 +618,7 @@ class TestCliConfigSetLocal:
             "memory": {"inject_lessons": False}
         }
 
-    def test_nonlocal_set_subtracts_overlay(self, tmp_path: Path) -> None:
+    def test_nonlocal_set_keeps_a_base_value_equal_to_the_overlay(self, tmp_path: Path) -> None:
         import argparse
 
         from kiro_crew.cli_config import _config_cmd
@@ -589,7 +653,8 @@ class TestCliConfigSetLocal:
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["dangerously_skip_permissions"] is True
-        assert "streaming" not in saved.get("agent", {})
+        # The base file's own streaming value stays, though the overlay sets it too.
+        assert saved["agent"]["streaming"] is True
 
     def test_local_set_handles_corrupt_existing_file(self, tmp_path: Path) -> None:
         import argparse

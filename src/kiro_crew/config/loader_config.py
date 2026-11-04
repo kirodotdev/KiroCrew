@@ -857,7 +857,10 @@ class KiroCrewConfig:
         # A stored edition STT provider this snapshot degraded to ``off`` (it was
         # loaded before the edition registered it) is written back as stored.
         _restore_stored_stt_provider(d)
-        # Strip overlay-owned values so they don't leak into config.json
+        # Strip overlay-owned values so they don't leak into config.json. The
+        # subtraction itself runs under the write lock below, against the base
+        # read there, so a leaf config.json stores keeps its own value.
+        overlay_owned: dict | None = None
         local_path = config_local_path()
         if local_path.is_file():
             try:
@@ -882,11 +885,9 @@ class KiroCrewConfig:
                                 k: canonical[k] for k in rl_overlay if k in canonical
                             },
                         }
-                    d = _subtract_overlay(d, raw_local)
+                    overlay_owned = raw_local
             except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
-        # An equal overlay value must not erase a choice the base file owns.
-        _restore_stored_harness_fields(d)
 
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
@@ -913,8 +914,13 @@ class KiroCrewConfig:
                     f"refusing to save over {p}: this snapshot was loaded while the "
                     "file did not parse, so it holds defaults, not the saved settings"
                 )
-            if p.exists():
-                read_config_for_update(p)
+            stored = read_config_for_update(p) if p.exists() else {}
+            if overlay_owned is not None:
+                # What config.json stores keeps its own value under an
+                # overlay-owned leaf, so dropping the overlay later still finds it.
+                d = _subtract_overlay(d, overlay_owned, stored)
+                # An equal overlay value must not erase a choice the base file owns.
+                _restore_stored_harness_fields(d)
             write_config_atomically(p, stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
