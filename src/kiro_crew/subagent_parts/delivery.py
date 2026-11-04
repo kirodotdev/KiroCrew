@@ -109,21 +109,15 @@ class SpawnApprovalCallback(Protocol):
         pass
 
 
-# ── Delivery routing state: enumerated from the PRODUCING side ────────────────
+# Delivery routing state, enumerated from the producing side.
 #
-# Every ``SubagentInfo`` attribute that the modules owning terminal-outcome routing
-# WRITE -- ``subagent_manager/terminal.py``, ``subagent_manager/waves.py``,
-# ``subagent_manager/cancellation.py`` and the gateway's completion consumer
-# (``slack/gateway_runtime/subagent_wiring.py``, ``subagent_report.py``,
-# ``subagent_injection.py`` and ``runtime_charge.py``) -- classified by what it says
-# about whether the outcome has reached the parent.
+# Every ``SubagentInfo`` attribute that the ``DELIVERY_ROUTING_MODULES`` write,
+# classified by what it says about whether the outcome has reached the parent.
 #
-# The list exists because "has this run's outcome reached its parent" has more than one
-# representation, and reading only the obvious one was wrong four separate times. A
-# parent-end teardown has to suppress the delivery of a run whose parent is gone, so a
-# representation it does not know about is a delivery that lands in a conversation that
-# ended -- and the injector CREATES a session when none is live, so that delivery rebuilds
-# the conversation the teardown just took down.
+# "Has this run's outcome reached its parent" has more than one representation. A
+# parent-end teardown must suppress the delivery of a run whose parent is gone, and the
+# injector CREATES a session when none is live, so a representation the teardown misses
+# rebuilds the conversation it just took down.
 #
 # ``PARKS_WHEN_SET``  -- truthy means the outcome is parked somewhere and has not landed.
 # ``PARKS_WHEN_UNSET`` -- falsy means it has not landed; truthy means it has.
@@ -263,18 +257,12 @@ def _audit_ids(ids: "Iterable[str]", cap: int = 20) -> str:
     return ",".join(listed[:cap]) + f",+{len(listed) - cap}-more"
 
 
-# How long the delivery gate remembers a teardown-cancelled run id when nothing has
-# explicitly discarded it.
+# How long the delivery gate remembers a teardown-cancelled run id nobody discarded.
 #
-# A BACKSTOP, not the primary rule. The primary rule is that the gate keeps an id until
-# that run's delivery has actually been suppressed, which is what ``_report_terminal_impl``
-# discards on -- so the ordinary case never depends on this number. It exists for a marked
-# run that never reaches a terminal at all.
-#
-# A day rather than an hour, because an approval-parked run is deliberately NOT cancelled
-# (the approval is a person's decision to make) and a person can take far longer than an
-# hour to answer. An hour let a later teardown prune the mark while such a run was still
-# waiting, and its completion then injected into whatever the key served by then.
+# A backstop: normally ``_report_terminal_impl`` discards the id once that run's delivery
+# was suppressed. This covers a marked run that never reaches a terminal. A full day,
+# because an approval-parked run is not cancelled and a person may take hours to answer;
+# pruning its mark earlier would let its completion inject into whatever the key serves.
 _TEARDOWN_GATE_TTL_SECS = 86400.0
 
 
