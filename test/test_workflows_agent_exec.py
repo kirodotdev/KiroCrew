@@ -96,10 +96,12 @@ async def test_named_session_is_reused_and_lease_released() -> None:
     fn = build_agent_fn(sessions, run_id="wf_x")
 
     out = await fn("step1", {"session": "chain-A"})
-    assert out == "reply[chain-A]:step1"
-    assert sessions.created[0][0] == "chain-A"
+    key = agent_exec.named_session_key("wf_x", "chain-A")
+    assert key.startswith("wf:wf_x:named:")
+    assert out == f"reply[{key}]:step1"
+    assert sessions.created[0][0] == key
     # Returning the lease does not destroy the named provider or its history.
-    assert sessions.released == ["chain-A"]
+    assert sessions.released == [key]
 
 
 async def test_two_default_calls_get_distinct_sessions() -> None:
@@ -253,7 +255,7 @@ async def test_step_backend_reaches_get_or_create_as_override() -> None:
     res = await runner.run(script, run_id="wf_be", now="2026-11-06T00:00:00Z")
     assert res.ok, res.error
     assert sessions.extra_kwargs == [{"backend_override": "claude"}, {"backend_override": ""}]
-    assert sessions.created[1][0] == "chain@kiro"
+    assert sessions.created[1][0] == agent_exec.named_session_key("wf_be", "chain@kiro")
 
 
 async def test_unknown_backend_fails_the_step_before_allocating() -> None:
@@ -303,7 +305,7 @@ async def test_a_named_session_reused_at_another_effort_gets_that_effort() -> No
     sessions = _LiveSessions()
     fn = build_agent_fn(sessions, run_id="wf_ns")
     await fn("a", {"session": "chain", "effort": "low"})
-    provider = sessions.live["chain"]
+    provider = sessions.live[agent_exec.named_session_key("wf_ns", "chain")]
     assert provider.efforts_pushed == []
     await fn("b", {"session": "chain", "effort": "high"})
     assert provider.efforts_pushed == ["high"]
@@ -314,7 +316,7 @@ async def test_a_named_session_reused_with_no_effort_pushes_nothing() -> None:
     fn = build_agent_fn(sessions, run_id="wf_ns0")
     await fn("a", {"session": "chain", "effort": "low"})
     await fn("b", {"session": "chain"})
-    assert sessions.live["chain"].efforts_pushed == []
+    assert sessions.live[agent_exec.named_session_key("wf_ns0", "chain")].efforts_pushed == []
 
 
 async def test_a_raised_effort_push_on_a_named_session_fails_the_step() -> None:
@@ -324,7 +326,8 @@ async def test_a_raised_effort_push_on_a_named_session_fails_the_step() -> None:
     with pytest.raises(RuntimeError, match="effort push refused"):
         await fn("b", {"session": "chain", "effort": "high"})
     # The failed step still returns its lease.
-    assert sessions.released == ["chain", "chain"]
+    key = agent_exec.named_session_key("wf_nsr", "chain")
+    assert sessions.released == [key, key]
 
 
 async def test_a_named_session_on_a_chosen_backend_takes_a_later_steps_effort() -> None:
@@ -334,12 +337,13 @@ async def test_a_named_session_on_a_chosen_backend_takes_a_later_steps_effort() 
     fn = build_agent_fn(sessions, run_id="wf_nsb")
     await fn("a", {"session": "chain", "backend": "claude", "effort": "low"})
     await fn("b", {"session": "chain", "backend": "claude", "effort": "high"})
-    assert [key for key, _ in sessions.created] == ["chain@claude", "chain@claude"]
+    key = agent_exec.named_session_key("wf_nsb", "chain@claude")
+    assert [created for created, _ in sessions.created] == [key, key]
     assert sessions.extra_kwargs == [
         {"reasoning_effort_override": "low", "backend_override": "claude"},
         {"reasoning_effort_override": "high", "backend_override": "claude"},
     ]
-    assert sessions.live["chain@claude"].efforts_pushed == ["high"]
+    assert sessions.live[key].efforts_pushed == ["high"]
 
 
 def _no_audit(*_a, **_k) -> None:
