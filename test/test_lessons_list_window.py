@@ -1,15 +1,10 @@
 """``GET /api/lessons`` says how big the population is and pages through it.
 
-The route returns one bounded window (``LESSON_LIST_LIMIT`` rows by default),
-and it was the only lesson surface that omitted rows without saying so: the
-body was ``{"lessons": [...]}`` and nothing else, ``learn_list`` rendered it
-verbatim under a description promising "all", and ``learn_add``'s ``deduped``
-outcome sent the model to that list to find a stored lesson that -- being an
-older dedup winner whose ``updated_at`` the dedup never bumps -- sat exactly
-outside the newest window. The body now carries ``total``, ``truncated`` and
-the effective ``limit`` / ``offset``, both tiers honour the window the same
-way (``offset`` counts back from the newest row), and ``learn_list`` reports
-"showing N of M" with the offset that reaches the next page.
+The route returns one bounded window (``LESSON_LIST_LIMIT`` rows by default) with
+``total``, ``truncated`` and the effective ``limit`` / ``offset``. Both tiers count
+``offset`` back from the newest row, and ``learn_list`` reports "showing N of M" with
+the next offset. An older dedup winner (the dedup never bumps ``updated_at``) can sit
+outside the newest window, which is why ``deduped`` must point at the paging.
 """
 
 from __future__ import annotations
@@ -185,8 +180,7 @@ async def test_vector_tier_pages_back_from_the_newest_row(tmp_path) -> None:
     store = _store(tmp_path)
     try:
         rules = _seed_vector(store, 5)
-        # First page: the two NEWEST, oldest-first within the page. The old
-        # ``[-50:]`` idiom selected the oldest rows here; the window must not.
+        # First page: the two NEWEST, oldest-first within the page.
         status, body = await _call(store, MagicMock(), {"limit": "2"})
         assert status == 200
         assert _rules(body) == rules[3:5]
@@ -246,11 +240,9 @@ async def test_a_page_past_the_end_keeps_the_vector_total_and_never_reads_jsonl(
 async def test_a_vector_store_of_only_undecodable_rows_does_not_silence_jsonl(tmp_path) -> None:
     """Tier authority is whether any vector row DECODES, not the raw row count.
 
-    An import or legacy migration can leave ``lesson.*`` rows whose stored JSON
-    does not decode. This list drops exactly those rows (and keeps every row
-    that decodes, legacy shapes included), so a store holding only such rows
-    has answered nothing; keying the fallback on ``count_lessons()`` would
-    still pick the vector tier and hide the valid corrections in the JSONL file.
+    The list drops undecodable ``lesson.*`` rows, so keying the fallback on
+    ``count_lessons()`` would pick a vector tier that answers nothing and hide the
+    JSONL corrections.
     """
     store = _store(tmp_path)
     try:
@@ -429,11 +421,8 @@ def test_learn_list_reports_showing_n_of_m_with_the_next_offset() -> None:
 
 
 def test_learn_list_advances_a_short_page_by_the_window_the_store_consumed() -> None:
-    # The route drops a row whose stored JSON does not decode, so the store
-    # skipped 3 rows for this page while only 2 came back. Both the older count
-    # and the next offset advance by limit, not by shown: 9 - 3 - 3 = 3 older,
-    # next offset 6. Counting by 2 would claim 4 older and re-read this page's
-    # tail instead of reaching them.
+    # The route drops undecodable rows, so the store skipped 3 rows while 2 came
+    # back. Counts advance by limit, not by shown: 9 - 3 - 3 = 3 older, next offset 6.
     body = {"lessons": _rows(2), "total": 9, "truncated": True, "limit": 3, "offset": 3}
     with patch.object(learn.mcp_core, "_get", return_value=body):
         text = learn.learn_list("learn_list", {"limit": 3, "offset": 3})
@@ -466,10 +455,8 @@ def test_learn_list_past_the_end_does_not_claim_the_store_is_empty() -> None:
 
 
 def test_learn_list_refuses_a_page_the_response_cap_would_cut() -> None:
-    # sanitize_response drops the TAIL past MAX_RESPONSE_LEN and the header is
-    # the head, so a page that renders past the cap would claim "Showing N"
-    # and then lose rows the model never sees. The page is refused whole and
-    # a limit that fits is named; the reply itself stays under the cap.
+    # sanitize_response drops the TAIL past MAX_RESPONSE_LEN, so an over-cap page
+    # would claim "Showing N" and lose rows. It is refused whole with a limit that fits.
     rows = [{"rule": "x" * 500, "category": "tool", "repo_scope": ""} for _ in range(300)]
     body = {"lessons": rows, "total": 300, "truncated": False, "limit": 300, "offset": 0}
     with patch.object(learn.mcp_core, "_get", return_value=body):
