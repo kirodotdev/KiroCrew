@@ -758,7 +758,9 @@ describe('AppsPage — Library enable and update', () => {
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
-    expect(await screen.findByText(/Synced Orchestrator Switch from its source directory/)).toBeInTheDocument()
+    // The message is read from the always-mounted live region (the visible
+    // card carries the same text, hidden from assistive tech).
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Synced Orchestrator Switch from its source directory/))
   })
 
   it('surfaces a failed in-place sync instead of leaving the card silent', async () => {

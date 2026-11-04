@@ -82,9 +82,17 @@ export default function LibraryPage() {
   // Transient success surface for the shared update hook: the hook reports
   // outcomes, this page owns display + auto-dismiss (same 4s the other
   // toasts here use).
+  // One timer at a time: a newer success restarts the 4s, so the timer an
+  // earlier success armed cannot wipe it early. Cleared on unmount too.
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (successTimerRef.current) clearTimeout(successTimerRef.current) }, [])
   const showSuccess = (msg: string) => {
     setSuccessMsg(msg)
-    setTimeout(() => setSuccessMsg(''), 4000)
+    if (successTimerRef.current) clearTimeout(successTimerRef.current)
+    successTimerRef.current = setTimeout(() => {
+      successTimerRef.current = null
+      setSuccessMsg('')
+    }, 4000)
   }
 
   // Per-row update comes from the shared useAppUpdates hook (PR2), so this
@@ -347,9 +355,14 @@ export default function LibraryPage() {
             askAgent
           />
         )}
+        {/* Always mounted, so a screen reader hears the message when it lands:
+            a live region inserted already holding its text is not announced
+            by every reader. The visible card's copy is hidden from AT so the
+            message is read once. */}
+        <span role="status" className="sr-only">{successMsg}</span>
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
-            <span className="text-text text-sm flex-1">{successMsg}</span>
+            <span aria-hidden="true" className="text-text text-sm flex-1">{successMsg}</span>
             <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
