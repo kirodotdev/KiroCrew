@@ -463,8 +463,8 @@ def test_cancelled_persistent_selection_withdraws_the_vouched_identity(members):
     #
     # `restore_agent_selection` routes every rollback through this one seam before
     # it touches the record, so the seam is where the withdrawal belongs. The cost
-    # is that own-store dispatch waits for the owner to re-select the agent, which
-    # binds afresh through the durable path -- the recovery the spec documents.
+    # is that own-store dispatch waits for a gate-verified admission to re-vouch the
+    # session -- the recovery the spec documents.
     admitted = execution.resolve_member_execution(members, "alice")
     published = execution.resolve_member_execution(members, "bob")
     key = "dashboard:cancelled-persistent"

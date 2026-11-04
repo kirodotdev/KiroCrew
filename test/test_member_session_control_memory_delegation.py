@@ -476,7 +476,7 @@ class TestPrivateStoreCallerIsolation:
     ):
         # A restart empties the vouched map in process memory while the durable
         # record survives, so a rehydrated member session's own-store dispatch
-        # would otherwise stay refused until its OWNER re-selected the agent. The
+        # would otherwise stay refused for the life of the chat. The
         # trust source that closes that gap: a vouch registered at the session's
         # next GATE-VERIFIED admission, keyed on the verified session key, not on
         # anything the record asserts. The member DM caller's key IS
@@ -593,11 +593,10 @@ class TestPrivateStoreCallerIsolation:
     def test_a_fresh_bind_restores_the_own_store_admission_after_a_restart(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # A member re-selecting the agent binds through the durable path, which
-        # vouches again, and the same dispatch is admitted. Kept alongside the
-        # gate-verified self-heal above: both restore the capability after a
-        # restart, one automatically at the next admission and one on an explicit
-        # owner re-select, and neither removes it outright.
+        # A vouching bind, the one a new member chat gets when it is created,
+        # restores the same dispatch. Kept alongside the gate-verified self-heal
+        # above: both restore the capability after a restart, and neither removes
+        # it outright.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import bind_session_execution
 
