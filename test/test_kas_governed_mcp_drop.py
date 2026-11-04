@@ -260,3 +260,105 @@ class TestDeclaredGoverned:
     def test_a_readable_declaration_is_passed_through(self, monkeypatch, mode):
         self._load(monkeypatch, mode=mode)
         assert _declared_governed() is mode
+
+
+def _filtered(*names: str, servers: tuple[dict, ...] = (), key="accessModeFilteredServers"):
+    """The captured governed snapshot: ``servers`` empty, the drop listed by name."""
+    params = {
+        "sessionId": _SID,
+        "servers": list(servers),
+        "accessMode": "registry",
+        "accessModeFilteredServers": [],
+        "unresolvedRegistryServers": [],
+    }
+    params[key] = list(names)
+    return JsonRpcMessage(method=METHOD_KAS_MCP_STATUS, params=params)
+
+
+class TestRegistryFilteredSnapshot:
+    """The host names the servers its registry dropped: decide at once, never wait.
+
+    Each test gives a 30s budget that the suite's own --timeout would kill, so
+    only the snapshot can end the wait.
+    """
+
+    def test_a_listed_server_is_registry_filtered(self):
+        ready = KasMcpReadiness(_SID, _REQUIRED)
+        ready.record(_filtered("kirocrew-core"))
+        assert ready.registry_filtered == ("kirocrew-core",)
+        assert not ready.all_pending_filtered
+        assert "kirocrew-core: filtered by the MCP registry" in ready.pending
+
+    def test_an_unresolved_registry_server_is_not_decided(self):
+        # Not captured as final: it may still be resolving, so silence rules apply.
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_filtered("kirocrew-core", key="unresolvedRegistryServers"))
+        assert ready.filtered == {}
+
+    def test_the_sessions_own_entry_wins_over_the_list(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_filtered("kirocrew-core", servers=(_entry("kirocrew-core", "connecting"),)))
+        assert ready.registry_filtered == ()
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_same_named_entry_keeps_the_timeout_when_governed(self):
+        # A global server under Crew's name must never let the start through.
+        handle = _handle(
+            _filtered("kirocrew-core", servers=(_entry("kirocrew-core", "connected", _GLOBAL),))
+        )
+        with pytest.raises(AcpRequestTimeout, match="kirocrew-core: unreported"):
+            await handle.wait_mcp_ready(("kirocrew-core",), 0.2, governed=True)
+        assert handle._mcp_report._failed == []
+
+    def test_another_sessions_list_does_not_count(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        msg = _filtered("kirocrew-core")
+        msg.params["sessionId"] = "other"
+        ready.record(msg)
+        assert ready.registry_filtered == ()
+
+    def test_an_unrequired_name_is_ignored(self):
+        ready = KasMcpReadiness(_SID, ("kirocrew-core",))
+        ready.record(_filtered("admin-server"))
+        assert ready.filtered == {}
+
+    @pytest.mark.asyncio
+    async def test_undeclared_fails_at_once_naming_the_drop(self):
+        handle = _handle(_filtered(*_REQUIRED))
+        with pytest.raises(AcpRuntimeError) as raised:
+            await handle.wait_mcp_ready(_REQUIRED, 30.0)
+        text = str(raised.value)
+        assert "kirocrew-core (accessModeFilteredServers)" in text
+        assert "filtered by this account's MCP registry" in text
+        assert "agent.mcp_registry_mode true" in text
+        assert "never reported" not in text
+        # Not a start without the servers: nothing is recorded dropped.
+        assert handle._mcp_report._failed == []
+
+    @pytest.mark.asyncio
+    async def test_undeclared_fails_at_once_when_only_one_is_filtered(self):
+        handle = _handle(
+            _filtered("kirocrew-core", servers=(_entry("kirocrew-cron", "connecting"),))
+        )
+        with pytest.raises(AcpRuntimeError, match="kirocrew-core"):
+            await handle.wait_mcp_ready(_REQUIRED, 30.0)
+
+    @pytest.mark.asyncio
+    async def test_governed_starts_at_once_without_the_settle(self, monkeypatch):
+        monkeypatch.setattr(session_handle_mcp, "GOVERNED_SETTLE_SECS", 25.0)
+        handle = _handle(
+            _filtered("kirocrew-core", servers=(_entry("kirocrew-cron", "connected"),))
+        )
+        await handle.wait_mcp_ready(_REQUIRED, 30.0, governed=True)
+        report = handle._mcp_report
+        assert report._failed == ["kirocrew-core"]
+        assert report._failures["kirocrew-core"] == GOVERNED_DROP_REASON
+        assert "kirocrew-cron" in report._ready
+
+    @pytest.mark.asyncio
+    async def test_governed_keeps_waiting_for_a_server_still_connecting(self):
+        handle = _handle(
+            _filtered("kirocrew-core", servers=(_entry("kirocrew-cron", "connecting"),))
+        )
+        with pytest.raises(AcpRequestTimeout, match="kirocrew-cron: connecting"):
+            await handle.wait_mcp_ready(_REQUIRED, 0.2, governed=True)

@@ -205,6 +205,19 @@ port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
 
+An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
+(`auth/service._canonical_start_url`, through the cloud login target's
+`normalize_start_url`, so the vault and a cloud target record the same string): a
+missing `https://` and a missing `/start` are added and a `#/...` fragment is dropped,
+because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/start`
+and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
+a port, shell characters) is refused with `invalid_start_url` before AWS is called.
+A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
+`StartUrlRejectedError`, also `invalid_start_url` (HTTP 400, not the 502 of an
+auth-service failure): its message says to use the access portal URL when AWS names
+the start URL, and to check the Region field otherwise, since a portal looked up in
+the wrong region answers a bare `Invalid request`.
+
 ### External IdP (enterprise SSO) — independent
 
 Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,

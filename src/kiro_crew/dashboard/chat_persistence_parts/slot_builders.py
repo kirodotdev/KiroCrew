@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_persistence import (
+        _DEFER_MEMBER_RESTORE,
         _SKIP_MEMBER_RESTORE,
         ConversationLog,
         DashboardState,
@@ -238,6 +239,16 @@ def _apply_restored_open_slot(
         _lazy_tail=tail if messages is None else None,
         pending_backfills=pending_backfills,
     )
+    if slot is None and member_identity is _DEFER_MEMBER_RESTORE:
+        # A crewmate thread whose binding waits on the Crew config: kept in the
+        # reopen seed and named as deferred, which is the set the later pass
+        # (dashboard.member_slot_retry) retries.
+        unrestored.add(key)
+        deferred = getattr(state, "deferred_member_slot_keys", None)
+        if isinstance(deferred, set):
+            deferred.add(key)
+        else:
+            state.deferred_member_slot_keys = {key}
     return 1 if slot is not None else 0
 
 
@@ -492,7 +503,7 @@ def _rehydrate_slot_from_history(
         if _prefetched_member_identity is _IDENTITY_UNRESOLVED
         else _prefetched_member_identity
     )
-    if _member_identity is _SKIP_MEMBER_RESTORE:
+    if _member_identity is _SKIP_MEMBER_RESTORE or _member_identity is _DEFER_MEMBER_RESTORE:
         return None
     purpose = _metadata_codec.Restore(
         name=slot_name,
@@ -856,7 +867,7 @@ def _apply_recent_session(
         if member_identity is _IDENTITY_UNRESOLVED
         else member_identity
     )
-    if _member_identity is _SKIP_MEMBER_RESTORE:
+    if _member_identity is _SKIP_MEMBER_RESTORE or _member_identity is _DEFER_MEMBER_RESTORE:
         return
     if _is_app_owned_channel_row(meta, key):
         return

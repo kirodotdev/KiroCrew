@@ -223,6 +223,33 @@ function createPortHolders({
     });
   }
 
+  // macOS only: the pids launchd runs as jobs in this user's gui and user
+  // domains and in the system domain. PPID 1 alone cannot tell a LaunchAgent
+  // gateway from an orphan the previous app left behind (both are children of
+  // launchd), but only the agent is a job. Resolves null when any domain cannot
+  // be read or lists no services, so the caller keeps its fail-closed verdict.
+  function launchdJobPids() {
+    let uid;
+    try {
+      uid = typeof processObj.getuid === "function" ? processObj.getuid() : os.userInfo().uid;
+    } catch {
+      return Promise.resolve(null);
+    }
+    if (!Number.isInteger(uid)) return Promise.resolve(null);
+    const readDomain = (domain) => new Promise((resolve) => {
+      execFile(
+        "/bin/launchctl",
+        ["print", domain],
+        { timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
+        (error, stdout) => resolve(error ? null : launchdServicePids(stdout)),
+      );
+    });
+    return Promise.all([`gui/${uid}`, `user/${uid}`, "system"].map(readDomain)).then((sets) => {
+      if (sets.some((set) => set === null)) return null;
+      return new Set(sets.flatMap((set) => [...set]));
+    });
+  }
+
   // Every live descendant of `pid`, deepest first. Empty when ps cannot run
   // or hangs: the caller still signals `pid` itself, exactly as before. The
   // execFile timeout only signals ps; a ps stuck in an uninterruptible read
@@ -279,6 +306,7 @@ function createPortHolders({
     lsofHoldsFile,
     psCommand,
     psPpid,
+    launchdJobPids,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
@@ -286,4 +314,31 @@ function createPortHolders({
   };
 }
 
-module.exports = { createPortHolders, descendantPids };
+/**
+ * The running job pids in one `launchctl print <domain>` listing: the rows of
+ * its `services = { ... }` block, each `<pid> <status> <label>`, where a job
+ * that is not running shows pid 0. Returns null when the block is missing or
+ * has no rows, because a listing with no services is not one this parser
+ * understands, and the caller must then fail closed.
+ *
+ * @param {string} stdout
+ * @returns {Set<number>|null}
+ */
+function launchdServicePids(stdout) {
+  const lines = String(stdout || "").split("\n");
+  const start = lines.findIndex((line) => /^\s*services = \{\s*$/.test(line));
+  if (start < 0) return null;
+  const pids = new Set();
+  let rows = 0;
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\}\s*$/.test(line)) break;
+    const match = /^\s*(-?\d+)\s+\S+\s+\S/.exec(line);
+    if (!match) continue;
+    rows += 1;
+    const pid = parseInt(match[1], 10);
+    if (pid > 0) pids.add(pid);
+  }
+  return rows ? pids : null;
+}
+
+module.exports = { createPortHolders, descendantPids, launchdServicePids };

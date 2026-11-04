@@ -221,6 +221,13 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
 
+    # The crewmate thread keys among ``unrestored_slot_keys`` that the open-tab
+    # restore deferred because their binding waited on the Crew config
+    # (``chat_persistence._DEFER_MEMBER_RESTORE``). Only these are the later pass's
+    # (``dashboard.member_slot_retry``) to retry and to take out of the seed; an
+    # unreadable or remote-only seed is not. Same frozenset baseline as above.
+    deferred_member_slot_keys: "frozenset[str] | set[str]" = frozenset()
+
     # Whether the last open-tab restore could READ the registry at all. False means
     # every generation that might hold the set was refused by the OS, so this process
     # has no basis for treating ``_slots`` as the authoritative open-tab set and
@@ -486,6 +493,7 @@ class DashboardState:
         self.open_slots_restored = False
         # Per-instance (see the class-level frozenset baseline for why).
         self.unrestored_slot_keys: set[str] = set()
+        self.deferred_member_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
         self._notification_coordinator = _new_notification_coordinator(

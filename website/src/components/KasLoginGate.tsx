@@ -334,9 +334,16 @@ function Chooser({
               htmlFor="kas-sso-start-url"
             >
               {i18nT('components.kasLogin.sso_start_url_label')}
+              {/* type="text", not "url": the browser's URL check refuses a paste
+                  without "https://" before the gateway can add it. inputMode
+                  keeps the URL keyboard on touch devices. */}
               <input
                 id="kas-sso-start-url"
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
                 autoFocus
                 value={startUrl}
