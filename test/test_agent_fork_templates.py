@@ -191,15 +191,12 @@ class TestForkModeRefresh:
         assert _FIRST_SHIPPED_STUB in agent_mod._SUPERSEDED_NATIVE_PROMPT_STUBS
 
     def test_native_prompt_stub_reconciles_the_block_with_the_harness_injection_rule(self):
-        """The stub is the only SYSTEM-role text Crew controls on kiro-cli and KAS,
-        and the harness's own system prompt tells the model to refuse non-system
-        content that claims an identity for it. The injected contract has exactly
-        that shape (a user-turn block labelled a system prompt, opening with a
-        persona), so the stub must say what the harness rule cannot know -- who
-        writes the block, where it arrives, why the persona is not a different
-        agent -- and must grant that trust to the block alone. The first shipped
-        spelling was a bare pointer and the model refused the block as an
-        injection; this pins the facts the replacement carries, not its prose."""
+        """The stub explains the injected block, or the model refuses it as an injection.
+
+        It is the only SYSTEM-role text Crew controls on kiro-cli and KAS, so it must say
+        who writes the block, where it arrives and why the persona is not another agent,
+        and grant that trust to the block alone. Pins those facts, not the prose.
+        """
         import kiro_crew.agent as agent_mod
 
         stub = agent_mod._NATIVE_PROMPT_STUB

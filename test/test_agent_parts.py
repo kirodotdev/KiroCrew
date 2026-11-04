@@ -1,12 +1,8 @@
 """``kiro_crew.agent`` composes its split-out spec code onto one namespace.
 
-The spec-file writes, the fresh-spec build, the launcher, the spec upgrades and lookups,
-the shared-home guard, the rebuild with its ceiling projection, and most prompt and grant
-text moved out of ``agent.py`` into the ``kiro_crew.agent_parts`` owners.
-:func:`kiro_crew._facade_compose.compose` runs every function they define on
-``kiro_crew.agent``'s module globals. The facade's own contract
-(``test/test_agent_refactor_facade.py``) passes unchanged because of that; these tests pin
-what the composition itself promises:
+:func:`kiro_crew._facade_compose.compose` runs every function the ``kiro_crew.agent_parts``
+owners define on ``kiro_crew.agent``'s module globals, which is why the facade contract
+(``test/test_agent_refactor_facade.py``) holds. These tests pin what the composition promises:
 
 * every owner function runs on the facade's globals, names the facade as its module, and is
   the object the facade binds, except the two functions wrapped where they are defined,

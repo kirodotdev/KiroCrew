@@ -417,12 +417,9 @@ class TestKiroHooksFiltering:
     def test_bundled_defaults_hook_keys_are_classified(self):
         """Pins the exact set of hook keys in bundled defaults.json.
 
-        _VALID_HOOK_EVENTS derives from bundled keys minus _INTERNAL_HOOK_KEYS, so
-        a new key is auto-accepted as an event by construction -- silent if it was
-        actually meant to be internal (kiro-cli would then reject the whole spec at
-        runtime). This ratchet forces an explicit choice: adding a bundled hook key
-        means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
-        (Kiro-Crew-internal), never neither (a fail-loud guard)."""
+        _VALID_HOOK_EVENTS accepts any new bundled key not in _INTERNAL_HOOK_KEYS, and
+        kiro-cli rejects the whole spec for an internal one, so each new key must be
+        added here (an event) or to _INTERNAL_HOOK_KEYS."""
         from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
 
         bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")

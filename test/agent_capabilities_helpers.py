@@ -27,11 +27,9 @@ _REFUSES = (SPEC_PERMISSIONS_MIN_VERSION[0], SPEC_PERMISSIONS_MIN_VERSION[1] - 1
 def _pin_spec_permissions_cli(monkeypatch, which):
     """Pin what the shared writer gate believes the installed kiro-cli is.
 
-    Same helper the five generated writers' suites use: the gate reads
-    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``,
-    so the patch lands there. ``which`` is ``"accepts"``, ``"refuses"`` or
-    ``"unknown"``. A developer box below the floor -- or with no resolvable
-    binary at all -- would otherwise decide these assertions.
+    The gate reads ``installed_kiro_cli_version`` function-locally from
+    ``kiro_crew.kiro_cli``, so the patch lands there; otherwise the developer's own
+    kiro-cli decides. ``which`` is ``"accepts"``, ``"refuses"`` or ``"unknown"``.
     """
     version = {"accepts": _ACCEPTS, "refuses": _REFUSES, "unknown": None}[which]
     monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
