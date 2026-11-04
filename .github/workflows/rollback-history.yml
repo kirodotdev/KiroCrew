@@ -1,0 +1,43 @@
+# Labels a PR `recently-reverted` when it touches a file that a revert on the
+# base branch touched in the last 60 days. The merge policy sends labelled PRs
+# to a person. Fork PRs use read-only tokens and cannot receive this label.
+name: rollback-history
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  label:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare changed files with recent reverts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE"
+          reverted=$(git log -i -E "origin/$BASE" --since=60.days --grep='^revert(:| |\()' --grep='^This reverts commit' --name-only --format= | sort -u)
+          changed=$(git diff --name-only "origin/$BASE"...HEAD | sort -u)
+          overlap=$(comm -12 <(printf '%s\n' "$reverted") <(printf '%s\n' "$changed") | sed '/^$/d')
+          gh label create recently-reverted --color B60205 \
+            --description "Touches a file reverted on the base branch in the last 60 days" 2>/dev/null || true
+          if [ -n "$overlap" ]; then
+            gh pr edit "$PR" --add-label recently-reverted
+            { echo "Files reverted in the last 60 days that this PR touches:"; echo "$overlap"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr edit "$PR" --remove-label recently-reverted 2>/dev/null || true
+            echo "No overlap with recent reverts." >> "$GITHUB_STEP_SUMMARY"
+          fi

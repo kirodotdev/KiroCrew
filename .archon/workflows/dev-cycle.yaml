@@ -1,0 +1,229 @@
+# Copy to <repo>/.archon/workflows/dev-cycle.yaml
+# For hand-driven changes. The factory itself runs Archon's SDLC pack (see ../../SOFTWARE-FACTORY.md).
+#
+# Graph: research -> plan -> implement (loop) -> guard -> two review lenses (parallel)
+#        -> [rework once if a lens says changes] -> brief -> human approves the merge -> PR -> CI
+# The only human step is approving the PR. Ticket approval happens upstream, before this run.
+# Run:  archon workflow run dev-cycle --cwd <repo> --branch <branch> "<task>" --detach --json
+# Why each step exists: ../../BEST-PRACTICES.md and ../../LOOPS-AND-GRAPHS.md
+name: dev-cycle
+description: Research and plan a change in vertical slices, implement it until program-checkable conditions pass, review it with two independent lenses, rework only the named findings, then open a PR after a person approves it.
+provider: pi
+model: large
+
+nodes:
+  # Research documents what exists. It does not propose changes.
+  - id: research
+    model: large
+    prompt: |
+      Research the codebase for this task. Do not edit source files.
+      Task: $USER_MESSAGE
+
+      Write $ARTIFACTS_DIR/research.md: the files and functions involved, how data
+      flows through them, existing patterns and utilities to reuse, and the tests
+      that cover this area. Describe what exists, not what should change.
+      Read AGENTS.md and .archon/sdlc/policy/rulings.md (if present) first.
+
+  - id: plan
+    depends_on: [research]
+    model: large
+    effort: high
+    prompt: |
+      Plan this change from $ARTIFACTS_DIR/research.md. Do not edit source files.
+      Task: $USER_MESSAGE
+
+      Write $ARTIFACTS_DIR/plan.md as a checklist of vertical slices (tracer bullets).
+      Each slice works end to end through every layer it needs and can be checked on
+      its own. Do not plan layer by layer. For each slice, name the files it touches
+      and the test that proves it. Reuse the patterns research found. Follow every
+      ruling in .archon/sdlc/policy/rulings.md.
+
+      Also write $ARTIFACTS_DIR/plan-files.txt: every repository path any slice may
+      create or change, one per line, tests included. The run fails if the change
+      touches a file not on this list, so be complete.
+
+  # The loop lives inside this node: produce, check, correct, repeat until green.
+  - id: implement
+    depends_on: [plan]
+    model: medium
+    loop:
+      prompt: |
+        Work from $ARTIFACTS_DIR/plan.md and $ARTIFACTS_DIR/progress.md (if present).
+        Take the next unchecked slice only. Change only files in
+        $ARTIFACTS_DIR/plan-files.txt (and AGENTS.md for one reusable build or test fact).
+        Then run `bash .archon/check.sh`.
+
+        If it fails, write the return record to progress.md before fixing:
+          UNIT     <slice>
+          REASON   <the failing check>
+          EVIDENCE <expected vs got, file:line>
+          SCOPE    <the files you will touch; nothing in other slices>
+        Fix only that. Never delete or weaken a test, and never edit .archon/.
+
+        When the slice passes: tick it in the plan, append one line to progress.md,
+        and commit.
+        If the same slice has failed three times, stop: the plan is wrong, and the
+        loop cannot see the plan. Write the slice and its three reasons to
+        $ARTIFACTS_DIR/stuck.md and output <promise>STUCK</promise>.
+      until_bash: 'test -f "$ARTIFACTS_DIR/stuck.md" || bash .archon/check.sh'
+      max_iterations: 8
+      fresh_context: true
+
+  # Code node: every condition here is program-checkable. No model involved.
+  - id: guard
+    depends_on: [implement]
+    bash: |
+      set -euo pipefail
+      if [ -f "$ARTIFACTS_DIR/stuck.md" ]; then
+        echo "FAIL: a slice failed three corrections; the plan needs redoing:"; cat "$ARTIFACTS_DIR/stuck.md"; exit 1
+      fi
+      branch=$(git rev-parse --abbrev-ref HEAD)
+      case "$branch" in
+        meta/*) : ;;
+        *)
+          if ! git diff --quiet "$BASE_BRANCH"...HEAD -- .archon/; then
+            echo "FAIL: the change edits .archon/ (checks or workflows) on a non-meta branch"; exit 1
+          fi ;;
+      esac
+      deleted=$(git diff --name-only --diff-filter=D "$BASE_BRANCH"...HEAD | grep -E '(^|/)(tests?|__tests__|spec)/|[._-](test|spec)\.' || true)
+      if [ -n "$deleted" ]; then
+        echo "FAIL: the change deletes test files:"; echo "$deleted"; exit 1
+      fi
+      if [ ! -s "$ARTIFACTS_DIR/plan-files.txt" ]; then
+        echo "FAIL: plan-files.txt is missing or empty"; exit 1
+      fi
+      outside=$(git diff --name-only "$BASE_BRANCH"...HEAD | grep -vxF -f "$ARTIFACTS_DIR/plan-files.txt" | grep -vx 'AGENTS.md' || true)
+      if [ -n "$outside" ]; then
+        echo "FAIL: the change touches files not in the plan:"; echo "$outside"; exit 1
+      fi
+      echo ok
+
+  # Two workers, one lens each, each in its own context so they don't converge.
+  - id: review_spec
+    depends_on: [guard]
+    model: large
+    effort: high
+    prompt: |
+      You did not write this code. Review `git diff $BASE_BRANCH...HEAD` against the
+      task and $ARTIFACTS_DIR/plan.md only. Task: $USER_MESSAGE
+      Find: requirements missing or partial, behaviour nobody asked for, and
+      requirements that look done but are wrong. Ignore style.
+      Verdict "changes" only for a concrete finding. Each finding names the unit
+      (slice), the reason, the evidence (file:line, expected vs got) and the scope
+      (files to touch). The summary is for a busy human.
+    output_format:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, changes] }
+        summary: { type: string }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              unit: { type: string }
+              reason: { type: string }
+              evidence: { type: string }
+              scope: { type: string }
+            required: [unit, reason, evidence, scope]
+      required: [verdict, summary, findings]
+
+  - id: review_standards
+    depends_on: [guard]
+    model: large
+    prompt: |
+      You did not write this code. Review `git diff $BASE_BRANCH...HEAD` against
+      engineering.md, architecture.md and $ARTIFACTS_DIR/research.md only. Ignore
+      whether it meets the task; another reviewer checks that.
+      Find: broken conventions, duplicated logic or a new pattern where research
+      names an existing one, and changes that would force edits in many places
+      next time. Skip anything lint or types already enforce.
+      Same output rules: each finding has unit, reason, evidence and scope.
+    output_format:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, changes] }
+        summary: { type: string }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              unit: { type: string }
+              reason: { type: string }
+              evidence: { type: string }
+              scope: { type: string }
+            required: [unit, reason, evidence, scope]
+      required: [verdict, summary, findings]
+
+  # Correction edge: the verdict changes what runs next. Return only the named units.
+  - id: rework
+    depends_on: [review_spec, review_standards]
+    when: "$review_spec.output.verdict == 'changes' || $review_standards.output.verdict == 'changes'"
+    model: medium
+    prompt: |
+      Fix only these findings, each within its scope. Do not touch other slices or
+      files, and do not fix anything else you notice: note it in
+      $ARTIFACTS_DIR/progress.md instead.
+      Spec findings: $review_spec.output.findings
+      Standards findings: $review_standards.output.findings
+      Run `bash .archon/check.sh` and commit when it passes.
+
+  - id: recheck
+    depends_on: [rework]
+    bash: |
+      set -euo pipefail
+      bash .archon/check.sh
+      outside=$(git diff --name-only "$BASE_BRANCH"...HEAD | grep -vxF -f "$ARTIFACTS_DIR/plan-files.txt" | grep -vx 'AGENTS.md' || true)
+      if [ -n "$outside" ]; then
+        echo "FAIL: rework touched files not in the plan:"; echo "$outside"; exit 1
+      fi
+      echo ok
+
+  # Code node: concatenating two summaries is not a judgement.
+  - id: brief
+    depends_on: [review_spec, review_standards, rework, recheck]
+    trigger_rule: none_failed_min_one_success
+    bash: |
+      spec=$review_spec.output.summary
+      std=$review_standards.output.summary
+      printf 'Spec review: %s\n\nStandards review: %s\n' "$spec" "$std"
+
+  # The one human step: approve the merge.
+  - id: gate
+    depends_on: [brief]
+    wait:
+      attention: "$brief.output"
+      form: approval
+      labels:
+        stage: pr
+        spec: "$review_spec.output.verdict"
+        standards: "$review_standards.output.verdict"
+
+  - id: stop
+    depends_on: [gate]
+    when: "$gate.output.decision == 'reject'"
+    cancel: "PR not approved at the review gate"
+
+  - id: pr
+    depends_on: [gate]
+    when: "$gate.output.decision == 'approve'"
+    bash: |
+      set -euo pipefail
+      git push -u origin HEAD
+      if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
+        body_file=$(mktemp)
+        sed 's/<!--.*-->//g' .github/PULL_REQUEST_TEMPLATE.md > "$body_file"
+        gh pr create --base "$BASE_BRANCH" --title "feat: $USER_MESSAGE" --body-file "$body_file"
+        rm -f "$body_file"
+      else
+        gh pr create --base "$BASE_BRANCH" --fill
+      fi
+
+  # CI is the full validation. check.sh only covers fast checks on what changed.
+  # Delete this node if the repository has no CI.
+  - id: ci
+    depends_on: [pr]
+    bash: |
+      set -euo pipefail
+      gh pr checks --watch --fail-fast
