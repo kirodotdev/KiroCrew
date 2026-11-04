@@ -27,28 +27,18 @@ class OnLoopPersistError(AssertionError):
     """A session-file mutation entered :meth:`ConversationLog._locked` directly
     on the event loop, violating the off-loop persistence discipline.
 
-    The offload invariant (see the ``_locked`` contract and
-    ``docs/system-specs/modules/history.md``) is that NO session-JSONL mutator
-    runs on the gateway event loop: on-loop callers route through
-    ``append_off_loop`` / ``append_if_absent_off_loop`` /
-    ``append_rows_if_absent_off_loop`` / ``update_metadata_off_loop`` (here), or
-    ``dashboard.chat_persistence.save_slot_off_loop`` (or ``asyncio.to_thread``),
-    all of which dispatch
-    the mutation to a worker thread so ``_locked`` runs OFF the loop and takes
-    the patient acquire path. A raw on-loop mutator call works in every low-
-    traffic test and use (the flock is uncontended) and only loses data under
-    real concurrency — where the on-loop path makes a single non-blocking
-    acquire, raises :class:`HistoryLockTimeout`, and the caller's best-effort
-    ``try/except`` swallows it as silent transcript loss.
+    No session-JSONL mutator may run on the event loop (see the ``_locked``
+    contract and ``docs/system-specs/modules/history.md``): on-loop callers use
+    the ``*_off_loop`` helpers here, ``dashboard.chat_persistence.save_slot_off_loop``
+    or ``asyncio.to_thread``. A raw on-loop call works while the flock is
+    uncontended, but under real concurrency its single non-blocking acquire
+    raises :class:`HistoryLockTimeout` and a best-effort ``try/except`` swallows
+    it as silent transcript loss.
 
-    Because that failure is invisible in CI, ``_locked`` fails LOUD instead:
-    when strict enforcement is active (:func:`_on_loop_persist_strict` — on under
-    ``KIROCREW_STRICT_ON_LOOP_PERSIST`` or ``KIROCREW_DEV_MODE``) any on-loop
-    entry raises this error so an un-offloaded call-site fails tests rather than
-    losing data in production. In production (strict off) the same on-loop entry
-    is instead logged loudly (throttled) and proceeds via the single non-blocking
-    safety-net acquire. Tests that deliberately exercise the low-level on-loop
-    primitive wrap the call in :func:`allow_on_loop_persist`.
+    So under strict enforcement (:func:`_on_loop_persist_strict`) an on-loop entry
+    raises this, failing tests instead of losing data. In production it is logged
+    (throttled) and proceeds via the non-blocking acquire. Tests that exercise the
+    on-loop primitive on purpose wrap it in :func:`allow_on_loop_persist`.
     """
 
 
@@ -85,24 +75,13 @@ def allow_on_loop_persist() -> Iterator[None]:
 def _on_loop_persist_strict() -> bool:
     """Whether an on-loop ``_locked`` entry should RAISE (vs. warn-and-proceed).
 
-    Strict enforcement turns the convention-only offload discipline into a hard,
-    test-catchable failure. It is on when EITHER:
-
-    - ``KIROCREW_STRICT_ON_LOOP_PERSIST`` is truthy (explicit opt-in — the knob
-      the discipline-enforcement tests flip, and a CI/dev harness can export to
-      make an un-offloaded call-site fail instead of ship), or
-    - ``KIROCREW_DEV_MODE`` is truthy (developer gateway runs — where all
-      persistence is already offloaded, so a raise means a real newly-added
-      un-offloaded path, surfaced immediately rather than lost under contention).
-
-    A truthy ``KIROCREW_STRICT_ON_LOOP_PERSIST`` wins; an explicit falsy value
-    force-disables even under dev-mode (so the production-fallback path stays
-    testable). It is deliberately NOT auto-on under bare pytest: the suite's own
-    async harness calls several mutators directly on the loop as a convenience
-    (not a production path), so auto-strict would flag harness code, not drift.
-    The default (no flag) is the production behavior — a loud throttled warning
-    plus the non-blocking safety-net acquire — so shipping never introduces a new
-    hard failure in the field.
+    On when ``KIROCREW_STRICT_ON_LOOP_PERSIST`` is truthy (the knob enforcement
+    tests and CI flip) or ``KIROCREW_DEV_MODE`` is truthy (dev gateways, where all
+    persistence is already offloaded, so a raise is a real new path). An explicit
+    falsy ``KIROCREW_STRICT_ON_LOOP_PERSIST`` wins over dev mode, keeping the
+    production fallback testable. Not auto-on under pytest: the async harness
+    calls some mutators on the loop as a convenience. The default is the
+    production warn-and-proceed, so shipping adds no new hard failure.
     """
     explicit = os.environ.get("KIROCREW_STRICT_ON_LOOP_PERSIST", "").strip().lower()
     if explicit in _ON_LOOP_TRUTHY:
@@ -180,19 +159,12 @@ def append_off_loop(
 ) -> None:
     """Persist a message without blocking (or fail-fast-dropping on) the loop.
 
-    The lock-backed :meth:`ConversationLog.append` acquires a cross-process
-    flock and writes to disk. On the gateway event loop that primitive makes a
-    single non-blocking acquire attempt and raises :class:`HistoryLockTimeout`
-    on *any* concurrent holder (see the ``_locked`` contract), so calling it
-    directly from an async context both risks a disk write on the loop and drops
-    the write under benign contention.
-
-    This helper routes around both problems: on a running asyncio loop the
-    append is dispatched to a worker thread (``run_in_executor``) so it takes the
-    patient off-loop acquire path and never stalls the loop; off the loop it
-    appends inline. Persistence is best-effort — the caller has already reflected
-    the message in the in-memory slot, so a lock timeout or I/O error only skips
-    the durable replay copy and is logged rather than raised.
+    On the event loop :meth:`ConversationLog.append` makes one non-blocking flock
+    attempt and raises :class:`HistoryLockTimeout` on any holder, so a direct
+    call writes on the loop and drops the row under benign contention. On a
+    running loop this dispatches to a worker thread (``run_in_executor``) for the
+    patient acquire; off the loop it appends inline. Best-effort: the message is
+    already in the in-memory slot, so a failure is logged, not raised.
     """
 
     def _do() -> None:
@@ -227,30 +199,20 @@ def append_rows_if_absent_off_loop(
 ) -> Any:
     """Persist SEVERAL rows of one turn as one indivisible off-loop write.
 
-    :func:`append_if_absent_off_loop` dispatches each row as its own executor
-    task, so a caller writing a prompt+result PAIR hands two worker threads two
-    independent writes: they can land out of order, and one can fail while the
-    other succeeds. The transcript then replays a run whose rows are reversed or
-    half-present, and no timestamp ordering repairs it because each row's ``ts``
-    is correct on its own.
+    :func:`append_if_absent_off_loop` sends each row as its own executor task, so
+    a prompt+result pair could land out of order or half-written, which no
+    ``ts`` ordering repairs. This runs the group in ONE task holding
+    :meth:`ConversationLog.atomic_appends`; ``_locked`` is reentrant per key per
+    thread, so the per-row locks reuse the hold.
 
-    This routes the whole group through ONE task holding
-    :meth:`ConversationLog.atomic_appends`, whose contract names this hazard as
-    the companion a multi-append caller needs precisely BECAUSE it moved the
-    write off the loop. ``_locked`` is reentrant per key per thread, so the
-    per-row locks inside ``append_if_absent`` reuse the hold rather than
-    deadlocking on it.
+    *rows* is an ordered sequence of ``(role, content, cls, mid)``, appended in
+    order. Each row keeps ``append_if_absent``'s idempotence, so a row the slot
+    save already wrote is skipped alone. ``row_meta``, when given, aligns with
+    *rows* by index and adds display fields to that row's ``meta`` (see
+    :meth:`ConversationLog.append`).
 
-    *rows* is an ordered sequence of ``(role, content, cls, mid)``; they are
-    appended in that order. Each row keeps ``append_if_absent``'s idempotence,
-    so a row the periodic slot save already serialized is skipped individually
-    without dropping its siblings. ``row_meta``, when given, is aligned with
-    *rows* by index and adds display fields to that row's ``meta``
-    (see :meth:`ConversationLog.append`).
-
-    Returns the executor future, or None when the write already happened inline
-    (no running loop). Best-effort like its siblings: a lock timeout or I/O
-    error only skips the durable replay copy the slot already carries.
+    Returns the executor future, or None when written inline (no running loop).
+    Best-effort like its siblings.
     """
 
     def _do() -> None:
@@ -302,20 +264,14 @@ def append_if_absent_off_loop(
 ) -> Any:
     """Idempotent, loop-safe variant of :func:`append_off_loop`.
 
-    Returns the executor future for the scheduled write, or None when the write
-    already happened inline (no running loop). A caller holding the ONLY durable
-    copy of something must await that future: scheduling is not durability.
+    Returns the executor future, or None when written inline (no running loop).
+    A caller holding the ONLY durable copy must await it: scheduling is not
+    durability.
 
-    Routes :meth:`ConversationLog.append_if_absent` — which atomically skips a
-    message already persisted under the same session lock — off the event loop
-    exactly like :func:`append_off_loop`. Used by the workflow-result and
-    cron-result injectors, which ALSO reflect the message in the in-memory slot
-    (``slot.append``); the periodic slot save can therefore serialize the same
-    message before this durable copy runs. The plain ``append`` would then
-    double-write it; ``append_if_absent`` performs the disk check under the
-    lock so the second write is a no-op. Best-effort — a lock timeout / I/O
-    error only skips the durable replay copy (the slot already carries it) and
-    is logged rather than raised.
+    Used by the workflow-result and cron-result injectors, which also add the
+    message to the in-memory slot, so the periodic slot save may persist it
+    first. :meth:`ConversationLog.append_if_absent` checks the disk under the
+    lock, so the second write is a no-op. Best-effort: failures are logged.
     """
 
     def _do() -> None:
@@ -360,26 +316,16 @@ def update_metadata_off_loop(
 ) -> None:
     """Merge session metadata without running the flock/fd ops on the loop.
 
-    Mirrors :func:`append_off_loop`, but for the lock-backed
-    :meth:`ConversationLog.update_metadata`. That method enters ``_locked``,
-    which ``os.open``\\ s the sidecar, takes a cross-process ``flock`` and
-    ``os.close``\\ s the fd. Those primitives are ``blocking: true`` under the
-    ``no-blocking-call-on-event-loop`` rule: a wedged cross-process peer can
-    stall the acquire (or, mid-release, the close) and freeze chat, WebSockets,
-    and heartbeat until the watchdog restarts the gateway. This helper keeps
-    them off the loop.
+    :meth:`ConversationLog.update_metadata` enters ``_locked``, whose
+    ``os.open``, ``flock`` and ``os.close`` are ``blocking: true`` under the
+    ``no-blocking-call-on-event-loop`` rule: a wedged cross-process peer could
+    freeze chat, WebSockets and heartbeat until the watchdog restarts.
 
-    Use it from *synchronous* helpers that may run on the event-loop thread
-    (e.g. slot rehydration / startup restore) where ``await`` is not available.
-    Async handlers that can ``await`` should prefer
+    For *synchronous* helpers that may run on the loop thread (slot rehydration,
+    startup restore). Async handlers should prefer
     ``await asyncio.to_thread(conversation_log.update_metadata, ...)`` so the
-    write is ordered against the response.
-
-    On a running loop the update is dispatched to a worker thread (which takes
-    ``_locked``'s patient off-loop acquire path); off the loop it runs inline.
-    Persistence is best-effort — the mutation is metadata backfill the caller
-    has already reflected in memory, so a lock timeout or I/O error is logged
-    rather than raised.
+    write is ordered against the response. On a running loop this dispatches to
+    a worker thread; off it, it runs inline. Best-effort: failures are logged.
     """
 
     def _do() -> None:
